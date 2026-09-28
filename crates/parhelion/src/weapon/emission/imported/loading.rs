@@ -1,9 +1,34 @@
 //! Include borrowed native shaders and textures in the material owner's scope.
 use super::*;
+mod components;
+
+pub(super) fn include_native_resources(
+    manager: &sundial::package_authoring::PackageManager,
+    folder: &Path,
+    nodes: &[Value],
+    symbols: &BTreeMap<String, TagHash>,
+    groups: &mut BTreeMap<TagHash, Vec<TagHash>>,
+) -> AuthoringResult<()> {
+    include_native_materials(manager, folder, nodes, symbols, groups)?;
+    components::include(manager, folder, nodes, symbols, groups)
+}
 
 fn material_references(data: &[u8]) -> AuthoringResult<BTreeSet<TagHash>> {
     let mut references = BTreeSet::new();
     for stage in [0x48, 0xE8, 0x188, 0x228, 0x2C8, 0x368] {
+        let writable = read_u32(data, stage + 0x74)? & 0xFF != 0;
+        let buffer = read_u32(data, stage + 0x84)?;
+        let external = ![0, u32::MAX, 0x811C9DC5].contains(&buffer);
+        if writable && crate::tag_payload::read_u64(data, stage + 0x50)? == 0 {
+            return Err(invalid(format!(
+                "Imported material stage 0x{stage:X} allocates an empty writable buffer. Re-import its materials."
+            )));
+        }
+        if (writable || external) && read_u32(data, stage + 0x80)? >= 14 {
+            return Err(invalid(format!(
+                "Imported material stage 0x{stage:X} has an invalid constant-buffer slot. Re-import its materials."
+            )));
+        }
         references.insert(TagHash(read_u32(data, stage)?));
         references.insert(TagHash(read_u32(data, stage + 0x84)?));
         for (descriptor, stride, field) in [(stage + 8, 8, 4), (stage + 0x40, 16, 0)] {

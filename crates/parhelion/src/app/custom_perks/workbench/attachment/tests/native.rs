@@ -1,5 +1,5 @@
 use super::*;
-use crate::app::custom_perks::editor::tests::{editor, fixture, set_test_speed};
+use crate::app::custom_perks::workbench::parameters::tests::{editor, fixture, set_test_speed};
 
 #[test]
 #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES for workbench navigation"]
@@ -25,6 +25,7 @@ fn native_reopening_a_different_perk_does_not_reuse_the_previous_parameter_edito
     let mut workbench = Workbench::default();
     workbench.set_test_editor(parameter_editor);
     workbench.documents[0].target = Some(first.clone());
+    workbench.documents[0].from_socket = true;
     workbench.open = false;
     workbench.open_target(second, &catalog);
     assert_eq!(workbench.selected, 1);

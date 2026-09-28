@@ -1,10 +1,13 @@
 //! Label editing over the active registry, with stock usage as a guide rather than a limit.
 use super::*;
-use crate::app::custom_perks::workbench::controls::{COLUMN_WIDTH, cell};
 
 use sundial::investment::discovery::labels::Registry;
 use sundial::package_authoring::sandbox_perk::activation;
 use sundial::ui::catalog::labels as picker;
+
+/// The four set operations of a binding site, in `activation::LABEL_OPERATIONS` order.
+pub(in crate::app::custom_perks::workbench::program::native) const OPERATIONS: [&str; 4] =
+    ["Matches Any", "Requires All", "Excludes Any", "Not All"];
 
 fn registry(ui: &egui::Ui) -> (Option<Arc<Registry>>, Option<String>) {
     ui.data(|data| data.get_temp(egui::Id::new("installed-label-registry")))
@@ -16,23 +19,37 @@ pub(in crate::app::custom_perks::workbench::program::native) fn draw_single(
     value: &mut u32,
 ) {
     let (registry, error) = registry(ui);
+    let listed = sundial::investment::discovery::labels::name(*value).is_some();
+    let typed = super::super::Typed::new(ui, "registered-label", listed);
     crate::app::custom_perks::workbench::controls::column(ui, |ui| {
+        // The list holds a search box, so only a choice or a click outside closes it.
+        let mut chose = false;
         egui::ComboBox::from_id_salt("registered-label")
-            .width(COLUMN_WIDTH)
+            .width(ui.available_width())
             .truncate()
             .selected_text(picker::title(*value))
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show_ui(ui, |ui| {
                 if let Some(error) = error {
                     ui.colored_label(ui.visuals().error_fg_color, error);
                 }
-                picker::select_one(ui, registry.as_deref(), value);
-                egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
-                    let response = hex_key(ui, "label-hash", value);
-                    pickers::name_response(ui, &response, "Label as Hex");
-                });
+                if picker::select_one(ui, registry.as_deref(), value) {
+                    typed.listed(ui);
+                    chose = true;
+                }
+                chose |= typed.row(ui);
             });
+        if chose {
+            ui.memory_mut(egui::Memory::close_popup);
+        }
         pickers::name_combo(ui, "registered-label", "Label");
     });
+    if typed.shown {
+        crate::app::custom_perks::workbench::controls::column(ui, |ui| {
+            let response = hex_key(ui, "label-hash", value);
+            pickers::name_response(ui, &response, "Label as Hex");
+        });
+    }
 }
 
 /// All four operations at every binding site. The kill node draws these beside its presets.
@@ -53,7 +70,7 @@ pub(super) fn draw_row_sites(
 ) -> Result<(), String> {
     let class = graph.blocks[index].class;
     let stride = schema::record(class)?.size;
-    let fold = Fold::of(ui, index, row);
+    let fold = Fold::of(ui, row);
     let mut unset = 0;
     for (binding, _) in native::labels::bindings(class)? {
         let at = row * stride + binding;
@@ -72,15 +89,19 @@ pub(super) fn draw_row_sites(
         let at = row * stride + source;
         let current = read_list(graph, index, at)?;
         ui.push_id(("added-labels", row, source), |ui| {
-            if let Some(labels) = draw_labels(
-                ui,
-                class,
-                source,
-                0,
-                "Adds Labels",
-                "Labels added to the event when this action's filter passes. Other perks can read them.",
-                &current,
-            )? {
+            let edited = crate::app::style::tiles(ui, |ui, width| {
+                draw_labels(
+                    ui,
+                    width,
+                    class,
+                    source,
+                    0,
+                    "Adds Labels",
+                    "Labels added to the event when this action's filter passes.",
+                    &current,
+                )
+            })?;
+            if let Some(labels) = edited {
                 set_labels(graph, index, at, 0, &labels)?;
             }
             Ok::<_, String>(())
@@ -121,9 +142,9 @@ pub(super) struct Fold {
 }
 
 impl Fold {
-    /// Independent editors can both use block zero, so scope the fold to its editing surface.
-    pub fn of(ui: &egui::Ui, index: usize, row: usize) -> Self {
-        let id = ui.make_persistent_id(("label-sites-unset", index, row));
+    /// Keyed by row within the caller's `Ui`, which is scoped to the node's path.
+    pub fn of(ui: &egui::Ui, row: usize) -> Self {
+        let id = ui.make_persistent_id(("label-sites-unset", row));
         Self {
             id,
             unfolded: ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false)),
@@ -138,17 +159,20 @@ impl Fold {
             return;
         }
         let label = if self.unfolded {
-            "Fewer filters".to_owned()
+            "Fewer Filters".to_owned()
         } else if unset == 1 {
-            "1 more filter".to_owned()
+            "1 More Filter".to_owned()
         } else {
-            format!("{unset} more filters")
+            format!("{unset} More Filters")
         };
-        let toggled = cell(ui, "", "", |ui| {
-            ui.small_button(label)
-                .on_hover_text("Set operations this node leaves empty. They stay editable here.")
-                .clicked()
-        });
+        let toggled = ui
+            .scope(|ui| {
+                crate::app::style::quiet(ui);
+                ui.button(label)
+                    .on_hover_text("Set operations this node leaves empty.")
+                    .clicked()
+            })
+            .inner;
         if toggled {
             ui.data_mut(|data| data.insert_temp(self.id, !self.unfolded));
         }
@@ -170,17 +194,18 @@ pub(super) fn draw_site_group(
     }
     let mut edited = None;
     let mut failed = None;
-    ui.horizontal_wrapped(|ui| {
-        for (operation, name, hint) in activation::LABEL_OPERATIONS {
+    crate::app::style::tiles(ui, |ui, width| {
+        for (operation, _, hint) in activation::LABEL_OPERATIONS {
             if lists[operation].is_empty() && !unfolded {
                 continue;
             }
             match draw_labels(
                 ui,
+                width,
                 class,
                 binding,
                 operation,
-                &format!("{caption} {}", name.to_lowercase()),
+                &format!("{caption} {}", OPERATIONS[operation]),
                 hint,
                 &lists[operation],
             ) {
@@ -219,13 +244,15 @@ pub(super) fn site_caption(class: u32, binding: usize) -> String {
     let known = match (class, binding) {
         // The kind 37 site mixes weapon families (pulse rifle, energy weapon, heavy weapon)
         // with abilities (super, grenade, melee), which together are what dealt the damage.
-        (0x80802F5F, 0x28) | (0x80803DDC, 0x28) | (0x80803E1A, 0x28) => Some("Damage source"),
+        (0x80802F5F, 0x28) | (0x80803DDC, 0x28) | (0x80803E1A, 0x28) => Some("Damage Source"),
+        // The weapon event conditions, kinds 13 to 19, share one layout whose labels are the
+        // weapon's own: stock nodes list hand cannon, sidearm, sword, machine gun and the rest.
         (0x808029DB, 0x8)
         | (0x808029EC, 0x8)
-        | (0x80803DDD, 0x10)
-        | (0x80803DF5, 0x10)
+        | (0x80803DDE | 0x80803DFA | 0x80803DF7 | 0x80803DF5, 0x10)
+        | (0x80803DDB | 0x80803DDD | 0x80803DE2, 0x10)
         | (0x80803E3E, 0x8)
-        | (0x80803E3F, 0x8) => Some("Weapon type"),
+        | (0x80803E3F, 0x8) => Some("Weapon Type"),
         (0x80802F16, 0x48) => Some("Ability"),
         (0x80802F16, 0xC0) | (0x80804D73, 0x0) | (0x80803DE5, 0x8) | (0x80803DE7, 0x8) => {
             Some("Target")
@@ -233,7 +260,7 @@ pub(super) fn site_caption(class: u32, binding: usize) -> String {
         // The kill node filters on the kill's own labels and on what was killed, through
         // the same four set operations, so each site needs its own word to read by.
         (0x80803DE7, 0xD0) => Some("Kill"),
-        (0x80803E3C, 0x30) => Some("Target rank"),
+        (0x80803E3C, 0x30) => Some("Target Rank"),
         _ => None,
     };
     if let Some(caption) = known {
@@ -273,6 +300,7 @@ fn read_list(graph: &Graph, index: usize, at: usize) -> Result<Vec<u32>, String>
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw_labels(
     ui: &mut egui::Ui,
+    width: f32,
     class: u32,
     binding: usize,
     operation: usize,
@@ -301,12 +329,15 @@ pub(super) fn draw_labels(
     // grows to the width of its text, and a node draws up to eight of these in one column:
     // spelling the operation inside every one of them filled the pane and wrapped each
     // control onto several lines. The full reading stays on hover.
-    cell(ui, name, hint, |ui| {
+    crate::app::style::tile(ui, width, salt, name, hint, false, |ui| {
+        // The list holds a search box and several labels are chosen in one visit, so only a
+        // click outside closes it.
         egui::ComboBox::from_id_salt(salt)
-            .width(COLUMN_WIDTH)
+            .width(ui.available_width())
             .height(380.0)
             .truncate()
             .selected_text(summary.clone())
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show_ui(ui, |ui| {
                 if let Some(error) = error {
                     ui.colored_label(ui.visuals().error_fg_color, error);
@@ -326,17 +357,19 @@ pub(super) fn draw_labels(
 }
 
 /// A label as a reader sees it: the engine's token with its underscores opened and each
-/// word capitalized, so "projectile_melee" reads "Projectile Melee". The token itself stays
+/// word capitalized but the small words inside it, so "projectile_melee" reads "Projectile
+/// Melee" and "ward of dawn" reads "Ward of Dawn". The token itself stays
 /// in the hover text and in the vocabulary, since it is what the game matches on.
 pub(super) fn plain_label(token: &str) -> String {
-    token
+    let words = token
         .split(['_', ' '])
         .filter(|word| !word.is_empty())
-        .map(|word| {
-            let mut characters = word.chars();
-            characters.next().map_or_else(String::new, |first| {
-                first.to_uppercase().chain(characters).collect()
-            })
+        .collect::<Vec<_>>();
+    words
+        .iter()
+        .enumerate()
+        .map(|(index, word)| {
+            sundial::package_authoring::sandbox_perk::nodes::title_word(word, index, words.len())
         })
         .collect::<Vec<_>>()
         .join(" ")

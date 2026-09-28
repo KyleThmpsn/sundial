@@ -325,6 +325,31 @@ pub(crate) fn weapon_bucket_capacities(
     Ok(capacities)
 }
 
+/// Rows one native bucket holds. The bucket must belong to a character or, with `profile`, to
+/// the profile.
+pub(crate) fn inventory_bucket_capacity(
+    manager: &PackageManager,
+    root: &[u8],
+    bucket: u8,
+    profile: bool,
+) -> Result<usize, String> {
+    let scope = if profile {
+        InventoryScope::Profile
+    } else {
+        InventoryScope::Character
+    };
+    scan_inventory_bucket_descriptors(manager, root)?
+        .get(&bucket)
+        .filter(|descriptor| descriptor.scope == scope)
+        .map(|descriptor| usize::from(descriptor.capacity))
+        .ok_or_else(|| {
+            format!(
+                "Native inventory bucket {bucket} is missing or is not a {} bucket",
+                scope.label().to_lowercase()
+            )
+        })
+}
+
 pub(in crate::catalog) fn scan_inventory_bucket_descriptors(
     manager: &PackageManager,
     root: &[u8],

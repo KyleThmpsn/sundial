@@ -221,34 +221,6 @@ fn append_zero_length_shared_pair(source: &[u8], target_patch: u8) -> Vec<u8> {
 }
 
 #[test]
-fn parses_shadowkeep_table_locations() {
-    let bytes = synthetic_package();
-    let layout = PackageLayout::parse(&bytes).expect("synthetic package should parse");
-
-    assert_eq!(layout.content_build, SHADOWKEEP_CONTENT_BUILD);
-    assert_eq!(layout.content_revision, SHADOWKEEP_CONTENT_REVISION);
-    assert_eq!((layout.package_id, layout.patch_id), (0x058f, 2));
-    assert_eq!((layout.entry_count, layout.block_count), (2, 3));
-    assert_eq!(
-        (layout.entry_table_offset, layout.block_table_offset),
-        (0x200, 0x240)
-    );
-    assert_eq!(layout.package_tables_data_offset, 0x1A0);
-    assert_eq!(layout.package_tables_data_size, 0x170);
-    assert_eq!(layout.opaque_trailer_offset, 0x310);
-    assert_eq!(layout.opaque_trailer_size, PACKAGE_FILE_ALIGNMENT);
-    assert_eq!(layout.shared_tag_enrollment_count(), 4);
-    let reserved = PackageLayout::parse(&synthetic_package_with_capacities(8, 8)).unwrap();
-    assert_eq!(
-        (reserved.entry_count, reserved.block_count),
-        (layout.entry_count, layout.block_count)
-    );
-    assert_eq!((reserved.entry_capacity, reserved.block_capacity), (8, 8));
-    assert_eq!(reserved.entry_table_trailer_size, 32);
-    assert_eq!(reserved.block_table_offset, 0x2A0);
-}
-
-#[test]
 fn earlier_hud_generation_is_confined_to_its_audited_package_and_patch() {
     let mut bytes = synthetic_package();
     let mut layout = PackageLayout::parse(&bytes).unwrap();

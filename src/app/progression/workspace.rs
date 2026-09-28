@@ -13,7 +13,7 @@ impl SundialApp {
         self.progression_ui.read_only = read_only;
         self.collections_ui.read_only = read_only;
         if read_only {
-            ui.label("Browsing only. Enable Progression Editing under Preferences > Editing > Experimental to change progression state.");
+            ui.label("Browsing only. Enable Progression Editing in Preferences > Editing > Experimental to edit.");
         }
         ui.heading("Progression");
         ui.add_space(8.0);

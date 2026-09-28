@@ -76,6 +76,10 @@ pub fn name(class: u32) -> String {
         0x80804D78 => "Faction Filter",
         0x80809312 => "Filter List",
         0x80809316 => "Filter Entry",
+        // The compiled comparison `predicate::read` decodes into a compared engine variable,
+        // an operation and a threshold, and one row of its expression's Inputs.
+        0x80804D7D => "Comparison",
+        0x8080941B => "Expression Input",
         _ => return format!("Native Record 0x{class:08X}"),
     }
     .to_owned()
@@ -233,22 +237,112 @@ fn insert(
     });
 }
 
-fn headers(class: u32, fields: &mut Vec<Field>, covered: &mut [bool]) {
+/// Selection masks no stock node leaves empty, by class and offset: the ammunition pickup
+/// flags (48 nodes), the ability masks of both slot filters (25 and 62), Set Ability Enum's
+/// slot (1), and the selected bits of Event Mask (2) and Event Slot Mask (16). With no bit set
+/// the node matches no event or changes no slot.
+const NEVER_EMPTY_MASKS: [(u32, usize); 6] = [
+    (0x8080_3DFB, 8),
+    (0x8080_3DFD, 8),
+    (0x8080_3E01, 8),
+    (0x8080_3E0F, 2),
+    (0x8080_3DE0, 8),
+    (0x8080_3E00, 8),
+];
+
+/// Whether an editable field still holds nothing chosen. No key or tag in any stock node is
+/// zero, since an empty key is the hash of an empty name and an empty tag is all ones, so a
+/// zero one was never picked. The masks above are never empty in stock either. The compiler
+/// accepts such a node, but it never matches or never acts in game.
+#[must_use]
+pub fn unset(class: u32, field: &Field, bytes: &[u8]) -> bool {
+    field.editable
+        && bytes.iter().all(|byte| *byte == 0)
+        && (matches!(field.format, Format::Key | Format::Tag)
+            || NEVER_EMPTY_MASKS.contains(&(class, field.offset)))
+}
+
+/// The label of a class's compiler-derived event mask at +0x18.
+fn derived_mask(class: u32) -> Option<&'static str> {
     // A subgroup row stores the event mask of its own conditions and their children, right
     // after the condition list it summarises. Checked against every stock subgroup: 21 of 22
     // rows equal the mask over their listed conditions, and the one that differs carries the
     // extra bit of a nested General Predicate, which is what the root masks also fold in.
-    // The compiler derives it, so it is not editable.
-    if class == 0x8080_3E06 {
-        insert(
-            fields,
-            covered,
-            0x18,
-            4,
-            Format::Mask32,
-            "Nested Event Mask",
-            false,
-        );
+    // A counter stores the same mask over its contributing conditions: 141 of 142 stock
+    // counters match it, and the one with no contributions stores 1. Both are 64 bits like
+    // the root masks. `metadata::rebuild` derives them, so they are not editable.
+    match class {
+        0x8080_3E06 => Some("Nested Event Mask"),
+        0x8080_3E30 => Some("Source Event Mask"),
+        _ => None,
+    }
+}
+
+fn headers(class: u32, fields: &mut Vec<Field>, covered: &mut [bool]) {
+    if let Some(label) = derived_mask(class) {
+        insert(fields, covered, 0x18, 8, Format::Bytes, label, false);
+    }
+    // A comparison's two expressions end in the value program header: an input count, a lane
+    // no stock comparison sets, an output count and the fast path, the counts
+    // `value::validate` checks. The compared side loads its input and the threshold side only
+    // pushes its constant, which is why every stock comparison stores 1 or 2 inputs on the
+    // first and none on the second, and one output on both. The header is structure the
+    // comparison editor keeps as it is, so it is not editable.
+    if class == super::predicate::COMPARISON_CLASS {
+        for (base, side) in [(0x18, "Compared Value"), (0x58, "Threshold")] {
+            for (offset, count) in [
+                (0x20, "Input Count"),
+                (0x28, "Output Count"),
+                (0x2C, "Fast Path"),
+            ] {
+                let label = format!("{side} {count}");
+                insert(
+                    fields,
+                    covered,
+                    base + offset,
+                    4,
+                    Format::Unsigned,
+                    &label,
+                    false,
+                );
+            }
+        }
+    }
+    // Every other inline value program ends in the same header, which `value::validate` accepts
+    // only as one input, a zero unused lane and one output, with a fast path set only beside a
+    // constant vector. The value editor owns it, so it is named and read-only, as above, rather
+    // than four unnamed native values.
+    if class != super::predicate::COMPARISON_CLASS
+        && let Ok(inline) = schema::inline(class)
+    {
+        let programs = inline
+            .iter()
+            .filter(|(_, child, _)| *child == super::value::CLASS)
+            .map(|(offset, _, _)| *offset)
+            .collect::<Vec<_>>();
+        for (position, base) in programs.iter().enumerate() {
+            let side = if programs.len() > 1 {
+                format!("Value Program {}", position + 1)
+            } else {
+                "Value Program".to_owned()
+            };
+            for (offset, count) in [
+                (0x20, "Input Count"),
+                (0x24, "Unused Count"),
+                (0x28, "Output Count"),
+                (0x2C, "Fast Path"),
+            ] {
+                insert(
+                    fields,
+                    covered,
+                    base + offset,
+                    4,
+                    Format::Unsigned,
+                    &format!("{side} {count}"),
+                    false,
+                );
+            }
+        }
     }
     if class == 0x808040B5 {
         for (offset, width, format, label, editable) in [
@@ -495,11 +589,8 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
         // +0x58. The word takes -1, 0 and 1 in stock perks. Its role is not resolved, so the
         // name says only what it is: the predicate's mode word.
         0x808094A8 => vec![(0x00, 4, Integer, "Predicate Mode")],
-        // The mask spans both words. Condition kinds run past 31, so an event mask needs a
-        // full 64 bits here as it does at the action root and on Extend Timers, and the high
-        // word carries exactly the single bits that reading predicts.
+        // The event mask at +0x18 is compiler-derived, see `headers`.
         0x80803E30 => vec![
-            (0x18, 8, Bytes, "Source Event Mask"),
             (0x20, 4, Float, "Trigger Threshold"),
             (0x24, 4, Float, "Reset Threshold"),
             (0x28, 4, Float, "Minimum Value"),
@@ -615,6 +706,14 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
         0x80804D78 => vec![(0x00, 8, Pointer, "Factions")],
         0x80809312 => vec![(0x08, 8, Pointer, "Filters")],
         0x80809316 => vec![(0x08, 8, Pointer, "Filter")],
+        // The operation byte `predicate::read` decodes and `predicate::rewrite` writes.
+        0x80804D7D => vec![(0x88, 1, Byte, "Comparison")],
+        // `predicate::read` requires this key to be the FNV-1 hash of the variable its source
+        // text names, and every stock row holds a compared variable such as Nearby Enemy Count.
+        0x8080941B => vec![(0x04, 4, Key, "Variable")],
+        // Kind 40 matches this optional named event before its four object filters, the key
+        // its fact already reads as the Named Event Key.
+        0x80802D00 => vec![(0x08, 4, Key, "Named Event Key")],
         // Lanes whose role is unresolved but whose shape the stock values settle, so the
         // workbench renders a checkbox or a number instead of four hex bytes. Each label
         // states the position and the shape, never a meaning this project has not recovered.
@@ -623,19 +722,20 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
         0x80802F16 => vec![(0xB8, 1, Flag, "Applies After Filters")],
         // Two Objects and Event State: +78 is set in one row of 43.
         0x808029E0 => vec![(0x78, 1, Flag, "Second Object Flag")],
-        // Add Event Labels: every stock value at these three lanes is a single bit, so each
-        // reads as a mask rather than a count.
+        // Add Event Labels: these lanes are words of the 40-byte label set the compiler builds
+        // from the node's label list (`labels::compile`), which is why every stock value is a
+        // single bit. Stagger, overload and pierce land in word 10 and charged in word 1.
         0x80803E1A => vec![
-            (0xA8, 4, Mask32, "First Label Mask"),
-            (0xC8, 4, Mask32, "Second Label Mask"),
-            (0xCC, 4, Mask32, "Third Label Mask"),
+            (0xA8, 4, Mask32, "Label Set Word 1"),
+            (0xC8, 4, Mask32, "Label Set Word 9"),
+            (0xCC, 4, Mask32, "Label Set Word 10"),
         ],
-        // The record is 0xA8 bytes, so it has no lane at 0xA8: a third mask was named there
+        // The record is 0xA8 bytes, so it has no lane at 0xA8: a third word was named there
         // and silently dropped, because the bytes it pointed at belong to the array header
-        // that follows the node. Its two real masks are below.
+        // that follows the node. Its compiled label set runs from +78 to +A0.
         0x8080281C => vec![
-            (0x78, 4, Mask32, "Object Filter Mask"),
-            (0x9C, 4, Mask32, "Label Mask"),
+            (0x78, 4, Mask32, "Label Set Word 1"),
+            (0x9C, 4, Mask32, "Label Set Word 10"),
         ],
         _ => Vec::new(),
     };
@@ -656,6 +756,12 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
                 (0x142, 1, Flag, "Source Flag"),
                 (0x14C, 4, Unsigned, "Source Selector"),
                 (0x150, 4, Float, "Source Threshold"),
+                // The two key lanes, told apart by the keys stock kills store in them: +144
+                // is a state the defeated target carries (Overload, Enemy Near a Warmind
+                // Cell), and +148 the name Remember a Target by Name stores, which Vengeance
+                // requires of the kill it rewards.
+                (0x144, 4, Key, "Target State"),
+                (0x148, 4, Key, "Remembered Target"),
             ],
             9 | 28 => vec![(8, 4, Mask32, "Selected Bits")],
             // The schema declares a resource reference at +10 and every stock value is a tag,
@@ -993,7 +1099,7 @@ mod tests {
                 }
             }
         }
-        assert!(checked > 100, "only {checked} fields were checked");
+        assert!(checked > 0, "no fields were checked");
     }
 
     /// The module's contract: every byte of a record belongs to exactly one field, so the

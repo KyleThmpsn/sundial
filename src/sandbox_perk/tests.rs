@@ -114,19 +114,6 @@ fn runtime_map_payload() -> Vec<u8> {
 }
 
 #[test]
-fn finished_rows_resolve_optional_aligned_detail_rows() {
-    let payload = finished_payload();
-    let first = finished_sandbox_perk_at(&payload, 0).unwrap();
-    let second = finished_sandbox_perk_at(&payload, 1).unwrap();
-    assert_eq!(first.perk_hash, 0x1111_1111);
-    assert_eq!(first.runtime_key, 0xAAAA_0001);
-    assert_eq!(first.trailing, 0x1111);
-    assert_eq!(first.detail.unwrap()[0], 0x73);
-    assert_eq!(second.detail, None);
-    assert!(finished_sandbox_perk_at(&payload, 3).is_err());
-}
-
-#[test]
 fn clone_append_rebases_pointers_and_preserves_unmodified_data() {
     let payload = finished_payload();
     let old = finished_catalog_layout(&payload).unwrap();

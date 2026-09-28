@@ -89,30 +89,30 @@ fn field_export_retains_exact_float_bits_and_opaque_bytes() {
 fn named_fields_and_opaque_bytes_have_separate_visibility() {
     let root = root();
     assert_eq!(
-        view::matching_fields(&root, "Translator", "", false).len(),
+        view::matching_indices(&root, "Translator", "", false).len(),
         1
     );
     assert_eq!(
-        view::matching_fields(&root, "Translator", "", true).len(),
+        view::matching_indices(&root, "Translator", "", true).len(),
         2
     );
     assert_eq!(
-        view::matching_fields(&root, "Translator", "speed", false).len(),
+        view::matching_indices(&root, "Translator", "speed", false).len(),
         1
     );
     assert_eq!(
-        view::matching_fields(&root, "Translator", "translator", false).len(),
+        view::matching_indices(&root, "Translator", "translator", false).len(),
         1
     );
     assert_eq!(
-        view::matching_fields(&root, "Translator", "0x80801234", false).len(),
+        view::matching_indices(&root, "Translator", "0x80801234", false).len(),
         1
     );
     assert_eq!(
-        view::matching_fields(&root, "Translator", "0x80803456", false).len(),
+        view::matching_indices(&root, "Translator", "0x80803456", false).len(),
         1
     );
-    assert!(view::matching_fields(&root, "Translator", "unmatched", true).is_empty());
+    assert!(view::matching_indices(&root, "Translator", "unmatched", true).is_empty());
 }
 
 #[test]

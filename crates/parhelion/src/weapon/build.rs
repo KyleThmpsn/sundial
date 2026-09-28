@@ -32,37 +32,35 @@ pub(super) fn canonical_project_weapons(
     let mut localized_hashes = BTreeSet::new();
     let mut weapons = project.weapons.clone();
     for weapon in &weapons {
-        let weapon_label = weapon.error_context();
-        weapon
-            .validate()
-            .map_err(|error| error.context(weapon_label.clone()))?;
+        let duplicate = |message: String| weapon.in_recipe(AuthoringError::InvalidInput(message));
+        weapon.validate().map_err(|error| weapon.in_recipe(error))?;
         if !namespaces.insert(weapon.namespace.as_bytes().to_vec()) {
-            return Err(AuthoringError::InvalidInput(format!(
-                "{weapon_label}: duplicate project namespace {:?}",
+            return Err(duplicate(format!(
+                "duplicate project namespace {:?}",
                 weapon.namespace
             )));
         }
         if !item_hashes.insert(weapon.identity.item_hash) {
-            return Err(AuthoringError::InvalidInput(format!(
-                "{weapon_label}: duplicate authored item hash 0x{:08X}",
+            return Err(duplicate(format!(
+                "duplicate authored item hash 0x{:08X}",
                 weapon.identity.item_hash
             )));
         }
         if !collectible_hashes.insert(weapon.identity.collectible_hash) {
-            return Err(AuthoringError::InvalidInput(format!(
-                "{weapon_label}: duplicate authored collectible hash 0x{:08X}",
+            return Err(duplicate(format!(
+                "duplicate authored collectible hash 0x{:08X}",
                 weapon.identity.collectible_hash
             )));
         }
         if !unlock_hashes.insert(weapon.identity.unlock_hash) {
-            return Err(AuthoringError::InvalidInput(format!(
-                "{weapon_label}: duplicate authored unlock hash 0x{:08X}",
+            return Err(duplicate(format!(
+                "duplicate authored unlock hash 0x{:08X}",
                 weapon.identity.unlock_hash
             )));
         }
         if !pattern_global_ids.insert(weapon.identity.pattern_global_id_hash) {
-            return Err(AuthoringError::InvalidInput(format!(
-                "{weapon_label}: duplicate authored sandbox-pattern global identity 0x{:08X}",
+            return Err(duplicate(format!(
+                "duplicate authored sandbox-pattern global identity 0x{:08X}",
                 weapon.identity.pattern_global_id_hash
             )));
         }
@@ -77,8 +75,8 @@ pub(super) fn canonical_project_weapons(
             weapon.identity.collection_requirement_hash,
         ] {
             if !localized_hashes.insert(hash) {
-                return Err(AuthoringError::InvalidInput(format!(
-                    "{weapon_label}: duplicate authored localized hash 0x{hash:08X}"
+                return Err(duplicate(format!(
+                    "duplicate authored localized hash 0x{hash:08X}"
                 )));
             }
         }
@@ -188,17 +186,19 @@ fn compile_canonical(
         placements::Plan::new(&sources, weapons)
             .map_err(|error| error.context("Collections destination planning"))
     })?;
-    let resolved = resolve::resolve_project_weapons_with_progress(
+    let mut resolved = resolve::resolve_project_weapons_with_progress(
         &sources,
         weapons,
         &collection_plan,
         progress,
     )?;
+    subclass::validate_project(&sources, &resolved)?;
+    let dye_plan = progress.step("Planning Dyes", || dyes::plan(&sources, &mut resolved))?;
     let templates = progress.step("Reading Perk Templates", || PerkTemplates::read(&sources))?;
     let mut custom_plugs = progress.step("Planning Private Perks", || {
         custom_plugs::plan(&sources, &resolved, &templates.strings)
     })?;
-    let assets = progress.step("Planning Artwork", || {
+    let mut assets = progress.step("Planning Artwork", || {
         assets::plan(
             &sources.manager,
             &resolved,
@@ -215,15 +215,29 @@ fn compile_canonical(
             &mut custom_plugs,
         )
     })?;
-    let (runtime, custom_payloads) = runtime::author(
+    let (mut runtime, custom_payloads) = runtime::author(
         package_directory,
         &mut sources,
         &resolved,
         &custom_plugs,
         &templates,
-        assets.weapon_runtime_start,
+        &mut assets,
         progress,
     )?;
+    // Each custom shader dye takes an asset group, and its key maps to its relation.
+    runtime.entity_assignments = dyes::author(
+        &sources.manager,
+        &dye_plan,
+        &mut runtime.asset_packages,
+        std::mem::take(&mut runtime.entity_assignments),
+    )?;
+    let dye_table = sources
+        .dye_table
+        .with(&dye_plan)?
+        .map(|payload| ReplacementSpec {
+            tag: sources.dye_table.tag,
+            payload,
+        });
     let localization = progress.step("Compiling Text", || {
         let localization = author_project_localized_strings(
             &sources.manager,
@@ -238,6 +252,7 @@ fn compile_canonical(
 
     let mut tables = tables::WeaponTables::take_stock(&mut sources, resolved.len());
     let context = tables::WeaponBuildContext {
+        weapon_count: resolved.len(),
         stock_item_count: sources.stock_item_count,
         stock_collectible_count: sources.stock_collectible_count,
         authored_weapon_icon_indices: &icons.weapon_indices,
@@ -260,28 +275,56 @@ fn compile_canonical(
     })?;
     tables.definitions.extend(custom_payloads.definitions);
     tables.authored_strings.extend(custom_payloads.strings);
+    // Subclass lists and display records follow the private plugs, each paired with its
+    // companion, where their tags were placed.
+    let subclass_start = tables.definitions.len();
+    tables
+        .definitions
+        .extend(std::mem::take(&mut tables.subclass_records));
+    tables
+        .authored_strings
+        .extend(std::mem::take(&mut tables.subclass_companions));
 
+    // Collections, badges and page counts cover only the items with an entry, not subclasses.
+    let collected = weapons
+        .iter()
+        .zip(&resolved)
+        .filter(|(_, donor)| donor.collection.is_some())
+        .map(|(weapon, _)| weapon.clone())
+        .collect::<Vec<_>>();
     let collections = progress.step("Building Collections", || {
         collections::author(
             &mut sources,
             &collection_plan,
             &tables.project_rows,
             icons.badge_index,
-            weapons,
+            &collected,
             &icons.custom_badges,
             &mut tables.collectibles,
         )
         .map_err(|error| error.context("Collections authoring"))
     })?;
+    let paths = tables
+        .subclass_path_names
+        .iter()
+        .flat_map(|(record, names)| {
+            names.iter().map(move |name| lore::PathLore {
+                display: subclass_start + record,
+                name: name.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
     let lore = progress.step("Building Lore", || {
         lore::author(
             &sources.manager,
             &sources.globals_data,
             weapons,
             &mut tables.definitions,
+            &paths,
         )
     })?;
     let output = assembly::Output {
+        dye_table,
         lore,
         assets,
         icons,
@@ -291,10 +334,11 @@ fn compile_canonical(
         localization,
         has_custom_plugs: !custom_plugs.is_empty(),
     };
-    let emission = progress.step("Linking Package Data", || {
+    let (emission, manager) = progress.step("Linking Package Data", || {
         assembly::prepare(sources, output)
     })?;
-    let mut bundle = emission::emit_packages(package_directory, emission, weapons, progress)?;
+    let mut bundle =
+        emission::emit_packages(package_directory, manager, emission, weapons, progress)?;
     for plug in &custom_plugs {
         for usage in &plug.uses {
             let weapon = bundle

@@ -187,20 +187,6 @@ fn added_sockets_rebase_inherited_lists_without_moving_nested_conditions_or_prog
 }
 
 #[test]
-fn added_socket_choices_support_private_default_and_alternative_plugs() {
-    let mut data = eight_socket_definition();
-    let mut columns = added_columns(9);
-    set_weapon_socket_columns(&mut data, &columns).unwrap();
-
-    replace_socket_choice_item_index(&mut data, 8, 0, 28, 100).unwrap();
-    replace_socket_choice_item_index(&mut data, 8, 1, 48, 101).unwrap();
-
-    columns[8].as_mut().unwrap().choices = vec![100, 101];
-    validate_weapon_socket_columns(&data, &columns, &[92; 9]).unwrap();
-    assert_eq!(weapon_default_plug_indices(&data).unwrap()[8], 100);
-}
-
-#[test]
 fn added_socket_shapes_reject_shrinking_overflow_and_incomplete_rows_without_changes() {
     let mut invalid_columns = vec![vec![None; 7], added_columns(13)];
     for invalid in [

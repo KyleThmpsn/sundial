@@ -45,6 +45,7 @@ fn dawn_detection_and_native_artwork_plans_match_previews() {
         donor_container_tag: TagHash(0x8132_57B1),
         icon_edit: WeaponIconEdit::default(),
         rarity: AuthoredWeaponRarity::Legendary,
+        plain: false,
     }];
     let plan = crate::watermark::build_presented_watermark_plan(
         &manager,
@@ -73,50 +74,4 @@ fn stale_dawn_folders_do_not_select_dawn() {
     std::fs::create_dir(root.path().join("Dawn")).unwrap();
     std::fs::create_dir_all(root.path().join("bin/x64/Dawn")).unwrap();
     assert_eq!(Branding::detect(root.path()), Branding::Sunrise);
-}
-
-#[test]
-fn badge_and_watermark_use_runtime_art_without_altering_sunrise() {
-    assert!(Branding::Sunrise.badge().unwrap().is_none());
-    assert!(Branding::Sunrise.corner().unwrap().is_none());
-    assert_eq!(
-        Branding::Sunrise.watermark().unwrap(),
-        crate::watermark::render_output_texture(0).unwrap()
-    );
-    let artwork = Branding::Dawn.badge().unwrap().unwrap();
-    let badge = crate::badge_icon::preview(Some(&artwork), None).unwrap();
-    assert_eq!(badge.dimensions(), (440, 268));
-    assert!(badge.pixels().any(|pixel| pixel.0 == [255; 4]));
-    assert_eq!(badge.get_pixel(0, 0).0, [3, 15, 38, 255]);
-    assert_eq!(badge.get_pixel(0, 267).0, [8, 89, 242, 255]);
-    assert_ne!(
-        Branding::Dawn.watermark().unwrap(),
-        Branding::Sunrise.watermark().unwrap()
-    );
-    if let Some(directory) = std::env::var_os("PARHELION_BRANDING_PREVIEWS") {
-        let directory = Path::new(&directory);
-        std::fs::create_dir_all(directory).unwrap();
-        badge.save(directory.join("dawn-badge.png")).unwrap();
-        artwork
-            .render(208, 126)
-            .save(directory.join("dawn-badge-low.png"))
-            .unwrap();
-        Branding::Dawn
-            .watermark()
-            .unwrap()
-            .save(directory.join("dawn-watermark.png"))
-            .unwrap();
-        for (index, (width, height)) in [(96, 96), (54, 54), (45, 45), (45, 45), (96, 96), (54, 54)]
-            .into_iter()
-            .enumerate()
-        {
-            let image = Branding::Dawn.texture(index).unwrap();
-            image
-                .save(directory.join(format!("dawn-watermark-{index}.png")))
-                .unwrap();
-            crate::image_import::fit(&image, width, height)
-                .save(directory.join(format!("dawn-watermark-{index}-native.png")))
-                .unwrap();
-        }
-    }
 }

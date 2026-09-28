@@ -88,7 +88,7 @@ pub(super) fn build(c: &mut Effect, draw: &SourceDraw, material: &Payload) -> Re
     let mut text = source.clone();
     let count = inputs::cb_count(&text, 1)?.context("source skinning buffer")?;
     ensure!(
-        (24..=256).contains(&count) && count.is_multiple_of(3),
+        count == 7 || ((24..=256).contains(&count) && count.is_multiple_of(3)),
         "source bone buffer size differs"
     );
     let native_bones = c.graph.manifest["rig_mapping"]["native_bone_count"]
@@ -101,11 +101,14 @@ pub(super) fn build(c: &mut Effect, draw: &SourceDraw, material: &Payload) -> Re
         &inputs::cb_decl(11, native_count),
     )?;
     text = model_reads(&text)?;
+    let view_count = inputs::cb_count(&text, 12)?;
     ensure!(
-        inputs::cb_count(&text, 12)? == Some(16),
+        view_count == Some(16) || (count == 7 && view_count == Some(8)),
         "source vertex view layout differs"
     );
-    text = replace_once(&text, &inputs::cb_decl(12, 16), &inputs::cb_decl(12, 14))?;
+    if view_count == Some(16) {
+        text = replace_once(&text, &inputs::cb_decl(12, 16), &inputs::cb_decl(12, 14))?;
+    }
     text = text.replace("cb12[15].xyz", "(-cb12[7].xyz)");
     text = text.replace("cb12[14].xyzw", "cb12[13].xyzw");
     text = text.replace("cb12[10].xyz", "cb12[7].xyz");

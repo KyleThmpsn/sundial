@@ -15,11 +15,21 @@ pub(super) fn draw(
         _ => return Err("Invalid native mask width.".into()),
     };
     let mut value = before;
+    // Every set bit is named, or the mask is typed as hex under the list.
+    let named = contract
+        .choices
+        .iter()
+        .fold(0u32, |bits, (bit, _)| bits | u32::from(*bit));
+    let typed = Typed::new(ui, "native-mask", value & !named == 0);
     column(ui, |ui| {
+        // Several bits are set in one visit, so only a click outside or Other Value… closes
+        // the list.
+        let mut chose = false;
         egui::ComboBox::from_id_salt("native-mask")
-            .width(COLUMN_WIDTH)
+            .width(ui.available_width())
             .truncate()
-            .selected_text(summary(value, contract.choices))
+            .selected_text(summary(value, contract.choices, contract.empty))
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show_ui(ui, |ui| {
                 for (bit, name) in contract.choices {
                     let bit = u32::from(*bit);
@@ -32,27 +42,32 @@ pub(super) fn draw(
                         }
                     }
                 }
-                egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
-                    for (observed, uses, perks) in contract.observed {
-                        ui.selectable_value(
-                            &mut value,
-                            u32::from(*observed),
-                            format!("0x{observed:02X}"),
-                        )
-                        .on_hover_text(format!("{uses} stock perk records. {perks}"));
-                    }
-                    let raw = hex_key(ui, "native-mask-hex", &mut value);
-                    pickers::name_response(ui, &raw, "Mask as Hex");
-                });
+                chose = typed.row(ui);
             })
             .response
             .on_hover_text(contract.description);
+        if chose {
+            ui.memory_mut(egui::Memory::close_popup);
+        }
         pickers::name_combo(
             ui,
             "native-mask",
             plain_field_label(block.class, &field.label),
         );
     });
+    if typed.shown {
+        column(ui, |ui| {
+            // The stock masks are what the game's own perks store, so they stay a hover away.
+            let stock = contract
+                .observed
+                .iter()
+                .map(|(observed, uses, _)| format!("0x{observed:02X} · {uses} stock perk records"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let raw = hex_key(ui, "native-mask-hex", &mut value).on_hover_text(stock);
+            pickers::name_response(ui, &raw, "Mask as Hex");
+        });
+    }
     if value != before {
         write(field, block, row, value)?;
     }
@@ -73,9 +88,9 @@ fn write(
     }
 }
 
-fn summary(value: u32, choices: &[(u8, &str)]) -> String {
+fn summary(value: u32, choices: &[(u8, &str)], empty: &str) -> String {
     if value == 0 {
-        return "None".to_owned();
+        return empty.to_owned();
     }
     let mut remaining = value;
     let mut names = Vec::new();
@@ -133,7 +148,7 @@ mod tests {
             let original = graph.blocks[0].bytes.clone();
             write(&field, &mut graph.blocks[0], 0, first | second | unknown).unwrap();
             assert!(
-                summary(first | second | unknown, contract.choices)
+                summary(first | second | unknown, contract.choices, contract.empty)
                     .contains(&format!("0x{unknown:X}"))
             );
             write(

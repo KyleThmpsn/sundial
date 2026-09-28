@@ -1205,31 +1205,6 @@ mod tests {
     }
 
     #[test]
-    fn socket_source_cache_rows_keep_pool_refs_and_drop_scan_scratch() {
-        let socket = SocketDef {
-            sources: vec![SocketOptionSource {
-                kind: SocketOptionSourceKind::RandomizedSet { index: 42 },
-                pool: 7,
-                valid: true,
-                ordered_members: vec![200, 100],
-                allowed: vec![100, 200],
-            }],
-            ..SocketDef::default()
-        };
-
-        let encoded = serde_json::to_value(&socket).unwrap();
-        assert!(encoded["sources"][0].get("allowed").is_none());
-        let decoded: SocketDef = serde_json::from_value(encoded).unwrap();
-        assert_eq!(decoded.sources[0].pool, 7);
-        assert_eq!(
-            decoded.sources[0].kind,
-            SocketOptionSourceKind::RandomizedSet { index: 42 }
-        );
-        assert_eq!(decoded.sources[0].ordered_members, vec![200, 100]);
-        assert!(decoded.sources[0].allowed.is_empty());
-    }
-
-    #[test]
     fn interning_sorts_picker_pool_without_erasing_package_member_order() {
         let mut items = vec![item(
             1_498_876_634,

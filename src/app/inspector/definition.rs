@@ -20,13 +20,9 @@ use super::super::{
     ui::{TABLE_CELL_HEIGHT, TABLE_COLUMN_GAP, table_cell},
 };
 use super::{
-    catalog_hash_hex_and_decimal_field, condition_opcode_label, condition_token_resolution,
-    draw_catalog_hash_link, draw_hash_hex_and_decimal_cells, draw_hash_hex_cell,
-    draw_hash_wrapped_detail, draw_metadata_paths, draw_named_catalog_hash_link, hash_detail_field,
-    hash_hex_and_decimal_field, hash_metadata_section, item_class_type_label,
-    item_definition_name_cell, metadata_label_text, metadata_path_text, metadata_subsection,
-    metadata_text, objective_description, objective_owner_display_label,
-    objective_owner_kind_label, progression_context_kind_label, progression_scope_label,
+    UNNAMED, condition_opcode_label, condition_token_resolution, draw_named_catalog_hash_link,
+    hash_metadata_section, item_class_type_label, objective_owner_kind_label,
+    progression_context_kind_label, progression_scope_label,
     take_definition_request as take_hash_inspection_request, yes_no,
 };
 
@@ -38,13 +34,15 @@ mod item_details;
 mod matches;
 mod materials;
 mod progression;
+mod reverse;
 mod runtime;
 mod state;
+#[cfg(test)]
+mod tests;
 mod unlocks;
 
 use collections::{
     collectible_item_name, draw_hash_collection_matches, draw_hash_condition_programs,
-    draw_hash_package_paths,
 };
 use controller::HashInspectorAction;
 pub(in crate::app) use controller::draw_catalog_hash_window;
@@ -77,11 +75,4 @@ enum InspectorProgressionEdit {
         collectible_index: u16,
         acquired: bool,
     },
-}
-
-fn hash_state_field(ui: &mut egui::Ui, value: impl Into<String>, tooltip: impl Into<String>) {
-    ui.label(metadata_label_text(ui, "Current State"));
-    ui.add(egui::Label::new(value.into()).wrap())
-        .on_hover_text(tooltip.into());
-    ui.end_row();
 }

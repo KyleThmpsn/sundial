@@ -64,9 +64,7 @@ pub(crate) fn draw(
                 if field.optional {
                     if ui
                         .checkbox(&mut present, field.label)
-                        .on_hover_text(
-                            "Enable to set this value. Disable to use the Sunrise default.",
-                        )
+                        .on_hover_text("Off uses the Sunrise default.")
                         .changed()
                     {
                         if present {

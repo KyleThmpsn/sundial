@@ -10,7 +10,7 @@ use std::{
 };
 
 use crate::{
-    AuthoredWeaponRarity, AuthoringError, ModernDamageType, WeaponAmmoType,
+    AuthoredWeaponRarity, AuthoringError, ItemKind, ModernDamageType, WeaponAmmoType,
     WeaponArtArrangementOverride, WeaponCloneIdentity, WeaponCloneOverrides, WeaponCloneSpec,
     WeaponCloneText, WeaponDyeReferenceOverride, WeaponIconEdit, WeaponInventorySlot,
     WeaponLocaleTextOverride, WeaponNumericInstruction, WeaponRawPayloadPatch,
@@ -232,6 +232,25 @@ pub enum RecipeCollectionPlacement {
 pub struct AdditionalBehaviorRecipe {
     /// Catalogue identifier from [`crate::weapon_behavior::CATALOG`].
     pub behavior: String,
+}
+
+/// Whose firing pattern a weapon uses when a borrowed perk changes its burst.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecipeBehaviorFiring {
+    /// Fire the burst the behavior's source weapon fires.
+    Behavior,
+    /// Keep this weapon's own burst and shot timing.
+    Weapon,
+}
+
+impl From<RecipeBehaviorFiring> for crate::weapon_behavior::BehaviorFiring {
+    fn from(value: RecipeBehaviorFiring) -> Self {
+        match value {
+            RecipeBehaviorFiring::Behavior => Self::Behavior,
+            RecipeBehaviorFiring::Weapon => Self::Weapon,
+        }
+    }
 }
 
 /// Element switching by holding Reload, the way Hard Light and Borealis work.
@@ -950,6 +969,10 @@ pub struct WeaponRecipeOverrides {
     /// keep half of their behavior in a perk, so the plugs travel with it by default.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub skip_behavior_perks: bool,
+    /// Whose firing pattern the weapon uses when a borrowed perk changes its burst. Absent means
+    /// the behavior's, so the weapon fires what the source weapon fires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behavior_firing: Option<RecipeBehaviorFiring>,
     /// IEEE-754 bit pattern raising the launch speed of a grafted projectile on a weapon that
     /// fires none of its own, and the most it is raised to. Absent means the default boost.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -993,6 +1016,19 @@ pub struct WeaponRecipeOverrides {
         skip_serializing_if = "Option::is_none"
     )]
     pub render_dye_rows: Option<[Vec<WeaponDyeReferenceRecipe>; 3]>,
+    /// A subclass's abilities and attunements taken from other stock subclasses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subclass_abilities: Option<crate::subclass::SubclassAbilities>,
+    /// A shader's custom surface values, by gear type, channel and surface.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dye_edits: Vec<crate::dye::DyeEdit>,
+    /// A shader's custom detail textures and tiling, by gear type and channel.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dye_texture_edits: Vec<crate::dye::DyeTextureEdit>,
+    /// A shader whose icon the page draws from its dyes, into the icon's imported image. The build
+    /// compiles that image like any other.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub icon_from_dyes: bool,
     /// Complete positional socket columns. An empty vector inherits every donor socket unchanged.
     /// A non-empty vector contains every donor socket and may append explicitly typed columns up
     /// to the native socket limit. `None` preserves donor socket content. Added columns must be
@@ -1136,6 +1172,7 @@ impl WeaponRecipeOverrides {
                 .map(|entry| entry.behavior.clone())
                 .collect(),
             skip_behavior_perks: self.skip_behavior_perks,
+            behavior_firing: self.behavior_firing.map(Into::into).unwrap_or_default(),
             behavior_projectile_speed: self.behavior_projectile_speed_bits.map(f32::from_bits),
             power_cap_group: self.power_cap_group,
             power_cap_groups: self.power_cap_groups.clone(),
@@ -1161,6 +1198,25 @@ impl WeaponRecipeOverrides {
                         .collect()
                 })
             }),
+            subclass_abilities: self
+                .subclass_abilities
+                .as_ref()
+                .map(|abilities| {
+                    abilities
+                        .validate()
+                        .map(|()| abilities.clone())
+                        .map_err(RecipeError::Validation)
+                })
+                .transpose()?,
+            dye_edits: {
+                crate::dye::validate_edits(&self.dye_edits).map_err(RecipeError::Validation)?;
+                self.dye_edits.clone()
+            },
+            dye_texture_edits: {
+                crate::dye::validate_texture_edits(&self.dye_texture_edits)
+                    .map_err(RecipeError::Validation)?;
+                self.dye_texture_edits.clone()
+            },
             socket_columns,
             socket_plug_variants: self
                 .socket_plug_variants
@@ -1206,6 +1262,10 @@ impl WeaponRecipeOverrides {
 #[serde(deny_unknown_fields)]
 pub struct WeaponRecipe {
     pub schema: u32,
+    /// What the recipe builds. Weapon recipes predate kinds and omit it, so their files are
+    /// unchanged and an older Parhelion rejects a gear recipe instead of building it as a weapon.
+    #[serde(default, skip_serializing_if = "ItemKind::is_weapon")]
+    pub kind: ItemKind,
     pub namespace: String,
     pub collection_placement: RecipeCollectionPlacement,
     pub donor: WeaponDonorReference,
@@ -1344,6 +1404,7 @@ impl WeaponRecipe {
         let identity = WeaponCloneIdentity::from_namespace(&namespace)?;
         Ok(Self {
             schema: RECIPE_SCHEMA,
+            kind: ItemKind::Weapon,
             namespace,
             collection_placement: RecipeCollectionPlacement::SunriseBadge,
             donor: WeaponDonorReference {
@@ -1392,6 +1453,18 @@ impl WeaponRecipe {
         Ok(recipe)
     }
 
+    /// A new recipe of `kind` with no base item yet. Weapons keep their original defaults.
+    pub(crate) fn new_unbound_kind(kind: ItemKind) -> Result<Self, RecipeError> {
+        if kind.is_weapon() {
+            return Self::new_unbound("New Recipe");
+        }
+        let mut recipe = Self::new_unbound(format!("New {}", kind.label()))?;
+        recipe.kind = kind;
+        recipe.flavor = kind.default_flavor().to_owned();
+        recipe.overrides.icon_from_dyes = kind == ItemKind::Shader;
+        Ok(recipe)
+    }
+
     pub fn set_donor(&mut self, item_hash: u32, expected_name: impl Into<String>) {
         let expected_name = expected_name.into();
         self.donor = WeaponDonorReference {
@@ -1413,6 +1486,7 @@ impl WeaponRecipe {
             lore: previous.lore,
             icon_edit: previous.icon_edit,
             hud_icon: previous.hud_icon,
+            icon_from_dyes: previous.icon_from_dyes,
             ..Default::default()
         };
     }
@@ -1499,6 +1573,7 @@ impl WeaponRecipe {
             )));
         }
         let spec = WeaponCloneSpec {
+            kind: self.kind,
             namespace: self.namespace.clone(),
             donor_item_hash: parse_recipe_hash("donor.item_hash", &self.donor.item_hash)?,
             expected_donor_name: self.donor.expected_name.clone(),

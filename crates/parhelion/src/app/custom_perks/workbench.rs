@@ -21,17 +21,21 @@ mod guidance;
 pub(in crate::app::custom_perks) mod history;
 use crate::artwork_browser as icons;
 mod library;
+mod markers;
+mod parameters;
 pub(super) use crate::app::pickers;
 mod program;
 mod properties;
 mod reading;
 mod selection;
 mod stats;
+mod stock;
 mod templates;
 mod test_plan;
 #[cfg(test)]
 pub(crate) mod tests;
 mod validation;
+use parameters::{PerkEditor, PrivatePerkRuntimeGraph};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::app) enum Request {
@@ -53,36 +57,96 @@ struct Document {
     history: history::History,
     recipe: PerkRecipe,
     baseline: Option<Vec<u8>>,
+    /// `baseline` parsed. Assign `baseline` through `set_baseline` so the two agree.
+    #[serde(skip)]
+    saved: Option<PerkRecipe>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     origin: Option<PerkRecipe>,
     #[serde(skip)]
     target: Option<attachment::Target>,
+    /// Opened from a weapon socket as a copy of the perk there.
+    #[serde(skip)]
+    from_socket: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending_effect: Option<EffectDraft>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     modified: Option<SystemTime>,
+    /// The last problem and warning check. The checks compile every effect, so they run again
+    /// only when the recipe or the discovery they read changes, not on every frame.
+    #[serde(skip)]
+    issues: Option<IssueCache>,
+}
+
+/// A document's checked recipe with what the check found.
+#[derive(Clone)]
+struct IssueCache {
+    recipe: PerkRecipe,
+    /// Whether discovery was idle at the check. Its results feed the problem check.
+    ready: bool,
+    problem: Option<String>,
+    warning: Option<String>,
 }
 
 impl Document {
     fn new(recipe: PerkRecipe, baseline: Option<Vec<u8>>) -> Self {
         Self {
             history: history::History::default(),
+            issues: None,
             modified: baseline.is_none().then(SystemTime::now),
             origin: Some(recipe.clone()),
             recipe,
+            saved: parse_baseline(baseline.as_deref()),
             baseline,
             target: None,
+            from_socket: false,
             pending_effect: None,
         }
     }
 
+    fn set_baseline(&mut self, baseline: Option<Vec<u8>>) {
+        self.baseline = baseline;
+        self.read_baseline();
+    }
+
+    /// Parses `baseline` again, for a document read from the drafts file.
+    fn read_baseline(&mut self) {
+        self.saved = parse_baseline(self.baseline.as_deref());
+    }
+
     fn restored(&self) -> PerkRecipe {
-        self.baseline
-            .as_deref()
-            .and_then(|bytes| serde_json::from_slice(bytes).ok())
+        self.saved
+            .clone()
             .or_else(|| self.origin.clone())
             .unwrap_or_else(|| self.recipe.clone())
     }
+
+    /// Whether the recipe differs from what `restored` returns.
+    fn changed(&self) -> bool {
+        self.saved
+            .as_ref()
+            .or(self.origin.as_ref())
+            .is_some_and(|restored| *restored != self.recipe)
+    }
+
+    /// Whether the recipe matches its saved library copy.
+    fn unchanged(&self) -> bool {
+        self.saved
+            .as_ref()
+            .is_some_and(|saved| *saved == self.recipe)
+    }
+
+    /// A socket's perk opened as a copy and not changed or saved since. The library list, the
+    /// Select Custom Perk choices and the drafts file leave it out.
+    fn untouched_copy(&self) -> bool {
+        self.from_socket
+            && self.baseline.is_none()
+            && self.pending_effect.is_none()
+            && !self.changed()
+    }
+}
+
+fn parse_baseline(bytes: Option<&[u8]>) -> Option<PerkRecipe> {
+    bytes.and_then(|bytes| serde_json::from_slice(bytes).ok())
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -110,13 +174,24 @@ enum Page {
 #[derive(Default)]
 pub(in crate::app) struct Workbench {
     pub open: bool,
+    /// The installed runtime, named by warnings about what it reads.
+    pub(in crate::app) branding: crate::branding::Branding,
     initialized: bool,
     draft_baseline: Option<Vec<u8>>,
     drafts_writable: bool,
+    /// Why the last draft write failed. Autosave tries again on the next edit.
+    drafts_error: Option<String>,
     library: Option<Library>,
     entries: Vec<Entry>,
+    /// Each saved perk's problem, by path, with the modified time and size it was checked at.
+    /// A library holds hundreds of perks, too many to check on every frame.
+    library_issues: BTreeMap<PathBuf, (Option<SystemTime>, usize, Option<String>)>,
+    /// Whether discovery was idle when `library_issues` was filled. Its results feed the check.
+    library_issues_ready: bool,
     documents: Vec<Document>,
     selected: usize,
+    /// The destination last chosen. A selected document without one takes it.
+    destination: Option<attachment::Target>,
     page: Page,
     query: String,
     library_order: library::Order,
@@ -129,13 +204,13 @@ pub(in crate::app) struct Workbench {
     icon_query: String,
     icons: icons::Picker,
     asset_query: String,
-    property_query: String,
-    removal_query: String,
     keys: program::Keys,
     behaviors: behaviors::Picker,
     /// Stock perk names by finished perk index, for labelling assets the perks reference.
     perk_names: BTreeMap<u16, String>,
     ingredients: Option<(usize, usize, Arc<sundial::investment::IngredientCatalog>)>,
+    /// Stock effect names for Add from Perk, read from one ingredient catalog.
+    effect_names: Option<forms::EffectNames>,
     ingredient_source: Option<sundial::investment::IngredientSource>,
     /// Weapon names by item hash, for assets named after the pattern that fires them.
     item_names: BTreeMap<u32, projectile::catalog::ItemName>,
@@ -146,7 +221,7 @@ pub(in crate::app) struct Workbench {
     editor: Option<PerkEditor>,
     retired_editors: Vec<PerkEditor>,
     templates: Option<Vec<WeaponSandboxPerkChoice>>,
-    /// The stock Copy Existing rows, built once per catalog from `templates`.
+    /// The stock New from Perk rows, built once per catalog from `templates`.
     template_rows: Option<Vec<templates::Row>>,
     authored_templates: Option<Vec<templates::AuthoredTemplate>>,
     editing_effect: Option<u16>,
@@ -164,8 +239,16 @@ pub(in crate::app) struct Workbench {
     reveal_document: bool,
     header_action: Option<HeaderAction>,
     duplicating: Option<duplicate::Pending>,
+    /// Stock effects with overrides, converted so their cards edit in place.
+    stock_programs: Vec<stock::Prepared>,
     reveal_problem: Option<validation::Location>,
     reveal_action: Option<usize>,
+    /// The open recipe's kind, set each frame, for text that names the item a perk goes on.
+    item_kind: crate::ItemKind,
+    /// Whether the open weapon recipe has unsaved changes, set by the host each frame.
+    pub(in crate::app) recipe_unsaved: bool,
+    /// The footer asked the host to save the weapon recipe.
+    pub(in crate::app) save_recipe_requested: bool,
 }
 
 enum HeaderAction {
@@ -175,11 +258,47 @@ enum HeaderAction {
     Delete,
 }
 
+#[cfg(test)]
+impl Workbench {
+    /// A workbench that never opens the reader's Custom Perks library or writes drafts.
+    pub(in crate::app) fn offline() -> Self {
+        Self {
+            initialized: true,
+            ..Self::default()
+        }
+    }
+
+    /// The open perk, for a test that edits it the way the Basics and Stats forms do.
+    pub(in crate::app) fn open_perk_mut(&mut self) -> Option<&mut PerkRecipe> {
+        self.documents
+            .get_mut(self.selected)
+            .map(|document| &mut document.recipe)
+    }
+
+    /// Whether the background perk discovery that effect checks read has finished.
+    pub(in crate::app) fn discovery_settled(&self) -> bool {
+        !self.discovery.busy() && (self.discovery.data.is_some() || self.discovery.error.is_some())
+    }
+
+    /// Removes the open perk's effects the workbench flags, as a reader does before applying.
+    pub(in crate::app) fn remove_flagged_effects(&mut self) {
+        let discovery = &self.discovery;
+        if let Some(document) = self.documents.get_mut(self.selected) {
+            document
+                .recipe
+                .effects
+                .retain(|effect| discovery.perk_issue(effect.source_perk_index).is_none());
+        }
+    }
+}
+
 impl Workbench {
     pub(in crate::app) fn saved_weapons_changed(&mut self) {
         self.authored_templates = None;
     }
 
+    /// The perk's first problem, one that keeps it from being applied or chosen. Warnings, which
+    /// never block, come from `validation::perk_warning`.
     fn perk_issue(&self, recipe: &PerkRecipe) -> Option<String> {
         recipe
             .validate()
@@ -197,6 +316,12 @@ impl Workbench {
                     .iter()
                     .find_map(|effect| validation::counter_issue(effect.program.as_ref()))
             })
+            .or_else(|| {
+                recipe
+                    .effects
+                    .iter()
+                    .find_map(|effect| validation::choice_issue(effect.program.as_ref()))
+            })
     }
 
     pub(in crate::app) fn open_engine_catalog(&mut self) {
@@ -206,6 +331,8 @@ impl Workbench {
     pub(in crate::app) fn busy(&self) -> bool {
         self.discovery.busy()
             || self.duplicating.is_some()
+            || self.preparing_stock_effect()
+            || self.properties.busy()
             || self.icons.busy()
             || self
                 .editor
@@ -215,6 +342,12 @@ impl Workbench {
                 .retired_editors
                 .iter()
                 .any(PerkEditor::has_background_work)
+    }
+
+    /// Stops reads that only feed a view, so work that needs the packages to itself can go
+    /// ahead. The Markers view can read again after package work finishes.
+    pub(in crate::app) fn stop_optional_reads(&mut self) {
+        self.engine.markers.stop();
     }
 
     pub(in crate::app) fn editing(&self) -> bool {
@@ -232,6 +365,10 @@ impl Workbench {
         self.editing_program_action = None;
         self.selected = index;
         self.reveal_document = true;
+        // A result or an error belongs to the perk it came from.
+        self.message = None;
+        self.message_path = None;
+        self.error = None;
     }
 
     fn discard_changes(&mut self) {
@@ -249,16 +386,22 @@ impl Workbench {
         }
         self.error = None;
         self.message = Some("Changes discarded.".into());
+        self.message_path = None;
         self.persist_drafts();
     }
 
     pub(in crate::app) fn invalidate(&mut self) {
         self.capture_effect_draft();
         self.discovery.invalidate();
+        // The marker index describes the packages that were open, so a reload drops it.
+        self.engine.markers.stop();
+        self.engine.markers.invalidate();
         self.icons.invalidate();
         self.behaviors = behaviors::Picker::default();
         self.keys = program::Keys::default();
         self.ingredients = None;
+        self.effect_names = None;
+        self.clear_stock_programs();
         self.retire_editor();
         self.templates = None;
         self.template_rows = None;
@@ -324,6 +467,7 @@ impl Workbench {
         choices: &[WeaponSandboxPerkChoice],
     ) {
         self.poll_duplicate(ctx, choices);
+        self.poll_stock_programs();
         if let Some(editor) = &mut self.editor {
             editor.poll();
         }
@@ -335,6 +479,16 @@ impl Workbench {
             self.discovery.start(packages, ctx);
         }
         self.discovery.poll();
+        // Native discovery feeds the other catalog views. Let it finish before this optional
+        // whole-game read starts competing for the same package readers.
+        if self.engine.wants_markers() && packages.is_dir() && !self.discovery.busy() {
+            self.engine.markers.start(packages, ctx);
+        } else {
+            // Only the Markers view shows this read, so it stops when that view is left
+            // rather than holding every other job that waits on the packages.
+            self.engine.markers.cancel();
+        }
+        self.engine.markers.poll();
         // An effect opened before discovery finished shows the index notice until the
         // index exists; once discovery has data, the index does.
         if self.discovery.data.is_some()
@@ -355,6 +509,7 @@ impl Workbench {
         attachment: (&WeaponRecipe, Option<&WeaponDonor>),
     ) -> Option<attachment::Change> {
         let (weapon, donor) = attachment;
+        self.item_kind = weapon.kind;
         self.poll_background_work(ctx, packages, choices);
         program::native::label_choices(
             ctx,
@@ -385,6 +540,7 @@ impl Workbench {
             }
             Arc::clone(&self.ingredients.as_ref().expect("ingredient catalog").2)
         });
+        self.behaviors.count_carried(ingredients.clone());
         self.keys
             .sync(self.discovery.keys.as_ref(), ingredients.as_ref());
         let choices = ingredients
@@ -405,13 +561,16 @@ impl Workbench {
             self.discovery.data.as_ref().map(|data| &data.effects),
         );
         self.refresh_editor_context();
-        if self.busy() {
+        if self.busy() || self.engine.markers.busy() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
         if self.engine.open {
             self.refresh_asset_labels();
         }
         let empty_sources = sundial::investment::PerkSources::default();
+        // Taken before the call, because `show` borrows the catalog mutably while the object
+        // page needs the same index the Markers view read.
+        let marker_index = self.engine.markers.index();
         self.engine.show(
             ctx,
             choices,
@@ -424,6 +583,8 @@ impl Workbench {
                 perk_names: &self.perk_names,
                 item_names: &self.item_names,
                 asset_labels: &self.asset_labels,
+                markers: marker_index.as_deref(),
+                carried: ingredients.as_ref().map(|data| &data.sources),
             },
             experimental,
         );
@@ -438,24 +599,10 @@ impl Workbench {
             return None;
         }
         self.initialize();
-        if !experimental && self.editing_program_action.is_some() {
-            self.capture_effect_draft();
-            self.retire_editor();
-            self.editing_effect = None;
-            self.editing_program_action = None;
-        }
-        let restore_allowed = experimental
-            || self
-                .documents
-                .get(self.selected)
-                .and_then(|document| document.pending_effect.as_ref())
-                .is_none_or(|draft| draft.action.is_none());
-        if restore_allowed {
-            self.restore_effect_draft(ctx, packages, choices);
-        }
+        self.restore_effect_draft(ctx, packages, choices);
         let mut open = self.open;
         let mut attachment = None;
-        egui::Window::new("Custom Perk Workbench")
+        let window = egui::Window::new("Custom Perk Workbench")
             .id(egui::Id::new("global-custom-perk-workbench"))
             .open(&mut open)
             .collapsible(false)
@@ -493,12 +640,7 @@ impl Workbench {
                             egui::Layout::top_down(egui::Align::Min),
                             |ui| {
                                 ui.set_width(library_width);
-                                self.draw_library(
-                                    ui,
-                                    catalog,
-                                    experimental,
-                                    donor.map(|donor| (weapon, donor)),
-                                );
+                                self.draw_library(ui, catalog, donor.map(|donor| (weapon, donor)));
                             },
                         );
                         ui.separator();
@@ -550,6 +692,7 @@ impl Workbench {
                                         document.modified = Some(SystemTime::now());
                                     }
                                     self.message = None;
+                                    self.message_path = None;
                                     self.persist_drafts();
                                 }
                             },
@@ -562,8 +705,9 @@ impl Workbench {
                 ctx.data_mut(|data| {
                     data.insert_temp(footer_id, (ui.cursor().top() - footer_top + 8.0).max(40.0))
                 });
-            });
-        if open {
+            })
+            .map(|window| window.response.layer_id);
+        if open && window.is_some_and(|layer| history::owns_shortcuts(ctx, layer)) {
             self.handle_save_shortcut(ctx);
             self.history_shortcuts(ctx);
         }
@@ -600,18 +744,27 @@ impl Workbench {
         let editing = self.editor.is_some();
         let save_issue = self.save_issue();
         let saveable = save_issue.is_none();
-        let dirty = self.documents.get(self.selected).is_some_and(|document| {
-            document.recipe != document.restored() || document.pending_effect.is_some()
-        }) || editing;
+        let dirty = self
+            .documents
+            .get(self.selected)
+            .is_some_and(|document| document.changed() || document.pending_effect.is_some())
+            || editing;
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                crate::app::style::more_menu(ui, |ui| {
+                crate::app::style::more_menu(ui, "Perk", |ui| {
                     for (label, redo) in [("Undo", false), ("Redo", true)] {
                         let available = self.editor.as_ref().map_or_else(
-                            || self.documents.get(self.selected).is_some_and(|d| d.pending_effect.is_none() && d.history.available(redo)),
+                            || {
+                                self.documents.get(self.selected).is_some_and(|d| {
+                                    d.pending_effect.is_none() && d.history.available(redo)
+                                })
+                            },
                             |editor| editor.history_available(redo),
                         );
-                        if ui.add_enabled(available, egui::Button::new(label)).clicked() {
+                        if ui
+                            .add_enabled(available, egui::Button::new(label))
+                            .clicked()
+                        {
                             self.header_action = Some(HeaderAction::History(redo));
                             ui.close_menu();
                         }
@@ -622,13 +775,11 @@ impl Workbench {
                             !editing && !recipe.effects.is_empty(),
                             egui::Button::new("Copy Test Plan"),
                         )
-                        .on_hover_text(
-                            "Copy an in-game checklist derived from this perk's triggers, actions and lifetime.",
-                        )
                         .clicked()
                     {
                         ui.ctx().copy_text(test_plan::render(
                             recipe,
+                            self.item_kind,
                             &self.perk_names,
                             Some(&self.keys.catalog),
                             &self.asset_labels,
@@ -663,26 +814,71 @@ impl Workbench {
                 let save = crate::app::style::primary(ui, "Save to Library");
                 if ui
                     .add_enabled(saveable, save)
-                    .on_hover_text("Save this perk in Custom Perks for reuse (Ctrl+S). Weapon copies stay unchanged. Apply to Weapon updates the selected socket.")
+                    .on_hover_text("Ctrl+S")
                     .on_disabled_hover_text(save_issue.unwrap_or_default())
                     .clicked()
                 {
                     self.header_action = Some(HeaderAction::Save(false));
+                }
+                // The same reading and colours as the weapon recipe's save status.
+                let status = self.documents.get(self.selected).map(|document| {
+                    if document.saved.is_none() {
+                        crate::app::ui_state::RecipeSaveStatus::NotSavedYet
+                    } else if dirty {
+                        crate::app::ui_state::RecipeSaveStatus::UnsavedChanges
+                    } else {
+                        crate::app::ui_state::RecipeSaveStatus::Saved
+                    }
+                });
+                if let Some(status) = status {
+                    let visuals = ui.visuals();
+                    let color = match status {
+                        crate::app::ui_state::RecipeSaveStatus::NotSavedYet => visuals.text_color(),
+                        crate::app::ui_state::RecipeSaveStatus::UnsavedChanges => {
+                            visuals.warn_fg_color
+                        }
+                        crate::app::ui_state::RecipeSaveStatus::Saved => {
+                            crate::app::style::success_color(visuals)
+                        }
+                    };
+                    ui.label(egui::RichText::new(status.label()).color(color));
                 }
                 if let Some(message) = &self.message {
                     let detail = self.message_path.as_ref().map_or_else(
                         || message.clone(),
                         |path| format!("{message}\n{}", path.display()),
                     );
-                    ui.label(
-                        egui::RichText::new(egui_phosphor::regular::CHECK)
-                            .color(crate::app::style::success_color(ui.visuals())),
-                    )
-                    .on_hover_text(detail);
+                    // Shown inline so an action says what it did, held to a width that leaves
+                    // the name field room. The saved path stays on hover.
+                    let color = crate::app::style::success_color(ui.visuals());
+                    let width = 260.0_f32.min(ui.available_width() * 0.4);
+                    let height = ui.spacing().interact_size.y;
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(width, height),
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            // Right to left, so the message sits at the edge and the check
+                            // reads before it.
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(message.as_str()).color(color),
+                                )
+                                .truncate(),
+                            )
+                            .on_hover_text(detail);
+                            ui.label(
+                                crate::app::style::icon(ui, egui_phosphor::regular::CHECK)
+                                    .color(color),
+                            );
+                        },
+                    );
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    if !self.icons.preview(ui, self.discovery.packages(), recipe.icon.as_ref())
-                        && let Some(catalog) = catalog {
+                    if !self
+                        .icons
+                        .preview(ui, self.discovery.packages(), recipe.icon.as_ref())
+                        && let Some(catalog) = catalog
+                    {
                         catalog.draw_perk_icon(
                             ui,
                             recipe.template_plug.parse_u32().unwrap_or_default(),
@@ -707,6 +903,26 @@ impl Workbench {
         });
         if !editing {
             self.draw_basics(ui, catalog, recipe);
+        }
+        // A draft with no editor open, such as one left when Experimental Features turns off.
+        let stranded = !editing
+            && self
+                .documents
+                .get(self.selected)
+                .is_some_and(|document| document.pending_effect.is_some());
+        if stranded {
+            let discard = ui
+                .horizontal_wrapped(|ui| {
+                    ui.colored_label(ui.visuals().warn_fg_color, "Unapplied parameter edits.");
+                    ui.button("Discard Parameter Edits").clicked()
+                })
+                .inner;
+            if discard {
+                if let Some(document) = self.documents.get_mut(self.selected) {
+                    document.pending_effect = None;
+                }
+                self.persist_drafts();
+            }
         }
         if let Some(error) = &self.error {
             ui.colored_label(ui.visuals().error_fg_color, error);

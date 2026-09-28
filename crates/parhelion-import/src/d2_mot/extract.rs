@@ -15,17 +15,20 @@ fn unique<T>(mut values: Vec<T>, name: &str) -> Result<T> {
     Ok(values.remove(0))
 }
 pub fn extract(r: &mut Reader, item_hash: u32, recipe: Option<&Path>) -> Result<Value> {
-    extract_with_progress(r, item_hash, recipe, &mut |_| {})
+    extract_with_progress(
+        r,
+        item_hash,
+        recipe,
+        geometry::Detail::default(),
+        &mut |_| {},
+    )
 }
 
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "Preserve the audited converter while integrating the legacy rendering pipeline."
-)]
 pub fn extract_with_progress(
     r: &mut Reader,
     item_hash: u32,
     recipe: Option<&Path>,
+    detail: geometry::Detail,
     progress: &mut dyn FnMut(String),
 ) -> Result<Value> {
     progress("Reading source weapon data and lore…".into());
@@ -47,47 +50,17 @@ pub fn extract_with_progress(
     let lore = super::lore::read(r, &item)?;
     write_json(&r.output.join("lore.json"), &json!(lore))?;
     let (texture, w, h) = crate::d2_mot::icon::export(r, item_hash, index)?;
-    let translation = item.pointer(0x70)?;
-    let mut art = BTreeSet::new();
-    for row in item.array(translation, 4, None)? {
-        art.insert(item.u16(row + 2)? as usize);
-    }
-    let mut keys = BTreeSet::new();
-    for t in r.classes(0x808055CE) {
-        let p = r.tag(t, None)?;
-        let rows = p.array(8, 32, None)?;
-        for &i in &art {
-            if let Some(&row) = rows.get(i) {
-                keys.insert(p.u32(row + 8)?);
-                keys.insert(p.u32(row + 12)?);
-                for a in p.array(row + 16, 8, None)? {
-                    let resource = p.pointer(a)?;
-                    for b in p.array(resource + 8, 4, None)? {
-                        keys.insert(p.u32(b)?);
-                    }
-                }
-            }
-        }
-    }
-    for sentinel in [0, u32::MAX, 0x811C9DC5] {
-        keys.remove(&sentinel);
-    }
-    let mut entities = BTreeSet::new();
-    for t in r.classes(0x80804F43) {
-        let p = r.tag(t, None)?;
-        for row in p.array(8, 8, None)? {
-            if keys.contains(&p.u32(row)?) {
-                let parent = r.tag(p.u32(row + 4)?, Some(0x80806FA3))?;
-                let e = r.ref64(&parent, 8)?;
-                if [0, u32::MAX, 0x811C9DC5].contains(&e) {
-                    continue;
-                }
-                if r.reference(e)? == 0x80809AD8 {
-                    entities.insert(e);
-                }
-            }
-        }
-    }
+    let art_parts = super::artwork::source::read(r, &item)?;
+    let entities = art_parts
+        .iter()
+        .filter(|part| part["entity_class"] == "80809AD8")
+        .map(|part| {
+            Ok(u32::from_str_radix(
+                part["entity"].as_str().context("art entity")?,
+                16,
+            )?)
+        })
+        .collect::<Result<BTreeSet<_>>>()?;
     ensure!(!entities.is_empty(), "no model entities");
     let mut models = vec![];
     let mut skipped_models = vec![];
@@ -107,10 +80,10 @@ pub fn extract_with_progress(
                 continue;
             }
             let mt = owner.u32(resource + 0x264)?;
-            let mut report = match geometry::export(r, mt) {
+            let mut report = match geometry::export(r, mt, detail) {
                 Ok(report) => report,
-                Err(error) if error.to_string() == "no LOD0 geometry" => {
-                    skipped_models.push(json!({"model":format!("{mt:08X}"),"owner":format!("{ot:08X}"),"entity":format!("{entity:08X}"),"reason":"no nondegenerate LOD0 triangles; not imported"}));
+                Err(error) if error.to_string() == "no full-detail geometry" => {
+                    skipped_models.push(json!({"model":format!("{mt:08X}"),"owner":format!("{ot:08X}"),"entity":format!("{entity:08X}"),"reason":"no nondegenerate full-detail triangles; not imported"}));
                     continue;
                 }
                 Err(error) => {
@@ -120,10 +93,26 @@ pub fn extract_with_progress(
                 }
             };
             report["entity"] = json!(format!("{entity:08X}"));
+            report["art_parts"] = json!(
+                art_parts
+                    .iter()
+                    .filter(|part| part["entity"] == report["entity"])
+                    .collect::<Vec<_>>()
+            );
             report["owner"] = json!(format!("{ot:08X}"));
             report["texture_plates"] = json!({});
-            let plates = r.tag(owner.u32(resource + 0x350)?, Some(0x80806E1C))?;
+            let plate_tag = owner.u32(resource + 0x350)?;
+            let plates = if [0, u32::MAX, 0x811C9DC5].contains(&plate_tag) {
+                None
+            } else {
+                Some(r.tag(plate_tag, Some(0x80806E1C))?)
+            };
+            report["has_texture_plates"] = json!(plates.is_some());
             for (n, name) in ["albedo", "normal", "gstack", "dyemap"].iter().enumerate() {
+                let Some(plates) = &plates else {
+                    report["texture_plates"][name] = json!([]);
+                    continue;
+                };
                 progress(format!("Saving {name} textures for model {mt:08X}…"));
                 let plate = r.tag(plates.u32(0x28 + n * 4)?, Some(0x80809E91))?;
                 let mut entries = vec![];
@@ -163,6 +152,6 @@ pub fn extract_with_progress(
         write_json(&r.output.join("with-icon.parhelion.json"), &recipe)?;
     }
     Ok(
-        json!({"item_hash":item_hash,"item_tag":format!("{tag:08X}"),"item_index":index,"name":localized["name"],"localization":localized,"flavor":flavor["name"],"lore":lore,"flavor_localization":flavor,"icon":{"path":"item-icon.png","texture":format!("{texture:08X}"),"size":[w,h],"layer":"primary artwork; native rarity background and watermark are separate"},"models":models,"skipped_models":skipped_models,"shadowkeep_ready":false,"remaining":["native mesh/part record conversion","Shadowkeep material bindings and texture headers","private model tag allocation and gear-art registration","attachment/animation and in-game verification"]}),
+        json!({"item_hash":item_hash,"item_tag":format!("{tag:08X}"),"item_index":index,"name":localized["name"],"localization":localized,"flavor":flavor["name"],"lore":lore,"flavor_localization":flavor,"icon":{"path":"item-icon.png","texture":format!("{texture:08X}"),"size":[w,h],"layer":"primary artwork; native rarity background and watermark are separate"},"art_parts":art_parts,"models":models,"skipped_models":skipped_models,"shadowkeep_ready":false,"remaining":["native mesh/part record conversion","Shadowkeep material bindings and texture headers","private model tag allocation and gear-art registration","attachment/animation and in-game verification"]}),
     )
 }

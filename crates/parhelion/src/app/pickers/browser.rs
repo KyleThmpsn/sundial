@@ -2,12 +2,15 @@
 #[cfg(test)]
 mod tests;
 
-pub(crate) fn show_all(ui: &mut egui::Ui) -> (bool, bool) {
-    let id = egui::Id::new("perk-picker-show-all");
+/// The Include Unidentified switch of one picker. Its state is keyed on the picker, not on
+/// the `Ui` it is drawn in, since a wrapped toolbar draws it in a child `Ui` whose id can
+/// change from frame to frame.
+pub(crate) fn show_all(ui: &mut egui::Ui, scope: impl std::hash::Hash) -> (bool, bool) {
+    let id = egui::Id::new(("perk-picker-show-all", scope));
     let mut value = ui.data(|state| state.get_temp::<bool>(id).unwrap_or(false));
     let changed = ui
         .checkbox(&mut value, "Show All")
-        .on_hover_text("Include unnamed effects and debug assets.")
+        .on_hover_text("Include unnamed assets.")
         .changed();
     ui.data_mut(|state| state.insert_temp(id, value));
     (value, changed)
@@ -35,6 +38,9 @@ pub(crate) fn search(ui: &mut egui::Ui, query: &mut String, opened: bool, width:
     sundial::ui::catalog::search(ui, query, opened, width, "Search Effects or Perks")
 }
 
+/// The room the Clear button after a search box takes, with the spacing before it.
+pub(crate) const CLEAR_WIDTH: f32 = 56.0;
+
 pub(crate) fn browser_with_toolbar<T>(
     ui: &mut egui::Ui,
     scope: impl std::hash::Hash,
@@ -51,9 +57,14 @@ pub(crate) fn browser_with_toolbar<T>(
         let screen = ui.ctx().screen_rect();
         let width = (screen.width() - 48.0).clamp(280.0, 880.0);
         let height = (screen.height() - 96.0).clamp(240.0, 640.0);
-        let mut local_query = ui
-            .data(|data| data.get_temp::<String>(id.with("query")))
-            .unwrap_or_default();
+        // A picker opens on its whole listing, so the item in use is there to be selected. The
+        // search a reader left behind last time is not what they are looking for now.
+        let mut local_query = if clicked {
+            String::new()
+        } else {
+            ui.data(|data| data.get_temp::<String>(id.with("query")))
+                .unwrap_or_default()
+        };
         egui::Window::new(title)
             .id(id.with("window"))
             .order(egui::Order::Foreground)
@@ -73,7 +84,10 @@ pub(crate) fn browser_with_toolbar<T>(
             });
         *query = local_query.clone();
         ui.data_mut(|data| data.insert_temp(id.with("query"), local_query));
-        if ui.ctx().input(|input| input.key_pressed(egui::Key::Escape)) || picked.is_some() {
+        // Escape closes an open dropdown first, and the window only when none is open.
+        let escaped = ui.ctx().input(|input| input.key_pressed(egui::Key::Escape))
+            && !ui.ctx().memory(egui::Memory::any_popup_open);
+        if escaped || picked.is_some() {
             open = false;
         }
     }

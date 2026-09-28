@@ -367,6 +367,7 @@ fn real_breachlight_private_micro_missile_perk_chain_round_trips_when_configured
         ..WeaponSocketColumnOverride::default()
     });
     let spec = WeaponCloneSpec {
+        kind: crate::ItemKind::Weapon,
         namespace: namespace.to_owned(),
         donor_item_hash: BREACHLIGHT_ITEM_HASH,
         expected_donor_name: Some("Breachlight".to_owned()),

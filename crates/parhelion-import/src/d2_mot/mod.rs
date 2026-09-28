@@ -24,8 +24,18 @@ pub(crate) fn is_source_limit(error: &anyhow::Error) -> bool {
     error.downcast_ref::<SourceLimit>().is_some()
 }
 pub mod arrays;
+mod audio;
+pub use audio::bank::{
+    Bank as ConvertedAudioBank, lower as lower_audio_bank,
+    lower_with_settings as lower_audio_bank_with_settings, settings::Settings as AudioSettings,
+};
+pub use audio::legacy::fit_variations;
+pub use audio::modern::default_layers;
+pub use audio::prepare as prepare_audio;
+pub use audio::transcode::{mix_pcm, normalize_pcm_wem, pcm_bank_template};
 pub mod artwork;
 mod graph;
+pub mod markers;
 pub use graph::GraphReference;
 
 pub mod assets;
@@ -39,6 +49,7 @@ pub mod entity;
 pub mod extract;
 pub mod geometry;
 pub mod icon;
+pub mod kept_parts;
 pub mod localization;
 pub mod mapping;
 pub mod ornaments;

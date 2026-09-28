@@ -81,13 +81,18 @@ impl Preview {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
     }
+    #[cfg(test)]
+    pub(super) fn loaded(&self) -> bool {
+        self.result.is_some()
+    }
+
     pub(super) fn entry(&self) -> Option<&LoreEntry> {
         self.result
             .as_ref()
             .and_then(|r| r.as_ref().ok())
             .and_then(Option::as_ref)
     }
-    pub(super) fn draw(&self, ui: &mut egui::Ui) {
+    pub(super) fn draw(&self, ui: &mut egui::Ui, kind: crate::ItemKind) {
         match &self.result {
             Some(Ok(Some(entry))) => {
                 ui.strong(&entry.title);
@@ -99,7 +104,7 @@ impl Preview {
                     });
             }
             Some(Ok(None)) => {
-                ui.weak("No Lore Tab");
+                ui.weak("Inherited: None");
             }
             Some(Err(error)) => {
                 ui.weak("Lore Unavailable").on_hover_text(error);
@@ -108,7 +113,7 @@ impl Preview {
                 ui.spinner();
             }
             _ => {
-                ui.weak("No Weapon Selected");
+                ui.weak(format!("No {} Selected", kind.label()));
             }
         }
     }

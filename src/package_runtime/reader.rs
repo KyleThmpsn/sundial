@@ -53,7 +53,7 @@ impl PackageManager {
             self.version
                 .open(&path.path)
                 .map(Mutex::new)
-                .map_err(|e| format!("Could not open {}: {e:#}", path.filename))
+                .map_err(|e| describe_open_failure(&path.filename, &format!("{e:#}")))
         })?;
         let reader = lease
             .value()
@@ -133,5 +133,43 @@ impl PackageManager {
                     .map(move |(index, entry)| (TagHash::new(package, index as u16), entry.clone()))
             })
             .collect()
+    }
+}
+
+/// Names the open-file limit when that is what stopped a package from opening.
+///
+/// The pool bounds Sundial's own readers, but the limit is shared with everything else the
+/// process has open, so it can still run out. The raw message says only "os error 24", which
+/// reads like a corrupt package rather than a setting the reader can change.
+fn describe_open_failure(file_name: &str, error: &str) -> String {
+    let exhausted =
+        error.contains("os error 24") || error.to_ascii_lowercase().contains("too many open files");
+    if exhausted {
+        return format!(
+            "Could not open {file_name}: {error}. The open-file limit is too low for this install. \
+             Raise it with `ulimit -n 8192` before starting Sundial."
+        );
+    }
+    format!("Could not open {file_name}: {error}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::describe_open_failure;
+
+    /// The remedy is only useful where it applies, and misapplied it would send someone chasing
+    /// a limit while the real fault is the package.
+    #[test]
+    fn only_a_descriptor_failure_mentions_the_limit() {
+        let exhausted = describe_open_failure(
+            "w64_globals_01a3_0.pkg",
+            "Too many open files (os error 24)",
+        );
+        assert!(exhausted.contains("ulimit -n 8192"));
+        assert!(exhausted.contains("w64_globals_01a3_0.pkg"));
+
+        let corrupt = describe_open_failure("w64_globals_01a3_0.pkg", "invalid package header");
+        assert!(!corrupt.contains("ulimit"));
+        assert!(corrupt.contains("invalid package header"));
     }
 }

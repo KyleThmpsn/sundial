@@ -1,4 +1,4 @@
-//! Stock ornaments offered by the selected appearance.
+//! Stock ornaments, used as appearances in their own right.
 //!
 //! An ornament is a plug rather than an authoring donor: it carries the translation-art rows that
 //! select the equipped model, its own locked dye rows, and an inventory icon. Applying one
@@ -6,27 +6,92 @@
 //! overrides and the icon donor, instead of adding a build path. Every later control keeps
 //! describing what the authored weapon will carry, and changing the appearance donor already
 //! restores all three.
+//!
+//! What an ornament does not carry is a rig. Its translation block disables the gear-art pattern
+//! selector, so it names no animation group and no runtime entity, and nothing in it says how the
+//! model is held, aimed or reloaded. The weapon whose sockets offer it says all of that. So an
+//! ornament from another weapon is offered here paired with that weapon, which becomes the
+//! appearance donor, and the ornament's rows then replace its model. The build writes the donor's
+//! rows first and the recipe's overrides second, so the pair lands in that order by itself.
 use super::*;
-use sundial::investment::WeaponOrnament;
+use sundial::investment::{WeaponOrnament, WeaponOrnamentAppearance};
 
-/// Ornaments for one appearance source, reloaded when that source changes.
+/// The ornaments one weapon may wear, rebuilt when the weapon or its appearance changes.
 #[derive(Default)]
 pub(in crate::app) struct Ornaments {
-    item_hash: Option<u32>,
-    ornaments: Vec<WeaponOrnament>,
+    key: Option<(u32, u32, WeaponInventorySlot)>,
+    appearances: Vec<WeaponOrnamentAppearance>,
 }
 
 impl Ornaments {
-    pub(in crate::app) fn list(
+    /// Every ornament this gameplay donor can wear, each with the weapon that lends it a rig.
+    ///
+    /// Two sources. Ornaments that change a model come from the whole installation, kept when
+    /// their own weapon would be an allowed appearance donor, which is what lets an ornament
+    /// from another weapon be worn at all. Ornaments of the current appearance source come from
+    /// that weapon directly, including the ones carrying no model rows: those can still lend an
+    /// icon, and only this weapon's are worth offering for that.
+    ///
+    /// The current appearance's own ornaments sort first so the ordinary choice stays at the top.
+    fn list(
         &mut self,
         catalog: &InvestmentCatalog,
-        item_hash: u32,
-    ) -> &[WeaponOrnament] {
-        if self.item_hash != Some(item_hash) {
-            self.ornaments = catalog.weapon_ornaments(item_hash);
-            self.item_hash = Some(item_hash);
+        all: &[WeaponOrnamentAppearance],
+        donors: &[WeaponDonorSummary],
+        gameplay_hash: u32,
+        appearance: u32,
+        target: WeaponInventorySlot,
+    ) -> &[WeaponOrnamentAppearance] {
+        let key = (gameplay_hash, appearance, target);
+        if self.key != Some(key) {
+            let hosts: BTreeMap<u32, &WeaponDonorSummary> =
+                donors.iter().map(|donor| (donor.hash, donor)).collect();
+            let gameplay = hosts.get(&gameplay_hash).copied();
+            let mut appearances: Vec<WeaponOrnamentAppearance> = all
+                .iter()
+                .filter(|candidate| {
+                    hosts
+                        .get(&candidate.host_item_hash)
+                        .zip(gameplay)
+                        .is_some_and(|(host, gameplay)| {
+                            host.hash == gameplay.hash
+                                || presentation_donor_candidate_is_compatible(
+                                    host, gameplay, target,
+                                )
+                        })
+                })
+                .cloned()
+                .collect();
+            let host_name = hosts
+                .get(&appearance)
+                .map_or_else(String::new, |host| host.name.clone());
+            for ornament in catalog.weapon_ornaments(appearance) {
+                if appearances.iter().any(|candidate| {
+                    candidate.ornament.hash == ornament.hash
+                        && candidate.host_item_hash == appearance
+                }) {
+                    continue;
+                }
+                appearances.push(WeaponOrnamentAppearance {
+                    ornament,
+                    host_item_hash: appearance,
+                    host_name: host_name.clone(),
+                });
+            }
+            appearances.sort_by_cached_key(|candidate| {
+                (
+                    candidate.host_item_hash != appearance,
+                    candidate.host_item_hash != gameplay_hash,
+                    candidate.ornament.name.to_lowercase(),
+                    candidate.ornament.hash,
+                )
+            });
+            let mut seen = BTreeSet::new();
+            appearances.retain(|candidate| seen.insert(candidate.ornament.hash));
+            self.appearances = appearances;
+            self.key = Some(key);
         }
-        &self.ornaments
+        &self.appearances
     }
 }
 
@@ -102,6 +167,77 @@ pub(in crate::app) fn restore(recipe: &mut WeaponRecipe, ornament: &WeaponOrname
     }
 }
 
+/// Returns the offered ornament the recipe currently wears.
+///
+/// Several ornaments can select the same model, so the one offered by the weapon already lending
+/// the appearance wins. Without that the label could name a different ornament with identical
+/// rows, and picking it would move the appearance for no reason.
+pub(in crate::app) fn applied_appearance<'a>(
+    recipe: &WeaponRecipe,
+    appearances: &'a [WeaponOrnamentAppearance],
+    gameplay_hash: u32,
+) -> Option<&'a WeaponOrnamentAppearance> {
+    let lending = recipe
+        .presentation_donor
+        .as_ref()
+        .and_then(|donor| donor.item_hash.parse_u32().ok())
+        .unwrap_or(gameplay_hash);
+    let worn = |candidate: &WeaponOrnamentAppearance| {
+        applied(recipe, std::slice::from_ref(&candidate.ornament)).is_some()
+    };
+    appearances
+        .iter()
+        .find(|candidate| worn(candidate) && candidate.host_item_hash == lending)
+        .or_else(|| appearances.iter().find(|candidate| worn(candidate)))
+}
+
+/// Takes the ornament's model, colours and icon, and the rig of the weapon that offers it.
+pub(in crate::app) fn apply_appearance(
+    recipe: &mut WeaponRecipe,
+    appearance: &WeaponOrnamentAppearance,
+    gameplay_hash: u32,
+) {
+    // Naming the ornament's own weapon as the appearance donor is what carries the skeleton,
+    // animations and first-person attachment across; without it the model would be held in the
+    // gameplay donor's hands. An ornament of the gameplay donor needs none of that, and naming
+    // it would only be rejected as an appearance equal to the base. An ornament with no model
+    // rows lends its icon alone, so it leaves the appearance where it is.
+    if !appearance.ornament.art_arrangements.is_empty() {
+        if appearance.host_item_hash == gameplay_hash {
+            recipe.set_presentation_donor(None);
+        } else {
+            recipe.set_presentation_donor(Some(WeaponDonorReference {
+                item_hash: appearance.host_item_hash.into(),
+                expected_name: Some(appearance.host_name.clone()),
+            }));
+        }
+    }
+    // Setting the appearance donor clears the override fields, so the rows go on afterwards.
+    apply(recipe, &appearance.ornament);
+}
+
+/// Restores the appearance the recipe had before this ornament, donor included.
+pub(in crate::app) fn restore_appearance(
+    recipe: &mut WeaponRecipe,
+    appearance: &WeaponOrnamentAppearance,
+    gameplay_hash: u32,
+) {
+    restore(recipe, &appearance.ornament);
+    // The donor was only named to lend this ornament a rig. Dropping the ornament without it
+    // would leave the weapon wearing another weapon's plain model, which nobody chose.
+    let lent = recipe
+        .presentation_donor
+        .as_ref()
+        .and_then(|donor| donor.item_hash.parse_u32().ok())
+        == Some(appearance.host_item_hash);
+    if lent
+        && !appearance.ornament.art_arrangements.is_empty()
+        && appearance.host_item_hash != gameplay_hash
+    {
+        recipe.set_presentation_donor(None);
+    }
+}
+
 fn art_rows(ornament: &WeaponOrnament) -> Vec<WeaponArtArrangementRecipe> {
     ornament
         .art_arrangements
@@ -126,76 +262,137 @@ fn dye_rows(ornament: &WeaponOrnament) -> [Vec<WeaponDyeReferenceRecipe>; 3] {
 }
 
 impl PackageAuthoringApp {
-    /// Draws the ornament section for whichever weapon currently lends the appearance.
-    pub(in crate::app) fn draw_appearance_ornaments(&mut self, ui: &mut egui::Ui) {
+    /// The gameplay donor, the appearance it currently wears, and the slot being authored.
+    fn ornament_context(&self) -> Option<(u32, u32, WeaponInventorySlot)> {
         // Read the appearance back from the recipe so a selection made elsewhere is in force.
+        let appearance = self.appearance_donor_hash()?;
+        let gameplay = self
+            .recipe
+            .donor
+            .item_hash
+            .parse_u32()
+            .ok()
+            .filter(|hash| *hash != 0)
+            .and_then(|hash| self.donor_summaries.iter().find(|donor| donor.hash == hash))?;
+        let target = authored_inventory_slot(&self.recipe.overrides, gameplay)?;
+        Some((gameplay.hash, appearance, target))
+    }
+
+    /// Draws the ornament section, offering every ornament this weapon could wear.
+    pub(in crate::app) fn draw_appearance_ornaments(&mut self, ui: &mut egui::Ui) {
         let Some(catalog) = self.catalog.as_ref() else {
             return;
         };
-        let Some(item_hash) = self.appearance_donor_hash() else {
+        let Some((gameplay_hash, appearance, target)) = self.ornament_context() else {
             return;
         };
-        let ornaments = self.appearance_ornaments.list(catalog, item_hash);
-        draw(ui, catalog, ornaments, &mut self.recipe, &self.packages);
+        let appearances = self.appearance_ornaments.list(
+            catalog,
+            &self.ornament_appearances,
+            &self.donor_summaries,
+            gameplay_hash,
+            appearance,
+            target,
+        );
+        draw(
+            ui,
+            catalog,
+            appearances,
+            gameplay_hash,
+            &mut self.recipe,
+            &self.packages,
+        );
     }
 
     /// The same chooser, offered beside the appearance picker so an ornament can be taken
-    /// without leaving the main page. Absent when this appearance wears none.
+    /// without leaving the main page. Absent when nothing is offered.
     pub(in crate::app) fn draw_appearance_ornament_button(&mut self, ui: &mut egui::Ui) {
         let Some(catalog) = self.catalog.as_ref() else {
             return;
         };
-        let Some(item_hash) = self.appearance_donor_hash() else {
+        let Some((gameplay_hash, appearance, target)) = self.ornament_context() else {
             return;
         };
-        let ornaments = self.appearance_ornaments.list(catalog, item_hash);
-        if ornaments.is_empty() {
+        let appearances = self.appearance_ornaments.list(
+            catalog,
+            &self.ornament_appearances,
+            &self.donor_summaries,
+            gameplay_hash,
+            appearance,
+            target,
+        );
+        if appearances.is_empty() {
             return;
         }
-        draw_chooser(ui, catalog, ornaments, &mut self.recipe, &self.packages);
+        draw_chooser(
+            ui,
+            "weapon-tab",
+            catalog,
+            appearances,
+            gameplay_hash,
+            &mut self.recipe,
+            &self.packages,
+        );
     }
 }
 
 fn draw(
     ui: &mut egui::Ui,
     catalog: &InvestmentCatalog,
-    ornaments: &[WeaponOrnament],
+    appearances: &[WeaponOrnamentAppearance],
+    gameplay_hash: u32,
     recipe: &mut WeaponRecipe,
     packages: &Path,
 ) {
-    if ornaments.is_empty() {
+    if appearances.is_empty() {
         return;
     }
     draw_donor_section_label(
         ui,
         "Ornament",
         Some(
-            "Stock ornaments this appearance can wear. Choosing one takes the ornament's model, its own colors and its inventory icon. Everything it sets stays editable on the Appearance tab.",
+            "Ornaments from any compatible weapon. Sets the model, colors and icon, all editable on the Appearance tab.",
         ),
     );
-    draw_chooser(ui, catalog, ornaments, recipe, packages);
+    draw_chooser(
+        ui,
+        "appearance-tab",
+        catalog,
+        appearances,
+        gameplay_hash,
+        recipe,
+        packages,
+    );
     ui.add_space(12.0);
     ui.separator();
     ui.add_space(8.0);
 }
 
 /// The chooser on its own, so the main page and the Appearance tab offer the same thing.
+/// `place` keeps each page's browser state separate.
 fn draw_chooser(
     ui: &mut egui::Ui,
+    place: &str,
     catalog: &InvestmentCatalog,
-    ornaments: &[WeaponOrnament],
+    appearances: &[WeaponOrnamentAppearance],
+    gameplay_hash: u32,
     recipe: &mut WeaponRecipe,
     packages: &Path,
 ) {
-    let current = applied(recipe, ornaments);
+    let current = applied_appearance(recipe, appearances, gameplay_hash);
     let label = current.map_or_else(
         || "Use Ornament".to_owned(),
-        |ornament| ornament.name.clone(),
+        |current| current.ornament.name.clone(),
     );
+    /// The weapon that lends the rig, shown only when it is not the weapon being authored.
+    fn host(candidate: &WeaponOrnamentAppearance, gameplay_hash: u32) -> Option<&str> {
+        (candidate.host_item_hash != gameplay_hash && !candidate.host_name.is_empty())
+            .then_some(candidate.host_name.as_str())
+    }
     let mut action = None;
     ui.horizontal_wrapped(|ui| {
         let opened = ui.button(&label).clicked();
-        let id = ui.make_persistent_id("ornament-preview-browser");
+        let id = egui::Id::new(("ornament-preview-browser", place));
         if let Some(hash) = sundial::ui::model_preview::chooser::show(
             ui,
             id,
@@ -214,19 +411,26 @@ fn draw_chooser(
                 if opened {
                     search.request_focus();
                 }
-                let visible: Vec<_> = ornaments
+                let visible: Vec<_> = appearances
                     .iter()
-                    .filter(|ornament| crate::app::pickers::matches(&query, &ornament.name))
+                    .filter(|candidate| {
+                        crate::app::pickers::matches(&query, &candidate.ornament.name)
+                            || crate::app::pickers::matches(&query, &candidate.host_name)
+                    })
                     .collect();
                 let keys: Vec<_> = std::iter::once(0)
-                    .chain(visible.iter().map(|ornament| u64::from(ornament.hash)))
+                    .chain(
+                        visible
+                            .iter()
+                            .map(|candidate| u64::from(candidate.ornament.hash)),
+                    )
                     .collect();
                 ui.data_mut(|data| data.insert_temp(query_id, query));
                 if opened {
                     ui.data_mut(|data| {
                         data.insert_temp(
                             ui.make_persistent_id("inspected-choice"),
-                            current.map_or(0, |ornament| u64::from(ornament.hash)),
+                            current.map_or(0, |current| u64::from(current.ornament.hash)),
                         )
                     });
                 }
@@ -237,40 +441,43 @@ fn draw_chooser(
                     row_height: 48.0,
                     select: None,
                 }
-                .draw_with_actions(
+                .draw_with_actions_activating(
                     ui,
                     |ui, index, selected| {
-                        let ornament = index.checked_sub(1).map(|index| visible[index]);
+                        let chosen = index.checked_sub(1).map(|index| visible[index]);
                         catalog.draw_authoring_choice_row(
                             ui,
-                            ornament.map(|ornament| ornament.hash),
-                            ornament
-                                .map_or("Default Appearance", |ornament| ornament.name.as_str()),
-                            None,
+                            chosen.map(|candidate| candidate.ornament.hash),
+                            chosen.map_or("Default Appearance", |candidate| {
+                                candidate.ornament.name.as_str()
+                            }),
+                            chosen.and_then(|candidate| host(candidate, gameplay_hash)),
                             selected,
                         )
                     },
-                    |ui, index| {
-                        let ornament = index.checked_sub(1).map(|index| visible[index]);
+                    |ui, index, activated| {
+                        let picked = index.checked_sub(1).map(|index| visible[index]);
                         let mut candidate = recipe.clone();
                         if let Some(current) = current {
-                            restore(&mut candidate, current);
+                            restore_appearance(&mut candidate, current, gameplay_hash);
                         }
-                        if let Some(ornament) = ornament {
-                            apply(&mut candidate, ornament);
+                        if let Some(picked) = picked {
+                            apply_appearance(&mut candidate, picked, gameplay_hash);
                         }
-                        let chosen = ui.button("Use Ornament").clicked().then_some(keys[index]);
+                        // A double-click uses the ornament, as the button does.
+                        let chosen = (ui.button("Use Ornament").clicked() || activated)
+                            .then_some(keys[index]);
                         if let Some(loadout) = super::preview::loadout(catalog, &candidate) {
                             sundial::ui::model_preview::chooser::preview(
                                 ui,
                                 packages,
                                 catalog.preview_appearance(&loadout),
-                                ornament.map_or("Default Appearance", |ornament| {
-                                    ornament.name.as_str()
+                                picked.map_or("Default Appearance", |picked| {
+                                    picked.ornament.name.as_str()
                                 }),
                             );
                         } else {
-                            ui.label("No model is available for this appearance.");
+                            ui.label("No model for this appearance.");
                         }
                         chosen
                     },
@@ -278,9 +485,9 @@ fn draw_chooser(
             },
         ) {
             action = Some(
-                ornaments
+                appearances
                     .iter()
-                    .find(|ornament| u64::from(ornament.hash) == hash),
+                    .find(|candidate| u64::from(candidate.ornament.hash) == hash),
             );
         }
         if current.is_some() && ui.button("Default Appearance").clicked() {
@@ -288,13 +495,13 @@ fn draw_chooser(
         }
     });
     match (action, current) {
-        (Some(Some(ornament)), current) => {
+        (Some(Some(picked)), current) => {
             if let Some(current) = current {
-                restore(recipe, current);
+                restore_appearance(recipe, current, gameplay_hash);
             }
-            apply(recipe, ornament);
+            apply_appearance(recipe, picked, gameplay_hash);
         }
-        (Some(None), Some(current)) => restore(recipe, current),
+        (Some(None), Some(current)) => restore_appearance(recipe, current, gameplay_hash),
         (Some(None), None) | (None, _) => {}
     }
 }

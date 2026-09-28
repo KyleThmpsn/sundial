@@ -16,6 +16,7 @@ pub(super) const RECIPES: &[&str] = &[
     include_str!("../../recipes/perks/loaded-dice.perk.json"),
     include_str!("../../recipes/perks/scatter-matrix.perk.json"),
     include_str!("../../recipes/perks/borrowed-time.perk.json"),
+    include_str!("../../recipes/perks/everything-at-once.perk.json"),
 ];
 
 #[cfg(test)]

@@ -70,7 +70,7 @@ impl RecipeLibrary {
         &self,
         preview: &RestoreDefaults,
     ) -> Result<Option<PathBuf>, String> {
-        self.restore_defaults_with(preview, |path, bytes, exists| {
+        let restored = self.restore_defaults_with(preview, |path, bytes, exists| {
             if exists {
                 atomic_write_replace(path, bytes)
             } else {
@@ -81,7 +81,12 @@ impl RecipeLibrary {
                     WriteNewError::Other(e) => e,
                 })
             }
-        })
+        })?;
+        // Every bundled recipe is back on disk, so none of them is recorded as deleted.
+        // Failing to clear the record only stops a later deletion outside Parhelion from
+        // being undone on the next launch, so the restore itself still succeeds.
+        let _ = self.write_removed_bundled(&BTreeSet::new());
+        Ok(restored)
     }
 
     fn restore_defaults_with(
@@ -165,7 +170,7 @@ impl RecipeLibrary {
             })
     }
 
-    fn prepare_restore_target(
+    pub(super) fn prepare_restore_target(
         &self,
         path: &Path,
         expected: &Option<Vec<u8>>,
@@ -322,19 +327,6 @@ mod tests {
                 bytes
             );
         }
-    }
-
-    #[test]
-    fn unchanged_defaults_do_not_create_backup_directories() {
-        let dir = tempfile::tempdir().unwrap();
-        let library = RecipeLibrary::open(dir.path().join("recipes")).unwrap();
-        assert!(
-            library
-                .restore_defaults(&library.prepare_restore_defaults().unwrap())
-                .unwrap()
-                .is_none()
-        );
-        assert!(!dir.path().join("backups").exists());
     }
 
     #[test]

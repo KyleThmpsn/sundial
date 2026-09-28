@@ -20,8 +20,15 @@ fn clean_stock_sunrise_build_enrolls_the_weapon_icon_graph_in_the_native_host() 
         .find(|artifact| artifact.plan.chain.identity.package_id == HOST_PACKAGE_ID)
         .expect("bundle should contain the host overlay");
     assert_eq!(host.plan.original_entry_count, HOST_EXPECTED_ENTRY_COUNT);
-    assert_eq!(host.plan.final_entry_count, HOST_EXPECTED_ENTRY_COUNT + 17);
-    assert_eq!(host.plan.appended_tags.len(), 17);
+    // Every End appends 22 host tags in this cycle, up from 17 in v0.5.1. The order checks
+    // below are what the count guards: the definition and strings lead, the icon and its
+    // companion end.
+    let appended = host.plan.appended_tags.len();
+    assert_eq!(
+        host.plan.final_entry_count,
+        HOST_EXPECTED_ENTRY_COUNT + appended
+    );
+    assert_eq!(appended, 22);
     assert_eq!(host.plan.appended_tags[0].tag, weapon_plan.definition_tag);
     assert_eq!(host.plan.appended_tags[1].tag, weapon_plan.string_tag);
     assert_eq!(

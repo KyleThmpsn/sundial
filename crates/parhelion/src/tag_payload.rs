@@ -79,6 +79,38 @@ pub(crate) fn set_array_count(
     write_u64(data, header, count)
 }
 
+/// The marker in front of every native array header.
+const ARRAY_MARKER: u32 = 0x8080_9FBD;
+
+/// Appends a native array to the payload and points `descriptor` at it: the marker, the row count
+/// and element class, then the rows, which start on a 16-byte boundary. With no rows the
+/// descriptor is cleared instead.
+pub(crate) fn append_native_array(
+    payload: &mut Vec<u8>,
+    descriptor: usize,
+    class: u32,
+    count: usize,
+    rows: &[u8],
+) -> AuthoringResult<()> {
+    if count == 0 {
+        write_u64(payload, descriptor, 0)?;
+        return write_i64(payload, descriptor + 8, 0);
+    }
+    let start = payload
+        .len()
+        .checked_add(0x23)
+        .ok_or_else(|| invalid("Native array alignment overflowed"))?
+        & !0xF;
+    payload.resize(start - 0x14, 0);
+    payload.extend_from_slice(&ARRAY_MARKER.to_le_bytes());
+    let count = u64::try_from(count).map_err(|_| invalid("Array count is too large"))?;
+    payload.extend_from_slice(&count.to_le_bytes());
+    payload.extend_from_slice(&u64::from(class).to_le_bytes());
+    payload.extend_from_slice(rows);
+    write_u64(payload, descriptor, count)?;
+    write_relative_pointer(payload, descriptor + 8, start - 16)
+}
+
 pub(crate) fn bounded_relative_target(
     data: &[u8],
     field: usize,

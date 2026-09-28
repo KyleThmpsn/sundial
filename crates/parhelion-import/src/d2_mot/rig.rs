@@ -7,25 +7,38 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
-fn attachments(p: &Payload, resource: usize, content: u32, modern: bool) -> Result<Vec<usize>> {
-    let (offset, stride, row_class, reference) = if modern {
-        (0x680, 0x128, 0x8080319B, 0xA0)
+pub(crate) fn attachment_rows(
+    p: &Payload,
+    resource: usize,
+    content: u32,
+    modern: bool,
+) -> Result<Vec<usize>> {
+    let (offset, stride, row_class) = if modern {
+        (0x680, 0x128, 0x8080319B)
     } else {
-        (0x588, 0xE8, 0x80803E72, 0x78)
+        (0x588, 0xE8, 0x80803E72)
     };
-    p.array(resource + offset, stride, Some(row_class))?
-        .into_iter()
-        .filter_map(|row| {
-            let matches = (|| -> Result<bool> {
-                Ok(p.u32(row)? == content || (modern && p.u32(row + 0x28)? == content))
-            })();
-            match matches {
-                Ok(true) => Some(Ok(row + reference)),
-                Ok(false) => None,
-                Err(error) => Some(Err(error)),
-            }
-        })
-        .collect()
+    let mut selected = Vec::new();
+    let mut family = Vec::new();
+    for row in p.array(resource + offset, stride, Some(row_class))? {
+        if p.u32(row)? == content {
+            selected.push(row);
+        } else if modern && p.u32(row + 0x28)? == content {
+            family.push(row);
+        }
+    }
+    // An exact variant selects its own attachment. Its key can also name the
+    // family of sibling variants, whose animation profiles are not equivalent.
+    if selected.is_empty() {
+        selected = family;
+    }
+    // The embedded attachment precedes the variant table. An unmatched content
+    // key uses it, including the empty-name selector on nonmodular weapons.
+    if selected.is_empty() {
+        Ok(vec![resource + offset - stride])
+    } else {
+        Ok(selected)
+    }
 }
 #[expect(
     clippy::cognitive_complexity,
@@ -112,6 +125,24 @@ pub fn inspect(r: &mut Reader, item_tag: u32, modern: bool) -> Result<Value> {
     Ok(report)
 }
 
+fn attachments(p: &Payload, resource: usize, content: u32, modern: bool) -> Result<Vec<usize>> {
+    Ok(attachment_rows(p, resource, content, modern)?
+        .into_iter()
+        .map(|row| row + if modern { 0xA0 } else { 0x78 })
+        .collect())
+}
+
+/// Resolve the selected weapon's audio after the lightweight rig inspection.
+/// Donor matching intentionally calls `inspect` so it does not decode sound
+/// groups for every candidate.
+pub fn inspect_with_audio(r: &mut Reader, item_tag: u32, modern: bool) -> Result<Value> {
+    let mut report = inspect(r, item_tag, modern)?;
+    super::audio::add_to_rig(r, &mut report, modern)?;
+    write_json(&r.output.join("rig.json"), &report)?;
+    r.finish()?;
+    Ok(report)
+}
+
 pub(crate) fn decode(
     p: &Payload,
     resource: usize,
@@ -177,13 +208,12 @@ mod tests {
             p.0[header + 8..header + 12].copy_from_slice(&class.to_le_bytes());
             p.0[start..start + 4].copy_from_slice(&7u32.to_le_bytes());
             p.0[start + stride + 0x28..start + stride + 0x2C].copy_from_slice(&7u32.to_le_bytes());
-            let expected = if modern {
-                vec![start + reference, start + stride + reference]
-            } else {
-                vec![start + reference]
-            };
+            let expected = vec![start + reference];
             assert_eq!(attachments(&p, 0, 7, modern).unwrap(), expected);
-            assert!(attachments(&p, 0, 9, modern).unwrap().is_empty());
+            assert_eq!(
+                attachments(&p, 0, 9, modern).unwrap(),
+                vec![descriptor - stride + reference]
+            );
             p.0[header + 8..header + 12].fill(0);
             assert!(attachments(&p, 0, 7, modern).is_err());
         }

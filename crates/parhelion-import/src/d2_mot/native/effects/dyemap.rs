@@ -200,16 +200,6 @@ pub(super) fn build(c: &mut Effect, prepared: &Path) -> Result<()> {
     let source_dyes = dyes(prepared)?;
     let source_text =
         fs::read_to_string(c.refs.join("surface-carriers-01/80CF5F86.hlsl"))?.replace("\r\n", "\n");
-    let native_model = Payload(fs::read(prepared.join("native/raw/80EC2722.bin"))?);
-    let rows = native_model.array(352, 32, None)?;
-    let range = native_model.u16(382)? as usize..native_model.u16(384)? as usize;
-    let row = rows
-        .get(range)
-        .context("native reflection draw range")?
-        .iter()
-        .find(|r| native_model.u32(**r).is_ok_and(|v| v == 0x80EC271F))
-        .context("native reflection draw")?;
-    let donor = native_model.0[*row..*row + 32].to_vec();
     let mut created = BTreeMap::new();
     let mut evidence = vec![];
     for draw in c.source.draws(7)? {
@@ -346,7 +336,7 @@ pub(super) fn build(c: &mut Effect, prepared: &Path) -> Result<()> {
         }
         for (channel, faces) in &draw.groups {
             c.draws
-                .add(7, &donor, &draw, *channel, faces, &created[&draw.model])?;
+                .add(7, &draw, *channel, faces, &created[&draw.model])?;
         }
     }
     c.draws.layout(7)?;

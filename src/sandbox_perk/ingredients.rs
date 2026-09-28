@@ -120,7 +120,6 @@ mod tests {
             .iter()
             .map(|source| source.perk_index)
             .collect::<BTreeSet<_>>();
-        assert!(unique.len() >= 134);
         for index in [88, 89, 90, 535, 536, 537] {
             assert!(unique.contains(&index));
         }

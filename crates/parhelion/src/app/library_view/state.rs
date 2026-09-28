@@ -19,7 +19,7 @@ impl SortOrder {
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Name => "Name",
-            Self::WeaponType => "Weapon Type",
+            Self::WeaponType => "Item Type",
             Self::RecentlyModified => "Recently Modified",
         }
     }
@@ -33,10 +33,13 @@ pub(super) enum TransferResult {
 #[derive(Default)]
 pub(crate) struct LibraryState {
     pub(super) sort: SortOrder,
+    /// `None` shows every kind.
+    pub(super) kind: Option<ItemKind>,
     pub(super) highlighted: BTreeSet<PathBuf>,
     pub(super) reveal: Option<PathBuf>,
     pub(super) export_selection: Option<BTreeSet<PathBuf>>,
     pub(super) restore: Option<crate::recipe_library::RestoreRecipe>,
+    pub(super) delete: Option<crate::recipe_library::DeleteRecipe>,
     pub(super) notice: Option<String>,
     pub(super) errors: Vec<String>,
     pub(super) job: Option<thread::JoinHandle<TransferResult>>,
@@ -79,6 +82,7 @@ impl LibraryState {
     ) -> Vec<(&'a RecipeLibraryEntry, String)> {
         entries
             .iter()
+            .filter(|entry| self.kind.is_none_or(|kind| entry.kind == kind))
             .filter_map(|entry| {
                 let details = library_entry_details(entry, self.donor(donors, entry.donor_hash));
                 library_entry_matches(entry, &details, query).then_some((entry, details))
@@ -153,12 +157,12 @@ impl PackageAuthoringApp {
         self.library_state.errors.clear();
         let message = match result {
             Ok(TransferResult::Imported(report)) => {
+                let imported = recipe_count(report.paths.len());
                 let message = if report.errors.is_empty() {
-                    format!("Imported {} recipes.", report.paths.len())
+                    format!("Imported {imported}.")
                 } else {
                     format!(
-                        "Imported {} recipes. {} could not be imported.",
-                        report.paths.len(),
+                        "Imported {imported}. {} could not be imported.",
                         report.errors.len()
                     )
                 };
@@ -175,7 +179,7 @@ impl PackageAuthoringApp {
                     "Exported recipe bundle {}",
                     path.display()
                 )));
-                format!("Exported {count} recipes.")
+                format!("Exported {}.", recipe_count(count))
             }
             Ok(TransferResult::Exported(Err(error))) => {
                 self.library_state.errors.push(error);

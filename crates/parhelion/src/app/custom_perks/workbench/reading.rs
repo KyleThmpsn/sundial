@@ -1,13 +1,16 @@
 //! Source-backed details shared by the ingredient preview.
 use super::*;
-use sundial::package_authoring::sandbox_perk::dependencies::{Behavior, DetailSection, Perk};
+use sundial::package_authoring::sandbox_perk::{
+    dependencies::{Behavior, DetailLine, DetailSection, Perk},
+    nodes,
+};
 
 pub(super) fn identity(perk: &Perk) -> String {
     if let Some(behavior) = &perk.behavior {
         let names = behavior
             .effect_kinds
             .iter()
-            .map(|&kind| sundial::package_authoring::sandbox_perk::nodes::effect_name(kind))
+            .map(|&kind| nodes::effect_title(kind))
             .collect::<Vec<_>>();
         if !names.is_empty() {
             return format!("{} · Effect {}", names.join(" · "), perk.index);
@@ -50,7 +53,8 @@ pub(super) fn draw(
                 ui.horizontal_top(|ui| {
                     ui.add_space(line.depth as f32 * 12.0);
                     ui.vertical(|ui| {
-                        ui.add(egui::Label::new(egui::RichText::new(&line.kind).strong()).wrap());
+                        let title = line_title(behavior, section, line);
+                        ui.add(egui::Label::new(egui::RichText::new(title).strong()).wrap());
                         draw_fields(ui, &line.fields);
                         if let Some(entry) = line.asset.and_then(|tag| {
                             data.and_then(|data| {
@@ -75,6 +79,30 @@ pub(super) fn draw(
         {
             ui.label(note);
         }
+    }
+}
+
+/// A digest line named as the picker and the cards name its kind. The digest keeps only the
+/// engine's name, so the kind is found among the behavior's own, and a name two of them share
+/// stays the engine's.
+fn line_title<'a>(behavior: &Behavior, section: &DetailSection, line: &'a DetailLine) -> &'a str {
+    let effects = section.heading == "Then";
+    let (kinds, table): (&[u8], &[nodes::NodeKind]) = if effects {
+        (&behavior.effect_kinds, &nodes::EFFECTS)
+    } else {
+        (&behavior.condition_kinds, &nodes::CONDITIONS)
+    };
+    let title = if effects {
+        nodes::effect_title
+    } else {
+        nodes::condition_title
+    };
+    let mut matching = table
+        .iter()
+        .filter(|node| node.name == line.kind && kinds.contains(&node.kind));
+    match (matching.next(), matching.next()) {
+        (Some(node), None) => title(node.kind),
+        _ => line.kind.as_str(),
     }
 }
 

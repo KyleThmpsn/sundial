@@ -20,7 +20,7 @@ fn incomplete_name_edits_are_retained_but_cannot_be_saved_or_built() {
         "an intermediate edit must not corrupt identities"
     );
     assert!(app.recipe_dirty);
-    let (output, overflow) = render(480.0, |ui| app.draw_weapon_name(ui));
+    let (output, overflow) = render(480.0, |ui| app.draw_weapon_name(ui, 90.0));
     assert!(text(&output).contains("Finish editing the weapon name"));
     assert!(overflow <= 1.0);
     let library = app.recipe_library.clone().unwrap();
@@ -50,7 +50,7 @@ fn incomplete_name_edits_are_guarded_and_can_be_discarded_or_completed() {
     let mut app = PackageAuthoringApp::default();
     let original = app.recipe.clone();
     app.edit_weapon_name(String::new());
-    assert!(!app.request_recipe_action(PendingRecipeAction::New));
+    assert!(!app.request_recipe_action(PendingRecipeAction::New(ItemKind::Weapon)));
     assert!(app.pending_recipe_action.is_some());
     app.discard_recipe_changes();
     assert!(app.invalid_weapon_name.is_none());
@@ -255,6 +255,7 @@ fn duplicate_preserves_draft_mechanics_and_allocates_a_fresh_identity() {
     assert!(app.recipe_path.is_none());
     let first_copy = app.recipe.clone();
     app.recipe_entries.push(RecipeLibraryEntry {
+        kind: first_copy.kind,
         collection_destination: None,
         badge: None,
         corner_icon: None,

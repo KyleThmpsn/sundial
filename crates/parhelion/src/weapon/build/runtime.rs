@@ -4,23 +4,46 @@ mod dependencies;
 mod plan;
 pub(super) use plan::{Payloads, author};
 
+/// Where imported runtime assets go: a group per weapon in the rolling asset packages, and
+/// the tags placed there for the runtime dependency index.
+pub(super) struct RuntimeAssets<'a> {
+    pub packages: &'a mut crate::asset_packages::AssetPackages,
+    pub placed: &'a mut Vec<TagHash>,
+}
+
+/// The allocator and tag list of one reserved asset group's package.
+#[cfg(feature = "d2-model-importer")]
+fn asset_target(
+    packages: &mut crate::asset_packages::AssetPackages,
+    index: usize,
+) -> (AppendedTagAllocator, &mut Vec<NewTagSpec>) {
+    let package = &mut packages.packages[index];
+    (AppendedTagAllocator::new(package.id, 0), &mut package.tags)
+}
+
 pub(super) struct EntitySources<'a> {
     pub sandbox_patterns: &'a [u8],
     pub entity_assignments: &'a [u8],
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn author_entities(
     manager: &PackageManager,
     stock: EntitySources<'_>,
     resolved: &[resolve::ResolvedWeapon],
     weapon_runtime_tag_allocator: AppendedTagAllocator,
+    assets: RuntimeAssets<'_>,
     entity_assignments: &mut Vec<u8>,
     weapon_runtime_new_tags: &mut Vec<NewTagSpec>,
     progress: &mut Progress<'_>,
 ) -> AuthoringResult<Vec<Option<u32>>> {
+    #[cfg(not(feature = "d2-model-importer"))]
+    let _ = (assets.packages, assets.placed);
     let stock_sandbox_patterns = stock.sandbox_patterns;
     let stock_entity_assignments = stock.entity_assignments;
     let mut authored_pattern_global_ids = Vec::with_capacity(resolved.len());
+    #[cfg(feature = "d2-model-importer")]
+    let mut animation_cache = crate::weapon::custom_runtime::animation::AnimationTagCache::new();
     for donor in resolved {
         let operation = format!("Compiling Runtime for {}", donor.weapon.text.name);
         progress.start(&operation);
@@ -63,9 +86,34 @@ pub(super) fn author_entities(
                 .map(crate::weapon::custom_runtime::animation::load)
                 .transpose()?
                 .flatten();
+            #[cfg(feature = "d2-model-importer")]
+            let imported_audio = donor
+                .weapon
+                .overrides
+                .imported_graph
+                .as_ref()
+                .map(crate::weapon::custom_runtime::audio::load)
+                .transpose()?
+                .flatten();
             #[cfg(not(feature = "d2-model-importer"))]
             let imported_animation: Option<()> = None;
+            #[cfg(feature = "d2-model-importer")]
+            let imported_extensions = donor
+                .weapon
+                .overrides
+                .imported_graph
+                .as_ref()
+                .map(crate::weapon::custom_runtime::extensions::load)
+                .transpose()?
+                .unwrap_or_default();
             let has_runtime_edits = imported_animation.is_some()
+                || {
+                    #[cfg(feature = "d2-model-importer")]
+                    { imported_audio.is_some() || !imported_extensions.is_empty() }
+                    #[cfg(not(feature = "d2-model-importer"))]
+                    { false }
+                }
+                || donor.appearance_rig_donor.is_some()
                 || !component_donors.is_empty()
                 || hud_key.is_some()
                 || donor.weapon.overrides.ammo_type.is_some()
@@ -104,6 +152,24 @@ pub(super) fn author_entities(
                 pattern_source.item_hash,
                 "weapon-pattern donor entity",
             )?;
+            // Before any component donor, so the appearance's rig is promoted onto exactly
+            // the entity the resolver tested. A donor that then conflicts with it is reported
+            // against that donor rather than silently dropping the appearance's animations.
+            if let Some(item_hash) = donor.appearance_rig_donor {
+                let (_, appearance_entity) = resolve_runtime_weapon_entity(
+                    manager,
+                    stock_sandbox_patterns,
+                    stock_entity_assignments,
+                    item_hash,
+                    "appearance runtime entity",
+                )?;
+                crate::weapon::rig::graft_presentation(&mut pattern_entity, &appearance_entity)
+                    .map_err(|error| {
+                        invalid(format!(
+                            "Could not move the appearance's rig and animations onto this runtime: {error}"
+                        ))
+                    })?;
+            }
             let mut component_entities = Vec::with_capacity(component_donors.len());
             for component in component_donors {
                 let (_, component_entity) = resolve_runtime_weapon_entity(
@@ -119,31 +185,118 @@ pub(super) fn author_entities(
                 .iter()
                 .map(|(binding_hash, entity)| (*binding_hash, entity.as_slice()))
                 .collect::<Vec<_>>();
-            graft_weapon_component_bindings(&mut pattern_entity, &component_grafts)
-                .map_err(invalid)?;
-            let content_group = donor
-                .gear_art_pattern_source
-                .or(donor.runtime_pattern_source)
-                .map(|source| source.weapon_content_group_hash);
+            graft_weapon_component_bindings_or_rewire(
+                &mut pattern_entity,
+                &component_grafts,
+                &|tag| manager.read_tag(tag),
+            )
+            .map_err(invalid)?;
+            // The pattern row selects the appearance's block when it supplies the row, and the
+            // base weapon's own block keeps its behavior there.
+            let groups = crate::weapon_behavior::ContentGroups {
+                selected: donor
+                    .gear_art_pattern_source
+                    .or(donor.runtime_pattern_source)
+                    .map(|source| source.weapon_content_group_hash),
+                own: donor
+                    .runtime_pattern_source
+                    .map(|source| source.weapon_content_group_hash),
+            };
+            #[cfg(feature = "d2-model-importer")]
+            crate::weapon::custom_runtime::extensions::author(
+                manager,
+                &imported_extensions,
+                &mut pattern_entity,
+            )?;
+            let runtime_overrides = &donor.weapon.overrides;
+            #[cfg(feature = "d2-model-importer")]
+            let extended_overrides = {
+                let mut overrides = runtime_overrides.clone();
+                overrides.runtime_resource_patches.extend(
+                    crate::weapon::custom_runtime::extensions::input_patches(
+                        manager,
+                        &imported_extensions,
+                        &pattern_entity,
+                    )?,
+                );
+                overrides
+            };
+            #[cfg(feature = "d2-model-importer")]
+            let runtime_overrides = &extended_overrides;
             author_runtime_edits(
                 manager,
                 &mut pattern_entity,
-                &donor.weapon.overrides,
+                runtime_overrides,
                 hud_key,
-                content_group,
+                groups,
                 weapon_runtime_tag_allocator,
                 weapon_runtime_new_tags,
             )?;
             #[cfg(feature = "d2-model-importer")]
-            if let Some(animation) = &imported_animation {
-                crate::weapon::custom_runtime::animation::author(
+            crate::weapon::custom_runtime::extensions::input_callbacks(
+                manager,
+                &imported_extensions,
+                &mut pattern_entity,
+                weapon_runtime_tag_allocator,
+                weapon_runtime_new_tags,
+            )?;
+            // Clips and audio media grow with every imported weapon, so they take a group in
+            // the asset packages. Only the owners that route them stay in the host package.
+            #[cfg(feature = "d2-model-importer")]
+            let group = {
+                let bounds = imported_animation
+                    .iter()
+                    .flat_map(|animation| animation.asset_bounds())
+                    .chain(imported_audio.iter().flat_map(|audio| audio.asset_bounds()))
+                    .collect::<Vec<_>>();
+                if bounds.is_empty() {
+                    None
+                } else {
+                    let index = assets.packages.reserve_group(bounds)?;
+                    Some((index, assets.packages.packages[index].tags.len()))
+                }
+            };
+            #[cfg(feature = "d2-model-importer")]
+            let private_animation_owner = match (&imported_animation, group) {
+                (Some(animation), Some((index, _))) => {
+                    let (_, owner) = crate::weapon::custom_runtime::animation::author(
+                        manager,
+                        animation,
+                        pattern_entity_tag,
+                        &mut pattern_entity,
+                        weapon_runtime_tag_allocator,
+                        weapon_runtime_new_tags,
+                        asset_target(assets.packages, index),
+                        &mut animation_cache,
+                    )?;
+                    Some(owner)
+                }
+                _ => None,
+            };
+            #[cfg(feature = "d2-model-importer")]
+            if let (Some(audio), Some((index, _))) = (&imported_audio, group) {
+                crate::weapon::custom_runtime::audio::author(
                     manager,
-                    animation,
+                    audio,
                     pattern_entity_tag,
                     &mut pattern_entity,
+                    private_animation_owner,
                     weapon_runtime_tag_allocator,
                     weapon_runtime_new_tags,
+                    asset_target(assets.packages, index),
                 )?;
+            }
+            #[cfg(feature = "d2-model-importer")]
+            if let Some((index, start)) = group {
+                let package = &assets.packages.packages[index];
+                let allocator = AppendedTagAllocator::new(package.id, 0);
+                for ordinal in start..package.tags.len() {
+                    assets.placed.push(allocator.assigned_tag(
+                        ordinal,
+                        "Imported runtime asset",
+                        "dependency",
+                    )?);
+                }
             }
             let authored_entity_tag = weapon_runtime_tag_allocator.assigned_tag(
                 weapon_runtime_new_tags.len(),
@@ -163,7 +316,7 @@ pub(super) fn author_entities(
             });
             Ok(Some(donor.weapon.identity.pattern_global_id_hash))
         })()
-        .map_err(|error| error.context(donor.weapon.error_context()))?;
+        .map_err(|error| donor.weapon.in_recipe(error))?;
         authored_pattern_global_ids.push(authored_pattern_global_id);
         progress.finish(&operation);
     }
@@ -267,6 +420,12 @@ mod tests {
             },
             &donors,
             allocator,
+            RuntimeAssets {
+                packages: &mut crate::asset_packages::AssetPackages {
+                    packages: Vec::new(),
+                },
+                placed: &mut vec![],
+            },
             &mut assignments,
             &mut tags,
             &mut Progress::new(donors.len(), &mut |_, _, _, _| {}),

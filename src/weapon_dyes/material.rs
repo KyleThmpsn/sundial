@@ -39,8 +39,29 @@ pub(crate) struct Frame {
     pub normal_transform: [f32; 4],
 }
 impl Animation {
-    pub fn at(&self, seconds: f32) -> Result<Frame, String> {
-        Ok(properties(&self.program.run(self.base, seconds)?))
+    /// The frame at `seconds`, with some of the dye's vectors changed first, as a build changes
+    /// them. The program still overwrites any vector it writes, as it does in the game.
+    pub fn at_edited(
+        &self,
+        seconds: f32,
+        edit: impl FnOnce(&mut [[f32; 4]; 27]),
+    ) -> Result<Frame, String> {
+        let mut base = self.base;
+        edit(&mut base);
+        Ok(properties(&self.program.run(base, seconds)?))
+    }
+}
+
+/// Writes an editor's values into a dye's vectors, where a build writes them: a vector, its lane
+/// and the value. Writes outside the 27 vectors are ignored.
+pub(crate) fn apply_writes(vectors: &mut [[f32; 4]; 27], writes: &[(usize, usize, f32)]) {
+    for &(vector, lane, value) in writes {
+        if let Some(slot) = vectors
+            .get_mut(vector)
+            .and_then(|vector| vector.get_mut(lane))
+        {
+            *slot = value;
+        }
     }
 }
 
@@ -48,11 +69,11 @@ pub(crate) fn load(
     manager: &PackageManager,
     indices: &[u16],
 ) -> Result<BTreeMap<u16, Result<Material, String>>, String> {
+    let channels = global_channels(manager);
     read_dyes(manager, indices, |constants, scope| {
         let mut material = decode(constants)?;
-        material.detail = detail_texture(scope, 3);
-        material.normal = detail_texture(scope, 4);
-        material.animation = program::Program::read(scope).map(|p| {
+        (material.detail, material.normal) = detail_textures(scope);
+        material.animation = program::Program::read(scope, &channels).map(|p| {
             p.map(|program| Animation {
                 program,
                 base: material.vectors,
@@ -62,8 +83,46 @@ pub(crate) fn load(
     })
 }
 
+/// Each global channel's default value, from the render globals' channel table (class
+/// 0x8080858D: channel ids at +0x08, default values at +0x18). A dye program that reads a channel
+/// sees what the game holds when nothing drives it. Empty when the table cannot be read.
+fn global_channels(manager: &PackageManager) -> Vec<[f32; 4]> {
+    let Some((tag, _)) = manager.get_all_by_reference(0x8080_858D).into_iter().next() else {
+        return Vec::new();
+    };
+    let Ok(table) = manager.read_tag(tag) else {
+        return Vec::new();
+    };
+    let Ok((count, _, rows, _)) = native_array_at(&table, 0x18) else {
+        return Vec::new();
+    };
+    (0..count.min(1024))
+        .map_while(|index| {
+            let row = table.get(rows + index * 16..rows + index * 16 + 16)?;
+            Some(std::array::from_fn(|lane| {
+                f32::from_le_bytes(row[lane * 4..lane * 4 + 4].try_into().unwrap())
+            }))
+        })
+        .collect()
+}
+
+/// A dye's detail diffuse and detail normal textures. Armor dyes bind them at slots 3 and 4,
+/// cloth dyes at 5 and 6, and suit dyes at 7 and 8, so the pair the scope binds is the one.
+fn detail_textures(scope: &[u8]) -> (Result<Option<u32>, String>, Result<Option<u32>, String>) {
+    for (diffuse, normal) in [(3, 4), (5, 6), (7, 8)] {
+        let pair = (
+            detail_texture(scope, diffuse),
+            detail_texture(scope, normal),
+        );
+        if !matches!(pair, (Ok(None), Ok(None))) {
+            return pair;
+        }
+    }
+    (Ok(None), Ok(None))
+}
+
 fn detail_texture(scope: &[u8], slot: u32) -> Result<Option<u32>, String> {
-    // Pixel scope texture bindings. Slot 3 is detail diffuse, slot 4 detail normal.
+    // Pixel scope texture bindings, a slot and a texture per row.
     if u64::from_le_bytes(bytes_at(scope, 0x40)?) == 0 {
         return Ok(None);
     }
@@ -102,7 +161,8 @@ fn decode(constants: &[u8]) -> Result<Material, String> {
     })
 }
 
-fn properties(vectors: &[[f32; 4]; 27]) -> Frame {
+/// The surfaces and texture transforms a dye's 27 vectors describe.
+pub(crate) fn properties(vectors: &[[f32; 4]; 27]) -> Frame {
     let rgb = |i: usize| [vectors[i][0], vectors[i][1], vectors[i][2]].map(|v| v.max(0.0));
     let surface = |index: usize| {
         let base = 9 + index * 4;

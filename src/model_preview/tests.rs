@@ -1,6 +1,456 @@
 use super::*;
 
 #[test]
+#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and installed Shadowkeep packages"]
+fn model_less_emitter_reaches_sound_bank_events() {
+    let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
+    let manager = crate::investment::discovery::open_packages(Path::new(&packages)).unwrap();
+    let mut inventory = Inventory::default();
+    inventory.scan_sound_bank(&manager, 0x80BD_0809);
+    assert!(
+        inventory.sounds.len() >= 64,
+        "{} events",
+        inventory.sounds.len()
+    );
+    assert!(inventory.sounds.contains(&0x80BD_07BB));
+    assert!(inventory.sounds.contains(&0x80BD_0808));
+    let model = load(Path::new(&packages), 0x80BD_059F).unwrap();
+    assert_eq!(model.assets.sounds.len(), inventory.sounds.len());
+    assert!(
+        model
+            .assets
+            .sounds
+            .iter()
+            .take(16)
+            .any(|sound| !sound.clips.is_empty())
+    );
+    assert!(
+        model
+            .assets
+            .sounds
+            .iter()
+            .skip(16)
+            .all(|sound| sound.clips.is_empty())
+    );
+}
+
+#[test]
+#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and installed Shadowkeep packages"]
+fn model_less_emitter_reaches_shadowing_light() {
+    let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
+    let packages = Path::new(&packages);
+    let emitter = load(packages, 0x80FD_E2FB).unwrap();
+    assert!(
+        emitter
+            .assets
+            .lights
+            .iter()
+            .any(|light| light.tag == 0x80FD_E2F9)
+    );
+    assert!(emitter.light_geometry);
+    assert_eq!(emitter.triangles.len(), 48);
+    let light = load(packages, 0x80FD_E2F9).unwrap();
+    assert!(light.light_geometry);
+    assert_eq!(light.triangles.len(), 48);
+    let image = render::styled_image(
+        &light,
+        render::Camera::default(),
+        render::Scene::default(),
+        [480, 360],
+        0.0,
+        render::Style::Textured,
+    );
+    let background = image.pixels[0];
+    assert!(
+        image
+            .pixels
+            .iter()
+            .filter(|&&pixel| pixel != background)
+            .count()
+            > 100
+    );
+    if let Some(output) = std::env::var_os("SUNDIAL_PROBE_OUT") {
+        let rgba = image
+            .pixels
+            .iter()
+            .flat_map(|pixel| pixel.to_array())
+            .collect::<Vec<_>>();
+        let png = export::png(&rgba, 480, 360).unwrap();
+        std::fs::write(Path::new(&output).join("shadowing-light-preview.png"), png).unwrap();
+    }
+}
+
+#[test]
+#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and installed Shadowkeep packages"]
+fn light_collection_places_its_native_volumes() {
+    let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
+    let model = load(Path::new(&packages), 0x80F7_0A65).unwrap();
+    assert!(model.light_geometry);
+    assert_eq!(model.triangles.len(), 48);
+    if let Some(output) = std::env::var_os("SUNDIAL_PROBE_OUT") {
+        let image = render::styled_image(
+            &model,
+            render::Camera::default(),
+            render::Scene::default(),
+            [480, 360],
+            0.0,
+            render::Style::Textured,
+        );
+        let rgba = image
+            .pixels
+            .iter()
+            .flat_map(|pixel| pixel.to_array())
+            .collect::<Vec<_>>();
+        let png = export::png(&rgba, 480, 360).unwrap();
+        std::fs::write(Path::new(&output).join("light-collection-preview.png"), png).unwrap();
+    }
+}
+
+#[test]
+#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and installed Shadowkeep packages"]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "One installed effect sequence is checked node by node against the packages"
+)]
+fn air_weak_fx_sequence_opens_particles_and_sounds() {
+    let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
+    let packages = Path::new(&packages);
+    let model = load(packages, 0x80BC_12EB).unwrap();
+    assert_eq!(model.assets.particles.len(), 1);
+    assert_eq!(model.assets.sounds.len(), 4);
+    assert_eq!(model.assets.effect_nodes.len(), 7);
+    assert_eq!(model.assets.effect_nodes[0].target, Some(0x80EF_5769));
+    assert_eq!(model.assets.effect_nodes[3].target, Some(0x80BB_E621));
+    let particle_timing = model.assets.effect_nodes[0].timing.unwrap();
+    assert_eq!(particle_timing.start, 0.0);
+    assert_eq!(particle_timing.duration, 0.0001);
+    assert_eq!(model.assets.effect_nodes[3].timing.unwrap().start, 0.0);
+    assert_eq!(model.assets.particles[0].definition, Some(0x80BC_130B));
+    assert_eq!(
+        model.assets.particles[0]
+            .material_textures
+            .iter()
+            .map(|(slot, _)| *slot)
+            .collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+    assert_eq!(
+        model.assets.particles[0].material_textures[2].1.size,
+        [256, 1]
+    );
+    assert_eq!(model.assets.particles[0].material_slot_omissions, 0);
+    assert_eq!(
+        model.assets.particles[0]
+            .material_samplers
+            .iter()
+            .map(|sampler| sampler.u)
+            .collect::<Vec<_>>(),
+        [
+            super::texture::AddressMode::Wrap,
+            super::texture::AddressMode::Border,
+            super::texture::AddressMode::Clamp,
+        ]
+    );
+    assert!(model.assets.particles[0].compute_passes.is_empty());
+    assert_eq!(
+        model.assets.particles[0].pixel_kind,
+        Some(assets::PixelKind::DualMaskRamp)
+    );
+    let program = model.assets.particles[0]
+        .program
+        .as_ref()
+        .expect("validated particle program");
+    assert_eq!(program.sections, [0, 31, 8, 32, 288, 0, 10, 0]);
+    assert_eq!(program.bytecode.len(), 369);
+    assert_eq!(program.constants.len(), 60);
+    assert_eq!(
+        program.routes[7].map(|route| (route.bank, route.scalar)),
+        Some((1, 12))
+    );
+    assert_eq!(
+        program.routes[6].map(|route| (route.bank, route.scalar)),
+        Some((1, 16))
+    );
+    assert_eq!(program.default_for(5), Some(0.85));
+    assert_eq!(program.lifetime_default(), Some(0.85));
+    assert_eq!(program.lifetime_ceiling, 0.85_f32 + 0.05);
+    let [first, second] = program.state_routes().expect("native state routes");
+    assert_eq!((first.0.scalar, first.1.scalar), (8, 12));
+    assert_eq!((second.0.scalar, second.1.scalar), (12, 16));
+    let state = program.section(3).expect("state initialization section");
+    assert_eq!(state.len(), 32);
+    assert!(state.windows(4).any(|window| window == [0x3F, 1, 3, 1]));
+    assert!(state.windows(4).any(|window| window == [0x3F, 1, 4, 1]));
+    let mut registers = assets::Registers::new(program);
+    program
+        .evaluate_section_with_inputs(1, &mut registers, &[[0.0; 4], [0.0; 4]])
+        .unwrap();
+    assert_eq!(registers.output(program, 32), Some(1.0));
+    program
+        .evaluate_section_with_inputs(1, &mut registers, &[[0.0; 4], [3.0; 4]])
+        .unwrap();
+    let gradient_z = registers.output(program, 32).unwrap();
+    assert!((gradient_z - 0.928429).abs() < 1e-5);
+    let state_a = [1.0, 2.0, 3.0, 0.5];
+    let state_b = [4.0, 5.0, 6.0, 7.0];
+    registers.set(2, 2, state_a).unwrap();
+    registers.set(2, 3, state_b).unwrap();
+    program.evaluate_section(3, &mut registers).unwrap();
+    assert_eq!(registers.get(1, 3), Some(state_a));
+    assert_eq!(registers.get(1, 4), Some(state_b));
+    assert_eq!(registers.output(program, 7), Some(state_a[0]));
+    assert_eq!(registers.output(program, 6), Some(state_b[0]));
+    assert_eq!(registers.output(program, 0), Some(state_a[3]));
+    assert_eq!(registers.output(program, 27), Some(state_b[3]));
+    program
+        .evaluate_section_with_runtime(6, &mut registers, &[], &[[0.2; 4], [0.8; 4]])
+        .unwrap();
+    assert_eq!(registers.get(1, 6).unwrap()[3], 0.2);
+    assert_eq!(registers.get(1, 7).unwrap()[0], 0.8);
+    program.evaluate_section(4, &mut registers).unwrap();
+    assert_eq!(registers.get(1, 3), Some(state_a));
+    assert_eq!(registers.get(1, 4), Some(state_b));
+    for slot in 0..=2 {
+        assert!(
+            registers
+                .get(1, slot)
+                .unwrap()
+                .iter()
+                .all(|value| value.is_finite())
+        );
+    }
+    let writes = program
+        .register_writes()
+        .expect("bounded particle instructions");
+    assert_eq!(writes.iter().filter(|write| write.section == 1).count(), 2);
+    assert!(
+        writes
+            .iter()
+            .any(|write| write.section == 1 && write.bank == 5 && write.slot == 1)
+    );
+    assert_eq!(writes.iter().filter(|write| write.section == 3).count(), 4);
+    assert_eq!(writes.iter().filter(|write| write.section == 6).count(), 2);
+    assert_eq!(model.assets.particles[0].emitter, Some(0x80EF_5768));
+    assert_eq!(model.assets.particles[0].emitter_model, Some(0x80EF_5767));
+    assert!(
+        model.assets.particles[0].texture.is_some(),
+        "particle material texture: {:?}",
+        model.assets.particles[0].notice
+    );
+    assert_eq!(
+        model.assets.particles[0].gradient.as_ref().map(|t| t.size),
+        Some([256, 1])
+    );
+    assert!(
+        model
+            .assets
+            .sounds
+            .iter()
+            .all(|sound| sound.clips.len() >= 3)
+    );
+    assert!(model.particle_geometry);
+    assert!(!model.has_object_mesh());
+    assert!(model.particle_sources.is_empty());
+    assert!(model.uvs.iter().any(|uv| uv[0] > 0.8 && uv[1] < 0.2));
+    assert!(model.normals.iter().any(|normal| normal[2] < -0.9));
+    let z_extent = model
+        .vertices
+        .iter()
+        .map(|position| position[2])
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), z| {
+            (low.min(z), high.max(z))
+        });
+    assert!(z_extent.1 - z_extent.0 < 2.0);
+    assert!(model.triangle_emitter.iter().any(|&emitter| emitter));
+    assert!(!model.triangles.is_empty());
+    println!(
+        "{} particle triangles, {} sound clips",
+        model.triangles.len(),
+        model
+            .assets
+            .sounds
+            .iter()
+            .map(|sound| sound.clips.len())
+            .sum::<usize>()
+    );
+    let manager = crate::investment::discovery::open_packages(packages).unwrap();
+    let bytes = manager.read_tag(0x80C7_ACBF).unwrap();
+    let wave = assets::decoded_wave(&bytes).unwrap();
+    assert_eq!(&wave[..4], b"RIFF");
+    assert_eq!(&wave[8..12], b"WAVE");
+    assert!(wave.len() > bytes.len());
+    if let Some(output) = std::env::var_os("SUNDIAL_PROBE_OUT") {
+        std::fs::write(Path::new(&output).join("air-weak-sample.wav"), wave).unwrap();
+        if !model.triangles.is_empty() {
+            let image = render::styled_image(
+                &model,
+                render::Camera::default(),
+                render::Scene::default(),
+                [512, 512],
+                0.0,
+                render::Style::Textured,
+            );
+            let rgba: Vec<_> = image
+                .pixels
+                .iter()
+                .flat_map(|pixel| pixel.to_array())
+                .collect();
+            let png = export::png(&rgba, image.width(), image.height()).unwrap();
+            std::fs::write(Path::new(&output).join("air-weak-preview.png"), png).unwrap();
+            for (seconds, name) in [
+                (0.17, "air-weak-preview-0.17.png"),
+                (0.34, "air-weak-preview-0.34.png"),
+            ] {
+                let image = render::styled_image(
+                    &model,
+                    render::Camera::default(),
+                    render::Scene::default(),
+                    [512, 512],
+                    seconds,
+                    render::Style::Textured,
+                );
+                if seconds == 0.17 {
+                    let warm = image
+                        .pixels
+                        .iter()
+                        .filter(|pixel| pixel.r() > pixel.b().saturating_add(8) && pixel.r() > 50)
+                        .count();
+                    assert!(
+                        warm > 500,
+                        "native mask should produce a visible warm effect"
+                    );
+                }
+                let rgba: Vec<_> = image
+                    .pixels
+                    .iter()
+                    .flat_map(|pixel| pixel.to_array())
+                    .collect();
+                let png = export::png(&rgba, image.width(), image.height()).unwrap();
+                std::fs::write(Path::new(&output).join(name), png).unwrap();
+            }
+            for (style, name) in [
+                (render::Style::Solid, "air-weak-emitter-solid.png"),
+                (render::Style::Wireframe, "air-weak-emitter-wireframe.png"),
+            ] {
+                let image = render::styled_image(
+                    &model,
+                    render::Camera::default(),
+                    render::Scene::default(),
+                    [512, 512],
+                    0.0,
+                    style,
+                );
+                let rgba: Vec<_> = image
+                    .pixels
+                    .iter()
+                    .flat_map(|pixel| pixel.to_array())
+                    .collect();
+                let png = export::png(&rgba, image.width(), image.height()).unwrap();
+                std::fs::write(Path::new(&output).join(name), png).unwrap();
+            }
+        }
+        let texture = model.assets.particles[0].texture.as_ref().unwrap();
+        let png = export::png(&texture.rgba, texture.size[0], texture.size[1]).unwrap();
+        std::fs::write(Path::new(&output).join("air-weak-particle.png"), png).unwrap();
+        for (slot, texture) in &model.assets.particles[0].material_textures {
+            let png = export::png(&texture.rgba, texture.size[0], texture.size[1]).unwrap();
+            std::fs::write(
+                Path::new(&output).join(format!("air-weak-material-slot-{slot}.png")),
+                png,
+            )
+            .unwrap();
+        }
+    }
+}
+
+/// Compare several installed effects against the Air Weak particle preview.
+#[test]
+#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_PROBE_OUT"]
+fn sample_other_effects_render() {
+    let packages = std::path::PathBuf::from(std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").unwrap());
+    let out = std::path::PathBuf::from(std::env::var_os("SUNDIAL_PROBE_OUT").unwrap());
+    std::fs::create_dir_all(&out).unwrap();
+    let mut report = String::new();
+    for tag in [0x80B3_BDC5, 0x80BB_AEFC, 0x80C6_611E, 0x80F8_321E] {
+        match load(&packages, tag) {
+            Ok(model) => {
+                let image = render::animated_image(
+                    &model,
+                    render::Camera::default(),
+                    render::Scene::default(),
+                    [512, 512],
+                    0.36,
+                );
+                let background = eframe::egui::Color32::from_rgb(24, 28, 35);
+                let visible = image.pixels.iter().filter(|&&p| p != background).count();
+                if tag == 0x80C6_611E {
+                    assert_eq!(model.assets.particles[0].compute_passes.len(), 3);
+                    assert_eq!(
+                        model.assets.particles[0]
+                            .compute_passes
+                            .iter()
+                            .map(|pass| pass.phase)
+                            .collect::<Vec<_>>(),
+                        ["Spawn", "Motion", "Appearance"]
+                    );
+                    assert!(model.particle_sources.is_empty());
+                    assert_eq!(visible, 0);
+                } else {
+                    assert!(
+                        !model.particle_sources.is_empty() || model.particle_geometry,
+                        "{tag:08X} has no particle preview"
+                    );
+                    assert!(visible > 100, "{tag:08X} is blank");
+                }
+                let rgba: Vec<_> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
+                let png = export::png(&rgba, image.width(), image.height()).unwrap();
+                std::fs::write(out.join(format!("effect-{tag:08X}.png")), png).unwrap();
+                report.push_str(&format!(
+                    "{tag:08X}: {} triangles, {} particle systems, {} compute passes, {} sprite sources, {} sounds, {} visible pixels, notices {:?}\n",
+                    model.triangles.len(),
+                    model.assets.particles.len(),
+                    model.assets.particles.iter().map(|particle| particle.compute_passes.len()).sum::<usize>(),
+                    model.particle_sources.len(),
+                    model.assets.sounds.len(),
+                    visible,
+                    model.notices,
+                ));
+                for (system, texture) in
+                    model
+                        .assets
+                        .particles
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, particle)| {
+                            particle.texture.as_ref().map(|texture| (index, texture))
+                        })
+                {
+                    let transparent = texture
+                        .rgba
+                        .chunks_exact(4)
+                        .filter(|pixel| pixel[3] == 0)
+                        .count();
+                    let texture_png =
+                        export::png(&texture.rgba, texture.size[0], texture.size[1]).unwrap();
+                    std::fs::write(
+                        out.join(format!("effect-{tag:08X}-texture-{system}.png")),
+                        texture_png,
+                    )
+                    .unwrap();
+                    report.push_str(&format!(
+                        "  system {system} texture {:08X} {}x{}, {} zero-alpha pixels\n",
+                        texture.tag, texture.size[0], texture.size[1], transparent
+                    ));
+                }
+            }
+            Err(error) => report.push_str(&format!("{tag:08X}: load failed: {error}\n")),
+        }
+    }
+    std::fs::write(out.join("effect-sample.txt"), &report).unwrap();
+    println!("{report}");
+}
+
+#[test]
 fn solid_and_wireframe_modes_ignore_texture_color() {
     let model = Model {
         vertices: vec![[-1.0, 0.0, -1.0], [1.0, 0.0, -1.0], [0.0, 0.0, 1.0]],
@@ -18,9 +468,24 @@ fn solid_and_wireframe_modes_ignore_texture_color() {
         yaw: 0.0,
         pitch: 0.0,
         zoom: 1.0,
+        pan: [0.0, 0.0],
     };
-    let solid = render::styled_image(&model, camera, [128, 128], 0.0, render::Style::Solid);
-    let wire = render::styled_image(&model, camera, [128, 128], 0.0, render::Style::Wireframe);
+    let solid = render::styled_image(
+        &model,
+        camera,
+        render::Scene::default(),
+        [128, 128],
+        0.0,
+        render::Style::Solid,
+    );
+    let wire = render::styled_image(
+        &model,
+        camera,
+        render::Scene::default(),
+        [128, 128],
+        0.0,
+        render::Style::Wireframe,
+    );
     let colored = render::image(&model, camera, [128, 128]);
     let background = eframe::egui::Color32::from_rgb(24, 28, 35);
     let count = |image: &eframe::egui::ColorImage| {
@@ -29,6 +494,33 @@ fn solid_and_wireframe_modes_ignore_texture_color() {
     assert!(count(&wire) > 100 && count(&wire) < count(&solid) / 4);
     assert_ne!(solid, colored);
     assert_ne!(wire, solid);
+}
+
+#[test]
+fn linked_light_volume_does_not_shrink_a_mesh_preview() {
+    let mut model = Model {
+        vertices: vec![[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        triangles: vec![[0, 1, 2]],
+        ..Default::default()
+    };
+    let camera = render::Camera::default();
+    let reference = render::image(&model, camera, [128, 128]);
+    model.vertices.extend([
+        [100.0, 100.0, 100.0],
+        [200.0, 100.0, 100.0],
+        [100.0, 200.0, 100.0],
+    ]);
+    model.triangles.push([3, 4, 5]);
+    model.triangle_light = vec![false, true];
+    assert_eq!(render::image(&model, camera, [128, 128]), reference);
+
+    model.triangles.remove(0);
+    model.triangle_light.remove(0);
+    let light = render::image(&model, camera, [128, 128]);
+    assert_ne!(
+        light,
+        eframe::egui::ColorImage::new([128, 128], eframe::egui::Color32::from_rgb(24, 28, 35))
+    );
 }
 
 #[test]
@@ -52,8 +544,14 @@ fn expanded_preview_reads_component_and_rocket_color_texture() {
             ("rocket-wireframe", &rocket, render::Style::Wireframe),
             ("snowball-color", &snowball, render::Style::Textured),
         ] {
-            let image =
-                render::styled_image(model, render::Camera::default(), [400, 400], 0.0, style);
+            let image = render::styled_image(
+                model,
+                render::Camera::default(),
+                render::Scene::default(),
+                [400, 400],
+                0.0,
+                style,
+            );
             let mut bytes = b"P6\n400 400\n255\n".to_vec();
             bytes.extend(image.pixels.iter().flat_map(|p| [p.r(), p.g(), p.b()]));
             std::fs::write(output.join(format!("{name}.ppm")), bytes).unwrap();
@@ -96,14 +594,29 @@ fn preview_depth_is_independent_of_triangle_submission_order() {
         yaw: 0.0,
         pitch: 0.0,
         zoom: 1.0,
+        pan: [0.0, 0.0],
     };
     let first = render::image(&model, camera, [128, 128]);
-    let wireframe = render::styled_image(&model, camera, [128, 128], 0.0, render::Style::Wireframe);
+    let wireframe = render::styled_image(
+        &model,
+        camera,
+        render::Scene::default(),
+        [128, 128],
+        0.0,
+        render::Style::Wireframe,
+    );
     model.triangles.reverse();
     assert_eq!(first, render::image(&model, camera, [128, 128]));
     assert_eq!(
         wireframe,
-        render::styled_image(&model, camera, [128, 128], 0.0, render::Style::Wireframe)
+        render::styled_image(
+            &model,
+            camera,
+            render::Scene::default(),
+            [128, 128],
+            0.0,
+            render::Style::Wireframe
+        )
     );
     assert!(
         first
@@ -222,6 +735,7 @@ fn each_triangle_uses_its_own_material_texture() {
             yaw: 0.0,
             pitch: 0.0,
             zoom: 1.0,
+            pan: [0.0, 0.0],
         },
         [128, 128],
     );
@@ -241,328 +755,6 @@ fn each_triangle_uses_its_own_material_texture() {
             .count()
             > 100
     );
-}
-
-#[test]
-#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_PROBE_OUT"]
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "A probe that dumps every intermediate of one render in one place"
-)]
-fn textured_preview_dumps_frames_samples_and_timings() {
-    use std::time::Instant;
-    let packages = std::path::PathBuf::from(std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").unwrap());
-    let out = std::path::PathBuf::from(std::env::var_os("SUNDIAL_PROBE_OUT").unwrap());
-    std::fs::create_dir_all(&out).unwrap();
-    let catalog =
-        crate::investment::InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {})
-            .unwrap();
-    let mut report = String::new();
-    {
-        let manager = crate::investment::discovery::open_packages(&packages).unwrap();
-        let sets = manager.get_all_by_reference(0x8080_6B99);
-        report.push_str(&format!(
-            "global texture sets: {}
-",
-            sets.len()
-        ));
-        for (tag, _) in &sets {
-            let bytes = manager.read_tag(*tag).unwrap();
-            let slots: Vec<String> = (0..4)
-                .map(|i| format!("{:08X}", u32_at(&bytes, 8 + i * 4).unwrap_or(0)))
-                .collect();
-            report.push_str(&format!(
-                "  set {:08X} len {} slots {slots:?}
-",
-                tag.0,
-                bytes.len()
-            ));
-            for i in 0..4 {
-                let texture = u32_at(&bytes, 8 + i * 4).unwrap_or(0);
-                if let Some(entry) = manager.get_entry(texture) {
-                    let header = manager.read_tag(texture).unwrap();
-                    report.push_str(&format!(
-                        "    texture {texture:08X} type {} sub {} format {} size {}x{} depth {} array {} large {:08X}: {:?}
-",
-                        entry.file_type, entry.file_subtype, u32_at(&header, 4).unwrap(), u16_at(&header, 0x0E).unwrap(),
-                        u16_at(&header, 0x10).unwrap(), u16_at(&header, 0x12).unwrap(), u16_at(&header, 0x14).unwrap(),
-                        u32_at(&header, 0x24).unwrap(), texture::load(&manager, texture).map(|t| t.size)
-                    ));
-                }
-            }
-        }
-    }
-    for name in ["Age-Old Bond", "Better Devils"] {
-        let donor = catalog
-            .weapon_donors()
-            .into_iter()
-            .find(|d| d.name == name)
-            .unwrap();
-        let loadout = catalog.preview_loadout(donor.hash).unwrap();
-        let appearance = catalog.preview_appearance(&loadout);
-        report.push_str(&format!(
-            "{name}: arrangement {} dyes {:?}
-",
-            appearance.arrangement, appearance.dyes
-        ));
-        let slug = name.to_lowercase().replace(' ', "-");
-        {
-            let manager = crate::investment::discovery::open_packages(&packages).unwrap();
-            let indices: Vec<u16> = appearance.dyes.iter().map(|d| d.1).collect();
-            let materials = crate::weapon_dyes::material::load(&manager, &indices).unwrap();
-            for (index, material) in &materials {
-                if let Ok(material) = material {
-                    for (i, v) in material.vectors.iter().enumerate() {
-                        report.push_str(&format!(
-                            "  dye {index} vector {i:2}: {v:?}
-"
-                        ));
-                    }
-                }
-            }
-        }
-        let started = Instant::now();
-        let model = weapon::load(&packages, &appearance).unwrap();
-        report.push_str(&format!("{name}: load {:?}, {} vertices, {} triangles, {} textures, animation {}, shader animation {}\n",
-            started.elapsed(), model.vertices.len(), model.triangles.len(), model.textures.len(), model.animation.is_some(), model.has_shader_animation()));
-        for (i, t) in model.textures.iter().enumerate() {
-            report.push_str(&format!(
-                "  texture {i}: tag {:08X} {}x{}\n",
-                t.tag, t.size[0], t.size[1]
-            ));
-        }
-        let mut slots = std::collections::BTreeMap::new();
-        for &slot in &model.triangle_dyes {
-            *slots.entry(slot).or_insert(0usize) += 1;
-        }
-        report.push_str(&format!(
-            "  part dye slots (slot: triangles) {slots:?}
-"
-        ));
-        for (i, dye) in model.dyes.iter().enumerate() {
-            if let Some(d) = dye {
-                let s = &d.surface;
-                report.push_str(&format!("  dye slot {i}: albedo {:?} worn {:?} params {:?} worn_params {:?} wear {:?} rough {:?} emissive {:?} detail {:?} normal {:?}
-",
-                    s.albedo, s.worn_albedo, s.params, s.worn_params, s.wear, s.roughness, s.emissive, d.detail, d.normal));
-            } else {
-                report.push_str(&format!(
-                    "  dye slot {i}: none
-"
-                ));
-            }
-        }
-        if let Some(Some(g)) = model
-            .triangle_gearstacks
-            .first()
-            .map(|g| g.map(|i| &model.textures[i]))
-        {
-            let mut bands = [0usize; 8];
-            for px in g.rgba.chunks_exact(4) {
-                bands[(px[3] / 32) as usize] += 1;
-            }
-            report.push_str(&format!(
-                "  gearstack alpha histogram (32-wide bands) {bands:?}
-"
-            ));
-        }
-        // Per slot: gearstack alpha and blue histograms over the texels each triangle touches.
-        for want in 0u8..6 {
-            let mut alpha = [0usize; 8];
-            let mut blue = [0usize; 8];
-            let mut seen = 0usize;
-            for (tri, &slot) in model.triangle_dyes.iter().enumerate() {
-                if slot != want {
-                    continue;
-                }
-                let Some(Some(g)) = model.triangle_gearstacks.get(tri) else {
-                    continue;
-                };
-                let g = &model.textures[*g];
-                let t = model.triangles[tri];
-                for vertex in t {
-                    let uv = model.uvs[vertex as usize];
-                    let px = g.sample_rgba(uv);
-                    alpha[(px[3] as usize / 32).min(7)] += 1;
-                    blue[(px[2] as usize / 32).min(7)] += 1;
-                    seen += 1;
-                }
-            }
-            if seen > 0 {
-                report.push_str(&format!(
-                    "  slot {want}: {seen} samples, alpha bands {alpha:?}, blue bands {blue:?}
-"
-                ));
-            }
-        }
-        let dyes = shader::dyes(&model, 0.0);
-        for want in [0u8, 1, 2, 4] {
-            let Some(tri) = model.triangle_dyes.iter().position(|&s| s == want) else {
-                continue;
-            };
-            let t = model.triangles[tri];
-            let uv: [f32; 2] = std::array::from_fn(|i| {
-                (0..3).map(|k| model.uvs[t[k] as usize][i]).sum::<f32>() / 3.0
-            });
-            let b = shader::Bindings::new(&model, tri, &dyes);
-            let albedo = b.albedo.map(|a| a.sample_rgba(uv));
-            let gear = model.triangle_gearstacks[tri].map(|i| model.textures[i].sample_rgba(uv));
-            let norm = model.triangle_normals[tri].map(|i| model.textures[i].sample_rgba(uv));
-            let shaded = b.shade(uv, [0.0, 0.0, -1.0], None);
-            report.push_str(&format!("  slot {want} tri {tri} uv {uv:?}: albedo {albedo:?} gearstack {gear:?} normal {norm:?} -> {shaded:?}
-"));
-        }
-        report.push_str(&format!(
-            "  constant emissive triangles {}
-",
-            model
-                .triangle_constant
-                .iter()
-                .filter(|c| c.is_some())
-                .count()
-        ));
-        {
-            // Channel histograms over the texels the emissive panels cover.
-            let mut bands = [[0usize; 8]; 12];
-            let mut samples = 0usize;
-            for (tri, constant) in model.triangle_constant.iter().enumerate() {
-                if constant.is_none() {
-                    continue;
-                }
-                let t = model.triangles[tri];
-                let uv = |k: usize| model.uvs[t[k] as usize];
-                for a in 0..8 {
-                    for b in 0..(8 - a) {
-                        let (fa, fb) = (a as f32 / 8.0 + 0.05, b as f32 / 8.0 + 0.05);
-                        let fc = 1.0 - fa - fb;
-                        let p: [f32; 2] =
-                            std::array::from_fn(|i| fa * uv(0)[i] + fb * uv(1)[i] + fc * uv(2)[i]);
-                        let sources = [
-                            model.triangle_textures[tri],
-                            model.triangle_gearstacks[tri],
-                            model.triangle_normals[tri],
-                        ];
-                        for (which, index) in sources.iter().enumerate() {
-                            if let Some(index) = index {
-                                let px = model.textures[*index].sample_rgba(p);
-                                for c in 0..4 {
-                                    bands[which * 4 + c][(px[c] as usize / 32).min(7)] += 1;
-                                }
-                            }
-                        }
-                        samples += 1;
-                    }
-                }
-            }
-            let names = [
-                "albedo.r", "albedo.g", "albedo.b", "albedo.a", "gear.r", "gear.g", "gear.b",
-                "gear.a", "normal.r", "normal.g", "normal.b", "normal.a",
-            ];
-            report.push_str(&format!(
-                "  panel samples {samples}
-"
-            ));
-            for (name, band) in names.iter().zip(bands) {
-                report.push_str(&format!(
-                    "    {name}: {band:?}
-"
-                ));
-            }
-        }
-        let with = |v: &Vec<Option<usize>>| v.iter().filter(|t| t.is_some()).count();
-        report.push_str(&format!(
-            "  triangles with albedo {}, gearstack {}, normal {}\n",
-            with(&model.triangle_textures),
-            with(&model.triangle_gearstacks),
-            with(&model.triangle_normals)
-        ));
-        for n in &model.notices {
-            report.push_str(&format!("  notice: {n}\n"));
-        }
-        for (label, size, style) in [
-            (
-                "textured-640",
-                [640usize, 480usize],
-                render::Style::Textured,
-            ),
-            ("textured-320", [320, 240], render::Style::Textured),
-            ("solid-640", [640, 480], render::Style::Solid),
-        ] {
-            let started = Instant::now();
-            let image = render::styled_image(&model, render::Camera::default(), size, 0.0, style);
-            let elapsed = started.elapsed();
-            let started = Instant::now();
-            let _ = render::styled_image(&model, render::Camera::default(), size, 0.5, style);
-            report.push_str(&format!(
-                "  {label}: {elapsed:?} then {:?}\n",
-                started.elapsed()
-            ));
-            let mut bytes = format!("P6\n{} {}\n255\n", size[0], size[1]).into_bytes();
-            bytes.extend(image.pixels.iter().flat_map(|p| [p.r(), p.g(), p.b()]));
-            std::fs::write(out.join(format!("{slug}-{label}.ppm")), bytes).unwrap();
-        }
-        // Flat colour per dye slot so geometry-to-slot assignment can be compared with the game.
-        let mut flat = model;
-        let colors = [
-            [1.0, 0.1, 0.1],
-            [0.1, 1.0, 0.1],
-            [0.1, 0.1, 1.0],
-            [1.0, 1.0, 0.1],
-            [1.0, 0.1, 1.0],
-            [0.1, 1.0, 1.0],
-        ];
-        for (i, dye) in flat.dyes.iter_mut().enumerate() {
-            if let Some(d) = dye {
-                d.surface.albedo = colors[i];
-                d.surface.worn_albedo = colors[i];
-                d.surface.emissive = [0.0; 3];
-                d.detail = None;
-            }
-        }
-        for (label, yaw) in [
-            ("slots-front", -0.65f32),
-            ("slots-back", -0.65 + std::f32::consts::PI),
-        ] {
-            let camera = render::Camera {
-                yaw,
-                pitch: 0.25,
-                zoom: 1.0,
-            };
-            let image =
-                render::styled_image(&flat, camera, [640, 480], 0.0, render::Style::Textured);
-            let mut bytes = b"P6
-640 480
-255
-"
-            .to_vec();
-            bytes.extend(image.pixels.iter().flat_map(|p| [p.r(), p.g(), p.b()]));
-            std::fs::write(out.join(format!("{slug}-{label}.ppm")), bytes).unwrap();
-        }
-        let model = flat;
-        if let Some(t) = &model.iridescence {
-            report.push_str(&format!(
-                "  iridescence lookup {}x{}
-",
-                t.size[0], t.size[1]
-            ));
-            let mut bytes = format!(
-                "P6
-{} {}
-255
-",
-                t.size[0], t.size[1]
-            )
-            .into_bytes();
-            bytes.extend(t.rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]));
-            std::fs::write(out.join(format!("{slug}-iridescence.ppm")), bytes).unwrap();
-        }
-        for (i, t) in model.textures.iter().enumerate() {
-            let mut bytes = format!("P6\n{} {}\n255\n", t.size[0], t.size[1]).into_bytes();
-            bytes.extend(t.rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]));
-            std::fs::write(out.join(format!("{slug}-texture-{i}.ppm")), bytes).unwrap();
-        }
-    }
-    std::fs::write(out.join("report.txt"), report).unwrap();
 }
 
 /// Loads a random sample of installed weapons through the preview and reports any failure.
@@ -601,7 +793,11 @@ fn sample_weapons_load_in_the_preview() {
             None => "no preview loadout".to_owned(),
             Some(loadout) => {
                 let appearance = catalog.preview_appearance(&loadout);
-                match weapon::load(&packages, &appearance) {
+                match weapon::load_reported(
+                    &packages,
+                    &appearance,
+                    &crate::model_preview::Load::default(),
+                ) {
                     Ok(model) => format!(
                         "ok: {} triangles, {} textures, {} notices",
                         model.triangles.len(),
@@ -622,234 +818,4 @@ fn sample_weapons_load_in_the_preview() {
     }
     std::fs::write(out.join("sample.txt"), &report).unwrap();
     assert_eq!(failures, 0, "{report}");
-}
-
-/// Dumps the resources of named objects the preview cannot load, to find what to support.
-#[test]
-#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_PROBE_OUT"]
-fn probe_unsupported_objects() {
-    let packages = std::path::PathBuf::from(std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").unwrap());
-    let out = std::path::PathBuf::from(std::env::var_os("SUNDIAL_PROBE_OUT").unwrap());
-    std::fs::create_dir_all(&out).unwrap();
-    let manager = crate::investment::discovery::open_packages(&packages).unwrap();
-    let catalog = crate::sandbox_perk::projectile::catalog::cached_only(&packages)
-        .unwrap()
-        .expect("cached effects catalog");
-    let wanted = ["alpha_strike", "harpy", "ritual_seeker", "seeker"];
-    let mut report = String::new();
-    let mut seen = 0;
-    for entry in &catalog.entries {
-        let text = format!("{:?} {:?}", entry.native_name, entry.native_paths).to_lowercase();
-        if !wanted.iter().any(|w| text.contains(w)) {
-            continue;
-        }
-        seen += 1;
-        if seen > 12 {
-            break;
-        }
-        report.push_str(&format!(
-            "\n== {:08X} {:?} {:?} {:?}\n",
-            entry.graph, entry.kind, entry.native_name, entry.native_paths
-        ));
-        match load(&packages, entry.graph) {
-            Ok(model) => {
-                report.push_str(&format!("  loads: {} triangles\n", model.triangles.len()))
-            }
-            Err(error) => report.push_str(&format!("  FAILS: {error}\n")),
-        }
-        let Some(header) = manager.get_entry(entry.graph) else {
-            continue;
-        };
-        report.push_str(&format!(
-            "  class {:08X} type {}/{} size {}\n",
-            header.reference, header.file_type, header.file_subtype, header.file_size
-        ));
-        if header.reference != ENTITY {
-            continue;
-        }
-        let Ok(entity) = manager.read_tag(entry.graph) else {
-            continue;
-        };
-        let Ok((count, rows)) = array(&entity, 0x10, 0x8080_9C04, 12, 4096) else {
-            continue;
-        };
-        for index in 0..count {
-            let resource = u32_at(&entity, rows + index * 12).unwrap_or(0);
-            let Some(res_entry) = manager.get_entry(resource) else {
-                report.push_str(&format!("  resource {resource:08X}: missing\n"));
-                continue;
-            };
-            let Ok(bytes) = manager.read_tag(resource) else {
-                continue;
-            };
-            let class_at = |p: usize| -> String {
-                pointer(&bytes, p)
-                    .ok()
-                    .and_then(|o| o.checked_sub(4))
-                    .and_then(|o| u32_at(&bytes, o).ok())
-                    .map_or("-".into(), |c| format!("{c:08X}"))
-            };
-            report.push_str(&format!(
-                "  resource {resource:08X} class {:08X} size {} header {} data {}\n",
-                res_entry.reference,
-                bytes.len(),
-                class_at(0x10),
-                class_at(0x18)
-            ));
-            // Children candidates: dump the arrays at the data struct's known offsets.
-            if let Ok(data) = pointer(&bytes, 0x18) {
-                for offset in [0x78usize, 0x88, 0x100, 0x168] {
-                    if let Ok((n, _, r, class)) = native_array_at(&bytes, data + offset)
-                        && n > 0
-                        && n < 512
-                        && r < bytes.len()
-                    {
-                        let head: Vec<String> = (0..6)
-                            .map(|i| {
-                                u32_at(&bytes, r + i * 4).map_or("?".into(), |v| format!("{v:08X}"))
-                            })
-                            .collect();
-                        report.push_str(&format!("    array at data+{offset:#x}: {n} rows class {class:08X} first words {head:?}\n"));
-                    }
-                }
-            }
-        }
-    }
-    std::fs::write(out.join("objects.txt"), &report).unwrap();
-    println!("{report}");
-}
-
-/// Survey: across the whole effects catalog, which objects have no direct model, and what
-/// would rescue them (child entities with models, transparent-only stages, nothing).
-#[test]
-#[ignore]
-fn survey_model_coverage() {
-    let packages = std::path::PathBuf::from(std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").unwrap());
-    let out = std::path::PathBuf::from(std::env::var_os("SUNDIAL_PROBE_OUT").unwrap());
-    let manager = crate::investment::discovery::open_packages(&packages).unwrap();
-    let catalog = crate::sandbox_perk::projectile::catalog::cached(&packages, &manager).unwrap();
-    let has_model = |tag: u32| -> Option<bool> {
-        let entity = manager.read_tag(tag).ok()?;
-        let (count, rows) = array(&entity, 0x10, 0x8080_9C04, 12, 4096).ok()?;
-        for index in 0..count {
-            let resource = u32_at(&entity, rows + index * 12).ok()?;
-            let Ok(bytes) = manager.read_tag(resource) else {
-                continue;
-            };
-            let header = pointer(&bytes, 0x10)
-                .ok()
-                .and_then(|o| o.checked_sub(4))
-                .and_then(|o| u32_at(&bytes, o).ok());
-            if header == Some(0x8080_72B8) {
-                return Some(true);
-            }
-        }
-        Some(false)
-    };
-    let child_entities = |tag: u32| -> Vec<u32> {
-        let mut found = Vec::new();
-        let Ok(entity) = manager.read_tag(tag) else {
-            return found;
-        };
-        let Ok((count, rows)) = array(&entity, 0x10, 0x8080_9C04, 12, 4096) else {
-            return found;
-        };
-        for index in 0..count {
-            let Ok(resource) = u32_at(&entity, rows + index * 12) else {
-                continue;
-            };
-            let Ok(bytes) = manager.read_tag(resource) else {
-                continue;
-            };
-            for offset in (0..bytes.len().saturating_sub(3)).step_by(4) {
-                let word = u32_at(&bytes, offset).unwrap();
-                if word & 0xFF00_0000 != 0x8000_0000 || word == tag || word == resource {
-                    continue;
-                }
-                if manager
-                    .get_entry(word)
-                    .is_some_and(|e| e.reference == ENTITY)
-                    && !found.contains(&word)
-                {
-                    found.push(word);
-                }
-            }
-        }
-        found
-    };
-    let mut total = 0;
-    let mut with_model = 0;
-    let mut not_entity = 0;
-    let mut rescued_by_child = 0;
-    let mut child_examples = Vec::new();
-    let mut orphan_kinds = std::collections::BTreeMap::new();
-    let mut orphan_examples = Vec::new();
-    for entry in &catalog.entries {
-        total += 1;
-        let Some(header) = manager.get_entry(entry.graph) else {
-            continue;
-        };
-        if header.reference != ENTITY {
-            not_entity += 1;
-            continue;
-        }
-        if has_model(entry.graph) == Some(true) {
-            with_model += 1;
-            continue;
-        }
-        let mut visited = BTreeSet::new();
-        let mut queue = vec![(entry.graph, 0usize)];
-        let mut rescued = None;
-        while let Some((tag, depth)) = queue.pop() {
-            if !visited.insert(tag) || depth > 3 {
-                continue;
-            }
-            if tag != entry.graph && has_model(tag) == Some(true) {
-                rescued = Some((tag, depth));
-                break;
-            }
-            for child in child_entities(tag) {
-                queue.push((child, depth + 1));
-            }
-        }
-        if let Some((tag, depth)) = rescued {
-            rescued_by_child += 1;
-            if child_examples.len() < 15 {
-                child_examples.push(format!(
-                    "{:08X} {:?} {:?} -> child {tag:08X} at depth {depth}",
-                    entry.graph,
-                    entry.kind,
-                    entry.native_paths.first()
-                ));
-            }
-        } else {
-            *orphan_kinds
-                .entry(format!("{:?}", entry.kind))
-                .or_insert(0usize) += 1;
-            if orphan_examples.len() < 15 {
-                orphan_examples.push(format!(
-                    "{:08X} {:?} {:?}",
-                    entry.graph,
-                    entry.kind,
-                    entry.native_paths.first()
-                ));
-            }
-        }
-    }
-    let report = format!(
-        "total {total} not_entity {not_entity} with_model {with_model} rescued_by_child {rescued_by_child} orphans {}
-orphan kinds {orphan_kinds:?}
-child examples:
-{}
-orphan examples:
-{}
-",
-        total - not_entity - with_model - rescued_by_child,
-        child_examples.join("
-"),
-        orphan_examples.join("
-")
-    );
-    std::fs::write(out.join("survey.txt"), &report).unwrap();
-    println!("{report}");
 }

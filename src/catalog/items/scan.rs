@@ -592,7 +592,9 @@ pub(in crate::catalog) fn scan_items(
             name,
             type_name,
             bucket_hash,
-            class_type: class_items::class_type(hash).unwrap_or(3),
+            class_type: class_items::class_type(hash)
+                .or_else(|| class_items::class_from_item_strings(&string_thing))
+                .unwrap_or(3),
             default_plugs: decoded_sockets.default_plugs,
             sockets: decoded_sockets.sockets,
             abilities: AbilityOptions::default(),

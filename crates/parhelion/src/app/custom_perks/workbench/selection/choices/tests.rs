@@ -101,3 +101,22 @@ fn candidates_use_payload_identity_and_share_workbench_validation() {
     );
     assert!(!choices.iter().any(|choice| choice.matches("duplicate")));
 }
+
+#[test]
+fn an_untouched_socket_copy_is_offered_only_once_it_changes() {
+    let mut recipe = PerkRecipe::new();
+    recipe.name = "Custom Socket Perk".into();
+    let mut document = Document::new(recipe, None);
+    document.from_socket = true;
+    let workbench = Workbench::default();
+    let collect = |document: &Document| {
+        super::collect(&[], std::slice::from_ref(document), [], |recipe| {
+            workbench.perk_issue(recipe)
+        })
+    };
+    assert!(collect(&document).is_empty());
+    document.recipe.description = "Changed".into();
+    let choices = collect(&document);
+    assert_eq!(choices.len(), 1);
+    assert_eq!(choices[0].source, "Workbench Draft");
+}

@@ -6,7 +6,7 @@ use crate::package_runtime::reader::PackageManager;
 use super::catalog::Entry;
 
 mod requirements;
-pub use requirements::{Report, Requirement, inspect};
+pub use requirements::{Report, Requirement, additions, inspect, owner_requirements};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Residency {

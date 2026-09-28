@@ -21,7 +21,11 @@ pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringR
         .find(|p| p.item_hash == owner_hash)
         .ok_or_else(|| invalid("Ornament owner plan"))?;
     // Installing the authored weapon also grants its imported cosmetic choices.
-    let unlock = owner.unlock_definition_index;
+    let unlock = owner
+        .collection
+        .as_ref()
+        .ok_or_else(|| invalid("Ornament owner has no collection unlock"))?
+        .unlock_definition_index;
     let (n, _, rows, _) = array_at(&emission.item_table, 8)?;
     let index = |hash| -> AuthoringResult<usize> {
         let found = (0..n)

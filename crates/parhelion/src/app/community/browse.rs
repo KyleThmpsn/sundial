@@ -28,12 +28,12 @@ impl Window {
                     .hint_text("Search Recipes or Creators")
                     .desired_width(260.0),
             );
-            let tags: BTreeSet<_> = self
+            let tags: BTreeSet<&str> = self
                 .catalog
                 .as_ref()
                 .into_iter()
                 .flat_map(|catalog| &catalog.recipes)
-                .flat_map(|entry| entry.listing.tags.iter().cloned())
+                .flat_map(|entry| entry.listing.tags.iter().map(String::as_str))
                 .collect();
             egui::ComboBox::from_id_salt("community-tag")
                 .selected_text(if self.tag.is_empty() {
@@ -44,7 +44,7 @@ impl Window {
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut self.tag, String::new(), "All Tags");
                     for tag in tags {
-                        ui.selectable_value(&mut self.tag, tag.clone(), tag);
+                        ui.selectable_value(&mut self.tag, tag.to_owned(), tag);
                     }
                 });
             egui::ComboBox::from_id_salt("community-sort")
@@ -60,16 +60,19 @@ impl Window {
                 .add_enabled(self.worker.is_none(), egui::Button::new("Refresh"))
                 .clicked()
             {
-                self.start(ctx, |client| client.catalog().map(Outcome::Catalog));
+                self.start(ctx, Job::Catalog, |client| {
+                    client.catalog().map(Outcome::Catalog)
+                });
             }
         });
-        let Some(catalog) = self.catalog.as_ref() else {
+        // Taken for this frame so the rows can borrow it while the window changes.
+        let Some(catalog) = self.catalog.take() else {
             ui.add_space(20.0);
             ui.label("Refresh to load published community recipes.");
             return;
         };
         let query = self.search.trim().to_lowercase();
-        let mut entries: Vec<_> = catalog
+        let mut entries: Vec<&service::Entry> = catalog
             .recipes
             .iter()
             .filter(|entry| {
@@ -85,10 +88,13 @@ impl Window {
                     .to_lowercase()
                     .contains(&query)
             })
-            .cloned()
             .collect();
         entries.sort_by(|left, right| self.sort.compare(left, right));
-        ui.label(format!("{} Recipes", entries.len()));
+        let count = entries.len();
+        ui.label(format!(
+            "{count} recipe{}",
+            if count == 1 { "" } else { "s" }
+        ));
         ui.separator();
         ui.columns(2, |columns| {
             egui::ScrollArea::vertical()
@@ -110,8 +116,8 @@ impl Window {
                             {
                                 self.selected = Some(entry.listing.id.clone());
                                 self.downloaded = None;
-                                let entry = entry.clone();
-                                self.start(ctx, move |client| {
+                                let entry = (*entry).clone();
+                                self.start(ctx, Job::Download, move |client| {
                                     client
                                         .download(&entry)
                                         .map(|recipe| Outcome::Downloaded(Box::new(recipe)))
@@ -137,13 +143,15 @@ impl Window {
                 .id_salt("community-detail")
                 .max_height(columns[1].available_height().max(200.0))
                 .show(&mut columns[1], |ui| {
-                    if let Some(downloaded) = self.downloaded.clone() {
+                    if let Some(downloaded) = self.downloaded.take() {
                         self.recipe_detail(ui, &downloaded, can_edit);
+                        self.downloaded = Some(downloaded);
                     } else {
-                        ui.label("Choose a recipe to inspect its details and download options.");
+                        ui.label("No Recipe Selected");
                     }
                 });
         });
+        self.catalog = Some(catalog);
     }
 
     fn recipe_detail(&mut self, ui: &mut egui::Ui, downloaded: &Downloaded, can_edit: bool) {
@@ -162,9 +170,8 @@ impl Window {
             "Sundial: {}\nSunrise: {}",
             listing.tested_with.sundial, listing.tested_with.sunrise
         ));
-        ui.small("Recipe validation passed. In-game behavior still depends on the recipe, application version, and your game installation.");
         if let Some(original) = &listing.remix_of {
-            ui.label(format!("Remix Of {original}"));
+            ui.label(format!("Remix of {original}"));
         }
         ui.add_space(10.0);
         let receipt = self.receipts.get(&listing.id).cloned();
@@ -185,7 +192,6 @@ impl Window {
             }
             ui.separator();
             ui.strong("Make a Remix");
-            ui.label("A remix gets its own identity and leaves the original recipe intact.");
             ui.add(egui::TextEdit::singleline(&mut self.remix_name).hint_text("Remix Name"));
             if ui
                 .add_enabled(

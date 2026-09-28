@@ -43,7 +43,7 @@ use schema::*;
 use unlocks::*;
 
 pub(crate) use models::{
-    ObjectiveDef, ObjectiveOwnerDef, ObjectiveOwnerKind, ObjectiveOwnerTraitDef,
+    ObjectiveDef, ObjectiveOwnerDef, ObjectiveOwnerKind, ObjectiveOwnerTraitDef, PresentationNode,
     ProgressionContextDef, ProgressionContextKind, ProgressionDefinition,
     ProgressionFactionDefinition, ProgressionRewardDefinition, ProgressionScope,
     ProgressionStepDefinition, RecordDefinition, RecordProgress, RecordRuntime, UnlockDefinition,
@@ -70,8 +70,8 @@ pub(super) use package_conditions::{
     expand_shared_condition_contexts, scan_package_condition_contexts,
 };
 pub(super) use presentation::{
-    attach_presentation_node_objective_owners, definition_index_list, presentation_paths,
-    scan_presentation_nodes,
+    PresentationIndex, attach_presentation_node_objective_owners, definition_index_list,
+    parent_node_hashes, presentation_node_models, presentation_paths, scan_presentation_nodes,
 };
 pub(super) use records::{item_objective_indices, scan_records};
 pub(super) use seasonal::scan_seasonal;

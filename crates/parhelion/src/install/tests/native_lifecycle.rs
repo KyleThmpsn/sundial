@@ -49,9 +49,10 @@ impl NativeFixture {
             .project
             .weapons
             .iter()
-            .map(|weapon| {
-                assert_eq!(weapon.unlock.bank, 1);
-                weapon.unlock.slot
+            .filter_map(|weapon| weapon.unlock.as_ref())
+            .map(|unlock| {
+                assert_eq!(unlock.bank, 1);
+                unlock.slot
             })
             .collect::<Vec<_>>();
         slots.sort_unstable();

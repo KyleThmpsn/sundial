@@ -29,6 +29,10 @@ pub(super) struct ProjectSources {
     pub(super) unlock_table_tag: TagHash,
     pub(super) unlock_display_tag: TagHash,
     pub(super) entity_assignment_tag: TagHash,
+    /// Subclass socket-entry lists and their display records.
+    pub(super) subclass_tables: super::subclass::SubclassTables,
+    /// The art-dye table shader rows index.
+    pub(super) dye_table: super::dyes::DyeTable,
     pub(super) stock_item_table: Vec<u8>,
     pub(super) stock_item_strings: Vec<u8>,
     pub(super) stock_item_metadata: Vec<u8>,
@@ -122,6 +126,15 @@ pub(super) fn load_project_sources(package_directory: &Path) -> AuthoringResult<
     let unlock_table_tag = root_child_tag(&root, ROOT_UNLOCK_FLAG_DEFINITION_TABLE_SLOT)?;
     let unlock_display_tag =
         globals_child_tag(&globals_data, GLOBALS_UNLOCK_FLAG_DISPLAY_TABLE_SLOT)?;
+    let subclass_tables = super::subclass::SubclassTables::load(
+        &manager,
+        root_child_tag(&root, ROOT_SOCKET_ENTRY_LIST_TABLE_SLOT)?,
+        globals_child_tag(&globals_data, GLOBALS_SUBCLASS_DISPLAY_TABLE_SLOT)?,
+    )?;
+    let dye_table = super::dyes::DyeTable::load(
+        &manager,
+        globals_child_tag(&globals_data, GLOBALS_ART_DYE_TABLE_SLOT)?,
+    )?;
     let entity_assignment_tag = TagHash(SANDBOX_PATTERN_ENTITY_ASSIGNMENT_TAG);
     validate_source_tag(
         &manager,
@@ -347,6 +360,8 @@ pub(super) fn load_project_sources(package_directory: &Path) -> AuthoringResult<
         unlock_table_tag,
         unlock_display_tag,
         entity_assignment_tag,
+        subclass_tables,
+        dye_table,
         stock_item_table,
         stock_item_strings,
         stock_item_metadata,

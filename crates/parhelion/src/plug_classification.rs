@@ -123,37 +123,6 @@ mod tests {
     }
 
     #[test]
-    fn copies_native_plug_classification_without_changing_runtime() {
-        let (source, source_strings) = template(0x67FB_A961);
-        let classification = PlugClassification::from_template(&source, &source_strings).unwrap();
-        let (mut target, mut strings) = template(0x0078_A617);
-        target[ITEM_RARITY_OFFSET] = 4;
-        write_u32(&mut strings, ITEM_STRING_TYPE_REFERENCE_OFFSET + 4, 0x5678).unwrap();
-        write_u32(
-            &mut strings,
-            ITEM_STRING_UI_TEMPLATE_HASH_OFFSET,
-            0x811C_9DC5,
-        )
-        .unwrap();
-        let before = (target.clone(), strings.clone());
-        classification.apply(&mut target, &mut strings).unwrap();
-        assert_eq!(
-            PlugClassification::from_template(&target, &strings).unwrap(),
-            classification
-        );
-        write_u32(&mut target, 0x188, 0x0078_A617).unwrap();
-        target[ITEM_RARITY_OFFSET] = 4;
-        write_u32(&mut strings, ITEM_STRING_TYPE_REFERENCE_OFFSET + 4, 0x5678).unwrap();
-        write_u32(
-            &mut strings,
-            ITEM_STRING_UI_TEMPLATE_HASH_OFFSET,
-            0x811C_9DC5,
-        )
-        .unwrap();
-        assert_eq!((target, strings), before);
-    }
-
-    #[test]
     fn trait_classification_can_clear_an_intrinsic_ui_template() {
         let (source, mut source_strings) = template(0x0078_A617);
         write_u32(

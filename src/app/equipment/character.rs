@@ -331,7 +331,7 @@ fn draw_character_ability_group(
             ui.set_width(width);
             ui.horizontal_wrapped(|ui| {
                 ui.label("Choose abilities and attunement in game.");
-                crate::ui_help::info(ui, "Saved ability and attunement selections are not applied when the character loads with this settings format.");
+                crate::ui_help::info(ui, "This settings version ignores saved ability choices.");
             });
         });
         return;
@@ -395,7 +395,7 @@ fn draw_character_ability_group(
                     }
                 }
                 crate::app::ui::field_label(ui, "Class Ability", ABILITY_LABEL_WIDTH).on_hover_text(
-                    "Dodge, Barricade, and Rift remain independent choices. Attunement perks may modify their behavior.",
+                    "Dodge, Barricade and Rift are separate choices. Attunement perks can change them.",
                 );
                 state.selection_requested |= ability_combo(
                     ui,
@@ -731,10 +731,10 @@ impl SundialApp {
                 }
             })
             .response
-            .on_hover_text("Choose which plugs appear in socket pickers. Broader selections may include incompatible plugs.");
+            .on_hover_text("Broader choices can include incompatible plugs.");
         if show_dummy_items {
             ui.checkbox(&mut self.show_dummy_items, "Dummy Items")
-                .on_hover_text("Include display-only definitions that cannot normally be obtained");
+                .on_hover_text("Include display-only items that cannot be obtained");
         }
         if requested_plug_selection_mode != self.plug_selection_mode {
             if requested_plug_selection_mode == PlugSelectionMode::AnyPlug

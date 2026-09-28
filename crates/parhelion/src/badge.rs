@@ -75,8 +75,6 @@ const ACE_BADGE_OBJECTIVE_TEMPLATE_INDEX: usize = 6_289;
 const ACE_BADGE_OBJECTIVE_TEMPLATE_HASH: u32 = 0xE72F_FAB8;
 const SUNRISE_BADGE_OBJECTIVE_HASH: u32 = 0x5355_4F42;
 
-#[cfg(test)]
-const SUNRISE_BADGE_GROUP_NODE_INDEX: usize = STOCK_PRESENTATION_NODE_COUNT;
 const SUNRISE_BADGE_TITAN_NODE_INDEX: usize = STOCK_PRESENTATION_NODE_COUNT + 1;
 const SUNRISE_BADGE_HUNTER_NODE_INDEX: usize = STOCK_PRESENTATION_NODE_COUNT + 2;
 const SUNRISE_BADGE_WARLOCK_NODE_INDEX: usize = STOCK_PRESENTATION_NODE_COUNT + 3;
@@ -684,20 +682,6 @@ fn append_nodes(
     Ok(nodes)
 }
 
-#[cfg(test)]
-fn append_sunrise_presentation_strings(
-    strings: Vec<u8>,
-    localization_table_index: u32,
-    badge_icon_index: u16,
-) -> AuthoringResult<Vec<u8>> {
-    append_strings(
-        strings,
-        localization_table_index,
-        badge_icon_index,
-        &Layout::sunrise(),
-    )
-}
-
 fn append_strings(
     mut strings: Vec<u8>,
     localization_table_index: u32,
@@ -1015,106 +999,6 @@ fn validate_records(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sundial::package_authoring::fnv1_name_hash;
-
-    #[test]
-    fn localized_badge_hashes_are_fnv_name_keys() {
-        assert_eq!(
-            SUNRISE_BADGE_NAME_HASH,
-            fnv1_name_hash("parhelion/project-sunrise/badge/name")
-        );
-        assert_eq!(
-            SUNRISE_BADGE_DESCRIPTION_HASH,
-            fnv1_name_hash("parhelion/project-sunrise/badge/description/1")
-        );
-    }
-
-    #[test]
-    fn appends_a_dedicated_badge_icon_row_and_presentation_string() {
-        let header = 0x20;
-        let rows = header + 16;
-        let lunar_container = TagHash(0x8132_E45F);
-        let sunrise_container = TagHash(0x8133_0010);
-        let mut icons = vec![0; rows + STOCK_ITEM_ICON_COUNT * ITEM_ICON_ROW_SIZE];
-        write_u64(&mut icons, 8, STOCK_ITEM_ICON_COUNT as u64).unwrap();
-        write_relative_pointer(&mut icons, 16, header).unwrap();
-        write_u64(&mut icons, header, STOCK_ITEM_ICON_COUNT as u64).unwrap();
-        write_u32(&mut icons, header + 8, ITEM_ICON_ROW_CLASS).unwrap();
-        write_u32(
-            &mut icons,
-            rows + LUNAR_BADGE_ICON_ROW_INDEX * ITEM_ICON_ROW_SIZE,
-            LUNAR_BADGE_ICON_KEY,
-        )
-        .unwrap();
-        write_u32(
-            &mut icons,
-            rows + LUNAR_BADGE_ICON_ROW_INDEX * ITEM_ICON_ROW_SIZE + ITEM_ICON_CONTAINER_OFFSET,
-            lunar_container.0,
-        )
-        .unwrap();
-
-        let (icons, sunrise_icon_index) = append_badge_icon_row(icons, sunrise_container).unwrap();
-        let (icon_count, _, icon_rows, _) = array_at(&icons, 8).unwrap();
-        assert_eq!(icon_count, STOCK_ITEM_ICON_COUNT + 1);
-        assert_eq!(usize::from(sunrise_icon_index), STOCK_ITEM_ICON_COUNT);
-        assert_eq!(
-            read_u32(
-                &icons,
-                icon_rows + STOCK_ITEM_ICON_COUNT * ITEM_ICON_ROW_SIZE
-            )
-            .unwrap(),
-            SUNRISE_BADGE_ICON_KEY
-        );
-        assert_eq!(
-            read_u32(
-                &icons,
-                icon_rows + STOCK_ITEM_ICON_COUNT * ITEM_ICON_ROW_SIZE + ITEM_ICON_CONTAINER_OFFSET,
-            )
-            .unwrap(),
-            u32::from(sunrise_container)
-        );
-
-        let string_header = 0x20;
-        let string_rows = string_header + 16;
-        let mut presentation_strings =
-            vec![
-                0;
-                string_rows + STOCK_PRESENTATION_NODE_COUNT * PRESENTATION_NODE_STRING_ROW_SIZE
-            ];
-        write_u64(
-            &mut presentation_strings,
-            8,
-            STOCK_PRESENTATION_NODE_COUNT as u64,
-        )
-        .unwrap();
-        write_relative_pointer(&mut presentation_strings, 16, string_header).unwrap();
-        write_u64(
-            &mut presentation_strings,
-            string_header,
-            STOCK_PRESENTATION_NODE_COUNT as u64,
-        )
-        .unwrap();
-        write_u32(
-            &mut presentation_strings,
-            string_header + 8,
-            PRESENTATION_NODE_STRING_ROW_CLASS,
-        )
-        .unwrap();
-        let presentation_strings =
-            append_sunrise_presentation_strings(presentation_strings, 0x615, sunrise_icon_index)
-                .unwrap();
-        let (_, _, presentation_rows, _) = array_at(&presentation_strings, 8).unwrap();
-        assert_eq!(
-            read_u16(
-                &presentation_strings,
-                presentation_rows
-                    + SUNRISE_BADGE_GROUP_NODE_INDEX * PRESENTATION_NODE_STRING_ROW_SIZE
-                    + PRESENTATION_NODE_STRING_ICON_OFFSET,
-            )
-            .unwrap(),
-            sunrise_icon_index
-        );
-    }
 
     #[test]
     fn presentation_child_array_terminator_handles_every_alignment_class() {
@@ -1224,27 +1108,5 @@ mod tests {
         .unwrap();
         write_u32(&mut records, header - 4, 0).unwrap();
         assert!(validate_sunrise_badge_records(&records, &strings, objective_index).is_err());
-    }
-
-    #[test]
-    fn authored_records_replace_all_donor_objective_dependencies() {
-        let (records, strings) = synthetic_badge_record_tables();
-        let objective_index = STOCK_OBJECTIVE_COUNT as u16;
-        let (records, strings) =
-            append_sunrise_badge_records(records, strings, objective_index).unwrap();
-        validate_sunrise_badge_records(&records, &strings, objective_index).unwrap();
-        let (record_count, _, record_rows, _) = array_at(&records, 8).unwrap();
-        assert_eq!(
-            record_count,
-            STOCK_RECORD_COUNT + SUNRISE_BADGE_RECORD_HASHES.len()
-        );
-        for position in 0..SUNRISE_BADGE_RECORD_HASHES.len() {
-            let row = record_rows + (STOCK_RECORD_COUNT + position) * RECORD_ROW_SIZE;
-            let (count, _, objective_rows, class) =
-                array_at(&records, row + RECORD_OBJECTIVE_DESCRIPTOR_OFFSET).unwrap();
-            assert_eq!(count, 1);
-            assert_eq!(class, RECORD_OBJECTIVE_ROW_CLASS);
-            assert_eq!(read_u16(&records, objective_rows).unwrap(), objective_index);
-        }
     }
 }

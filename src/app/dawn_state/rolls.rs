@@ -60,32 +60,34 @@ impl SundialApp {
                 item_label(ui,&self.manifest,hash);
                 let Some(definition)=definition else {ui.weak("The installed socket definition is unavailable.");return;};
                 let mut roll=saved.clone();
-                if ui.button("Clear Saved Roll").on_hover_text("Clears ownership and roll bytes. Authored socket choices are unchanged.").clicked() { roll=SavedRoll::default(); }
+                if ui.button("Clear Saved Roll").on_hover_text("Clears roll ownership. Authored socket choices are kept.").clicked() { roll=SavedRoll::default(); }
                 for (lane,socket) in definition.sockets.iter().take(12).enumerate() {
                     let pool=socket.ordered_randomized_choices();
                     if pool.is_empty() && roll.lanes&(1<<lane)==0 {continue;}
                     egui::CollapsingHeader::new(socket.display_label(lane)).id_salt((soid,lane)).show(ui,|ui| {
                         let authored=matches!(&item.plugs,sundial_account::ItemPlugs::Authored(p) if lane<p.len());
                         let mut rolled=roll.lanes&(1<<lane)!=0;
-                        if ui.add_enabled(authored,egui::Checkbox::new(&mut rolled,"Rolled Socket")).on_disabled_hover_text("Author this socket in Items before enabling saved roll ownership.").changed() {
+                        if ui.add_enabled(authored,egui::Checkbox::new(&mut rolled,"Rolled Socket")).on_disabled_hover_text("Set this socket in Items first.").changed() {
                             if rolled {roll.lanes|=1<<lane;} else {roll.lanes&=!(1<<lane);roll.owned[lane]=0;}
                         }
                         ui.add_enabled_ui(rolled && pool.len()<=64,|ui| {
                             for (row,hash) in pool.iter().take(64).enumerate() {
                                 let mut owned=roll.owned[lane]&(1<<row)!=0;
                                 let label=self.manifest.display_name(*hash).map(str::to_owned).unwrap_or_else(||format!("Plug {hash:08X}"));
-                                if ui.checkbox(&mut owned,label).changed() {
+                                let response=ui.checkbox(&mut owned,label);
+                                crate::app::inspector::definition_context_menu(&response,"Inspect Definition",*hash);
+                                if response.changed() {
                                     if owned {roll.owned[lane]|=1<<row;} else {roll.owned[lane]&=!(1<<row);}
                                 }
                             }
                         });
-                        if pool.is_empty() {ui.weak("The randomized pool is unavailable. Existing ownership is preserved.");}
+                        if pool.is_empty() {ui.weak("No random pool for this socket. Ownership is kept.");}
                     });
                 }
                 egui::CollapsingHeader::new("Roll Bytes").id_salt((soid,"entropy")).show(ui,|ui| {
                     ui.horizontal_wrapped(|ui| {
                         for (i,byte) in roll.entropy.iter_mut().enumerate() {
-                            ui.push_id(i,|ui| {ui.add(egui::DragValue::new(byte).range(0..=255)).on_hover_text(format!("Entropy byte {}. Used by the client to select randomized socket rows.",i+1));});
+                            ui.push_id(i,|ui| {ui.add(egui::DragValue::new(byte).range(0..=255)).on_hover_text(format!("Entropy byte {}. Picks random socket rows.",i+1));});
                         }
                     });
                 });

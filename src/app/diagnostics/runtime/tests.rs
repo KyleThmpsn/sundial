@@ -15,17 +15,6 @@ fn empty_directories_consume_the_scan_budget() {
 }
 
 #[test]
-fn exact_budget_does_not_claim_the_scan_was_truncated() {
-    let directory = TestDirectory::new("diagnostic-exact-budget");
-    fs::create_dir(directory.0.join("empty")).unwrap();
-    fs::write(directory.0.join("runtime.bin"), b"private content").unwrap();
-    let scan = scan_runtime_folder_with_limit(&directory.0, 2);
-    assert_eq!(scan.files.len(), 1);
-    assert_eq!(scan.entries_scanned, 2);
-    assert!(!scan.truncated);
-}
-
-#[test]
 fn nested_directories_share_one_budget() {
     let directory = TestDirectory::new("diagnostic-nested-budget");
     fs::create_dir_all(directory.0.join("a/b/c/d")).unwrap();

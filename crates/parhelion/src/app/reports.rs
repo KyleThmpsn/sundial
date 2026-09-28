@@ -16,14 +16,10 @@ pub(super) fn draw_build_report(ui: &mut egui::Ui, build: &BuildReport) {
         ui.heading(
             egui::RichText::new("Build Validated").color(style::success_color(ui.visuals())),
         );
-        draw_summary(
-            ui,
-            build.weapons.len(),
-            build.artifacts.len(),
-            "Ready for Review",
-        );
+        draw_summary(ui, build, "Ready for Review");
         ui.add_space(6.0);
-        egui::CollapsingHeader::new("Included Weapons")
+        egui::CollapsingHeader::new(format!("Included {}", items_noun(build, 2)))
+            .id_salt("build_included_items")
             .default_open(build.weapons.len() <= 6)
             .show(ui, |ui| {
                 for weapon in &build.weapons {
@@ -39,18 +35,24 @@ pub(super) fn draw_build_report(ui: &mut egui::Ui, build: &BuildReport) {
     });
 }
 
-pub(super) fn draw_summary(ui: &mut egui::Ui, weapons: usize, packages: usize, status: &str) {
+fn items_noun(build: &BuildReport, count: usize) -> &'static str {
+    ItemKind::count_noun(build.weapons.iter().map(|item| item.kind), count)
+}
+
+pub(super) fn draw_summary(ui: &mut egui::Ui, build: &BuildReport, status: &str) {
+    let items = build.weapons.len();
+    let packages = build.artifacts.len();
     egui::Frame::group(ui.style())
         .inner_margin(12)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
-                ui.strong(format!(
-                    "{weapons} {}",
-                    if weapons == 1 { "Weapon" } else { "Weapons" }
-                ));
+                ui.strong(format!("{items} {}", items_noun(build, items)));
                 ui.weak("·");
-                ui.strong(format!("{packages} Verified Packages"));
+                ui.strong(format!(
+                    "{packages} Verified {}",
+                    if packages == 1 { "Package" } else { "Packages" }
+                ));
                 ui.weak("·");
                 ui.label(status);
             });
@@ -96,9 +98,10 @@ fn format_file_size(bytes: u64) -> String {
 
 pub(super) fn draw_install_report(ui: &mut egui::Ui, report: &InstallReport) {
     ui.heading(egui::RichText::new("Packages Installed").color(style::success_color(ui.visuals())));
+    let count = report.artifacts.len();
     ui.strong(format!(
-        "{} verified packages installed",
-        report.artifacts.len()
+        "{count} verified {} installed",
+        if count == 1 { "package" } else { "packages" }
     ));
     if report.cleaned_account.is_some() {
         ui.label(
@@ -125,6 +128,44 @@ pub(super) fn draw_install_report(ui: &mut egui::Ui, report: &InstallReport) {
         }
         None => {}
     }
+    let items = |count: usize| format!("{count} {}", if count == 1 { "item" } else { "items" });
+    match &report.item_grants {
+        Some(Ok(grants)) => {
+            if !grants.added.is_empty() {
+                ui.label(format!(
+                    "Added {} to the account.",
+                    items(grants.added.len())
+                ));
+            }
+            if !grants.full.is_empty() {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    format!(
+                        "{} not added because a bucket is full.",
+                        items(grants.full.len())
+                    ),
+                );
+            }
+            if !grants.equipped.is_empty() {
+                let count = grants.equipped.len();
+                ui.label(format!(
+                    "Subclass equipped on {count} {}.",
+                    if count == 1 {
+                        "character"
+                    } else {
+                        "characters"
+                    }
+                ));
+            }
+        }
+        Some(Err(error)) => {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                format!("Packages installed, but authored items could not be added: {error}"),
+            );
+        }
+        None => {}
+    }
     if let Some(warning) = &report.backup_prune_warning {
         ui.colored_label(ui.visuals().warn_fg_color, warning);
     }
@@ -139,6 +180,13 @@ pub(super) fn draw_install_report(ui: &mut egui::Ui, report: &InstallReport) {
             if report.cleaned_account.as_ref() != Some(&sync.settings_path) {
                 path_row(ui, "Account", &sync.settings_path);
             }
+        }
+        if let Some(Ok(grants)) = &report.item_grants
+            && grants.backup_path.is_some()
+            && report.cleaned_account.as_ref() != Some(&grants.account_path)
+            && !matches!(&report.profile_sync, Some(Ok(sync)) if sync.settings_path == grants.account_path)
+        {
+            path_row(ui, "Account", &grants.account_path);
         }
         if let Some(cache) = &report.invalidated_sunrise_cache {
             ui.label("Sunrise build-data cache refreshed.");

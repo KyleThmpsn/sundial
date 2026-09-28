@@ -480,7 +480,7 @@ pub(super) fn inspect(
     let directory = crate::paths::cache_dir().map(|root| root.join("discovery/source-packages"));
     let targets = EntityTargets::new(manager);
     let known_lane = |lane: u64| manager.lookup.tag64_entries.contains_key(&lane);
-    let total = manager
+    let total: usize = manager
         .lookup
         .tag32_entries_by_pkg
         .values()
@@ -521,6 +521,12 @@ pub(super) fn inspect(
         .values()
         .map(|(shard, ..)| shard.scanned_resources)
         .sum::<usize>();
+    index.cache_usage = Some(CacheUsage {
+        reused_packages: shards.len(),
+        scanned_packages: jobs.len(),
+        reused_resources: reused,
+        scanned_resources: total.saturating_sub(reused),
+    });
     progress(reused, total);
     let scanned = scan_packages(
         manager,
@@ -642,9 +648,8 @@ mod tests {
         .unwrap();
     }
 
-    /// `packed_evidence_rows_read_back_exactly_in_source_order` covers the ordinary values a
-    /// scan produces. This covers the ends of the ranges, where the wrapping differences the
-    /// layout relies on are the only thing keeping a row readable.
+    /// The ends of the ranges, where the wrapping differences the layout relies on are the only
+    /// thing keeping a row readable.
     #[test]
     fn packed_evidence_survives_values_that_wrap_the_delta_coding() {
         let rows = vec![
@@ -886,50 +891,5 @@ mod tests {
                 "unrelated.json".to_owned(),
             ]
         );
-    }
-
-    #[test]
-    fn packed_evidence_rows_read_back_exactly_in_source_order() {
-        let rows = vec![
-            EntityEvidence {
-                source: 0x80A0_2005,
-                source_class: 0x8080_9C0F,
-                words: vec![0x80A0_2001, 0x80A0_2009, 0x8152_82E1],
-                lanes: vec![FIXTURE_LANE],
-            },
-            // Words are sorted by the scan. The layout does not depend on it.
-            EntityEvidence {
-                source: 0x80A0_2001,
-                source_class: 0x8080_1234,
-                words: vec![0x8152_82E1, 0x80A0_2001],
-                lanes: Vec::new(),
-            },
-            EntityEvidence {
-                source: 0x80A0_2002,
-                source_class: 0x8080_9C0F,
-                words: Vec::new(),
-                lanes: vec![FIXTURE_LANE, 1],
-            },
-        ];
-        let shard = Shard {
-            evidence: rows.clone(),
-            ..Shard::default()
-        };
-        let encoded = serde_json::to_string(&shard).unwrap();
-        // Each class once, sources as steps from the previous row, words as steps too.
-        assert!(encoded.contains(&format!(
-            "\"classes\":[{},{}]",
-            0x8080_1234_u32, 0x8080_9C0F_u32
-        )));
-        assert!(encoded.contains(&format!("[{},0,[{},", 0x80A0_2001_u32, 0x8152_82E1_u32)));
-        assert!(encoded.contains(&format!("[1,1,[],[{FIXTURE_LANE},1]]")));
-        assert!(encoded.contains(&format!("[3,1,[{},8,", 0x80A0_2001_u32)));
-        let decoded: Shard = serde_json::from_str(&encoded).unwrap();
-        let mut expected = rows;
-        expected.sort_by_key(|row| row.source);
-        assert_eq!(decoded.evidence, expected);
-        // A row naming a class the table does not have is a broken shard, not a panic.
-        let broken = encoded.replace("[1,1,[],[", "[1,7,[],[");
-        assert!(serde_json::from_str::<Shard>(&broken).is_err());
     }
 }

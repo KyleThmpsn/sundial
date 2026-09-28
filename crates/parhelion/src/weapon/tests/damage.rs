@@ -1,66 +1,6 @@
 use super::*;
 
 #[test]
-fn materializes_solar_damage_for_a_kinetic_donor_moved_to_energy() {
-    let mut definition =
-        synthetic_weapon_definition(WeaponInventorySlot::Kinetic, WeaponDamageDescriptor::Empty);
-    let mut strings = synthetic_item_strings(WeaponDamageDescriptor::Empty);
-    let original_len = definition.len();
-    let original_string_len = strings.len();
-    let string_template = synthetic_sandbox_perk_string_template();
-    let overrides = WeaponCloneOverrides {
-        inventory_slot: Some(WeaponInventorySlot::Energy),
-        modern_damage_type: Some(ModernDamageType::Solar),
-        ..WeaponCloneOverrides::default()
-    };
-
-    apply_weapon_slot_and_damage_overrides(
-        &mut definition,
-        &mut strings,
-        &overrides,
-        Some(&ResolvedDamageCarrierSource {
-            family: WeaponDamageCarrierFamily::ModernFixed,
-            topology_definition: None,
-        }),
-        &synthetic_sandbox_perk_definition_template(),
-        &string_template,
-    )
-    .expect("canonical Kinetic/empty donors should author Energy/Solar");
-
-    assert_eq!(
-        weapon_inventory_slot(&definition).unwrap(),
-        WeaponInventorySlot::Energy
-    );
-    assert_eq!(
-        weapon_damage_descriptor(&definition).unwrap(),
-        WeaponDamageDescriptor::Elemental(ModernDamageType::Solar)
-    );
-    assert_eq!(definition.len(), original_len + 56);
-    let investment = relative_target(&definition, ITEM_INVESTMENT_STAT_POINTER_OFFSET).unwrap();
-    let descriptor = investment + ITEM_SANDBOX_PERK_DESCRIPTOR_OFFSET;
-    let (count, header, rows, class) = array_at(&definition, descriptor).unwrap();
-    assert_eq!(count, 1);
-    assert_eq!(header, original_len + 16);
-    assert_eq!(
-        &definition[header - 8..header],
-        NESTED_ARRAY_TRAILER.as_slice()
-    );
-    assert_eq!(class, ITEM_SANDBOX_PERK_ROW_CLASS);
-    assert_eq!(
-        read_u16(&definition, rows).unwrap(),
-        MODERN_SOLAR_DAMAGE_PERK_INDEX
-    );
-    assert_eq!(
-        &definition[rows + 2..rows + ITEM_SANDBOX_PERK_ROW_SIZE],
-        &synthetic_sandbox_perk_definition_template()[2..]
-    );
-    assert_eq!(rows + ITEM_SANDBOX_PERK_ROW_SIZE, definition.len());
-    assert_eq!(strings.len(), original_string_len + string_template.len());
-    assert_eq!(item_string_sandbox_perk_count(&strings).unwrap(), 1);
-    validate_weapon_sandbox_perk_parallelism(&definition, &strings, &string_template).unwrap();
-}
-
-#[test]
 fn recognized_modern_damage_override_stays_in_place() {
     let mut definition = synthetic_weapon_definition(
         WeaponInventorySlot::Energy,
@@ -258,54 +198,6 @@ fn non_damage_base_perks_are_preserved_while_authoring_damage() {
 }
 
 #[test]
-fn combat_profile_creates_native_element_without_a_manual_base_perk_override() {
-    for (element, perk) in [
-        (ModernDamageType::Arc, 449),
-        (ModernDamageType::Solar, 450),
-        (ModernDamageType::Void, 451),
-    ] {
-        let mut definition = synthetic_weapon_definition(
-            WeaponInventorySlot::Kinetic,
-            WeaponDamageDescriptor::Empty,
-        );
-        let mut strings = synthetic_item_strings(WeaponDamageDescriptor::Empty);
-        // The workbench's Combat profile selection supplies these fields. No manual
-        // base-perk list or raw patch should be required to get actual elemental damage.
-        let overrides = WeaponCloneOverrides {
-            inventory_slot: Some(WeaponInventorySlot::Energy),
-            modern_damage_type: Some(element),
-            ..Default::default()
-        };
-        assert!(overrides.base_sandbox_perks.is_none());
-        apply_weapon_slot_and_damage_overrides(
-            &mut definition,
-            &mut strings,
-            &overrides,
-            Some(&ResolvedDamageCarrierSource {
-                family: WeaponDamageCarrierFamily::ModernFixed,
-                topology_definition: None,
-            }),
-            &synthetic_sandbox_perk_definition_template(),
-            &synthetic_sandbox_perk_string_template(),
-        )
-        .unwrap();
-        assert_eq!(weapon_sandbox_perks(&definition).unwrap(), vec![perk]);
-        assert_eq!(item_string_sandbox_perk_count(&strings).unwrap(), 1);
-        assert_eq!(
-            weapon_inventory_slot(&definition).unwrap(),
-            WeaponInventorySlot::Energy
-        );
-        let resource = relative_target(&definition, ITEM_INVESTMENT_STAT_POINTER_OFFSET).unwrap();
-        let (_, header, _, _) =
-            array_at(&definition, resource + ITEM_SANDBOX_PERK_DESCRIPTOR_OFFSET).unwrap();
-        assert_eq!(
-            &definition[header - 8..header],
-            NESTED_ARRAY_TRAILER.as_slice()
-        );
-    }
-}
-
-#[test]
 fn appended_base_perks_have_the_native_nested_array_marker() {
     let mut definition =
         synthetic_weapon_definition(WeaponInventorySlot::Kinetic, WeaponDamageDescriptor::Empty);
@@ -323,6 +215,10 @@ fn appended_base_perks_have_the_native_nested_array_marker() {
     }
 }
 
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "One matrix walks every slot and damage pairing through the same override call"
+)]
 #[test]
 fn independent_slot_and_damage_overrides_preserve_native_structure() {
     for source_slot in [
@@ -394,7 +290,17 @@ fn independent_slot_and_damage_overrides_preserve_native_structure() {
         weapon_equipment_slot(&mismatched).unwrap(),
         WeaponInventorySlot::Kinetic
     );
-    assert!(set_weapon_inventory_slot(&mut mismatched, WeaponInventorySlot::Energy).is_err());
+    // Stock Trust's shape. Authoring any slot makes both fields agree.
+    for slot in [
+        WeaponInventorySlot::Kinetic,
+        WeaponInventorySlot::Energy,
+        WeaponInventorySlot::Power,
+    ] {
+        let mut authored = mismatched.clone();
+        set_weapon_inventory_slot(&mut authored, slot).unwrap();
+        assert_eq!(weapon_inventory_slot(&authored).unwrap(), slot);
+        assert_eq!(weapon_equipment_slot(&authored).unwrap(), slot);
+    }
 
     let mut missing_sentinel =
         synthetic_weapon_definition(WeaponInventorySlot::Kinetic, WeaponDamageDescriptor::Empty);

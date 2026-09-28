@@ -11,18 +11,28 @@ pub(super) fn show(
     let mut open = true;
     let mut action = None;
     let screen = ctx.screen_rect();
+    // Escape leaves as Cancel does, once no dropdown is open to take it first.
+    if ctx.input(|input| input.key_pressed(egui::Key::Escape))
+        && !ctx.memory(egui::Memory::any_popup_open)
+    {
+        return Some(Action::Cancel);
+    }
     egui::Window::new("Select Custom Perk")
         .id(egui::Id::new("custom-perk-picker"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(screen.center())
         .default_width(560.0_f32.min((screen.width() - 40.0).max(280.0)))
         .show(ctx, |ui| {
             crate::app::style::perk_workbench_style(ui);
             ui.label(picker.target.label(donor, catalog));
-            ui.label("Choose a perk to use in this choice. Custom perks do not need to be installed first.");
             ui.horizontal_wrapped(|ui| {
-                if ui.add_enabled(stale.is_none(), egui::Button::new("Create Custom Perk…")).clicked() {
+                if ui
+                    .add_enabled(stale.is_none(), egui::Button::new("Create Custom Perk…"))
+                    .clicked()
+                {
                     action = Some(Action::Create);
                 }
                 if ui.button("Cancel").clicked() {
@@ -34,10 +44,18 @@ pub(super) fn show(
             }
             draw_warnings(ui, &picker.warnings);
             ui.separator();
-            let response = ui.add(egui::TextEdit::singleline(&mut picker.query)
-                .hint_text("Search Custom Perks").desired_width(f32::INFINITY));
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut picker.query)
+                    .hint_text("Search Custom Perks")
+                    .desired_width(f32::INFINITY),
+            );
+            // The search takes the keyboard when the window opens.
+            if ui.memory(|memory| memory.focused().is_none()) {
+                response.request_focus();
+            }
             crate::app::style::named_control(response, "Search Custom Perks");
-            if let Some(index) = draw_choices(ui, picker, catalog, stale.is_none(), screen.height()) {
+            if let Some(index) = draw_choices(ui, picker, catalog, stale.is_none(), screen.height())
+            {
                 action = Some(Action::Use(index));
             }
         });
@@ -68,6 +86,11 @@ fn draw_choices(
     screen_height: f32,
 ) -> Option<usize> {
     let query = picker.query.trim().to_lowercase();
+    // A source every row shares says nothing, so rows then show only their description.
+    let shared_source = picker
+        .choices
+        .windows(2)
+        .all(|pair| pair[0].source == pair[1].source);
     let mut selected = None;
     let mut visible = false;
     egui::ScrollArea::vertical()
@@ -82,10 +105,11 @@ fn draw_choices(
                 .filter(|(_, choice)| choice.matches(&query))
             {
                 visible = true;
-                let detail = if choice.recipe.description.trim().is_empty() {
-                    choice.source.clone()
-                } else {
-                    format!("{} · {}", choice.source, choice.recipe.description)
+                let description = choice.recipe.description.trim();
+                let detail = match (shared_source, description.is_empty()) {
+                    (true, _) => description.to_owned(),
+                    (false, true) => choice.source.clone(),
+                    (false, false) => format!("{} · {description}", choice.source),
                 };
                 let response = ui
                     .add_enabled_ui(enabled && choice.issue.is_none(), |ui| {
@@ -98,7 +122,7 @@ fn draw_choices(
                             ui,
                             choice.recipe.template_plug.parse_u32().ok(),
                             &choice.recipe.name,
-                            Some(&detail),
+                            (!detail.is_empty()).then_some(detail.as_str()),
                             false,
                             icon,
                         )
@@ -110,11 +134,14 @@ fn draw_choices(
                 if let Some(issue) = &choice.issue {
                     response.on_disabled_hover_text(issue);
                     ui.small(issue);
+                } else if let Some(warning) = &choice.warning {
+                    let color = crate::app::style::secondary(ui.visuals());
+                    ui.small(egui::RichText::new(warning).color(color));
                 }
             }
             if !visible {
                 ui.label(if picker.choices.is_empty() {
-                    "No custom perks yet. Create one to use it in this choice."
+                    "No custom perks yet."
                 } else {
                     "No matching custom perks."
                 });

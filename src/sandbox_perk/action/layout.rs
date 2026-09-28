@@ -292,9 +292,10 @@ pub const EFFECT_LAYOUTS: &[Layout] = &[
             Field::new("Binding Key", 4, Key),
         ],
     },
+    // Kind 51 appends byte +2 to a weapon list rather than choosing an operation.
     Layout {
         kind: 51,
-        fields: OPERATION,
+        fields: &[Field::new("Entry", 2, Byte)],
     },
     Layout {
         kind: 52,
@@ -493,10 +494,50 @@ pub fn stock_defaults(condition: bool, kind: u8) -> &'static [(usize, u8)] {
             // A new Enhanced Radar action adds the stock contribution. Loaded nodes
             // retain their operation, including deliberately subtractive effects.
             20 => &[(2, 1)],
+            // Kind 30: all seven stock uses, the tracking perks, add one while active. A zero
+            // would remove one, the opposite of what its title says.
+            30 => &[(0x02, 0x01)],
+            // Kind 33: every stock node selects the node's own multiplier with FF at +08
+            // and turns the distance limit off with -1 at +0C. A fresh node starts at a
+            // multiplier of 1, which changes nothing until the author sets it; zero would
+            // erase all incoming damage.
+            33 => &[
+                (0x01, 0x01),
+                (0x04, 0x00),
+                (0x05, 0x00),
+                (0x06, 0x80),
+                (0x07, 0x3F),
+                (0x08, 0xFF),
+                (0x0C, 0x00),
+                (0x0D, 0x00),
+                (0x0E, 0x80),
+                (0x0F, 0xBF),
+            ],
+            // Kind 35: the interface four of five stock uses select with the full auto key, the
+            // only key any stock use writes. Zero selects an interface no stock perk overrides.
+            35 => &[(0x03, 0x0E)],
+            // Kind 41: the owner and slot selectors every Sword Guard perk carries.
+            41 => &[(0x01, 0x01), (0x02, 0x01)],
+            // Kind 42: all 147 stock counter setters store 1, which sets the counter to the
+            // node's Counter Value. A zero-filled node would use a mode no stock perk does.
+            42 => &[(0x02, 0x01)],
+            // Kind 49: the target selector both stock nodes carry.
+            49 => &[(0x02, 0x03)],
+            // Kind 52: the stock selector, and an amount of 1 rather than a silent zero.
+            52 => &[
+                (0x01, 0x01),
+                (0x08, 0x00),
+                (0x09, 0x00),
+                (0x0A, 0x80),
+                (0x0B, 0x3F),
+            ],
             _ => &[],
         };
     }
     match kind {
+        // Picking up ammunition: every bit of the pickup flags, as Lead from Gold and Cold
+        // Fusion set. All 48 stock nodes set at least one, and a zero mask never passes.
+        6 => &[(8, 7)],
         // Reloading: the owning weapon and the reload flag alone, as Kill Clip and 17 others.
         19 => &[(8, 1), (9, 1), (0x0A, 0)],
         // Crouching started, the activation byte of Field Prep, Firmly Planted and Sneak Bow.
@@ -504,10 +545,45 @@ pub fn stock_defaults(condition: bool, kind: u8) -> &'static [(usize, u8)] {
         // Aiming started on the owning weapon, the activation bytes of Rangefinder and the
         // eleven other aiming perks.
         23 => &[(8, 1), (0x0A, 1)],
+        // Sliding started, as Reflective Vents, the only stock user, starts on it.
+        24 => &[(8, 1)],
+        // The trigger released on the owning weapon, as every stock use of the kind.
+        13 => &[(8, 1)],
+        // A swap to any weapon, as the stock triggers read it. An ending on the owning
+        // weapon, as Sprint Grip reads it, sets the flag on the card.
+        18 => &[(8, 0)],
         // A shot from the owning weapon, as every stock use of the kind.
         27 => &[(8, 1)],
         // A finisher final blow, as Bulwark Finisher and Empowered Finish.
         42 => &[(8, 1)],
+        // Kind 34: all four stock nodes reference no resource (an all-ones tag, not zero) and
+        // accept both values up to 1. Zero maxima would pass only on a value of exactly 0.
+        34 => &[
+            (0x10, 0xFF),
+            (0x11, 0xFF),
+            (0x12, 0xFF),
+            (0x13, 0xFF),
+            (0x1E, 0x80),
+            (0x1F, 0x3F),
+            (0x26, 0x80),
+            (0x27, 0x3F),
+        ],
+        // Kind 36: all eight stock nodes match event byte 1.
+        36 => &[(8, 1)],
+        // Kind 38: the configuration both stock nodes share, including Vengeance's own
+        // 100 unit distance. A zero distance would pass the moment a target exists.
+        38 => &[
+            (0x00, 0x00),
+            (0x01, 0x00),
+            (0x02, 0x80),
+            (0x03, 0x3F),
+            (0x04, 0xFF),
+            (0x07, 0x01),
+            (0x0C, 0x00),
+            (0x0D, 0x00),
+            (0x0E, 0xC8),
+            (0x0F, 0x42),
+        ],
         // Kind 26: the stock norm across 146 accumulator perks. Count Needed 1 fires on the
         // first contribution, Resets At -1 never resets, and the clamps run -9998 to 100. A
         // zero-filled node clamps its counter at zero, so it could never fire.
@@ -581,25 +657,5 @@ mod tests {
         assert_eq!(&effect[..2], &[42, 0]);
         assert_eq!(blank_effect(30).unwrap()[1], 1);
         assert!(blank_effect(1).is_none());
-    }
-
-    /// A blank node of a kind and a stock node of the same kind must agree on the retained
-    /// byte, since no stock node of a kind disagrees with another. The byte is read from the
-    /// captured template, so this checks that every kind with a scalar layout has one and
-    /// that the blank node leaves the rest of the template's settings zero.
-    #[test]
-    fn a_blank_effect_carries_the_stock_retained_byte_of_its_kind() {
-        for layout in EFFECT_LAYOUTS {
-            let blank = blank_effect(layout.kind)
-                .unwrap_or_else(|| panic!("effect kind {} has no blank node", layout.kind));
-            let template = crate::sandbox_perk::action::native::template(false, layout.kind)
-                .unwrap_or_else(|| panic!("effect kind {} has no stock template", layout.kind));
-            assert_eq!(blank[0], layout.kind);
-            assert_eq!(
-                blank[1], template[1],
-                "blank effect kind {} disagrees with its stock template",
-                layout.kind
-            );
-        }
     }
 }

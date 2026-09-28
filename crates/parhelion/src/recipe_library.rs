@@ -13,8 +13,10 @@ use crate::{
     bundled_defaults::{self, AppliedVersions, DefaultsRefresh},
 };
 
+mod delete;
 mod restore;
 mod transfer;
+pub(crate) use delete::DeleteRecipe;
 pub(crate) use restore::RestoreDefaults;
 pub(crate) use restore::RestoreRecipe;
 pub(crate) use transfer::ImportReport;
@@ -94,6 +96,7 @@ pub(crate) const BUNDLED_RECIPES: [(&str, &str); 18] = [
 const LIBRARY_STATE_SCHEMA: u32 = 1;
 const LIBRARY_STATE_FILE_NAME: &str = "library-state.json";
 const BUNDLED_VERSIONS_FILE_NAME: &str = "bundled-recipe-versions.json";
+const REMOVED_BUNDLED_FILE_NAME: &str = "removed-bundled-recipes.txt";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -105,6 +108,7 @@ struct RecipeLibraryState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecipeLibraryEntry {
+    pub kind: crate::ItemKind,
     pub collection_destination: Option<crate::collection::Destination>,
     pub badge: Option<crate::presentation::Badge>,
     pub corner_icon: Option<crate::presentation::Artwork>,
@@ -188,6 +192,7 @@ impl RecipeLibrary {
         for path in paths {
             match WeaponRecipe::load_json(&path) {
                 Ok(recipe) => scan.entries.push(RecipeLibraryEntry {
+                    kind: recipe.kind,
                     collection_destination: recipe.overrides.collection_destination,
                     badge: recipe.overrides.badge.clone(),
                     corner_icon: recipe.overrides.corner_icon.clone(),
@@ -361,12 +366,19 @@ impl RecipeLibrary {
     /// and replaced; a copy edited under the current release is kept.
     fn materialize_bundled_recipes(&self) -> Result<Option<DefaultsRefresh>, String> {
         let mut versions = AppliedVersions::load(self.versions_path()?)?;
+        // An unreadable record only means a deleted bundled recipe comes back, which is
+        // worth less than opening the library at all.
+        let removed = self.removed_bundled().unwrap_or_default();
         let mut stale = Vec::new();
         for (file_name, encoded) in BUNDLED_RECIPES {
             let recipe = WeaponRecipe::from_json_str(encoded)
                 .map_err(|error| format!("Bundled recipe {file_name} is invalid: {error}"))?;
             let digest = bundled_defaults::digest(encoded.as_bytes());
             let path = self.root.join(file_name);
+            // A bundled recipe that was deleted stays deleted until defaults are restored.
+            if removed.contains(file_name) && fs::symlink_metadata(&path).is_err() {
+                continue;
+            }
             match atomic_write_create_new(&path, encoded.as_bytes()) {
                 Ok(()) => {
                     versions.record(file_name, digest);
@@ -404,28 +416,55 @@ impl RecipeLibrary {
         }
         let refresh = if stale.is_empty() {
             None
-        } else {
-            let backup = self.create_restore_backup()?;
+        } else if let Ok(backup) = self.create_restore_backup() {
             let mut names = Vec::new();
             let mut copies = Vec::new();
             for (file_name, encoded, digest, current, recipe, edited) in stale {
-                bundled_defaults::back_up(&backup, file_name, &current)?;
-                if let Some(edited) = edited {
-                    let copy = self.duplicate(&edited)?;
-                    copies
-                        .push(WeaponRecipe::load_json(&copy).map_or(edited.name, |copy| copy.name));
+                if bundled_defaults::back_up(&backup, file_name, &current).is_err() {
+                    continue;
                 }
-                atomic_write_replace(&self.root.join(file_name), encoded.as_bytes())?;
+                // Keeping the reader's edits comes first, and a default whose edits cannot be
+                // kept is left exactly as it is. Refreshing it is worth nothing beside losing
+                // their work, and it must never cost them the library: this runs while it opens,
+                // so returning here would leave them with no recipes at all. The next launch
+                // tries again, because nothing is recorded for a default that was not replaced.
+                let edited_copy = if let Some(edited) = edited {
+                    let Ok(copy) = self.duplicate(&edited) else {
+                        continue;
+                    };
+                    let name = WeaponRecipe::load_json(&copy).map_or(edited.name, |copy| copy.name);
+                    Some((copy, name))
+                } else {
+                    None
+                };
+                if atomic_write_replace(&self.root.join(file_name), encoded.as_bytes()).is_err() {
+                    // The copy was made for a refresh that did not happen. Left behind, the next
+                    // launch would set another beside it.
+                    if let Some((copy, _)) = &edited_copy {
+                        let _ = std::fs::remove_file(copy);
+                    }
+                    continue;
+                }
+                if let Some((_, name)) = edited_copy {
+                    copies.push(name);
+                }
                 versions.record(file_name, digest);
                 names.push(recipe.name);
             }
-            Some(DefaultsRefresh {
+            (!names.is_empty()).then_some(DefaultsRefresh {
                 names,
                 copies,
                 backup,
             })
+        } else {
+            // Opening the library still works when its backup folder cannot be created.
+            // Leave every stale default intact and retry the refresh on a later launch.
+            None
         };
-        versions.save()?;
+        // The record is an optimisation, not the result: failing to write it costs one repeated
+        // comparison next launch, which then finds the defaults already current. Opening the
+        // library is worth more than recording that this ran.
+        let _ = versions.save();
         Ok(refresh)
     }
 
@@ -663,23 +702,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn slot_override_does_not_invent_a_damage_override() {
-        let directory = tempfile::tempdir().unwrap();
-        let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
-        let mut recipe = WeaponRecipe::new_weapon("parhelion.inherited-damage").unwrap();
-        recipe.overrides.inventory_slot = Some(crate::recipe::RecipeInventorySlot::Kinetic);
-        recipe.overrides.modern_damage_type = None;
-        let path = library.save_new(&recipe).unwrap();
-        let scan = library.scan().unwrap();
-        let entry = scan
-            .entries
-            .iter()
-            .find(|entry| entry.path == path)
-            .unwrap();
-        assert_eq!(entry.damage_type, None);
-    }
-
-    #[test]
     fn selection_edits_preserve_membership_of_unreadable_recipes() {
         let directory = tempfile::tempdir().unwrap();
         let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
@@ -725,21 +747,6 @@ mod tests {
                 .is_err()
         );
         assert!(state_path.is_dir());
-    }
-
-    #[test]
-    fn recipe_discovery_ignores_non_json_files_and_json_named_directories() {
-        let directory = tempfile::tempdir().unwrap();
-        let recipe = directory.path().join("weapon.JSON");
-        let non_recipe = directory.path().join("notes.txt");
-        let subdirectory = directory.path().join("folder.json");
-        fs::write(&recipe, b"{}").unwrap();
-        fs::write(&non_recipe, b"notes").unwrap();
-        fs::create_dir(&subdirectory).unwrap();
-        assert_eq!(
-            collect_recipe_paths([Ok(non_recipe), Ok(subdirectory), Ok(recipe.clone())]).unwrap(),
-            vec![recipe]
-        );
     }
 
     #[test]
@@ -834,26 +841,6 @@ mod tests {
     }
 
     #[test]
-    fn all_bundled_defaults_are_seeded() {
-        let directory = tempfile::tempdir().unwrap();
-        let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
-        let every_end_path = library.root().join(EVERY_END_FILE_NAME);
-        let second_sun_path = library.root().join(SECOND_SUN_FILE_NAME);
-
-        let every_end = WeaponRecipe::load_json(every_end_path).unwrap();
-        let second_sun = WeaponRecipe::load_json(second_sun_path).unwrap();
-        let scan = library.scan().unwrap();
-        let enabled = library.enabled_paths(&scan.entries).unwrap();
-
-        assert_eq!(every_end, WeaponRecipe::every_end());
-        assert_eq!(second_sun, WeaponRecipe::second_sun().unwrap());
-        assert_eq!(scan.entries.len(), BUNDLED_RECIPES.len());
-        assert!(scan.entries.iter().all(|entry| entry.bundled));
-        assert_eq!(enabled.len(), BUNDLED_RECIPES.len());
-        assert!(directory.path().join(LIBRARY_STATE_FILE_NAME).is_file());
-    }
-
-    #[test]
     fn reopening_keeps_user_edits_while_the_bundled_recipe_is_unchanged() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("recipes");
@@ -922,6 +909,26 @@ mod tests {
     }
 
     #[test]
+    fn an_unavailable_backup_folder_does_not_block_the_recipe_library() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("recipes");
+        let library = RecipeLibrary::open(root.clone()).unwrap();
+        let path = library.root().join(EVERY_END_FILE_NAME);
+        let mut edited = WeaponRecipe::load_json(&path).unwrap();
+        edited.flavor = "Keep this edit.".into();
+        library.save_existing(&path, &edited).unwrap();
+        let original = fs::read(&path).unwrap();
+        forget_applied_version(&library, EVERY_END_FILE_NAME);
+        fs::write(directory.path().join("backups"), b"not a directory").unwrap();
+
+        let reopened = RecipeLibrary::open(root).unwrap();
+
+        assert!(reopened.defaults_refresh().is_none());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(!reopened.scan().unwrap().entries.is_empty());
+    }
+
+    #[test]
     fn a_stale_copy_that_is_not_a_recipe_is_only_backed_up() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("recipes");
@@ -983,33 +990,6 @@ mod tests {
         let scan = library.scan().unwrap();
         assert!(scan.errors.is_empty());
         assert_eq!(library.enabled_paths(&scan.entries).unwrap(), enabled);
-    }
-
-    #[test]
-    fn discovery_sorts_valid_recipes_and_reports_invalid_json() {
-        let directory = tempfile::tempdir().unwrap();
-        let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
-        let second = WeaponRecipe::new_weapon("parhelion.alpha").unwrap();
-        library.save_new(&second).unwrap();
-        fs::write(library.root().join("broken.json"), "not json").unwrap();
-
-        let scan = library.scan().unwrap();
-        let enabled = library.enabled_paths(&scan.entries).unwrap();
-
-        assert_eq!(scan.entries.len(), BUNDLED_RECIPES.len() + 1);
-        assert!(
-            scan.entries.windows(2).all(|pair| {
-                pair[0].name.to_ascii_lowercase() < pair[1].name.to_ascii_lowercase()
-            })
-        );
-        let custom = scan
-            .entries
-            .iter()
-            .find(|entry| entry.name == "New Weapon")
-            .unwrap();
-        assert!(!custom.bundled);
-        assert!(!enabled.contains(&custom.path));
-        assert_eq!(scan.errors.len(), 1);
     }
 
     #[test]

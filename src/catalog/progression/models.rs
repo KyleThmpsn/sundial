@@ -12,6 +12,20 @@ pub(crate) struct RecordDefinition {
     pub interval_count: usize,
     #[serde(default)]
     pub runtime: Option<RecordRuntime>,
+    /// Direct parent presentation-node hashes in package order.
+    #[serde(default)]
+    pub parent_nodes: Vec<u64>,
+}
+
+/// A presentation node kept from the scan, with its parents resolved to hashes.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PresentationNode {
+    pub hash: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// Direct parent node hashes in package order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parents: Vec<u64>,
 }
 
 /// The record's own replicated progress, distinct from an objective's source expression.

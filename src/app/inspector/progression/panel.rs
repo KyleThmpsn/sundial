@@ -1,16 +1,16 @@
 //! Progression metadata inspector workspace and navigation controller.
 
 use eframe::egui;
-use serde_json::Value;
 
 use crate::{
     app::{
         glyphs::Glyph,
         inspector::{
-            heading as inspector_heading, metadata_field, metadata_section, request_definition,
-            uses_side_workspace, workspace as inspector_workspace,
+            draw_catalog_hash_link, heading as inspector_heading, metadata_field,
+            metadata_label_text, metadata_section, request_definition, uses_side_workspace,
+            workspace as inspector_workspace,
         },
-        progression::{CollectionStateSnapshot, collection_state_snapshot},
+        progression::CollectionStateSnapshot,
         ui::{glyph_button, toolbar},
     },
     catalog::{Catalog, ObjectiveDef, UnlockDefinition},
@@ -20,17 +20,17 @@ use crate::{
 use super::{
     conditions::{ConditionEvaluation, condition_token_resolution, evaluate_condition_program},
     definition_details::draw_unlock_definition_metadata,
-    definitions::definition_name,
+    definitions::{computed_at_runtime, definition_name, storage_text},
     objective_details::draw_objective_metadata,
     objectives::{objective_owner_display_label, preferred_objective_owner},
-    overrides::draw_override_metadata,
+    overrides::{SavedOverride, draw_override_metadata},
     state::{MetadataSelection, ProgressionInspectorState},
 };
 
 pub(in crate::app) fn draw_progression_metadata_workspace(
     ui: &mut egui::Ui,
     catalog: &Catalog,
-    document: &Value,
+    snapshot: Option<&CollectionStateSnapshot>,
     state: &mut ProgressionInspectorState,
     hash_inspector_open: bool,
 ) -> bool {
@@ -42,13 +42,12 @@ pub(in crate::app) fn draw_progression_metadata_workspace(
         return false;
     }
 
-    let snapshot = collection_state_snapshot(document);
     let compact_width = !uses_side_workspace(ui.available_width());
     if state.full_width || compact_width {
         egui::Frame::group(ui.style())
             .inner_margin(egui::Margin::symmetric(12, 8))
             .show(ui, |ui| {
-                draw_metadata_panel(ui, catalog, snapshot.as_ref(), state, !compact_width)
+                draw_metadata_panel(ui, catalog, snapshot, state, !compact_width)
             });
         state.is_open()
     } else {
@@ -56,7 +55,7 @@ pub(in crate::app) fn draw_progression_metadata_workspace(
             ui,
             "progression_inspection_workspace",
             "progression_inspection_workspace_compact",
-            |ui, _placement| draw_metadata_panel(ui, catalog, snapshot.as_ref(), state, true),
+            |ui, _placement| draw_metadata_panel(ui, catalog, snapshot, state, true),
         );
         false
     }
@@ -165,7 +164,7 @@ fn draw_metadata_panel(
     ui.separator();
 
     egui::ScrollArea::vertical()
-        .id_salt("progression_metadata_scroll")
+        .id_salt(("progression_metadata_scroll", selection))
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
@@ -182,23 +181,25 @@ fn draw_metadata_panel(
 
             ui.add_space(10.0);
             egui::CollapsingHeader::new("Definition Details")
-                .id_salt(("progression_definition_details", selection))
+                .id_salt("progression_definition_details")
                 .default_open(false)
                 .show(ui, |ui| {
                     let Some(definition) = definition else {
-                        ui.colored_label(
-                            ui.visuals().warn_fg_color,
-                            "This definition is not present in the scanned package table.",
-                        );
+                        ui.colored_label(ui.visuals().warn_fg_color, "Not in package table.");
                         return;
                     };
-                    if matches!(
-                        selection,
-                        MetadataSelection::FlagOverride(_, _)
-                            | MetadataSelection::ValueOverride(_, _)
-                    ) {
+                    if let Some(snapshot) = snapshot
+                        && let Some(saved) = SavedOverride::current(selection, snapshot)
+                    {
                         metadata_section(ui, "Saved Override", |ui| {
-                            draw_override_metadata(ui, selection, definition);
+                            draw_override_metadata(
+                                ui,
+                                selection.definition_index(),
+                                saved,
+                                definition,
+                                catalog,
+                                snapshot,
+                            );
                         });
                         ui.add_space(10.0);
                     }
@@ -239,12 +240,12 @@ fn selection_metadata(
     catalog: &Catalog,
 ) -> (String, Option<&UnlockDefinition>, Vec<&ObjectiveDef>) {
     match selection {
-        MetadataSelection::FlagDefinition(index) | MetadataSelection::FlagOverride(index, _) => (
+        MetadataSelection::FlagDefinition(index) | MetadataSelection::FlagOverride(index) => (
             format!("Unlock Flag Definition #{index}"),
             catalog.unlock_flag_definition(index),
             Vec::new(),
         ),
-        MetadataSelection::ValueDefinition(index) | MetadataSelection::ValueOverride(index, _) => (
+        MetadataSelection::ValueDefinition(index) | MetadataSelection::ValueOverride(index) => (
             format!("Unlock Value Definition #{index}"),
             catalog.unlock_value_definition(index),
             catalog.objectives_for_unlock_value(index),
@@ -276,29 +277,23 @@ fn draw_effective_state_summary(
         )
         .map(|program| evaluate_condition_program(program, catalog, snapshot))
         .collect::<Vec<_>>();
-    let resolved = evaluations
-        .iter()
-        .filter(|evaluation| evaluation.is_resolved())
-        .count();
     let evaluation_coverage = if definition.is_none() {
-        "Definition unavailable".to_owned()
+        Some("Definition unavailable")
     } else if snapshot.is_none() {
-        "Save state is not loaded".to_owned()
+        Some("Save state unavailable")
     } else if evaluations.is_empty() {
-        "No conditions to evaluate".to_owned()
-    } else if resolved == evaluations.len() {
-        format!("All {} conditions evaluated", evaluations.len())
+        Some("No conditions to evaluate")
     } else {
-        format!("{resolved}/{} conditions evaluated", evaluations.len())
+        None
     };
     let outcome = if selection.is_value() {
         objective_completion_summary(selection, definition, objectives, snapshot)
-    } else if current_state == "Set" || current_state == "Override 2" {
-        "Stored unlock flag is set".into()
-    } else if current_state == "Unset" || current_state == "Override 0" {
-        "Stored unlock flag is unset".into()
     } else {
-        "Stored unlock state cannot be stated conclusively".into()
+        match snapshot.and_then(|snapshot| snapshot.evaluated_flag(index, catalog)) {
+            Some(true) => "Unlock flag set".into(),
+            Some(false) => "Unlock flag unset".into(),
+            None => "Unlock flag state unknown".into(),
+        }
     };
 
     ui.label(egui::RichText::new(&outcome).strong().size(17.0));
@@ -313,10 +308,12 @@ fn draw_effective_state_summary(
         );
     });
     ui.add_space(4.0);
-    ui.weak(evaluation_coverage);
+    if let Some(coverage) = evaluation_coverage {
+        ui.weak(coverage);
+    }
     ui.weak(format!(
         "Source: {}",
-        selection_provenance(selection, definition)
+        selection_provenance(selection, definition, snapshot)
     ));
 
     ui.add_space(8.0);
@@ -326,19 +323,18 @@ fn draw_effective_state_summary(
         .show(ui, |ui| {
             metadata_field(ui, "Definition Index", index.to_string(), true);
             if let Some(definition) = definition {
-                metadata_field(
+                ui.label(metadata_label_text(ui, "Definition Hash"));
+                draw_catalog_hash_link(
                     ui,
-                    "Definition Hash",
+                    catalog,
+                    definition.hash,
                     format_hash_hex(definition.hash),
-                    true,
                 );
+                ui.end_row();
                 metadata_field(
                     ui,
                     "Storage",
-                    definition.compact_slot.map_or_else(
-                        || "Unbanked override index".into(),
-                        |slot| format!("Bank {} · slot {slot}", definition.bank()),
-                    ),
+                    storage_text(definition, selection.is_value()),
                     true,
                 );
             }
@@ -369,10 +365,10 @@ fn objective_completion_summary(
     let current =
         snapshot.and_then(|snapshot| snapshot.value(selection.definition_index(), definition));
     let Some(current) = current else {
-        return "Objective value is not available in the current save".into();
+        return "Value not in save".into();
     };
     if objectives.is_empty() {
-        return format!("Current value is {current}. No completion target is linked");
+        return "No linked objective".into();
     }
     let complete = objectives
         .iter()
@@ -384,14 +380,14 @@ fn objective_completion_summary(
             }
         })
         .count();
-    let targets = objectives
-        .iter()
-        .map(|objective| objective.completion_value.to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
     format!(
-        "Current value {current}. {complete}/{} linked objectives complete (targets: {targets})",
-        objectives.len()
+        "{complete}/{} {} complete",
+        objectives.len(),
+        if objectives.len() == 1 {
+            "objective"
+        } else {
+            "objectives"
+        }
     )
 }
 
@@ -411,7 +407,16 @@ fn condition_evaluation_summary(evaluations: &[ConditionEvaluation]) -> String {
         .iter()
         .filter(|result| matches!(result, ConditionEvaluation::Unresolved(_)))
         .count();
-    format!("{passed} pass · {failed} fail · {unresolved} unresolved")
+    let numeric = evaluations
+        .iter()
+        .filter(|result| matches!(result, ConditionEvaluation::Value(_)))
+        .count();
+    let summary = format!("{passed} pass · {failed} fail · {unresolved} unresolved");
+    if numeric == 0 {
+        summary
+    } else {
+        format!("{summary} · {numeric} numeric")
+    }
 }
 
 fn selection_state_text(
@@ -432,24 +437,45 @@ fn selection_state_text(
 fn selection_provenance(
     selection: MetadataSelection,
     definition: Option<&UnlockDefinition>,
+    snapshot: Option<&CollectionStateSnapshot>,
 ) -> String {
-    match selection {
-        MetadataSelection::FlagOverride(_, value) => {
-            format!("saved flag override · value {value}")
+    let saved = match selection {
+        MetadataSelection::FlagOverride(index) => snapshot.map(|snapshot| {
+            snapshot
+                .flag_overrides
+                .get(&index)
+                .map(|value| format!("Saved flag override · value {value}"))
+        }),
+        MetadataSelection::ValueOverride(index) => snapshot.map(|snapshot| {
+            snapshot
+                .value_overrides
+                .get(&index)
+                .map(|value| format!("Saved value override · value {value}"))
+        }),
+        MetadataSelection::FlagDefinition(_) | MetadataSelection::ValueDefinition(_) => {
+            return definition_provenance(selection, definition);
         }
-        MetadataSelection::ValueOverride(_, value) => {
-            format!("saved value override · value {value}")
-        }
-        MetadataSelection::FlagDefinition(_) | MetadataSelection::ValueDefinition(_) => definition
-            .map_or_else(
-                || "package definition. Storage location unresolved".into(),
-                |definition| {
-                    definition.compact_slot.map_or_else(
-                        || "package definition · unbanked Family 5 slot".into(),
-                        |slot| format!("save state · bank {}, slot {slot}", definition.bank()),
-                    )
-                },
-            ),
+    };
+    match saved {
+        None => "Save state unavailable".into(),
+        Some(None) => "No saved override".into(),
+        Some(Some(text)) => text,
+    }
+}
+
+fn definition_provenance(
+    selection: MetadataSelection,
+    definition: Option<&UnlockDefinition>,
+) -> String {
+    let Some(definition) = definition else {
+        return "Package definition".into();
+    };
+    let is_value = selection.is_value();
+    let storage = storage_text(definition, is_value);
+    if definition.compact_slot.is_some() && !computed_at_runtime(definition, is_value) {
+        format!("Save state · {storage}")
+    } else {
+        format!("Package definition · {storage}")
     }
 }
 
@@ -475,7 +501,7 @@ fn progression_inspector_report(
         ));
         lines.push(format!(
             "Provenance: {}",
-            selection_provenance(selection, Some(definition))
+            selection_provenance(selection, Some(definition), snapshot)
         ));
         let evaluations = definition
             .tested_by

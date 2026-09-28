@@ -19,35 +19,60 @@ impl Order {
     }
 }
 
+/// Width of the sort combo beside the library search.
+const ORDER_WIDTH: f32 = 104.0;
+/// The narrowest the library search box may get before the sort moves to its own line.
+const SEARCH_WIDTH: f32 = 160.0;
+
 impl Workbench {
     pub(super) fn draw_library_search(&mut self, ui: &mut egui::Ui) {
+        let before = self.library_order;
+        let row_height = ui.spacing().interact_size.y;
+        let shared =
+            ui.available_width() >= ORDER_WIDTH + SEARCH_WIDTH + ui.spacing().item_spacing.x;
+        let mut changed = false;
         ui.allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+            egui::vec2(ui.available_width(), row_height),
             egui::Layout::right_to_left(egui::Align::Center),
             |ui| {
                 crate::app::style::compact_controls(ui);
-                let before = self.library_order;
-                egui::ComboBox::from_id_salt("perk-library-order")
-                    .width(104.0)
-                    .selected_text(self.library_order.label())
-                    .show_ui(ui, |ui| {
-                        for order in [Order::Recent, Order::NameAscending, Order::NameDescending] {
-                            ui.selectable_value(&mut self.library_order, order, order.label());
-                        }
-                    });
-                pickers::name_combo(ui, "perk-library-order", "Sort Custom Perks");
+                if shared {
+                    self.draw_library_order(ui);
+                }
                 let response = ui.add(
                     egui::TextEdit::singleline(&mut self.query)
                         .hint_text("Search Perks")
                         .desired_width(ui.available_width()),
                 );
-                let changed = response.changed() || before != self.library_order;
+                changed = response.changed();
                 crate::app::style::named_control(response, "Search Custom Perks");
-                if changed {
-                    self.reveal_document = true;
-                }
             },
         );
+        if !shared {
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), row_height),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    crate::app::style::compact_controls(ui);
+                    self.draw_library_order(ui);
+                },
+            );
+        }
+        if changed || before != self.library_order {
+            self.reveal_document = true;
+        }
+    }
+
+    fn draw_library_order(&mut self, ui: &mut egui::Ui) {
+        egui::ComboBox::from_id_salt("perk-library-order")
+            .width(ORDER_WIDTH)
+            .selected_text(self.library_order.label())
+            .show_ui(ui, |ui| {
+                for order in [Order::Recent, Order::NameAscending, Order::NameDescending] {
+                    ui.selectable_value(&mut self.library_order, order, order.label());
+                }
+            });
+        pickers::name_combo(ui, "perk-library-order", "Sort Custom Perks");
     }
 
     pub(super) fn library_rows(&self) -> Vec<PerkSource> {
@@ -61,12 +86,17 @@ impl Workbench {
             .iter()
             .map(|document| document.recipe.id.as_str())
             .collect::<BTreeSet<_>>();
-        let documents = self.documents.iter().enumerate().map(|(index, document)| {
-            let modified = document
-                .modified
-                .or_else(|| saved.get(document.recipe.id.as_str()).copied().flatten());
-            (PerkSource::Document(index), &document.recipe, modified)
-        });
+        let documents = self
+            .documents
+            .iter()
+            .enumerate()
+            .filter(|(_, document)| !document.untouched_copy())
+            .map(|(index, document)| {
+                let modified = document
+                    .modified
+                    .or_else(|| saved.get(document.recipe.id.as_str()).copied().flatten());
+                (PerkSource::Document(index), &document.recipe, modified)
+            });
         let entries = self
             .entries
             .iter()
@@ -154,5 +184,20 @@ mod tests {
         let restored: Vec<Document> =
             serde_json::from_slice(&serde_json::to_vec(&workbench.documents).unwrap()).unwrap();
         assert_eq!(restored[0].modified, at(40));
+    }
+
+    #[test]
+    fn an_untouched_socket_copy_stays_out_of_the_list_until_it_changes() {
+        let mut recipe = PerkRecipe::new();
+        recipe.name = "Custom Socket Perk".into();
+        let mut document = Document::new(recipe, None);
+        document.from_socket = true;
+        let mut workbench = Workbench {
+            documents: vec![document],
+            ..Default::default()
+        };
+        assert!(workbench.library_rows().is_empty());
+        workbench.documents[0].recipe.description = "Changed".into();
+        assert_eq!(workbench.library_rows(), [PerkSource::Document(0)]);
     }
 }

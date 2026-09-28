@@ -1,4 +1,6 @@
 use super::*;
+use crate::app::inspector::look;
+use crate::app::inspector::requests::{owned_quantities, request_owned_quantities};
 
 pub(super) fn draw_hash_item_source_comparison(
     ui: &mut egui::Ui,
@@ -7,308 +9,152 @@ pub(super) fn draw_hash_item_source_comparison(
     item: Option<&ItemDef>,
     context: &DefinitionInspectionContext,
 ) {
-    ui.add_space(8.0);
-    hash_metadata_section(
-        ui,
-        if context.instance_id.is_some() {
-            "Selected Instance"
-        } else {
-            "Source Snapshot"
-        },
-        true,
-        |ui| {
-            ui.strong(&context.source);
-            ui.weak(
-                "Snapshot captured when opened. Reopen the item after editing its account data.",
-            );
-            ui.add_space(6.0);
-            egui::Grid::new(("hash_item_instance", hash))
-                .num_columns(2)
-                .spacing([16.0, 4.0])
-                .show(ui, |ui| {
-                    if catalog.item_has_power_stat(hash)
-                        && let Some(level) = context.authored_level
-                    {
-                        let cap = catalog.item_power_cap(hash).map_or_else(
-                            || "No catalog cap".into(),
-                            |value| format!("Catalog cap {value}"),
-                        );
-                        hash_detail_field(
-                            ui,
-                            "Power",
-                            format!(
-                                "{} · authored level {level} · {cap}",
-                                displayed_item_power(level)
-                            ),
-                            true,
-                        );
-                    }
-                    if let Some(instance_id) = &context.instance_id {
-                        hash_detail_field(ui, "Instance ID", instance_id, true);
-                    }
-                    if let Some(quantity) = context.quantity {
-                        hash_detail_field(ui, "Quantity", quantity.to_string(), true);
-                    }
-                    if let Some(plugs) = &context.plugs {
-                        hash_detail_field(
-                            ui,
-                            "Plug Source",
-                            super::super::instance::plug_source(plugs),
-                            false,
-                        );
-                    }
-                    if let Some(plug_count) = context.plug_count {
-                        let sockets = item.map_or_else(
-                            || "Catalog sockets unavailable".into(),
-                            |item| format!("{} catalog sockets", item.sockets.len()),
-                        );
-                        hash_detail_field(
-                            ui,
-                            "Saved Plugs",
-                            format!("{plug_count} · {sockets}"),
-                            true,
-                        );
-                    }
-                    if let Some(flags) = context.flags {
-                        hash_detail_field(ui, "Instance Flags", format!("0x{flags:02X}"), true);
-                    }
-                });
-        },
-    );
-}
-
-pub(super) fn draw_hash_item_identity_summary(
-    ui: &mut egui::Ui,
-    catalog: &Catalog,
-    hash: u64,
-    resolved_name: &Option<String>,
-    item: Option<&ItemDef>,
-    package_metadata: Option<&ItemPackageMetadata>,
-    inventory_metadata: Option<&InventoryMetadata>,
-) {
-    ui.horizontal_top(|ui| {
-        if let Some(icon) = catalog.icon_texture(ui.ctx(), hash) {
-            ui.add(
-                egui::Image::new(&icon)
-                    .fit_to_exact_size(egui::vec2(72.0, 72.0))
-                    .maintain_aspect_ratio(true),
-            );
-            ui.add_space(8.0);
-        }
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            crate::app::item_editor::catalog_item_tooltip(
-                ui.label(
-                    crate::app::ui::destiny_text(
-                        ui,
-                        resolved_name.as_deref().unwrap_or("Unnamed item"),
-                    )
-                        .strong()
-                        .size(18.0),
-                ),
-                catalog,
-                hash,
-            );
-            ui.label(metadata_label_text(
-                ui,
-                catalog
-                    .package_item_type_name(hash)
-                    .unwrap_or("Type not present"),
-            ));
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 5.0;
-                let mut drew = false;
-                draw_inline_item_hash(ui, &mut drew, catalog, hash);
-                if let Some(metadata) = package_metadata {
-                    if let Some(ammo) = metadata.weapon_ammo_type {
-                        draw_inline_item_fact_with_tooltip(
-                            ui, &mut drew, "Ammo", ammo.label(), false,
-                            "Primary/Special/Heavy client classification. This does not establish which ammo pool the runtime weapon consumes.",
-                        );
-                    }
-                    if metadata.rarity != ItemRarity::Unknown {
-                        draw_inline_item_fact_with_tooltip(
-                            ui,
-                            &mut drew,
-                            "Rarity",
-                            metadata.rarity.label(),
-                            false,
-                            format!(
-                                "Stored directly in the item definition as package rarity value {}. This field has no separate definition hash.",
-                                metadata.rarity.package_value().unwrap_or_default()
-                            ),
-                        );
-                    }
-                    if let Some(damage_type) = metadata.damage_type {
-                        draw_inline_item_fact_with_tooltip(
-                            ui,
-                            &mut drew,
-                            "Damage",
-                            damage_type.label(),
-                            false,
-                            "Package-derived damage classification, not a live measurement. The Technical tab distinguishes modern, legacy, and default-plug inference.",
-                        );
-                    }
-                    if let Some(power_cap) = metadata.power_cap {
-                        draw_inline_item_fact_with_tooltip(
-                            ui,
-                            &mut drew,
-                            "Power Cap",
-                            power_cap.to_string(),
-                            true,
-                            "Read from the installed power-cap definition table using this item's ordered version indices. See Technical for the individual rows and definition hashes.",
-                        );
-                    }
-                }
-                if let Some(item) = item {
-                    draw_inline_item_fact_with_tooltip(
-                        ui,
-                        &mut drew,
-                        "Class",
-                        format!(
-                            "{} ({})",
-                            item_class_type_label(item.class_type),
-                            item.class_type
-                        ),
-                        false,
-                        format!(
-                            "Stored directly as item class type {}. This field has no separate definition hash.",
-                            item.class_type
-                        ),
-                    );
-                }
-            });
-            if let Some(metadata) = inventory_metadata {
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing.x = 5.0;
-                    let mut drew = false;
-                    let bucket_label = format!(
-                        "{} ({})",
-                        metadata.bucket_label(),
-                        metadata.native_bucket_id
-                    );
-                    if let Some(bucket_hash) = item.map(|item| item.bucket_hash).filter(|hash| *hash != 0)
-                    {
-                        draw_inline_item_definition_fact(
-                            ui,
-                            &mut drew,
-                            catalog,
-                            "Bucket",
-                            bucket_label,
-                            bucket_hash,
-                        );
-                    } else {
-                        draw_inline_item_fact(
-                            ui,
-                            &mut drew,
-                            "Bucket",
-                            bucket_label,
-                            false,
-                        );
-                    }
-                    draw_inline_item_fact(
-                        ui,
-                        &mut drew,
-                        "Storage",
-                        format!(
-                            "{} · {}",
-                            metadata.scope.label(),
-                            metadata.stackability.label()
-                        ),
-                        false,
-                    );
-                    if let Some(maximum) = metadata.max_stack_size {
-                        draw_inline_item_fact(
-                            ui,
-                            &mut drew,
-                            "Max Stack",
-                            maximum.to_string(),
-                            true,
-                        );
-                    }
-                    if let Some(capacity) = metadata.bucket_capacity {
-                        draw_inline_item_fact(
-                            ui,
-                            &mut drew,
-                            "Bucket Capacity",
-                            capacity.to_string(),
-                            true,
-                        );
-                    }
-                });
-            }
+    let title = if context.instance_id.is_some() {
+        "Selected Instance"
+    } else {
+        "Source Snapshot"
+    };
+    look::section(ui, ("item_source", hash), title, None, true, |ui| {
+        ui.label(
+            egui::RichText::new(format!("Opened from {}", context.source)).color(look::muted(ui)),
+        );
+        ui.add_space(4.0);
+        look::properties(ui, ("item_instance", hash), |rows| {
+            draw_instance_rows(rows, catalog, hash, item, context);
         });
     });
 }
 
-pub(super) fn draw_inline_item_hash(
-    ui: &mut egui::Ui,
-    drew: &mut bool,
+fn draw_instance_rows(
+    rows: &mut look::Properties<'_>,
     catalog: &Catalog,
     hash: u64,
+    item: Option<&ItemDef>,
+    context: &DefinitionInspectionContext,
 ) {
-    if *drew {
-        ui.weak("·");
+    if catalog.item_has_power_stat(hash)
+        && let Some(level) = context.authored_level
+    {
+        let cap = catalog.item_power_cap(hash).map_or_else(
+            || "No catalog cap".into(),
+            |value| format!("Catalog cap {value}"),
+        );
+        rows.text(
+            "Power",
+            format!(
+                "{} · authored level {level} · {cap}",
+                displayed_item_power(level)
+            ),
+        );
     }
-    ui.label(metadata_label_text(ui, "Hash"));
-    crate::app::item_editor::catalog_item_tooltip(
-        ui.label(
-            egui::RichText::new(format_hash_hex(hash))
-                .strong()
-                .monospace(),
-        ),
-        catalog,
-        hash,
-    );
-    *drew = true;
+    if let Some(instance_id) = &context.instance_id {
+        rows.mono("Instance ID", instance_id.as_str());
+    }
+    if let Some(quantity) = context.quantity {
+        rows.mono("Quantity", quantity.to_string());
+    }
+    if let Some(plugs) = &context.plugs {
+        rows.text("Plug Source", super::super::instance::plug_source(plugs));
+    }
+    if let Some(plug_count) = context.plug_count {
+        let sockets = item.map_or_else(
+            || "Catalog sockets unavailable".into(),
+            |item| format!("{} catalog sockets", item.sockets.len()),
+        );
+        rows.mono("Saved Plugs", format!("{plug_count} · {sockets}"));
+    }
+    if let Some(flags) = context.flags {
+        rows.mono("Instance Flags", format!("0x{flags:02X}"));
+    }
 }
 
-pub(super) fn draw_inline_item_fact(
-    ui: &mut egui::Ui,
-    drew: &mut bool,
-    label: &str,
-    value: impl Into<String>,
-    monospace: bool,
-) {
-    if *drew {
-        ui.weak("·");
+/// The card at the top of an item page, with the item's description under it.
+pub(super) fn draw_header(ui: &mut egui::Ui, content: &ItemInspection<'_>) {
+    let catalog = content.catalog;
+    let header = look::Header {
+        title: content.resolved_name.as_deref().unwrap_or(UNNAMED),
+        kind: catalog.item_kind_label(content.hash),
+        hash: content.hash,
+        icon: content.hash,
+        subtitle: catalog.package_item_type_name(content.hash),
+        path: item_crumbs(catalog, content.hash),
+    };
+    look::header(ui, catalog, &header, |ui| draw_facts(ui, content));
+    if let Some(description) = catalog
+        .description(content.hash)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        ui.add_space(6.0);
+        ui.add(
+            egui::Label::new(crate::app::ui::destiny_text(ui, description).color(look::muted(ui)))
+                .wrap(),
+        );
     }
-    ui.label(metadata_label_text(ui, label));
-    let value = egui::RichText::new(value.into()).strong();
-    ui.label(if monospace { value.monospace() } else { value });
-    *drew = true;
 }
 
-pub(super) fn draw_inline_item_fact_with_tooltip(
-    ui: &mut egui::Ui,
-    drew: &mut bool,
-    label: &str,
-    value: impl Into<String>,
-    monospace: bool,
-    tooltip: impl Into<String>,
-) {
-    if *drew {
-        ui.weak("·");
-    }
-    ui.label(metadata_label_text(ui, label));
-    let value = egui::RichText::new(value.into()).strong();
-    ui.label(if monospace { value.monospace() } else { value })
-        .on_hover_text(tooltip.into());
-    *drew = true;
+/// An item sits in Collections through its collectible.
+fn item_crumbs(catalog: &Catalog, hash: u64) -> Vec<look::Crumb> {
+    catalog
+        .collectibles()
+        .iter()
+        .find(|collectible| collectible.item_hash == hash)
+        .map_or_else(Vec::new, |collectible| {
+            look::presentation_crumbs(catalog, collectible.hash)
+        })
 }
 
-pub(super) fn draw_inline_item_definition_fact(
-    ui: &mut egui::Ui,
-    drew: &mut bool,
-    catalog: &Catalog,
-    label: &str,
-    value: impl Into<String>,
-    hash: u64,
-) {
-    if *drew {
-        ui.weak("·");
+fn draw_facts(ui: &mut egui::Ui, content: &ItemInspection<'_>) {
+    if let Some(metadata) = content.matches.item_package_metadata {
+        draw_package_facts(ui, metadata);
     }
-    ui.label(metadata_label_text(ui, label));
-    draw_named_catalog_hash_link(ui, catalog, hash, value);
-    *drew = true;
+    if let Some(item) = content.matches.item.filter(|item| item.class_type <= 2) {
+        look::fact(ui, "Class", item_class_type_label(item.class_type));
+    }
+    draw_bucket_fact(ui, content);
+    draw_owned_fact(ui, content);
+}
+
+fn draw_package_facts(ui: &mut egui::Ui, metadata: &ItemPackageMetadata) {
+    if let Some(ammo) = metadata.weapon_ammo_type {
+        look::fact(ui, "Ammo", ammo.label());
+    }
+    if metadata.rarity != ItemRarity::Unknown {
+        look::fact(ui, "Rarity", metadata.rarity.label());
+    }
+    if let Some(damage_type) = metadata.damage_type {
+        look::fact(ui, "Damage Type", damage_type.label());
+    }
+    if let Some(power_cap) = metadata.power_cap {
+        look::fact(ui, "Power Cap", power_cap.to_string());
+    }
+}
+
+fn draw_bucket_fact(ui: &mut egui::Ui, content: &ItemInspection<'_>) {
+    let bucket_hash = content.matches.item.map_or(0, |item| item.bucket_hash);
+    let label = content
+        .matches
+        .inventory_metadata
+        .map(|metadata| metadata.bucket_label())
+        .or_else(|| content.catalog.display_name(bucket_hash).map(str::to_owned));
+    if let Some(label) = label {
+        look::fact_link(ui, content.catalog, "Bucket", bucket_hash, label);
+    }
+}
+
+/// What the loaded account holds, for items that can be held.
+fn draw_owned_fact(ui: &mut egui::Ui, content: &ItemInspection<'_>) {
+    if content.matches.inventory_metadata.is_none() {
+        return;
+    }
+    request_owned_quantities(ui.ctx());
+    match owned_quantities(ui.ctx()) {
+        // The app answers on its next pass.
+        None => ui.ctx().request_repaint(),
+        Some(Some(quantities)) => {
+            let owned = quantities.get(&content.hash).copied().unwrap_or(0);
+            look::fact(ui, "Owned", owned.to_string());
+        }
+        Some(None) => {}
+    }
 }

@@ -2,8 +2,11 @@ use super::*;
 
 mod activation;
 mod ammo;
+mod appearance_sweep;
+mod behavior_firing;
 mod collection_conditions;
 mod companions;
+mod component_rewire;
 mod donors;
 mod hud;
 mod ornaments;

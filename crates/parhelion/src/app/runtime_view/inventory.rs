@@ -10,7 +10,7 @@ impl PackageAuthoringApp {
             ui,
             "Item Traits (Classification)",
             Some(
-                "Complete ordered native trait-definition indices. These classify the base item for client systems independently from socket perks. Removing weapon-family traits can make a definition intentionally unconventional or unusable.",
+                "Classify the item for the game, separate from socket perks. Removing weapon traits can make the item unusable.",
             ),
         );
         let inherited = gameplay_donor
@@ -18,7 +18,11 @@ impl PackageAuthoringApp {
             .unwrap_or_default();
         if self.recipe.overrides.trait_indices.is_none() {
             ui.horizontal_wrapped(|ui| {
-                ui.label(format!("Inheriting {} trait row(s)", inherited.len()));
+                ui.label(format!(
+                    "Inheriting {} trait {}",
+                    inherited.len(),
+                    if inherited.len() == 1 { "row" } else { "rows" }
+                ));
                 if ui.button("Edit Trait Rows").clicked() {
                     self.recipe.overrides.trait_indices = Some(inherited.to_vec());
                 }
@@ -30,12 +34,17 @@ impl PackageAuthoringApp {
         }
 
         let choices = &self.trait_choices;
-        let trait_count = self
+        let can_add = self
             .recipe
             .overrides
             .trait_indices
             .as_ref()
-            .map_or(0, Vec::len);
+            .is_some_and(|traits| {
+                traits.len() < 256
+                    && choices
+                        .iter()
+                        .any(|choice| !traits.contains(&choice.trait_index))
+            });
         let mut restore = false;
         let mut add = false;
         ui.horizontal_wrapped(|ui| {
@@ -43,7 +52,7 @@ impl PackageAuthoringApp {
                 restore = true;
             }
             if ui
-                .add_enabled(trait_count < 256, egui::Button::new("+ Add Trait"))
+                .add_enabled(can_add, egui::Button::new("+ Add Trait"))
                 .clicked()
             {
                 add = true;
@@ -76,7 +85,7 @@ impl PackageAuthoringApp {
                         .range(0..=u16::MAX - 1)
                         .speed(1),
                 )
-                .on_hover_text("Native item-trait definition index");
+                .on_hover_text("Item trait index");
                 egui::ComboBox::from_id_salt(("item-trait", index))
                     .selected_text(trait_choice_label(*trait_index, choices))
                     .width(choice_width)
@@ -101,7 +110,7 @@ impl PackageAuthoringApp {
         if traits.iter().copied().collect::<BTreeSet<_>>().len() != traits.len() {
             ui.colored_label(
                 ui.visuals().error_fg_color,
-                "Item-trait rows cannot contain duplicate indices.",
+                "Each trait can appear only once.",
             );
         }
         for &trait_index in traits.iter() {
@@ -111,7 +120,7 @@ impl PackageAuthoringApp {
             {
                 ui.colored_label(
                     ui.visuals().error_fg_color,
-                    format!("Item-trait index {trait_index} is not present in this install."),
+                    format!("Item trait {trait_index} is not in this install."),
                 );
             }
         }
@@ -124,10 +133,8 @@ impl PackageAuthoringApp {
     ) {
         draw_donor_section_label(
             ui,
-            "Native Inventory Fields",
-            Some(
-                "Low-level inline item scalars. Max stack size is a signed 32-bit content field. Stock instanced weapons normally use 1. Inventory bucket and equipment slot are authored together by Combat Profile.",
-            ),
+            "Inventory Fields",
+            Some("Stock weapons stack to 1. Bucket and slot follow Equipment Slot."),
         );
         let inherited = gameplay_donor
             .and_then(|donor| donor.max_stack_size)
@@ -163,7 +170,7 @@ impl PackageAuthoringApp {
                 if ui.button("Restore Gameplay Rows").clicked() {
                     restore_power_cap_rows = true;
                 } else {
-                    ui.weak(format!("{} native rows", groups.len()));
+                    ui.weak(format!("{} rows", groups.len()));
                 }
             } else {
                 ui.monospace(if inherited_power_cap_groups.is_empty() {
@@ -180,17 +187,20 @@ impl PackageAuthoringApp {
                         !inherited_power_cap_groups.is_empty(),
                         egui::Button::new("Customize Each Row"),
                     )
-                    .on_disabled_hover_text("This donor has no native quality/version rows.")
+                    .on_disabled_hover_text("This donor has no version rows.")
                     .clicked()
                 {
-                    let groups = effective_power_cap_rows(&self.recipe.overrides, inherited_power_cap_groups);
+                    let groups = effective_power_cap_rows(
+                        &self.recipe.overrides,
+                        inherited_power_cap_groups,
+                    );
                     self.recipe.overrides.power_cap_group = None;
                     self.recipe.overrides.power_cap_groups = Some(groups);
                 }
             }
             draw_authoring_info_icon(
                 ui,
-                "Complete ordered version-group array from the native quality block. The ordinary Power cap picker writes one group to every row. This advanced editor can preserve distinct groups per row.",
+                "One version group per row. The Power Cap picker sets every row the same.",
             );
         });
         if restore_power_cap_rows {
@@ -206,7 +216,7 @@ impl PackageAuthoringApp {
                 .spacing([8.0, 4.0])
                 .show(ui, |ui| {
                     for (index, group) in groups.iter_mut().enumerate() {
-                        ui.label(format!("Version row {}", index + 1));
+                        ui.label(format!("Version Row {}", index + 1));
                         ui.add(egui::DragValue::new(group).range(0..=u16::MAX));
                         egui::ComboBox::from_id_salt(("power-cap-version-row", index))
                             .selected_text(
@@ -214,7 +224,7 @@ impl PackageAuthoringApp {
                                     .iter()
                                     .find(|choice| choice.authoring_version_group == *group)
                                     .map_or_else(
-                                        || format!("Custom group {group}"),
+                                        || format!("Custom Group {group}"),
                                         |choice| choice.picker_label.to_owned(),
                                     ),
                             )
@@ -261,7 +271,7 @@ impl PackageAuthoringApp {
                             egui::Button::new("Edit Row Index"),
                         )
                         .on_disabled_hover_text(
-                            "This donor has no relocatable socket-entry-list holder.",
+                            "This donor has no socket entry list.",
                         )
                         .clicked()
                     {
@@ -271,7 +281,7 @@ impl PackageAuthoringApp {
             }
             draw_authoring_info_icon(
                 ui,
-                "Raw row index selected by the item's talent-grid holder. Stock weapons normally use the empty row. Non-empty rows are primarily subclass data and can radically change client behavior.",
+                "Stock weapons use the empty row. Other rows hold subclass data and can break the item.",
             );
         });
         let inherited_plug_category = gameplay_donor.and_then(|donor| donor.plug_category_hash);
@@ -289,10 +299,10 @@ impl PackageAuthoringApp {
                     }
                 }
                 None => {
-                    ui.monospace(inherited_plug_category.map_or_else(
-                        || "none / sentinel".to_owned(),
-                        |value| format!("0x{value:08X}"),
-                    ));
+                    ui.monospace(
+                        inherited_plug_category
+                            .map_or_else(|| "none".to_owned(), |value| format!("0x{value:08X}")),
+                    );
                     if ui.button("Edit Hash").clicked() {
                         self.recipe.overrides.plug_category_hash =
                             Some(HexHash::new(inherited_plug_category.unwrap_or_default()));
@@ -301,7 +311,7 @@ impl PackageAuthoringApp {
             }
             draw_authoring_info_icon(
                 ui,
-                "Raw category hash used by native plug metadata. Zero and 0xFFFFFFFF are native empty sentinels. Weapons rarely need this field, but it is part of the cloned gameplay definition.",
+                "Plug category hash. 0 and 0xFFFFFFFF mean none. Weapons rarely use it.",
             );
         });
         let inherited_roll_set = gameplay_donor.and_then(|donor| donor.roll_set_index);
@@ -325,19 +335,14 @@ impl PackageAuthoringApp {
                             inherited_roll_set.is_some(),
                             egui::Button::new("Edit Row Index"),
                         )
-                        .on_disabled_hover_text(
-                            "This donor has no native plug block containing a roll-set field.",
-                        )
+                        .on_disabled_hover_text("This donor has no roll set field.")
                         .clicked()
                     {
                         self.recipe.overrides.roll_set_index = inherited_roll_set;
                     }
                 }
             }
-            draw_authoring_info_icon(
-                ui,
-                "Native randomized-roll-set table index embedded in the optional plug block.",
-            );
+            draw_authoring_info_icon(ui, "Random roll set index.");
         });
         let inherited_linked_plug = gameplay_donor.and_then(|donor| donor.linked_plug_index);
         let inherited_linked_hash = gameplay_donor.and_then(|donor| donor.linked_plug_hash);
@@ -364,9 +369,7 @@ impl PackageAuthoringApp {
                             inherited_linked_plug.is_some(),
                             egui::Button::new("Edit Row Index"),
                         )
-                        .on_disabled_hover_text(
-                            "This donor has no active native linked-plug record.",
-                        )
+                        .on_disabled_hover_text("This donor has no linked plug.")
                         .clicked()
                     {
                         self.recipe.overrides.linked_plug_index = inherited_linked_plug;
@@ -375,16 +378,12 @@ impl PackageAuthoringApp {
             }
             draw_authoring_info_icon(
                 ui,
-                "Native item-table index held by the optional linked-plug record. The displayed hash is the installed item currently reached by that row.",
+                "Item table index of the linked plug. The hash is the installed item at that row.",
             );
         });
         ui.horizontal(|ui| {
             ui.label("Instanced Item");
             ui.monospace("true");
-            draw_authoring_info_icon(
-                ui,
-                "A weapon requires per-instance state for sockets, power, and equipped selections. Parhelion therefore preserves the donor's instanced-item invariant instead of exposing a malformed stackable-weapon state.",
-            );
         });
     }
 }

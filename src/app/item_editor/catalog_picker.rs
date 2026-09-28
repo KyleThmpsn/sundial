@@ -1,8 +1,5 @@
 use super::*;
 
-#[cfg(test)]
-mod tests;
-
 pub(crate) fn catalog_button<'a>(
     ui: &egui::Ui,
     catalog: &Catalog,
@@ -48,11 +45,36 @@ pub(crate) fn draw_picker_row(
     draw_picker_row_with_icon(ui, catalog, row, None)
 }
 
+/// A choice row. The emphasized title sets a name apart from the description under it.
 pub(crate) fn draw_picker_row_with_icon(
     ui: &mut egui::Ui,
     catalog: Option<&Catalog>,
     row: CatalogPickerRow<'_>,
     icon: Option<crate::investment::IconOverride>,
+) -> egui::Response {
+    let title =
+        crate::ui_help::emphasized_font(ui, egui::TextStyle::Button.resolve(ui.style()).size);
+    draw_row(ui, catalog, row, icon, title)
+}
+
+/// A name-only row for dense lists, such as the Custom Perks library, in the regular face. With
+/// no description to set it apart from, an emphasized name only makes the list harder to read.
+pub(crate) fn draw_compact_picker_row(
+    ui: &mut egui::Ui,
+    catalog: Option<&Catalog>,
+    row: CatalogPickerRow<'_>,
+    icon: Option<crate::investment::IconOverride>,
+) -> egui::Response {
+    let title = crate::app::ui::destiny_font_id(ui, egui::TextStyle::Button.resolve(ui.style()));
+    draw_row(ui, catalog, row, icon, title)
+}
+
+fn draw_row(
+    ui: &mut egui::Ui,
+    catalog: Option<&Catalog>,
+    row: CatalogPickerRow<'_>,
+    icon: Option<crate::investment::IconOverride>,
+    title: egui::FontId,
 ) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), row.row_height),
@@ -119,14 +141,12 @@ pub(crate) fn draw_picker_row_with_icon(
 
     let text_left = icon_rect.right() + ui.spacing().icon_spacing;
     let text_width = (rect.right() - PADDING - text_left).max(0.0);
-    let primary_font =
-        crate::ui_help::emphasized_font(ui, egui::TextStyle::Button.resolve(ui.style()).size);
     let secondary_font =
         crate::app::ui::destiny_font_id(ui, egui::TextStyle::Body.resolve(ui.style()));
     let primary_galley = limited_line_galley(
         ui,
         row.primary,
-        primary_font,
+        title,
         text_color,
         text_width,
         row.primary_max_rows,
@@ -261,46 +281,40 @@ pub(crate) fn draw_item_tooltip_with_icon(
         .is_none()
         .then(|| catalog.icon_diagnostic(hash))
         .flatten();
-    ui.set_max_width(320.0);
     let icon = match icon_override {
         Some(icon) => icon.texture().map(|id| (id, egui::Vec2::splat(96.0))),
         None => catalog
             .icon_texture(ui.ctx(), hash)
             .map(|texture| (texture.id(), texture.size_vec2())),
     };
-    ui.horizontal_top(|ui| {
-        if let Some(icon) = icon {
-            ui.add(egui::Image::new(icon).bg_fill(crate::app::ui::package_icon_backdrop(ui)));
-        }
-        ui.vertical(|ui| {
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                if let Some(name) = name {
-                    crate::ui_help::tooltip_title(ui, name);
+    draw_tooltip_layout(
+        ui,
+        (icon, name),
+        |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if let Some(type_name) = type_name {
+                    ui.label(crate::app::ui::destiny_text(ui, type_name));
+                    ui.label(egui::RichText::new("·").small().weak());
                 }
-                ui.horizontal_wrapped(|ui| {
-                    if let Some(type_name) = type_name {
-                        ui.label(crate::app::ui::destiny_text(ui, type_name));
-                        ui.label(egui::RichText::new("·").small().weak());
-                    }
-                    ui.label(
-                        egui::RichText::new(format_hash_hex(hash))
-                            .small()
-                            .monospace()
-                            .weak(),
-                    )
-                    .on_hover_text(if icon_override.is_some() {
-                        "Perk template"
-                    } else if authored.is_some() {
-                        "Icon and presentation source"
-                    } else {
-                        "Item definition"
-                    });
+                ui.label(
+                    egui::RichText::new(format_hash_hex(hash))
+                        .small()
+                        .monospace()
+                        .weak(),
+                )
+                .on_hover_text(if icon_override.is_some() {
+                    "Perk template"
+                } else if authored.is_some() {
+                    "Icon and presentation source"
+                } else {
+                    "Item definition"
                 });
-                if let Some((cost, label)) = catalog.mod_energy_cost(classification) {
-                    ui.label(format!("{label}: {cost}"));
-                }
             });
+            if let Some((cost, label)) = catalog.mod_energy_cost(classification) {
+                ui.label(format!("{label}: {cost}"));
+            }
+        },
+        |ui| {
             if let Some(description) = description {
                 ui.separator();
                 ui.label(crate::app::ui::destiny_text(ui, description));
@@ -313,6 +327,60 @@ pub(crate) fn draw_item_tooltip_with_icon(
                         .color(ui.visuals().warn_fg_color),
                 );
             }
+        },
+    );
+}
+
+/// The item tooltip's layout for something that is not an item, such as a subclass ability.
+pub(crate) fn draw_display_tooltip(
+    ui: &mut egui::Ui,
+    tooltip: crate::investment::DisplayTooltip<'_>,
+) {
+    let icon = tooltip
+        .icon
+        .map(|texture| (texture.id(), texture.size_vec2()));
+    draw_tooltip_layout(
+        ui,
+        (icon, Some(tooltip.name)),
+        |ui| {
+            if let Some(subtitle) = tooltip.subtitle {
+                ui.label(crate::app::ui::destiny_text(ui, subtitle));
+            }
+        },
+        |ui| {
+            if let Some(description) = tooltip
+                .description
+                .filter(|description| !description.trim().is_empty())
+            {
+                ui.separator();
+                ui.label(crate::app::ui::destiny_text(ui, description));
+            }
+        },
+    );
+}
+
+/// The tooltips' shared layout: the icon on the package backdrop beside the name, the lines
+/// `details` draws under the name, then what `body` draws.
+fn draw_tooltip_layout(
+    ui: &mut egui::Ui,
+    (icon, name): (Option<(egui::TextureId, egui::Vec2)>, Option<&str>),
+    details: impl FnOnce(&mut egui::Ui),
+    body: impl FnOnce(&mut egui::Ui),
+) {
+    ui.set_max_width(320.0);
+    ui.horizontal_top(|ui| {
+        if let Some(icon) = icon {
+            ui.add(egui::Image::new(icon).bg_fill(crate::app::ui::package_icon_backdrop(ui)));
+        }
+        ui.vertical(|ui| {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                if let Some(name) = name {
+                    crate::ui_help::tooltip_title(ui, name);
+                }
+                details(ui);
+            });
+            body(ui);
         });
     });
 }

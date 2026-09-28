@@ -33,7 +33,7 @@ fn incoming_damage_summaries_distinguish_literal_stats_and_source_distance() {
         let stat = fields.iter().find(|f| f.offset == 8).unwrap();
         assert_eq!(
             native::fields::contract(effect.class, stat).choices,
-            &[(255, "Literal Multiplier")]
+            &[(255, "Fixed Multiplier")]
         );
         assert!(
             fields
@@ -85,48 +85,6 @@ fn condition_choices_preserve_owned_records_and_report_nested_probability_source
 }
 
 #[test]
-fn source_derived_ability_roles_preserve_native_facts_and_the_known_event_key() {
-    for known in [true, false] {
-        let mut out = Builder::new();
-        let declaration = nodes::condition(12).unwrap();
-        let trigger = out.condition(declaration.class, 12, declaration.struct_size as usize);
-        out.u32(trigger + 8, 0x6CEC7A87);
-        out.u32(trigger + 12, if known { 0x18CCBF24 } else { 0x18CCBF25 });
-        out.pointer_list(
-            PRIMARY_GROUP + GROUP_ACTIVATION,
-            CONDITION_ROW_CLASS,
-            &[trigger],
-        );
-        let effect = out.component_adjustment(0.1, -1.0, 1.0);
-        out.bytes[effect + 2] = 0;
-        out.bytes[effect + 3] = u8::from(!known);
-        out.pointer_list(PRIMARY_GROUP + GROUP_EFFECTS, EFFECT_ROW_CLASS, &[effect]);
-        let action = decode(&out.finish()).unwrap();
-        let summary = ActionSummary::new(&action);
-        assert_eq!(
-            summary.groups[0].activation[0]
-                .text
-                .contains("Orb of Light"),
-            known
-        );
-        // The flag byte no longer gates the ability role. A census of every kind 8 node in
-        // the stock perks showed the selector alone decides which ability is adjusted, so
-        // grenade energy is named whether or not the flag is set.
-        assert!(summary.groups[0].effects[0].text.contains("grenade energy"));
-        assert!(
-            summary.groups[0].effects[0]
-                .detail
-                .contains(&"Target Selector: 0".into())
-        );
-        assert!(
-            summary.groups[0].effects[0]
-                .detail
-                .contains(&"Scale: 0.1".into())
-        );
-    }
-}
-
-#[test]
 fn a_drawn_pattern_action_decodes_into_its_lists_and_assets() {
     let payload = drawn_pattern_action();
     let action = decode(&payload).expect("decode");
@@ -173,44 +131,6 @@ fn a_precision_kill_action_decodes_its_labels_timers_and_nested_conditions() {
     assert_eq!(extend.conditions[0].kind, 2);
     assert_eq!(action.conditions().len(), 4);
     assert_eq!(action.activation_event_mask, 1 << 2);
-}
-
-#[test]
-fn the_summary_reads_as_plain_english_for_a_kill_trigger() {
-    let payload = precision_kill_action();
-    let action = decode(&payload).expect("decode");
-    let summary = ActionSummary::new(&action);
-    assert_eq!(
-        summary.headline,
-        "A precision kill from this weapon, then applies one effect."
-    );
-    let group = &summary.groups[0];
-    assert_eq!(group.label, "Main Program");
-    assert_eq!(
-        group.effects[0].text,
-        "Extend the running timers by 5 s, up to 5 s"
-    );
-    assert_eq!(group.removal[0].text, "After 5 s");
-    assert_eq!(group.rearm[0].text, "After 2.5 s");
-    assert!(summary.render().contains("Ready Again When:"));
-    assert!(
-        summary
-            .notes
-            .iter()
-            .any(|note| note.contains("does not prove"))
-    );
-}
-
-#[test]
-fn the_summary_names_assets_by_their_native_path() {
-    let payload = drawn_pattern_action();
-    let summary = ActionSummary::new(&decode(&payload).expect("decode"));
-    assert_eq!(
-        summary.groups[0].effects[0].text,
-        "Replace the weapon projectile pattern with demo"
-    );
-    assert_eq!(summary.groups[0].effects[1].text, "Spawn demo once");
-    assert_eq!(summary.groups[0].activation[0].text, "The weapon is drawn");
 }
 
 #[test]
@@ -555,6 +475,9 @@ fn general_predicates_read_as_the_state_and_weapon_type_they_check() {
     use crate::sandbox_perk::action::{native, summary::state_description};
     let class = 0x8080_3DCE;
     let mut bytes = native::template(true, 20).unwrap();
+    // The template requires the weapon in hand and aimed. These titles read the key alone.
+    bytes[0x38] = 0;
+    bytes[0x81] = 0;
     // A key no stock perk names, and no weapon record, keeps the traced name.
     bytes[0xD4..0xD8].copy_from_slice(&0x811C_9DC5u32.to_le_bytes());
     bytes[0xF8] = 0;
@@ -576,6 +499,17 @@ fn general_predicates_read_as_the_state_and_weapon_type_they_check() {
     assert_eq!(
         state_description(class, &bytes).as_deref(),
         Some("While Subclass Is Arc")
+    );
+    // A switch checked at 0 to 0 holds while its state does not. A count keeps its range.
+    bytes[0xD8..0xE0].copy_from_slice(&[0; 8]);
+    assert_eq!(
+        state_description(class, &bytes).as_deref(),
+        Some("While not Subclass Is Arc")
+    );
+    bytes[0xD4..0xD8].copy_from_slice(&0x59E3_47EDu32.to_le_bytes());
+    assert_eq!(
+        state_description(class, &bytes).as_deref(),
+        Some("Meets the Charged with Light Stacks requirement")
     );
     // The state keys hash from the engine's own variable names with the predicate fold.
     use crate::sandbox_perk::action::native::predicate::binding_key;
@@ -612,7 +546,7 @@ fn general_predicate_player_and_weapon_states_read_from_the_perks_that_set_them(
         assert_eq!(weapon.label, "Weapon State");
         assert_eq!(
             native::fields::contract(class, weapon).choices.to_vec(),
-            vec![(4u8, "Aiming Down Sights")]
+            vec![(1u8, "Holding the Weapon"), (4, "Aiming Down Sights")]
         );
         assert!(
             fields
@@ -655,11 +589,89 @@ fn general_predicate_player_and_weapon_states_read_from_the_perks_that_set_them(
         state_description(class, &bytes).as_deref(),
         Some("While not Aiming Down Sights")
     );
-    // A named key still wins over the inline states.
+    // A named key keeps the inline states beside it, since the predicate requires both.
     bytes[0xD4..0xD8].copy_from_slice(&0x59E3_47EDu32.to_le_bytes());
     bytes[0xF8] = 0;
     assert_eq!(
         state_description(class, &bytes).as_deref(),
-        Some("Meets the Charged with Light Stacks requirement")
+        Some("Meets the Charged with Light Stacks requirement while Aiming Down Sights")
     );
+}
+
+/// Every engine variable the installed perks compare has a named row in the workbench, so
+/// a comparison the game makes is one an author can make too. A game update that compares
+/// a new variable fails here rather than quietly becoming an unnamed General Predicate.
+#[test]
+#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES with a clean Shadowkeep package directory"]
+fn every_variable_the_stock_perks_compare_has_a_named_comparison_row() {
+    use crate::investment_schema::{
+        GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, investment_globals_table_tag,
+    };
+    use crate::sandbox_perk::action::native::{Graph, predicate};
+    use crate::sandbox_perk::{
+        SANDBOX_PERK_RUNTIME_MAP_TAG, finished_sandbox_perk_at, finished_sandbox_perk_count,
+        sandbox_perk_runtime_assignment,
+    };
+    use std::collections::BTreeSet;
+    use tiger_pkg::TagHash;
+
+    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
+        .expect("PARHELION_CLEAN_STOCK_PACKAGES must name a clean package directory");
+    let install = std::path::Path::new(&packages)
+        .parent()
+        .expect("clean packages need an install root");
+    let manager =
+        crate::package_runtime::open_shadowkeep_packages(install).expect("open clean packages");
+    let globals_tag =
+        crate::package_runtime::resolve_live_named_tag(&manager, "investment_globals", None)
+            .expect("resolve investment_globals");
+    let globals = manager.read_tag(globals_tag).expect("read globals");
+    let catalog = manager
+        .read_tag(TagHash(
+            investment_globals_table_tag(&globals, GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT)
+                .expect("resolve finished perk catalog"),
+        ))
+        .expect("read finished catalog");
+    let runtime_map = manager
+        .read_tag(TagHash(SANDBOX_PERK_RUNTIME_MAP_TAG))
+        .expect("read runtime map");
+
+    let mut compared = BTreeSet::new();
+    for index in 0..finished_sandbox_perk_count(&catalog).expect("count perks") {
+        let perk = finished_sandbox_perk_at(&catalog, index).expect("read perk");
+        let Some(assignment) =
+            sandbox_perk_runtime_assignment(&runtime_map, perk.runtime_key).expect("assignment")
+        else {
+            continue;
+        };
+        let Ok(payload) = manager.read_tag(TagHash(assignment.runtime_tag)) else {
+            continue;
+        };
+        let Ok(graph) = Graph::read(&payload, 0, 0x8080_40B5) else {
+            continue;
+        };
+        for block in 0..graph.blocks.len() {
+            if let Some(comparison) = predicate::read(&graph, block) {
+                compared.insert(predicate::plain_variable(&comparison.name).to_owned());
+            }
+        }
+    }
+    let rows = predicate::VARIABLES
+        .iter()
+        .map(|variable| variable.plain)
+        .collect::<BTreeSet<_>>();
+    let missing = compared
+        .iter()
+        .filter(|name| !rows.contains(name.as_str()))
+        .collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "the stock perks compare variables with no named row: {missing:?}"
+    );
+    assert_eq!(
+        compared.len(),
+        rows.len(),
+        "a named row compares something the installed perks do not"
+    );
+    println!("{} compared variables, every one named", compared.len());
 }

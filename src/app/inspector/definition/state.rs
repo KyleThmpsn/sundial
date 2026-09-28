@@ -1,9 +1,14 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use crate::{catalog::Catalog, hash::format_hash_hex};
+use eframe::egui;
+
+use crate::catalog::{Catalog, DefinitionSearchHit};
 
 use super::matches::CatalogHashMatchIndex;
 use crate::app::inspector::DefinitionInspectionContext;
+
+/// The search page, kept in navigation like a definition. No definition has hash zero.
+pub(super) const HOME: u64 = 0;
 
 #[derive(Clone, Debug)]
 pub(super) struct InspectionTarget {
@@ -12,20 +17,76 @@ pub(super) struct InspectionTarget {
 }
 #[derive(Debug, Default)]
 pub(in crate::app) struct HashInspectionState {
+    /// The inspected hash, or [`HOME`] while the search page shows.
     pub(super) current: Option<u64>,
     pub(super) history: Vec<InspectionTarget>,
     pub(super) forward: Vec<InspectionTarget>,
     pub(super) match_index: Option<(u64, Arc<CatalogHashMatchIndex>)>,
-    pub(super) lookup: String,
-    pub(super) lookup_error: bool,
+    pub(super) search: DefinitionSearch,
     pub(super) source_context: Option<DefinitionInspectionContext>,
     pub(super) mutation_feedback: Option<(bool, String)>,
     pub(super) runtime: super::runtime::RuntimeInspectionState,
+    /// Window size chosen when the inspector opened, so navigation keeps the user's resize.
+    pub(super) default_size: Option<egui::Vec2>,
+}
+
+/// The toolbar and home search fields with the results of the last query.
+#[derive(Debug, Default)]
+pub(super) struct DefinitionSearch {
+    /// The toolbar field, cleared once it opens a definition.
+    pub(super) query: String,
+    /// The home page field, kept so Back returns to the same results.
+    pub(super) home_query: String,
+    /// Set to focus whichever search field draws next.
+    pub(super) focus: bool,
+    pub(super) results: SearchResults,
+    /// Scroll offset and height of the home result list last frame.
+    pub(super) list_view: (f32, f32),
+    /// Kind labels of recently opened hashes, each with the item whose icon stands for it.
+    pub(super) kinds: HashMap<u64, (&'static str, u64)>,
+}
+
+/// Search hits for one query, recomputed only when the query or catalog changes.
+#[derive(Debug, Default)]
+pub(super) struct SearchResults {
+    /// Catalog address and trimmed query the hits belong to.
+    pub(super) key: Option<(usize, String)>,
+    pub(super) hits: Vec<DefinitionSearchHit>,
+    /// A hash the query parses as, offered as a row of its own.
+    pub(super) hash: Option<u64>,
+    pub(super) highlighted: usize,
 }
 
 pub(super) const HASH_INSPECTOR_HISTORY_LIMIT: usize = 32;
 
 impl HashInspectionState {
+    /// Opens the window on its search page, or focuses the search field when it is open.
+    pub(in crate::app) fn open_search(&mut self) {
+        if self.current.is_none() {
+            self.select(InspectionTarget {
+                hash: HOME,
+                context: None,
+            });
+        }
+        self.search.focus = true;
+    }
+
+    /// Leaves the inspected definition for the search page, which Back returns from.
+    pub(super) fn go_home(&mut self) {
+        if self.current != Some(HOME) {
+            if let Some(current) = self.take_current() {
+                self.history.push(current);
+                trim_navigation_stack(&mut self.history);
+            }
+            self.forward.clear();
+            self.select(InspectionTarget {
+                hash: HOME,
+                context: None,
+            });
+        }
+        self.search.focus = true;
+    }
+
     pub(in crate::app) fn open(&mut self, hash: u64) {
         self.open_with_context(hash, None);
     }
@@ -73,6 +134,14 @@ impl HashInspectionState {
         }
     }
 
+    /// Moves forward to one of the forward entries, where the last entry is the nearest.
+    pub(super) fn navigate_forward(&mut self, forward_index: usize) {
+        let steps = self.forward.len().saturating_sub(forward_index);
+        for _ in 0..steps {
+            self.forward();
+        }
+    }
+
     pub(super) fn navigate_history(&mut self, history_index: usize) {
         if self.history.get(history_index).is_none() {
             return;
@@ -100,8 +169,7 @@ impl HashInspectionState {
     fn select(&mut self, target: InspectionTarget) {
         self.current = Some(target.hash);
         self.match_index = None;
-        self.lookup = format_hash_hex(target.hash);
-        self.lookup_error = false;
+        self.search.query.clear();
         self.source_context = target.context;
         self.mutation_feedback = None;
     }
@@ -124,16 +192,26 @@ impl HashInspectionState {
         Arc::clone(&self.match_index.as_ref().expect("match index was set").1)
     }
 
+    /// Closes the window. The back history stays, so the search page lists it when reopened.
     pub(in crate::app) fn close(&mut self) {
         self.runtime.clear();
+        if let Some(current) = self.take_current().filter(|target| target.hash != HOME) {
+            self.history.push(current);
+            trim_navigation_stack(&mut self.history);
+        }
         self.current = None;
-        self.history.clear();
         self.forward.clear();
         self.match_index = None;
-        self.lookup.clear();
-        self.lookup_error = false;
+        self.search = DefinitionSearch::default();
         self.source_context = None;
         self.mutation_feedback = None;
+        self.default_size = None;
+    }
+
+    /// Closes the inspector and forgets its history, for a new account, catalog or page.
+    pub(in crate::app) fn reset(&mut self) {
+        self.close();
+        self.history.clear();
     }
 }
 
@@ -196,14 +274,64 @@ mod tests {
             &[],
             &[0x4444_4444, 0x3333_3333, 0x2222_2222],
         );
-        assert_eq!(inspection.lookup, "0x11111111");
 
+        inspection.navigate_forward(1);
+        assert_navigation_state(
+            &inspection,
+            Some(0x3333_3333),
+            &[0x1111_1111, 0x2222_2222],
+            &[0x4444_4444],
+        );
+
+        inspection.search.query = "ace".into();
         inspection.close();
         assert!(!inspection.is_open());
-        assert!(inspection.history.is_empty());
+        assert_eq!(
+            hashes(&inspection.history),
+            [0x1111_1111, 0x2222_2222, 0x3333_3333],
+            "closing keeps the back history and the page that was open"
+        );
         assert!(inspection.forward.is_empty());
-        assert!(inspection.lookup.is_empty());
-        assert!(!inspection.lookup_error);
+        assert!(inspection.search.query.is_empty());
+
+        inspection.open_search();
+        assert_navigation_state(
+            &inspection,
+            Some(HOME),
+            &[0x1111_1111, 0x2222_2222, 0x3333_3333],
+            &[],
+        );
+        inspection.close();
+        assert_eq!(
+            hashes(&inspection.history),
+            [0x1111_1111, 0x2222_2222, 0x3333_3333],
+            "the search page is not kept as a recent definition"
+        );
+    }
+
+    #[test]
+    fn the_search_page_is_a_navigation_entry() {
+        let mut inspection = HashInspectionState::default();
+        inspection.open_search();
+        assert!(inspection.is_open());
+        assert_navigation_state(&inspection, Some(HOME), &[], &[]);
+        assert!(inspection.search.focus);
+
+        inspection.open(0x1111_1111);
+        assert_navigation_state(&inspection, Some(0x1111_1111), &[HOME], &[]);
+        inspection.search.focus = false;
+        inspection.open_search();
+        assert_eq!(
+            inspection.current,
+            Some(0x1111_1111),
+            "an open window keeps its page and focuses the search field"
+        );
+        assert!(inspection.search.focus);
+
+        inspection.go_home();
+        assert_navigation_state(&inspection, Some(HOME), &[HOME, 0x1111_1111], &[]);
+        inspection.back();
+        assert_navigation_state(&inspection, Some(0x1111_1111), &[HOME], &[HOME]);
     }
 
     #[test]
@@ -227,44 +355,6 @@ mod tests {
         inspection.back();
         assert_eq!(inspection.current, Some(0xD980_2C4F));
         assert_eq!(inspection.source_context, Some(context));
-    }
-
-    #[test]
-    fn navigation_supports_back_and_forward() {
-        let mut inspection = HashInspectionState::default();
-        inspection.open(0x1111_1111);
-        inspection.open(0x2222_2222);
-        inspection.open(0x3333_3333);
-
-        inspection.back();
-        inspection.back();
-        assert_eq!(inspection.current, Some(0x1111_1111));
-        assert_eq!(hashes(&inspection.forward), [0x3333_3333, 0x2222_2222]);
-
-        inspection.forward();
-        assert_eq!(inspection.current, Some(0x2222_2222));
-        assert_eq!(hashes(&inspection.history), [0x1111_1111]);
-        assert_eq!(hashes(&inspection.forward), [0x3333_3333]);
-
-        inspection.forward();
-        assert_eq!(inspection.current, Some(0x3333_3333));
-        assert_eq!(hashes(&inspection.history), [0x1111_1111, 0x2222_2222]);
-        assert!(inspection.forward.is_empty());
-
-        inspection.open(0x4444_4444);
-        assert!(inspection.forward.is_empty());
-    }
-
-    #[test]
-    fn navigation_history_is_bounded_to_recent_definitions() {
-        let mut inspection = HashInspectionState::default();
-        for hash in 1..=40 {
-            inspection.open(hash);
-        }
-        assert_eq!(inspection.current, Some(40));
-        assert_eq!(inspection.history.len(), HASH_INSPECTOR_HISTORY_LIMIT);
-        assert_eq!(hashes(&inspection.history).first(), Some(&8));
-        assert_eq!(hashes(&inspection.history).last(), Some(&39));
     }
 
     fn hashes(targets: &[InspectionTarget]) -> Vec<u64> {

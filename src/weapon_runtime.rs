@@ -13,7 +13,9 @@ use registry::*;
 mod health;
 mod identity;
 mod invisibility;
-pub use identity::{native_member_names, native_type_name};
+pub use identity::{
+    NativeMember, native_holders, native_member_names, native_members, native_type_name,
+};
 pub mod modifiers;
 
 mod values;
@@ -75,7 +77,7 @@ const TECHNICAL_BYTES_PATH_HASH: u32 = 0x5048_4259;
 pub fn component_binding_label(binding: u32) -> String {
     runtime_registry().map_or_else(
         |_| format!("Binding 0x{binding:08X}"),
-        |registry| runtime_binding_label(binding, registry),
+        |registry| runtime_binding_label(binding, 0, registry),
     )
 }
 
@@ -427,6 +429,7 @@ struct RegistryRecord {
     native_layout: Vec<NativeLayoutEntry>,
 }
 
+#[cfg_attr(test, derive(Default))]
 struct RuntimeRegistry {
     records: BTreeMap<u32, RegistryRecord>,
     names: BTreeMap<u32, Vec<String>>,
@@ -794,7 +797,11 @@ pub fn resolve_weapon_runtime_field(
     ) {
         let runtime_binding = WeaponRuntimeBinding {
             binding_hash: locator.binding_hash,
-            binding_label: runtime_binding_label(locator.binding_hash, registry),
+            binding_label: runtime_binding_label(
+                locator.binding_hash,
+                binding.concrete_class,
+                registry,
+            ),
             resource_index: locator.resource_index,
             resource_count: u16::try_from(binding.resource_count)
                 .map_err(|_| "Runtime resource count does not fit 16 bits")?,
@@ -912,7 +919,11 @@ fn collect_runtime_bindings(
         for binding in weapon_component_bindings(entity, binding_hash)? {
             bindings.push(WeaponRuntimeBinding {
                 binding_hash,
-                binding_label: runtime_binding_label(binding_hash, registry),
+                binding_label: runtime_binding_label(
+                    binding_hash,
+                    binding.concrete_class,
+                    registry,
+                ),
                 resource_index: u16::try_from(binding.resource_index).map_err(|_| {
                     format!(
                         "Runtime binding 0x{binding_hash:08X} resource index does not fit 16 bits"

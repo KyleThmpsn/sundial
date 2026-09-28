@@ -1,6 +1,7 @@
 //! Add inspected native decal and reflection families to converted geometry.
 mod atmosphere;
 mod channels;
+pub mod constants;
 mod decals;
 mod dyemap;
 mod emission;
@@ -8,10 +9,12 @@ mod inputs;
 mod layout;
 mod lighting;
 mod null_glow;
+mod parts;
 mod procedural;
 mod reflection;
 mod shader;
 mod source;
+mod variants;
 mod vertex;
 use super::{Graph, checked_output, load, put};
 use crate::d2_mot::{
@@ -58,6 +61,7 @@ pub(crate) fn build_with_progress(
                 | "source-opaque"
                 | "source-transparent"
                 | "source-all"
+                | "source-optics"
         ),
         "unsupported effect family"
     );
@@ -97,6 +101,116 @@ pub(super) fn apply(
     apply_with_progress(prepared, graph, refs, bindings, out, family, &mut |_| {})
 }
 
+/// Map each modern global channel index onto the native channel with the same hash.
+fn globals(modern: &Value, native: &Value) -> Result<BTreeMap<u8, u8>> {
+    let mut globals = BTreeMap::new();
+    for row in modern["channels"].as_array().context("modern globals")? {
+        if let Some(n) = native["channels"]
+            .as_array()
+            .context("native globals")?
+            .iter()
+            .find(|n| n["hash"] == row["hash"])
+        {
+            globals.insert(
+                u8::try_from(row["index"].as_u64().context("global index")?)?,
+                u8::try_from(n["index"].as_u64().context("native index")?)?,
+            );
+        }
+    }
+    Ok(globals)
+}
+
+/// Merge every separated source part's draws into the main model's records.
+fn merge_parts(graph: &Graph, draws: &mut Draws) -> Result<()> {
+    for part in graph.manifest["source_parts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let mut copy = graph.manifest.clone();
+        let symbol = part["model"].as_str().context("part model")?;
+        let node = copy["nodes"]
+            .as_array_mut()
+            .context("nodes")?
+            .iter_mut()
+            .find(|node| node["symbol"] == "model")
+            .context("main model")?;
+        *node = graph.node(symbol)?.clone();
+        node["symbol"] = json!("model");
+        let part_draws = Draws::read(&Graph {
+            root: graph.root.clone(),
+            manifest: copy,
+        })?;
+        for (records, extra) in draws.records.iter_mut().zip(part_draws.records) {
+            records.extend(extra);
+        }
+    }
+    for stage in 0..23 {
+        draws.layout(stage)?;
+    }
+    Ok(())
+}
+
+/// Build one effect family into the context.
+fn build_family(
+    context: &mut Effect,
+    prepared: &Path,
+    family: &str,
+    progress: &mut dyn FnMut(String),
+) -> Result<()> {
+    if family == "source-all" {
+        progress("Adapting runtime material controls…".into());
+        channels::bind(context, prepared).context("source channel adaptation")?;
+        for (index, (stage, label)) in [
+            (0, "surface shading"),
+            (1, "decals"),
+            (7, "transparency"),
+            (9, "light shafts"),
+            (14, "scope stencils"),
+            (16, "reticles"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            progress(format!("Converting source {label} ({} of 8)…", index + 1));
+            source::build(context, prepared, stage)
+                .with_context(|| format!("source stage {stage}"))?;
+        }
+        for (index, (stage, label)) in [(3, "shadows"), (12, "depth")].into_iter().enumerate() {
+            progress(format!("Converting source {label} ({} of 8)…", index + 7));
+            source::auxiliary(context, prepared, stage)?;
+        }
+        context.graph.manifest["attachment_adapter"]["omitted_stages"] = json!([]);
+        context.graph.manifest["source_shader_adapter"] = json!({"stages":[0,1,3,7,9,12,14,16],"source_compute_skinning":"converted to native vertex skinning with validated bone indices","source_shader_equations_retained":context.graph.manifest["native_forward_lighting"].is_null(),"source_material_equations_retained":true,"implementation":"Rust","gameplay_verified":false});
+        context.graph.manifest["appearance"] =
+            json!("Source geometry and shader equations using native rendering bindings");
+    } else if family == "source-optics" {
+        channels::bind(context, prepared)?;
+        for stage in [14, 16] {
+            source::build(context, prepared, stage)?;
+        }
+        context.graph.manifest["source_shader_adapter"]["stages"] =
+            json!([0, 1, 3, 7, 9, 12, 14, 16]);
+    } else if family == "source-opaque" {
+        channels::bind(context, prepared)?;
+        source::build(context, prepared, 0)?;
+    } else if family == "source-transparent" {
+        channels::bind(context, prepared)?;
+        for stage in [7, 9] {
+            source::build(context, prepared, stage)?;
+        }
+    } else if family == "emission" {
+        emission::build(context)?;
+    } else if family == "dyemap-reflections" {
+        dyemap::build(context, prepared)?;
+    } else if family == "decals" {
+        decals::build(context)?;
+    } else {
+        reflection::build(context)?;
+    }
+    Ok(())
+}
+
 fn apply_with_progress(
     prepared: &Path,
     graph: Graph,
@@ -116,6 +230,7 @@ fn apply_with_progress(
                 | "source-opaque"
                 | "source-transparent"
                 | "source-all"
+                | "source-optics"
         ),
         "unsupported effect family"
     );
@@ -127,21 +242,11 @@ fn apply_with_progress(
     let objects = program::native_channels(&prepared.join("native"), Some(owner))?;
     let modern = load(&refs.join("tfx-modern/context.json"))?;
     let native = load(&refs.join("tfx-native/context.json"))?;
-    let mut globals = BTreeMap::new();
-    for row in modern["channels"].as_array().context("modern globals")? {
-        if let Some(n) = native["channels"]
-            .as_array()
-            .context("native globals")?
-            .iter()
-            .find(|n| n["hash"] == row["hash"])
-        {
-            globals.insert(
-                u8::try_from(row["index"].as_u64().context("global index")?)?,
-                u8::try_from(n["index"].as_u64().context("native index")?)?,
-            );
-        }
+    let globals = globals(&modern, &native)?;
+    let mut draws = Draws::read(&graph)?;
+    if family == "source-optics" {
+        merge_parts(&graph, &mut draws)?;
     }
-    let draws = Draws::read(&graph)?;
     let source = Source::read(&prepared.join("source"))?;
     let mut context = Effect {
         graph,
@@ -161,49 +266,19 @@ fn apply_with_progress(
             None
         },
     };
-    if family == "source-all" {
-        progress("Adapting runtime material controls…".into());
-        channels::bind(&mut context, prepared).context("source channel adaptation")?;
-        for (index, (stage, label)) in [
-            (0, "surface shading"),
-            (1, "decals"),
-            (7, "transparency"),
-            (9, "light shafts"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            progress(format!("Converting source {label} ({} of 6)…", index + 1));
-            source::build(&mut context, prepared, stage)
-                .with_context(|| format!("source stage {stage}"))?;
-        }
-        for (index, (stage, label)) in [(3, "shadows"), (12, "depth")].into_iter().enumerate() {
-            progress(format!("Converting source {label} ({} of 6)…", index + 5));
-            source::auxiliary(&mut context, prepared, stage)?;
-        }
-        context.graph.manifest["attachment_adapter"]["omitted_stages"] = json!([]);
-        context.graph.manifest["source_shader_adapter"] = json!({"stages":[0,1,3,7,9,12],"source_compute_skinning":"converted to native vertex skinning with validated bone indices","source_shader_equations_retained":context.graph.manifest["native_forward_lighting"].is_null(),"source_material_equations_retained":true,"implementation":"Rust","gameplay_verified":false});
-        context.graph.manifest["appearance"] =
-            json!("Source geometry and shader equations using native rendering bindings");
-    } else if family == "source-opaque" {
-        channels::bind(&mut context, prepared)?;
-        source::build(&mut context, prepared, 0)?;
-    } else if family == "source-transparent" {
-        channels::bind(&mut context, prepared)?;
-        for stage in [7, 9] {
-            source::build(&mut context, prepared, stage)?;
-        }
-    } else if family == "emission" {
-        emission::build(&mut context)?;
-    } else if family == "dyemap-reflections" {
-        dyemap::build(&mut context, prepared)?;
-    } else if family == "decals" {
-        decals::build(&mut context)?;
-    } else {
-        reflection::build(&mut context, &prepared.join("native"))?;
-    }
+    build_family(&mut context, prepared, family, progress)?;
     context.draws.write(&mut context.graph)?;
     layout::finish(&mut context.graph)?;
+    if family == "source-all" {
+        parts::separate(
+            &mut context.graph,
+            &context.draws,
+            &context.source.report,
+            prepared,
+        )?;
+    } else if family == "source-optics" {
+        parts::refresh(&mut context.graph, &context.draws)?;
+    }
     write_json(
         &context.graph.root.join("asset-graph.json"),
         &context.graph.manifest,
@@ -211,6 +286,40 @@ fn apply_with_progress(
     Ok(
         json!({"family":family,"nodes":context.graph.manifest["nodes"].as_array().unwrap().len(),"native_draw_parts":context.graph.manifest["native_draw_parts"],"gameplay_verified":false}),
     )
+}
+
+pub(super) fn refresh_optics(
+    prepared: &Path,
+    directory: &Path,
+    refs: &Path,
+    bindings: &Path,
+    out: &Path,
+) -> Result<Value> {
+    apply_with_progress(
+        prepared,
+        Graph {
+            root: directory.to_owned(),
+            manifest: load(&directory.join("asset-graph.json"))?,
+        },
+        refs,
+        bindings,
+        out,
+        "source-optics",
+        &mut |message| eprintln!("{message}"),
+    )
+}
+
+/// Partition source art regions in a copied graph without recompiling materials.
+pub fn restore_art_regions(prepared: &Path, directory: &Path) -> Result<Value> {
+    let report = load(&prepared.join("source/report.json"))?;
+    let mut graph = Graph {
+        root: directory.to_owned(),
+        manifest: load(&directory.join("asset-graph.json"))?,
+    };
+    let draws = Draws::read(&graph)?;
+    parts::separate(&mut graph, &draws, &report, prepared)?;
+    write_json(&directory.join("asset-graph.json"), &graph.manifest)?;
+    Ok(graph.manifest["source_art_regions"].clone())
 }
 
 struct Effect {
@@ -228,6 +337,27 @@ struct Effect {
     bindings_root: PathBuf,
 }
 impl Effect {
+    fn model_objects(&self, model: usize) -> Result<BTreeMap<String, u8>> {
+        let mut objects = self.objects.clone();
+        let tag = self.source.report["models"][model]["model"]
+            .as_str()
+            .context("source model tag")?;
+        if let Some(aliases) =
+            self.graph.manifest["object_channel_adapter"]["model_aliases"][tag].as_object()
+        {
+            for (source, private) in aliases {
+                let private = private.as_str().context("private model channel name")?;
+                objects.insert(
+                    source.clone(),
+                    *self
+                        .objects
+                        .get(private)
+                        .context("private model channel slot")?,
+                );
+            }
+        }
+        Ok(objects)
+    }
     fn contracts(&self) -> Result<&super::contracts::Catalog> {
         self.contracts
             .as_ref()
@@ -345,7 +475,7 @@ fn vectors(rows: &Value) -> Result<Vec<u8>> {
 pub(crate) fn check_source_blends(root: &Path) -> Result<()> {
     let source = Source::read(root)?;
     let mut checked = std::collections::BTreeSet::new();
-    for stage in [0, 1, 7, 9] {
+    for stage in [0, 1, 7, 9, 14, 16] {
         for draw in source.draws(stage)? {
             ensure!(
                 source::supported_blend(stage, source.raw(&draw.material)?.u8(48)? & 127),
@@ -463,11 +593,13 @@ impl Source {
     }
 }
 
+#[derive(Clone)]
 struct Draws {
     header: Vec<u8>,
     patches: Vec<Value>,
     indices: Vec<u8>,
     records: Vec<Vec<(Vec<u8>, String)>>,
+    sources: BTreeMap<String, String>,
 }
 
 impl Draws {
@@ -501,24 +633,28 @@ impl Draws {
                 .collect(),
             indices: g.read("indices-data")?.0,
             records,
+            sources: g.manifest["draw_sources"]
+                .as_object()
+                .map(|rows| {
+                    rows.iter()
+                        .filter_map(|(key, value)| {
+                            value.as_str().map(|value| (key.clone(), value.to_owned()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
     fn add(
         &mut self,
         stage: usize,
-        donor: &[u8],
         draw: &SourceDraw,
         channel: u8,
         faces: &[[u32; 3]],
         symbol: &str,
     ) -> Result<()> {
-        ensure!(
-            donor.len() == 32 && channel <= 5,
-            "invalid native effect draw"
-        );
-        let mut record = donor.to_vec();
-        record[4..24].copy_from_slice(&draw.record[4..24]);
-        record[26..30].copy_from_slice(&draw.record[28..32]);
+        ensure!(channel <= 5, "invalid native effect dye channel");
+        let mut record = crate::d2_mot::mapping::draw_record(&draw.record)?;
         record[26] = channel;
         // Each split dye draw is its own group, regardless of the source group size.
         record[29] = 1;
@@ -543,6 +679,14 @@ impl Draws {
         )?;
         put(&mut record, 16, &u32::try_from(faces.len())?.to_le_bytes())?;
         self.records[stage].push((record, symbol.to_owned()));
+        ensure!(
+            self.sources
+                .get(symbol)
+                .is_none_or(|model| *model == draw.model_tag),
+            "draw material belongs to multiple source models"
+        );
+        self.sources
+            .insert(symbol.to_owned(), draw.model_tag.clone());
         Ok(())
     }
     fn layout(&mut self, stage: usize) -> Result<()> {
@@ -557,7 +701,7 @@ impl Draws {
             .to_le_bytes(),
         )
     }
-    fn write(&self, g: &mut Graph) -> Result<()> {
+    fn model(&self) -> Result<(Vec<u8>, Vec<Value>, usize)> {
         let mut header = self.header.clone();
         let mut patches = self.patches.clone();
         let mut total = 0usize;
@@ -585,6 +729,11 @@ impl Draws {
         for at in [0xC8, 0x140] {
             put(&mut header, at, &(total as u64).to_le_bytes())?;
         }
+        crate::d2_mot::audit::draws::declare_draw_indices(&mut header, total)?;
+        Ok((header, patches, total))
+    }
+    fn write(&self, g: &mut Graph) -> Result<()> {
+        let (header, patches, total) = self.model()?;
         g.write("model", &header)?;
         g.node_mut("model")?["patches"] = json!(patches);
         g.write("indices-data", &self.indices)?;
@@ -596,6 +745,7 @@ impl Draws {
         )?;
         g.write("indices-header", &ih)?;
         g.manifest["native_draw_parts"] = json!(total);
+        g.manifest["draw_sources"] = json!(self.sources);
         Ok(())
     }
 }
@@ -640,21 +790,27 @@ mod tests {
             patches: Vec::new(),
             indices: Vec::new(),
             records: vec![Vec::new(); 23],
+            sources: BTreeMap::new(),
         };
         for channel in 0..3 {
+            source.record[24..28]
+                .copy_from_slice(&[1u32, 0x2005, 5][channel as usize].to_le_bytes());
             draws
-                .add(1, &[0; 32], &source, channel, &[[0, 1, 2]], "material")
+                .add(1, &source, channel, &[[0, 1, 2]], "material")
                 .unwrap();
         }
         let mut visited = Vec::new();
+        let mut visibility = Vec::new();
         let mut index = 0;
         while index < draws.records[1].len() {
             let record = &draws.records[1][index].0;
             visited.push(record[26]);
+            visibility.push(u16::from_le_bytes(record[24..26].try_into().unwrap()));
             assert_ne!(record[29], 0);
             index += usize::from(record[29]);
         }
         assert_eq!(visited, [0, 1, 2]);
+        assert_eq!(visibility, [1, 0x2005, 5]);
         let indices: Vec<_> = draws
             .indices
             .chunks_exact(2)

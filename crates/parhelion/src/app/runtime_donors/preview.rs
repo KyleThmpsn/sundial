@@ -81,9 +81,7 @@ pub(super) fn draw_review(ui: &mut egui::Ui, picker: &mut Picker, review: Option
         });
     }
     if !plan.resets.is_empty() {
-        ui.label(
-            "These edits cannot be carried to this donor. Reset them to use the donor's settings:",
-        );
+        ui.label("Not carried over:");
         egui::ScrollArea::vertical()
             .id_salt("swap-reset-settings")
             .max_height(100.0)
@@ -98,10 +96,6 @@ pub(super) fn draw_review(ui: &mut egui::Ui, picker: &mut Picker, review: Option
         ui.colored_label(
             ui.visuals().error_fg_color,
             format!("Resolve this recipe issue before applying: {error}"),
-        );
-    } else {
-        ui.weak(
-            "Runtime edits checked, including ammo and HUD changes. Gameplay still needs testing.",
         );
     }
     false

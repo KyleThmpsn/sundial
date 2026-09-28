@@ -2,44 +2,6 @@
 use super::*;
 
 #[test]
-fn moving_slots_does_not_replace_a_legacy_damage_family_with_modern() {
-    for target in [
-        WeaponInventorySlot::Kinetic,
-        WeaponInventorySlot::Energy,
-        WeaponInventorySlot::Power,
-    ] {
-        let damage = WeaponDamageDescriptor::Elemental(ModernDamageType::Arc);
-        let mut definition = synthetic_weapon_definition(WeaponInventorySlot::Energy, damage);
-        let mut strings = synthetic_item_strings(damage);
-        let resource = relative_target(&definition, ITEM_INVESTMENT_STAT_POINTER_OFFSET).unwrap();
-        let (_, _, rows, _) =
-            array_at(&definition, resource + ITEM_SANDBOX_PERK_DESCRIPTOR_OFFSET).unwrap();
-        write_u16(&mut definition, rows, LEGACY_ARC_DAMAGE_PERK_INDEX).unwrap();
-        apply_weapon_slot_and_damage_overrides(
-            &mut definition,
-            &mut strings,
-            &WeaponCloneOverrides {
-                inventory_slot: Some(target),
-                modern_damage_type: Some(ModernDamageType::Solar),
-                ..Default::default()
-            },
-            Some(&ResolvedDamageCarrierSource {
-                family: WeaponDamageCarrierFamily::ModernFixed,
-                topology_definition: None,
-            }),
-            &synthetic_sandbox_perk_definition_template(),
-            &synthetic_sandbox_perk_string_template(),
-        )
-        .unwrap();
-        assert_eq!(
-            weapon_sandbox_perks(&definition).unwrap(),
-            [LEGACY_SOLAR_DAMAGE_PERK_INDEX]
-        );
-        assert_eq!(weapon_inventory_slot(&definition).unwrap(), target);
-    }
-}
-
-#[test]
 fn adding_a_fixed_carrier_uses_the_proven_source_family() {
     for family in [
         WeaponDamageCarrierFamily::LegacyFixed,

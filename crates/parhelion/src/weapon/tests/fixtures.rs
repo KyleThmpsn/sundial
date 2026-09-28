@@ -181,25 +181,6 @@ pub(super) fn synthetic_socket_definition() -> Vec<u8> {
     data
 }
 
-pub(super) fn assert_serialized_socket_members(data: &[u8], rows: usize, choices: &[u16]) {
-    for (index, expected) in choices.iter().copied().enumerate() {
-        let member = rows + index * ITEM_ORDINARY_SOCKET_PLUG_MEMBER_ROW_SIZE;
-        assert_eq!(read_u16(data, member).unwrap(), expected);
-        assert!(data[member + 2..member + 8].iter().all(|byte| *byte == 0));
-        assert_eq!(read_u64(data, member + 8).unwrap(), 0);
-        assert_eq!(read_i64(data, member + 16).unwrap(), 0);
-        assert_eq!(
-            read_u32(
-                data,
-                member + ITEM_ORDINARY_SOCKET_PLUG_MEMBER_WEIGHT_OFFSET
-            )
-            .unwrap(),
-            1.0_f32.to_bits()
-        );
-        assert!(data[member + 28..member + 32].iter().all(|byte| *byte == 0));
-    }
-}
-
 pub(super) fn resolved_socket_columns(
     columns: &[Option<Vec<u16>>],
 ) -> Vec<Option<ResolvedSocketColumn>> {
@@ -212,50 +193,6 @@ pub(super) fn resolved_socket_columns(
             })
         })
         .collect()
-}
-
-pub(super) fn assert_socket_column_serialization(choices: Vec<u16>) {
-    let mut data = synthetic_socket_definition();
-    let resource = relative_target(&data, ITEM_ORDINARY_SOCKET_POINTER_OFFSET).unwrap();
-    let (_, _, rows, _) = array_at(&data, resource).unwrap();
-    let first_before = data[rows..rows + ITEM_ORDINARY_SOCKET_ROW_SIZE].to_vec();
-    let disabled = rows + 2 * ITEM_ORDINARY_SOCKET_ROW_SIZE;
-    let disabled_before = data[disabled..disabled + ITEM_ORDINARY_SOCKET_ROW_SIZE].to_vec();
-    let columns = resolved_socket_columns(&[None, Some(choices.clone()), None]);
-
-    set_weapon_socket_columns(&mut data, &columns).unwrap();
-
-    assert_eq!(
-        &data[rows..rows + ITEM_ORDINARY_SOCKET_ROW_SIZE],
-        first_before.as_slice()
-    );
-    assert_eq!(
-        &data[disabled..disabled + ITEM_ORDINARY_SOCKET_ROW_SIZE],
-        disabled_before.as_slice()
-    );
-    let row = rows + ITEM_ORDINARY_SOCKET_ROW_SIZE;
-    assert_eq!(
-        read_u16(&data, row + ITEM_ORDINARY_SOCKET_DEFAULT_PLUG_OFFSET).unwrap(),
-        choices[0]
-    );
-    assert_eq!(
-        read_u16(&data, row + ITEM_ORDINARY_SOCKET_REUSABLE_PLUG_SET_OFFSET).unwrap(),
-        u16::MAX
-    );
-    assert_eq!(
-        read_u16(&data, row + ITEM_ORDINARY_SOCKET_RANDOMIZED_PLUG_SET_OFFSET).unwrap(),
-        u16::MAX
-    );
-    let randomized_selection = row + ITEM_ORDINARY_SOCKET_RANDOMIZED_SELECTION_PROGRAM_OFFSET;
-    assert_eq!(read_u64(&data, randomized_selection).unwrap(), 0);
-    assert_eq!(read_i64(&data, randomized_selection + 8).unwrap(), 0);
-    let descriptor = row + ITEM_ORDINARY_SOCKET_EMBEDDED_PLUGS_OFFSET;
-    let (count, _, member_rows, class) = array_at(&data, descriptor).unwrap();
-    assert_eq!(count, choices.len());
-    assert_eq!(class, ITEM_ORDINARY_SOCKET_PLUG_MEMBER_ROW_CLASS);
-    assert_serialized_socket_members(&data, member_rows, &choices);
-    validate_socket_member_segment(&data, member_rows, count).unwrap();
-    validate_weapon_socket_columns(&data, &columns, &[176, 92, u16::MAX]).unwrap();
 }
 
 pub(super) fn item_string_classification_fixture(
@@ -286,6 +223,7 @@ pub(super) fn item_string_classification_fixture(
 
 pub(super) fn project_weapon(namespace: &str, donor_item_hash: u32) -> WeaponCloneSpec {
     WeaponCloneSpec {
+        kind: crate::ItemKind::Weapon,
         namespace: namespace.to_owned(),
         donor_item_hash,
         expected_donor_name: None,

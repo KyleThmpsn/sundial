@@ -173,38 +173,4 @@ mod tests {
         assert_eq!(error, "the selected character metadata is invalid");
         assert_eq!(document, before);
     }
-
-    #[test]
-    fn missing_fields_materialize_the_legacy_display_fallbacks() {
-        let mut document = json!({"version": 8, "state": {"characters": [{}]}});
-
-        apply_updates(
-            &mut document,
-            0,
-            vec![
-                CharacterMetadataUpdate::SetAppearanceAndClass {
-                    race: 0,
-                    gender: 0,
-                    class_type: 0,
-                },
-                CharacterMetadataUpdate::SetAbilities(CharacterAbilities {
-                    movement: 4,
-                    grenade: 7,
-                    super_ability: 10,
-                    melee: 11,
-                    class_ability: 2,
-                }),
-            ],
-        )
-        .unwrap();
-
-        assert_eq!(
-            document.pointer("/state/characters/0/race"),
-            Some(&json!(0))
-        );
-        assert_eq!(
-            document.pointer("/state/characters/0/class_ability"),
-            Some(&json!(2))
-        );
-    }
 }

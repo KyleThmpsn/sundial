@@ -27,19 +27,19 @@ pub(super) fn draw_investment_stat_action(
     let (label, tooltip, action) = if is_added {
         (
             "×",
-            "Remove this added investment stat",
+            "Remove this added stat",
             StatRowAction::RemoveAdded(definition_index),
         )
     } else if is_removed {
         (
             "↺",
-            "Restore this gameplay-donor investment stat row",
+            "Restore this stat",
             StatRowAction::RestoreDonor(definition_index),
         )
     } else {
         (
             "×",
-            "Remove this investment stat row from the authored weapon",
+            "Remove this stat",
             StatRowAction::RemoveDonor(definition_index),
         )
     };
@@ -126,26 +126,32 @@ pub(super) fn draw_investment_stats(
         (table.id, table.name, table.preview, table.action);
     let mut row_action = None;
     let mut edited = false;
-    table.show(ui, "dynamic_investment_stats", "Raw Value", "Raw value stored in the weapon's investment block", |ui| {
+    table.show(
+        ui,
+        "dynamic_investment_stats",
+        "Raw Value",
+        "Value saved to the weapon",
+        |ui| {
             for (stat, is_added, is_removed) in rows.iter().filter(|(stat, _, _)| {
                 show_internal_stats || !is_internal_weapon_stat(stat.definition_index)
-            })
-            {
+            }) {
                 let mut id_details = format!("Definition index {}", stat.definition_index);
                 if let Some(hash) = stat.definition_hash {
                     id_details.push_str(&format!("\nDefinition hash 0x{hash:08X}"));
                 }
                 if show_internal_stats {
-                left_cell(ui,
-                    id_width,
-                    egui::Label::new(
-                        egui::RichText::new(stat.definition_index.to_string()).monospace(),
+                    left_cell(
+                        ui,
+                        id_width,
+                        egui::Label::new(
+                            egui::RichText::new(stat.definition_index.to_string()).monospace(),
+                        )
+                        .halign(egui::Align::LEFT),
                     )
-                    .halign(egui::Align::LEFT),
-                )
-                .on_hover_text(id_details);
+                    .on_hover_text(id_details);
                 }
-                let name_response = left_cell(ui,
+                let name_response = left_cell(
+                    ui,
                     stat_width,
                     egui::Label::new(if *is_removed {
                         format!("{}  ·  Removed", stat.name)
@@ -154,12 +160,12 @@ pub(super) fn draw_investment_stats(
                     } else {
                         stat.name.clone()
                     })
-                        .truncate()
-                        .halign(egui::Align::LEFT),
+                    .truncate()
+                    .halign(egui::Align::LEFT),
                 );
                 if *is_added {
                     name_response.on_hover_text(
-                        "This definition is not present in the gameplay donor. Parhelion will append a canonical investment row. Runtime behavior remains weapon-dependent.",
+                        "Not on the gameplay donor. Its effect depends on the weapon.",
                     );
                 }
                 let mut effective_value = values
@@ -167,12 +173,13 @@ pub(super) fn draw_investment_stats(
                     .find(|candidate| candidate.definition_index == stat.definition_index)
                     .map_or(stat.value, |value| value.value);
                 let value_range = stat.value_range();
-                let response = table.value(ui, &mut effective_value, value_range, !*is_removed)
+                let response = table
+                    .value(ui, &mut effective_value, value_range, !*is_removed)
                     .on_hover_text(match (stat.minimum_value, stat.maximum_value) {
-                        (Some(minimum), Some(maximum)) => format!("Direct package value. Native range {minimum}–{maximum}."),
-                        (None, Some(maximum)) => format!("Direct package value. Native maximum {maximum}. No minimum is defined."),
-                        (Some(minimum), None) => format!("Direct package value. Native minimum {minimum}. No maximum is defined."),
-                        (None, None) => "Direct package value. Drag or type to edit.".to_owned(),
+                        (Some(minimum), Some(maximum)) => format!("Range {minimum}–{maximum}"),
+                        (None, Some(maximum)) => format!("Maximum {maximum}"),
+                        (Some(minimum), None) => format!("Minimum {minimum}"),
+                        (None, None) => "Drag or type to edit".to_owned(),
                     });
                 if response.changed() {
                     edited = true;
@@ -190,15 +197,16 @@ pub(super) fn draw_investment_stats(
                     stat.in_game_display_label(effective_value)
                 };
                 let display_tooltip = if *is_added && stat.display_interpolation.is_empty() {
-                    "The active stat display scaling has no curve for this added definition. Shown as the stored package value"
+                    "No display scaling for this stat. Shows the raw value"
                 } else if stat.display_interpolation.is_empty() {
-                    "No native display curve is defined. Shown as the stored package value"
+                    "No display scaling. Shows the raw value"
                 } else if stat.display_as_numeric {
-                    "Previewed from the active decoded numeric display curve"
+                    "Scaled in-game value"
                 } else {
-                    "Previewed from the active decoded display curve. The game may render this as a bar"
+                    "Scaled in-game value, shown as a bar"
                 };
-                left_cell(ui,
+                left_cell(
+                    ui,
                     display_width,
                     egui::Label::new(egui::RichText::new(display_label).monospace())
                         .halign(egui::Align::LEFT),
@@ -215,7 +223,8 @@ pub(super) fn draw_investment_stats(
                 });
                 ui.end_row();
             }
-        });
+        },
+    );
     edited |= row_action.is_some();
     match row_action {
         Some(StatRowAction::RemoveAdded(definition_index)) => {

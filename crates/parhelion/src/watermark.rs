@@ -147,6 +147,9 @@ pub struct WeaponIconRequest {
     pub donor_container_tag: TagHash,
     pub icon_edit: WeaponIconEdit,
     pub rarity: AuthoredWeaponRarity,
+    /// Keeps the base container's own background and watermark layers. A subclass icon has
+    /// neither a rarity plate nor a watermark.
+    pub plain: bool,
 }
 
 /// One cloned base-art container that points at the shared authored watermark layer.
@@ -156,6 +159,7 @@ pub struct WatermarkedIconContainer {
     pub donor_companion_tag: TagHash,
     pub icon_edit: WeaponIconEdit,
     pub rarity: AuthoredWeaponRarity,
+    pub plain: bool,
     pub authored_primary_layer_tag: Option<TagHash>,
     pub ordinal: usize,
     pub tag: TagHash,
@@ -386,6 +390,7 @@ fn build_watermark_plan_with_context(
             container.donor_container_tag == request.donor_container_tag
                 && container.icon_edit == request.icon_edit
                 && container.rarity == request.rarity
+                && container.plain == request.plain
         }) {
             request_container_tags.push(existing.tag);
             continue;
@@ -419,16 +424,23 @@ fn build_watermark_plan_with_context(
             let (donor_container, donor_companion) =
                 read_and_validate_icon_container(manager, donor_container_tag)?;
             let mut container = donor_container.clone();
-            let mut patched_offsets = vec![
-                ICON_CONTENT_FINGERPRINT_OFFSET,
-                ICON_WATERMARK_LAYER_OFFSET,
-                ICON_RARITY_BACKGROUND_LAYER_OFFSET,
-            ];
-            write_tag(
-                &mut container,
-                ICON_RARITY_BACKGROUND_LAYER_OFFSET,
-                request.rarity.icon_background_layer(),
-            )?;
+            let mut patched_offsets = vec![ICON_CONTENT_FINGERPRINT_OFFSET];
+            if !request.plain {
+                patched_offsets.extend([
+                    ICON_WATERMARK_LAYER_OFFSET,
+                    ICON_RARITY_BACKGROUND_LAYER_OFFSET,
+                ]);
+                write_tag(
+                    &mut container,
+                    ICON_RARITY_BACKGROUND_LAYER_OFFSET,
+                    request.rarity.icon_background_layer(),
+                )?;
+                write_tag(
+                    &mut container,
+                    ICON_WATERMARK_LAYER_OFFSET,
+                    watermark_layer_tag,
+                )?;
+            }
             if let Some((primary_layer_tag, _)) = edit_graph {
                 write_tag(
                     &mut container,
@@ -437,11 +449,6 @@ fn build_watermark_plan_with_context(
                 )?;
                 patched_offsets.push(ICON_PRIMARY_LAYER_OFFSET);
             }
-            write_tag(
-                &mut container,
-                ICON_WATERMARK_LAYER_OFFSET,
-                watermark_layer_tag,
-            )?;
             let fingerprint = private_icon_fingerprint(&container, visual_revision.as_slice());
             write_u32(&mut container, ICON_CONTENT_FINGERPRINT_OFFSET, fingerprint)?;
             validate_only_patched_fields(
@@ -459,11 +466,13 @@ fn build_watermark_plan_with_context(
             if let Some((_, primary_dependencies)) = edit_graph {
                 dependencies.extend(primary_dependencies.iter().copied());
             }
-            for pair in &texture_pairs {
-                dependencies.insert(u32::from(pair.data_tag));
-                dependencies.insert(u32::from(pair.header_tag));
+            if !request.plain {
+                for pair in &texture_pairs {
+                    dependencies.insert(u32::from(pair.data_tag));
+                    dependencies.insert(u32::from(pair.header_tag));
+                }
+                dependencies.insert(u32::from(watermark_layer_tag));
             }
-            dependencies.insert(u32::from(watermark_layer_tag));
             dependencies.insert(u32::from(tag));
             dependencies.insert(u32::from(companion_tag));
             let companion = build_shared_tag_companion_payload(
@@ -487,6 +496,7 @@ fn build_watermark_plan_with_context(
                 donor_companion_tag: donor_companion.tag,
                 icon_edit: request.icon_edit,
                 rarity: request.rarity,
+                plain: request.plain,
                 authored_primary_layer_tag: edit_graph.map(|(tag, _)| *tag),
                 ordinal,
                 tag,
@@ -1374,18 +1384,19 @@ fn validate_plan(context: WatermarkPlanValidation<'_>) -> AuthoringResult<()> {
                 || new_tags[definition_index].template_tag != container.donor_container_tag
                 || new_tags[definition_index].storage != NewTagStorageMode::InheritTemplate
                 || new_tags[definition_index].payload.len() != ICON_CONTAINER_SIZE
-                || read_tag(
-                    &new_tags[definition_index].payload,
-                    ICON_WATERMARK_LAYER_OFFSET,
-                )
-                .ok()
-                    != Some(layer_tag)
-                || read_tag(
-                    &new_tags[definition_index].payload,
-                    ICON_RARITY_BACKGROUND_LAYER_OFFSET,
-                )
-                .ok()
-                    != Some(container.rarity.icon_background_layer())
+                || (!container.plain
+                    && (read_tag(
+                        &new_tags[definition_index].payload,
+                        ICON_WATERMARK_LAYER_OFFSET,
+                    )
+                    .ok()
+                        != Some(layer_tag)
+                        || read_tag(
+                            &new_tags[definition_index].payload,
+                            ICON_RARITY_BACKGROUND_LAYER_OFFSET,
+                        )
+                        .ok()
+                            != Some(container.rarity.icon_background_layer())))
                 || container.icon_edit.is_identity()
                     != container.authored_primary_layer_tag.is_none()
                 || container.authored_primary_layer_tag.is_some_and(|primary| {
@@ -1413,6 +1424,7 @@ fn validate_plan(context: WatermarkPlanValidation<'_>) -> AuthoringResult<()> {
                         && container.donor_container_tag == request.donor_container_tag
                         && container.icon_edit == request.icon_edit
                         && container.rarity == request.rarity
+                        && container.plain == request.plain
                 })
             })
     {

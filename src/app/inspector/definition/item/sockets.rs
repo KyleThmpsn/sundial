@@ -1,22 +1,19 @@
+use super::super::item_details::{Cell, draw_hash_item_rows, draw_table, item_name};
 use super::*;
+use crate::app::inspector::look;
 
 pub(super) fn draw_sockets_page(ui: &mut egui::Ui, content: &ItemInspection<'_>) {
     let Some(item) = content.matches.item else {
-        ui.weak("No socket definition is available for this item.");
+        look::empty_state(ui, "No Sockets");
         return;
     };
     if let Some(context) = content.source_context {
-        ui.label(&context.source);
-        if let Some(plugs) = &context.plugs {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(super::super::instance::plug_source(plugs));
-                crate::ui_help::info(ui, "Opening-time account snapshot, not live equipped state. Empty and missing entries are not assumed to use the catalog default.");
-            });
-        } else {
-            ui.weak("Saved plug values were not available at this entry point.");
-        }
-    } else {
-        ui.weak("Catalog defaults and options only. Open an owned item to see its saved plugs.");
+        look::properties(ui, ("item_socket_source", item.hash), |p| {
+            p.text("Opened From", context.source.as_str());
+            if let Some(plugs) = &context.plugs {
+                p.text("Saved Plugs", super::super::instance::plug_source(plugs));
+            }
+        });
     }
     draw_hash_item_sockets(
         ui,
@@ -27,12 +24,13 @@ pub(super) fn draw_sockets_page(ui: &mut egui::Ui, content: &ItemInspection<'_>)
             .and_then(|context| context.plugs.as_ref()),
     );
     if item.sockets.is_empty() && item.default_plugs.is_empty() {
-        ui.weak("No sockets or default plugs are decoded for this item.");
+        look::empty_state(ui, "No Sockets");
     }
 }
 
-pub(super) fn draw_item_material_requirement_set_link(
-    ui: &mut egui::Ui,
+/// Insertion and enabled material requirement sets as property rows.
+pub(super) fn material_requirement_set_rows(
+    p: &mut look::Properties<'_>,
     catalog: &Catalog,
     label: &str,
     index: Option<u16>,
@@ -40,11 +38,9 @@ pub(super) fn draw_item_material_requirement_set_link(
     let Some(index) = index else {
         return;
     };
-    hash_detail_field(ui, &format!("{label} Index"), index.to_string(), true);
-    if let Some(set) = catalog.material_requirement_set(usize::from(index)) {
-        ui.label(metadata_label_text(ui, format!("{label} Hash")));
-        draw_catalog_hash_link(ui, catalog, set.hash, format_hash_hex_and_decimal(set.hash));
-        ui.end_row();
+    match catalog.material_requirement_set(usize::from(index)) {
+        Some(set) => p.link(label, catalog, set.hash, format!("Set #{index}")),
+        None => p.mono(label, format!("Set #{index}")),
     }
 }
 
@@ -63,20 +59,22 @@ pub(super) fn draw_hash_item_sockets(
         return;
     }
 
-    ui.add_space(8.0);
-    egui::CollapsingHeader::new(format!("Sockets ({socket_count})"))
-        .id_salt(("hash_item_sockets", item.hash))
-        .default_open(true)
-        .show(ui, |ui| {
+    look::section(
+        ui,
+        ("hash_item_sockets", item.hash),
+        "Sockets",
+        Some(socket_count),
+        true,
+        |ui| {
             let selection_id = egui::Id::new(("hash_item_socket_source_selection", item.hash));
             let mut clicked_socket = None;
             let current_socket = ui.data_mut(|data| data.get_temp::<usize>(selection_id));
             egui::ScrollArea::horizontal()
-                .id_salt("socket-table-columns")
+                .id_salt(("socket-table-columns", item.hash))
                 .show(ui, |ui| {
                     egui::Grid::new(("hash_item_socket_rows", item.hash))
                         .num_columns(if plugs.is_some() { 5 } else { 4 })
-                        .spacing([12.0, 3.0])
+                        .spacing([16.0, 4.0])
                         .striped(true)
                         .show(ui, |ui| {
                             ui.strong("Socket");
@@ -113,19 +111,23 @@ pub(super) fn draw_hash_item_sockets(
                                     clicked_socket = Some(socket_index);
                                 }
                                 if let Some(socket) = socket {
-                                    response.on_hover_text(format!(
+                                    let details = format!(
                                         "Socket type {} · pool {}",
                                         socket.socket_type, socket.pool
-                                    ));
+                                    );
+                                    response
+                                        .on_hover_text(details.clone())
+                                        .on_disabled_hover_text(details);
                                 }
                                 if let Some(default_hash) = default_hash {
-                                    let name = catalog
-                                        .package_item_name(default_hash)
-                                        .or_else(|| catalog.display_name(default_hash))
-                                        .unwrap_or("Name not resolved");
-                                    draw_named_catalog_hash_link(ui, catalog, default_hash, name);
+                                    draw_named_catalog_hash_link(
+                                        ui,
+                                        catalog,
+                                        default_hash,
+                                        item_name(catalog, default_hash),
+                                    );
                                 } else {
-                                    ui.weak("-");
+                                    ui.label("");
                                 }
                                 if let Some(plugs) = plugs {
                                     super::super::instance::draw_saved_plug(
@@ -172,34 +174,33 @@ pub(super) fn draw_hash_item_sockets(
                 .filter(|selected| detail_socket_indices.contains(selected))
                 .unwrap_or(first_socket_index);
 
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.strong("Socket Details");
-                egui::ComboBox::from_id_salt(("hash_item_socket_source_picker", item.hash))
-                    .selected_text(
-                        item.sockets[selected_socket_index].display_label(selected_socket_index),
-                    )
-                    .width(ui.available_width().clamp(180.0, 320.0))
-                    .show_ui(ui, |ui| {
-                        for socket_index in &detail_socket_indices {
-                            let socket = &item.sockets[*socket_index];
-                            ui.selectable_value(
-                                &mut selected_socket_index,
-                                *socket_index,
-                                format!(
-                                    "{} · {} Option Set{}",
-                                    socket.display_label(*socket_index),
-                                    socket.sources.len(),
-                                    if socket.sources.len() == 1 { "" } else { "s" }
-                                ),
-                            );
-                        }
-                    });
-            });
+            look::subheading(ui, "Socket Details");
+            egui::ComboBox::from_id_salt(("hash_item_socket_source_picker", item.hash))
+                .selected_text(
+                    item.sockets[selected_socket_index].display_label(selected_socket_index),
+                )
+                .width(ui.available_width().clamp(180.0, 320.0))
+                .show_ui(ui, |ui| {
+                    for socket_index in &detail_socket_indices {
+                        let socket = &item.sockets[*socket_index];
+                        ui.selectable_value(
+                            &mut selected_socket_index,
+                            *socket_index,
+                            format!(
+                                "{} · {} Option Set{}",
+                                socket.display_label(*socket_index),
+                                socket.sources.len(),
+                                if socket.sources.len() == 1 { "" } else { "s" }
+                            ),
+                        );
+                    }
+                });
             ui.data_mut(|data| data.insert_temp(selection_id, selected_socket_index));
+            ui.add_space(4.0);
 
             draw_hash_item_socket_sources(ui, catalog, item, selected_socket_index);
-        });
+        },
+    );
 }
 
 pub(super) fn draw_hash_item_socket_sources(
@@ -211,7 +212,7 @@ pub(super) fn draw_hash_item_socket_sources(
     let socket = &item.sockets[socket_index];
     let options = catalog.socket_options(socket);
     if socket.sources.is_empty() {
-        ui.weak("No decoded option sources.");
+        look::empty_state(ui, "No Option Sources");
     } else {
         draw_hash_item_socket_source_summary(ui, catalog, item, socket_index);
     }
@@ -221,48 +222,64 @@ pub(super) fn draw_hash_item_socket_sources(
         if source_options.is_empty() {
             continue;
         }
-        egui::CollapsingHeader::new(format!(
-            "{} Members ({})",
-            source.label(),
-            source_options.len()
-        ))
-        .id_salt((
-            "hash_item_socket_source_members",
-            item.hash,
-            socket_index,
-            source_index,
-        ))
-        .default_open(false)
-        .show(ui, |ui| {
-            let source_slot = socket_index.saturating_mul(64).saturating_add(source_index);
-            let ordered = &source.ordered_members;
-            let order_id = ui.id().with("authored_order");
-            let mut authored_order = ui.data_mut(|data| data.get_temp::<bool>(order_id).unwrap_or(!ordered.is_empty()));
-            ui.add_enabled(!ordered.is_empty(), egui::Checkbox::new(&mut authored_order, "Stored Package Order"))
-                .on_hover_text("Preserves the native member order and duplicates. When off, shows the normalized picker pool.");
-            ui.data_mut(|data| data.insert_temp(order_id, authored_order));
-            if ordered.is_empty() { ui.weak("No ordered member list was retained. Showing the normalized pool."); }
-            draw_hash_item_rows(
-                ui,
-                catalog,
-                ("socket_source_members", item.hash, source_slot),
-                if authored_order && !ordered.is_empty() { ordered.as_slice() } else { source_options }.iter().copied(),
-            );
-        });
-    }
-
-    if !options.is_empty() {
-        egui::CollapsingHeader::new(format!("Combined Plug Options ({})", options.len()))
-            .id_salt(("hash_item_socket_combined", item.hash, socket_index))
-            .default_open(false)
-            .show(ui, |ui| {
+        look::section(
+            ui,
+            (
+                "hash_item_socket_source_members",
+                item.hash,
+                socket_index,
+                source_index,
+            ),
+            &format!("{} Members", source.label()),
+            Some(source_options.len()),
+            false,
+            |ui| {
+                let source_slot = socket_index.saturating_mul(64).saturating_add(source_index);
+                let ordered = &source.ordered_members;
+                let order_id = egui::Id::new(("authored_order", item.hash, source_slot));
+                let mut authored_order = ui.data_mut(|data| {
+                    data.get_temp::<bool>(order_id)
+                        .unwrap_or(!ordered.is_empty())
+                });
+                ui.add_enabled(
+                    !ordered.is_empty(),
+                    egui::Checkbox::new(&mut authored_order, "Stored Package Order"),
+                );
+                ui.data_mut(|data| data.insert_temp(order_id, authored_order));
                 draw_hash_item_rows(
                     ui,
                     catalog,
-                    ("socket_combined", item.hash, socket_index),
-                    options.iter().copied(),
+                    egui::Id::new(("socket_source_members", item.hash, source_slot)),
+                    if authored_order && !ordered.is_empty() {
+                        ordered.as_slice()
+                    } else {
+                        source_options
+                    }
+                    .iter()
+                    .copied(),
+                    &[],
                 );
-            });
+            },
+        );
+    }
+
+    if !options.is_empty() {
+        look::section(
+            ui,
+            ("hash_item_socket_combined", item.hash, socket_index),
+            "Combined Plug Options",
+            Some(options.len()),
+            false,
+            |ui| {
+                draw_hash_item_rows(
+                    ui,
+                    catalog,
+                    egui::Id::new(("socket_combined", item.hash, socket_index)),
+                    options.iter().copied(),
+                    &[],
+                );
+            },
+        );
     }
 }
 
@@ -275,15 +292,13 @@ pub(super) fn draw_hash_item_socket_source_summary(
     let socket = &item.sockets[socket_index];
     egui::Grid::new(("hash_item_socket_source_rows", item.hash, socket_index))
         .num_columns(4)
-        .spacing([16.0, 3.0])
+        .spacing([16.0, 4.0])
         .striped(true)
         .show(ui, |ui| {
             ui.strong("Option Set");
             ui.strong("Plug Count");
             ui.strong("Data Source");
-            ui.strong("Catalog Pool ID").on_hover_text(
-                "Interned catalog pool ID. The source label contains the package record index or hash.",
-            );
+            ui.strong("Catalog Pool ID");
             ui.end_row();
             for source in &socket.sources {
                 let source_options = catalog.socket_source_options(source);
@@ -301,9 +316,7 @@ pub(super) fn draw_hash_item_socket_source_summary(
                         ui.visuals().error_fg_color,
                         format!("{} · {decode_status}", source.origin_label()),
                     )
-                    .on_hover_text(
-                        "Sundial retained every member it could decode safely. One or more package references were invalid.",
-                    );
+                    .on_hover_text("Some package references are invalid.");
                 }
                 ui.monospace(source.pool.to_string());
                 ui.end_row();
@@ -317,86 +330,61 @@ pub(super) fn draw_hash_item_abilities(
     item: &crate::catalog::ItemDef,
 ) {
     let abilities = &item.abilities;
-    let choice_count = abilities.movement.len()
-        + abilities.grenade.len()
-        + abilities.super_ability.len()
-        + abilities.melee.len()
-        + abilities.class_ability.len()
-        + abilities
-            .attunements
-            .iter()
-            .map(|attunement| {
-                attunement.super_abilities.len()
-                    + attunement.perks.len()
-                    + usize::from(attunement.melee.entry != 0)
-            })
-            .sum::<usize>();
-    if choice_count == 0 {
+    let mut rows = Vec::new();
+    for (label, choices) in [
+        ("Movement", abilities.movement.as_slice()),
+        ("Grenade", abilities.grenade.as_slice()),
+        ("Super Ability", abilities.super_ability.as_slice()),
+        ("Melee", abilities.melee.as_slice()),
+        ("Class Ability", abilities.class_ability.as_slice()),
+    ] {
+        for choice in choices {
+            rows.push(ability_row(label.to_owned(), choice));
+        }
+    }
+    for attunement in &abilities.attunements {
+        for choice in &attunement.super_abilities {
+            rows.push(ability_row(
+                format!("{} · Super Ability", attunement.name),
+                choice,
+            ));
+        }
+        if attunement.melee.entry != 0 {
+            rows.push(ability_row(
+                format!("{} · Melee", attunement.name),
+                &attunement.melee,
+            ));
+        }
+        for choice in &attunement.perks {
+            rows.push(ability_row(format!("{} · Perk", attunement.name), choice));
+        }
+    }
+    if rows.is_empty() {
         return;
     }
-
-    ui.add_space(8.0);
-    egui::CollapsingHeader::new(format!("Abilities ({choice_count})"))
-        .id_salt(("hash_item_abilities", item.hash))
-        .show(ui, |ui| {
-            egui::Grid::new(("hash_item_ability_rows", item.hash))
-                .num_columns(3)
-                .spacing([16.0, 3.0])
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.strong("Ability");
-                    ui.strong("Name");
-                    ui.strong("Hash");
-                    ui.end_row();
-                    for (label, choices) in [
-                        ("Movement", abilities.movement.as_slice()),
-                        ("Grenade", abilities.grenade.as_slice()),
-                        ("Super Ability", abilities.super_ability.as_slice()),
-                        ("Melee", abilities.melee.as_slice()),
-                        ("Class Ability", abilities.class_ability.as_slice()),
-                    ] {
-                        for choice in choices {
-                            draw_hash_ability_row(ui, catalog, label, choice);
-                        }
-                    }
-                    for attunement in &abilities.attunements {
-                        for choice in &attunement.super_abilities {
-                            draw_hash_ability_row(
-                                ui,
-                                catalog,
-                                &format!("{} · Super Ability", attunement.name),
-                                choice,
-                            );
-                        }
-                        if attunement.melee.entry != 0 {
-                            draw_hash_ability_row(
-                                ui,
-                                catalog,
-                                &format!("{} · Melee", attunement.name),
-                                &attunement.melee,
-                            );
-                        }
-                        for choice in &attunement.perks {
-                            draw_hash_ability_row(
-                                ui,
-                                catalog,
-                                &format!("{} · Perk", attunement.name),
-                                choice,
-                            );
-                        }
-                    }
-                });
-        });
+    look::section(
+        ui,
+        ("hash_item_abilities", item.hash),
+        "Abilities",
+        Some(rows.len()),
+        rows.len() <= super::super::HASH_RELATIONSHIP_AUTO_EXPAND_LIMIT,
+        |ui| {
+            draw_table(
+                ui,
+                catalog,
+                ("hash_item_abilities", item.hash),
+                &["Ability", "Name"],
+                &rows,
+            );
+        },
+    );
 }
 
-pub(super) fn draw_hash_ability_row(
-    ui: &mut egui::Ui,
-    catalog: &Catalog,
-    label: &str,
-    choice: &crate::catalog::AbilityChoice,
-) {
-    ui.label(label);
-    draw_named_catalog_hash_link(ui, catalog, choice.entry, metadata_text(&choice.name));
-    draw_catalog_hash_link(ui, catalog, choice.entry, format_hash_hex(choice.entry));
-    ui.end_row();
+/// `entry` is the ability's position in its list, not a definition hash, so the name is text.
+fn ability_row(label: String, choice: &crate::catalog::AbilityChoice) -> Vec<Cell> {
+    let name = choice.name.trim();
+    vec![
+        Cell::Text(label),
+        Cell::Text(if name.is_empty() { UNNAMED } else { name }.to_owned()),
+    ]
 }

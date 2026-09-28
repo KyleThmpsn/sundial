@@ -3,7 +3,7 @@
 //! stays as the fallback for tests and non-GL backends.
 use super::{
     Model,
-    render::{Camera, Style},
+    render::{Camera, Scene, Style},
     shader,
 };
 use eframe::{
@@ -33,6 +33,7 @@ pub fn available() -> bool {
 pub(crate) struct Frame {
     pub model: Arc<Model>,
     pub camera: Camera,
+    pub scene: Scene,
     pub style: Style,
     pub seconds: f32,
     /// Skinned positions for this instant; `None` draws the bind pose with smooth normals.
@@ -73,6 +74,12 @@ struct Uniforms {
     depth_scale: Option<glow::UniformLocation>,
     style: Option<glow::UniformLocation>,
     flat: Option<glow::UniformLocation>,
+    pan: Option<glow::UniformLocation>,
+    key_dir: Option<glow::UniformLocation>,
+    half_dir: Option<glow::UniformLocation>,
+    key: Option<glow::UniformLocation>,
+    fill: Option<glow::UniformLocation>,
+    exposure: Option<glow::UniformLocation>,
     samplers: [Option<glow::UniformLocation>; 6],
     has: [Option<glow::UniformLocation>; 9],
     constant: Option<glow::UniformLocation>,
@@ -90,7 +97,9 @@ struct Uniforms {
 }
 
 struct Uploaded {
-    key: usize,
+    /// The model these buffers hold. Kept alive so no later model can take its address and
+    /// be drawn with this upload's triangle order.
+    model: Arc<Model>,
     vao: glow::VertexArray,
     positions: glow::Buffer,
     attributes: glow::Buffer,
@@ -127,8 +136,6 @@ struct Target {
     size: [i32; 2],
 }
 
-const BACKGROUND: [f32; 3] = [24.0 / 255.0, 28.0 / 255.0, 35.0 / 255.0];
-
 impl State {
     #[expect(
         clippy::cognitive_complexity,
@@ -149,14 +156,17 @@ impl State {
             let Some((program, uniforms)) = self.program.as_ref() else {
                 return;
             };
-            let key = Arc::as_ptr(&frame.model) as usize;
-            if self.model.as_ref().is_some_and(|m| m.key != key) {
+            if self
+                .model
+                .as_ref()
+                .is_some_and(|m| !Arc::ptr_eq(&m.model, &frame.model))
+            {
                 if let Some(old) = self.model.take() {
                     old.delete(gl);
                 }
             }
             if self.model.is_none() {
-                self.model = Some(upload(gl, &frame.model, key));
+                self.model = Some(upload(gl, &frame.model));
             }
             let Some(uploaded) = self.model.as_ref() else {
                 return;
@@ -190,7 +200,8 @@ impl State {
             // Equal passes so emissive panels coincident with a surface win by draw order.
             gl.depth_func(glow::LEQUAL);
             gl.depth_mask(true);
-            gl.clear_color(BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], 1.0);
+            let background = frame.scene.background.map(|v| f32::from(v) / 255.0);
+            gl.clear_color(background[0], background[1], background[2], 1.0);
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
 
             gl.use_program(Some(*program));
@@ -223,6 +234,24 @@ impl State {
                 2.0 * scale / size[1] as f32,
             );
             gl.uniform_1_f32(uniforms.depth_scale.as_ref(), 1.0 / uploaded.radius);
+            // Pan is a fraction of the viewport; clip space spans two units and points up.
+            gl.uniform_2_f32(
+                uniforms.pan.as_ref(),
+                frame.camera.pan[0] * 2.0,
+                -frame.camera.pan[1] * 2.0,
+            );
+            let key = frame.scene.light;
+            // The highlight sits halfway between the key and the fixed head-on view direction.
+            let half = {
+                let sum = [key[0], key[1], key[2] - 1.0];
+                let length = sum.iter().map(|v| v * v).sum::<f32>().sqrt().max(0.0001);
+                sum.map(|v| v / length)
+            };
+            gl.uniform_3_f32(uniforms.key_dir.as_ref(), key[0], key[1], key[2]);
+            gl.uniform_3_f32(uniforms.half_dir.as_ref(), half[0], half[1], half[2]);
+            gl.uniform_1_f32(uniforms.key.as_ref(), frame.scene.key);
+            gl.uniform_1_f32(uniforms.fill.as_ref(), frame.scene.fill);
+            gl.uniform_1_f32(uniforms.exposure.as_ref(), frame.scene.exposure);
             gl.uniform_1_i32(
                 uniforms.style.as_ref(),
                 match frame.style {
@@ -358,28 +387,51 @@ fn expand_positions(order: &[u32], model: &Model, positions: &[[f32; 3]]) -> Vec
     out
 }
 
-unsafe fn upload(gl: &glow::Context, model: &Model, key: usize) -> Uploaded {
-    // SAFETY: called from the paint callback with the live context; buffers are sized from
-    // the slices uploaded and stay owned by the returned `Uploaded`.
-    unsafe {
-        let mut low = [f32::INFINITY; 3];
-        let mut high = [f32::NEG_INFINITY; 3];
-        for index in model.triangles.iter().flatten() {
-            let vertex = model.vertices[*index as usize];
+/// Center and half diagonal of the triangles drawn, leaving out light volumes when hidden.
+fn bounds(model: &Model, hide_light: bool) -> ([f32; 3], f32) {
+    let mut low = [f32::INFINITY; 3];
+    let mut high = [f32::NEG_INFINITY; 3];
+    for (index, triangle) in model.triangles.iter().enumerate() {
+        if hide_light && model.triangle_light.get(index).copied().unwrap_or(false) {
+            continue;
+        }
+        for &vertex in triangle {
+            let vertex = model.vertices[vertex as usize];
             for axis in 0..3 {
                 low[axis] = low[axis].min(vertex[axis]);
                 high[axis] = high[axis].max(vertex[axis]);
             }
         }
-        let center: [f32; 3] = std::array::from_fn(|axis| (low[axis] + high[axis]) * 0.5);
-        let radius = (0..3)
-            .map(|axis| (high[axis] - low[axis]).powi(2))
-            .sum::<f32>()
-            .sqrt()
-            .max(0.0001)
-            * 0.5;
+    }
+    let center: [f32; 3] = std::array::from_fn(|axis| (low[axis] + high[axis]) * 0.5);
+    let radius = (0..3)
+        .map(|axis| (high[axis] - low[axis]).powi(2))
+        .sum::<f32>()
+        .sqrt()
+        .max(0.0001)
+        * 0.5;
+    (center, radius)
+}
 
-        let mut order: Vec<u32> = (0..model.triangles.len() as u32).collect();
+unsafe fn upload(gl: &glow::Context, model: &Arc<Model>) -> Uploaded {
+    let held = Arc::clone(model);
+    let model: &Model = model;
+    // SAFETY: called from the paint callback with the live context; buffers are sized from
+    // the slices uploaded and stay owned by the returned `Uploaded`.
+    unsafe {
+        let hide_light = model.has_surface_mesh();
+        let (center, radius) = bounds(model, hide_light);
+
+        let mut order: Vec<u32> = (0..model.triangles.len() as u32)
+            .filter(|&index| {
+                !hide_light
+                    || !model
+                        .triangle_light
+                        .get(index as usize)
+                        .copied()
+                        .unwrap_or(false)
+            })
+            .collect();
         let key_of = |triangle: usize| Key {
             albedo: model.triangle_textures.get(triangle).copied().flatten(),
             gearstack: model.triangle_gearstacks.get(triangle).copied().flatten(),
@@ -554,7 +606,7 @@ unsafe fn upload(gl: &glow::Context, model: &Model, key: usize) -> Uploaded {
         gl.bind_texture(glow::TEXTURE_2D, None);
 
         Uploaded {
-            key,
+            model: held,
             vao,
             positions: position_buffer,
             attributes: attribute_buffer,
@@ -690,6 +742,12 @@ unsafe fn compile(gl: &glow::Context) -> Option<(glow::Program, Uniforms)> {
             scale: location("uScale"),
             depth_scale: location("uDepthScale"),
             style: location("uStyle"),
+            pan: location("uPan"),
+            key_dir: location("uKeyDir"),
+            half_dir: location("uHalfDir"),
+            key: location("uKey"),
+            fill: location("uFill"),
+            exposure: location("uExposure"),
             flat: location("uFlat"),
             samplers: [
                 location("uAlbedo"),
@@ -734,6 +792,7 @@ layout(location = 2) in vec2 aUv;
 uniform vec3 uCenter;
 uniform mat3 uRotate;
 uniform vec2 uScale;
+uniform vec2 uPan;
 uniform float uDepthScale;
 out vec3 vView;
 out vec3 vNormal;
@@ -743,7 +802,7 @@ void main() {
     vView = p;
     vNormal = uRotate * aNormal;
     vUv = aUv;
-    gl_Position = vec4(p.x * uScale.x, p.y * uScale.y, p.z * uDepthScale, 1.0);
+    gl_Position = vec4(p.x * uScale.x + uPan.x, p.y * uScale.y + uPan.y, p.z * uDepthScale, 1.0);
 }
 "#;
 
@@ -766,8 +825,8 @@ uniform vec3 uDyeAlbedo, uDyeWorn, uEmissive;
 uniform vec4 uParams, uWornParams, uRough, uWornRough, uWear, uDetailTransform, uNormalTransform;
 out vec4 fragColor;
 
-const vec3 KEY = vec3(-0.35, 0.55, -0.76);
-const vec3 HALF = vec3(-0.187, 0.293, -0.937);
+uniform vec3 uKeyDir, uHalfDir;
+uniform float uKey, uFill, uExposure;
 
 float sat(float v) { return clamp(v, 0.0, 1.0); }
 float remap(float v, vec4 m) {
@@ -785,18 +844,50 @@ vec3 encode(vec3 v) {
     return mix(lo, hi, step(vec3(0.0031308), v));
 }
 
+// Mirrors shader.rs `value_noise`.
+float hashCell(int x, int y) {
+    uint v = uint(x) * 0x8DA6B343u ^ uint(y) * 0xD8163841u ^ 0x2C1B3C6Du;
+    v ^= v >> 13u;
+    v *= 0x5BD1E995u;
+    v ^= v >> 15u;
+    return float(v & 0xFFFFu) / 65535.0;
+}
+float valueNoise(vec2 p) {
+    vec2 cell = floor(p);
+    vec2 f = p - cell;
+    f = f * f * (3.0 - 2.0 * f);
+    int cx = int(cell.x);
+    int cy = int(cell.y);
+    return mix(mix(hashCell(cx, cy), hashCell(cx + 1, cy), f.x),
+               mix(hashCell(cx, cy + 1), hashCell(cx + 1, cy + 1), f.x), f.y);
+}
+
+// Mirrors shader.rs `studio`. View space points y up, where the CPU raster points it down.
+float studio(vec3 n, float rough) {
+    float facing = -n.z;
+    vec3 r = vec3(2.0 * facing * n.x, 2.0 * facing * n.y, 2.0 * facing * n.z + 1.0);
+    float height = r.y;
+    float gradient = mix(0.08, 0.6, sat(0.5 + 0.6 * height));
+    float softbox = 1.4 * exp(-(1.0 - dot(r, uKeyDir)) / 0.06);
+    float clouds = (valueNoise(vec2(r.x * 3.0 + 7.0, -height * 3.0 + 7.0)) - 0.5) * 0.204;
+    float sharp = max(gradient + softbox + clouds, 0.0);
+    return mix(sharp, 0.32, sat(rough * 2.5));
+}
+
 vec3 light(vec3 albedo, float rough, float metal, float ao, vec3 emission, vec3 n, vec3 tint) {
     if (n.z > 0.0) n = -n;
-    float diffuse = max(dot(n, KEY), 0.0);
-    float half_ = max(dot(n, HALF), 0.0);
+    float diffuse = max(dot(n, uKeyDir), 0.0);
+    float half_ = max(dot(n, uHalfDir), 0.0);
     float r = clamp(rough, 0.06, 1.0);
-    float exponent = clamp(2.0 / (r * r) - 2.0, 1.0, 512.0);
-    float highlight = pow(half_, exponent) * (1.2 - 0.8 * r);
+    float glint = max(r, 0.2);
+    float exponent = clamp(2.0 / (glint * glint) - 2.0, 1.0, 512.0);
+    float highlight = pow(half_, exponent) * (1.2 - 0.8 * glint);
     float fresnel = pow(1.0 - abs(n.z), 5.0);
+    float surroundings = studio(n, r);
     vec3 specular = mix(vec3(0.04), albedo, metal);
-    vec3 diff = albedo * (1.0 - metal) * (0.30 * ao + 0.70 * diffuse);
-    vec3 refl = tint * specular * (0.32 * ao + highlight * 2.0) + fresnel * 0.18 * ao;
-    return diff + refl + emission;
+    vec3 diff = albedo * (1.0 - metal) * (uFill * ao + uKey * diffuse);
+    vec3 refl = tint * specular * (surroundings * ao + highlight * 2.0) + fresnel * 0.18 * ao;
+    return (diff + refl + emission) * uExposure;
 }
 
 void main() {
@@ -811,20 +902,20 @@ void main() {
         return;
     }
     if (n.z > 0.0) n = -n;
-    float lighting = 0.30 + 0.70 * min(abs(dot(n, KEY)), 1.0);
+    float lighting = uFill + uKey * min(abs(dot(n, uKeyDir)), 1.0);
     if (uStyle == 0 && uHasConstant == 1) {
         // Panel art lives in the colour plate: alpha cuts the segments, colour tints them.
         vec4 base = uHasAlbedo == 1 ? texture(uAlbedo, uv) : vec4(1.0);
         if (base.a < 0.5) discard;
-        fragColor = vec4(encode(uConstant * base.rgb), 1.0);
+        fragColor = vec4(encode(uConstant * base.rgb * uExposure), 1.0);
         return;
     }
     if (uStyle == 1 || (uHasAlbedo == 0 && uHasDye == 0)) {
-        fragColor = vec4(vec3(205.0, 216.0, 230.0) / 255.0 * lighting, 1.0);
+        fragColor = vec4(vec3(205.0, 216.0, 230.0) / 255.0 * lighting * uExposure, 1.0);
         return;
     }
     if (uHasAlbedo == 0) {
-        fragColor = vec4(encode(uDyeAlbedo * lighting), 1.0);
+        fragColor = vec4(encode(uDyeAlbedo * lighting * uExposure), 1.0);
         return;
     }
     vec3 base = texture(uAlbedo, uv).rgb;
@@ -860,7 +951,7 @@ void main() {
         }
     } else if (uHasNormal == 0) {
         // No material information: the CPU path lights the colour texture directly.
-        fragColor = vec4(encode(base) * lighting, 1.0);
+        fragColor = vec4(encode(base) * lighting * uExposure, 1.0);
         return;
     }
     if (uHasNormal == 1) {

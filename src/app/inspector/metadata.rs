@@ -7,71 +7,7 @@ use crate::{
     hash::{format_hash_decimal, format_hash_hex, format_hash_hex_and_decimal, parse_hash_hex},
 };
 
-use super::request_definition;
-use crate::app::ui::TABLE_CELL_HEIGHT;
-
-pub(in crate::app) fn hash_detail_field(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: impl Into<String>,
-    monospace: bool,
-) {
-    ui.label(metadata_label_text(ui, label));
-    let value = value.into();
-    let absent = value.starts_with('<') && value.ends_with('>');
-    let parsed_hash = label
-        .to_ascii_lowercase()
-        .contains("hash")
-        .then(|| parse_hash_hex(hash_hex_component(&value)))
-        .flatten()
-        .filter(|hash| *hash != 0);
-    let text = egui::RichText::new(&value);
-    let text = if absent { text.weak().italics() } else { text };
-    let text = if monospace { text.monospace() } else { text };
-    let text = if parsed_hash.is_some() || label == "Instance ID" {
-        text.weak()
-    } else {
-        text
-    };
-    if let Some(parsed_hash) = parsed_hash {
-        let response = ui
-            .add(egui::Button::new(text).frame(false))
-            .on_hover_text(format!("Open details for 0x{parsed_hash:08X}"));
-        if response.clicked() {
-            request_definition(ui.ctx(), parsed_hash);
-        }
-    } else {
-        ui.add(egui::Label::new(text).wrap());
-    }
-    ui.end_row();
-}
-
-pub(in crate::app) fn draw_hash_wrapped_detail(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: impl Into<String>,
-) {
-    ui.label(metadata_label_text(ui, label));
-    let value = value.into();
-    let absent = value.starts_with('<') && value.ends_with('>');
-    let text = egui::RichText::new(value);
-    ui.add(egui::Label::new(if absent { text.weak().italics() } else { text }).wrap());
-}
-
-pub(in crate::app) fn draw_hash_hex_cell(ui: &mut egui::Ui, width: f32, hash: Option<u64>) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(width, TABLE_CELL_HEIGHT),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            ui.set_min_size(egui::vec2(width, TABLE_CELL_HEIGHT));
-            if let Some(hash) = hash.filter(|hash| *hash != 0) {
-                draw_hash_link(ui, hash, format_hash_hex(hash));
-            } else {
-                ui.weak("-");
-            }
-        },
-    );
-}
+use super::{UNNAMED, request_definition};
 
 pub(in crate::app) fn draw_metadata_paths(ui: &mut egui::Ui, paths: &[Vec<String>]) {
     ui.add_space(4.0);
@@ -154,20 +90,6 @@ pub(in crate::app) fn metadata_field(
     ui.end_row();
 }
 
-pub(in crate::app) fn hash_hex_and_decimal_field(
-    ui: &mut egui::Ui,
-    label: &'static str,
-    hash: u64,
-) {
-    ui.label(metadata_label_text(ui, label));
-    if hash == 0 || hash == u64::from(u32::MAX) {
-        ui.label(egui::RichText::new("<not present>").weak().italics());
-    } else {
-        draw_hash_link(ui, hash, format_hash_hex_and_decimal(hash));
-    }
-    ui.end_row();
-}
-
 pub(in crate::app) fn catalog_hash_hex_and_decimal_field(
     ui: &mut egui::Ui,
     catalog: &Catalog,
@@ -200,29 +122,20 @@ pub(in crate::app) fn metadata_label_text(
     egui::RichText::new(label.into()).color(ui.visuals().text_color().gamma_multiply(0.92))
 }
 
-pub(in crate::app) fn draw_hash_link(
-    ui: &mut egui::Ui,
-    hash: u64,
-    text: impl Into<String>,
-) -> egui::Response {
-    draw_hash_button(
-        ui,
-        hash,
-        egui::RichText::new(text.into()).monospace().weak(),
-    )
-    .on_hover_text(format!("Open details for {}", format_hash_hex(hash)))
-}
-
 pub(in crate::app) fn draw_catalog_hash_link(
     ui: &mut egui::Ui,
     catalog: &Catalog,
     hash: u64,
     text: impl Into<String>,
 ) -> egui::Response {
+    let name = catalog
+        .display_name(hash)
+        .or_else(|| catalog.package_item_name(hash));
     let response = draw_hash_button(
         ui,
         hash,
         egui::RichText::new(text.into()).monospace().weak(),
+        name,
     );
     catalog_hash_tooltip(response, catalog, hash)
 }
@@ -233,21 +146,74 @@ pub(in crate::app) fn draw_named_catalog_hash_link(
     hash: u64,
     name: impl Into<String>,
 ) -> egui::Response {
+    let name = name.into();
     let color = ui.visuals().hyperlink_color;
+    let copied_name =
+        Some(name.as_str()).filter(|name| *name != UNNAMED && !name.trim().is_empty());
     let response = draw_hash_button(
         ui,
         hash,
-        crate::app::ui::destiny_text(ui, name).color(color),
+        crate::app::ui::destiny_text(ui, &name).color(color),
+        copied_name,
     );
     catalog_hash_tooltip(response, catalog, hash)
 }
 
-fn draw_hash_button(ui: &mut egui::Ui, hash: u64, text: egui::RichText) -> egui::Response {
+/// A frameless hash link that opens its definition, with a context menu for copying it.
+fn draw_hash_button(
+    ui: &mut egui::Ui,
+    hash: u64,
+    text: egui::RichText,
+    name: Option<&str>,
+) -> egui::Response {
     let response = ui.add(egui::Button::new(text).frame(false));
     if response.clicked() {
         request_definition(ui.ctx(), hash);
     }
+    response.context_menu(|ui| hash_context_menu(ui, hash, name));
     response
+}
+
+fn hash_context_menu(ui: &mut egui::Ui, hash: u64, name: Option<&str>) {
+    inspect_menu_button(ui, "Open", hash);
+    copy_menu_buttons(ui, hash, name);
+}
+
+/// Right-click actions for a definition shown as plain text: open it and copy its hash.
+pub(in crate::app) fn definition_context_menu(response: &egui::Response, label: &str, hash: u64) {
+    if hash == 0 || hash == u64::from(u32::MAX) {
+        return;
+    }
+    response.context_menu(|ui| {
+        inspect_menu_button(ui, label, hash);
+        copy_menu_buttons(ui, hash, None);
+    });
+}
+
+/// A menu button that opens a definition.
+pub(in crate::app) fn inspect_menu_button(ui: &mut egui::Ui, label: &str, hash: u64) {
+    if ui.button(label).clicked() {
+        request_definition(ui.ctx(), hash);
+        ui.close_menu();
+    }
+}
+
+/// Menu buttons that copy a hash, and the name when there is one.
+pub(in crate::app) fn copy_menu_buttons(ui: &mut egui::Ui, hash: u64, name: Option<&str>) {
+    if ui.button("Copy Hash").clicked() {
+        ui.ctx().copy_text(format_hash_hex(hash));
+        ui.close_menu();
+    }
+    if ui.button("Copy Decimal").clicked() {
+        ui.ctx().copy_text(format_hash_decimal(hash));
+        ui.close_menu();
+    }
+    if let Some(name) = name
+        && ui.button("Copy Name").clicked()
+    {
+        ui.ctx().copy_text(name.to_owned());
+        ui.close_menu();
+    }
 }
 
 fn catalog_hash_tooltip(response: egui::Response, catalog: &Catalog, hash: u64) -> egui::Response {
@@ -258,13 +224,28 @@ fn catalog_hash_tooltip(response: egui::Response, catalog: &Catalog, hash: u64) 
     }
 }
 
-pub(in crate::app) fn draw_hash_hex_and_decimal_cells(ui: &mut egui::Ui, hash: u64) {
-    draw_hash_link(ui, hash, format_hash_hex(hash));
-    ui.monospace(format_hash_decimal(hash));
-}
-
 pub(in crate::app) fn hash_hex_component(value: &str) -> &str {
     value.split_once(" · ").map_or(value, |(hex, _)| hex)
+}
+
+/// Reads a definition hash in any form the inspector shows or a user pastes: `0x` hexadecimal,
+/// bare hexadecimal with a letter or exactly eight digits, decimal, or a "0x… · decimal" pair.
+pub(in crate::app) fn parse_hash_text(text: &str) -> Option<u64> {
+    let text = hash_hex_component(text.trim()).trim();
+    let digits = |test: fn(&u8) -> bool| !text.is_empty() && text.bytes().all(|byte| test(&byte));
+    let bare_hex = text.len() <= 16
+        && digits(u8::is_ascii_hexdigit)
+        && (text.len() == 8 || text.bytes().any(|byte| byte.is_ascii_alphabetic()));
+    let parsed = if text.starts_with("0x") || text.starts_with("0X") {
+        parse_hash_hex(text)
+    } else if bare_hex {
+        u64::from_str_radix(text, 16).ok()
+    } else if digits(u8::is_ascii_digit) {
+        text.parse::<u32>().ok().map(u64::from)
+    } else {
+        None
+    };
+    parsed.filter(|hash| *hash != 0)
 }
 
 pub(in crate::app) fn metadata_text(value: &str) -> &str {
@@ -277,11 +258,11 @@ pub(in crate::app) const fn yes_no(value: bool) -> &'static str {
 
 pub(in crate::app) const fn objective_owner_kind_label(kind: ObjectiveOwnerKind) -> &'static str {
     match kind {
-        ObjectiveOwnerKind::InventoryItem => "Inventory item",
+        ObjectiveOwnerKind::InventoryItem => "Inventory Item",
         ObjectiveOwnerKind::Milestone => "Milestone",
         ObjectiveOwnerKind::Metric => "Metric",
         ObjectiveOwnerKind::Record => "Record",
-        ObjectiveOwnerKind::PresentationNode => "Presentation node",
+        ObjectiveOwnerKind::PresentationNode => "Presentation Node",
     }
 }
 
@@ -289,16 +270,16 @@ pub(in crate::app) const fn progression_context_kind_label(
     kind: ProgressionContextKind,
 ) -> &'static str {
     match kind {
-        ProgressionContextKind::InventoryItem => "Inventory item",
+        ProgressionContextKind::InventoryItem => "Inventory Item",
         ProgressionContextKind::Collectible => "Collectible",
         ProgressionContextKind::Record => "Record",
         ProgressionContextKind::Objective => "Objective",
-        ProgressionContextKind::PresentationNode => "Presentation node",
+        ProgressionContextKind::PresentationNode => "Presentation Node",
         ProgressionContextKind::Activity => "Activity",
-        ProgressionContextKind::ActivityAvailability => "Activity availability",
+        ProgressionContextKind::ActivityAvailability => "Activity Availability",
         ProgressionContextKind::Location => "Location",
-        ProgressionContextKind::LocationRelease => "Location release",
-        ProgressionContextKind::ExpressionMapping => "Expression mapping",
+        ProgressionContextKind::LocationRelease => "Location Release",
+        ProgressionContextKind::ExpressionMapping => "Expression Mapping",
         ProgressionContextKind::Progression => "Progression",
         ProgressionContextKind::Achievement => "Achievement",
         ProgressionContextKind::Requirement => "Requirement",
@@ -320,12 +301,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parser_accepts_the_hex_component_of_a_hash_display_pair() {
-        let displayed = "0x574E0A2A · 1464732202";
-        assert_eq!(hash_hex_component(displayed), "0x574E0A2A");
-        assert_eq!(
-            parse_hash_hex(hash_hex_component(displayed)),
-            Some(0x574E_0A2A)
-        );
+    fn typed_hashes_are_read_in_every_displayed_form() {
+        for text in [
+            "0x574E0A2A",
+            " 0X574e0a2a ",
+            "574E0A2A",
+            "574e0a2a",
+            "1464732202",
+            "0x574E0A2A · 1464732202",
+        ] {
+            assert_eq!(parse_hash_text(text), Some(0x574E_0A2A), "{text}");
+        }
+        assert_eq!(parse_hash_text("12345678"), Some(0x1234_5678));
+        assert_eq!(parse_hash_text("ace"), Some(0xACE));
+        assert_eq!(parse_hash_text("1234"), Some(1234));
+        for text in ["", "0", "0x0", "ace rifle", "4294967296", "0xnope", "x12"] {
+            assert_eq!(parse_hash_text(text), None, "{text}");
+        }
     }
 }

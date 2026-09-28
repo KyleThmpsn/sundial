@@ -1,5 +1,6 @@
 use super::*;
 use crate::{
+    app::inspector,
     catalog::Catalog,
     persistence::dawn_account::{ActivityState, VendorProgress, VendorUnlock},
 };
@@ -52,6 +53,20 @@ fn name(catalog: &Catalog, vendor: u16) -> String {
         })
         .map(str::to_owned)
         .unwrap_or_else(|| format!("Vendor {vendor}"))
+}
+
+/// The progression definition holding a vendor's reputation, or zero.
+fn progression_hash(catalog: &Catalog, vendor: u16) -> u64 {
+    FACTIONS
+        .iter()
+        .find(|f| f.0 == vendor)
+        .and_then(|f| {
+            catalog
+                .progression_definitions()
+                .iter()
+                .find(|p| p.definition_index == f.1)
+        })
+        .map_or(0, |p| p.hash)
 }
 
 pub(super) fn draw(
@@ -110,8 +125,11 @@ pub(super) fn draw(
                     .iter_mut()
                     .filter(|r| r.owner.eq_ignore_ascii_case(owner))
                 {
-                    ui.label(name(catalog, row.vendor))
+                    let vendor = ui
+                        .label(name(catalog, row.vendor))
                         .on_hover_text(format!("Vendor index {}", row.vendor));
+                    let hash = progression_hash(catalog, row.vendor);
+                    inspector::definition_context_menu(&vendor, "Inspect Definition", hash);
                     ui.push_id((row.position, "points"), |ui| {
                         ui.add(egui::DragValue::new(&mut row.points).range(0..=i32::MAX))
                     });
@@ -138,12 +156,28 @@ pub(super) fn draw(
         }
         ui.add_space(10.0);
     }
-    egui::CollapsingHeader::new("Campaign Selections").show(ui,|ui| {
-        for (bit,hash) in [0xBEB63647_u32,0x6CBEA754,0x65683247].into_iter().enumerate() {
-            let mut selected=*campaigns & (1<<bit)!=0;
-            let label=catalog.display_name(u64::from(hash)).map(str::to_owned).unwrap_or_else(||format!("Campaign {}",bit+1));
-            if ui.checkbox(&mut selected,label).on_hover_text("Controls the vendor's selection flag only. Does not grant the campaign quest or complete it.").changed() {
-                if selected {*campaigns|=1<<bit;} else {*campaigns&=!(1<<bit);}
+    egui::CollapsingHeader::new("Campaign Selections").show(ui, |ui| {
+        for (bit, hash) in [0xBEB63647_u32, 0x6CBEA754, 0x65683247]
+            .into_iter()
+            .enumerate()
+        {
+            let mut selected = *campaigns & (1 << bit) != 0;
+            let label = catalog
+                .display_name(u64::from(hash))
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("Campaign {}", bit + 1));
+            if ui
+                .checkbox(&mut selected, label)
+                .on_hover_text(
+                    "Sets the vendor's selection flag only. The quest is not granted or completed.",
+                )
+                .changed()
+            {
+                if selected {
+                    *campaigns |= 1 << bit;
+                } else {
+                    *campaigns &= !(1 << bit);
+                }
             }
         }
     });

@@ -20,6 +20,18 @@ impl AppendedTagAllocator {
         }
     }
 
+    #[cfg(feature = "d2-model-importer")]
+    pub(crate) fn ordinal(self, tag: TagHash) -> AuthoringResult<usize> {
+        if tag.pkg_id() != self.package_id
+            || (tag.entry_index() as usize) < self.current_entry_count
+        {
+            return Err(AuthoringError::InvalidInput(format!(
+                "{tag} is outside this appended-tag allocation"
+            )));
+        }
+        Ok(tag.entry_index() as usize - self.current_entry_count)
+    }
+
     pub(crate) fn checked_ordinal(
         base: usize,
         local: usize,

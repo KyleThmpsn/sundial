@@ -25,6 +25,7 @@ fn collectible(index: u16, slot: u32, inverse: bool) -> CollectibleDef {
         type_name: "Weapon".into(),
         paths: Vec::new(),
         conditions: vec![CollectionConditionDef { field: 4, tokens }],
+        parent_nodes: Vec::new(),
     }
 }
 

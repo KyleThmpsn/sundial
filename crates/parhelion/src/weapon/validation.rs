@@ -784,14 +784,16 @@ pub(crate) fn validate_weapon_clone_specs_against_catalog<'a>(
     install_directory: &Path,
     specs: impl IntoIterator<Item = &'a WeaponCloneSpec>,
 ) -> AuthoringResult<()> {
-    validate_catalog_with_progress(install_directory, specs, &mut |_, _, _, _| {})
+    validate_catalog_with_progress(install_directory, specs, &mut |_, _, _, _| {}).map(drop)
 }
 
+/// Also returns the class of each subclass base the specs start from: 0 Titan, 1 Hunter,
+/// 2 Warlock.
 pub(crate) fn validate_catalog_with_progress<'a>(
     install_directory: &Path,
     specs: impl IntoIterator<Item = &'a WeaponCloneSpec>,
     progress: &mut dyn FnMut(bool, &str, usize, usize),
-) -> AuthoringResult<()> {
+) -> AuthoringResult<BTreeMap<u32, u8>> {
     let specs = specs
         .into_iter()
         .filter(|spec| {
@@ -809,10 +811,12 @@ pub(crate) fn validate_catalog_with_progress<'a>(
                 || spec.overrides.roll_set_index.is_some()
                 || spec.overrides.linked_plug_index.is_some()
                 || !spec.overrides.raw_payload_patches.is_empty()
+                // Gear always checks that its base item is installed and of its own kind.
+                || !spec.kind.is_weapon()
         })
         .collect::<Vec<_>>();
     if specs.is_empty() {
-        return Ok(());
+        return Ok(BTreeMap::new());
     }
 
     let catalog = InvestmentCatalog::load(install_directory, false, |event| {
@@ -851,10 +855,14 @@ pub(crate) fn validate_catalog_with_progress<'a>(
     // The same for every weapon, and the check that reads it sits two loops deep, so it is
     // built at most once for the whole pass and only when a variant actually replaces effects.
     let mut perk_stat_choices = None;
+    let mut classes = BTreeMap::new();
     let total = specs.len();
     for (index, spec) in specs.into_iter().enumerate() {
         progress(false, &spec.text.name, index, total);
         (|| -> AuthoringResult<()> {
+        if !spec.kind.is_weapon() {
+            return gear::validate_against_catalog(&catalog, spec, reusable_plug_set_count);
+        }
         if let Some(reference) = &spec.presentation_donor {
             let gameplay = donors_by_hash
                 .get(&spec.donor_item_hash)
@@ -1065,10 +1073,17 @@ pub(crate) fn validate_catalog_with_progress<'a>(
             )));
         }
         Ok(())
-        })().map_err(|error| error.context(spec.error_context()))?;
+        })().map_err(|error| spec.in_recipe(error))?;
+        if spec.kind == crate::ItemKind::Subclass
+            && let Some(class) = catalog
+                .item_class_type(spec.donor_item_hash)
+                .filter(|class| *class < 3)
+        {
+            classes.insert(spec.donor_item_hash, class);
+        }
         progress(false, &spec.text.name, index + 1, total);
     }
-    Ok(())
+    Ok(classes)
 }
 
 pub(super) fn validate_project_package_owners(

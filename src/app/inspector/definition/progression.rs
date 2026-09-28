@@ -1,4 +1,7 @@
+use super::item_details::{Cell, draw_table, item_name};
+use super::unlocks::unlock_label;
 use super::*;
+use crate::app::inspector::{look, progression_type_label, resolved_objective_table_text};
 
 pub(super) fn draw_hash_progression_matches(
     ui: &mut egui::Ui,
@@ -9,19 +12,105 @@ pub(super) fn draw_hash_progression_matches(
     matches: &CatalogHashMatches<'_>,
 ) {
     draw_progression_definitions(ui, catalog, document, collection_state, matches);
-    draw_reward_references(ui, inspected_hash, matches);
-    draw_faction_references(ui, catalog, inspected_hash, matches);
-    draw_objective_matches(ui, catalog, matches);
-    draw_objective_owners(ui, catalog, matches);
-    draw_objective_traits(ui, catalog, matches);
-    draw_progression_readers(ui, catalog, matches);
-    draw_record_matches(ui, catalog, matches);
+    draw_objective_matches(ui, catalog, collection_state, matches);
+    draw_record_matches(ui, catalog, collection_state, inspected_hash, matches);
     draw_seasonal_matches(ui, catalog, collection_state, matches);
-    draw_mission_matches(ui, document, matches);
+    draw_mission_matches(ui, catalog, document, matches);
+    draw_hash_references(ui, catalog, collection_state, inspected_hash, matches);
+}
+
+/// Everything that points at the inspected hash, or that it points at, after its own content.
+fn draw_hash_references(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    snapshot: Option<&CollectionStateSnapshot>,
+    inspected_hash: u64,
+    matches: &CatalogHashMatches<'_>,
+) {
+    draw_record_references(ui, catalog, snapshot, inspected_hash, matches);
+    draw_objective_owners(ui, catalog, inspected_hash, matches);
+    draw_objective_traits(ui, catalog, inspected_hash, matches);
+    draw_reward_references(ui, catalog, inspected_hash, matches);
+    draw_faction_references(ui, catalog, inspected_hash, matches);
+    draw_progression_readers(ui, catalog, inspected_hash, matches);
+}
+
+/// A property row that opens another definition, or plain text when it names the page shown.
+pub(super) fn property_link(
+    p: &mut look::Properties<'_>,
+    label: &str,
+    catalog: &Catalog,
+    hash: u64,
+    current: u64,
+    name: impl Into<String>,
+) {
+    if hash == current {
+        p.text(label, name);
+    } else {
+        p.link(label, catalog, hash, name);
+    }
+}
+
+/// A presentation node's name.
+pub(super) fn node_name(catalog: &Catalog, hash: u64) -> String {
+    catalog
+        .presentation_node(hash)
+        .map(|node| node.name.trim())
+        .filter(|name| !name.is_empty())
+        .or_else(|| catalog.display_name(hash))
+        .unwrap_or(UNNAMED)
+        .to_owned()
+}
+
+/// A "Parent Nodes" row of presentation node links.
+pub(super) fn parent_nodes_row(p: &mut look::Properties<'_>, catalog: &Catalog, parents: &[u64]) {
+    if parents.is_empty() {
+        return;
+    }
+    p.custom("Parent Nodes", |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            for parent in parents {
+                draw_named_catalog_hash_link(ui, catalog, *parent, node_name(catalog, *parent));
+            }
+        });
+    });
+}
+
+/// Paths as root-first "A › B › C" text. Package paths are stored leaf first.
+pub(super) fn path_texts(paths: &[Vec<String>]) -> Vec<String> {
+    paths
+        .iter()
+        .map(|path| {
+            path.iter()
+                .rev()
+                .map(|part| part.trim())
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" › ")
+        })
+        .filter(|path| !path.is_empty())
+        .collect()
+}
+
+/// A "Paths" row of muted path lines.
+pub(super) fn paths_row(p: &mut look::Properties<'_>, label: &str, paths: &[Vec<String>]) {
+    let paths = path_texts(paths);
+    if paths.is_empty() {
+        return;
+    }
+    p.custom(label, |ui| {
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            for path in paths {
+                ui.label(egui::RichText::new(path).color(look::muted(ui)));
+            }
+        });
+    });
 }
 
 /// Artifact mods and Season Pass rewards inspected by their item or collectible hash. The
-/// Seasonal page renders the same definitions for Sunrise; here they resolve by hash on either
+/// Seasonal page renders the same definitions for Sunrise. Here they resolve by hash on either
 /// runtime, with ownership read from the loaded view.
 fn draw_seasonal_matches(
     ui: &mut egui::Ui,
@@ -32,81 +121,101 @@ fn draw_seasonal_matches(
     let Some(season) = catalog.seasonal() else {
         return;
     };
+    let current = matches.inspected_hash;
     if !matches.artifact_mods.is_empty() {
-        ui.add_space(8.0);
-        hash_metadata_section(
+        look::section(
             ui,
-            &format!("Artifact Mods ({})", matches.artifact_mods.len()),
+            ("hash_artifact_mods", current),
+            "Artifact Mods",
+            Some(matches.artifact_mods.len()),
             true,
             |ui| {
+                if snapshot.is_some_and(CollectionStateSnapshot::is_dawn) {
+                    look::empty_state(ui, crate::app::progression::seasonal::DAWN_UNAVAILABLE);
+                }
                 for entry in &matches.artifact_mods {
-                    metadata_subsection(
+                    look::subheading(
                         ui,
                         &format!(
                             "Column {} · Sale Row {}",
                             entry.column() + 1,
                             entry.sale_index
                         ),
-                        |ui| {
-                            egui::Grid::new(("hash_artifact_mod", entry.sale_index))
-                                .num_columns(2)
-                                .spacing([16.0, 4.0])
-                                .show(ui, |ui| {
-                                    hash_detail_field(
-                                        ui,
-                                        "Points Required",
-                                        entry.points_required().to_string(),
-                                        true,
-                                    );
-                                    hash_detail_field(
-                                        ui,
-                                        "Character Flag Slot",
-                                        entry.character_slot.to_string(),
-                                        true,
-                                    );
-                                    if let Some(snapshot) = snapshot {
-                                        let owned =
-                                            snapshot.artifact_mask(season, true) & entry.bit() != 0;
-                                        hash_detail_field(
-                                            ui,
-                                            "Owned by Selected Character",
-                                            if owned { "Yes" } else { "No" },
-                                            false,
-                                        );
-                                    }
-                                });
-                            draw_catalog_hash_link(ui, catalog, entry.item_hash, "Mod Item");
-                            draw_catalog_hash_link(
-                                ui,
-                                catalog,
-                                entry.collectible_hash,
-                                "Collectible",
-                            );
-                            if let Some(flag) =
-                                catalog.unlock_flag_definition(usize::from(entry.flag_definition))
-                            {
-                                draw_catalog_hash_link(ui, catalog, flag.hash, "Unlock Flag");
-                            }
-                            if snapshot.is_some_and(CollectionStateSnapshot::is_dawn) {
-                                ui.label(crate::app::progression::seasonal::DAWN_UNAVAILABLE);
-                            }
-                        },
                     );
+                    look::properties(ui, ("hash_artifact_mod", entry.sale_index), |p| {
+                        p.mono("Points Required", entry.points_required().to_string());
+                        p.mono("Character Flag Slot", entry.character_slot.to_string());
+                        if let Some(snapshot) = snapshot {
+                            let owned = snapshot.artifact_mask(season, true) & entry.bit() != 0;
+                            p.text("Owned by Selected Character", yes_no(owned));
+                        }
+                        property_link(
+                            p,
+                            "Mod Item",
+                            catalog,
+                            entry.item_hash,
+                            current,
+                            item_name(catalog, entry.item_hash),
+                        );
+                        property_link(
+                            p,
+                            "Collectible",
+                            catalog,
+                            entry.collectible_hash,
+                            current,
+                            catalog
+                                .display_name(entry.collectible_hash)
+                                .unwrap_or_else(|| item_name(catalog, entry.item_hash)),
+                        );
+                        let flag_index = usize::from(entry.flag_definition);
+                        if let Some(flag) = catalog.unlock_flag_definition(flag_index) {
+                            property_link(
+                                p,
+                                "Unlock Flag",
+                                catalog,
+                                flag.hash,
+                                current,
+                                unlock_label(catalog, "Flag", flag_index, flag),
+                            );
+                        }
+                    });
                 }
             },
         );
     }
     if let Some(grant) = matches.season_pass_reward {
-        ui.add_space(8.0);
-        hash_metadata_section(ui, "Season Pass Reward", true, |ui| {
-            hash_detail_field(ui, "Grant", grant.label(), false);
-            if let crate::investment::seasonal::RewardGrant::ClassPackage(items) = grant {
-                for item in items {
-                    draw_catalog_hash_link(ui, catalog, *item, "Package Item");
+        look::section(
+            ui,
+            ("hash_season_pass_reward", current),
+            "Season Pass Reward",
+            None,
+            true,
+            |ui| {
+                look::properties(ui, ("hash_season_pass_reward", current), |p| {
+                    p.text("Grant", grant.label());
+                });
+                if let crate::investment::seasonal::RewardGrant::ClassPackage(items) = grant {
+                    let rows = items
+                        .iter()
+                        .map(|item| {
+                            vec![
+                                Cell::link_unless(*item, current, item_name(catalog, *item)),
+                                Cell::muted(
+                                    catalog.package_item_type_name(*item).unwrap_or_default(),
+                                ),
+                            ]
+                        })
+                        .collect::<Vec<_>>();
+                    draw_table(
+                        ui,
+                        catalog,
+                        ("hash_season_pass_reward_items", current),
+                        &["Package Item", "Type"],
+                        &rows,
+                    );
                 }
-            }
-            ui.weak("The Season Pass ranks that grant it are listed under Progression Reward References.");
-        });
+            },
+        );
     }
 }
 
@@ -114,63 +223,75 @@ fn draw_seasonal_matches(
 /// the loaded Dawn account holds for it.
 fn draw_mission_matches(
     ui: &mut egui::Ui,
+    catalog: &Catalog,
     document: Option<&Value>,
     matches: &CatalogHashMatches<'_>,
 ) {
     let Some(scenario) = matches.mission_scenario else {
         return;
     };
-    ui.add_space(8.0);
-    hash_metadata_section(ui, "Dawn Mission", true, |ui| {
-        hash_detail_field(ui, "Scenario Package", scenario, false);
-        let saved = document
-            .and_then(|document| document["_dawn_activity"]["missions"].as_array())
-            .map(|rows| {
-                rows.iter()
-                    .filter(|row| {
-                        row["hash"]
-                            .as_u64()
-                            .and_then(|hash| u32::try_from(hash).ok())
-                            == u32::try_from(matches.inspected_hash).ok()
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let Some(document) = document else {
-            ui.weak("No account is loaded.");
-            return;
-        };
-        if document.get("_dawn_activity").is_none() {
-            ui.weak("Missions are tracked by Dawn accounts only.");
-        } else if saved.is_empty() {
-            ui.weak("Not started on this account or the selected character.");
-        } else {
-            egui::Grid::new(("hash_dawn_mission", scenario))
-                .num_columns(5)
-                .striped(true)
-                .spacing([16.0, 3.0])
-                .show(ui, |ui| {
-                    for title in [
+    look::section(
+        ui,
+        ("hash_dawn_mission", scenario),
+        "Dawn Mission",
+        None,
+        true,
+        |ui| {
+            look::properties(ui, ("hash_dawn_mission", scenario), |p| {
+                p.mono("Scenario Package", scenario);
+            });
+            let Some(document) = document else {
+                look::empty_state(ui, "No Account Loaded");
+                return;
+            };
+            if document.get("_dawn_activity").is_none() {
+                look::empty_state(ui, "Dawn Accounts Only");
+                return;
+            }
+            let rows = document["_dawn_activity"]["missions"]
+                .as_array()
+                .map(|rows| {
+                    rows.iter()
+                        .filter(|row| {
+                            row["hash"]
+                                .as_u64()
+                                .and_then(|hash| u32::try_from(hash).ok())
+                                == u32::try_from(matches.inspected_hash).ok()
+                        })
+                        .map(|row| {
+                            vec![
+                                Cell::text(row["scope"].as_str().unwrap_or("?")),
+                                Cell::text(yes_no(row["completed"].as_bool().unwrap_or(false))),
+                                Cell::mono(&row["progress"]),
+                                Cell::mono(&row["activity"]),
+                                Cell::Mono(format!(
+                                    "{:08X}",
+                                    row["checkpoint"].as_u64().unwrap_or(0)
+                                )),
+                            ]
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if rows.is_empty() {
+                look::empty_state(ui, "Not Started");
+            } else {
+                draw_table(
+                    ui,
+                    catalog,
+                    ("hash_dawn_mission_rows", scenario),
+                    &[
                         "Scope",
                         "Completed",
                         "Progress",
                         "Activity Index",
                         "Checkpoint",
-                    ] {
-                        ui.strong(title);
-                    }
-                    ui.end_row();
-                    for row in saved {
-                        ui.label(row["scope"].as_str().unwrap_or("?"));
-                        ui.label(yes_no(row["completed"].as_bool().unwrap_or(false)));
-                        ui.monospace(row["progress"].to_string());
-                        ui.monospace(row["activity"].to_string());
-                        ui.monospace(format!("{:08X}", row["checkpoint"].as_u64().unwrap_or(0)));
-                        ui.end_row();
-                    }
-                });
-        }
-    });
+                    ],
+                    &rows,
+                );
+            }
+        },
+    );
 }
 
 /// The Dawn vendor a progression definition backs, with the reputation the loaded account holds.
@@ -184,140 +305,322 @@ fn draw_dawn_vendor(
     else {
         return;
     };
-    // A Sunrise account keeps this definition as an ordinary faction progression; the vendor
+    // A Sunrise account keeps this definition as an ordinary faction progression. The vendor
     // join is Dawn's, so it is shown for Dawn views and for package browsing without an account.
     if document.is_some_and(|document| {
         !crate::persistence::progression::is_dawn_progression_view(document)
     }) {
         return;
     }
-    ui.add_space(8.0);
-    metadata_subsection(ui, "Dawn Vendor", |ui| {
-        egui::Grid::new(("hash_dawn_vendor", vendor))
-            .num_columns(2)
-            .spacing([16.0, 4.0])
-            .show(ui, |ui| {
-                hash_detail_field(ui, "Vendor Index", vendor.to_string(), true);
-                hash_detail_field(ui, "Progress Scope", if personal { "Character" } else { "Account" }, false);
-                hash_detail_field(ui, "Points per Package", per_package.to_string(), true);
-                let rows = document
-                    .and_then(|document| document["_dawn_activity"]["vendors"].as_array())
-                    .map(|rows| {
-                        rows.iter()
-                            .filter(|row| row["vendor"].as_u64() == Some(u64::from(vendor)))
-                            .collect::<Vec<_>>()
-                    });
-                match rows {
-                    None => hash_detail_field(ui, "Reputation", "No account loaded", false),
-                    Some(rows) if rows.is_empty() => {
-                        hash_detail_field(ui, "Reputation", "Not started", false);
-                    }
-                    Some(rows) => {
-                        for row in rows {
-                            let points = row["points"].as_i64().unwrap_or(0);
-                            let rewards = row["rewards"].as_i64().unwrap_or(0);
-                            let available = (points / i64::from(per_package) - rewards).max(0);
-                            hash_detail_field(
-                                ui,
-                                &format!("Reputation ({})", row["scope"].as_str().unwrap_or("?")),
-                                format!("{points} points · {rewards} packages claimed · {available} available"),
-                                false,
-                            );
-                        }
-                    }
-                }
+    look::subheading(ui, "Dawn Vendor");
+    look::properties(ui, ("hash_dawn_vendor", vendor), |p| {
+        p.mono("Vendor Index", vendor.to_string());
+        p.text(
+            "Progress Scope",
+            if personal { "Character" } else { "Account" },
+        );
+        p.mono("Points per Package", per_package.to_string());
+        let rows = document
+            .and_then(|document| document["_dawn_activity"]["vendors"].as_array())
+            .map(|rows| {
+                rows.iter()
+                    .filter(|row| row["vendor"].as_u64() == Some(u64::from(vendor)))
+                    .collect::<Vec<_>>()
             });
+        match rows {
+            None => p.text("Reputation", "No Account Loaded"),
+            Some(rows) if rows.is_empty() => p.text("Reputation", "Not Started"),
+            Some(rows) => {
+                for row in rows {
+                    let points = row["points"].as_i64().unwrap_or(0);
+                    let rewards = row["rewards"].as_i64().unwrap_or(0);
+                    let available = (points / i64::from(per_package) - rewards).max(0);
+                    p.text(
+                        &format!("Reputation ({})", row["scope"].as_str().unwrap_or("?")),
+                        format!(
+                            "{points} points · {rewards} packages claimed · {available} available"
+                        ),
+                    );
+                }
+            }
+        }
     });
 }
 
-fn record_heading(catalog: &Catalog, index: usize, record: &RecordDefinition) -> String {
-    let name = if record.name.trim().is_empty() {
-        catalog.display_name(record.hash)
-    } else {
-        Some(record.name.as_str())
-    };
-    name.map_or_else(
-        || format!("Record #{index}"),
-        |name| format!("{name} · Record #{index}"),
-    )
+/// A record's name, or its index.
+pub(super) fn record_name(catalog: &Catalog, record: &RecordDefinition) -> String {
+    if !record.name.trim().is_empty() {
+        return record.name.trim().to_owned();
+    }
+    catalog
+        .display_name(record.hash)
+        .map_or_else(|| format!("Record #{}", record.index), str::to_owned)
 }
 
-fn draw_record_detail(
+/// A record's progress read from saved state.
+pub(super) struct RecordStatus {
+    /// Each objective's current value, in the record's objective order.
+    pub(super) values: Vec<Option<i32>>,
+    pub(super) label: &'static str,
+}
+
+fn objective_complete(objective: &ObjectiveDef, value: i32) -> bool {
+    if objective.is_counting_downward {
+        value <= objective.completion_value
+    } else {
+        value >= objective.completion_value
+    }
+}
+
+/// The status the Triumphs page shows for a record.
+pub(super) fn record_status(
+    record: &RecordDefinition,
+    catalog: &Catalog,
+    snapshot: &CollectionStateSnapshot,
+) -> RecordStatus {
+    let (values, label) = crate::app::progression::record_progress(record, catalog, snapshot);
+    RecordStatus { values, label }
+}
+
+/// Records (triumphs) that carry this hash. The Triumphs page renders the same definitions. This
+/// makes them reachable by hash.
+fn draw_record_matches(
     ui: &mut egui::Ui,
     catalog: &Catalog,
+    snapshot: Option<&CollectionStateSnapshot>,
+    inspected_hash: u64,
+    matches: &CatalogHashMatches<'_>,
+) {
+    match matches.record_matches.as_slice() {
+        [] => {}
+        [(index, record)] => draw_record(ui, catalog, snapshot, inspected_hash, *index, record),
+        records => {
+            for (index, record) in records {
+                look::section(
+                    ui,
+                    ("hash_record", *index),
+                    &record_name(catalog, record),
+                    None,
+                    records.len() <= 3,
+                    |ui| draw_record(ui, catalog, snapshot, inspected_hash, *index, record),
+                );
+            }
+        }
+    }
+}
+
+fn draw_record(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    snapshot: Option<&CollectionStateSnapshot>,
+    current: u64,
     index: usize,
     record: &RecordDefinition,
 ) {
-    egui::Grid::new(("hash_record", index))
-        .num_columns(2)
-        .spacing([16.0, 4.0])
-        .show(ui, |ui| {
-            if let Some(path) = record.paths.first() {
-                hash_detail_field(ui, "Path", path.join(" / "), false);
-            }
-            hash_detail_field(ui, "Objectives", record.objectives.len().to_string(), true);
-            hash_detail_field(ui, "Intervals", record.interval_count.to_string(), true);
-            if let Some(runtime) = &record.runtime {
-                hash_detail_field(ui, "Score", runtime.score.to_string(), true);
-            }
-        });
-    for objective_index in &record.objectives {
-        if let Some(objective) = catalog.objectives().get(*objective_index) {
-            draw_catalog_hash_link(
-                ui,
+    let status = snapshot.map(|snapshot| record_status(record, catalog, snapshot));
+    look::properties(ui, ("hash_record", index), |p| {
+        if let Some(status) = &status {
+            p.text("Status", status.label);
+        }
+        if let Some(runtime) = record.runtime.as_ref().filter(|runtime| runtime.score > 0) {
+            p.mono("Score", runtime.score.to_string());
+        }
+        if let Some(flag_index) = record.completion_flag.map(usize::from)
+            && let Some(flag) = catalog.unlock_flag_definition(flag_index)
+        {
+            property_link(
+                p,
+                "Completion Flag",
                 catalog,
-                objective.hash,
-                format!("Objective #{objective_index}"),
+                flag.hash,
+                current,
+                unlock_label(catalog, "Flag", flag_index, flag),
             );
         }
+        if let Some(value_index) = record.redeemed_intervals.map(usize::from)
+            && let Some(value) = catalog.unlock_value_definition(value_index)
+        {
+            property_link(
+                p,
+                "Redeemed Intervals",
+                catalog,
+                value.hash,
+                current,
+                unlock_label(catalog, "Value", value_index, value),
+            );
+        }
+        p.mono("Record Index", index.to_string());
+        parent_nodes_row(p, catalog, &record.parent_nodes);
+        paths_row(p, "Paths", &record.paths);
+    });
+
+    if !record.objectives.is_empty() {
+        let rows = record
+            .objectives
+            .iter()
+            .enumerate()
+            .map(|(position, objective_index)| {
+                let mut row = match catalog.objective_definition(*objective_index) {
+                    Some(objective) => vec![
+                        Cell::link_unless(
+                            objective.hash,
+                            current,
+                            resolved_objective_table_text(catalog, objective, None),
+                        ),
+                        Cell::mono(objective.completion_value),
+                    ],
+                    None => vec![
+                        Cell::muted(format!("Objective #{objective_index}")),
+                        Cell::muted(""),
+                    ],
+                };
+                if let Some(status) = &status {
+                    row.push(status.values.get(position).copied().flatten().map_or_else(
+                        || Cell::muted("Unresolved"),
+                        |value| Cell::Mono(value.to_string()),
+                    ));
+                }
+                row
+            })
+            .collect::<Vec<_>>();
+        let headings: &[&str] = if status.is_some() {
+            &["Objective", "Completion Value", "Progress"]
+        } else {
+            &["Objective", "Completion Value"]
+        };
+        look::section(
+            ui,
+            ("hash_record_objectives", index),
+            "Objectives",
+            Some(rows.len()),
+            true,
+            |ui| {
+                draw_table(
+                    ui,
+                    catalog,
+                    ("hash_record_objectives", index),
+                    headings,
+                    &rows,
+                );
+            },
+        );
     }
-    if let Some(flag) = record
-        .completion_flag
-        .and_then(|flag| catalog.unlock_flag_definition(usize::from(flag)))
-    {
-        draw_catalog_hash_link(ui, catalog, flag.hash, "Completion Flag");
+
+    let Some(runtime) = &record.runtime else {
+        return;
+    };
+    let item_cell = |item_index: usize| {
+        catalog.item_hash_for_index(item_index).map_or_else(
+            || Cell::muted(format!("Item #{item_index}")),
+            |hash| Cell::link_unless(hash, current, item_name(catalog, hash)),
+        )
+    };
+    if !runtime.interval_scores.is_empty() {
+        let rows = runtime
+            .interval_scores
+            .iter()
+            .enumerate()
+            .map(|(interval, score)| {
+                vec![
+                    Cell::mono(interval + 1),
+                    Cell::mono(score),
+                    runtime
+                        .interval_items
+                        .get(interval)
+                        .copied()
+                        .flatten()
+                        .map_or_else(|| Cell::muted(""), item_cell),
+                ]
+            })
+            .collect::<Vec<_>>();
+        look::section(
+            ui,
+            ("hash_record_intervals", index),
+            "Intervals",
+            Some(rows.len()),
+            rows.len() <= HASH_RELATIONSHIP_AUTO_EXPAND_LIMIT,
+            |ui| {
+                draw_table(
+                    ui,
+                    catalog,
+                    ("hash_record_intervals", index),
+                    &["Interval", "Score", "Reward"],
+                    &rows,
+                );
+            },
+        );
+    }
+    if !runtime.rewards.is_empty() {
+        let rows = runtime
+            .rewards
+            .iter()
+            .map(|(item_index, quantity)| vec![item_cell(*item_index), Cell::mono(quantity)])
+            .collect::<Vec<_>>();
+        look::section(
+            ui,
+            ("hash_record_rewards", index),
+            "Rewards",
+            Some(rows.len()),
+            true,
+            |ui| {
+                draw_table(
+                    ui,
+                    catalog,
+                    ("hash_record_rewards", index),
+                    &["Item", "Quantity"],
+                    &rows,
+                );
+            },
+        );
     }
 }
 
-/// Records (triumphs) that carry this hash, and those that reach it through an objective or
-/// their completion flag. The Triumphs page renders the same definitions; this makes them
-/// reachable by hash.
-fn draw_record_matches(ui: &mut egui::Ui, catalog: &Catalog, matches: &CatalogHashMatches<'_>) {
-    if !matches.record_matches.is_empty() {
-        ui.add_space(8.0);
-        hash_metadata_section(
-            ui,
-            &format!("Records ({})", matches.record_matches.len()),
-            matches.record_matches.len() <= 3,
-            |ui| {
-                for (index, record) in &matches.record_matches {
-                    metadata_subsection(ui, &record_heading(catalog, *index, record), |ui| {
-                        draw_record_detail(ui, catalog, *index, record);
-                    });
-                }
-            },
-        );
+/// Records that reach the inspected hash through an objective or their completion flag.
+fn draw_record_references(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    snapshot: Option<&CollectionStateSnapshot>,
+    current: u64,
+    matches: &CatalogHashMatches<'_>,
+) {
+    let references = &matches.record_references;
+    if references.is_empty() {
+        return;
     }
-    if !matches.record_references.is_empty() {
-        ui.add_space(8.0);
-        hash_metadata_section(
-            ui,
-            &format!("Record References ({})", matches.record_references.len()),
-            false,
-            |ui| {
-                for (index, record, kind) in &matches.record_references {
-                    metadata_subsection(
-                        ui,
-                        &format!("{} · via {kind}", record_heading(catalog, *index, record)),
-                        |ui| {
-                            draw_catalog_hash_link(ui, catalog, record.hash, "Record");
-                            draw_record_detail(ui, catalog, *index, record);
-                        },
-                    );
-                }
-            },
-        );
-    }
+    let rows = references
+        .iter()
+        .map(|(_, record, kind)| {
+            let mut row = vec![
+                Cell::link_unless(record.hash, current, record_name(catalog, record)),
+                Cell::text(*kind),
+            ];
+            if let Some(snapshot) = snapshot {
+                row.push(Cell::text(record_status(record, catalog, snapshot).label));
+            }
+            row
+        })
+        .collect::<Vec<_>>();
+    let headings: &[&str] = if snapshot.is_some() {
+        &["Record", "Via", "Status"]
+    } else {
+        &["Record", "Via"]
+    };
+    look::section(
+        ui,
+        ("hash_record_references", current),
+        "Used by Records",
+        Some(rows.len()),
+        rows.len() <= HASH_RELATIONSHIP_AUTO_EXPAND_LIMIT,
+        |ui| {
+            draw_table(
+                ui,
+                catalog,
+                ("hash_record_references", current),
+                headings,
+                &rows,
+            )
+        },
+    );
 }
 
 fn draw_progression_definitions(
@@ -327,34 +630,25 @@ fn draw_progression_definitions(
     collection_state: Option<&CollectionStateSnapshot>,
     matches: &CatalogHashMatches<'_>,
 ) {
-    let progression_definitions = &matches.progression_definitions;
-    if !progression_definitions.is_empty() {
-        ui.add_space(8.0);
-        let heading = if progression_definitions.len() == 1 {
-            "Progression Definition".to_owned()
-        } else {
-            format!(
-                "Progression Definitions ({})",
-                progression_definitions.len()
-            )
-        };
-        hash_metadata_section(ui, &heading, true, |ui| {
-            for (index, definition) in progression_definitions {
-                if progression_definitions.len() == 1 {
-                    draw_hash_progression_definition(
-                        ui,
-                        catalog,
-                        document,
-                        collection_state,
-                        *index,
-                        definition,
-                    );
-                } else {
-                    let heading = progression_display_name(definition).map_or_else(
-                        || format!("Definition #{index}"),
-                        |name| format!("{name} · Definition #{index}"),
-                    );
-                    metadata_subsection(ui, &heading, |ui| {
+    match matches.progression_definitions.as_slice() {
+        [] => {}
+        [(index, definition)] => draw_hash_progression_definition(
+            ui,
+            catalog,
+            document,
+            collection_state,
+            *index,
+            definition,
+        ),
+        definitions => {
+            for (index, definition) in definitions {
+                look::section(
+                    ui,
+                    ("hash_progression_definition", *index),
+                    &progression_name(*index, definition),
+                    None,
+                    false,
+                    |ui| {
                         draw_hash_progression_definition(
                             ui,
                             catalog,
@@ -363,507 +657,632 @@ fn draw_progression_definitions(
                             *index,
                             definition,
                         );
-                    });
-                }
+                    },
+                );
             }
-        });
+        }
     }
 }
 
-const REWARD_PROGRESSION_WIDTH: f32 = 220.0;
-const REWARD_HASH_WIDTH: f32 = 126.0;
-const REWARD_INDEX_WIDTH: f32 = 88.0;
-const REWARD_LEVEL_WIDTH: f32 = 72.0;
-const REWARD_QUANTITY_WIDTH: f32 = 88.0;
-
-/// Names a progression definition by index, adding its name when it has one.
-fn definition_label(index: usize, name: &str) -> String {
-    if name.trim().is_empty() {
-        format!("Definition #{index}")
-    } else {
-        format!("Definition #{index} · {name}")
-    }
+/// A progression's name, or its index.
+fn progression_name(index: usize, definition: &ProgressionDefinition) -> String {
+    progression_display_name(definition).unwrap_or_else(|| format!("Progression #{index}"))
 }
 
-fn draw_reward_reference_header(ui: &mut egui::Ui) {
-    ui.horizontal(|ui| {
-        table_cell(
-            ui,
-            REWARD_PROGRESSION_WIDTH,
-            egui::RichText::new("Progression").strong(),
-        );
-        table_cell(ui, REWARD_HASH_WIDTH, egui::RichText::new("Hash").strong());
-        table_cell(
-            ui,
-            REWARD_INDEX_WIDTH,
-            egui::RichText::new("Reward Index").strong(),
-        );
-        table_cell(
-            ui,
-            REWARD_LEVEL_WIDTH,
-            egui::RichText::new("Level").strong(),
-        );
-        table_cell(
-            ui,
-            REWARD_QUANTITY_WIDTH,
-            egui::RichText::new("Quantity").strong(),
-        );
-    });
+/// A progression definition by its native definition index.
+fn progression_by_definition_index(
+    catalog: &Catalog,
+    definition_index: u16,
+) -> Option<(usize, &ProgressionDefinition)> {
+    catalog
+        .progression_definitions()
+        .iter()
+        .enumerate()
+        .find(|(_, definition)| definition.definition_index == definition_index)
 }
 
-fn draw_reward_reference_row(
-    ui: &mut egui::Ui,
-    definition_index: usize,
-    definition: &ProgressionDefinition,
-    reward_index: usize,
-) {
-    let reward = &definition.reward_items[reward_index];
-    table_cell(
-        ui,
-        REWARD_PROGRESSION_WIDTH,
-        definition_label(definition_index, &definition.name),
-    );
-    draw_hash_hex_cell(ui, REWARD_HASH_WIDTH, Some(definition.hash));
-    table_cell(
-        ui,
-        REWARD_INDEX_WIDTH,
-        egui::RichText::new(reward_index.to_string()).monospace(),
-    );
-    table_cell(
-        ui,
-        REWARD_LEVEL_WIDTH,
-        egui::RichText::new(reward.rewarded_at_progression_level.to_string()).monospace(),
-    );
-    table_cell(
-        ui,
-        REWARD_QUANTITY_WIDTH,
-        egui::RichText::new(reward.quantity.to_string()).monospace(),
-    );
-    ui.end_row();
+/// A progression named by its native definition index, as a table cell.
+pub(super) fn progression_cell(catalog: &Catalog, definition_index: u16, current: u64) -> Cell {
+    progression_by_definition_index(catalog, definition_index).map_or_else(
+        || Cell::text(format!("Progression #{definition_index}")),
+        |(index, definition)| {
+            Cell::link_unless(
+                definition.hash,
+                current,
+                progression_name(index, definition),
+            )
+        },
+    )
 }
 
 fn draw_reward_references(
     ui: &mut egui::Ui,
-    inspected_hash: u64,
+    catalog: &Catalog,
+    current: u64,
     matches: &CatalogHashMatches<'_>,
 ) {
     let reward_matches = &matches.progression_reward_matches;
     if reward_matches.is_empty() {
         return;
     }
-    ui.add_space(8.0);
-    hash_metadata_section(
+    let rows = reward_matches
+        .iter()
+        .map(|(definition_index, definition, reward_index)| {
+            let reward = &definition.reward_items[*reward_index];
+            vec![
+                Cell::link_unless(
+                    definition.hash,
+                    current,
+                    progression_name(*definition_index, definition),
+                ),
+                Cell::mono(reward.rewarded_at_progression_level),
+                Cell::mono(reward.quantity),
+                Cell::mono(reward_index),
+            ]
+        })
+        .collect::<Vec<_>>();
+    look::section(
         ui,
-        &format!("Progression Reward References ({})", reward_matches.len()),
-        reward_matches.len() <= 12,
+        ("hash_progression_reward_references", current),
+        "Progression Rewards",
+        Some(rows.len()),
+        rows.len() <= HASH_RELATIONSHIP_AUTO_EXPAND_LIMIT,
         |ui| {
-            draw_reward_reference_header(ui);
-            egui::ScrollArea::vertical()
-                .id_salt(("hash_progression_reward_references", inspected_hash))
-                .max_height(280.0)
-                .auto_shrink([false, true])
-                .show_rows(ui, TABLE_CELL_HEIGHT, reward_matches.len(), |ui, range| {
-                    egui::Grid::new(("hash_progression_reward_reference_rows", inspected_hash))
-                        .num_columns(5)
-                        .striped(true)
-                        .spacing([TABLE_COLUMN_GAP, TABLE_ROW_GAP])
-                        .show(ui, |ui| {
-                            for row in range {
-                                let (definition_index, definition, reward_index) =
-                                    reward_matches[row];
-                                draw_reward_reference_row(
-                                    ui,
-                                    definition_index,
-                                    definition,
-                                    reward_index,
-                                );
-                            }
-                        });
-                });
+            draw_table(
+                ui,
+                catalog,
+                ("hash_progression_reward_references", current),
+                &["Progression", "Level", "Quantity", "Reward Index"],
+                &rows,
+            );
         },
     );
-}
-
-fn draw_faction_reference_row(
-    ui: &mut egui::Ui,
-    catalog: &Catalog,
-    definition_index: usize,
-    definition: &ProgressionDefinition,
-    faction: &ProgressionFactionDefinition,
-) {
-    ui.label(if faction.name.trim().is_empty() {
-        egui::RichText::new("-").weak()
-    } else {
-        egui::RichText::new(&faction.name)
-    });
-    let progression_name = if definition.name.trim().is_empty() {
-        format!("Definition #{definition_index}")
-    } else {
-        definition.name.clone()
-    };
-    draw_named_catalog_hash_link(ui, catalog, definition.hash, progression_name);
-    ui.monospace(definition_index.to_string());
-    draw_catalog_hash_link(
-        ui,
-        catalog,
-        definition.hash,
-        format_hash_hex(definition.hash),
-    );
-    ui.end_row();
 }
 
 fn draw_faction_references(
     ui: &mut egui::Ui,
     catalog: &Catalog,
-    inspected_hash: u64,
+    current: u64,
     matches: &CatalogHashMatches<'_>,
 ) {
     let faction_matches = &matches.progression_faction_matches;
     if faction_matches.is_empty() {
         return;
     }
-    ui.add_space(8.0);
-    hash_metadata_section(
+    let rows = faction_matches
+        .iter()
+        .map(|(definition_index, definition, _, faction)| {
+            vec![
+                Cell::link_unless(
+                    definition.hash,
+                    current,
+                    progression_name(*definition_index, definition),
+                ),
+                Cell::text(faction.name.trim()),
+            ]
+        })
+        .collect::<Vec<_>>();
+    look::section(
         ui,
-        &format!("Faction Progression References ({})", faction_matches.len()),
+        ("hash_progression_faction_references", current),
+        "Faction Progressions",
+        Some(rows.len()),
         true,
         |ui| {
-            egui::Grid::new(("hash_progression_faction_references", inspected_hash))
-                .num_columns(4)
-                .striped(true)
-                .spacing([16.0, 4.0])
-                .show(ui, |ui| {
-                    ui.strong("Faction");
-                    ui.strong("Progression");
-                    ui.strong("Index");
-                    ui.strong("Hash");
-                    ui.end_row();
-                    for (definition_index, definition, _, faction) in faction_matches {
-                        draw_faction_reference_row(
-                            ui,
-                            catalog,
-                            *definition_index,
-                            definition,
-                            faction,
-                        );
-                    }
-                });
-        },
-    );
-}
-
-fn draw_objective_detail_grid(ui: &mut egui::Ui, index: usize, objective: &ObjectiveDef) {
-    egui::Grid::new(("hash_objective", index))
-        .num_columns(2)
-        .spacing([16.0, 4.0])
-        .show(ui, |ui| {
-            hash_detail_field(ui, "Description", objective_description(objective), false);
-            hash_detail_field(
+            draw_table(
                 ui,
-                "Completion Value",
-                objective.completion_value.to_string(),
-                true,
+                catalog,
+                ("hash_progression_faction_references", current),
+                &["Progression", "Faction"],
+                &rows,
             );
-            hash_detail_field(ui, "Owners", objective.owners.len().to_string(), true);
-        });
-}
-
-fn draw_objective_matches(ui: &mut egui::Ui, catalog: &Catalog, matches: &CatalogHashMatches<'_>) {
-    let objectives = &matches.objectives;
-    if objectives.is_empty() {
-        return;
-    }
-    ui.add_space(8.0);
-    hash_metadata_section(
-        ui,
-        &format!("Objectives ({})", objectives.len()),
-        objectives.len() <= 3,
-        |ui| {
-            for (index, objective) in objectives {
-                let name = if objective.name.trim().is_empty() {
-                    catalog.display_name(objective.hash)
-                } else {
-                    Some(objective.name.as_str())
-                };
-                let heading = name.map_or_else(
-                    || format!("Objective #{index}"),
-                    |name| format!("{name} · Objective #{index}"),
-                );
-                metadata_subsection(ui, &heading, |ui| {
-                    draw_objective_detail_grid(ui, *index, objective);
-                    draw_hash_condition_programs(
-                        ui,
-                        egui::Id::new(("hash_objective_conditions", *index, objective.hash)),
-                        &objective.condition_programs,
-                        catalog,
-                    );
-                });
-            }
         },
     );
 }
 
-fn objective_owner_heading(
-    catalog: &Catalog,
-    objective_index: usize,
-    owner: &ObjectiveOwnerDef,
-) -> String {
-    let name = if owner.name.trim().is_empty() {
-        catalog.display_name(owner.hash)
+/// The four objective behaviour flags that are set, as short labels.
+fn objective_behavior(objective: &ObjectiveDef) -> Vec<&'static str> {
+    [
+        (objective.allow_overcompletion, "Over-Completion"),
+        (objective.allow_negative_value, "Negative Values"),
+        (
+            objective.allow_value_change_when_completed,
+            "Changes after Completion",
+        ),
+        (objective.is_counting_downward, "Counts Downward"),
+    ]
+    .into_iter()
+    .filter_map(|(set, label)| set.then_some(label))
+    .collect()
+}
+
+fn objective_heading(catalog: &Catalog, index: usize, objective: &ObjectiveDef) -> String {
+    if objective.name.trim().is_empty() {
+        catalog
+            .display_name(objective.hash)
+            .map_or_else(|| format!("Objective #{index}"), str::to_owned)
     } else {
-        Some(owner.name.as_str())
-    };
-    name.map_or_else(
-        || {
-            format!(
-                "{} · Objective #{objective_index}",
-                objective_owner_kind_label(owner.kind)
-            )
-        },
-        |name| format!("{name} · {}", objective_owner_kind_label(owner.kind)),
-    )
+        objective.name.trim().to_owned()
+    }
 }
 
-fn draw_objective_owner_traits(
+fn draw_objective_matches(
     ui: &mut egui::Ui,
     catalog: &Catalog,
-    detail_id: egui::Id,
-    traits: &[ObjectiveOwnerTraitDef],
+    snapshot: Option<&CollectionStateSnapshot>,
+    matches: &CatalogHashMatches<'_>,
 ) {
-    if traits.is_empty() {
-        return;
-    }
-    egui::CollapsingHeader::new(format!("Traits ({})", traits.len()))
-        .id_salt(detail_id.with("traits"))
-        .default_open(traits.len() <= 4)
-        .show(ui, |ui| {
-            egui::Grid::new(detail_id.with("trait_rows"))
-                .num_columns(3)
-                .striped(true)
-                .spacing([16.0, 4.0])
-                .show(ui, |ui| {
-                    ui.strong("Name");
-                    ui.strong("Hash");
-                    ui.strong("Description");
-                    ui.end_row();
-                    for trait_definition in traits {
-                        draw_named_catalog_hash_link(
-                            ui,
-                            catalog,
-                            trait_definition.hash,
-                            metadata_text(&trait_definition.name),
-                        );
-                        draw_catalog_hash_link(
-                            ui,
-                            catalog,
-                            trait_definition.hash,
-                            format_hash_hex(trait_definition.hash),
-                        );
-                        ui.label(metadata_text(&trait_definition.description));
-                        ui.end_row();
-                    }
-                });
-        });
-}
-
-fn draw_objective_owner_details(
-    ui: &mut egui::Ui,
-    catalog: &Catalog,
-    objective_index: usize,
-    objective: &ObjectiveDef,
-    owner: &ObjectiveOwnerDef,
-) {
-    egui::Grid::new(("hash_objective_owner", objective_index, owner.hash))
-        .num_columns(2)
-        .spacing([16.0, 4.0])
-        .show(ui, |ui| {
-            hash_detail_field(ui, "Objective", objective_description(objective), false);
-            hash_detail_field(ui, "Type", metadata_text(&owner.type_name), false);
-            hash_detail_field(ui, "Description", metadata_text(&owner.description), false);
-        });
-    let detail_id = egui::Id::new(("hash_objective_owner_detail", objective_index, owner.hash));
-    draw_hash_package_paths(ui, detail_id, &owner.paths);
-    draw_objective_owner_traits(ui, catalog, detail_id, &owner.traits);
-}
-
-fn draw_objective_owners(ui: &mut egui::Ui, catalog: &Catalog, matches: &CatalogHashMatches<'_>) {
-    let owner_matches = &matches.owner_matches;
-    if owner_matches.is_empty() {
-        return;
-    }
-    ui.add_space(8.0);
-    hash_metadata_section(
-        ui,
-        &format!("Objective Owners ({})", owner_matches.len()),
-        owner_matches.len() <= HASH_RELATIONSHIP_AUTO_EXPAND_LIMIT,
-        |ui| {
-            for (objective_index, objective, owner) in owner_matches {
-                let heading = objective_owner_heading(catalog, *objective_index, owner);
-                metadata_subsection(ui, &heading, |ui| {
-                    draw_objective_owner_details(ui, catalog, *objective_index, objective, owner);
-                });
+    let current = matches.inspected_hash;
+    match matches.objectives.as_slice() {
+        [] => {}
+        [(index, objective)] => draw_objective(ui, catalog, snapshot, current, *index, objective),
+        objectives => {
+            for (index, objective) in objectives {
+                look::section(
+                    ui,
+                    ("hash_objective", *index),
+                    &objective_heading(catalog, *index, objective),
+                    None,
+                    objectives.len() <= 3,
+                    |ui| draw_objective(ui, catalog, snapshot, current, *index, objective),
+                );
             }
-        },
-    );
+        }
+    }
 }
 
-fn draw_objective_traits(ui: &mut egui::Ui, catalog: &Catalog, matches: &CatalogHashMatches<'_>) {
-    let owner_matches = &matches.owner_matches;
-    let trait_matches = &matches.trait_matches;
-    if !trait_matches.is_empty() {
-        ui.add_space(8.0);
-        hash_metadata_section(
-            ui,
-            &format!("Objective Traits ({})", trait_matches.len()),
-            trait_matches.len() <= HASH_RELATIONSHIP_AUTO_EXPAND_LIMIT && owner_matches.is_empty(),
-            |ui| {
-                for (objective_index, objective, owner, trait_definition) in trait_matches {
-                    let name = if trait_definition.name.trim().is_empty() {
-                        catalog.display_name(trait_definition.hash)
-                    } else {
-                        Some(trait_definition.name.as_str())
-                    };
-                    let heading = name.map_or_else(
-                        || format!("Trait · Objective #{objective_index}"),
-                        |name| format!("{name} · Trait"),
-                    );
-                    metadata_subsection(ui, &heading, |ui| {
-                        egui::Grid::new((
-                            "hash_objective_trait",
-                            *objective_index,
-                            trait_definition.hash,
-                        ))
-                        .num_columns(2)
-                        .spacing([16.0, 4.0])
-                        .show(ui, |ui| {
-                            hash_detail_field(
-                                ui,
-                                "Objective",
-                                objective_description(objective),
-                                false,
-                            );
-                            hash_detail_field(
-                                ui,
-                                "Owner",
-                                objective_owner_display_label(owner)
-                                    .or_else(|| catalog.display_name(owner.hash).map(str::to_owned))
-                                    .unwrap_or_else(|| "<not resolved>".into()),
-                                false,
-                            );
-                            hash_detail_field(
-                                ui,
-                                "Description",
-                                metadata_text(&trait_definition.description),
-                                false,
-                            );
-                        });
-                    });
-                }
+fn draw_objective(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    snapshot: Option<&CollectionStateSnapshot>,
+    current: u64,
+    index: usize,
+    objective: &ObjectiveDef,
+) {
+    let value_index = objective
+        .related_unlock_value_definition_index
+        .map(usize::from);
+    look::properties(ui, ("hash_objective", index), |p| {
+        let display = objective.display_description.trim();
+        let progress = objective.progress_description.trim();
+        p.text(
+            "Description",
+            if display.is_empty() {
+                objective.description.trim()
+            } else {
+                display
             },
         );
+        if !progress.eq_ignore_ascii_case(display) {
+            p.text("Progress Description", progress);
+        }
+        p.mono("Completion Value", objective.completion_value.to_string());
+        if let (Some(snapshot), Some(value_index)) = (snapshot, value_index)
+            && let Some(value) = snapshot.evaluated_value(value_index, catalog)
+        {
+            p.mono(
+                "Current Progress",
+                if objective_complete(objective, value) {
+                    format!("{value} / {} · Complete", objective.completion_value)
+                } else {
+                    format!("{value} / {}", objective.completion_value)
+                },
+            );
+        }
+        let behavior = objective_behavior(objective);
+        if !behavior.is_empty() {
+            p.text("Behavior", behavior.join(" · "));
+        }
+        if let Some(value_index) = value_index
+            && let Some(value) = catalog.unlock_value_definition(value_index)
+        {
+            property_link(
+                p,
+                "Unlock Value",
+                catalog,
+                value.hash,
+                current,
+                unlock_label(catalog, "Value", value_index, value),
+            );
+        }
+        p.mono("Objective Index", index.to_string());
+    });
+    draw_objective_owner_table(ui, catalog, current, objective);
+    draw_objective_intrinsic_perks(ui, catalog, current, objective);
+    draw_objective_references(ui, catalog, current, objective);
+    draw_hash_condition_programs(
+        ui,
+        egui::Id::new(("hash_objective_conditions", index, objective.hash)),
+        &objective.condition_programs,
+        catalog,
+    );
+}
+
+/// An objective owner's name.
+fn owner_name(catalog: &Catalog, owner: &ObjectiveOwnerDef) -> String {
+    let name = owner.name.trim();
+    if name.is_empty() {
+        catalog
+            .display_name(owner.hash)
+            .unwrap_or(UNNAMED)
+            .to_owned()
+    } else {
+        name.to_owned()
     }
 }
 
+fn draw_objective_owner_table(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    current: u64,
+    objective: &ObjectiveDef,
+) {
+    if objective.owners.is_empty() {
+        return;
+    }
+    let show_traits = objective
+        .owners
+        .iter()
+        .any(|owner| !owner.traits.is_empty());
+    let rows = objective
+        .owners
+        .iter()
+        .map(|owner| {
+            let kind = objective_owner_kind_label(owner.kind);
+            let type_name = progression_type_label(&owner.type_name);
+            let mut row = vec![
+                Cell::link_unless(owner.hash, current, owner_name(catalog, owner)),
+                Cell::text(kind),
+                Cell::muted(if type_name.eq_ignore_ascii_case(kind) {
+                    ""
+                } else {
+                    type_name
+                }),
+            ];
+            if show_traits {
+                row.push(Cell::Links(
+                    owner
+                        .traits
+                        .iter()
+                        .map(|trait_definition| {
+                            let name = trait_definition.name.trim();
+                            (
+                                trait_definition.hash,
+                                if name.is_empty() { UNNAMED } else { name }.to_owned(),
+                            )
+                        })
+                        .collect(),
+                ));
+            }
+            row
+        })
+        .collect::<Vec<_>>();
+    let headings: &[&str] = if show_traits {
+        &["Owner", "Kind", "Type", "Traits"]
+    } else {
+        &["Owner", "Kind", "Type"]
+    };
+    look::section(
+        ui,
+        ("hash_objective_owners", objective.hash),
+        "Owners",
+        Some(rows.len()),
+        rows.len() <= HASH_RELATIONSHIP_AUTO_EXPAND_LIMIT,
+        |ui| {
+            draw_table(
+                ui,
+                catalog,
+                ("hash_objective_owners", objective.hash),
+                headings,
+                &rows,
+            );
+        },
+    );
+}
+
+fn draw_objective_intrinsic_perks(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    current: u64,
+    objective: &ObjectiveDef,
+) {
+    if objective.intrinsic_perk_flag_definition_indices.is_empty() {
+        return;
+    }
+    let rows = objective
+        .intrinsic_perk_flag_definition_indices
+        .iter()
+        .map(|&raw_index| {
+            let index = usize::from(raw_index);
+            vec![
+                catalog.unlock_flag_definition(index).map_or_else(
+                    || Cell::muted(format!("Flag #{index}")),
+                    |definition| {
+                        Cell::link_unless(
+                            definition.hash,
+                            current,
+                            unlock_label(catalog, "Flag", index, definition),
+                        )
+                    },
+                ),
+                Cell::mono(index),
+            ]
+        })
+        .collect::<Vec<_>>();
+    look::section(
+        ui,
+        ("hash_objective_intrinsic_perks", objective.hash),
+        "Intrinsic Perk Flags",
+        Some(rows.len()),
+        true,
+        |ui| {
+            draw_table(
+                ui,
+                catalog,
+                ("hash_objective_intrinsic_perks", objective.hash),
+                &["Flag", "Index"],
+                &rows,
+            );
+        },
+    );
+}
+
+fn draw_objective_references(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    current: u64,
+    objective: &ObjectiveDef,
+) {
+    if objective.referenced_objective_indices.is_empty() {
+        return;
+    }
+    let rows = objective
+        .referenced_objective_indices
+        .iter()
+        .map(|&raw_index| {
+            let index = usize::from(raw_index);
+            match catalog.objective_definition(index) {
+                Some(target) => vec![
+                    Cell::link_unless(
+                        target.hash,
+                        current,
+                        resolved_objective_table_text(catalog, target, None),
+                    ),
+                    Cell::mono(target.completion_value),
+                ],
+                None => vec![Cell::muted(format!("Objective #{index}")), Cell::muted("")],
+            }
+        })
+        .collect::<Vec<_>>();
+    look::section(
+        ui,
+        ("hash_objective_references", objective.hash),
+        "Referenced Objectives",
+        Some(rows.len()),
+        true,
+        |ui| {
+            draw_table(
+                ui,
+                catalog,
+                ("hash_objective_references", objective.hash),
+                &["Objective", "Completion Value"],
+                &rows,
+            );
+        },
+    );
+}
+
+/// Objectives the inspected hash owns, one row each. A record's own objectives are listed with
+/// the record and left out here.
+fn draw_objective_owners(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    current: u64,
+    matches: &CatalogHashMatches<'_>,
+) {
+    let listed = matches
+        .record_matches
+        .iter()
+        .flat_map(|(_, record)| record.objectives.iter().copied())
+        .collect::<std::collections::HashSet<_>>();
+    let rows = matches
+        .owner_matches
+        .iter()
+        .filter(|(objective_index, _, owner)| {
+            owner.kind != ObjectiveOwnerKind::Record || !listed.contains(objective_index)
+        })
+        .map(|(_, objective, owner)| {
+            vec![
+                Cell::link_unless(owner.hash, current, owner_name(catalog, owner)),
+                Cell::text(objective_owner_kind_label(owner.kind)),
+                Cell::link_unless(
+                    objective.hash,
+                    current,
+                    resolved_objective_table_text(catalog, objective, None),
+                ),
+                Cell::mono(objective.completion_value),
+            ]
+        })
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        return;
+    }
+    look::section(
+        ui,
+        ("hash_owned_objectives", current),
+        "Owned Objectives",
+        Some(rows.len()),
+        rows.len() <= HASH_RELATIONSHIP_AUTO_EXPAND_LIMIT,
+        |ui| {
+            draw_table(
+                ui,
+                catalog,
+                ("hash_owned_objectives", current),
+                &["Owner", "Kind", "Objective", "Completion Value"],
+                &rows,
+            );
+        },
+    );
+}
+
+/// Objective owners that carry the inspected hash as a trait.
+fn draw_objective_traits(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    current: u64,
+    matches: &CatalogHashMatches<'_>,
+) {
+    let trait_matches = &matches.trait_matches;
+    if trait_matches.is_empty() {
+        return;
+    }
+    let rows = trait_matches
+        .iter()
+        .map(|(_, objective, owner, _)| {
+            vec![
+                Cell::link_unless(owner.hash, current, owner_name(catalog, owner)),
+                Cell::text(objective_owner_kind_label(owner.kind)),
+                Cell::link_unless(
+                    objective.hash,
+                    current,
+                    resolved_objective_table_text(catalog, objective, None),
+                ),
+            ]
+        })
+        .collect::<Vec<_>>();
+    look::section(
+        ui,
+        ("hash_objective_traits", current),
+        "Objective Owners",
+        Some(rows.len()),
+        rows.len() <= HASH_RELATIONSHIP_AUTO_EXPAND_LIMIT,
+        |ui| {
+            draw_table(
+                ui,
+                catalog,
+                ("hash_objective_traits", current),
+                &["Owner", "Kind", "Objective"],
+                &rows,
+            );
+        },
+    );
+}
+
+/// Unlock flags and values whose known references include the inspected hash.
 fn draw_progression_readers(
     ui: &mut egui::Ui,
     catalog: &Catalog,
+    current: u64,
     matches: &CatalogHashMatches<'_>,
 ) {
-    let owner_matches = &matches.owner_matches;
-    let trait_matches = &matches.trait_matches;
-    let context_matches = &matches.context_matches;
-    if !context_matches.is_empty() {
-        ui.add_space(8.0);
-        hash_metadata_section(
-            ui,
-            &format!("Progression Readers ({})", context_matches.len()),
-            context_matches.len() <= HASH_RELATIONSHIP_AUTO_EXPAND_LIMIT
-                && owner_matches.is_empty()
-                && trait_matches.is_empty(),
-            |ui| {
-                draw_hash_progression_reader_table(ui, catalog, context_matches);
-                draw_hash_progression_reader_details(ui, catalog, context_matches);
-            },
-        );
+    let readers = &matches.context_matches;
+    if readers.is_empty() {
+        return;
     }
+    let rows = readers
+        .iter()
+        .map(|(kind, definition_index, context)| {
+            let definition = match *kind {
+                "Flag" => catalog.unlock_flag_definition(*definition_index),
+                "Value" => catalog.unlock_value_definition(*definition_index),
+                _ => None,
+            };
+            vec![
+                definition.map_or_else(
+                    || Cell::text(format!("{kind} #{definition_index}")),
+                    |definition| {
+                        Cell::link_unless(
+                            definition.hash,
+                            current,
+                            unlock_label(catalog, kind, *definition_index, definition),
+                        )
+                    },
+                ),
+                Cell::text(format!("Unlock {kind}")),
+                Cell::text(reference_role(context)),
+                Cell::mono(context.condition_programs.len()),
+            ]
+        })
+        .collect::<Vec<_>>();
+    look::section(
+        ui,
+        ("hash_referenced_unlocks", current),
+        "Referenced Unlocks",
+        Some(rows.len()),
+        rows.len() <= HASH_RELATIONSHIP_AUTO_EXPAND_LIMIT,
+        |ui| {
+            draw_table(
+                ui,
+                catalog,
+                ("hash_referenced_unlocks", current),
+                &["Unlock", "Kind", "Role", "Programs"],
+                &rows,
+            );
+            draw_reference_details(ui, catalog, current, readers);
+        },
+    );
 }
 
-fn draw_hash_progression_reader_table(
-    ui: &mut egui::Ui,
-    catalog: &Catalog,
-    readers: &[(&'static str, usize, &ProgressionContextDef)],
-) {
-    egui::Grid::new("hash_progression_reader_rows")
-        .num_columns(5)
-        .spacing([16.0, 3.0])
-        .striped(true)
-        .show(ui, |ui| {
-            ui.strong("Reader");
-            ui.strong("Source");
-            ui.strong("Type");
-            ui.strong("Hash");
-            ui.strong("Programs");
-            ui.end_row();
-            for (kind, definition_index, context) in readers {
-                let name = progression_reader_name(catalog, context);
-                draw_named_catalog_hash_link(ui, catalog, context.hash, name);
-                ui.monospace(format!("{kind} #{definition_index}"));
-                ui.label(progression_reader_type(context));
-                draw_catalog_hash_link(ui, catalog, context.hash, format_hash_hex(context.hash));
-                ui.monospace(context.condition_programs.len().to_string());
-                ui.end_row();
-            }
-        });
-}
-
-fn draw_hash_progression_reader_details(
-    ui: &mut egui::Ui,
-    catalog: &Catalog,
-    readers: &[(&'static str, usize, &ProgressionContextDef)],
-) {
-    for (kind, definition_index, context) in readers {
-        let name = progression_reader_name(catalog, context);
-        egui::CollapsingHeader::new(format!("Reader Details · {name}"))
-            .id_salt((
-                "hash_progression_reader_details",
-                *kind,
-                *definition_index,
-                context.hash,
-            ))
-            .default_open(false)
-            .show(ui, |ui| {
-                if !context.description.trim().is_empty() {
-                    ui.add(
-                        egui::Label::new(crate::app::ui::destiny_text(
-                            ui,
-                            context.description.trim(),
-                        ))
-                        .wrap(),
-                    );
-                }
-                let detail_id = egui::Id::new((
-                    "hash_context_detail",
-                    *kind,
-                    *definition_index,
-                    context.hash,
-                ));
-                draw_hash_package_paths(ui, detail_id, &context.paths);
-                draw_hash_condition_programs(ui, detail_id, &context.condition_programs, catalog);
-            });
-    }
-}
-
-fn progression_reader_name<'a>(
-    catalog: &'a Catalog,
-    context: &'a ProgressionContextDef,
-) -> &'a str {
-    if context.name.trim().is_empty() {
-        catalog
-            .display_name(context.hash)
-            .unwrap_or("Name not resolved")
+/// How a reference reaches its unlock definition: its direct reference fields, or a condition.
+pub(super) fn reference_role(context: &ProgressionContextDef) -> String {
+    if !context.direct_references.is_empty() {
+        context.direct_references.join(" · ")
+    } else if !context.condition_programs.is_empty() {
+        "Condition".into()
     } else {
-        context.name.trim()
+        String::new()
     }
+}
+
+/// Descriptions, paths and programs of the references, each distinct one once.
+fn draw_reference_details(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    current: u64,
+    readers: &[(&'static str, usize, &ProgressionContextDef)],
+) {
+    let mut distinct: Vec<&ProgressionContextDef> = Vec::new();
+    for (_, _, context) in readers {
+        let has_details = !context.description.trim().is_empty()
+            || !context.paths.is_empty()
+            || !context.condition_programs.is_empty();
+        if has_details
+            && !distinct.iter().any(|seen| {
+                seen.kind == context.kind
+                    && seen.type_name == context.type_name
+                    && seen.description == context.description
+                    && seen.paths == context.paths
+                    && seen.condition_programs == context.condition_programs
+            })
+        {
+            distinct.push(*context);
+        }
+    }
+    if distinct.is_empty() {
+        return;
+    }
+    look::section(
+        ui,
+        ("hash_reference_details", current),
+        "Reference Details",
+        None,
+        false,
+        |ui| {
+            for (position, context) in distinct.into_iter().enumerate() {
+                look::properties(ui, ("hash_reference_detail", current, position), |p| {
+                    p.text("Type", progression_reader_type(context));
+                    p.text("Description", context.description.trim());
+                    paths_row(p, "Paths", &context.paths);
+                });
+                draw_hash_condition_programs(
+                    ui,
+                    egui::Id::new(("hash_reference_detail", current, position)),
+                    &context.condition_programs,
+                    catalog,
+                );
+            }
+        },
+    );
 }
 
 fn progression_reader_type(context: &ProgressionContextDef) -> String {
@@ -883,143 +1302,189 @@ fn draw_hash_progression_definition(
     index: usize,
     definition: &ProgressionDefinition,
 ) {
+    let rank = collection_state.and_then(|snapshot| snapshot.progression_rank(definition));
     if hash_inspector_uses_wide_summary(ui.available_width()) {
         ui.columns(2, |columns| {
             draw_hash_progression_identity_summary(&mut columns[0], catalog, index, definition);
-            draw_hash_progression_persistence_summary(&mut columns[1], document, index, definition);
+            draw_hash_progression_persistence_summary(
+                &mut columns[1],
+                document,
+                rank,
+                index,
+                definition,
+            );
         });
     } else {
         draw_hash_progression_identity_summary(ui, catalog, index, definition);
-        ui.add_space(8.0);
-        draw_hash_progression_persistence_summary(ui, document, index, definition);
+        draw_hash_progression_persistence_summary(ui, document, rank, index, definition);
     }
     draw_dawn_vendor(ui, document, definition);
 
-    if let Some(help) = crate::app::progression::seasonal::progression_help(index)
-        && document.is_some_and(crate::persistence::progression::is_dawn_progression_view)
-    {
-        ui.label(help);
-        ui.label(crate::app::progression::seasonal::DAWN_UNAVAILABLE);
-        ui.add_space(8.0);
+    let seasonal = crate::app::progression::seasonal::is_xp_progression(index);
+    if seasonal && document.is_some_and(crate::persistence::progression::is_dawn_progression_view) {
+        ui.add_space(6.0);
+        look::empty_state(ui, crate::app::progression::seasonal::DAWN_UNAVAILABLE);
     }
-    if let Some(help) = crate::app::progression::seasonal::progression_help(index)
+    if seasonal
         && document.is_some_and(crate::persistence::progression::supports_seasonal_authoring)
+        && let Some(snapshot) = collection_state
+        && let Some(season) = catalog.seasonal()
+        && let Ok(experience) = snapshot.seasonal_experience(season)
     {
-        ui.label(help);
-        if let Some(snapshot) = collection_state
-            && let Some(season) = catalog.seasonal()
-            && let Ok(experience) = snapshot.seasonal_experience(season)
-        {
-            ui.label(format!(
-                "After Sunrise Refresh: Rank {} · +{} Artifact Power · {} Artifact Points",
-                experience.rank, experience.power_bonus, experience.points_earned
-            ));
+        look::subheading(ui, "After Sunrise Refresh");
+        look::properties(ui, ("hash_progression_seasonal", index), |p| {
+            p.mono("Rank", experience.rank.to_string());
+            p.mono("Artifact Power", format!("+{}", experience.power_bonus));
+            p.mono("Artifact Points", experience.points_earned.to_string());
             if let Some((_, total)) = experience
                 .lanes()
                 .into_iter()
                 .find(|(slot, _)| *slot == index)
             {
-                ui.label(format!("Lane 0 After Refresh: {total}"));
+                p.mono("Lane 0", total.to_string());
             }
-        }
-        ui.add_space(8.0);
+        });
     }
 
     if !definition.factions.is_empty() {
-        egui::CollapsingHeader::new(format!("Factions ({})", definition.factions.len()))
-            .id_salt(("hash_progression_factions", index))
-            .default_open(true)
-            .show(ui, |ui| {
-                for (faction_index, faction) in definition.factions.iter().enumerate() {
-                    let heading = if faction.name.trim().is_empty() {
-                        format!("Faction #{faction_index}")
-                    } else {
-                        faction.name.clone()
-                    };
-                    metadata_subsection(ui, &heading, |ui| {
-                        egui::Grid::new(("hash_progression_faction", index, faction_index))
-                            .num_columns(2)
-                            .spacing([16.0, 4.0])
-                            .show(ui, |ui| {
-                                hash_hex_and_decimal_field(ui, "Hash", faction.hash);
-                                hash_detail_field(
-                                    ui,
-                                    "Description",
-                                    if faction.description.trim().is_empty() {
-                                        "<not present>"
-                                    } else {
-                                        &faction.description
-                                    },
-                                    false,
-                                );
-                            });
-                    });
-                }
-            });
+        let rows = definition
+            .factions
+            .iter()
+            .enumerate()
+            .map(|(faction_index, faction)| {
+                let name = if faction.name.trim().is_empty() {
+                    format!("Faction #{faction_index}")
+                } else {
+                    faction.name.trim().to_owned()
+                };
+                vec![
+                    Cell::link_unless(faction.hash, definition.hash, name),
+                    Cell::muted(faction.description.trim()),
+                ]
+            })
+            .collect::<Vec<_>>();
+        look::section(
+            ui,
+            ("hash_progression_factions", index),
+            "Factions",
+            Some(rows.len()),
+            true,
+            |ui| {
+                draw_table(
+                    ui,
+                    catalog,
+                    ("hash_progression_factions", index),
+                    &["Faction", "Description"],
+                    &rows,
+                );
+            },
+        );
     }
 
     if !definition.steps.is_empty() {
-        let has_step_icons = definition
-            .steps
-            .iter()
-            .any(|step| step.icon_container.is_some());
-        egui::CollapsingHeader::new(format!("Steps ({})", definition.steps.len()))
-            .id_salt(("hash_progression_steps", index))
-            .default_open(definition.steps.len() <= 12)
-            .show(ui, |ui| {
-                egui::Grid::new(("hash_progression_step_rows", index))
-                    .num_columns(if has_step_icons { 4 } else { 3 })
-                    .striped(true)
-                    .spacing([16.0, 4.0])
-                    .show(ui, |ui| {
-                        if has_step_icons {
-                            ui.strong("Icon");
-                        }
-                        ui.strong("Index");
-                        ui.strong("Name");
-                        ui.strong("Rank Cost");
-                        ui.end_row();
-                        for (step_index, step) in definition.steps.iter().enumerate() {
-                            if has_step_icons {
-                                if let Some(container) = step.icon_container
-                                    && let Some(icon) = catalog.icon_texture_from_container(
-                                        ui.ctx(),
-                                        0x2_0000_0000
-                                            | (u64::from(definition.definition_index) << 16)
-                                            | u64::try_from(step_index).unwrap_or_default(),
-                                        container,
-                                    )
-                                {
-                                    ui.add(
-                                        egui::Image::new(&icon)
-                                            .fit_to_exact_size(egui::vec2(24.0, 24.0))
-                                            .maintain_aspect_ratio(true),
-                                    );
-                                } else {
-                                    ui.weak("-");
-                                }
-                            }
-                            ui.monospace(step_index.to_string());
-                            if step.name.trim().is_empty() {
-                                ui.weak("-");
-                            } else {
-                                ui.label(&step.name);
-                            }
-                            ui.monospace(step.cost.to_string());
-                            ui.end_row();
-                        }
-                    });
-            });
+        look::section(
+            ui,
+            ("hash_progression_steps", index),
+            "Steps",
+            Some(definition.steps.len()),
+            definition.steps.len() <= 20,
+            |ui| draw_progression_steps(ui, catalog, rank, index, definition),
+        );
     }
 
     if !definition.reward_items.is_empty() {
-        egui::CollapsingHeader::new(format!("Reward Items ({})", definition.reward_items.len()))
-            .id_salt(("hash_progression_reward_items", index))
-            .default_open(false)
-            .show(ui, |ui| {
+        look::section(
+            ui,
+            ("hash_progression_reward_items", index),
+            "Reward Items",
+            Some(definition.reward_items.len()),
+            false,
+            |ui| {
                 crate::app::progression::seasonal::rewards::draw(ui, catalog, document, definition);
-            });
+            },
+        );
     }
+}
+
+fn draw_progression_steps(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    rank: Option<i32>,
+    index: usize,
+    definition: &ProgressionDefinition,
+) {
+    let has_step_icons = definition
+        .steps
+        .iter()
+        .any(|step| step.icon_container.is_some());
+    let has_flags = definition
+        .steps
+        .iter()
+        .any(|step| step.unlock_flag.is_some());
+    let columns =
+        3 + usize::from(has_step_icons) + usize::from(has_flags) + usize::from(rank.is_some());
+    egui::Grid::new(("hash_progression_step_rows", index))
+        .num_columns(columns)
+        .striped(true)
+        .spacing([16.0, 4.0])
+        .show(ui, |ui| {
+            if has_step_icons {
+                ui.strong("Icon");
+            }
+            ui.strong("Rank");
+            ui.strong("Name");
+            ui.strong("Cost");
+            if has_flags {
+                ui.strong("Unlock Flag");
+            }
+            if rank.is_some() {
+                ui.strong("State");
+            }
+            ui.end_row();
+            for (step_index, step) in definition.steps.iter().enumerate() {
+                if has_step_icons {
+                    if let Some(container) = step.icon_container
+                        && let Some(icon) = catalog.icon_texture_from_container(
+                            ui.ctx(),
+                            0x2_0000_0000
+                                | (u64::from(definition.definition_index) << 16)
+                                | u64::try_from(step_index).unwrap_or_default(),
+                            container,
+                        )
+                    {
+                        ui.add(
+                            egui::Image::new(&icon)
+                                .fit_to_exact_size(egui::vec2(24.0, 24.0))
+                                .maintain_aspect_ratio(true),
+                        );
+                    } else {
+                        ui.label("");
+                    }
+                }
+                ui.monospace((step_index + 1).to_string());
+                ui.label(step.name.trim());
+                ui.monospace(step.cost.to_string());
+                if has_flags {
+                    if let Some(flag_index) = step.unlock_flag.map(usize::from)
+                        && let Some(flag) = catalog.unlock_flag_definition(flag_index)
+                    {
+                        draw_named_catalog_hash_link(
+                            ui,
+                            catalog,
+                            flag.hash,
+                            unlock_label(catalog, "Flag", flag_index, flag),
+                        );
+                    } else {
+                        ui.label("");
+                    }
+                }
+                if let Some(rank) = rank {
+                    let reached = i32::try_from(step_index).is_ok_and(|step| step < rank);
+                    ui.label(if reached { "Reached" } else { "" });
+                }
+                ui.end_row();
+            }
+        });
 }
 
 fn draw_hash_progression_identity_summary(
@@ -1028,161 +1493,95 @@ fn draw_hash_progression_identity_summary(
     index: usize,
     definition: &ProgressionDefinition,
 ) {
-    metadata_subsection(ui, "Definition", |ui| {
-        ui.horizontal_top(|ui| {
-            if let Some(container) = definition.icon_container
-                && let Some(icon) = catalog.icon_texture_from_container(
-                    ui.ctx(),
-                    0x1_0000_0000 | definition.hash,
-                    container,
-                )
-            {
-                ui.add(
-                    egui::Image::new(&icon)
-                        .fit_to_exact_size(egui::vec2(80.0, 80.0))
-                        .maintain_aspect_ratio(true),
-                );
-                ui.add_space(8.0);
-            }
-            ui.vertical(|ui| {
-                let name = if definition.name.trim().is_empty() {
-                    egui::RichText::new("<not present>").weak().italics()
-                } else {
-                    egui::RichText::new(&definition.name).strong().size(16.0)
-                };
-                ui.label(name);
-                egui::Grid::new(("hash_progression_definition", index))
-                    .num_columns(2)
-                    .spacing([16.0, 4.0])
-                    .show(ui, |ui| {
-                        hash_detail_field(
-                            ui,
-                            "Definition Index",
-                            definition.definition_index.to_string(),
-                            true,
-                        );
-                    });
+    look::subheading(ui, "Definition");
+    ui.horizontal_top(|ui| {
+        if let Some(container) = definition.icon_container
+            && let Some(icon) = catalog.icon_texture_from_container(
+                ui.ctx(),
+                0x1_0000_0000 | definition.hash,
+                container,
+            )
+        {
+            ui.add(
+                egui::Image::new(&icon)
+                    .fit_to_exact_size(egui::vec2(56.0, 56.0))
+                    .maintain_aspect_ratio(true),
+            );
+            ui.add_space(8.0);
+        }
+        ui.vertical(|ui| {
+            look::properties(ui, ("hash_progression_definition", index), |p| {
+                p.text("Description", definition.description.trim());
+                p.text("Source", definition.source.trim());
+                p.text("Display Units", definition.display_units_name.trim());
+                p.mono("Definition Index", definition.definition_index.to_string());
+                if let Some(target) = progression_target(definition) {
+                    p.mono("Target", target.to_string());
+                }
+                if let Some(value_index) = definition.level_value.map(usize::from)
+                    && let Some(value) = catalog.unlock_value_definition(value_index)
+                {
+                    p.link(
+                        "Level Value",
+                        catalog,
+                        value.hash,
+                        unlock_label(catalog, "Value", value_index, value),
+                    );
+                }
             });
         });
-        ui.add_space(6.0);
-        draw_hash_wrapped_detail(
-            ui,
-            "Description",
-            if definition.description.trim().is_empty() {
-                "<not present>"
-            } else {
-                &definition.description
-            },
-        );
-        ui.add_space(4.0);
-        draw_hash_wrapped_detail(
-            ui,
-            "Source",
-            if definition.source.trim().is_empty() {
-                "<not present>"
-            } else {
-                &definition.source
-            },
-        );
-        ui.add_space(4.0);
-        draw_hash_wrapped_detail(
-            ui,
-            "Display Unit Name",
-            if definition.display_units_name.trim().is_empty() {
-                "<not present>"
-            } else {
-                &definition.display_units_name
-            },
-        );
     });
 }
 
 fn draw_hash_progression_persistence_summary(
     ui: &mut egui::Ui,
     document: Option<&Value>,
+    rank: Option<i32>,
     index: usize,
     definition: &ProgressionDefinition,
 ) {
-    let saved_lanes = document.and_then(|document| {
-        saved_progression_lanes(
-            document,
-            definition.scope,
-            usize::from(definition.definition_index),
-        )
+    look::subheading(ui, "Persistence");
+    look::properties(ui, ("hash_progression_persistence", index), |p| {
+        p.text("Scope", progression_scope_label(definition.scope));
+        if let Some(slot) = definition.scope_slot {
+            p.mono("Slot", slot.to_string());
+        }
+        p.text("Repeat Last Step", yes_no(definition.repeat_last_step));
     });
+    let Some(document) = document else {
+        return;
+    };
+    let saved_lanes = saved_progression_lanes(
+        document,
+        definition.scope,
+        usize::from(definition.definition_index),
+    );
     let target = progression_target(definition);
-    metadata_subsection(ui, "Persistence", |ui| {
-        egui::Grid::new(("hash_progression_persistence", index))
-            .num_columns(2)
-            .spacing([16.0, 4.0])
-            .show(ui, |ui| {
-                hash_detail_field(
-                    ui,
-                    "Scope",
-                    progression_scope_label(definition.scope),
-                    false,
+    look::subheading(ui, "Saved State");
+    look::properties(ui, ("hash_progression_save_state", index), |p| {
+        if let Some(rank) = rank {
+            p.mono(
+                "Current Rank",
+                if definition.repeat_last_step || definition.steps.is_empty() {
+                    rank.to_string()
+                } else {
+                    format!("{rank} of {}", definition.steps.len())
+                },
+            );
+        }
+        match saved_lanes {
+            Some(lanes) => {
+                p.mono(
+                    "Progress",
+                    target.map_or_else(
+                        || lanes[0].to_string(),
+                        |target| format!("{} / {target}", lanes[0]),
+                    ),
                 );
-                hash_detail_field(
-                    ui,
-                    "Slot",
-                    definition
-                        .scope_slot
-                        .map_or_else(|| "<unreplicated>".into(), |slot| slot.to_string()),
-                    true,
-                );
-                hash_detail_field(
-                    ui,
-                    "Repeat Last Step",
-                    yes_no(definition.repeat_last_step),
-                    false,
-                );
-                hash_detail_field(ui, "Lane 0 Meaning", "Progress", false);
-                hash_detail_field(ui, "Lane 1 Meaning", "<not decoded>", false);
-                hash_detail_field(ui, "Lane 2 Meaning", "<not decoded>", false);
-            });
-    });
-    ui.add_space(8.0);
-    metadata_subsection(ui, "Referenced Save State", |ui| {
-        egui::Grid::new(("hash_progression_save_state", index))
-            .num_columns(2)
-            .spacing([16.0, 4.0])
-            .show(ui, |ui| {
-                hash_detail_field(
-                    ui,
-                    "State",
-                    if saved_lanes.is_some() {
-                        "Present"
-                    } else {
-                        "Missing"
-                    },
-                    false,
-                );
-                match saved_lanes {
-                    Some(lanes) => {
-                        hash_detail_field(
-                            ui,
-                            "Progress",
-                            target.map_or_else(
-                                || lanes[0].to_string(),
-                                |target| format!("{} / {target}", lanes[0]),
-                            ),
-                            true,
-                        );
-                        hash_detail_field(ui, "Lane 1", lanes[1].to_string(), true);
-                        hash_detail_field(ui, "Lane 2", lanes[2].to_string(), true);
-                    }
-                    None => {
-                        hash_detail_field(ui, "Progress", "<not present>", true);
-                        hash_detail_field(ui, "Lane 1", "<not present>", true);
-                        hash_detail_field(ui, "Lane 2", "<not present>", true);
-                    }
-                }
-                hash_detail_field(
-                    ui,
-                    "Target",
-                    target.map_or_else(|| "<not present>".into(), |target| target.to_string()),
-                    true,
-                );
-            });
+                p.mono("Lane 1", lanes[1].to_string());
+                p.mono("Lane 2", lanes[2].to_string());
+            }
+            None => p.text("State", "Not Saved"),
+        }
     });
 }

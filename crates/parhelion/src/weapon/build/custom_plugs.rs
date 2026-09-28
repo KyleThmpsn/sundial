@@ -242,6 +242,11 @@ pub(super) fn plan(
         SUNRISE_BADGE_NAME_HASH,
     ]);
     for donor in resolved {
+        occupied_localized_hashes.extend(
+            crate::weapon::subclass::authored_text(&donor.weapon)
+                .into_iter()
+                .map(|(hash, _)| hash),
+        );
         if donor.weapon.overrides.lore.is_some() {
             occupied_localized_hashes.insert(crate::presentation::text_hash(
                 &donor.weapon.namespace,
@@ -455,6 +460,14 @@ pub(super) fn plan(
                                     graphs: Vec::new(),
                                 }
                             }
+                            // Unedited, such a row keeps its stock identity on this plug, as a
+                            // fixed damage marker does: it has no action to clone, and whatever
+                            // reads the marker, such as the weapon it belongs to, still finds it.
+                            Err(error)
+                                if error.contains("is not assigned") && unedited(&perk) =>
+                            {
+                                continue;
+                            }
                             Err(error) => return Err(invalid(error)),
                         };
                         if damage_markers::keeps_stock_identity(&perk) {
@@ -526,7 +539,7 @@ pub(super) fn plan(
                         sandbox_perks: private_perks,
                     });
                     Ok(())
-                })().map_err(|error| error.context(context))?;
+                })().map_err(|error| donor.weapon.in_recipe_as(error, context))?;
         }
     }
 
@@ -728,6 +741,15 @@ pub(super) fn author_payloads(
         definitions: custom_plug_definitions,
         strings: custom_plug_strings,
     })
+}
+
+/// Whether an effect is its stock row as the game ships it: no program and no overrides.
+fn unedited(perk: &WeaponSandboxPerkRuntimeOverride) -> bool {
+    perk.program.is_none()
+        && perk.projectiles.is_empty()
+        && perk.activation.is_none()
+        && perk.runtime_values.is_empty()
+        && perk.action_float_values.is_empty()
 }
 
 fn plug_context(plug: &ResolvedCustomPlug, resolved: &[resolve::ResolvedWeapon]) -> String {

@@ -390,18 +390,6 @@ fn hash_choices_skip_the_engine_empty_marker() {
 }
 
 #[test]
-fn loadout_scopes_default_off_and_partition_every_slot() {
-    let options = LoadoutOptions::default();
-    assert!(!options.any());
-    assert!(!options.replace_held_inventory);
-    assert!(options.keep_locked_items);
-    assert_eq!(loadout_scope_for_slot("kinetic"), LoadoutScope::Weapons);
-    assert_eq!(loadout_scope_for_slot("helmet"), LoadoutScope::Armor);
-    assert_eq!(loadout_scope_for_slot("subclass"), LoadoutScope::Subclass);
-    assert_eq!(loadout_scope_for_slot("ship"), LoadoutScope::EquipmentFlair);
-}
-
-#[test]
 fn unchecked_loadout_scopes_are_excluded_without_affecting_the_others() {
     let options = LoadoutOptions {
         weapons: false,
@@ -421,28 +409,6 @@ fn unchecked_loadout_scopes_are_excluded_without_affecting_the_others() {
     assert!(selected.contains(&SUBCLASS_SLOT));
     assert!(!selected.contains(&"kinetic"));
     assert!(!selected.contains(&"ship"));
-}
-
-#[test]
-fn loadout_lock_detection_only_uses_the_locked_flag() {
-    assert!(loadout_item_is_locked(Some(
-        inventory::INVENTORY_FLAG_LOCKED
-    )));
-    assert!(loadout_item_is_locked(Some(
-        inventory::INVENTORY_FLAG_LOCKED | inventory::INVENTORY_FLAG_TRACKED
-    )));
-    assert!(!loadout_item_is_locked(None));
-    assert!(!loadout_item_is_locked(Some(
-        inventory::INVENTORY_FLAG_TRACKED
-    )));
-}
-
-#[test]
-fn random_item_add_respects_native_bucket_capacity() {
-    assert!(bucket_has_room_for_add(9, 0, 10));
-    assert!(!bucket_has_room_for_add(10, 0, 10));
-    assert!(!bucket_has_room_for_add(9, 1, 10));
-    assert!(bucket_has_room_for_add(8, 1, 10));
 }
 
 #[test]

@@ -114,12 +114,25 @@ pub fn extract(r: &mut Reader, item_hash: u32) -> Result<Value> {
         let tag = table.u32(row + 4)?;
         let parent = r.tag(tag, None)?;
         let key = table.u32(row)?;
-        parents.push(json!({"assignment":format!("{key:08X}"),"parent":format!("{tag:08X}"),"parent_class":format!("{:08X}",r.reference(tag)?),"parent_bytes":hex::encode(&parent.0),"placement":placements.get(&key).cloned().unwrap_or(Value::Null)}));
         let entity_tag = parent.u32(16)?;
-        if entity_tag == u32::MAX {
-            continue;
+        let entity = (entity_tag != u32::MAX)
+            .then(|| r.tag(entity_tag, Some(0x80809C0F)))
+            .transpose()?;
+        // The part that carries the weapon's marker set (grip, sights, fire points) is the
+        // one the weapon is placed by, so the body host is chosen from these.
+        let mut marker_set = false;
+        if let Some(entity) = &entity {
+            for component in entity.array(16, 12, Some(0x80809C04))? {
+                let owner = r.tag(entity.u32(component)?, Some(0x80809C36))?;
+                let data = owner.pointer(0x10)?;
+                marker_set |=
+                    data >= 4 && owner.u32(data - 4)? == crate::d2_mot::markers::NATIVE_COMPONENT;
+            }
         }
-        let entity = r.tag(entity_tag, Some(0x80809C0F))?;
+        parents.push(json!({"assignment":format!("{key:08X}"),"parent":format!("{tag:08X}"),"parent_class":format!("{:08X}",r.reference(tag)?),"parent_bytes":hex::encode(&parent.0),"placement":placements.get(&key).cloned().unwrap_or(Value::Null),"marker_set":marker_set}));
+        let Some(entity) = entity else {
+            continue;
+        };
         for component in entity.array(16, 12, Some(0x80809C04))? {
             let owner_tag = entity.u32(component)?;
             let owner = r.tag(owner_tag, Some(0x80809C36))?;

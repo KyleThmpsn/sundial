@@ -55,13 +55,14 @@ pub fn draw_sources(ui: &mut egui::Ui, sources: &PerkSources, index: usize) {
     egui::CollapsingHeader::new(format!("Source Items and Plugs ({})", entries.len()))
         .id_salt(("effect-sources", index))
         .show(ui, |ui| {
-            ui.small("These names belong to items and plugs that reference this effect. A source can carry other effects, and its description may cover more than this effect.");
             if entries.is_empty() {
-                ui.weak("No item or plug references found in the catalog.");
+                ui.weak("No Source Items or Plugs");
             }
             for source in entries {
                 ui.label(format!("{} · {:08X}", source.name, source.hash));
-                if !source.type_name.is_empty() { ui.small(&source.type_name); }
+                if !source.type_name.is_empty() {
+                    ui.small(&source.type_name);
+                }
             }
         });
 }

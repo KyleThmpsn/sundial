@@ -205,22 +205,19 @@ fn speed_values(
     ]
     .into_iter()
     .map(|(root, schema, offset)| {
-        let fields = decoded
+        // The registry names members inside the bounded region as well, so the widest byte
+        // field covering the speed word is the storage the override rewrites.
+        let field = decoded
             .fields()
             .filter(|field| {
                 field.locator.root == root
                     && field.locator.root_schema == schema
                     && field.locator.value_offset <= offset
                     && field.locator.value_offset + field.locator.byte_size >= offset + 4
+                    && matches!(field.value, WeaponRuntimeValue::Bytes(_))
             })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            fields.len(),
-            1,
-            "{} has ambiguous speed storage",
-            effect.name
-        );
-        let field = fields[0];
+            .max_by_key(|field| field.locator.byte_size)
+            .unwrap_or_else(|| panic!("{} has no bounded speed storage", effect.name));
         let WeaponRuntimeValue::Bytes(mut bytes) = field.value.clone() else {
             panic!("bounded speed bytes")
         };

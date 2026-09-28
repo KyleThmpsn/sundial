@@ -5,9 +5,47 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, OnceLock, Weak},
 };
 use tiger_pkg::{DestinyVersion, GameVersion, MarathonVersion, PackageManager, TagHash};
+
+/// Package indexes open in this process, by folder and era, with the package stamp each was
+/// built from.
+type Indexes = BTreeMap<(PathBuf, bool), (String, Weak<PackageManager>)>;
+
+/// One package index per folder and era while any reader holds it. Building an index reads
+/// every package header, about five seconds for either game, and one import opens readers for
+/// each stage, so readers of an unchanged folder share the index instead. The cache holds no
+/// index itself: once the last reader drops, the memory is released. A changed package stamp,
+/// such as after an install, builds a new index.
+pub(crate) fn package_index(packages: &Path, modern: bool) -> Result<Arc<PackageManager>> {
+    static INDEXES: OnceLock<Mutex<Indexes>> = OnceLock::new();
+    let stamp = crate::d2_mot::service::package_stamp(packages)?;
+    let key = (packages.to_owned(), modern);
+    let mut indexes = INDEXES
+        .get_or_init(Mutex::default)
+        .lock()
+        .map_err(|_| anyhow::anyhow!("package index cache poisoned"))?;
+    if let Some((built, index)) = indexes.get(&key)
+        && *built == stamp
+        && let Some(index) = index.upgrade()
+    {
+        return Ok(index);
+    }
+    let version = if modern {
+        DestinyVersion::Destiny2TheEdgeOfFate
+    } else {
+        DestinyVersion::Destiny2Shadowkeep
+    };
+    let index = Arc::new(PackageManager::new(
+        packages,
+        GameVersion::Destiny(version),
+        None,
+    )?);
+    indexes.retain(|_, (_, index)| index.strong_count() > 0);
+    indexes.insert(key, (stamp, Arc::downgrade(&index)));
+    Ok(index)
+}
 
 // Resolve junctions in the existing ancestor before creating any directories.
 pub fn resolved(path: &Path) -> Result<PathBuf> {
@@ -40,7 +78,7 @@ pub fn outside(output: &Path, source: &Path) -> Result<PathBuf> {
     Ok(output)
 }
 pub struct Reader {
-    pub manager: PackageManager,
+    pub manager: Arc<PackageManager>,
     pub output: PathBuf,
     cache: BTreeMap<u32, Arc<Payload>>,
     tags: BTreeMap<String, Value>,
@@ -52,11 +90,11 @@ impl Reader {
     pub fn marathon(packages: &Path, output: &Path) -> Result<Self> {
         let packages = packages.canonicalize()?;
         let output = outside(output, packages.parent().context("source has no parent")?)?;
-        let manager = PackageManager::new(
+        let manager = Arc::new(PackageManager::new(
             &packages,
             GameVersion::Marathon(MarathonVersion::Marathon),
             None,
-        )?;
+        )?);
         fs::create_dir_all(output.join("raw"))?;
         Ok(Self {
             manager,
@@ -71,12 +109,7 @@ impl Reader {
     pub fn new(packages: &Path, output: &Path, modern: bool) -> Result<Self> {
         let packages = packages.canonicalize()?;
         let output = outside(output, packages.parent().context("source has no parent")?)?;
-        let version = if modern {
-            DestinyVersion::Destiny2TheEdgeOfFate
-        } else {
-            DestinyVersion::Destiny2Shadowkeep
-        };
-        let manager = PackageManager::new(&packages, GameVersion::Destiny(version), None)?;
+        let manager = package_index(&packages, modern)?;
         fs::create_dir_all(output.join("raw"))?;
         Ok(Self {
             manager,
@@ -93,6 +126,23 @@ impl Reader {
         let mut reader = Self::new(packages, output, modern)?;
         reader.record_reads = false;
         Ok(reader)
+    }
+    /// Start an independent export while keeping the already opened package index.
+    pub(crate) fn shared_export(&self, output: &Path) -> Result<Self> {
+        let output = outside(output, self.packages.parent().context("package parent")?)?;
+        fs::create_dir_all(output.join("raw"))?;
+        Ok(Self {
+            manager: Arc::clone(&self.manager),
+            output,
+            cache: BTreeMap::new(),
+            tags: BTreeMap::new(),
+            packages: self.packages.clone(),
+            version: self.version.clone(),
+            record_reads: true,
+        })
+    }
+    pub(crate) fn clear_cached_tags(&mut self) {
+        self.cache.clear();
     }
     pub fn tag(&mut self, tag: u32, class: Option<u32>) -> Result<Arc<Payload>> {
         let entry = self
@@ -176,5 +226,26 @@ mod tests {
         let child = t.path().join("not-created/raw");
         assert!(outside(&child, t.path()).is_err());
         assert!(!child.exists());
+    }
+
+    #[test]
+    #[ignore = "Requires PARHELION_IMPORT_NATIVE_PACKAGES; reads installed packages and writes only temporary exports"]
+    fn configured_shared_export_reuses_native_package_index() {
+        let packages = PathBuf::from(
+            std::env::var_os("PARHELION_IMPORT_NATIVE_PACKAGES")
+                .expect("PARHELION_IMPORT_NATIVE_PACKAGES"),
+        );
+        let output = tempfile::tempdir().unwrap();
+        let opened = std::time::Instant::now();
+        let reader = Reader::discovery(&packages, &output.path().join("matching"), false).unwrap();
+        let opening = opened.elapsed();
+        let forked = std::time::Instant::now();
+        let export = reader
+            .shared_export(&output.path().join("candidate"))
+            .unwrap();
+        let forking = forked.elapsed();
+        assert!(Arc::ptr_eq(&reader.manager, &export.manager));
+        assert!(export.output.join("raw").is_dir());
+        eprintln!("Native package index: opening {opening:?}, shared export {forking:?}");
     }
 }

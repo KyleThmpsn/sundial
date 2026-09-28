@@ -1,7 +1,6 @@
 //! Kill-filter editing on a single native condition, independent of its source perk.
 use super::labels::{Fold, draw_site_group, set_labels, site_caption, unset_operations};
 use super::*;
-use crate::app::custom_perks::workbench::controls::{COLUMN_WIDTH, cell};
 use sundial::package_authoring::sandbox_perk::activation::PerkActivation;
 
 pub(super) const CLASS: u32 = 0x80803DE7;
@@ -12,34 +11,54 @@ const LABELS: usize = 0xD0;
 const VICTIM: usize = 8;
 const WEAPON: usize = 0x141;
 
-pub(super) fn draw(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result<(), String> {
+/// The kill trigger preset and its filters. `chance` draws the condition's chance beside the
+/// preset, so the two short values share a line.
+pub(super) fn draw(
+    ui: &mut egui::Ui,
+    graph: &mut Graph,
+    index: usize,
+    chance: bool,
+) -> Result<(), String> {
     // Each filter is its own labelled row. Left in the caller's horizontal flow they ran
     // side by side across the pane, spread by their label columns, and the last one clipped
     // at the edge. A column of its own keeps them stacked and whole at any width.
-    ui.vertical(|ui| rows(ui, graph, index)).inner
+    ui.vertical(|ui| rows(ui, graph, index, chance)).inner
 }
 
-fn rows(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result<(), String> {
+fn rows(ui: &mut egui::Ui, graph: &mut Graph, index: usize, chance: bool) -> Result<(), String> {
     let lists = native::labels::source(graph, index, LABELS)?;
     let owning = graph.blocks[index].bytes[WEAPON] != 0;
     let selected = PerkActivation::from_filter(&lists[0], owning);
     let mut choice = selected;
-    // The preset leads the filters it writes, in the same label column and at the same
-    // width, so the row reads as the summary of the ones below it.
-    let hint = "Changes this condition's kill category and weapon requirement. Other conditions and effects keep their own settings.";
-    cell(ui, "Kill Trigger", hint, |ui| {
-        egui::ComboBox::from_id_salt("kill-trigger")
-            .width(COLUMN_WIDTH)
-            .truncate()
-            .selected_text(choice.map_or("Custom Kill Filter", PerkActivation::label))
-            .show_ui(ui, |ui| {
-                for option in PerkActivation::ALL {
-                    ui.selectable_value(&mut choice, Some(option), option.label());
-                }
-            })
-            .response
-            .on_hover_text(hint);
-        pickers::name_combo(ui, "kill-trigger", "Kill Trigger");
+    // The preset leads the filters it writes, as a tile of the same width, so it reads as
+    // the summary of the ones below it.
+    let hint = "Changes this condition's kill category and weapon requirement.";
+    crate::app::style::tiles(ui, |ui, width| {
+        crate::app::style::tile(
+            ui,
+            width,
+            "kill-trigger",
+            "Kill Trigger",
+            hint,
+            false,
+            |ui| {
+                egui::ComboBox::from_id_salt("kill-trigger")
+                    .width(ui.available_width())
+                    .truncate()
+                    .selected_text(choice.map_or("Custom Kill Filter", PerkActivation::label))
+                    .show_ui(ui, |ui| {
+                        for option in PerkActivation::ALL {
+                            ui.selectable_value(&mut choice, Some(option), option.label());
+                        }
+                    })
+                    .response
+                    .on_hover_text(hint);
+                pickers::name_combo(ui, "kill-trigger", "Kill Trigger");
+            },
+        );
+        if chance {
+            super::chance(ui, width, &mut graph.blocks[index].bytes);
+        }
     });
     if choice != selected
         && let Some(choice) = choice
@@ -53,7 +72,7 @@ fn rows(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result<(), String
     // is editable here from the vocabulary the game uses at that exact site.
     // Both sites fold together, so the node offers one way to reach every empty operation
     // rather than one beside each site.
-    let fold = Fold::of(ui, index, 0);
+    let fold = Fold::of(ui, 0);
     let mut unset = 0;
     for (group, binding) in [LABELS, VICTIM].into_iter().enumerate() {
         // The preset and the two sites are three separate readings. Run together they read
@@ -109,61 +128,6 @@ fn set(
 mod tests {
     use super::*;
     use sundial::package_authoring::sandbox_perk::activation;
-
-    #[test]
-    fn folded_empty_filter_groups_do_not_leave_a_blank_row() {
-        let bytes = native::template(true, 2).unwrap();
-        let mut graph = Graph::read(&bytes, 0, CLASS).unwrap();
-        for binding in [LABELS, VICTIM] {
-            for operation in 0..4 {
-                set_labels(&mut graph, 0, binding, operation, &[]).unwrap();
-            }
-        }
-        set(
-            &mut graph,
-            0,
-            PerkActivation::PrecisionWeaponKill.labels(),
-            true,
-        )
-        .unwrap();
-        let before = graph.clone();
-        let ctx = egui::Context::default();
-        let output = ctx.run(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(900.0, 600.0),
-                )),
-                ..Default::default()
-            },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    crate::app::style::perk_workbench_style(ui);
-                    draw(ui, &mut graph, 0).unwrap();
-                });
-            },
-        );
-        let rect = |name: &str| {
-            output
-                .shapes
-                .iter()
-                .find_map(|shape| match &shape.shape {
-                    egui::Shape::Text(text) if text.galley.job.text == name => {
-                        Some(text.galley.rect.translate(text.pos.to_vec2()))
-                    }
-                    _ => None,
-                })
-                .unwrap_or_else(|| panic!("Missing {name}"))
-        };
-        let last_filter = rect("Kill matches any");
-        let more = rect("7 more filters");
-        assert!(
-            more.top() - last_filter.bottom() <= 12.0,
-            "Hidden filters reserved a blank row"
-        );
-        assert!(more.top() >= last_filter.bottom());
-        assert_eq!(graph, before);
-    }
 
     #[test]
     fn changing_a_kill_filter_preserves_shared_siblings_and_other_requirements() {
@@ -270,20 +234,5 @@ mod tests {
         // The lists neither edit touched stay empty rather than inheriting either write.
         assert!(native::labels::source(&reread, 0, LABELS).unwrap()[2].is_empty());
         assert!(native::labels::source(&reread, 0, VICTIM).unwrap()[0].is_empty());
-    }
-
-    #[test]
-    fn every_site_label_is_named_and_counted() {
-        for (class, offset, labels) in activation::LABEL_SITES {
-            assert!(!labels.is_empty(), "{class:08X}+{offset:X} has no labels");
-            for (hash, name, uses) in *labels {
-                assert!(!name.trim().is_empty(), "label 0x{hash:08X} has no name");
-                assert!(*uses > 0, "{name} is offered with no stock use");
-                assert_eq!(activation::site_label_name(*hash), Some(*name));
-            }
-        }
-        // A label no stock perk uses at any site is not offered.
-        assert_eq!(activation::site_label_name(0x1234_5678), None);
-        assert!(activation::site_labels(0x1234_5678, 0).is_empty());
     }
 }

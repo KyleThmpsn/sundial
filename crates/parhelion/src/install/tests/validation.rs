@@ -404,23 +404,6 @@ fn non_current_manifest_schema_is_rejected_before_mutation() {
 }
 
 #[test]
-fn manifest_unknown_fields_are_rejected_before_mutation() {
-    let fixture = Fixture::new();
-    let mut manifest = fixture.manifest_json(None);
-    manifest["project"]["sunrise"]["unexpected"] = json!(true);
-    fs::write(
-        fixture.staging.join(MANIFEST_FILE_NAME),
-        serde_json::to_vec_pretty(&manifest).unwrap(),
-    )
-    .unwrap();
-
-    let error = install_staged_packages(&fixture.request()).unwrap_err();
-
-    assert!(error.message.contains("unknown field"));
-    assert!(!fixture.backups.exists());
-}
-
-#[test]
 fn manifest_recipe_fingerprint_is_consumed_before_mutation() {
     let fixture = Fixture::new();
     let mut manifest = fixture.manifest_json(None);

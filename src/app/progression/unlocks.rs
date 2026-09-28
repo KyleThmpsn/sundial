@@ -497,7 +497,7 @@ fn edit_blocked(
     if definition.bank() > 6 {
         return Some((
             "Unknown Bank",
-            "This storage bank is not decoded. Open Details to inspect its references.",
+            "This storage bank is unknown. Open Details to see its references.",
         ));
     }
     None
@@ -534,7 +534,7 @@ fn override_cell(
                         }
                     })
                     .response
-                    .on_hover_text("No saved account value exists. Add an override to author one.");
+                    .on_hover_text("No saved value. Add an override to set one.");
                 });
             });
         },

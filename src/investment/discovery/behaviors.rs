@@ -73,6 +73,9 @@ fn read_with_manager(
             Err(error) => catalog.errors.push(format!("Action 0x{tag:08X}: {error}")),
         }
     }
+    // Every action's payload has been decoded into the catalog and dropped. The catalog is a
+    // fraction of what reading them cost, so this is where the difference goes back.
+    crate::memory::release_free_memory();
     Ok(catalog)
 }
 

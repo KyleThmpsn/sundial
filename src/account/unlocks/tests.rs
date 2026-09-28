@@ -172,8 +172,7 @@ fn authored_unlock_sync_accepts_the_last_extended_account_flag_byte() {
         serde_json::to_vec(&unlock_settings_for_test()).unwrap(),
     )
     .unwrap();
-    let slot = u16::try_from(crate::account_contract::SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY - 1)
-        .unwrap();
+    let slot = 12_299;
 
     let (_, _, changed) = synchronize_authored_collection_unlocks_at(
         &settings,
@@ -201,8 +200,7 @@ fn authored_unlock_sync_rejects_the_first_byte_of_the_next_account_region() {
     let original = unlock_settings_for_test();
     let original_bytes = serde_json::to_vec(&original).unwrap();
     fs::write(&settings, &original_bytes).unwrap();
-    let slot =
-        u16::try_from(crate::account_contract::SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY).unwrap();
+    let slot = 12_300;
 
     let error = synchronize_authored_collection_unlocks_at(
         &settings,

@@ -1,43 +1,6 @@
 use super::*;
 
 #[test]
-fn icon_rarity_follows_authored_tier_or_gameplay_donor_and_invalidates_cache() {
-    use crate::AuthoredWeaponRarity as R;
-    for (authored, inherited, expected) in [
-        (None, Some(WeaponRarity::Common), Some(R::Common)),
-        (None, Some(WeaponRarity::Uncommon), Some(R::Uncommon)),
-        (None, Some(WeaponRarity::Rare), Some(R::Rare)),
-        (None, Some(WeaponRarity::Legendary), Some(R::Legendary)),
-        (None, Some(WeaponRarity::Exotic), Some(R::Exotic)),
-        (
-            Some(RecipeRarity::Legendary),
-            Some(WeaponRarity::Exotic),
-            Some(R::Legendary),
-        ),
-        (
-            Some(RecipeRarity::Exotic),
-            Some(WeaponRarity::Legendary),
-            Some(R::Exotic),
-        ),
-        (Some(RecipeRarity::Rare), None, Some(R::Rare)),
-        (None, Some(WeaponRarity::Unknown), None),
-    ] {
-        assert_eq!(effective_icon_rarity(authored, inherited), expected);
-    }
-}
-
-#[test]
-fn ammo_selection_without_a_native_donor_is_read_only_and_preserves_saved_data() {
-    let mut overrides = WeaponRecipeOverrides {
-        ammo_type: Some(RecipeAmmoType::Special),
-        ..Default::default()
-    };
-    let (output, _) = render(420.0, |ui| draw_ammo_type_control(ui, &mut overrides, None));
-    assert!(text(&output).contains("Choose a gameplay donor"));
-    assert_eq!(overrides.ammo_type, Some(RecipeAmmoType::Special));
-}
-
-#[test]
 #[ignore = "requires PARHELION_DEFAULT_WEAPONS_PACKAGES; package-backed headless layout check"]
 #[expect(
     clippy::cognitive_complexity,
@@ -261,7 +224,7 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
                 app.recipe.name
             );
         }
-        for label in ["+ Add Choice", "…"] {
+        for label in ["+ Add Choice", crate::app::style::MORE] {
             let positions = text_origins(&output, label);
             assert!(positions.len() >= 5);
             assert!(

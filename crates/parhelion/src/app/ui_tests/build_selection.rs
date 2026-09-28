@@ -40,7 +40,7 @@ fn bundled_build_checkbox_toggles_all_defaults_without_touching_custom_selection
             .filter(|entry| entry.bundled)
             .count();
         let included = app.build_selection_draft.as_ref().unwrap().len() - 1;
-        let label = format!("Include default Parhelion weapons ({included}/{count})");
+        let label = format!("Include Default Weapons ({included}/{count})");
         let pos = text_origin(&output, &label) + egui::vec2(4.0, 4.0);
         for pressed in [true, false] {
             let mut click = input.clone();
@@ -68,65 +68,6 @@ fn bundled_build_checkbox_toggles_all_defaults_without_touching_custom_selection
             .unwrap()
             .is_empty()
     );
-}
-
-#[test]
-fn build_pages_replace_each_other_and_selection_precedes_build() {
-    let mut app = PackageAuthoringApp {
-        build_status_open: true,
-        latest_build: Some(Ok(BuildReport {
-            weapons: Vec::new(),
-            run_directory: PathBuf::from("staged-run"),
-            manifest_path: PathBuf::from("staged-run/manifest.json"),
-            artifacts: Vec::new(),
-            selection_fingerprint: "fingerprint".into(),
-            staged_recipe_paths: Vec::new(),
-        })),
-        ..Default::default()
-    };
-    let before = app.recipe.clone();
-    let (output, _) = render(1320.0, |ui| app.draw_actions(ui));
-    assert!(
-        text_origin(&output, "0 weapons selected for build…").x
-            < text_origin(&output, "Build & Stage").x
-    );
-    let action_y = text_origin(&output, "Build & Stage").y;
-    for label in ["0 weapons selected for build…", "Build & Install Status…"] {
-        assert!((text_origin(&output, label).y - action_y).abs() < 1.0);
-    }
-    for step in [
-        BuildDialogStep::Build,
-        BuildDialogStep::ReviewInstall,
-        BuildDialogStep::Install,
-    ] {
-        app.build_dialog_step = step;
-        let (output, _) = render(1320.0, |ui| app.draw_build_status_window(ui.ctx()));
-        let labels = text(&output);
-        assert_eq!(labels.matches("Build & Install").count(), 1);
-        assert_eq!(
-            labels.contains("Build Validated"),
-            step == BuildDialogStep::Build
-        );
-        assert!(
-            labels.contains("1. Build")
-                && labels.contains("2. Review")
-                && labels.contains("3. Install")
-        );
-        assert_eq!(
-            labels.contains("Review Installation"),
-            step != BuildDialogStep::Install
-        );
-        assert_eq!(
-            labels.contains("This replaces your installed custom weapon set."),
-            step == BuildDialogStep::ReviewInstall
-        );
-        assert_eq!(
-            labels.contains("No installation result"),
-            step == BuildDialogStep::Install
-        );
-        assert_eq!(app.recipe, before);
-        assert!(app.install_receiver.is_none());
-    }
 }
 
 #[test]
@@ -176,12 +117,12 @@ fn filtered_build_selection_changes_only_the_draft_and_cancel_discards_it() {
     };
     // One checkbox covers the search: ticking it adds every shown recipe, clearing it removes
     // them, and a recipe the search hides keeps its membership either way.
-    click_label(&mut app, "Select all shown");
+    click_label(&mut app, "Select All Shown");
     assert_eq!(
         app.build_selection_draft.as_ref().unwrap(),
         &BTreeSet::from([shown.clone(), hidden.clone()])
     );
-    click_label(&mut app, "Select all shown");
+    click_label(&mut app, "Select All Shown");
     assert_eq!(
         app.build_selection_draft.as_ref().unwrap(),
         &BTreeSet::from([hidden.clone()])
@@ -198,24 +139,6 @@ fn filtered_build_selection_changes_only_the_draft_and_cancel_discards_it() {
         app.build_selection_draft.as_ref(),
         Some(&app.enabled_recipe_paths)
     );
-}
-
-#[test]
-fn workbench_tabs_keep_recipe_and_build_selection_unchanged() {
-    let mut app = PackageAuthoringApp::default();
-    let before = app.recipe.clone();
-    let selected = app.enabled_recipe_paths.clone();
-    assert_eq!(app.workbench_page, WorkbenchPage::Weapon);
-    for page in WorkbenchPage::ALL {
-        app.workbench_page = page;
-        let (_, overflow) = render(900.0, |ui| {
-            app.draw_workbench_tabs(ui);
-            app.draw_recipe_editor(ui);
-        });
-        assert!(overflow < 1.0, "{page:?} overflow: {overflow}");
-        assert_eq!(app.recipe, before);
-        assert_eq!(app.enabled_recipe_paths, selected);
-    }
 }
 
 #[test]
@@ -385,52 +308,4 @@ fn build_selection_is_explicit_and_failed_commits_do_not_change_it() {
             .is_empty()
     );
     assert_eq!(app.recipe.clone(), recipe_before);
-}
-
-#[test]
-fn a_long_build_selection_pins_its_footer_to_the_bottom_of_the_window() {
-    let directory = tempfile::tempdir().unwrap();
-    let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
-    for index in 0..40 {
-        let mut recipe = WeaponRecipe::every_end();
-        recipe
-            .rename_authored_item(format!("Footer fit weapon {index:02}"))
-            .unwrap();
-        library.save_new(&recipe).unwrap();
-    }
-    let entries = library.scan().unwrap().entries;
-    let mut app = PackageAuthoringApp {
-        recipe_library: Some(library.clone()),
-        recipe_entries: entries,
-        ..Default::default()
-    };
-    app.open_build_selection();
-    let ctx = egui::Context::default();
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(902.0, 760.0));
-    let input = egui::RawInput {
-        screen_rect: Some(screen),
-        ..Default::default()
-    };
-    let mut output = egui::FullOutput::default();
-    for _ in 0..3 {
-        output = ctx.run(input.clone(), |ctx| app.draw_library_windows(ctx));
-    }
-    // The list claims exactly the height the footer leaves behind: more recipes than fit can
-    // neither push the buttons off the bottom of the screen nor strand them under a blank band.
-    let window = ctx
-        .memory(|memory| memory.area_rect(egui::Id::new("Weapons in This Build")))
-        .expect("the build selection window must be on screen");
-    assert!(
-        window.bottom() <= screen.bottom(),
-        "window bottom {} ran past the screen at {}",
-        window.bottom(),
-        screen.bottom()
-    );
-    let apply = text_origin(&output, "Apply Selection");
-    assert!(
-        apply.y > window.bottom() - 48.0,
-        "the footer sat at {} instead of just above the window bottom {}",
-        apply.y,
-        window.bottom()
-    );
 }

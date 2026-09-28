@@ -12,7 +12,7 @@ mod view;
 pub(in crate::app) use editing::{Edit, apply};
 pub(in crate::app) use view::{UiState, draw};
 
-pub(in crate::app) const DAWN_UNAVAILABLE: &str = "Seasonal authoring is unavailable for Dawn. Dawn's runtime has no verified support for the coordinated seasonal XP, artifact and Season Pass editor.";
+pub(in crate::app) const DAWN_UNAVAILABLE: &str = "Seasonal authoring is unavailable for Dawn.";
 
 impl CollectionStateSnapshot {
     pub(in crate::app) fn is_native(&self) -> bool {
@@ -93,20 +93,13 @@ pub(in crate::app) fn is_derived_value(index: usize) -> bool {
     )
 }
 
-pub(in crate::app) fn progression_help(index: usize) -> Option<&'static str> {
-    match index {
-        rules::POWER_PROGRESSION => Some(
-            "This is the seasonal XP source. Use Seasonal to update the pass, HUD, and artifact counters together.",
-        ),
-        rules::POINTS_PROGRESSION => Some(
-            "This counter mirrors seasonal XP. Use Seasonal to update the linked XP counters together.",
-        ),
-        rules::PASS_PROGRESSION => Some(
-            "This copy of seasonal XP is capped at rank 100. Reward eligibility uses the seasonal XP source.",
-        ),
-        rules::HUD_PROGRESSION => Some(
-            "This HUD bar repeats every 100,000 XP before rank 100, then tracks XP above the pass cap. Use Seasonal to update it with the linked XP counters.",
-        ),
-        _ => None,
-    }
+/// One of the progressions that carry seasonal XP.
+pub(in crate::app) const fn is_xp_progression(index: usize) -> bool {
+    matches!(
+        index,
+        rules::POWER_PROGRESSION
+            | rules::POINTS_PROGRESSION
+            | rules::PASS_PROGRESSION
+            | rules::HUD_PROGRESSION
+    )
 }

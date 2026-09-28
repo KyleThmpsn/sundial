@@ -64,6 +64,10 @@ pub(super) struct Browser {
     pub show_installed: bool,
     pub order: Order,
     pub dirty: bool,
+    /// The list returns to the top on its next draw.
+    pub reset_scroll: bool,
+    /// The view differs from the saved view file.
+    pub view_changed: bool,
     pub visible: Vec<usize>,
     pub types: BTreeMap<String, usize>,
     pub records: BTreeMap<u32, status::Record>,
@@ -87,6 +91,8 @@ impl Default for Browser {
             show_installed: false,
             order: Order::Catalog,
             dirty: true,
+            reset_scroll: false,
+            view_changed: false,
             visible: Vec::new(),
             types: BTreeMap::new(),
             records: BTreeMap::new(),
@@ -155,6 +161,7 @@ impl Browser {
         self.kind.clear();
         self.status = status::Filter::All;
         self.dirty = true;
+        self.reset_scroll = true;
     }
 
     fn sort_key(&self, weapon: &Weapon) -> (u8, String, String, u32) {
@@ -176,6 +183,7 @@ impl Browser {
         if !self.dirty {
             return;
         }
+        let cursor = self.cursor.map(|row| (row, self.visible.get(row).copied()));
         let query = self.query.trim().to_lowercase();
         self.visible = weapons
             .iter()
@@ -192,7 +200,15 @@ impl Browser {
             positions.sort_by(|&a, &b| keys[a].cmp(&keys[b]));
             self.visible = positions.iter().map(|&p| self.visible[p]).collect();
         }
-        self.cursor = None;
+        // Without a scroll reset the cursor follows its weapon or keeps its row.
+        self.cursor = match cursor {
+            Some((row, weapon)) if !self.reset_scroll && !self.visible.is_empty() => Some(
+                weapon
+                    .and_then(|weapon| self.visible.iter().position(|&index| index == weapon))
+                    .unwrap_or(row.min(self.visible.len() - 1)),
+            ),
+            _ => None,
+        };
         self.dirty = false;
     }
 
@@ -376,9 +392,25 @@ impl PackageAuthoringApp {
     pub(super) fn draw_importer_toolbar(&mut self, ui: &mut egui::Ui) {
         let browser = &mut self.importer.browser;
         let mut changed = false;
+        let mut query_changed = false;
+        let mut query_left = false;
         ui.horizontal_wrapped(|ui| {
             style::compact_controls(ui);
-            changed |= sundial::ui::catalog::search(ui, &mut browser.query, false, 220.0, "Search");
+            // Matches `sundial::ui::catalog::search`, which does not report focus loss.
+            let search = ui.add_sized(
+                [220.0, ui.spacing().interact_size.y],
+                egui::TextEdit::singleline(&mut browser.query).hint_text("Search"),
+            );
+            search.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Search")
+            });
+            query_changed = search.changed();
+            query_left = search.lost_focus();
+            if ui.button("Clear").clicked() {
+                browser.query.clear();
+                query_changed = true;
+                search.request_focus();
+            }
             egui::ComboBox::from_id_salt("d2-importer-type")
                 .width(150.0)
                 .selected_text(if browser.kind.is_empty() {
@@ -430,11 +462,14 @@ impl PackageAuthoringApp {
                 .changed();
             changed |= ui.checkbox(&mut browser.show_dummy, "Dummy").changed();
         });
-        if changed {
+        if changed || query_changed {
             browser.dirty = true;
-            if let Err(error) = browser.view().save() {
-                self.importer.notice = error;
-            }
+            browser.reset_scroll = true;
+            browser.view_changed = true;
+        }
+        // The query saves when its field loses focus, every other control at once.
+        if changed || query_left {
+            self.importer.save_view();
         }
     }
 
@@ -510,8 +545,8 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn draw_importer_browser(&mut self, ui: &mut egui::Ui, idle: bool) {
-        let reset_scroll = self.importer.browser.dirty;
         self.importer.browser.refresh(&self.importer.weapons);
+        let reset_scroll = std::mem::take(&mut self.importer.browser.reset_scroll);
         self.importer_keyboard(ui, idle);
         let Importer {
             browser,
@@ -530,6 +565,7 @@ impl PackageAuthoringApp {
                 ("All installed", "Tick Installed to list them.")
             };
             ui.add_space(ui.available_height() * 0.3);
+            let mut cleared = false;
             ui.vertical_centered(|ui| {
                 ui.label(egui::RichText::new(title).heading().weak());
                 if !detail.is_empty() {
@@ -538,8 +574,13 @@ impl PackageAuthoringApp {
                 ui.add_space(6.0);
                 if browser.filters_active() && ui.button("Clear Filters").clicked() {
                     browser.clear_filters();
+                    browser.view_changed = true;
+                    cleared = true;
                 }
             });
+            if cleared {
+                self.importer.save_view();
+            }
             return;
         }
         let step = ROW_HEIGHT + ui.spacing().item_spacing.y;
@@ -658,6 +699,17 @@ impl PackageAuthoringApp {
     }
 }
 
+impl Importer {
+    /// Writes the view file if the view changed since the last write.
+    pub(in crate::app) fn save_view(&mut self) {
+        if std::mem::take(&mut self.browser.view_changed)
+            && let Err(error) = self.browser.view().save()
+        {
+            self.notice = error;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -668,6 +720,7 @@ mod tests {
             name: name.into(),
             weapon_type: kind.into(),
             present_in_native: false,
+            native_item: false,
             dummy: false,
             icon_index: None,
         }
@@ -723,6 +776,37 @@ mod tests {
             browser.refresh(&weapons);
             assert_eq!(browser.visible, expected, "{}", order.label());
         }
+    }
+
+    #[test]
+    fn status_edits_keep_the_cursor_on_its_weapon_until_the_view_resets() {
+        let weapons = vec![
+            weapon(1, "Ace", "Sword"),
+            weapon(2, "Bolt", "Sword"),
+            weapon(3, "Cinder", "Sword"),
+        ];
+        let mut browser = Browser {
+            order: Order::Status,
+            ..Browser::default()
+        };
+        browser.refresh(&weapons);
+        browser.cursor = Some(2);
+        browser.records.insert(
+            3,
+            status::Record {
+                working: true,
+                note: String::new(),
+            },
+        );
+        browser.dirty = true;
+        browser.refresh(&weapons);
+        assert_eq!(browser.visible, [2, 0, 1]);
+        assert_eq!(browser.cursor, Some(0));
+        browser.order = Order::Name;
+        browser.dirty = true;
+        browser.reset_scroll = true;
+        browser.refresh(&weapons);
+        assert_eq!(browser.cursor, None);
     }
 
     #[test]

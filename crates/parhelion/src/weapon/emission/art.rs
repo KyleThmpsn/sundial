@@ -138,7 +138,7 @@ pub(super) fn row_keys(data: &[u8], row: usize) -> AuthoringResult<Vec<u32>> {
 
 /// Give the row at `row` its own copy of the assignments of the donor row at `donor`,
 /// rewritten by `policy`. The policy sees the two single keys and every slot as
-/// `(selector, keys)`; it may change keys but not the layout.
+/// `(selector, keys)`. Additional source regions receive their own registered resources.
 pub(super) fn rewrite(
     data: &mut Vec<u8>,
     row: usize,
@@ -155,7 +155,11 @@ pub(super) fn rewrite(
     }
     let mut singles = [read_u32(data, donor + 8)?, read_u32(data, donor + 12)?];
     if n == 0 {
-        policy(&mut singles, &mut Vec::new())?;
+        let mut slots = Vec::new();
+        policy(&mut singles, &mut slots)?;
+        if !slots.is_empty() {
+            return Err(invalid("Artwork regions have no native array format"));
+        }
         for (i, value) in singles.into_iter().enumerate() {
             write_u32(data, row + 8 + i * 4, value)?;
         }
@@ -164,7 +168,6 @@ pub(super) fn rewrite(
     }
     let (resource_count, resource_header, resources, _) = array(data, 24)?;
     let end = resources + resource_count * 24;
-    let extra = n * 24;
     let mut copies = Vec::new();
     let mut slots = Vec::new();
     for i in 0..n {
@@ -180,14 +183,39 @@ pub(super) fn rewrite(
         slots.push((read_u64(data, source)?, keys));
     }
     policy(&mut singles, &mut slots)?;
-    if slots.len() != n
+    if slots.len() > 32
         || slots
             .iter()
-            .zip(&copies)
-            .any(|(slot, copy)| slot.1.len() != copy.1)
+            .map(|slot| slot.0)
+            .collect::<BTreeSet<_>>()
+            .len()
+            != slots.len()
     {
-        return Err(invalid("Artwork policy changed the slot layout"));
+        return Err(invalid(
+            "Artwork regions must be distinct and fit the native limit",
+        ));
     }
+    if copies
+        .iter()
+        .any(|copy| !slots.iter().any(|slot| slot.0 == copy.0))
+    {
+        return Err(invalid("Artwork rewrite removed a native region"));
+    }
+    // A native empty assignment array has a zero pointer and no header, so it has no class.
+    let assignment_classes = copies
+        .iter()
+        .filter(|copy| copy.1 != 0)
+        .map(|copy| copy.2)
+        .collect::<BTreeSet<_>>();
+    if assignment_classes.len() > 1 {
+        return Err(invalid("Artwork assignment array classes differ"));
+    }
+    let assignment_class = assignment_classes.first().copied();
+    if assignment_class.is_none() && slots.iter().any(|slot| !slot.1.is_empty()) {
+        return Err(invalid("Artwork regions have no native array format"));
+    }
+    let n = slots.len();
+    let extra = n * 24;
     // Insert new registered resource rows before the assignment arrays. Existing
     // multi-slot pointers keep their targets; each assignment-array pointer moves.
     let mut targets = Vec::new();
@@ -216,9 +244,8 @@ pub(super) fn rewrite(
             targets.push((o + 16, target));
         }
     }
-    if multi >= end {
-        return Err(invalid("Unexpected multiple-assignment placement"));
-    }
+    // The donor may be a private row whose arrays sit after the table. Its slots were read
+    // above and the relocation covers its arrays like any other private row's.
     data.splice(end..end, std::iter::repeat_n(0, extra));
     let moved = |offset: usize| {
         if offset >= end {
@@ -233,17 +260,20 @@ pub(super) fn rewrite(
     write_u64(data, 24, (resource_count + n) as u64)?;
     write_u64(data, resource_header, (resource_count + n) as u64)?;
     let mh = append(data, multi_class, n, &vec![0; n * 8]);
-    for (i, ((selector, cnt, class), (_, keys))) in copies.into_iter().zip(slots).enumerate() {
+    for (i, (selector, keys)) in slots.into_iter().enumerate() {
         let resource = end + i * 24;
+        let cnt = keys.len();
         write_u64(data, resource, selector)?;
         write_u64(data, resource + 8, cnt as u64)?;
-        let bytes = keys
-            .into_iter()
-            .flat_map(u32::to_le_bytes)
-            .collect::<Vec<_>>();
-        let ah = append(data, class, cnt, &bytes);
-        point(data, resource + 16, ah)?;
         point(data, mh + 16 + i * 8, resource)?;
+        if let Some(class) = assignment_class.filter(|_| cnt != 0) {
+            let bytes = keys
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect::<Vec<_>>();
+            let ah = append(data, class, cnt, &bytes);
+            point(data, resource + 16, ah)?;
+        }
     }
     for (i, value) in singles.into_iter().enumerate() {
         write_u32(data, row + 8 + i * 4, value)?;

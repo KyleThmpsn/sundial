@@ -19,7 +19,7 @@ pub(crate) fn draw_state_flags(
         (
             INVENTORY_FLAG_MASTERWORK,
             "Masterworked",
-            "Marks the item as masterworked. Socket plugs and catalyst objectives are separate.",
+            "Socket plugs and catalyst objectives are set separately.",
             masterwork_available,
         ),
     ] {
@@ -41,13 +41,7 @@ pub(crate) fn draw_state_flags(
 
 pub(crate) fn draw_seen_flag(ui: &mut egui::Ui, seen: Option<bool>) -> Option<bool> {
     let mut seen = seen?;
-    draw_state_checkbox(
-        ui,
-        &mut seen,
-        "Seen",
-        "Marks the item as inspected in game, clearing its new-item indicator.",
-    )
-    .then_some(seen)
+    draw_state_checkbox(ui, &mut seen, "Seen", "Clears the new item indicator.").then_some(seen)
 }
 
 fn draw_state_checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str, help: &str) -> bool {

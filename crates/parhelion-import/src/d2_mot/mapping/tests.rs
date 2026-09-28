@@ -207,6 +207,30 @@ fn carrier_mapping_rebuilds_native_records_and_relocations() {
     }
 }
 #[test]
+fn records_take_the_source_flags_rather_than_the_carriers() {
+    let (dir, mut modern, template) = fixture();
+    // The source part carries modern-only bits beside the native ones, and the carrier that
+    // lends its material is drawn in other views.
+    put(&mut modern.0, 0x140 + 24, &0x0002_4005u32.to_le_bytes()).unwrap();
+    let carrier = dir.path().join("native/raw/00000004.bin");
+    let mut native = fs::read(&carrier).unwrap();
+    put(&mut native, 0x150 + 24, &2u16.to_le_bytes()).unwrap();
+    fs::write(&carrier, native).unwrap();
+    map(
+        &dir.path().join("source"),
+        &dir.path().join("native"),
+        &dir.path().join("out"),
+        &modern,
+        0xB0,
+        &template,
+    )
+    .unwrap();
+    let native = Payload(fs::read(dir.path().join("out/model.unlinked.bin")).unwrap());
+    let mesh = native.array(16, 136, Some(0x80807378)).unwrap()[0];
+    let part = native.array(mesh + 24, 32, Some(0x8080737E)).unwrap()[0];
+    assert_eq!(native.u16(part + 24).unwrap(), 5);
+}
+#[test]
 fn plated_mapping_omits_unsupported_effect_carriers_but_keeps_geometry() {
     let (dir, mut modern, template) = fixture();
     // Move the second draw from compute to depth prepass. It has no compatible
@@ -287,6 +311,8 @@ fn missing_material_carrier_is_rejected() {
     );
 }
 
+/// A modular weapon keeps a markerless piece in selector 0 and its receiver, which carries the
+/// marker set, in selector 1. The receiver places the weapon, so it hosts the import.
 #[test]
 fn body_slot_model_hosts_the_import_and_is_tried_first() {
     // Table order lists an attachment before the body. Parent bytes hold the

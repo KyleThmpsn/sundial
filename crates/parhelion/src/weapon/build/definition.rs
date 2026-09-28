@@ -88,7 +88,6 @@ pub(super) fn apply_presentation(
     definition: &mut Vec<u8>,
     strings: &mut [u8],
     donor: &resolve::ResolvedWeapon,
-    donor_inventory_slot: WeaponInventorySlot,
     authored_icon_index: u16,
 ) -> AuthoringResult<u16> {
     let identity = donor.weapon.identity;
@@ -97,16 +96,15 @@ pub(super) fn apply_presentation(
         transplant_weapon_geometry(definition, &presentation.definition)?;
         transplant_item_string_client_classification(
             strings,
-            donor_inventory_slot,
             &presentation.strings,
-            presentation.inventory_slot,
             authored_inventory_slot,
         )?;
-    } else if authored_inventory_slot != donor_inventory_slot {
+    } else if item_string_client_classification(strings, authored_inventory_slot).is_err() {
         // Retaining the original geometry also retains its type keys and animations.
         // The native definition's bucket and equipment slot were updated earlier.
         // Here, update the matching client classification without changing geometry.
-        set_item_string_inventory_slot(strings, donor_inventory_slot, authored_inventory_slot)?;
+        // Stock Trust already names Kinetic here while its bucket is Energy.
+        set_item_string_inventory_slot(strings, authored_inventory_slot)?;
     }
     if let Some(render_gear) = &donor.render_gear_donor {
         transplant_weapon_render_gear(definition, &render_gear.definition)?;

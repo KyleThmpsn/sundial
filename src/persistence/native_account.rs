@@ -39,6 +39,15 @@ pub(crate) trait NativeAccountDocument {
     /// Commit an identity only after its item was successfully added.
     fn observe_item_identity(&mut self, _identity: sundial_account::InstanceSoid) {}
 
+    /// Numbers a character item just added, for formats that give each row a serial.
+    fn note_new_character_item(
+        &mut self,
+        _character_index: usize,
+        _identity: sundial_account::InstanceSoid,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Abilities a format stores per item rather than per character.
     ///
     /// Dawn keeps abilities only on the character row, so its adapter reports none and never
@@ -87,6 +96,13 @@ impl<T: NativeAccountDocument> NativeAccountDocument for Box<T> {
     }
     fn observe_item_identity(&mut self, identity: sundial_account::InstanceSoid) {
         (**self).observe_item_identity(identity);
+    }
+    fn note_new_character_item(
+        &mut self,
+        character_index: usize,
+        identity: sundial_account::InstanceSoid,
+    ) -> Result<(), String> {
+        (**self).note_new_character_item(character_index, identity)
     }
     fn persisted_item_abilities(&self, id: EntityId) -> Option<CharacterAbilities> {
         (**self).persisted_item_abilities(id)

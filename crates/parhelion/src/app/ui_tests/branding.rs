@@ -18,7 +18,7 @@ fn runtime_branding_survives_recipe_and_catalog_resets() {
                 app.presentation_editor
                     .draw_corner(ui, &mut app.recipe.overrides);
                 app.presentation_editor
-                    .draw_badge(ui, &mut app.recipe.overrides, &[]);
+                    .draw_badge(ui, &mut app.recipe.overrides, &[], false);
             });
             let labels = text(&output);
             let runtime = if branding == Branding::Dawn {

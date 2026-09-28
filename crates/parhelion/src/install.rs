@@ -32,7 +32,7 @@ use preparation::*;
 mod replacement;
 pub use replacement::{ReplacementReview, preview_replacement};
 #[cfg(test)]
-pub(crate) use replacement::{test_review, test_review_with_slots, test_review_with_sockets};
+pub(crate) use replacement::{test_review, test_review_with_slots};
 mod uninstall;
 pub use uninstall::{
     UninstallPlan, UninstallReport, preview_uninstall, preview_uninstall_with_account_cleanup,
@@ -53,7 +53,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sundial::package_authoring::account::{
-    AuthoredCollectionUnlock, AuthoredProfileSyncReport, synchronize_authored_collection_unlocks,
+    AuthoredCollectionUnlock, AuthoredGrantReport, AuthoredProfileSyncReport,
+    synchronize_authored_collection_unlocks,
 };
 use sundial::package_authoring::{
     RuntimeBrand, RuntimeSnapshot, path_is_within, paths_equal, resolve_path_for_comparison,
@@ -218,6 +219,8 @@ pub struct InstallReport {
     pub invalidated_package_header_caches: Vec<InvalidatedPackageHeaderCache>,
     /// Account-state synchronization attempted after the package transaction committed.
     pub profile_sync: Option<Result<AuthoredProfileSyncReport, String>>,
+    /// Authored subclasses and shaders added to the account after the transaction committed.
+    pub item_grants: Option<Result<AuthoredGrantReport, String>>,
     /// Account updated as part of this backed-up replacement transaction.
     pub cleaned_account: Option<PathBuf>,
 }
@@ -301,6 +304,7 @@ struct ValidatedRun {
     obsolete_artifacts: Vec<ArtifactMetadata>,
     selected_recipe_files: Vec<String>,
     authored_unlocks: Vec<AuthoredCollectionUnlock>,
+    authored_grants: Vec<identities::GrantedItem>,
     package_backup_retention: usize,
     limit_package_backups: bool,
     backup_recipe_snapshots: bool,
@@ -450,6 +454,54 @@ const DEFAULT_CACHE_INVALIDATION_OPS: CacheInvalidationOps = CacheInvalidationOp
     rename: rename_cache_into_quarantine,
     cleanup: cleanup_cache_quarantine,
 };
+
+/// What the account step applied when it ran again for the installed generation.
+#[derive(Debug)]
+pub struct AccountResyncReport {
+    pub authored_unlocks: usize,
+    pub profile_sync: Result<AuthoredProfileSyncReport, String>,
+    /// Absent when the installed generation holds no subclass or shader.
+    pub item_grants: Option<Result<AuthoredGrantReport, String>>,
+}
+
+/// Runs the account step of an install again for the generation already installed: every
+/// authored Collections unlock is set in the active account source, and the authored subclasses
+/// and shaders are added. A changed runtime, such as Sunrise in place of Dawn, catches up this
+/// way without a rebuild or a reinstall. Reads the installed native tables, not a manifest.
+pub fn resync_account(
+    target_packages_directory: &Path,
+    game_running_check: GameRunningCheck,
+) -> Result<AccountResyncReport, String> {
+    if game_running_check()? {
+        return Err("Close Destiny 2 before resyncing the account".to_owned());
+    }
+    let _lock = lock_installation(target_packages_directory).map_err(|error| error.to_string())?;
+    // An interrupted install leaves its transaction record until the next install or uninstall
+    // repairs the package set. The account is not written against a half-committed generation.
+    if target_packages_directory
+        .join(INSTALL_TRANSACTION_FILE_NAME)
+        .exists()
+    {
+        return Err(
+            "An interrupted package install needs recovery first. Install or uninstall to repair it, then resync."
+                .to_owned(),
+        );
+    }
+    let game_root = target_packages_directory
+        .parent()
+        .ok_or_else(|| "Installed package directory has no game root".to_owned())?;
+    let (hashes, unlocks) = identities::installed_identities(target_packages_directory)
+        .map_err(|error| format!("No installed Parhelion generation to resync: {error}"))?;
+    let grants = identities::installed_grants(target_packages_directory, &hashes)?;
+    let profile_sync = synchronize_authored_collection_unlocks(game_root, &unlocks);
+    let item_grants = (!grants.is_empty())
+        .then(|| identities::grant_items(game_root, target_packages_directory, &grants));
+    Ok(AccountResyncReport {
+        authored_unlocks: unlocks.len(),
+        profile_sync,
+        item_grants,
+    })
+}
 
 /// Verify and transactionally install one staged Parhelion package set.
 pub fn install_staged_packages(request: &InstallRequest) -> Result<InstallReport, InstallError> {
@@ -740,6 +792,7 @@ struct ValidatedManifest {
     artifacts: Vec<ArtifactMetadata>,
     selected_recipe_files: Vec<String>,
     authored_unlocks: Vec<AuthoredCollectionUnlock>,
+    authored_grants: Vec<identities::GrantedItem>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -898,12 +951,26 @@ fn commit_and_verify(
             None => Err("Installed package directory has no game root".to_owned()),
         })
     };
+    // Nothing in the game grants a subclass or a shader stack, so the install adds them.
+    let item_grants = if context.validated.authored_grants.is_empty() {
+        None
+    } else {
+        Some(match game_root {
+            Some(game_root) => identities::grant_items(
+                game_root,
+                &context.validated.target_packages_directory,
+                &context.validated.authored_grants,
+            ),
+            None => Err("Installed package directory has no game root".to_owned()),
+        })
+    };
     let mut report = build_install_report(
         &context,
         &prepared,
         invalidated_sunrise_cache,
         invalidated_package_header_caches,
         profile_sync,
+        item_grants,
     );
     progress(InstallProgress::stage(InstallPhase::CleaningUp));
     cleanup_prepared_files(&prepared);
@@ -1042,6 +1109,7 @@ fn build_install_report(
     invalidated_sunrise_cache: Option<InvalidatedSunriseCache>,
     invalidated_package_header_caches: Vec<InvalidatedPackageHeaderCache>,
     profile_sync: Option<Result<AuthoredProfileSyncReport, String>>,
+    item_grants: Option<Result<AuthoredGrantReport, String>>,
 ) -> InstallReport {
     let validated = context.validated;
     let artifacts = prepared
@@ -1080,6 +1148,7 @@ fn build_install_report(
         invalidated_sunrise_cache,
         invalidated_package_header_caches,
         profile_sync,
+        item_grants,
     }
 }
 

@@ -28,6 +28,7 @@ pub(super) fn collect(
             recipe,
             source,
             issue,
+            warning: None,
         });
     };
     // Saved payloads stay usable while a document with the same identity is being edited.
@@ -36,17 +37,14 @@ pub(super) fn collect(
     }
     let empty = PerkRecipe::new().at_socket(0, 0);
     for document in documents {
-        if document.baseline.is_none() && document.recipe.at_socket(0, 0) == empty {
+        if document.untouched_copy()
+            || (document.baseline.is_none() && document.recipe.at_socket(0, 0) == empty)
+        {
             continue;
         }
-        let saved = document
-            .baseline
-            .as_deref()
-            .and_then(|bytes| serde_json::from_slice::<PerkRecipe>(bytes).ok())
-            .is_some_and(|saved| saved == document.recipe);
         add(
             document.recipe.clone(),
-            if saved {
+            if document.unchanged() {
                 "Custom Perks"
             } else {
                 "Workbench Draft"

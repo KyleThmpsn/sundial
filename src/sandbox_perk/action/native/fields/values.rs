@@ -7,6 +7,9 @@ pub struct ValueContract {
     pub choices: &'static [(u8, &'static str)],
     /// Named choices are independent bits rather than mutually exclusive selectors.
     pub bitmask: bool,
+    /// How a bit mask with no bit set reads. Most event masks then match nothing, but a
+    /// weapon event's slot mask then filters no slot.
+    pub empty: &'static str,
     /// Values the installed stock perks set for this byte, most used first. Present when a
     /// selector has no recovered names, so a user can still pick a value the engine is
     /// known to accept instead of guessing inside 0 to 255.
@@ -22,24 +25,27 @@ pub struct ValueContract {
 // allied players with matching group identity into available/living (+403) and
 // defeated/unavailable (+404), without a distance test. Last Stand and Celerity
 // independently require +403 / (+403 + +404) == 0 and +403 + +404 + 1 >= 2.
-// The three protected stat slots still lack sufficiently established meanings.
 // F04ADC rejects selectors above 12, returning the caller's XMM3 fallback at
 // F04EA4. Stock FF therefore selects this default, not another component/stat.
+// Selector 0 reads the number the action keeps at runtime state +14. Stock perks write it
+// into entity parameters named renown_stack_count and mod3_stack, and Swashbuckler and
+// Multikill Clip scale by it over their 5 and 3 stacks, so it reads as the stack count.
+// Selector 1 complements the ammunition accessor against its limit, and its stock users all
+// describe the magazine running low: Under Pressure, High-Impact Reserves and SUROS Legacy.
+// Selector 2 is the same accessor's current value. The three stat slots (3 to 5) and the
+// mapped property (12) have no established meaning and no named stock user, so they are left
+// out of the choices. A stored one is preserved and reads by its number.
 const COMMON_INPUTS: &[(u8, &str)] = &[
-    (0, "Action Numeric State"),
-    (1, "Ammunition Complement"),
-    (2, "Current Ammunition Value"),
-    (3, "Native Stat Slot 1"),
-    (4, "Native Stat Slot 2"),
-    (5, "Native Stat Slot 3"),
+    (0, "Stacks"),
+    (1, "Rounds Missing from Magazine"),
+    (2, "Rounds in Magazine"),
     (6, "Nearby Enemies"),
     (7, "Nearby Allies"),
     (8, "Other Fireteam Members"),
     (9, "Living Fireteam Members"),
     (10, "Defeated Fireteam Members"),
-    (11, "Selected Object Value"),
-    (12, "Mapped Object Property Value"),
-    (255, "Default Input"),
+    (11, "Target's Value"),
+    (255, "None"),
 ];
 
 /// This does not infer selector meanings from a field's numeric representation.
@@ -64,30 +70,57 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
         suffix: "",
         choices: &[],
         bitmask: false,
+        empty: "None",
         observed: if field.format == Format::Byte {
             super::stock_values::observed(class, field.offset)
         } else {
             &[]
         },
     };
+    // A weapon event's slot mask is one bit per weapon slot, as `describe` records: Mecha
+    // Holster's hand cannon nodes set 1 and 2, Lumina's set 1, Looks Can Kill's sets 2, Lucent
+    // Blade's and Tesseract's sword nodes set 4, and the perks that apply to every weapon set 7.
+    if field.label == "Slot Mask"
+        && crate::sandbox_perk::nodes::CONDITIONS
+            .iter()
+            .any(|node| node.class == class && matches!(node.kind, 13..=19 | 27 | 41))
+    {
+        result.description = "Which weapon slots the event comes from. A value with several bits accepts any of them, and no bit accepts every slot, as the 44 stock perks on this weapon's own events store.";
+        result.choices = &[(1, "Kinetic"), (2, "Energy"), (4, "Power")];
+        result.bitmask = true;
+        result.empty = "Any Slot";
+        return result;
+    }
     match (class, field.offset) {
         // Registered damage callback 1088E80, consumed by CD3570's multiplier lane.
         (0x80803E3C, 4) => {
-            result.description = "Incoming damage factor when Multiplier Stat is Literal Multiplier. 1 leaves damage unchanged, 0.5 halves it and 1.5 increases it by half. The damage filter and source distance still apply. This is not a percentage or an outgoing weapon-damage bonus.";
+            result.description = "Incoming damage factor when Multiplier Stat is Fixed Multiplier. 1 leaves damage unchanged, 0.5 halves it and 1.5 increases it by half. The damage filter and source distance still apply. This is not a percentage or an outgoing weapon-damage bonus.";
             result.suffix = "×";
         }
         (0x80803E3C, 8) => {
-            result.description = "Literal Multiplier uses Damage Multiplier. Other values select a native stat through the recipient's stat interface. Their identities are unresolved. This selector does not use the common action-input choices.";
-            result.choices = &[(255, "Literal Multiplier")];
+            result.description = "Fixed Multiplier uses Damage Multiplier. Other values select a native stat through the recipient's stat interface. Their identities are unresolved. This selector does not use the common action-input choices.";
+            result.choices = &[(255, "Fixed Multiplier")];
         }
         (0x80803E3C, 12) => {
             result.description = "Maximum three-dimensional distance between the damage source and recipient. Negative values disable this check. The boundary is inclusive. This limits source distance, not damage amount or the multiplier.";
         }
         // EC0AA0 is shared by 1089400, 10896D0 and EC58C0. ECD110 resolves
         // event modes 2/3 from context +10/+14, whose meaning depends on the event.
+        // The two event objects are named by the stock perks that attach to them. All 41 on 2
+        // start from a weapon's own event and attach to that weapon: Quickdraw and Snapshot
+        // Sights on draw, Impetus on reload, Moving Target on aiming, and Spring-Loaded Mounting,
+        // an armor perk, on the Sidearm drawn. The 42 on 3 attach to the
+        // other side of a kill or a hit: Firefly ("cause the target to explode"), Cosmology and
+        // Judgment on the enemy, Vengeance ("those that harm you") on the attacker, and Blessing
+        // of the Sky on the ally a Noble Round reaches.
         (0x80803E44..=0x80803E46, 2) => {
-            result.description = "Object receiving the attachment. Owning Object is the object hosting this perk, such as its weapon. Owning Player resolves the player through that host. Native modes 2 and 3 use the event's first and second object handles, whose roles depend on the trigger. These modes do not select a spawn position.";
-            result.choices = &[(0, "Owning Object"), (1, "Owning Player")];
+            result.description = "Who receives the attachment. This Item is the weapon or armor carrying the perk. Triggering Weapon is the weapon a draw, reload or aiming event comes from, such as the Sidearm an armor perk buffs when you draw it. Other Combatant is the enemy you hit or killed, or the one who hit you.";
+            result.choices = &[
+                (0, "This Item"),
+                (1, "You"),
+                (2, "Triggering Weapon"),
+                (3, "Other Combatant"),
+            ];
         }
         // 108B605..108B7E7 tests only empty versus nonempty, not the key's identity.
         (0x80803E45, 0x18) => {
@@ -103,7 +136,7 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
         }
         // 10895E1..108966F splats action state +14 into the creation request.
         (0x80803E45, 0x30) => {
-            result.description = "Named parameter initialized when the entity is created. All four lanes receive the current action numeric value. An empty key skips initialization. The entity must expose and use the parameter.";
+            result.description = "Named parameter set when the entity is created. All four lanes receive the effect's current stacks. An empty key skips it. The entity must expose and use the parameter.";
         }
         (0x80803E23, 4 | 8 | 12) => {
             result.description = if field.offset == 12 {
@@ -112,12 +145,18 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
                 "Additional radar setting whose exact gameplay role remains unresolved. Negative values leave it unchanged. Nonnegative values override it until the effect ends, then restore its previous value."
             };
         }
+        // All 147 stock counter setters store 1 with literals from 0 to 5, Relay Defender
+        // setting each of 1 to 5 in turn, so 1 is what sets the counter to Counter Value.
+        (0x80803E2F, 2) => {
+            result.description = "Counter Value sets the counter to the value beside it, as every stock perk does. Other values are preserved.";
+            result.choices = &[(1, "Counter Value")];
+        }
         (0x80803E24, 2) => {
             result.description = "Adds or removes a contribution to enhanced radar detail. The effect reverses the operation when it ends. Multiple positive contributions keep enhancement active without repeatedly increasing detail. This does not control whether radar stays visible while aiming.";
             result.choices = &[(0, "Remove Contribution"), (1, "Add Contribution")];
         }
         (0x80803E44, 0x50) | (0x80803E4D, 0x48) | (0x80802F18, 0x38) | (0x808029EC, 0x6B) => {
-            result.description = "Input to the value program. Nearby counts use the engine's enemy and ally distances. Fireteam counts exclude you and do not use a distance limit. The defeated count also includes members with no available player object. Default Input uses the calling action's default value. Ammunition inputs use native accessor values and optional normalization. Native stat slots remain unresolved.";
+            result.description = "What drives the value. Stacks is the number this effect keeps, usually its stack count. Nearby counts use the game's enemy and ally distances. Fireteam counts exclude you and ignore distance, and the defeated count includes members who are unavailable. None uses the action's default.";
             result.choices = COMMON_INPUTS;
         }
         // 107FC20 passes these pairs to inclusive range checks, not multiply/add.
@@ -212,14 +251,30 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
         // Dodge, Barricade and four perks reading "when using your class ability"; on class
         // 0x80803DFD they are Solar Rampart, Planetary Torrent and Burning Souls, which name
         // the Barricade, the Rift and the Dodge, one class ability per class.
+        // Each bit is one ability slot in the numbering kind 7's ability selector uses (0
+        // Grenade, 1 Super, 2 Melee, 3 Jump, 7 Class Ability), which the three bits above
+        // follow. Value 4 is Heavy Handed's on 0x80803DFD ("when you use a charged melee
+        // ability"), and value 8 is Jump Jets' and Move to Survive's on 0x80803E01.
         (0x80803E01, 8) => {
-            result.description = "Which ability raised the event. The bits are identified by the stock perks that set them. A value with several bits accepts any of those abilities.";
-            result.choices = &[(1, "Grenade"), (2, "Super"), (128, "Class Ability")];
+            result.description = "Which ability raised the event. The bits are identified by the stock perks that set them and the ability slot each stands for. A value with several bits accepts any of those abilities.";
+            result.choices = &[
+                (1, "Grenade"),
+                (2, "Super"),
+                (4, "Melee"),
+                (8, "Jump"),
+                (128, "Class Ability"),
+            ];
             result.bitmask = true;
         }
         (0x80803DFD, 8) => {
-            result.description = "Which ability raised the event. Class Ability is identified by the stock perks that set it on this condition. Grenade and Super carry over from the sibling condition that shares this layout, and no stock perk sets them here. A value with several bits accepts any of those abilities.";
-            result.choices = &[(1, "Grenade"), (2, "Super"), (128, "Class Ability")];
+            result.description = "Which ability raised the event. Class Ability and Melee are identified by the stock perks that set them on this condition. The other bits carry over from the sibling condition that shares this layout. A value with several bits accepts any of those abilities.";
+            result.choices = &[
+                (1, "Grenade"),
+                (2, "Super"),
+                (4, "Melee"),
+                (8, "Jump"),
+                (128, "Class Ability"),
+            ];
             result.bitmask = true;
         }
         // Kind 7's ability slot. The slot numbering reproduces kind 8's, which four stock
@@ -249,9 +304,13 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
         // Kind 10's target. Every stock perk that sets 2 changes a fired projectile
         // (Cluster Bomb, Timed Payload, Explosive Payload and the grenade-payload perks),
         // which identifies that value. The other values carry no such agreeing set.
+        // The same targets as Create Entity's: the 84 stock perks on 0 are the item's own
+        // (weapon frames, exotic weapon perks, Sword guards, Sparrow and subclass perks), and
+        // the 33 on 1 are the player's (the Ammo Finder mods, Charged Up, Supercharged and
+        // MIDA Multi-Tool's move speed).
         (0x808029ED, 2) => {
-            result.description = "What the named property is read from. Value 2 is identified: every stock perk that uses it changes the fired projectile, as Explosive Payload and the grenade payload perks do. The other values are unidentified and keep their number.";
-            result.choices = &[(2, "The Fired Projectile")];
+            result.description = "What the named property belongs to. This Item is the weapon or armor carrying the perk. Every stock perk on The Fired Projectile changes the projectile, as Explosive Payload and the grenade payload perks do.";
+            result.choices = &[(0, "This Item"), (1, "You"), (2, "The Fired Projectile")];
         }
         // Kind 15's capacity basis, established the same way: the perks on 0 are the
         // Scavenger and Armaments families, which grant reserves, and the perks on 1 are
@@ -286,6 +345,59 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
             result.description = "Whether crouching has started or ended. Field Prep, Firmly Planted and Sneak Bow all start on 1 and end on 0.";
             result.choices = &[(1, "Crouching Started"), (0, "Crouching Ended")];
         }
+        // Kind 25's event byte: Striking Light, damage resistance while sprinting, is its only
+        // stock user, and starts on 1 and ends on 0.
+        (0x80803DDF, 8) => {
+            result.description = "Whether sprinting has started or stopped. Striking Light, damage resistance while sprinting, starts on 1 and ends on 0.";
+            result.choices = &[(1, "Sprinting Started"), (0, "Sprinting Stopped")];
+        }
+        // Kind 24's event byte: Reflective Vents, which reflects projectiles while sliding, is
+        // its only stock user and starts on 1.
+        (0x80803DE1, 8) => {
+            result.description = "Whether sliding has started. Reflective Vents, which reflects projectiles while sliding, starts on 1.";
+            result.choices = &[(1, "Sliding Started")];
+        }
+        // Kind 28 sets the weapon's trigger. Every full auto and rapid fire perk (Full Auto
+        // Trigger System, Rapid-Fire Frame, Fan Fire, Thunderer, Revolution) writes 0 to both,
+        // and Charge Shot and Ahamkara's Eye, a charged beam, write 1.
+        (0x80803E0C, 2 | 3) => {
+            result.description = "How the trigger fires. The full auto perks write 0, as Full Auto Trigger System does, and Charge Shot and Ahamkara's Eye write 1.";
+            result.choices = &[(0, "Hold to Fire"), (1, "Hold to Charge")];
+        }
+        // Kind 30: all seven stock uses, the tracking perks from Tracking Module to Häkke
+        // Precision Frame, write 1 while active, and cleanup applies the inverse.
+        (0x80803E0D, 2) => {
+            result.description = "Whether the weapon count goes up or down while the effect lasts. All seven stock uses, the tracking perks such as Tracking Module, add one, and the effect's end undoes it.";
+            result.choices = &[(1, "Add One"), (0, "Remove One")];
+        }
+        // Kind 22: Sneak Bow's only other action attaches its hold time and reload bonuses, so
+        // this is its "prevents radar pings from shooting while crouched".
+        (0x80803E0F, 4) => {
+            result.description = "The ability setting written while the effect lasts. Sneak Bow writes 0 while crouched, for its prevented radar pings.";
+            result.choices = &[(0, "No Radar Pings")];
+        }
+        // Kind 51 appends an entry to a weapon list. Radar Tuner, its one stock user, appends 0.
+        (0x80802D03, 2) => {
+            result.description = "The entry added to the weapon's list while the effect lasts. Radar Tuner adds 0, for radar that returns as soon as aiming stops.";
+            result.choices = &[(0, "Radar Returns After Aiming")];
+        }
+        (0x808094A8, 0) => {
+            result.description = "Set by the compiler from the label lists above it. 255 tests no labels, 0 tests Matches Any and Excludes Any, and 1 tests all four.";
+        }
+        // The comparison's operation, in the words of `predicate::OPERATIONS`, which the
+        // Comparison tile shows. Surrounded ("three or more enemies") and Firing Line ("two or
+        // more allies") compare with >=. Value 2 is set by #1951 alone and keeps its number.
+        (0x80804D7D, 0x88) => {
+            result.description = "How the compared value is measured against the threshold. Surrounded, three or more enemies nearby, compares with >=.";
+            result.choices = &[(0, "="), (3, ">="), (4, "<"), (5, ">")];
+        }
+        (0x80803DE7, 0x144) => {
+            result.description = "A state the defeated target must carry, such as Overload.";
+        }
+        (0x80803DE7, 0x148) => {
+            result.description =
+                "The target Remember a Target by Name stored, which the kill must be.";
+        }
         // Kind 42's event byte: Bulwark Finisher and Empowered Finish read the finisher's
         // final blow and start on 1. Reactive Pulse, an overshield while performing the
         // finisher, starts on 0 and ends on 2.
@@ -306,10 +418,16 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
         }
         // Kind 9's slot bits reproduce kind 8's ability numbering: bit 1 is set by Resolute
         // ("casting Fists of Havoc") and Volatile Conduction ("Arc Super ... cast"), bit 7 by
-        // Aeon Energy ("dodging"). Bits 2 and 3 are each set by one undescribed perk.
+        // Aeon Energy ("dodging"). Bits 2 and 3 are each set by one undescribed perk, and read
+        // as Melee and Jump by that numbering, as they do on kind 8.
         (0x80803E00, 8) => {
-            result.description = "Which ability slot's bit the event must carry. Super is identified by Resolute and Volatile Conduction, Class Ability by Aeon Energy. Other bits are unidentified and keep their number.";
-            result.choices = &[(2, "Super"), (128, "Class Ability")];
+            result.description = "Which ability slot's bit the event must carry. Super is identified by Resolute and Volatile Conduction, Class Ability by Aeon Energy. Melee and Jump follow the same slot numbering. Other bits are unidentified and keep their number.";
+            result.choices = &[
+                (2, "Super"),
+                (4, "Melee"),
+                (8, "Jump"),
+                (128, "Class Ability"),
+            ];
             result.bitmask = true;
         }
         // A one-byte damage type record nested in kill, damage and accumulator conditions.
@@ -349,12 +467,16 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
             ];
             result.bitmask = true;
         }
-        // The weapon state at +81. Value 4 is set by Upgraded Sensor Pack, Box Breathing,
-        // MIDA Radar and Tome of Dawn, all reading "while aiming". Values 0, 1, 2 and 5 split
-        // perks that share no reading.
+        // The weapon state at +81 is a bit set, read the way the effect summary reads it. Bit 4
+        // is set by Upgraded Sensor Pack, Box Breathing, MIDA Radar and Tome of Dawn, all
+        // reading "while aiming". Bit 1 holds in the weapon perks and weapon mods whose effect
+        // applies while that weapon is in hand (Anti-Barrier Rounds, Celerity, Eye of the
+        // Storm, Black Talon Catalyst), and in #1944, "while you are wielding a sword". Queen's
+        // Wrath ("when aiming down sights") sets both. Bit 2 is set by One-Two Punch alone.
         (0x80803DCE, 0x81) | (0x80803DCC, 0x81) => {
-            result.description = "The weapon state this predicate requires. Aiming Down Sights is set by Upgraded Sensor Pack, Box Breathing, MIDA Radar and Tome of Dawn. The other values are set by perks that share no reading and keep their number.";
-            result.choices = &[(4, "Aiming Down Sights")];
+            result.description = "All selected weapon states must be present. Holding the Weapon is set by the weapon perks that apply while the weapon is in hand, such as Celerity. Aiming Down Sights is set by the perks that read while aiming, such as Box Breathing.";
+            result.choices = &[(1, "Holding the Weapon"), (4, "Aiming Down Sights")];
+            result.bitmask = true;
         }
         // Key fields whose stock values are named by the perks that use them; the names
         // themselves live in `fields::keys`.
@@ -414,7 +536,7 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
         (0x80803E42, 2) => {
             result.description =
                 "Select the owner or activation-event position for the generation request.";
-            result.choices = &[(0, "Owner Position"), (1, "Event Position")];
+            result.choices = &[(0, "You"), (1, "Triggering Event")];
         }
         (0x80803E42, 4) => {
             result.description =
@@ -458,6 +580,7 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
                 (0x80803E32, 16) => {
                     "Seconds to retain a successful contribution. Positive values schedule the hold path. Zero does not schedule it."
                 }
+                (0x80803E06, 0) => "Seconds this requirement stays met after it passes.",
                 (0x80803E3B, 4) => "Seconds added to eligible running timers, limited by Up To.",
                 (0x80803E3B, 8) => {
                     "Maximum duration in seconds after extending eligible running timers."
@@ -469,8 +592,8 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
             result.description = "Literal probability when Probability Source is 255. 1 always passes, nonpositive values fail, and 0.25 means a 25% chance. Other sources ignore this literal."
         }
         _ if field.label == "Probability Source" => {
-            result.description = "255 uses the literal probability. Other values obtain probability from a native stat whose identity remains unresolved.";
-            result.choices = &[(255, "Literal Probability")];
+            result.description = "255 uses the Chance as set. Other values take the chance from a native stat whose identity remains unresolved.";
+            result.choices = &[(255, "Fixed Chance")];
         }
         _ => {}
     }

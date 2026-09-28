@@ -18,6 +18,27 @@ pub(crate) struct EncodedPackageBlock {
     pub gcm_tag: [u8; 16],
 }
 
+impl EncodedPackageBlock {
+    /// Streamed media is read directly from the package file by Wwise.
+    pub(crate) fn raw(plaintext: &[u8]) -> AuthoringResult<Self> {
+        validate_plaintext(plaintext)?;
+        Ok(Self {
+            stored: plaintext.to_vec(),
+            flags: FULL_RAW_FLAGS,
+            gcm_tag: [0; 16],
+        })
+    }
+}
+
+fn validate_plaintext(plaintext: &[u8]) -> AuthoringResult<()> {
+    if plaintext.is_empty() || plaintext.len() > BLOCK_SIZE {
+        return Err(AuthoringError::InvalidInput(format!(
+            "A package block must contain between 1 and {BLOCK_SIZE} plaintext bytes"
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 pub(crate) struct PackageBlockEncoder {
     #[cfg(all(windows, target_pointer_width = "64"))]
@@ -91,11 +112,7 @@ impl PackageBlockEncoder {
         _package_id: u16,
         plaintext: &[u8],
     ) -> AuthoringResult<EncodedPackageBlock> {
-        if plaintext.is_empty() || plaintext.len() > BLOCK_SIZE {
-            return Err(AuthoringError::InvalidInput(format!(
-                "A package block must contain between 1 and {BLOCK_SIZE} plaintext bytes"
-            )));
-        }
+        validate_plaintext(plaintext)?;
         #[cfg(all(windows, target_pointer_width = "64"))]
         let compressed = self
             .compressor

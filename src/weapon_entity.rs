@@ -5,8 +5,12 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
+mod compose;
 mod groups;
-mod owner;
+mod lookup;
+pub use compose::extend_weapon_components;
+pub mod owner;
+mod rewire;
 pub use groups::coupled_weapon_component_bindings;
 
 pub const SANDBOX_PATTERN_ENTITY_ASSIGNMENT_TAG: u32 = 0x80EC_3F60;
@@ -368,6 +372,94 @@ pub fn graft_weapon_component_bindings(
     target: &mut Vec<u8>,
     grafts: &[(u32, &[u8])],
 ) -> Result<(), String> {
+    graft_weapon_component_bindings_with(target, grafts, owner::EventPolicy::Paired)
+}
+
+/// As [`graft_weapon_component_bindings`], choosing how event connections into the replaced
+/// owners are re-pointed. Anything reached from a recipe uses [`owner::EventPolicy::Paired`];
+/// see that type for what relaxing it does and does not prove.
+pub fn graft_weapon_component_bindings_with(
+    target: &mut Vec<u8>,
+    grafts: &[(u32, &[u8])],
+    policy: owner::EventPolicy,
+) -> Result<(), String> {
+    let planned = plan_owner_grafts(target, grafts)?;
+    // Plan event endpoints against the original entity. Applying one owner first must not
+    // change the evidence used to match another owner's incoming or outgoing connections.
+    let mut event_updates = BTreeMap::new();
+    for (&target_owner_tag, plan) in &planned {
+        for (offset, bytes) in owner::graft_event_updates(
+            target,
+            plan.donor,
+            target_owner_tag,
+            plan.donor_owner_tag,
+            policy,
+        )? {
+            if event_updates
+                .insert(offset, bytes)
+                .is_some_and(|previous| previous != bytes)
+            {
+                return Err("Runtime component donors disagree about an event connection".into());
+            }
+        }
+    }
+    let mut authored = apply_owner_grafts(target, &planned)?;
+    for (offset, bytes) in event_updates {
+        authored[offset..offset + bytes.len()].copy_from_slice(&bytes);
+    }
+    finish_owner_grafts(target, authored, grafts)
+}
+
+/// How a component graft connected the moved owners to the rest of the entity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ComponentWiring {
+    /// Both entities declared the same connections, so each endpoint was copied from its pair.
+    Paired,
+    /// The donor's own connections were rebuilt against the target's matching receivers.
+    Rewired,
+}
+
+/// As [`graft_weapon_component_bindings`], rebuilding the moved owners' event connections when
+/// the two entities do not declare the same ones.
+///
+/// Entities with different owners never declare the same connections, so the paired rule
+/// refuses their donors. Here the donor's own connections are kept and each endpoint outside
+/// the moved owners is re-pointed at the target's equivalent: the concrete object of the same
+/// bound resource, the same class at the same offset, the only object of that class, or the
+/// Channel Interpolation entry and variable of the same name. Anything that matches none of
+/// these is refused with the reason. `read_owner` reads a component owner's payload by tag.
+pub fn graft_weapon_component_bindings_or_rewire(
+    target: &mut Vec<u8>,
+    grafts: &[(u32, &[u8])],
+    read_owner: &dyn Fn(u32) -> Result<Vec<u8>, String>,
+) -> Result<ComponentWiring, String> {
+    let mut paired = target.clone();
+    if graft_weapon_component_bindings(&mut paired, grafts).is_ok() {
+        *target = paired;
+        return Ok(ComponentWiring::Paired);
+    }
+    // Planning refuses exactly what the paired graft refused before its event check, so those
+    // reasons surface unchanged.
+    let planned = plan_owner_grafts(target, grafts)?;
+    let mut authored = apply_owner_grafts(target, &planned)?;
+    let moves = planned
+        .iter()
+        .map(|(&target_owner, plan)| rewire::Move {
+            target_owner,
+            donor_owner: plan.donor_owner_tag,
+            donor: plan.donor,
+        })
+        .collect::<Vec<_>>();
+    rewire::rewire(target, &mut authored, &moves, read_owner)?;
+    finish_owner_grafts(target, authored, grafts)?;
+    Ok(ComponentWiring::Rewired)
+}
+
+/// Pairs every requested binding's target owners with the donor owners that replace them.
+fn plan_owner_grafts<'a>(
+    target: &[u8],
+    grafts: &[(u32, &'a [u8])],
+) -> Result<BTreeMap<u32, PlannedOwnerGraft<'a>>, String> {
     let target_aliases = weapon_component_aliases(target)?;
     let mut requested = BTreeSet::new();
     let mut planned = BTreeMap::<u32, PlannedOwnerGraft<'_>>::new();
@@ -439,24 +531,16 @@ pub fn graft_weapon_component_bindings(
         }
     }
 
-    // Plan event endpoints against the original entity. Applying one owner first must not
-    // change the evidence used to match another owner's incoming or outgoing connections.
-    let mut event_updates = BTreeMap::new();
-    for (&target_owner_tag, plan) in &planned {
-        for (offset, bytes) in
-            owner::graft_event_updates(target, plan.donor, target_owner_tag, plan.donor_owner_tag)?
-        {
-            if event_updates
-                .insert(offset, bytes)
-                .is_some_and(|previous| previous != bytes)
-            {
-                return Err("Runtime component donors disagree about an event connection".into());
-            }
-        }
-    }
-    let original_component_count = native_array(target, ENTITY_COMPONENTS_DESCRIPTOR)?.count;
-    let mut authored = target.clone();
-    for (target_owner_tag, plan) in planned {
+    Ok(planned)
+}
+
+/// Clones `target` with every planned owner partition replaced by its donor's.
+fn apply_owner_grafts(
+    target: &[u8],
+    planned: &BTreeMap<u32, PlannedOwnerGraft<'_>>,
+) -> Result<Vec<u8>, String> {
+    let mut authored = target.to_vec();
+    for (&target_owner_tag, plan) in planned {
         graft_weapon_component_owner_in_place(
             &mut authored,
             plan.donor,
@@ -465,11 +549,19 @@ pub fn graft_weapon_component_bindings(
             plan.requested_binding_hash,
         )?;
     }
-    for (offset, bytes) in event_updates {
-        authored[offset..offset + bytes.len()].copy_from_slice(&bytes);
-    }
+    Ok(authored)
+}
+
+/// Checks that `authored` holds exactly the requested donor partitions, then commits it.
+fn finish_owner_grafts(
+    target: &mut Vec<u8>,
+    authored: Vec<u8>,
+    grafts: &[(u32, &[u8])],
+) -> Result<(), String> {
     validate_weapon_entity(&authored)?;
-    if native_array(&authored, ENTITY_COMPONENTS_DESCRIPTOR)?.count != original_component_count {
+    if native_array(&authored, ENTITY_COMPONENTS_DESCRIPTOR)?.count
+        != native_array(target, ENTITY_COMPONENTS_DESCRIPTOR)?.count
+    {
         return Err("Runtime component graft changed the entity component count".into());
     }
     for &(binding_hash, donor) in grafts {
@@ -760,8 +852,9 @@ pub fn retarget_weapon_component_owner(
 ///
 /// Component resource descriptors store an absolute offset into the owner payload. Both the
 /// resource prefix and the pointed-to concrete object begin with the owning tag. Nested
-/// objects also carry reciprocal typed references to their instance or definition. Those
-/// fields are rewritten while unrelated aligned integers are preserved.
+/// objects also carry reciprocal typed references to their instance or definition. Callback
+/// references can address a validated entity-bound instance without a reciprocal link.
+/// These fields are rewritten while unrelated aligned integers are preserved.
 pub fn retarget_weapon_component_owner_payload(
     owner_payload: &mut [u8],
     entity: &[u8],
@@ -800,7 +893,7 @@ pub fn retarget_weapon_component_owner_payload(
     }
 
     let mut owner_fields = BTreeSet::new();
-    for (resource_offset, concrete_class) in resources {
+    for (&resource_offset, &concrete_class) in &resources {
         let prefix_end = resource_offset
             .checked_add(16)
             .ok_or("Component resource prefix range overflowed")?;
@@ -849,6 +942,11 @@ pub fn retarget_weapon_component_owner_payload(
     owner_fields.extend(owner::self_reference_owner_fields(
         owner_payload,
         old_owner_tag,
+    ));
+    owner_fields.extend(owner::bound_reference_owner_fields(
+        owner_payload,
+        old_owner_tag,
+        &resources,
     ));
     for offset in &owner_fields {
         write_u32(owner_payload, *offset, new_owner_tag)?;

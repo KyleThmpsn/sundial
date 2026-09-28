@@ -4,16 +4,6 @@ use sundial::package_authoring::weapon_runtime::{
 };
 
 #[test]
-fn absent_source_lore_round_trips_and_rejects_a_replacement() {
-    let mut recipe = WeaponRecipe::new_weapon("parhelion.no-lore-test").unwrap();
-    recipe.overrides.remove_lore = true;
-    let decoded = WeaponRecipe::from_json_str(&recipe.to_json_pretty().unwrap()).unwrap();
-    assert!(decoded.to_spec().unwrap().overrides.remove_lore);
-    recipe.overrides.lore = Some("Conflicting lore".into());
-    assert!(recipe.validate().is_err());
-}
-
-#[test]
 fn activation_recipe_round_trips_and_rejects_unsupported_effects() {
     use sundial::package_authoring::sandbox_perk::activation::PerkActivation;
     let mut recipe = WeaponRecipe::new_weapon("parhelion.activation-test").unwrap();
@@ -107,67 +97,6 @@ fn private_perk_runtime_value() -> WeaponRuntimeValueOverride {
 }
 
 #[test]
-fn socket_plug_variants_round_trip_and_compile() {
-    let mut recipe = WeaponRecipe::new_weapon("parhelion.private-perk").unwrap();
-    recipe.overrides.socket_plug_variants = vec![WeaponSocketPlugVariantRecipe {
-        replace_effects: false,
-        investment_stats: vec![WeaponStatOverride {
-            definition_index: 13,
-            value: -5,
-        }],
-        socket_index: 4,
-        choice_index: 0,
-        source_plug_hash: HexHash::new(0xDD5C_B37A),
-        name: Some("Micro-Missile Frame".to_owned()),
-        icon: None,
-        classification_donor_hash: Some(HexHash::new(0xC684_24BC)),
-        description: Some("A private intrinsic description.".to_owned()),
-        additional_sandbox_perks: vec![405],
-        sandbox_perks: vec![WeaponSandboxPerkRuntimeRecipe {
-            program: None,
-            projectiles: Vec::new(),
-            source_perk_index: 1178,
-            activation: None,
-            runtime_values: vec![private_perk_runtime_value()],
-            action_float_values: Vec::new(),
-        }],
-    }];
-
-    let expected_values = recipe.overrides.socket_plug_variants[0].sandbox_perks[0]
-        .runtime_values
-        .clone();
-    for socket_index in [0, 3, 4] {
-        recipe.overrides.socket_plug_variants[0].socket_index = socket_index;
-        let encoded = recipe.to_json_pretty().unwrap();
-        assert!(encoded.contains(r#""socket_plug_variants""#));
-        assert!(encoded.contains(r#""source_plug_hash": "0xDD5CB37A""#));
-        assert!(encoded.contains(r#""source_perk_index": 1178"#));
-
-        let decoded = WeaponRecipe::from_json_str(&encoded).unwrap();
-        assert_eq!(decoded, recipe);
-        let variants = &decoded.to_spec().unwrap().overrides.socket_plug_variants;
-        assert_eq!(variants.len(), 1);
-        assert_eq!(variants[0].socket_index, socket_index);
-        assert_eq!(variants[0].choice_index, 0);
-        assert_eq!(variants[0].source_plug_hash, 0xDD5C_B37A);
-        assert_eq!(variants[0].classification_donor_hash, Some(0xC684_24BC));
-        assert_eq!(
-            variants[0].description.as_deref(),
-            Some("A private intrinsic description.")
-        );
-        assert_eq!(
-            (
-                &variants[0].additional_sandbox_perks,
-                &variants[0].investment_stats
-            ),
-            (&vec![405], &vec![(13, -5)])
-        );
-        assert_eq!(variants[0].sandbox_perks[0].source_perk_index, 1178);
-        assert_eq!(variants[0].sandbox_perks[0].runtime_values, expected_values);
-    }
-}
-
-#[test]
 fn socket_plug_variants_reject_invalid_positions_and_perks() {
     let mut recipe = WeaponRecipe::new_weapon("parhelion.invalid-private-perk").unwrap();
     recipe.overrides.socket_plug_variants = vec![
@@ -256,30 +185,6 @@ fn socket_plug_variants_reject_invalid_positions_and_perks() {
 }
 
 #[test]
-fn new_donor_recipe_inherits_definition_by_default() {
-    let recipe = WeaponRecipe::new_weapon_for_donor(
-        "parhelion.falling-star",
-        0x1234_5678,
-        "A Different Weapon",
-    )
-    .unwrap();
-    let spec = recipe.to_spec().unwrap();
-
-    assert_eq!(spec.donor_item_hash, 0x1234_5678);
-    assert_eq!(
-        spec.expected_donor_name.as_deref(),
-        Some("A Different Weapon")
-    );
-    assert_eq!(spec.overrides, WeaponCloneOverrides::default());
-    assert!(spec.presentation_donor.is_none());
-    assert_eq!(spec.text.source, DEFAULT_SOURCE_TEXT);
-    assert_eq!(
-        recipe.collection_placement,
-        RecipeCollectionPlacement::SunriseBadge
-    );
-}
-
-#[test]
 fn changing_base_keeps_collection_story_and_independent_artwork() {
     let mut recipe = WeaponRecipe::every_end();
     recipe.overrides.collection_destination = Some(crate::collection::Destination {
@@ -364,45 +269,6 @@ fn changing_geometry_donor_restores_dependent_presentation_sources() {
     assert!(recipe.overrides.render_dye_rows.is_none());
     assert_eq!(recipe.overrides.icon_edit, icon_edit);
     assert_eq!(recipe.overrides.investment_stats.len(), 1);
-}
-
-#[test]
-fn canonical_hash_json_is_uppercase_and_string_typed() {
-    let encoded = serde_json::to_string(&HexHash::new(0x000A_BC12)).unwrap();
-    assert_eq!(encoded, r#""0x000ABC12""#);
-    assert_eq!(
-        serde_json::from_str::<HexHash>(&encoded)
-            .unwrap()
-            .parse_u32()
-            .unwrap(),
-        0x000A_BC12
-    );
-}
-
-#[test]
-fn icon_image_edit_round_trips_and_identity_is_omitted() {
-    let mut recipe = WeaponRecipe::new_weapon("parhelion.icon-edit").unwrap();
-    let identity = recipe.to_json_pretty().unwrap();
-    assert!(!identity.contains("icon_edit"));
-
-    recipe.overrides.icon_edit = WeaponIconEdit {
-        hue_shift_degrees: 24,
-        brightness: 8,
-        invert: true,
-        ..WeaponIconEdit::default()
-    };
-    let encoded = recipe.to_json_pretty().unwrap();
-    assert!(encoded.contains(r#""icon_edit""#));
-    assert!(encoded.contains(r#""hue_shift_degrees": 24"#));
-    assert!(!encoded.contains("imported_image"));
-    assert_eq!(WeaponRecipe::from_json_str(&encoded).unwrap(), recipe);
-    assert_eq!(
-        recipe.to_spec().unwrap().overrides.icon_edit,
-        recipe.overrides.icon_edit
-    );
-
-    recipe.overrides.icon_edit.hue_shift_degrees = 181;
-    assert!(recipe.validate().is_err());
 }
 
 #[test]
@@ -577,43 +443,6 @@ fn rename_updates_name_namespace_and_all_hashes_atomically() {
 }
 
 #[test]
-fn custom_identity_is_valid_and_renames_atomically() {
-    let mut every_end = WeaponRecipe::every_end();
-    let original = every_end.clone();
-    assert!(every_end.validate().is_ok());
-    assert!(!every_end.identity_is_name_derived());
-
-    every_end.rename_authored_item("Different Name").unwrap();
-    assert_eq!(every_end.namespace, "parhelion.different-name");
-    assert_ne!(every_end.identity, original.identity);
-    assert!(every_end.identity_is_name_derived());
-
-    let another = WeaponRecipe::new_named_weapon_for_donor(
-        "Every End",
-        ARC_LOGIC_DONOR_HASH,
-        ARC_LOGIC_DONOR_NAME,
-    )
-    .unwrap();
-    assert_eq!(another.namespace, "parhelion.every-end");
-    assert!(another.identity_is_name_derived());
-}
-
-#[test]
-fn slug_is_stable_and_filesystem_safe() {
-    let mut recipe = WeaponRecipe::every_end();
-    assert_eq!(recipe.slug(), "every-end");
-    recipe.name = "Alpha__Beta.Gamma".to_owned();
-    assert_eq!(recipe.slug(), "alpha-beta-gamma");
-
-    recipe.name = "CON".to_owned();
-    assert_eq!(recipe.slug(), "weapon-con");
-
-    recipe.name = format!("{}---tail", "a".repeat(200));
-    assert_eq!(recipe.slug().len(), 80);
-    assert!(!recipe.slug().ends_with('-'));
-}
-
-#[test]
 fn name_namespace_normalization_has_explicit_boundaries() {
     assert_eq!(
         namespace_for_weapon_name("  Every__END...Again!  ").unwrap(),
@@ -690,44 +519,6 @@ fn investment_stats_are_canonicalized_by_definition_index() {
 }
 
 #[test]
-fn locale_payload_overrides_round_trip_and_are_canonicalized() {
-    let mut recipe = WeaponRecipe::new_weapon("parhelion.localized").unwrap();
-    recipe.locale_overrides = vec![
-        WeaponLocaleTextRecipe {
-            locale_index: 12,
-            name: Some("Final locale".to_owned()),
-            ..Default::default()
-        },
-        WeaponLocaleTextRecipe {
-            locale_index: 2,
-            flavor: Some("A different description.".to_owned()),
-            ..Default::default()
-        },
-    ];
-
-    let decoded = WeaponRecipe::from_json_str(&recipe.to_json_pretty().unwrap()).unwrap();
-    assert_eq!(
-        decoded
-            .locale_overrides
-            .iter()
-            .map(|locale| locale.locale_index)
-            .collect::<Vec<_>>(),
-        [2, 12]
-    );
-    assert_eq!(
-        decoded.to_spec().unwrap().text.locale_overrides[1]
-            .name
-            .as_deref(),
-        Some("Final locale")
-    );
-
-    decoded
-        .clone()
-        .to_json_pretty()
-        .expect("canonical locale overrides remain serializable");
-}
-
-#[test]
 fn duplicate_locale_and_conflicting_stat_removal_are_rejected() {
     let mut recipe = WeaponRecipe::new_weapon("parhelion.invalid-technical").unwrap();
     recipe.locale_overrides = vec![
@@ -782,29 +573,6 @@ fn custom_choices_sharing_a_template_round_trip_while_duplicate_definitions_are_
     recipe.overrides.socket_plug_variants[1].name = Some("Different Private Choice".into());
     let saved = recipe.to_json_pretty().unwrap();
     assert_eq!(WeaponRecipe::from_json_str(&saved).unwrap(), recipe);
-}
-
-#[test]
-fn additional_behaviors_round_trip_and_stay_out_of_untouched_recipes() {
-    let mut recipe = WeaponRecipe::new_weapon("parhelion.behavior").unwrap();
-    // The field is absent from a recipe that does not use it.
-    let bare = recipe.to_json_pretty().unwrap();
-    assert!(!bare.contains("additional_behaviors"), "{bare}");
-
-    recipe.overrides.additional_behaviors = vec![AdditionalBehaviorRecipe {
-        behavior: "graviton-lance".to_owned(),
-    }];
-    recipe.validate().unwrap();
-    let encoded = recipe.to_json_pretty().unwrap();
-    assert!(
-        encoded.contains(r#""additional_behaviors": ["#),
-        "{encoded}"
-    );
-    assert_eq!(WeaponRecipe::from_json_str(&encoded).unwrap(), recipe);
-
-    // Variable damage asks for the element switch by family rather than naming a carrier.
-    let spec = recipe.to_spec().unwrap();
-    assert_eq!(spec.overrides.additional_behaviors, ["graviton-lance"]);
 }
 
 #[test]

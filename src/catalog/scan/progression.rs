@@ -7,17 +7,17 @@ use crate::catalog::collections::{
 };
 use crate::catalog::progression::{
     PendingProgressionContext, PresentationNodeDef, ProgressionPackageData,
-    attach_presentation_node_objective_owners, scan_activity_condition_contexts,
-    scan_collectible_condition_contexts, scan_collectible_item_paths, scan_context_writers,
-    scan_destination_writers, scan_direct_tables, scan_location_condition_contexts,
-    scan_metric_objective_owners, scan_milestone_objective_owners, scan_objectives,
-    scan_presentation_nodes, scan_progression_context_outputs, scan_records,
-    scan_trait_definitions, scan_unlock_flag_definitions, scan_unlock_flag_displays,
-    scan_unlock_value_definitions,
+    attach_presentation_node_objective_owners, presentation_node_models,
+    scan_activity_condition_contexts, scan_collectible_condition_contexts,
+    scan_collectible_item_paths, scan_context_writers, scan_destination_writers,
+    scan_direct_tables, scan_location_condition_contexts, scan_metric_objective_owners,
+    scan_milestone_objective_owners, scan_objectives, scan_presentation_nodes,
+    scan_progression_context_outputs, scan_records, scan_trait_definitions,
+    scan_unlock_flag_definitions, scan_unlock_flag_displays, scan_unlock_value_definitions,
 };
 use crate::catalog::{
     CatalogProgress, CollectionConditionTokenDef, ObjectiveDef, ObjectiveOwnerTraitDef,
-    RecordDefinition, UnlockDefinition,
+    PresentationNode, RecordDefinition, UnlockDefinition,
 };
 use crate::investment_localization::LocalizedStringCache;
 use std::collections::HashMap;
@@ -27,7 +27,7 @@ pub(super) struct ProgressionScan {
     pub unlock_flag_definitions: Vec<UnlockDefinition>,
     pub unlock_value_definitions: Vec<UnlockDefinition>,
     pub objectives: Vec<ObjectiveDef>,
-    pub presentation_node_hashes: Vec<u64>,
+    pub presentation_nodes: Vec<PresentationNode>,
     pub records: Option<Vec<RecordDefinition>>,
     pub trait_definitions: Vec<ObjectiveOwnerTraitDef>,
     pub collectible_item_paths: HashMap<usize, Vec<Vec<String>>>,
@@ -108,7 +108,7 @@ pub(super) fn read(
             Vec::new()
         }
     };
-    let presentation_node_hashes = presentation_nodes.iter().map(|node| node.hash).collect();
+    let node_models = presentation_node_models(&presentation_nodes);
     let trait_definitions = retain_progression_scan(
         "Trait definitions",
         scan_trait_definitions(&mut progression_package),
@@ -192,7 +192,7 @@ pub(super) fn read(
         unlock_flag_definitions,
         unlock_value_definitions,
         objectives,
-        presentation_node_hashes,
+        presentation_nodes: node_models,
         records,
         trait_definitions,
         collectible_item_paths,

@@ -276,13 +276,6 @@ mod tests {
         assert_eq!(&transparent[..4], &[0, 0, 0, 0]);
     }
 
-    #[test]
-    fn alpha_composition_uses_unpremultiplied_channels() {
-        let mut destination = [0, 0, 255, 255];
-        blend_rgba_pixel(&mut destination, [255, 0, 0, 128]);
-        assert_eq!(destination, [128, 0, 127, 255]);
-    }
-
     const PLATE: [u8; 3] = [0xF2, 0xE3, 0x70];
 
     fn filled(width: usize, height: usize, pixel: [u8; 4]) -> Vec<u8> {

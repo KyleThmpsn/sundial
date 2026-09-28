@@ -470,8 +470,13 @@ pub(super) fn effect_facts(payload: &[u8], node: usize, kind: u8) -> Result<Vec<
                 FactValue::Number(float(payload, node, 0x0C)?),
             ),
         ]),
-        20 | 30 | 51 => Ok(vec![Fact::new(
+        20 | 30 => Ok(vec![Fact::new(
             "Operation",
+            FactValue::Selector(byte(payload, node, 2)?),
+        )]),
+        // Kind 51 appends this byte to a weapon list rather than choosing an operation.
+        51 => Ok(vec![Fact::new(
+            "Entry",
             FactValue::Selector(byte(payload, node, 2)?),
         )]),
         22 => Ok(vec![
@@ -730,17 +735,23 @@ fn proportional_ammunition_facts(payload: &[u8], node: usize) -> Result<Vec<Fact
     Ok(facts)
 }
 
-/// Kind 16's independent value programs, in native field order.
+/// Kind 16's independent value programs, in native field order: the share of capacity each
+/// weapon reloads. The stock perks name them. Nightmare Fuel ("reload equipped weapon") fills
+/// the first. The second is the perk's own weapon, even stowed: Auto-Loading Holster, Pulse
+/// Monitor ("even when this weapon is stowed"), Serve the Colony and the Eriana's Vow Catalyst.
+/// The last three are the Kinetic, Energy and Power slots: Harbinger's Pulse fills the first two
+/// and reads "reload your equipped Kinetic and Energy weapons", and the perks that fill all
+/// three reload every weapon.
 pub const RESERVE_TRANSFER_PROGRAMS: [(usize, &str, &str); 5] = [
-    (0x78, "Selected Slot Value", "Selected Slot Program Words"),
     (
-        0xB0,
-        "Second Selected Slot Value",
-        "Second Selected Slot Program Words",
+        0x78,
+        "Equipped Weapon Value",
+        "Equipped Weapon Program Words",
     ),
-    (0xE8, "Slot 0 Value", "Slot 0 Program Words"),
-    (0x120, "Slot 1 Value", "Slot 1 Program Words"),
-    (0x158, "Slot 2 Value", "Slot 2 Program Words"),
+    (0xB0, "This Weapon Value", "This Weapon Program Words"),
+    (0xE8, "Kinetic Slot Value", "Kinetic Slot Program Words"),
+    (0x120, "Energy Slot Value", "Energy Slot Program Words"),
+    (0x158, "Power Slot Value", "Power Slot Program Words"),
 ];
 
 /// Kind 16: five value programs selected per slot, plus the transfer selectors.

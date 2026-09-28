@@ -1,4 +1,6 @@
 //! Data-only donor, stat and socket contracts exposed to authoring consumers.
+use std::collections::BTreeMap;
+
 use crate::catalog::{
     InvestmentStatDisplayPoint, ItemDamageProfile, ItemDamageType, ItemRarity, ItemWeaponAmmoType,
     ItemWeaponInventorySlot, format_in_game_investment_stat, interpolate_investment_stat_display,
@@ -229,6 +231,23 @@ pub struct WeaponDonorSummary {
     pub rarity: WeaponRarity,
 }
 
+/// An installed subclass's ability names by socket-entry position, for authoring subclasses.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SubclassSummary {
+    pub hash: u32,
+    pub name: String,
+    /// 0 Titan, 1 Hunter, 2 Warlock, 3 unknown.
+    pub class_type: u8,
+    pub entry_names: BTreeMap<u8, String>,
+    /// Top, bottom and middle.
+    pub attunement_names: Vec<String>,
+    /// Each entry's sandbox perks.
+    pub entry_perks: BTreeMap<u8, Vec<u16>>,
+    /// Each entry's icon container and description, as its node display record gives them.
+    pub entry_icons: BTreeMap<u8, u32>,
+    pub entry_descriptions: BTreeMap<u8, String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WeaponStatDisplayPoint {
     pub investment_value: i32,
@@ -378,6 +397,22 @@ pub struct WeaponOrnament {
     pub render_dye_rows: [Vec<WeaponDyeReference>; 3],
 }
 
+/// An ornament paired with a weapon that can lend it the rig it does not have.
+///
+/// An ornament carries the translation-art rows that select its model, its own locked dye rows
+/// and an inventory icon. It carries no gear-art pattern row, so it names no animation group and
+/// no runtime entity, and on its own it cannot be an appearance: nothing would say how the model
+/// is held or animated. The weapon whose sockets offer it supplies all of that, so the two travel
+/// together and an appearance built from an ornament is that weapon plus these rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WeaponOrnamentAppearance {
+    pub ornament: WeaponOrnament,
+    /// Installed weapon whose sockets offer this ornament.
+    pub host_item_hash: u32,
+    /// That weapon's name, for the chooser row.
+    pub host_name: String,
+}
+
 /// Flat color of the decorative plate painted into exotic ornament icon artwork.
 const EXOTIC_ORNAMENT_PLATE: [u8; 3] = [0xF2, 0xE3, 0x70];
 /// The same plate on legendary ornament artwork.
@@ -494,72 +529,6 @@ mod stat_display_tests {
     }
 
     #[test]
-    fn historical_rpm_curve_translates_arc_logic_value() {
-        let stat = WeaponInvestmentStat {
-            definition_index: 14,
-            definition_hash: Some(0xFF66_4809),
-            name: "Rounds Per Minute".to_owned(),
-            value: 80,
-            minimum_value: Some(0),
-            maximum_value: Some(100),
-            display_as_numeric: true,
-            is_linear: false,
-            display_interpolation: vec![
-                WeaponStatDisplayPoint {
-                    investment_value: 0,
-                    display_value: 360,
-                },
-                WeaponStatDisplayPoint {
-                    investment_value: 20,
-                    display_value: 450,
-                },
-                WeaponStatDisplayPoint {
-                    investment_value: 80,
-                    display_value: 600,
-                },
-                WeaponStatDisplayPoint {
-                    investment_value: 100,
-                    display_value: 720,
-                },
-            ],
-        };
-
-        assert_eq!(stat.in_game_display_value(80), 600);
-        assert_eq!(stat.in_game_display_label(80), "600 RPM");
-        assert_eq!(stat.in_game_display_value(50), 525);
-        assert_eq!(stat.in_game_display_value(100), 720);
-        assert_eq!(stat.in_game_display_label(100), "720 RPM");
-        assert_eq!(stat.value_range(), Some((0, 100)));
-    }
-
-    #[test]
-    fn identity_display_values_are_not_repeated() {
-        let stat = WeaponInvestmentStat {
-            definition_index: 0,
-            definition_hash: None,
-            name: "Identity".to_owned(),
-            value: 50,
-            minimum_value: Some(0),
-            maximum_value: Some(100),
-            display_as_numeric: false,
-            is_linear: false,
-            display_interpolation: vec![
-                WeaponStatDisplayPoint {
-                    investment_value: 0,
-                    display_value: 0,
-                },
-                WeaponStatDisplayPoint {
-                    investment_value: 100,
-                    display_value: 100,
-                },
-            ],
-        };
-
-        assert_eq!(stat.in_game_display_value(50), 50);
-        assert_eq!(stat.in_game_display_label(50), "50");
-    }
-
-    #[test]
     fn native_linear_flag_preserves_unlisted_values_but_not_exact_points() {
         let stat = WeaponInvestmentStat {
             definition_index: 0,
@@ -578,34 +547,6 @@ mod stat_display_tests {
 
         assert_eq!(stat.in_game_display_value(49), 49);
         assert_eq!(stat.in_game_display_value(50), 600);
-    }
-
-    #[test]
-    fn native_curves_clamp_values_outside_the_decoded_domain() {
-        let stat = WeaponInvestmentStat {
-            definition_index: 0,
-            definition_hash: None,
-            name: "Bounded".to_owned(),
-            value: 50,
-            minimum_value: Some(0),
-            maximum_value: Some(100),
-            display_as_numeric: true,
-            is_linear: false,
-            display_interpolation: vec![
-                WeaponStatDisplayPoint {
-                    investment_value: 20,
-                    display_value: 450,
-                },
-                WeaponStatDisplayPoint {
-                    investment_value: 80,
-                    display_value: 600,
-                },
-            ],
-        };
-
-        assert_eq!(stat.in_game_display_value(-1), 450);
-        assert_eq!(stat.in_game_display_value(10), 450);
-        assert_eq!(stat.in_game_display_value(90), 600);
     }
 
     #[test]

@@ -143,7 +143,9 @@ pub(in crate::app::progression) fn draw_review(
     if direct_count(before, after) == 0 {
         return;
     }
-    ui.label("Sunrise's Reward Queue doesn’t support granting consumables. Apply anyway and add consumables directly to your inventory?");
+    ui.label(
+        "The Reward Queue cannot grant consumables. Add them directly to your inventory instead?",
+    );
     ui.collapsing("Consumables", |ui| {
         let mut totals = std::collections::BTreeMap::<u64, i64>::new();
         for row in after["_progression_consumables"]

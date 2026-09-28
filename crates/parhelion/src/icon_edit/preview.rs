@@ -13,6 +13,7 @@ use sundial::package_authoring::PackageManager;
 use sundial::package_authoring::{
     icon_schema::{
         ICON_BACKGROUND_LAYER_OFFSET, ICON_FOREGROUND_LAYER_OFFSET, ICON_PRIMARY_LAYER_OFFSET,
+        ICON_WATERMARK_LAYER_OFFSET,
     },
     is_valid_package_tag, open_shadowkeep_package_manager,
 };
@@ -30,6 +31,8 @@ pub(super) struct LoadedIconPreview {
     pub(super) authored_watermark: DecodedIconImage,
     pub(super) foreground: Option<DecodedIconImage>,
     pub(super) warnings: Vec<String>,
+    /// Keeps the container's own background and watermark, as the build does for a subclass.
+    pub(super) plain: bool,
 }
 
 /// Decoded context retained by the watermark editor, without open package handles.
@@ -47,7 +50,7 @@ impl WatermarkPreview {
     ) -> Result<Self, String> {
         let manager = open_shadowkeep_package_manager(packages)?;
         Ok(Self {
-            icon: load_icon_preview(&manager, container, rarity)?,
+            icon: load_icon_preview(&manager, container, rarity, false)?,
             edit,
         })
     }
@@ -67,6 +70,9 @@ impl LoadedIconPreview {
         &mut self,
         branding: crate::branding::Branding,
     ) -> Result<(), String> {
+        if self.plain {
+            return Ok(());
+        }
         let image = branding.watermark().map_err(|error| error.to_string())?;
         self.authored_watermark = DecodedIconImage {
             size: [image.width() as usize, image.height() as usize],
@@ -100,18 +106,21 @@ pub(super) fn load_icon_preview(
     manager: &PackageManager,
     container_tag: TagHash,
     rarity: crate::AuthoredWeaponRarity,
+    plain: bool,
 ) -> Result<LoadedIconPreview, String> {
     // Reuse the backend's strict icon-definition audit before accepting any preview graph.
     read_primary_layer_tag(manager, container_tag).map_err(|error| error.to_string())?;
     let mut container = manager.read_tag(container_tag).map_err(|error| {
         format!("Could not read donor icon definition {container_tag}: {error}")
     })?;
-    write_u32(
-        &mut container,
-        ICON_BACKGROUND_LAYER_OFFSET,
-        rarity.icon_background_layer().0,
-    )
-    .map_err(|error| error.to_string())?;
+    if !plain {
+        write_u32(
+            &mut container,
+            ICON_BACKGROUND_LAYER_OFFSET,
+            rarity.icon_background_layer().0,
+        )
+        .map_err(|error| error.to_string())?;
+    }
     let primary = load_primary_preview_layer(manager, &container, container_tag)?;
     let mut warnings = Vec::new();
     let background = load_context_preview_layer(
@@ -128,13 +137,28 @@ pub(super) fn load_icon_preview(
         "foreground overlay",
         &mut warnings,
     );
-    let authored_watermark = load_bundled_preview_watermark()?;
+    let authored_watermark = if plain {
+        load_context_preview_layer(
+            manager,
+            &container,
+            ICON_WATERMARK_LAYER_OFFSET,
+            "watermark",
+            &mut warnings,
+        )
+        .unwrap_or(DecodedIconImage {
+            size: [0, 0],
+            rgba: Vec::new(),
+        })
+    } else {
+        load_bundled_preview_watermark()?
+    };
     Ok(LoadedIconPreview {
         background,
         primary,
         authored_watermark,
         foreground,
         warnings,
+        plain,
     })
 }
 
@@ -152,6 +176,7 @@ pub(crate) fn render_weapon_icon_preview(
     rarity: crate::AuthoredWeaponRarity,
     edit: &WeaponIconEdit,
     corner: Option<&crate::presentation::Artwork>,
+    plain: bool,
 ) -> Result<egui::ColorImage, String> {
     let manager = open_shadowkeep_package_manager(package_directory)?;
     render_weapon_icon_preview_from_manager(
@@ -161,6 +186,7 @@ pub(crate) fn render_weapon_icon_preview(
         edit,
         corner,
         crate::branding::Branding::for_packages(package_directory),
+        plain,
     )
 }
 
@@ -171,10 +197,11 @@ pub(crate) fn render_weapon_icon_preview_from_manager(
     edit: &WeaponIconEdit,
     corner: Option<&crate::presentation::Artwork>,
     branding: crate::branding::Branding,
+    plain: bool,
 ) -> Result<egui::ColorImage, String> {
-    let mut preview = load_icon_preview(manager, container_tag, rarity)?;
+    let mut preview = load_icon_preview(manager, container_tag, rarity, plain)?;
     preview.set_branding(branding)?;
-    if let Some(corner) = corner {
+    if let Some(corner) = corner.filter(|_| !plain) {
         preview.authored_watermark.rgba =
             crate::watermark::render_custom_corner(corner, 0).map_err(|error| error.to_string())?;
     }

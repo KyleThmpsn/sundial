@@ -64,82 +64,58 @@ pub(super) fn draw_objective_metadata(
     } else {
         "Objective definition".to_owned()
     };
-    egui::Grid::new("progression_objective_metadata")
+    egui::Grid::new(("progression_objective_metadata", objective.hash))
         .num_columns(2)
         .spacing([16.0, 4.0])
         .show(ui, |ui| {
             metadata_field(
                 ui,
-                "Resolved label",
+                "Resolved Label",
                 resolved_objective_table_text(catalog, objective, Some(definition)),
                 false,
             );
-            metadata_field(ui, "Ownership source", ownership_source, false);
-            catalog_hash_hex_and_decimal_field(ui, catalog, "Definition Hash", objective.hash);
-            catalog_hash_hex_and_decimal_field(
-                ui,
-                catalog,
-                "Unlock definition hash",
-                definition.hash,
-            );
+            metadata_field(ui, "Ownership Source", ownership_source, false);
+            catalog_hash_hex_and_decimal_field(ui, catalog, "Objective Hash", objective.hash);
             metadata_field(ui, "Name", metadata_text(&objective.name), false);
             metadata_field(
                 ui,
-                "Display description",
+                "Display Description",
                 metadata_text(&objective.display_description),
                 false,
             );
             metadata_field(
                 ui,
-                "Progress description",
+                "Progress Description",
                 metadata_text(&objective.progress_description),
                 false,
             );
             metadata_field(
                 ui,
-                "Completion value",
+                "Completion Value",
                 objective.completion_value.to_string(),
                 true,
             );
             metadata_field(
                 ui,
-                "Related unlock definition",
-                objective.related_unlock_value_definition_index.map_or_else(
-                    || "<not present>".into(),
-                    |index| format!("#{index} · current account value"),
-                ),
-                true,
-            );
-            metadata_field(ui, "Unlock bank", definition.bank().to_string(), true);
-            metadata_field(
-                ui,
-                "Account slot",
-                definition
-                    .compact_slot
-                    .map_or_else(|| "<unbanked>".into(), |slot| slot.to_string()),
-                true,
-            );
-            metadata_field(
-                ui,
-                "Allows over-completion",
+                "Allows Over-Completion",
                 yes_no(objective.allow_overcompletion),
                 false,
             );
             metadata_field(
                 ui,
-                "Allows negative values",
+                "Allows Negative Values",
                 yes_no(objective.allow_negative_value),
                 false,
             );
             metadata_field(
                 ui,
-                "Allows changes after completion",
+                "Allows Changes after Completion",
                 yes_no(objective.allow_value_change_when_completed),
                 false,
             );
             metadata_field(
                 ui,
-                "Counts downward",
+                "Counts Downward",
                 yes_no(objective.is_counting_downward),
                 false,
             );
@@ -151,13 +127,13 @@ pub(super) fn draw_objective_metadata(
             );
             metadata_field(
                 ui,
-                "Referenced objectives",
+                "Referenced Objectives",
                 objective.referenced_objective_indices.len().to_string(),
                 true,
             );
             metadata_field(
                 ui,
-                "Intrinsic perk flags",
+                "Intrinsic Perk Flags",
                 objective
                     .intrinsic_perk_flag_definition_indices
                     .len()
@@ -199,7 +175,7 @@ pub(super) fn draw_objective_metadata(
             },
         );
         egui::CollapsingHeader::new(label)
-            .id_salt(("progression_owner_metadata", owner_index))
+            .id_salt(("progression_owner_metadata", objective.hash, owner_index))
             .default_open(objective.owners.len() <= 3)
             .show(ui, |ui| draw_objective_owner_metadata(ui, owner, catalog));
     }
@@ -210,20 +186,19 @@ fn draw_objective_references(ui: &mut egui::Ui, objective: &ObjectiveDef, catalo
         return;
     }
     egui::CollapsingHeader::new(format!(
-        "Referenced objectives ({})",
+        "Referenced Objectives ({})",
         objective.referenced_objective_indices.len()
     ))
     .id_salt(("objective_references", objective.hash))
     .default_open(true)
     .show(ui, |ui| {
         egui::Grid::new(("objective_reference_rows", objective.hash))
-            .num_columns(4)
+            .num_columns(3)
             .spacing([16.0, 3.0])
             .show(ui, |ui| {
                 ui.strong("Index");
                 ui.strong("Label");
                 ui.strong("Hash");
-                ui.strong("Relationship");
                 ui.end_row();
                 for &raw_index in &objective.referenced_objective_indices {
                     let index = usize::from(raw_index);
@@ -249,7 +224,6 @@ fn draw_objective_references(ui: &mut egui::Ui, objective: &ObjectiveDef, catalo
                     } else {
                         ui.label(egui::RichText::new("<unavailable>").weak().italics());
                     }
-                    ui.label("Condition Program Reference (Opcode 12)");
                     ui.end_row();
                 }
             });
@@ -261,20 +235,19 @@ fn draw_objective_intrinsic_perks(ui: &mut egui::Ui, objective: &ObjectiveDef, c
         return;
     }
     egui::CollapsingHeader::new(format!(
-        "Intrinsic perks ({})",
+        "Intrinsic Perks ({})",
         objective.intrinsic_perk_flag_definition_indices.len()
     ))
     .id_salt(("objective_intrinsic_perks", objective.hash))
     .default_open(true)
     .show(ui, |ui| {
         egui::Grid::new(("objective_intrinsic_perk_rows", objective.hash))
-            .num_columns(4)
+            .num_columns(3)
             .spacing([16.0, 3.0])
             .show(ui, |ui| {
                 ui.strong("Index");
                 ui.strong("Perk");
                 ui.strong("Hash");
-                ui.strong("Effect");
                 ui.end_row();
                 for &raw_index in &objective.intrinsic_perk_flag_definition_indices {
                     let index = usize::from(raw_index);
@@ -302,7 +275,6 @@ fn draw_objective_intrinsic_perks(ui: &mut egui::Ui, objective: &ObjectiveDef, c
                     } else {
                         ui.label(egui::RichText::new("<unavailable>").weak().italics());
                     }
-                    ui.label("Enabled When This Objective Completes");
                     ui.end_row();
                 }
             });

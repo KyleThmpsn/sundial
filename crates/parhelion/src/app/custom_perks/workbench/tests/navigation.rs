@@ -1,5 +1,5 @@
 use super::*;
-use crate::app::custom_perks::editor::tests::{set_test_speed, test_speed};
+use crate::app::custom_perks::workbench::parameters::tests::{set_test_speed, test_speed};
 use sundial::package_authoring::sandbox_perk::program::Program;
 
 #[test]
@@ -190,7 +190,7 @@ fn new_draft_clears_search_and_is_visible_above_a_long_library() {
             },
             |ctx| {
                 egui::CentralPanel::default()
-                    .show(ctx, |ui| workbench.draw_library(ui, None, true, None));
+                    .show(ctx, |ui| workbench.draw_library(ui, None, None));
             },
         );
     }
@@ -222,8 +222,9 @@ fn converted() -> Program {
     }
 }
 
-/// Drives the same two-frame click the app receives and seeds a ready conversion between the
-/// press and the release, so the conversion competes with the click in the frame that lands it.
+/// Drives the same two-frame click the app receives and seeds a requested conversion between
+/// the press and the release, so the conversion competes with the click in the frame that
+/// lands it.
 fn click_with_ready_conversion(ctx: &egui::Context, workbench: &mut Workbench, button: &str) {
     let size = egui::vec2(1000.0, 720.0);
     let mut output = egui::FullOutput::default();
@@ -296,12 +297,13 @@ fn apply_keeps_stock_overrides_over_a_conversion_that_became_ready_in_the_same_f
 }
 
 #[test]
-fn a_ready_conversion_without_a_click_still_replaces_the_stock_effect() {
+fn a_requested_conversion_replaces_the_stock_effect() {
     let mut workbench = workbench_with_saved_and_pending_speed();
     let ctx = egui::Context::default();
     let size = egui::vec2(1000.0, 720.0);
     frame(&ctx, &mut workbench, false, size, vec![]);
     assert!(workbench.editor.is_some());
+    // What Convert to Editable Program leaves for the host to take.
     workbench.editor.as_mut().unwrap().conversion = Some(converted());
     frame(&ctx, &mut workbench, false, size, vec![]);
     let effect = &workbench.documents[0].recipe.effects[0];

@@ -1,7 +1,7 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
-const SCHEMA: u32 = 2;
+const SCHEMA: u32 = 3;
 
 /// Metadata changes, additions, removals and a different configured build invalidate the cache.
 pub fn package_stamp(packages: &Path) -> Result<String> {

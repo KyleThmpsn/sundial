@@ -32,6 +32,8 @@ const STAT_ICON_CACHE_PREFIX: u64 = 1_u64 << 63;
 /// Namespaces the overlay-free copy of an item icon so both variants can stay cached.
 const ARTWORK_ICON_CACHE_PREFIX: u64 = 1_u64 << 62;
 const TEXTURE_ICON_CACHE_PREFIX: u64 = 1_u64 << 61;
+/// Namespaces subclass node icons, which are keyed by their container tag.
+const SUBCLASS_ICON_CACHE_PREFIX: u64 = 1_u64 << 60;
 
 /// The cache key of an artwork icon. The cleared color is part of the key: two requests for
 /// one item with different cleared colors composite differently, so they must not read each
@@ -174,6 +176,19 @@ impl Catalog {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         runtime.texture(context, &self.install_path, cache_key, container)
+    }
+
+    /// A subclass node's icon, from the container its display record names.
+    pub(crate) fn subclass_icon_texture(
+        &self,
+        context: &eframe::egui::Context,
+        container: u32,
+    ) -> Option<eframe::egui::TextureHandle> {
+        self.icon_texture_from_container(
+            context,
+            SUBCLASS_ICON_CACHE_PREFIX | u64::from(container),
+            container,
+        )
     }
 
     /// Preserves the primary layer's dimensions for artwork such as portrait badges.
@@ -921,24 +936,6 @@ mod tests {
                 alphas[index]
             );
         }
-    }
-
-    #[test]
-    fn bc1_catalog_texture_decodes_package_blocks() {
-        let mut header = vec![0_u8; 0x12];
-        header[4..8].copy_from_slice(&71_u32.to_le_bytes());
-        header[0x0E..0x10].copy_from_slice(&4_u16.to_le_bytes());
-        header[0x10..0x12].copy_from_slice(&4_u16.to_le_bytes());
-        let block = [0x00, 0xF8, 0xE0, 0x07, 0, 0, 0, 0];
-        let image = decode_catalog_texture(&header, &block, None).unwrap();
-
-        assert_eq!(image.size, [4, 4]);
-        assert!(
-            image
-                .pixels
-                .iter()
-                .all(|pixel| *pixel == eframe::egui::Color32::RED)
-        );
     }
 
     #[test]

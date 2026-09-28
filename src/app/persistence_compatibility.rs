@@ -10,7 +10,7 @@ const RUNTIME_STATE_FILE_NAME: &str = "runtime-state.bin";
 const RUNTIME_STATE_MAGIC: u32 = 0x5352_5354;
 const RUNTIME_STATE_MODULE_MARKER: &[u8] = b"r\0u\0n\0t\0i\0m\0e\0-\0s\0t\0a\0t\0e\0.\0b\0i\0n\0";
 
-pub(super) const WARNING_MESSAGE: &str = "This Sunrise installation appears to use the separate runtime-state.bin persistence found in Sunrise AIO Karisma. It can override account data loaded from settings.json, so changes made in Sundial may not appear in game.";
+pub(super) const WARNING_MESSAGE: &str = "This install uses runtime-state.bin from Sunrise AIO Karisma. It can override settings.json, so Sundial edits can fail to appear in game.";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Evidence {

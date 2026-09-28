@@ -252,7 +252,7 @@ fn build_title(phase: BuildPhase) -> &'static str {
         BuildPhase::CheckingRecipes => "Checking Recipe Compatibility",
         BuildPhase::PreparingSource => "Preparing Source Packages",
         BuildPhase::HashingSource => "Recording Source Checksums",
-        BuildPhase::CompilingProject => "Compiling Weapons",
+        BuildPhase::CompilingProject => "Compiling Items",
         BuildPhase::BuildingPayloads => "Building Package Payloads",
         BuildPhase::RecheckingSource => "Rechecking Source Packages",
         BuildPhase::WritingPackages => "Writing Packages",

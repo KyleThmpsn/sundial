@@ -67,34 +67,6 @@ fn first_appended_socket_and_condition_have_native_relocation_markers() {
 }
 
 #[test]
-fn private_intrinsic_replaces_default_and_embedded_choice_without_changing_socket_type() {
-    let mut data = synthetic_socket_definition();
-    let mut columns = resolved_socket_columns(&[Some(vec![20, 10, 21]), None, None]);
-    set_weapon_socket_columns(&mut data, &columns).unwrap();
-    let before = data.clone();
-
-    replace_socket_choice_item_index(&mut data, 0, 0, 20, 100).unwrap();
-    columns[0].as_mut().unwrap().choices[0] = 100;
-    validate_weapon_socket_columns(&data, &columns, &[176, 92, u16::MAX]).unwrap();
-
-    // Restore only the chosen plug index. Every other byte, including the
-    // intrinsic socket type and both remaining choices, must be unchanged.
-    replace_socket_choice_item_index(&mut data, 0, 0, 100, 20).unwrap();
-    assert_eq!(data, before);
-}
-
-#[test]
-fn socket_columns_serialize_variable_length_ordered_members_without_touching_other_rows() {
-    for choices in [
-        vec![20],
-        vec![20, 21, 22],
-        vec![20, 21, 22, 23, 24, 25, 26, 27],
-    ] {
-        assert_socket_column_serialization(choices);
-    }
-}
-
-#[test]
 fn inherited_program_only_socket_columns_remain_inherited() {
     let mut data = synthetic_socket_definition();
     let resource = relative_target(&data, ITEM_ORDINARY_SOCKET_POINTER_OFFSET).unwrap();

@@ -76,13 +76,31 @@ fn condition_metadata(
     let mut mask = 1u64
         .checked_shl(condition.kind.into())
         .ok_or("Condition kind exceeds the event mask.")?;
+    let mut contributions = 0;
     for child in condition.children.iter().rev() {
-        mask |= condition_metadata(bytes, child, ordinal.as_deref_mut())?;
+        contributions |= condition_metadata(bytes, child, ordinal.as_deref_mut())?;
     }
+    mask |= contributions;
+    // A counter stores the mask of its contributing conditions, as 141 of 142 stock counters
+    // do, and 1 when it has none, as the other does. New counters used to keep zero.
+    if condition.kind == 26 {
+        let stored = if condition.children.is_empty() {
+            1
+        } else {
+            contributions
+        };
+        let at = at + action::ACCUMULATOR_EVENT_MASK;
+        bytes[at..at + 8].copy_from_slice(&stored.to_le_bytes());
+    }
+    // Each subgroup row stores the mask of its own conditions, as every stock subgroup does.
     for subgroup in &condition.subgroups {
+        let mut nested = 0;
         for child in subgroup.conditions.iter().rev() {
-            mask |= condition_metadata(bytes, child, ordinal.as_deref_mut())?;
+            nested |= condition_metadata(bytes, child, ordinal.as_deref_mut())?;
         }
+        let at = subgroup.offset + action::SUBGROUP_EVENT_MASK;
+        bytes[at..at + 8].copy_from_slice(&nested.to_le_bytes());
+        mask |= nested;
     }
     Ok(mask)
 }

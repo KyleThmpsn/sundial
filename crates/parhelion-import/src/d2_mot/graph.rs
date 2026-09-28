@@ -44,6 +44,36 @@ impl GraphReference {
             fs::create_dir_all(destination.parent().context("Model file parent")?)?;
             fs::copy(self.directory.join(file), destination)?;
         }
+        if let Some(first_person) = graph["animation"]["first_person"].as_object() {
+            let files = first_person["files"]
+                .as_object()
+                .context("animation files")?;
+            let clips = first_person["clips"]
+                .as_array()
+                .context("animation clips")?;
+            for value in files.values().chain(clips.iter().map(|clip| &clip["file"])) {
+                let file = value.as_str().context("animation file")?;
+                let destination = output.join(file);
+                fs::create_dir_all(destination.parent().context("animation file parent")?)?;
+                fs::copy(self.directory.join(file), destination)?;
+            }
+        }
+        for media in graph["audio"]["transcoded_media"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(
+                graph["audio"]["converted_banks"]
+                    .as_array()
+                    .into_iter()
+                    .flatten(),
+            )
+        {
+            let file = media["file"].as_str().context("audio media file")?;
+            let destination = output.join(file);
+            fs::create_dir_all(destination.parent().context("audio file parent")?)?;
+            fs::copy(self.directory.join(file), destination)?;
+        }
         let key = |role: &str| {
             let mut hash = format!("parhelion/imported-model/{target_item:08X}/{role}")
                 .bytes()
@@ -60,6 +90,16 @@ impl GraphReference {
         if let Some(dyes) = graph["dyes"].as_array_mut() {
             for (index, dye) in dyes.iter_mut().enumerate() {
                 dye["manifest"] = key(&format!("dye-{index}")).into();
+            }
+        }
+        if let Some(parts) = graph["kept_parts"].as_array_mut() {
+            for (index, part) in parts.iter_mut().enumerate() {
+                part["key"] = key(&format!("kept-{index}")).into();
+            }
+        }
+        if let Some(parts) = graph["source_parts"].as_array_mut() {
+            for (index, part) in parts.iter_mut().enumerate() {
+                part["key"] = key(&format!("source-part-{index}")).into();
             }
         }
         super::reader::write_json(&output.join("asset-graph.json"), &graph)?;
@@ -181,6 +221,35 @@ fn fingerprint(directory: &Path, item: u32) -> Result<String> {
             digest.update(payload);
         }
     }
+    for media in graph["audio"]["transcoded_media"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(
+            graph["audio"]["converted_banks"]
+                .as_array()
+                .into_iter()
+                .flatten(),
+        )
+    {
+        let name = media["file"].as_str().context("audio media file")?;
+        let path = Path::new(name);
+        ensure!(
+            !path.as_os_str().is_empty()
+                && path
+                    .components()
+                    .all(|part| matches!(part, Component::Normal(_))),
+            "Audio payload path must stay inside its graph folder"
+        );
+        let resolved = root.join(path).canonicalize()?;
+        ensure!(
+            resolved.starts_with(&root),
+            "Audio payload escapes its graph folder"
+        );
+        let payload = fs::read(resolved)?;
+        digest.update((payload.len() as u64).to_le_bytes());
+        digest.update(payload);
+    }
     if let Some(icon) = graph["ornament_icon_png"].as_str() {
         let path = root.join(icon).canonicalize()?;
         ensure!(
@@ -243,6 +312,27 @@ mod tests {
         assert!(reference.validate(43).is_err());
         fs::write(root.path().join("parent.bin"), [1, 2, 4]).unwrap();
         assert!(reference.validate(42).is_err());
+    }
+
+    #[test]
+    fn converted_audio_is_pinned_and_copied_with_the_graph() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        fs::create_dir_all(source.join("audio")).unwrap();
+        fs::write(source.join("parent.bin"), [1, 2, 3]).unwrap();
+        fs::write(source.join("audio/source.pcm.wem"), [4, 5, 6]).unwrap();
+        fs::write(source.join("asset-graph.json"), r#"{"item_hash":42,"nodes":[{"symbol":"parent","file":"parent.bin"}],"audio":{"transcoded_media":[{"file":"audio/source.pcm.wem"}]}}"#).unwrap();
+        let reference = GraphReference::new(&source, 42).unwrap();
+        let copied = reference
+            .copy_model(42, 43, &root.path().join("copy"))
+            .unwrap();
+        assert_eq!(
+            fs::read(copied.directory.join("audio/source.pcm.wem")).unwrap(),
+            [4, 5, 6]
+        );
+        fs::write(source.join("audio/source.pcm.wem"), [4, 5, 7]).unwrap();
+        assert!(reference.validate(42).is_err());
+        copied.validate(43).unwrap();
     }
 
     #[test]

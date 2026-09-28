@@ -3,10 +3,40 @@ use super::*;
 mod plate;
 pub(super) use plate::{albedo, gearstack, normal};
 
+#[derive(Clone)]
 pub(crate) struct Texture {
     pub tag: u32,
     pub size: [usize; 2],
     pub rgba: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AddressMode {
+    Wrap,
+    Mirror,
+    Clamp,
+    Border,
+    MirrorOnce,
+}
+
+impl AddressMode {
+    fn read(value: u32) -> Option<Self> {
+        Some(match value {
+            1 => Self::Wrap,
+            2 => Self::Mirror,
+            3 => Self::Clamp,
+            4 => Self::Border,
+            5 => Self::MirrorOnce,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Sampler {
+    pub u: AddressMode,
+    pub v: AddressMode,
+    pub border: [f32; 4],
 }
 
 pub(super) fn material(
@@ -14,18 +44,10 @@ pub(super) fn material(
     tag: u32,
     model: &mut Model,
 ) -> Result<usize, String> {
-    let bytes = checked(manager, tag, 0x8080_71E8)?;
-    if u64_at(&bytes, 0x2D0)? == 0 {
-        return Err("This material has no image texture bindings".into());
-    }
-    let (count, rows) = array(&bytes, 0x2D0, 0x8080_7211, 8, 256)?;
     // Prefer explicitly sRGB color bindings over linear normal/data bindings.
     // This is a preview policy, not an evaluation of the material's TFX shader.
     let mut candidates = Vec::new();
-    for row in 0..count {
-        let offset = rows + row * 8;
-        let slot = u32_at(&bytes, offset)?;
-        let tag = u32_at(&bytes, offset + 4)?;
+    for (slot, tag) in material_bindings(manager, tag)? {
         if let Some(entry) = manager.get_entry(tag)
             && entry.file_type == 32
             && matches!(entry.file_subtype, 1..=3)
@@ -67,7 +89,7 @@ fn color_rank(format: u32, slot: u32) -> Option<u8> {
 }
 
 /// The iridescence lookup from the render globals texture set (0x80806B99, slot 0x14).
-pub(super) fn iridescence(manager: &PackageManager) -> Option<Texture> {
+pub(crate) fn iridescence(manager: &PackageManager) -> Option<Texture> {
     let (tag, _) = manager
         .get_all_by_reference(0x8080_6B99)
         .into_iter()
@@ -80,7 +102,7 @@ pub(super) fn iridescence(manager: &PackageManager) -> Option<Texture> {
     load(manager, texture).ok()
 }
 
-pub(super) fn load(manager: &PackageManager, tag: u32) -> Result<Texture, String> {
+pub(crate) fn load(manager: &PackageManager, tag: u32) -> Result<Texture, String> {
     let entry = manager.get_entry(tag).ok_or("Texture header is missing")?;
     if entry.file_type != 32 || !matches!(entry.file_subtype, 1..=3) {
         return Err("Unsupported texture header type".into());
@@ -135,7 +157,7 @@ fn preview_mip(
     let mut offset = 0;
     while width > 2048 || height > 2048 {
         offset += match format {
-            28 | 29 | 87 | 88 | 91 | 93 => width * height * 4,
+            26 | 28 | 29 | 35 | 87 | 88 | 91 | 93 => width * height * 4,
             10 => width * height * 8,
             61 => width * height,
             71 | 72 | 80 => width.div_ceil(4) * height.div_ceil(4) * 8,
@@ -185,6 +207,41 @@ pub(super) fn decode(
                 .get(..width * height)
                 .ok_or("Truncated grayscale texture")?;
             return Ok(source.iter().flat_map(|&v| [v, v, v, 255]).collect());
+        }
+        // DXGI_FORMAT_R11G11B10_FLOAT stores three unsigned floating-point channels.
+        26 => {
+            let source = bytes
+                .get(..width * height * 4)
+                .ok_or("Truncated packed-float texture")?;
+            return Ok(source
+                .chunks_exact(4)
+                .flat_map(|pixel| {
+                    let bits = u32::from_le_bytes(pixel.try_into().unwrap());
+                    let red = unsigned_float(bits & 0x7FF, 6);
+                    let green = unsigned_float((bits >> 11) & 0x7FF, 6);
+                    let blue = unsigned_float((bits >> 22) & 0x3FF, 5);
+                    [red, green, blue, 255]
+                })
+                .collect());
+        }
+        // DXGI_FORMAT_R16G16_UNORM stores two normalized 16-bit channels.
+        35 => {
+            let source = bytes
+                .get(..width * height * 4)
+                .ok_or("Truncated two-channel texture")?;
+            return Ok(source
+                .chunks_exact(4)
+                .flat_map(|pixel| {
+                    let red = u16::from_le_bytes([pixel[0], pixel[1]]);
+                    let green = u16::from_le_bytes([pixel[2], pixel[3]]);
+                    [
+                        ((u32::from(red) * 255 + 32767) / 65535) as u8,
+                        ((u32::from(green) * 255 + 32767) / 65535) as u8,
+                        0,
+                        255,
+                    ]
+                })
+                .collect());
         }
         // DXGI_FORMAT_R16G16B16A16_FLOAT, used by the lighting lookups. Clamped to 0..=1.
         10 => {
@@ -264,23 +321,205 @@ fn half_to_f32(bits: u16) -> f32 {
     }
 }
 
+pub(super) fn material_color_ramp(
+    manager: &PackageManager,
+    material: u32,
+) -> Result<Option<Texture>, String> {
+    let Some((_, tag)) = material_bindings(manager, material)?
+        .into_iter()
+        .find(|&(candidate, _)| candidate == 2)
+    else {
+        return Ok(None);
+    };
+    let Some(entry) = manager.get_entry(tag) else {
+        return Ok(None);
+    };
+    if entry.file_type != 32 || !matches!(entry.file_subtype, 1..=3) {
+        return Ok(None);
+    }
+    let header = manager.read_tag(tag)?;
+    let width = usize::from(u16_at(&header, 0x0E)?);
+    let height = usize::from(u16_at(&header, 0x10)?);
+    let format = u32_at(&header, 4)?;
+    if !(16..=1024).contains(&width) || height != 1 || color_rank(format, 2) != Some(0) {
+        return Ok(None);
+    }
+    let texture = load(manager, tag)?;
+    Ok(Some(texture))
+}
+
+/// Decode the declared texture slots in shader order for effect inspection.
+/// A generic color pick cannot describe a particle material that combines
+/// masks, distortion, and a color ramp in separate shader slots.
+pub(super) fn material_slots(
+    manager: &PackageManager,
+    material: u32,
+) -> Result<(Vec<(u32, Texture)>, usize), String> {
+    const MAX_SLOTS: usize = 8;
+    const MAX_PIXELS: usize = 4 * 1024 * 1024;
+    let bindings = material_bindings(manager, material)?;
+    let mut textures = Vec::new();
+    let mut omitted = bindings.len().saturating_sub(MAX_SLOTS);
+    let mut pixels = 0usize;
+    for (slot, tag) in bindings.into_iter().take(MAX_SLOTS) {
+        let Some(entry) = manager.get_entry(tag) else {
+            omitted += 1;
+            continue;
+        };
+        if entry.file_type != 32 || !matches!(entry.file_subtype, 1..=3) {
+            omitted += 1;
+            continue;
+        }
+        let Ok(texture) = load(manager, tag) else {
+            omitted += 1;
+            continue;
+        };
+        let area = texture.size[0].saturating_mul(texture.size[1]);
+        if area > MAX_PIXELS.saturating_sub(pixels) {
+            omitted += 1;
+            continue;
+        }
+        pixels += area;
+        textures.push((slot, texture));
+    }
+    Ok((textures, omitted))
+}
+
+/// The pixel shader's native sampler list follows its texture assignments.
+pub(super) fn material_samplers(manager: &PackageManager, material: u32) -> Vec<Sampler> {
+    let Ok(bytes) = checked(manager, material, 0x8080_71E8) else {
+        return Vec::new();
+    };
+    let Ok((count, rows)) = array(&bytes, 0x308, 0x8080_73F3, 16, 8) else {
+        return Vec::new();
+    };
+    (0..count)
+        .map(|index| {
+            let tag = u32_at(&bytes, rows + index * 16).ok()?;
+            let entry = manager.get_entry(tag)?;
+            if entry.file_type != 34 || entry.file_subtype != 1 {
+                return None;
+            }
+            let header = manager.get_entry(entry.reference)?;
+            if header.file_type != 42
+                || header.file_subtype != 1
+                || header.reference != tag
+                || header.file_size != 52
+            {
+                return None;
+            }
+            let data = manager.read_tag(entry.reference).ok()?;
+            let u = AddressMode::read(u32_at(&data, 4).ok()?)?;
+            let v = AddressMode::read(u32_at(&data, 8).ok()?)?;
+            let mut border = [0.0; 4];
+            for (lane, value) in border.iter_mut().enumerate() {
+                *value = f32::from_bits(u32_at(&data, 28 + lane * 4).ok()?) * 255.0;
+            }
+            if !border.iter().all(|value| value.is_finite()) {
+                return None;
+            }
+            Some(Sampler { u, v, border })
+        })
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default()
+}
+
+fn material_bindings(manager: &PackageManager, tag: u32) -> Result<Vec<(u32, u32)>, String> {
+    let bytes = checked(manager, tag, 0x8080_71E8)?;
+    if u64_at(&bytes, 0x2D0)? == 0 {
+        return Err("This material has no image texture bindings".into());
+    }
+    let (count, rows) = array(&bytes, 0x2D0, 0x8080_7211, 8, 256)?;
+    (0..count)
+        .map(|row| {
+            let offset = rows + row * 8;
+            Ok((u32_at(&bytes, offset)?, u32_at(&bytes, offset + 4)?))
+        })
+        .collect()
+}
+
+fn unsigned_float(bits: u32, mantissa_bits: u32) -> u8 {
+    let mantissa_mask = (1 << mantissa_bits) - 1;
+    let exponent = ((bits >> mantissa_bits) & 0x1F) as i32;
+    let mantissa = (bits & mantissa_mask) as f32 / (1 << mantissa_bits) as f32;
+    let value = match exponent {
+        0 => mantissa * 2f32.powi(-14),
+        31 => f32::INFINITY,
+        _ => (1.0 + mantissa) * 2f32.powi(exponent - 15),
+    };
+    (value.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
 #[cfg(test)]
 mod tests;
 
 impl Texture {
+    pub(super) fn sample_ramp(&self, position: f32) -> [f32; 4] {
+        let width = self.size[0];
+        let x = (position.clamp(0.0, 1.0) * width as f32 - 0.5).clamp(0.0, (width - 1) as f32);
+        let left = x.floor() as usize;
+        let right = (left + 1).min(width - 1);
+        let blend = x - left as f32;
+        std::array::from_fn(|channel| {
+            self.rgba[left * 4 + channel] as f32 * (1.0 - blend)
+                + self.rgba[right * 4 + channel] as f32 * blend
+        })
+    }
+
     pub(super) fn sample(&self, uv: [f32; 2]) -> [f32; 3] {
         let rgba = self.sample_rgba(uv);
         [rgba[0], rgba[1], rgba[2]]
     }
 
     pub(super) fn sample_rgba(&self, uv: [f32; 2]) -> [f32; 4] {
+        self.sample_with_sampler(
+            uv,
+            &Sampler {
+                u: AddressMode::Wrap,
+                v: AddressMode::Wrap,
+                border: [0.0; 4],
+            },
+        )
+    }
+
+    pub(super) fn sample_with_sampler(&self, uv: [f32; 2], sampler: &Sampler) -> [f32; 4] {
         let [width, height] = self.size;
-        let x = uv[0].rem_euclid(1.0) * width as f32 - 0.5;
-        let y = uv[1].rem_euclid(1.0) * height as f32 - 0.5;
+        if !uv.iter().all(|value| value.is_finite()) || width == 0 || height == 0 {
+            return sampler.border;
+        }
+        let position = |coordinate: f32, size: usize, mode: AddressMode| {
+            let coordinate = match mode {
+                AddressMode::Wrap => coordinate.rem_euclid(1.0),
+                AddressMode::Mirror => coordinate.rem_euclid(2.0),
+                AddressMode::Clamp => coordinate.clamp(0.0, 1.0),
+                AddressMode::Border => coordinate.clamp(-1.0, 2.0),
+                AddressMode::MirrorOnce => coordinate.abs().clamp(0.0, 1.0),
+            };
+            coordinate * size as f32 - 0.5
+        };
+        let x = position(uv[0], width, sampler.u);
+        let y = position(uv[1], height, sampler.v);
         let (tx, ty) = (x - x.floor(), y - y.floor());
+        let address = |value: i32, size: usize, mode: AddressMode| {
+            let size = size as i32;
+            Some(match mode {
+                AddressMode::Wrap => value.rem_euclid(size),
+                AddressMode::Mirror => {
+                    let at = value.rem_euclid(size * 2);
+                    if at < size { at } else { size * 2 - 1 - at }
+                }
+                AddressMode::Clamp | AddressMode::MirrorOnce => value.clamp(0, size - 1),
+                AddressMode::Border if (0..size).contains(&value) => value,
+                AddressMode::Border => return None,
+            } as usize)
+        };
         let pixel = |dx: i32, dy: i32, channel: usize| {
-            let px = (x.floor() as i32 + dx).rem_euclid(width as i32) as usize;
-            let py = (y.floor() as i32 + dy).rem_euclid(height as i32) as usize;
+            let Some(px) = address(x.floor() as i32 + dx, width, sampler.u) else {
+                return sampler.border[channel];
+            };
+            let Some(py) = address(y.floor() as i32 + dy, height, sampler.v) else {
+                return sampler.border[channel];
+            };
             self.rgba[(py * width + px) * 4 + channel] as f32
         };
         std::array::from_fn(|c| {

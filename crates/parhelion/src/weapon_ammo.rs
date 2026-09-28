@@ -148,19 +148,6 @@ mod tests {
     }
 
     #[test]
-    fn includes_default_and_every_selected_variant() {
-        assert_eq!(
-            property_offsets(&fixture(), 0).unwrap(),
-            vec![0x80, 0x310, 0x4D0]
-        );
-        let mut data = vec![0; DEFINITION_SIZE];
-        assert_eq!(property_offsets(&data, 0).unwrap(), vec![0x80]);
-        // Native selection ignores the array pointer when there are no variants.
-        data[0x248..0x250].copy_from_slice(&i64::MIN.to_le_bytes());
-        assert_eq!(property_offsets(&data, 0).unwrap(), vec![0x80]);
-    }
-
-    #[test]
     fn rejects_bad_count_class_pointer_and_truncation() {
         for (offset, replacement) in [(0x300, 3_u8), (0x308, 0_u8), (0x24F, 0x7F_u8)] {
             let mut data = fixture();

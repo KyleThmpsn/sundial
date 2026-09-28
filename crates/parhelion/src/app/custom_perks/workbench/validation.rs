@@ -12,44 +12,103 @@ pub(super) struct Location {
 pub(super) struct Issue {
     pub message: String,
     pub location: Option<Location>,
+    /// Whether it keeps Apply to Weapon and the socket picker closed. A warning names a likely
+    /// mistake the game still runs, so it is shown but never blocks.
+    pub blocking: bool,
 }
 
 impl Workbench {
+    /// The perk's first problem, or its first warning when it has no problem. The workbench reads
+    /// the cached `selected_issue`, so only tests check a recipe directly.
+    #[cfg(test)]
     pub(super) fn validation_issue(&self, recipe: &PerkRecipe) -> Option<Issue> {
-        let message = self.perk_issue(recipe)?;
+        if let Some(message) = self.perk_issue(recipe) {
+            return Some(self.locate(recipe, message, true));
+        }
+        let message = perk_warning(recipe, self.branding.runtime())?;
+        Some(self.locate(recipe, message, false))
+    }
+
+    /// The open perk's issue, as `validation_issue` reads it, from the document's cache.
+    pub(super) fn selected_issue(&mut self) -> Option<Issue> {
+        let index = self.selected;
+        let (problem, warning) = self.document_issues(index)?;
+        let recipe = &self.documents[index].recipe;
+        if let Some(message) = problem {
+            return Some(self.locate(recipe, message, true));
+        }
+        Some(self.locate(recipe, warning?, false))
+    }
+
+    /// A document's problem, or its warning when it has no problem, from its cache.
+    pub(super) fn document_issue(&mut self, index: usize) -> Option<String> {
+        let (problem, warning) = self.document_issues(index)?;
+        problem.or(warning)
+    }
+
+    /// The cached checks of one document, run again when its recipe or discovery changed.
+    fn document_issues(&mut self, index: usize) -> Option<(Option<String>, Option<String>)> {
+        let ready = !self.discovery.busy();
+        let document = self.documents.get(index)?;
+        if let Some(cache) = &document.issues
+            && cache.ready == ready
+            && cache.recipe == document.recipe
+        {
+            return Some((cache.problem.clone(), cache.warning.clone()));
+        }
+        let recipe = document.recipe.clone();
+        let problem = self.perk_issue(&recipe);
+        let warning = match problem {
+            Some(_) => None,
+            None => perk_warning(&recipe, self.branding.runtime()),
+        };
+        self.documents[index].issues = Some(IssueCache {
+            recipe,
+            ready,
+            problem: problem.clone(),
+            warning: warning.clone(),
+        });
+        Some((problem, warning))
+    }
+
+    /// The effect, action and native field an issue belongs to, so Show Problem can open it.
+    fn locate(&self, recipe: &PerkRecipe, message: String, blocking: bool) -> Issue {
         // Document-level failures have no effect to open. Never guess from error wording.
         let mut document = recipe.clone();
         document.effects.clear();
-        if document.validate().is_err() {
-            return Some(Issue {
+        if blocking && document.validate().is_err() {
+            return Issue {
                 message,
                 location: None,
-            });
+                blocking,
+            };
         }
         for (position, effect) in recipe.effects.iter().enumerate() {
-            document.effects = vec![effect.clone()];
-            if document.validate().is_ok()
-                && self
-                    .discovery
-                    .perk_issue(effect.source_perk_index)
-                    .is_none()
-                && counter_issue(effect.program.as_ref()).is_none()
-            {
+            let flagged = if blocking {
+                document.effects = vec![effect.clone()];
+                document.validate().is_err()
+                    || self
+                        .discovery
+                        .perk_issue(effect.source_perk_index)
+                        .is_some()
+                    || counter_issue(effect.program.as_ref()).is_some()
+                    || choice_issue(effect.program.as_ref()).is_some()
+            } else {
+                ending_issue(effect.program.as_ref()).is_some()
+            };
+            if !flagged {
                 continue;
             }
-            let native = effect
-                .program
-                .as_ref()
-                .filter(|program| program::uses_complete_editor(program))
-                .and_then(|program| {
-                    if let Some(native) = &program.native {
-                        native.authoring_issue().ok().flatten()
-                    } else {
-                        sundial::package_authoring::sandbox_perk::program::native_draft(program)
-                            .ok()
-                            .and_then(|native| native.authoring_issue().ok().flatten())
-                    }
-                });
+            // Every effect edits in the node design, so a problem is revealed there.
+            let native = effect.program.as_ref().and_then(|program| {
+                if let Some(native) = &program.native {
+                    native.authoring_issue().ok().flatten()
+                } else {
+                    sundial::package_authoring::sandbox_perk::program::native_draft(program)
+                        .ok()
+                        .and_then(|native| native.authoring_issue().ok().flatten())
+                }
+            });
             let action = effect.program.as_ref().and_then(|program| {
                 if program.native.is_some() {
                     return None;
@@ -72,7 +131,7 @@ impl Workbench {
                 || format!("Effect {}", position + 1),
                 |index| format!("Effect {}, Action {}", position + 1, index + 1),
             );
-            return Some(Issue {
+            return Issue {
                 message: format!("{context}: {message}"),
                 location: Some(Location {
                     document: recipe.id.clone(),
@@ -80,12 +139,14 @@ impl Workbench {
                     action,
                     native,
                 }),
-            });
+                blocking,
+            };
         }
-        Some(Issue {
+        Issue {
             message,
             location: None,
-        })
+            blocking,
+        }
     }
 
     pub(super) fn finish_reveal(&mut self, target: Option<Location>, response: &egui::Response) {
@@ -116,9 +177,86 @@ impl Workbench {
     }
 }
 
+/// Triggers the stock perks leave running with no ending: Always, After a Delay, On Equip and
+/// On Draw turn an effect on for as long as the perk is applied. Any other trigger with no
+/// ending starts the effect once and never lets it start again, which no installed stock perk
+/// does.
+const LASTING_TRIGGERS: [u8; 4] = [0, 1, 14, 16];
+
+/// Whether a behavior group starts on something that can happen again but never ends.
+pub(super) fn endless(
+    group: &sundial::package_authoring::sandbox_perk::action::DecodedGroup,
+) -> bool {
+    event_fired(group) && group.removal.is_empty()
+}
+
+/// Whether a behavior group starts on something that can happen again, rather than turning on
+/// for as long as the perk is applied.
+pub(super) fn event_fired(
+    group: &sundial::package_authoring::sandbox_perk::action::DecodedGroup,
+) -> bool {
+    !group.activation.is_empty()
+        && !group
+            .activation
+            .iter()
+            .any(|condition| LASTING_TRIGGERS.contains(&condition.kind))
+}
+
+/// How many of a plug's effects the runtime reads: `items::kSandboxPerkCapacity` in the
+/// Sunrise package reader, which Dawn shares, keeps four sandbox-perk entries per item or
+/// plug and `read_sandbox_perks` returns at that count (`docs/sunrise-contracts.md`, and
+/// `perk_bank::project` counts the same four). Everything at Once's fifth and sixth effects
+/// never fired in game on 2026-09-27 while its first four did. A warning, not a problem:
+/// the package and the game accept it.
+pub(super) const RUNNING_EFFECT_LIMIT: usize = 4;
+
+/// A likely mistake the game still runs, the first one in the perk. It is shown wherever a
+/// problem is, but it never keeps the perk from being applied or chosen. `runtime` names the
+/// installed runtime, Sunrise or Dawn.
+pub(super) fn perk_warning(recipe: &PerkRecipe, runtime: &str) -> Option<String> {
+    recipe
+        .effects
+        .iter()
+        .find_map(|effect| ending_issue(effect.program.as_ref()))
+        .or_else(|| {
+            (recipe.effects.len() > RUNNING_EFFECT_LIMIT).then(|| {
+                format!(
+                    "{runtime} reads a plug's first {RUNNING_EFFECT_LIMIT} effects. The rest never run."
+                )
+            })
+        })
+}
+
+/// A behavior that never ends runs once. The compiler accepts it, since the game can run it,
+/// so the workbench names it as a warning, in the status bar and under the trigger itself.
+/// No installed stock perk does it, but an author may mean it. A guided effect is read in the
+/// form it compiles to, since its ending comes from its trigger and duration.
+pub(super) fn ending_issue(
+    program: Option<&sundial::package_authoring::sandbox_perk::program::Program>,
+) -> Option<String> {
+    use sundial::package_authoring::sandbox_perk::{action, program::native_draft};
+    let program = program?;
+    let payload = match &program.native {
+        Some(native) => native.graph.emit(),
+        None => native_draft(program).ok()?.graph.emit(),
+    }
+    .ok()?;
+    let groups = action::decode(&payload).ok()?.groups;
+    let index = groups.iter().position(endless)?;
+    let subject = match (groups.len(), index) {
+        (1, _) => "This effect".to_owned(),
+        (_, 0) => "The main behavior".to_owned(),
+        (_, index) => format!("Behavior {}", index + 1),
+    };
+    Some(format!(
+        "{subject} never ends, so it cannot start again. End it at once or set a Duration."
+    ))
+}
+
 /// A counter with no contributing conditions never moves, so its effect can never fire.
 /// The compiler accepts the bare node, since it is a valid node; the workbench is where it
-/// becomes a named problem, in the status bar and beside the counter itself.
+/// becomes a named problem, in the status bar and beside the counter itself. A counter counts
+/// the same way inside a requirement, a "while" check or an ending, so every one is checked.
 pub(super) fn counter_issue(
     program: Option<&sundial::package_authoring::sandbox_perk::program::Program>,
 ) -> Option<String> {
@@ -126,12 +264,10 @@ pub(super) fn counter_issue(
     let program = program?;
     let empty = if let Some(native) = &program.native {
         let decoded = action::decode(&native.graph.emit().ok()?).ok()?;
-        decoded.groups.iter().any(|group| {
-            group
-                .activation
-                .iter()
-                .any(|condition| condition.kind == 26 && condition.children.is_empty())
-        })
+        decoded
+            .conditions()
+            .iter()
+            .any(|condition| condition.kind == 26 && condition.children.is_empty())
     } else {
         program.trigger == Trigger::Native
             && program.native_trigger.as_ref().is_some_and(|node| {
@@ -141,7 +277,64 @@ pub(super) fn counter_issue(
             })
     };
     empty.then(|| {
-        "The counter has no contributing conditions, so it can never fire. Add a condition that counts, such as a kill."
-            .to_owned()
+        "The counter has nothing to count. Add a contributing condition such as a kill.".to_owned()
     })
+}
+
+/// A key, tag or selection a node still needs, which compiles but never acts in game.
+pub(super) fn choice_issue(
+    program: Option<&sundial::package_authoring::sandbox_perk::program::Program>,
+) -> Option<String> {
+    let program = program?;
+    match &program.native {
+        Some(native) => super::program::native::unset_choice(&native.graph),
+        None => sundial::package_authoring::sandbox_perk::program::native_draft(program)
+            .ok()
+            .and_then(|draft| super::program::native::unset_choice(&draft.graph)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sundial::package_authoring::sandbox_perk::program::{
+        Action, NativeGroup, NativeNode, Program, Trigger,
+    };
+
+    /// A kill that starts a behavior with no ending can never start it again, whether it is
+    /// the effect's only behavior or a second one beside it. A duration ends it, and a trigger
+    /// that turns the effect on for good, such as On Draw, is not a problem.
+    #[test]
+    fn a_repeatable_trigger_with_no_ending_is_named() {
+        let program = |kind, duration_ms| Program {
+            trigger: Trigger::Native,
+            native_trigger: NativeNode::condition(kind),
+            duration_ms,
+            actions: vec![Action::add_rounds(1)],
+            ..Program::default()
+        };
+        assert_eq!(
+            ending_issue(Some(&program(2, 0))).as_deref(),
+            Some(
+                "This effect never ends, so it cannot start again. End it at once or set a Duration."
+            )
+        );
+        assert!(ending_issue(Some(&program(2, 5_000))).is_none());
+        assert!(ending_issue(Some(&program(16, 0))).is_none());
+        let second = Program {
+            trigger: Trigger::Drawn,
+            actions: vec![Action::add_rounds(1)],
+            additional_groups: vec![NativeGroup {
+                activation: vec![NativeNode::condition(2).unwrap()],
+                effects: vec![NativeNode::effect(16).unwrap()],
+                ..NativeGroup::default()
+            }],
+            ..Program::default()
+        };
+        assert!(
+            ending_issue(Some(&second))
+                .unwrap()
+                .starts_with("Behavior 2 never ends")
+        );
+    }
 }

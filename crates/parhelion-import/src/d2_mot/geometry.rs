@@ -6,6 +6,41 @@ use std::{
     fs::File,
     io::Write,
 };
+
+/// Which detail categories of a source model count as part of the weapon.
+///
+/// The engine's level-of-detail enumeration calls category 0 main geometry, 1
+/// grip and stock, 2 stickers and 3 internal geometry. All four are full
+/// quality; categories 4, 7, 8 and 9 are reduced-detail copies that the native
+/// model rebuilds from the retained parts, so they are never imported.
+///
+/// `Full` recovers grips, stocks and scopes, which are otherwise dropped along
+/// with any model made only of them. Some of those models carry materials the
+/// converter cannot translate yet, and a weapon is more useful without its grip
+/// than not imported at all, so `Main` reproduces the older behaviour for them.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Detail {
+    #[default]
+    Full,
+    Main,
+}
+
+impl Detail {
+    pub fn parse(value: Option<&str>) -> Result<Self> {
+        match value {
+            None | Some("full") => Ok(Self::Full),
+            Some("main") => Ok(Self::Main),
+            Some(other) => anyhow::bail!("unknown source detail level {other}"),
+        }
+    }
+
+    fn keeps(self, category: u8) -> bool {
+        match self {
+            Self::Full => matches!(category, 0..=3),
+            Self::Main => category == 0,
+        }
+    }
+}
 pub fn triangles(indices: &[u32], vertices: usize, restart: u32) -> Result<Vec<[u32; 3]>> {
     let mut window = Vec::new();
     let mut parity = false;
@@ -33,14 +68,20 @@ pub fn triangles(indices: &[u32], vertices: usize, restart: u32) -> Result<Vec<[
     }
     Ok(faces)
 }
-pub fn export(r: &mut Reader, tag: u32) -> Result<Value> {
-    export_mesh(r, tag, 0, true)
+pub fn export(r: &mut Reader, tag: u32, detail: Detail) -> Result<Value> {
+    export_mesh(r, tag, 0, true, detail)
 }
 #[expect(
     clippy::cognitive_complexity,
     reason = "Preserve the audited converter while integrating the legacy rendering pipeline."
 )]
-pub fn export_mesh(r: &mut Reader, tag: u32, index: usize, single: bool) -> Result<Value> {
+pub fn export_mesh(
+    r: &mut Reader,
+    tag: u32,
+    index: usize,
+    single: bool,
+    detail: Detail,
+) -> Result<Value> {
     let model = r.tag(tag, Some(0x80806F07))?;
     let meshes = model.array(16, 128, Some(0x80806EC5))?;
     ensure!(!single || meshes.len() == 1, "expected single mesh");
@@ -94,7 +135,7 @@ pub fn export_mesh(r: &mut Reader, tag: u32, index: usize, single: bool) -> Resu
     for part in model.array(mesh + 32, 36, Some(0x80806ECB))? {
         let start = model.u32(part + 8)? as usize;
         let count = model.u32(part + 12)? as usize;
-        if model.u8(part + 29)? != 0 || !seen.insert((start, count)) {
+        if !detail.keeps(model.u8(part + 29)?) || !seen.insert((start, count)) {
             continue;
         }
         ensure!(model.u16(part + 6)? == 5, "unsupported primitive");
@@ -110,7 +151,7 @@ pub fn export_mesh(r: &mut Reader, tag: u32, index: usize, single: bool) -> Resu
         .iter()
         .flat_map(|(_, f)| f.iter().flatten().copied())
         .collect::<BTreeSet<_>>();
-    ensure!(!used.is_empty(), "no LOD0 geometry");
+    ensure!(!used.is_empty(), "no full-detail geometry");
     let mapped = used
         .iter()
         .enumerate()
@@ -178,7 +219,7 @@ pub fn export_mesh(r: &mut Reader, tag: u32, index: usize, single: bool) -> Resu
         *bones.entry(pos.i16(o + 6)?.to_string()).or_insert(0usize) += 1;
     }
     Ok(
-        json!({"model":format!("{tag:08X}"),"obj":filename,"vertices_all_lods":vertices,"lod0_vertices":used.len(),"lod0_triangles":parts.iter().map(|(_,f)|f.len()).sum::<usize>(),"rigid_bone_zero":bones.len()==1&&bones.contains_key("0"),"bone_selectors":bones,"materials":model.array(mesh+32,36,Some(0x80806ECB))?.iter().map(|&p|Ok(format!("{:08X}",model.u32(p)?))).collect::<Result<BTreeSet<_>>>()?}),
+        json!({"model":format!("{tag:08X}"),"obj":filename,"vertices_all_lods":vertices,"full_detail_vertices":used.len(),"full_detail_triangles":parts.iter().map(|(_,f)|f.len()).sum::<usize>(),"rigid_bone_zero":bones.len()==1&&bones.contains_key("0"),"bone_selectors":bones,"materials":model.array(mesh+32,36,Some(0x80806ECB))?.iter().map(|&p|Ok(format!("{:08X}",model.u32(p)?))).collect::<Result<BTreeSet<_>>>()?}),
     )
 }
 #[cfg(test)]

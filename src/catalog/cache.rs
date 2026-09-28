@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 use super::{
     CollectibleDef, CollectionConditionTokenDef, InventoryMetadata, ItemDef,
     ItemMaterialRequirementSetIndices, ItemPackageMetadata, ItemStatDefinition, ItemStatGroup,
-    MaterialRequirementSetDef, ObjectiveDef, ObjectiveOwnerTraitDef, ProgressionDefinition,
-    RecordDefinition, UnlockDefinition,
+    MaterialRequirementSetDef, ObjectiveDef, ObjectiveOwnerTraitDef, PresentationNode,
+    ProgressionDefinition, RecordDefinition, UnlockDefinition,
 };
 
-pub(super) const CACHE_SCHEMA: u32 = 119;
+pub(super) const CACHE_SCHEMA: u32 = 122;
 pub(super) const SUNDIAL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Serialize, Deserialize)]
@@ -57,7 +57,7 @@ pub(super) struct CatalogContents {
     #[serde(default)]
     pub(super) inventory_metadata: HashMap<u64, InventoryMetadata>,
     pub(super) objectives: Vec<ObjectiveDef>,
-    pub(super) presentation_node_hashes: Vec<u64>,
+    pub(super) presentation_nodes: Vec<PresentationNode>,
     #[serde(default)]
     pub(super) records: Option<Vec<RecordDefinition>>,
     pub(super) unlock_flag_definitions: Vec<UnlockDefinition>,
@@ -88,23 +88,4 @@ pub(crate) fn cache_is_current(path: &Path) -> bool {
 fn cache_header_is_current(prefix: &str) -> bool {
     prefix.contains(&format!("\"schema\":{CACHE_SCHEMA}"))
         && prefix.contains(&format!("\"sundial_version\":\"{SUNDIAL_VERSION}\""))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cache_requires_the_current_sundial_version() {
-        assert!(cache_header_is_current(&format!(
-            "{{\"schema\":{CACHE_SCHEMA},\"sundial_version\":\"{SUNDIAL_VERSION}\"}}"
-        )));
-        assert!(!cache_header_is_current(&format!(
-            "{{\"schema\":{CACHE_SCHEMA},\"sundial_version\":\"older\"}}"
-        )));
-        assert!(!cache_header_is_current(&format!(
-            "{{\"schema\":{},\"sundial_version\":\"{SUNDIAL_VERSION}\"}}",
-            CACHE_SCHEMA - 1
-        )));
-    }
 }

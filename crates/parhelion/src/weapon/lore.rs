@@ -13,15 +13,26 @@ pub(super) struct Plan {
     pub strings: ReplacementSpec,
 }
 
+/// A subclass attunement path with a name of its own, and where its display record sits among
+/// the build's definitions.
+pub(super) struct PathLore {
+    pub display: usize,
+    pub name: super::subclass::PathName,
+}
+
 /// Appends one lore definition and display row per weapon with custom lore and links it from
 /// the item's lore block. Nothing else references the lore row: in particular the collectible
 /// row's `+0x2C` is the inventory item index, and writing the lore index there repointed the
 /// Collections entry at whichever stock item shared that index.
+///
+/// A subclass path with a name of its own also takes a row, copied from the stock row it showed
+/// before so it keeps that row's icon, and its display record shows it by the new row.
 pub(super) fn author(
     manager: &PackageManager,
     globals: &[u8],
     weapons: &[WeaponCloneSpec],
     items: &mut [NewTagSpec],
+    paths: &[PathLore],
 ) -> AuthoringResult<Option<Plan>> {
     for (ordinal, weapon) in weapons.iter().enumerate() {
         if weapon.overrides.remove_lore {
@@ -36,7 +47,7 @@ pub(super) fn author(
             write_u64(&mut item.payload, BLOCK_POINTER, 0)?;
         }
     }
-    if weapons.iter().all(|weapon| weapon.overrides.lore.is_none()) {
+    if weapons.iter().all(|weapon| weapon.overrides.lore.is_none()) && paths.is_empty() {
         return Ok(None);
     }
     if items.len() < weapons.len() {
@@ -93,6 +104,46 @@ pub(super) fn author(
         strings.extend_from_slice(&row);
         set_array_count(&mut strings, 8, header, count + 1)?;
         set_item_lore(&mut items[ordinal].payload, index)?;
+        count += 1;
+    }
+    for path in paths {
+        let index = u16::try_from(count)
+            .ok()
+            .filter(|&index| index != u16::MAX)
+            .ok_or_else(|| invalid("Custom lore exceeds the native table index capacity"))?;
+        let template = usize::try_from(path.name.template_row)
+            .ok()
+            .filter(|&row| row < STOCK_COUNT)
+            .ok_or_else(|| invalid("An attunement path does not show a stock lore row"))?;
+        let (old_count, header, rows, _) = array_at(&definitions, 8)?;
+        if contains_u32_at_offset(&definitions, rows, old_count, 16, 8, path.name.row_hash)? {
+            return Err(invalid(
+                "An attunement path's lore identity collides with an existing entry",
+            ));
+        }
+        let mut row = definitions[rows + template * 16..rows + template * 16 + 16].to_vec();
+        write_u32(&mut row, 8, path.name.row_hash)?;
+        definitions.extend_from_slice(&row);
+        set_array_count(&mut definitions, 8, header, count + 1)?;
+        let (_, header, rows, _) = array_at(&strings, 8)?;
+        let mut row = strings[rows + template * 40..rows + template * 40 + 40].to_vec();
+        write_u32(&mut row, 8, path.name.row_hash)?;
+        write_localized_reference(
+            &mut row,
+            12,
+            LOCALIZATION_DONOR_TABLE_INDEX as u32,
+            path.name.name_hash,
+        )?;
+        strings.extend_from_slice(&row);
+        set_array_count(&mut strings, 8, header, count + 1)?;
+        let display = items
+            .get_mut(path.display)
+            .ok_or_else(|| invalid("Missing subclass display record for a path name"))?;
+        super::subclass::set_path_value(
+            &mut display.payload,
+            path.name.plug_source,
+            u32::from(index),
+        )?;
         count += 1;
     }
     validate_tables(&definitions, &strings, count)?;

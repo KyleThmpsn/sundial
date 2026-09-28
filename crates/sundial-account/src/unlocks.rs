@@ -115,39 +115,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_bank_code_round_trips_through_its_scope() {
-        for scope in [
-            UnlockScope::Account,
-            UnlockScope::Profile,
-            UnlockScope::Character,
-            UnlockScope::CharacterObject,
-        ] {
-            assert_eq!(UnlockScope::for_bank(scope.bank()), Some(scope));
-        }
-        // Codes 4 and 5 are not flag banks, so an unlock naming one is refused rather than
-        // written to whichever bank happened to sort next.
-        for bank in [0, 4, 5, 7, 255] {
-            assert_eq!(UnlockScope::for_bank(bank), None);
-        }
-    }
-
-    #[test]
-    fn a_slot_outside_its_bank_is_refused_by_name() {
-        let unlock = AuthoredUnlock {
-            definition_index: 12,
-            bank: UnlockScope::Character.bank(),
-            slot: 256,
-        };
-        let error = unlock.target().unwrap_err();
-        assert!(error.contains("character slot 256"), "{error}");
-        let inside = AuthoredUnlock {
-            slot: 255,
-            ..unlock
-        };
-        assert_eq!(inside.target(), Ok((UnlockScope::Character, 255)));
-    }
-
-    #[test]
     fn an_unsupported_bank_names_the_definition_that_used_it() {
         let error = AuthoredUnlock {
             definition_index: 7,

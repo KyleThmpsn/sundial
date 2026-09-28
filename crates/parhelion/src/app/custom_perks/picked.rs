@@ -27,7 +27,11 @@ pub(in crate::app) fn resolve_picked_perk(
     find_picked_perk(&recipes, hash, |item_hash, socket_index, choice_index| {
         let donor = donors
             .entry(item_hash)
-            .or_insert_with(|| catalog.weapon_donor(item_hash))
+            .or_insert_with(|| {
+                catalog
+                    .weapon_donor(item_hash)
+                    .or_else(|| catalog.gear_donor(item_hash))
+            })
             .as_ref()?;
         let socket = donor.sockets.get(usize::from(socket_index))?;
         inherited_socket_choices(

@@ -29,6 +29,25 @@ impl WorkbenchPage {
             Self::Identity => "Identity",
         }
     }
+
+    /// The pages a kind uses. Gear keeps its base item's geometry and runtime, so it has no
+    /// Appearance or Advanced Gameplay page.
+    pub(crate) const fn for_kind(kind: crate::ItemKind) -> &'static [Self] {
+        match kind {
+            crate::ItemKind::Weapon => &Self::ALL,
+            // A subclass has no Collections entry.
+            crate::ItemKind::Subclass => &[Self::Weapon, Self::Identity],
+            _ => &[Self::Weapon, Self::Collections, Self::Identity],
+        }
+    }
+
+    /// The first page is named for what the recipe builds.
+    pub(crate) const fn label_for(self, kind: crate::ItemKind) -> &'static str {
+        match self {
+            Self::Weapon => kind.label(),
+            page => page.label(),
+        }
+    }
 }
 
 /// Shared edge for the donor/stat column and the definition/socket column.
@@ -91,7 +110,7 @@ impl RecipeSaveStatus {
 
     pub(crate) const fn label(self) -> &'static str {
         match self {
-            Self::NotSavedYet => "Not saved yet",
+            Self::NotSavedYet => "Not Saved",
             Self::UnsavedChanges => "Unsaved Changes",
             Self::Saved => "Saved",
         }

@@ -233,6 +233,7 @@ pub(crate) fn draw_plug_picker(
                         popup_width,
                         searchable,
                         false,
+                        true,
                         &mut selection,
                         |_| false,
                     );
@@ -247,16 +248,14 @@ pub(crate) fn draw_plug_picker(
                 .is_some_and(|default| snapshot.current_hash != default.value());
             let reset_tooltip = match snapshot.native_default {
                 Some(NativePlugDefault::Plug(hash)) => format!(
-                    "Restore this socket's native default: {}",
+                    "Restore this socket's default: {}",
                     snapshot
                         .native_default_label
                         .as_deref()
                         .map_or_else(|| format_hash_hex(hash), str::to_owned)
                 ),
-                Some(NativePlugDefault::Empty) => {
-                    "Restore this socket's native default: None".to_owned()
-                }
-                None => "No native default is available for this socket".to_owned(),
+                Some(NativePlugDefault::Empty) => "Restore this socket's default: None".to_owned(),
+                None => "This socket has no default".to_owned(),
             };
             let reset = draw_socket_picker_reset(ui, reset_enabled, reset_tooltip);
             if reset.clicked() {
@@ -281,13 +280,24 @@ pub(crate) fn draw_plug_icon_picker(
     height: PickerHeight,
     anchor: &egui::Response,
 ) -> Option<ItemEditorAction> {
-    draw_plug_icon_picker_with_footer(ui, catalog, scope, query, snapshot, height, anchor, |_| {
-        false
-    })
+    icon_picker(
+        ui,
+        catalog,
+        scope,
+        query,
+        snapshot,
+        height,
+        anchor,
+        true,
+        |_| false,
+    )
 }
 
+/// `leading_action` draws first in the popup, above the plug list. Return true from it when its
+/// action should close the popup. The authoring bridge draws this picker outside Sundial's
+/// inspector, so its rows offer no Inspect Definition.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_plug_icon_picker_with_footer(
+pub(crate) fn draw_plug_icon_picker_with_action(
     ui: &mut egui::Ui,
     catalog: &Catalog,
     scope: impl Hash,
@@ -295,7 +305,32 @@ pub(crate) fn draw_plug_icon_picker_with_footer(
     snapshot: &PlugPickerSnapshot,
     height: PickerHeight,
     anchor: &egui::Response,
-    footer: impl FnOnce(&mut egui::Ui) -> bool,
+    leading_action: impl FnOnce(&mut egui::Ui) -> bool,
+) -> Option<ItemEditorAction> {
+    icon_picker(
+        ui,
+        catalog,
+        scope,
+        query,
+        snapshot,
+        height,
+        anchor,
+        false,
+        leading_action,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn icon_picker(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    scope: impl Hash,
+    query: &mut String,
+    snapshot: &PlugPickerSnapshot,
+    height: PickerHeight,
+    anchor: &egui::Response,
+    inspect: bool,
+    header: impl FnOnce(&mut egui::Ui) -> bool,
 ) -> Option<ItemEditorAction> {
     let searchable = snapshot.choices.len() > 12;
     if !searchable {
@@ -313,7 +348,7 @@ pub(crate) fn draw_plug_icon_picker_with_footer(
             ui.is_enabled() && anchor.clicked(),
             query,
             snapshot,
-            footer,
+            header,
         );
     }
     if ui.is_enabled() && anchor.clicked() {
@@ -323,7 +358,7 @@ pub(crate) fn draw_plug_icon_picker_with_footer(
     let popup_width = 520.0_f32.min((screen.width() - 24.0).max(320.0));
     let row_height = ui.spacing().interact_size.y;
     let mut selection = None::<Option<u64>>;
-    let mut footer_clicked = false;
+    let mut header_clicked = false;
     let picker_style = ui.style().clone();
     egui::popup::popup_above_or_below_widget(
         ui,
@@ -334,7 +369,7 @@ pub(crate) fn draw_plug_icon_picker_with_footer(
         |ui| {
             ui.set_style(picker_style);
             ui.set_min_width(popup_width);
-            footer_clicked = draw_plug_browser_contents(
+            header_clicked = draw_plug_browser_contents(
                 ui,
                 catalog,
                 query,
@@ -344,12 +379,13 @@ pub(crate) fn draw_plug_icon_picker_with_footer(
                 popup_width,
                 searchable,
                 true,
+                inspect,
                 &mut selection,
-                footer,
+                header,
             );
         },
     );
-    if selection.is_some() || footer_clicked {
+    if selection.is_some() || header_clicked {
         ui.memory_mut(egui::Memory::close_popup);
     }
     selection.map(|hash| ItemEditorAction::SetPlug {
@@ -358,6 +394,12 @@ pub(crate) fn draw_plug_icon_picker_with_footer(
     })
 }
 
+/// Right-click Inspect Definition on one plug row.
+fn draw_inspect_menu(response: &egui::Response, hash: u64) {
+    crate::app::inspector::definition_context_menu(response, "Inspect Definition", hash);
+}
+
+/// Draws `header` above the list and returns whether its action asked to close the popup.
 #[allow(clippy::too_many_arguments)]
 fn draw_plug_browser_contents(
     ui: &mut egui::Ui,
@@ -369,10 +411,12 @@ fn draw_plug_browser_contents(
     popup_width: f32,
     searchable: bool,
     show_native_reset: bool,
+    inspect: bool,
     selection: &mut Option<Option<u64>>,
-    footer: impl FnOnce(&mut egui::Ui) -> bool,
+    header: impl FnOnce(&mut egui::Ui) -> bool,
 ) -> bool {
     ui.set_min_width(popup_width);
+    let header_clicked = header(ui);
     if searchable {
         let search = ui.add(
             egui::TextEdit::singleline(query)
@@ -424,7 +468,11 @@ fn draw_plug_browser_contents(
                 selected: true,
             },
         );
-        if catalog_item_tooltip(response, catalog, hash).clicked() {
+        let response = catalog_item_tooltip(response, catalog, hash);
+        if inspect {
+            draw_inspect_menu(&response, hash);
+        }
+        if response.clicked() {
             *selection = Some(Some(hash));
         }
     }
@@ -486,14 +534,17 @@ fn draw_plug_browser_contents(
                             selected: snapshot.current_hash == Some(choice.hash),
                         },
                     );
-                    if catalog_item_tooltip(response, catalog, choice.hash).clicked() {
+                    let response = catalog_item_tooltip(response, catalog, choice.hash);
+                    if inspect {
+                        draw_inspect_menu(&response, choice.hash);
+                    }
+                    if response.clicked() {
                         *selection = Some(Some(choice.hash));
                     }
                 }
             });
     }
 
-    let footer_clicked = footer(ui);
     let reset_enabled = show_native_reset
         && snapshot
             .native_default
@@ -502,18 +553,18 @@ fn draw_plug_browser_contents(
         ui.separator();
         let label = match snapshot.native_default {
             Some(NativePlugDefault::Plug(hash)) => format!(
-                "Reset to Native Default: {}",
+                "Reset to Default: {}",
                 snapshot
                     .native_default_label
                     .as_deref()
                     .map_or_else(|| format_hash_hex(hash), str::to_owned)
             ),
-            Some(NativePlugDefault::Empty) => "Reset to Native Default: None".to_owned(),
+            Some(NativePlugDefault::Empty) => "Reset to Default: None".to_owned(),
             None => String::new(),
         };
         if ui.button(label).clicked() {
             *selection = snapshot.native_default.map(NativePlugDefault::value);
         }
     }
-    footer_clicked
+    header_clicked
 }

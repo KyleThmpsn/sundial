@@ -22,7 +22,7 @@ fn library_rows_show_authored_metadata_and_search_it_without_changing_selection(
     let labels = text(&output);
     assert!(labels.contains("Library test weapon"));
     assert!(labels.contains("Open"));
-    assert!(labels.contains("Built-in"));
+    assert!(labels.lines().any(|line| line == "Default"));
     assert!(labels.contains("Micro-Missile Shotgun"));
     assert!(labels.contains("Arc · Special"));
     assert!(

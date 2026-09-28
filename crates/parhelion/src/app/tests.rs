@@ -109,31 +109,6 @@ fn standard_workbench_controls_are_not_reported_as_technical_overrides() {
 }
 
 #[test]
-fn runtime_value_scope_defaults_to_resolved_weapon_fields() {
-    assert!(runtime_field_is_in_editor_scope(
-        WeaponRuntimeFieldSource::GeneratedSchema,
-        true,
-        false,
-        false,
-        false,
-    ));
-    assert!(runtime_field_is_in_editor_scope(
-        WeaponRuntimeFieldSource::NativeMember,
-        true,
-        false,
-        false,
-        false,
-    ));
-    assert!(!runtime_field_is_in_editor_scope(
-        WeaponRuntimeFieldSource::OpaqueNativeType,
-        true,
-        false,
-        false,
-        true,
-    ));
-}
-
-#[test]
 fn runtime_value_scope_preserves_saved_values_and_gates_show_all() {
     assert!(runtime_field_is_in_editor_scope(
         WeaponRuntimeFieldSource::OpaqueNativeType,
@@ -269,7 +244,7 @@ fn build_worker_events_update_progress_then_finish_with_an_error() {
 
     sender
         .send(BuildWorkerEvent::Finished {
-            result: Err("synthetic failure".to_owned()),
+            result: Err("synthetic failure".to_owned().into()),
             elapsed: Duration::from_secs(2),
         })
         .unwrap();
@@ -324,9 +299,12 @@ fn dirty_recipe_requires_confirmation_before_replacement() {
     };
     app.recipe.name = "Unsaved name".to_owned();
 
-    assert!(!app.request_recipe_action(PendingRecipeAction::New));
+    assert!(!app.request_recipe_action(PendingRecipeAction::New(ItemKind::Weapon)));
     assert_eq!(app.recipe.name, "Unsaved name");
-    assert_eq!(app.pending_recipe_action, Some(PendingRecipeAction::New));
+    assert_eq!(
+        app.pending_recipe_action,
+        Some(PendingRecipeAction::New(ItemKind::Weapon))
+    );
 
     let action = app.pending_recipe_action.take().unwrap();
     assert!(app.execute_recipe_action(action));

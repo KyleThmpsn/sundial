@@ -3,15 +3,15 @@ use super::*;
 use sundial::package_authoring::account::{AuthoredSlotChange, AuthoredSlotReplacement};
 
 pub(in crate::install) fn slot_replacement(
-    target: &Path,
-    staged: &Path,
+    installed: &Generation,
+    staged: &Generation,
     retained: &BTreeSet<u32>,
 ) -> Result<Option<AuthoredSlotReplacement>, String> {
     if retained.is_empty() {
         return Ok(None);
     }
-    let previous = with_generation(target, target, |directory| slots(directory, retained))?;
-    let incoming = with_generation(target, staged, |directory| slots(directory, retained))?;
+    let previous = slots(installed, retained)?;
+    let incoming = slots(staged, retained)?;
     if previous.keys().ne(incoming.keys()) {
         return Err("A retained definition changed between weapon and nonweapon placement".into());
     }
@@ -29,36 +29,34 @@ pub(in crate::install) fn slot_replacement(
     if changes.is_empty() {
         return Ok(None);
     }
-    with_generation(target, staged, |directory| {
-        let manager = open_shadowkeep_package_manager(directory)?;
-        let (root, table) = tables(&manager)?;
-        let weapon_capacities =
-            sundial::package_authoring::weapon_bucket_capacities(&manager, &root)?;
-        let mut incoming_buckets = BTreeMap::new();
-        for row in rows(&table, ITEM_DEFINITION_INDEX_ROW_CLASS, ITEM_INDEX_ROW_SIZE)? {
-            let hash = read_u32(row, 0).map_err(|e| e.to_string())?;
-            let item = manager
-                .read_tag(TagHash(read_u32(row, 16).map_err(|e| e.to_string())?))
-                .map_err(|e| e.to_string())?;
-            let bucket = *item
-                .get(ITEM_INVENTORY_SLOT_OFFSET)
-                .ok_or("An incoming item has no inventory bucket")?;
-            if read_u32(&item, ITEM_DEFINITION_HASH_OFFSET).map_err(|e| e.to_string())? != hash {
-                return Err("An incoming inventory definition has an inconsistent hash".into());
-            }
-            if incoming_buckets.insert(hash, bucket).is_some() {
-                return Err("The incoming inventory table repeats a definition hash".into());
-            }
+    let manager = &staged.manager;
+    let (root, table) = tables(manager)?;
+    let weapon_capacities = sundial::package_authoring::weapon_bucket_capacities(manager, &root)?;
+    let mut incoming_buckets = BTreeMap::new();
+    for row in rows(&table, ITEM_DEFINITION_INDEX_ROW_CLASS, ITEM_INDEX_ROW_SIZE)? {
+        let hash = read_u32(row, 0).map_err(|e| e.to_string())?;
+        let item = manager
+            .read_tag(TagHash(read_u32(row, 16).map_err(|e| e.to_string())?))
+            .map_err(|e| e.to_string())?;
+        let bucket = *item
+            .get(ITEM_INVENTORY_SLOT_OFFSET)
+            .ok_or("An incoming item has no inventory bucket")?;
+        if read_u32(&item, ITEM_DEFINITION_HASH_OFFSET).map_err(|e| e.to_string())? != hash {
+            return Err("An incoming inventory definition has an inconsistent hash".into());
         }
-        Ok(Some(AuthoredSlotReplacement {
-            changes,
-            incoming_buckets,
-            weapon_capacities,
-        }))
-    })
+        if incoming_buckets.insert(hash, bucket).is_some() {
+            return Err("The incoming inventory table repeats a definition hash".into());
+        }
+    }
+    Ok(Some(AuthoredSlotReplacement {
+        changes,
+        incoming_buckets,
+        weapon_capacities,
+    }))
 }
 
-fn tables(
+/// The investment root and its item definition table.
+pub(super) fn tables(
     manager: &sundial::package_authoring::PackageManager,
 ) -> Result<(Vec<u8>, Vec<u8>), String> {
     let read = |tag| manager.read_tag(TagHash(tag)).map_err(|e| e.to_string());
@@ -72,9 +70,9 @@ fn tables(
     Ok((root, table))
 }
 
-fn slots(directory: &Path, hashes: &BTreeSet<u32>) -> Result<BTreeMap<u32, u8>, String> {
-    let manager = open_shadowkeep_package_manager(directory)?;
-    let (_, table) = tables(&manager)?;
+fn slots(generation: &Generation, hashes: &BTreeSet<u32>) -> Result<BTreeMap<u32, u8>, String> {
+    let manager = &generation.manager;
+    let (_, table) = tables(manager)?;
     let mut found = BTreeSet::new();
     let mut result = BTreeMap::new();
     for row in rows(&table, ITEM_DEFINITION_INDEX_ROW_CLASS, ITEM_INDEX_ROW_SIZE)? {

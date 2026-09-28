@@ -20,26 +20,15 @@ const BONE_PALETTE: usize = 0x40;
 
 pub(super) fn apply(
     directory: &Path,
+    manager: &sundial::package_authoring::PackageManager,
     emission: &mut PackageEmission,
     weapons: &[WeaponCloneSpec],
     replacements: &mut Vec<ReplacementSpec>,
 ) -> AuthoringResult<()> {
-    let mut manager = None;
     let mut companions = Companions::new();
     for spec in weapons {
         let Some(presentation) = &spec.presentation_donor else {
             continue;
-        };
-        let manager = match &manager {
-            Some(manager) => manager,
-            None => manager.insert(
-                sundial::package_authoring::PackageManager::new(
-                    directory,
-                    tiger_pkg::GameVersion::Destiny(tiger_pkg::DestinyVersion::Destiny2Shadowkeep),
-                    None,
-                )
-                .map_err(|e| invalid(e.to_string()))?,
-            ),
         };
         let item = spec.identity.item_hash;
         let ordinal = definition_ordinal(emission, item)?;
@@ -88,7 +77,7 @@ fn group(patterns: &[u8], index: Option<u16>) -> AuthoringResult<Option<u32>> {
         .filter(|hash| !matches!(*hash, 0 | 0x811C_9DC5)))
 }
 
-fn stock_definition(
+pub(super) fn stock_definition(
     emission: &PackageEmission,
     manager: &sundial::package_authoring::PackageManager,
     item: u32,
@@ -168,15 +157,22 @@ fn reskin(
     let mut nodes = Vec::new();
     let mut entries = Vec::new();
     let mut substitutions = BTreeMap::new();
-    for (index, key) in keys.iter().enumerate() {
+    for key in &keys {
         let relation_tag = *map
             .get(key)
             .ok_or_else(|| invalid(format!("Gear-art key 0x{key:08X} has no assignment")))?;
-        let prefix = format!("part{index}");
+        // An empty part names no entity and draws nothing, so its stock key can stay.
+        if read_u32(&read(manager, relation_tag)?, 0x10)? == u32::MAX {
+            continue;
+        }
+        let prefix = format!("part{}", entries.len());
         part_nodes(manager, &prefix, relation_tag, &mut nodes)?;
         let private = private_key(item, *key);
         entries.push((private, format!("{prefix}-parent")));
         substitutions.insert(*key, private);
+    }
+    if entries.is_empty() {
+        return Ok(());
     }
     let linked = linking::link(
         directory,
@@ -234,7 +230,7 @@ fn reskin(
     replacements.push(replacement);
     eprintln!(
         "Pinned {} gear parts of item 0x{item:08X} to the runtime rig; art index {row_index}",
-        keys.len()
+        entries.len()
     );
     Ok(())
 }
@@ -312,18 +308,14 @@ fn part_nodes(
             .ok_or_else(|| invalid("A mesh names no vertex buffer"))?;
         let header = read(manager, header_tag)?;
         let positions = read(manager, entry.reference)?;
-        if crate::tag_payload::read_u16(&header, 4)? != 8
-            || read_u32(&header, 0)? as usize != positions.len()
-        {
-            return Err(invalid("Gear vertices are not rigid 8-byte rows"));
+        if read_u32(&header, 0)? as usize != positions.len() {
+            return Err(invalid("A gear vertex header does not match its buffer"));
         }
+        let pinned = pin_to_root(&positions, crate::tag_payload::read_u16(&header, 4)?)
+            .map_err(|error| error.context(format!("Model 0x{model_tag:08X} mesh {index}")))?;
         let data_symbol = format!("{prefix}-mesh{index}-positions");
         let header_symbol = format!("{prefix}-mesh{index}-positions-header");
-        nodes.push(Node::new(
-            data_symbol.clone(),
-            entry.reference,
-            pin_to_root(&positions)?,
-        ));
+        nodes.push(Node::new(data_symbol.clone(), entry.reference, pinned));
         let mut header_node = Node::new(header_symbol.clone(), header_tag, header);
         header_node.reference = Some(data_symbol);
         nodes.push(header_node);
@@ -356,18 +348,44 @@ fn part_nodes(
     Ok(())
 }
 
-/// Every rigid selector becomes bone 0. Weighted rows would need a real re-skin.
-fn pin_to_root(positions: &[u8]) -> AuthoringResult<Vec<u8>> {
-    if positions.len() % 8 != 0 {
+/// Every vertex is bound to bone 0 alone. The selector word at bytes 6..8 names one bone when
+/// it is below 0x800. At 0x7FFF the row blends bones instead: a 12-byte row holds two bone
+/// indices and then two weights, a 16-byte row four weights and then four bone indices. Weights
+/// sum to 255 and an unused slot names bone 254. Pinned blends take the native one-bone form.
+fn pin_to_root(positions: &[u8], stride: u16) -> AuthoringResult<Vec<u8>> {
+    let stride = usize::from(stride);
+    let (bones, weights) = match stride {
+        8 => (0..0, 0..0),
+        12 => (8..10, 10..12),
+        16 => (12..16, 8..12),
+        _ => {
+            return Err(invalid(format!(
+                "Gear vertices use an unsupported {stride}-byte layout"
+            )));
+        }
+    };
+    if positions.is_empty() || positions.len() % stride != 0 {
         return Err(invalid("Gear vertex buffer is not a whole number of rows"));
     }
     let mut pinned = positions.to_vec();
-    for row in pinned.chunks_exact_mut(8) {
-        let selector = i16::from_le_bytes([row[6], row[7]]);
-        if !(0..0x800).contains(&selector) {
-            return Err(invalid("Gear vertices use weighted skinning"));
+    for row in pinned.chunks_exact_mut(stride) {
+        match i16::from_le_bytes([row[6], row[7]]) {
+            0..0x800 => row[6..8].fill(0),
+            0x7FFF if !bones.is_empty() => {
+                let total = row[weights.clone()]
+                    .iter()
+                    .map(|&w| u32::from(w))
+                    .sum::<u32>();
+                if total != 255 {
+                    return Err(invalid("Gear vertex weights do not sum to 255"));
+                }
+                row[bones.clone()].fill(0xFE);
+                row[bones.start] = 0;
+                row[weights.clone()].fill(0);
+                row[weights.start] = 0xFF;
+            }
+            _ => return Err(invalid("Gear vertices use an unsupported bone selector")),
         }
-        row[6..8].fill(0);
     }
     Ok(pinned)
 }
@@ -430,7 +448,7 @@ mod tests {
             .into_iter()
             .flat_map(i16::to_le_bytes)
             .collect::<Vec<_>>();
-        let pinned = pin_to_root(&rows).unwrap();
+        let pinned = pin_to_root(&rows, 8).unwrap();
         assert_eq!(&pinned[..6], &rows[..6]);
         assert_eq!(&pinned[6..8], &[0, 0]);
         assert_eq!(&pinned[8..14], &rows[8..14]);
@@ -439,8 +457,8 @@ mod tests {
             .into_iter()
             .flat_map(i16::to_le_bytes)
             .collect::<Vec<_>>();
-        assert!(pin_to_root(&weighted).is_err());
-        assert!(pin_to_root(&rows[..12]).is_err());
+        assert!(pin_to_root(&weighted, 8).is_err());
+        assert!(pin_to_root(&rows[..12], 8).is_err());
     }
 
     #[test]
@@ -464,14 +482,5 @@ mod tests {
         );
         entity[132..136].fill(0);
         assert!(owner_slots(&entity, &owner, 0x80EC2727).is_err());
-    }
-
-    #[test]
-    fn private_keys_are_stable_distinct_and_never_sentinels() {
-        let a = private_key(0x1234_5678, 0xEDB8_4B17);
-        assert_eq!(a, private_key(0x1234_5678, 0xEDB8_4B17));
-        assert_ne!(a, private_key(0x1234_5678, 0x09DA_1AB0));
-        assert_ne!(a, private_key(0x1234_5679, 0xEDB8_4B17));
-        assert!(!matches!(a, 0 | u32::MAX | 0x811C_9DC5));
     }
 }

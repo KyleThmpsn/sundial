@@ -67,8 +67,13 @@ pub(super) fn scan_packages(
     let power_cap_definitions = scan_power_cap_definitions(manager, root)?;
     let icon_containers_by_index = scan_item_icon_containers(manager, globals_data)?;
     report(CatalogProgress::stage("Reading subclass ability names…"));
-    let ability_displays =
-        scan_ability_displays(manager, globals_data, localized_tags, &mut localized_cache)?;
+    let ability_displays = scan_ability_displays(
+        manager,
+        globals_data,
+        localized_tags,
+        &mut localized_cache,
+        &icon_containers_by_index,
+    )?;
     let item_stat_definitions = scan_stat_definitions(
         manager,
         root,
@@ -220,7 +225,7 @@ pub(super) fn scan_packages(
         package_names,
         inventory_metadata: item_scan.inventory_metadata,
         objectives: progression.objectives,
-        presentation_node_hashes: progression.presentation_node_hashes,
+        presentation_nodes: progression.presentation_nodes,
         records: progression.records,
         unlock_flag_definitions: progression.unlock_flag_definitions,
         unlock_value_definitions: progression.unlock_value_definitions,

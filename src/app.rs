@@ -511,7 +511,7 @@ impl SundialApp {
                 },
                 |warning| {
                     format!(
-                        "Loaded with an unexpected setting: {warning}. A safety copy will be created beside settings.json before saving"
+                        "Loaded with an unexpected setting: {warning}. A safety copy is made before saving"
                     )
                 },
             ),
@@ -732,6 +732,7 @@ impl SundialApp {
             return;
         };
 
+        crate::ui::model_preview::stop_reads(ctx);
         self.manifest.suspend_package_access();
         let preferences = PackageAuthoringPreferences {
             show_parhelion_experimental_options: self
@@ -844,7 +845,7 @@ fn draw_json_account_source_notice(ui: &mut egui::Ui, source: &AccountSourceInfo
             ..
         } => (
             "Account Data Is Stored Separately",
-            "As of Sunrise settings schema v18, account data and player preferences are stored in investment.sqlite3. This editor changes settings.json only, including player identity and runtime configuration."
+            "Account data and player preferences are in investment.sqlite3. This editor changes only settings.json."
                 .to_owned(),
         ),
         AccountSourceInfo {
@@ -852,7 +853,7 @@ fn draw_json_account_source_notice(ui: &mut egui::Ui, source: &AccountSourceInfo
             ..
         } => (
             "Account Data Is Stored Separately",
-            "Dawn stores account data and player preferences in player-state.db. This editor changes settings.json only, including player identity, language and runtime configuration."
+            "Dawn keeps account data and player preferences in player-state.db. This editor changes only settings.json."
                 .to_owned(),
         ),
         AccountSourceInfo {
@@ -914,7 +915,7 @@ impl SundialApp {
             {
                 ui.heading("Finish the JSON Edit");
                 ui.label(
-                    "The detached editor has unapplied changes. Resolve its validation errors or reset it before using guided settings.",
+                    "The JSON editor has unapplied changes. Fix or reset them first.",
                 );
                 return;
             }
@@ -932,7 +933,7 @@ impl SundialApp {
                             });
                             if !character_editable {
                                 ui.weak(
-                                        "Character and equipment controls are disabled for this settings schema.",
+                                        "Character and equipment editing is unavailable for this settings version.",
                                     );
                             }
                             self.draw_equipment(ui, index);
@@ -1065,6 +1066,9 @@ impl SundialApp {
         if inspector::take_owned_quantities_request(ctx) {
             self.publish_owned_quantities(ctx);
         }
+        if let Some(selection) = inspector::take_progression_selection(ctx) {
+            self.open_progression_selection(selection);
+        }
         if let Some(hash) = inspector::take_definition_request(ctx) {
             let context = inspector::take_definition_context(ctx, hash);
             self.hash_inspection.open_with_context(hash, context);
@@ -1134,6 +1138,12 @@ impl eframe::App for SundialApp {
         }
         self.draw_update_window(ctx);
     }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if let Some(package_authoring) = self.package_authoring.as_mut() {
+            package_authoring.save_on_exit();
+        }
+    }
 }
 
 fn encode_settings_for_editor(document: &Value) -> Result<String, String> {
@@ -1144,16 +1154,16 @@ fn draw_future_schema_warning(ui: &mut egui::Ui, pending: &PendingFutureSchemaLo
     ui.heading("Newer Sunrise Settings Detected");
     ui.add_space(6.0);
     ui.label(format!(
-        "This settings.json uses schema version {}, which this Sundial release has not been tested with.",
+        "This settings.json uses version {}, untested with this Sundial release.",
         pending.schema_version
     ));
     ui.add_space(6.0);
     ui.colored_label(
         ui.visuals().warn_fg_color,
-        "You can continue, but settings may have changed in this Sunrise version.",
+        "Settings can differ in this Sunrise version.",
     );
     ui.add_space(6.0);
-    ui.label("Known fields remain editable where their layout is recognized. Sundial will preserve unrecognized JSON and create settings.json.bak beside the original before saving.");
+    ui.label("Known fields stay editable. Unknown fields are kept, and settings.json.bak is made before saving.");
     ui.add_space(8.0);
     ui.label(
         egui::RichText::new(pending.settings_path.display().to_string())
@@ -1171,7 +1181,7 @@ fn check_install(selection: InstallSelection) -> Result<String, String> {
         SettingsPathResolution::Found(layout, path) => (layout, path),
         SettingsPathResolution::Missing => return Err(missing_settings_message(&install_path)),
         SettingsPathResolution::Ambiguous => {
-            return Err("Multiple Sunrise settings.json files were found; open Sundial and choose which one Project Sunrise uses".into());
+            return Err("Multiple Sunrise settings.json files were found. Open Sundial and choose the one Project Sunrise uses".into());
         }
     };
     let app = SundialApp::new(settings_path, settings_layout, install_path)?;
@@ -1208,6 +1218,12 @@ fn validate_for_check(document: &WorkspaceDocument) -> Result<(), String> {
 }
 
 pub fn run(package_authoring: Box<dyn PackageAuthoringUtility>) -> eframe::Result {
+    // Before the catalog, the icon cache or any package reader opens anything.
+    if let Err(warning) = crate::file_limit::raise_open_file_limit() {
+        eprintln!("Sundial: {warning}");
+    }
+    // Before any worker pool starts, because the allocator keeps the arenas it has opened.
+    crate::memory::limit_allocator_arenas();
     let update_startup = crate::updates::startup()
         .map_err(|error| eframe::Error::AppCreation(Box::new(std::io::Error::other(error))))?;
     let (install, check_only, loaded_preferences) = parse_args();
@@ -1232,12 +1248,9 @@ pub fn run(package_authoring: Box<dyn PackageAuthoringUtility>) -> eframe::Resul
     }
     #[cfg(windows)]
     set_windows_app_identity();
-    #[cfg(target_os = "linux")]
-    let icon_bytes = include_bytes!("../assets/linux/io.github.kylethmpsn.Sundial-window.png");
-    #[cfg(windows)]
-    let icon_bytes = include_bytes!("../assets/sundial-alt.png");
-    let icon = eframe::icon_data::from_png_bytes(icon_bytes)
-        .expect("embedded Sundial icon must be a valid PNG");
+    // The window icon at title-bar size. On Windows the taskbar and Alt-Tab icons come from the
+    // embedded ICO once the window exists.
+    let icon = crate::ui::window_icon();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Sundial")
@@ -1246,6 +1259,8 @@ pub fn run(package_authoring: Box<dyn PackageAuthoringUtility>) -> eframe::Resul
             .with_inner_size([1_240.0, 960.0])
             .with_min_inner_size([720.0, 520.0])
             .with_icon(icon),
+        // Window sizes, places and zoom carry over between sessions, kept beside the preferences.
+        persistence_path: crate::paths::config_dir().map(|path| path.join("window-state.ron")),
         ..Default::default()
     };
     eframe::run_native(
@@ -1266,6 +1281,8 @@ pub fn run(package_authoring: Box<dyn PackageAuthoringUtility>) -> eframe::Resul
             if let Some(startup) = update_startup {
                 startup.window_created().map_err(std::io::Error::other)?;
             }
+            // After the rollback report is read, so its workspace can go.
+            crate::updates::sweep_workspaces();
             Ok(Box::new(app))
         }),
     )
@@ -1284,11 +1301,38 @@ impl SundialApp {
             return;
         };
         let mut quantities = std::collections::HashMap::new();
+        let mut add = |hash: u64, quantity: i64| *quantities.entry(hash).or_insert(0) += quantity;
         for item in items {
-            *quantities
-                .entry(u64::from(item.definition_hash))
-                .or_insert(0) += i64::from(item.quantity);
+            add(u64::from(item.definition_hash), i64::from(item.quantity));
+        }
+        for character in 0..account::character_count(&self.document) {
+            if let Ok(Some(items)) = account::character_inventory(&self.document, character) {
+                for item in items {
+                    add(u64::from(item.definition_hash), i64::from(item.quantity));
+                }
+            }
+            for item in
+                account::equipped_item_snapshots(&self.document, character).unwrap_or_default()
+            {
+                if let Some(hash) = item.definition_hash {
+                    add(hash, item.quantity.unwrap_or(1));
+                }
+            }
         }
         inspector::publish_owned_quantities(ctx, std::sync::Arc::new(quantities));
+    }
+
+    /// Shows an unlock definition from the Definition Inspector on the Progression page.
+    fn open_progression_selection(&mut self, selection: inspector::MetadataSelection) {
+        self.select_view(ViewMode::Progression);
+        if self.view_mode != ViewMode::Progression {
+            return;
+        }
+        if self.progression_section != ProgressionSection::Unlocks {
+            self.progression_section = ProgressionSection::Unlocks;
+            self.progression_ui.reset_navigation();
+            self.collections_ui.reset_navigation();
+        }
+        self.progression_ui.open_definition(selection);
     }
 }

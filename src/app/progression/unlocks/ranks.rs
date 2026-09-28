@@ -190,7 +190,8 @@ pub(super) fn draw(
                             let previous = row.saved.lanes;
                             let mut lanes = previous.unwrap_or([0; 3]);
                             let edited = if row.seasonal {
-                                table_cell(ui, 100.0, "Seasonal").on_hover_text("Managed by Seasonal where supported. These linked fields cannot be edited individually.");
+                                table_cell(ui, 100.0, "Seasonal")
+                                    .on_hover_text("Set on the Seasonal page.");
                                 false
                             } else if cache.scope == ProgressionScope::Unreplicated {
                                 table_cell(ui, 100.0, "Not Saved");

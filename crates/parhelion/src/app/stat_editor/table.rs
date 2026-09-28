@@ -33,14 +33,22 @@ impl Table {
         value_hint: &str,
         rows: impl FnOnce(&mut egui::Ui),
     ) {
-        egui::Grid::new(salt).striped(true)
+        egui::Grid::new(salt)
+            .striped(true)
             .num_columns(3 + usize::from(self.id > 0.0) + usize::from(self.preview > 0.0))
-            .min_col_width(0.0).spacing([8.0, 5.0]).show(ui, |ui| {
-                if self.id > 0.0 { self.heading(ui, self.id, "ID").on_hover_text("Investment stat definition index"); }
+            .min_col_width(0.0)
+            .spacing([8.0, 5.0])
+            .show(ui, |ui| {
+                if self.id > 0.0 {
+                    self.heading(ui, self.id, "ID")
+                        .on_hover_text("Stat definition index");
+                }
                 self.heading(ui, self.name, "Stat");
-                self.heading(ui, self.value, value_label).on_hover_text(value_hint);
+                self.heading(ui, self.value, value_label)
+                    .on_hover_text(value_hint);
                 if self.preview > 0.0 {
-                    self.heading(ui, self.preview, "Preview").on_hover_text("Preview from the active decoded stat-display scaling. Final client formatting may differ");
+                    self.heading(ui, self.preview, "Preview")
+                        .on_hover_text("Scaled in-game value");
                 }
                 ui.allocate_space(egui::vec2(self.action, ui.spacing().interact_size.y));
                 ui.end_row();

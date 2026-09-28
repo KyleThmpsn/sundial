@@ -240,7 +240,8 @@ pub(super) fn glyph_button(
             )
         })
         .inner
-        .on_hover_text(accessible_label);
+        .on_hover_text(accessible_label)
+        .on_disabled_hover_text(accessible_label);
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, true, accessible_label)
     });

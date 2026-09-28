@@ -101,7 +101,7 @@ impl BuildPhase {
             Self::CheckingRecipes => "Checking recipe compatibility",
             Self::PreparingSource => "Preparing source packages",
             Self::HashingSource => "Recording source checksums",
-            Self::CompilingProject => "Compiling weapon project",
+            Self::CompilingProject => "Compiling items",
             Self::BuildingPayloads => "Building package payloads",
             Self::RecheckingSource => "Rechecking source packages",
             Self::WritingPackages => "Writing package set",
@@ -149,18 +149,15 @@ impl BuildProgress {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WeaponBuildReport {
     pub name: String,
+    pub kind: crate::ItemKind,
     pub namespace: String,
     pub item_hash: u32,
     pub item_definition_hash: u32,
     pub item_string_hash: u32,
     pub icon_definition_hash: u32,
     pub item_index: u16,
-    pub collectible_hash: u32,
-    pub collectible_index: u16,
-    pub unlock_hash: u32,
-    pub unlock_definition_index: u16,
-    pub unlock_bank: u8,
-    pub unlock_slot: u16,
+    /// A subclass has no collectible or unlock.
+    pub collection: Option<crate::NewCollectionPlan>,
     pub custom_plugs: Vec<CustomPlugBuildReport>,
 }
 
@@ -201,7 +198,47 @@ pub(crate) fn default_backup_root() -> PathBuf {
 
 #[cfg(test)]
 fn preflight_snapshot(snapshot: &BatchBuildSnapshot) -> Result<(), String> {
-    plan_snapshot(snapshot, &mut |_| {}).map(drop)
+    plan_snapshot(snapshot, &mut |_| {})
+        .map(drop)
+        .map_err(String::from)
+}
+
+/// Why a build stopped, and the recipe it stopped on when a single recipe caused it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuildFailure {
+    pub message: String,
+    /// The namespace of the recipe the build stopped on.
+    pub recipe: Option<String>,
+}
+
+impl BuildFailure {
+    fn authoring(summary: &str, error: &crate::AuthoringError) -> Self {
+        Self {
+            message: format!("{summary}\n{error:#}"),
+            recipe: error.recipe_namespace().map(str::to_owned),
+        }
+    }
+}
+
+impl From<String> for BuildFailure {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            recipe: None,
+        }
+    }
+}
+
+impl From<BuildFailure> for String {
+    fn from(failure: BuildFailure) -> Self {
+        failure.message
+    }
+}
+
+impl std::fmt::Display for BuildFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -213,11 +250,24 @@ struct PlannedSnapshot {
     source_inspection: SourceInspection,
     source_artifacts: Vec<ArtifactMetadata>,
     bundle: NewWeaponProjectBundle,
+    /// The class of each subclass base, which the manifest records for the install.
+    subclass_classes: BTreeMap<u32, u8>,
 }
 
 fn plan_snapshot(
     snapshot: &BatchBuildSnapshot,
     progress: &mut impl FnMut(BuildProgress),
+) -> Result<PlannedSnapshot, BuildFailure> {
+    let mut recipe = None;
+    plan_snapshot_naming(snapshot, progress, &mut recipe)
+        .map_err(|message| BuildFailure { message, recipe })
+}
+
+/// Plans a build, recording in `failed` the recipe an error belongs to when one recipe caused it.
+fn plan_snapshot_naming(
+    snapshot: &BatchBuildSnapshot,
+    progress: &mut impl FnMut(BuildProgress),
+    failed: &mut Option<String>,
 ) -> Result<PlannedSnapshot, String> {
     progress(BuildProgress::artifact(
         BuildPhase::InspectingSource,
@@ -225,7 +275,18 @@ fn plan_snapshot(
         0,
         2,
     ));
-    let project = project_spec(snapshot)?;
+    let project = match project_spec(snapshot) {
+        Ok(project) => project,
+        Err(failure) => {
+            *failed = failure.recipe;
+            return Err(failure.message);
+        }
+    };
+    let mut record = |summary: &str, error: crate::AuthoringError| {
+        let failure = BuildFailure::authoring(summary, &error);
+        *failed = failure.recipe;
+        failure.message
+    };
     progress(BuildProgress::artifact(
         BuildPhase::InspectingSource,
         "Inspecting Package Headers",
@@ -240,7 +301,7 @@ fn plan_snapshot(
         .parent()
         .ok_or_else(|| "The package directory has no Shadowkeep install root".to_owned())?;
     progress(BuildProgress::phase(BuildPhase::LoadingCatalog, 0, 0));
-    validate_catalog_with_progress(
+    let subclass_classes = validate_catalog_with_progress(
         install_directory,
         project.weapons.iter(),
         &mut |loading, label, completed, total| {
@@ -256,7 +317,7 @@ fn plan_snapshot(
             ));
         },
     )
-    .map_err(|error| format!("Weapon project compatibility validation failed.\n{error:#}"))?;
+    .map_err(|error| record("Project compatibility validation failed.", error))?;
     progress(BuildProgress::phase(BuildPhase::PreparingSource, 0, 0));
     let source = PackageSource::prepare(
         &snapshot.request.package_directory,
@@ -289,7 +350,7 @@ fn plan_snapshot(
                 ));
             },
         )
-        .map_err(|error| format!("Weapon project compilation failed.\n{error:#}"));
+        .map_err(|error| record("Project compilation failed.", error));
         if compilation.is_ok() {
             progress(BuildProgress::phase(
                 BuildPhase::RecheckingSource,
@@ -314,6 +375,7 @@ fn plan_snapshot(
             source_inspection,
             source_artifacts,
             bundle,
+            subclass_classes,
         })
     })();
     // Compilation has released its managers and returned owned package bytes. A view that
@@ -408,12 +470,21 @@ fn build_and_stage_snapshot(snapshot: &BatchBuildSnapshot) -> Result<BuildReport
 
 pub fn build_and_stage_snapshot_with_progress(
     snapshot: &BatchBuildSnapshot,
-    mut progress: impl FnMut(BuildProgress),
+    progress: impl FnMut(BuildProgress),
 ) -> Result<BuildReport, String> {
+    build_and_stage_snapshot_reporting(snapshot, progress).map_err(String::from)
+}
+
+/// As [`build_and_stage_snapshot_with_progress`], naming the recipe a failure belongs to.
+pub fn build_and_stage_snapshot_reporting(
+    snapshot: &BatchBuildSnapshot,
+    mut progress: impl FnMut(BuildProgress),
+) -> Result<BuildReport, BuildFailure> {
     let planned = plan_snapshot(snapshot, &mut progress)?;
     let source_inspection = planned.source_inspection;
     let source_artifacts = planned.source_artifacts;
     let bundle = planned.bundle;
+    let subclass_classes = planned.subclass_classes;
     fs::create_dir_all(&snapshot.request.staging_root).map_err(|error| {
         format!(
             "Could not create staging root {}: {error}",
@@ -477,6 +548,7 @@ pub fn build_and_stage_snapshot_with_progress(
                 &snapshot.request.recipes,
                 &bundle.plan.weapons,
                 &bundle.plan.sunrise,
+                &subclass_classes,
             )?,
             artifacts: artifacts.clone(),
         };
@@ -496,18 +568,14 @@ pub fn build_and_stage_snapshot_with_progress(
                 .zip(&bundle.plan.weapons)
                 .map(|(recipe, plan)| WeaponBuildReport {
                     name: recipe.name.clone(),
+                    kind: plan.kind,
                     namespace: recipe.namespace.clone(),
                     item_hash: plan.item_hash,
                     item_definition_hash: u32::from(plan.definition_tag),
                     item_string_hash: u32::from(plan.string_tag),
                     icon_definition_hash: u32::from(plan.icon_definition_tag),
                     item_index: plan.item_index,
-                    collectible_hash: plan.collectible_hash,
-                    collectible_index: plan.collectible_index,
-                    unlock_hash: plan.unlock_hash,
-                    unlock_definition_index: plan.unlock_definition_index,
-                    unlock_bank: plan.unlock_bank,
-                    unlock_slot: plan.unlock_slot,
+                    collection: plan.collection,
                     custom_plugs: plan
                         .custom_plugs
                         .iter()
@@ -548,31 +616,24 @@ pub fn build_and_stage_snapshot_with_progress(
     Ok(report)
 }
 
-fn project_spec(snapshot: &BatchBuildSnapshot) -> Result<WeaponProjectSpec, String> {
+fn project_spec(snapshot: &BatchBuildSnapshot) -> Result<WeaponProjectSpec, BuildFailure> {
     snapshot
         .request
         .recipes
         .iter()
         .map(|recipe| {
-            recipe.to_spec().map_err(|error| {
-                format!(
+            recipe.to_spec().map_err(|error| BuildFailure {
+                message: format!(
                     "Recipe: {:?} ({})\nItem: {}\n{error}",
                     recipe.name,
                     recipe.namespace,
                     recipe.identity.item_hash.as_str()
-                )
+                ),
+                recipe: Some(recipe.namespace.clone()),
             })
         })
-        .collect::<Result<Vec<_>, String>>()
+        .collect::<Result<Vec<_>, _>>()
         .map(|weapons| WeaponProjectSpec { weapons })
-}
-
-#[cfg(test)]
-fn stage_recipe_snapshot(
-    run_directory: &Path,
-    snapshot: &BatchBuildSnapshot,
-) -> Result<Vec<PathBuf>, String> {
-    stage_recipe_snapshot_with_progress(run_directory, snapshot, &mut |_| {})
 }
 
 fn stage_recipe_snapshot_with_progress(

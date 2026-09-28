@@ -3,7 +3,7 @@ use crate::persistence::dawn_account::ActivityState;
 
 pub(super) fn draw(
     ui: &mut egui::Ui,
-    _catalog: &crate::catalog::Catalog,
+    catalog: &crate::catalog::Catalog,
     state: &mut ActivityState,
     owner: &str,
 ) {
@@ -16,9 +16,10 @@ pub(super) fn draw(
         count += 1;
         let name = mission_name(mission.hash);
         egui::CollapsingHeader::new(name).id_salt((&mission.owner,mission.hash)).show(ui,|ui| {
+            crate::app::inspector::draw_catalog_hash_link(ui,catalog,u64::from(mission.hash),"Inspect Mission");
             ui.horizontal_wrapped(|ui| {
-                ui.checkbox(&mut mission.completed,"Completed").on_hover_text("Changes the saved completion record only. Does not deliver rewards or replay mission scripts.");
-                if ui.button("Clear Checkpoint").on_hover_text("Clears the stored checkpoint and progress. Does not restart an activity or change completion and reward history.").clicked() {
+                ui.checkbox(&mut mission.completed,"Completed").on_hover_text("Changes the saved record only. No rewards are delivered.");
+                if ui.button("Clear Checkpoint").on_hover_text("Clears saved checkpoint and progress. Completion and rewards are unchanged.").clicked() {
                     mission.checkpoint=0;mission.slice=0;mission.progress=0;
                 }
             });

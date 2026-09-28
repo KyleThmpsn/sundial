@@ -1,5 +1,7 @@
 //! Adapts Sundial's picker widgets, preferences, and account persistence for Parhelion.
 mod appearance_picker;
+mod grants;
+pub(crate) use grants::grant_authored_items;
 
 use crate::account::{
     AuthoredAccountCleanup, AuthoredCollectionUnlock, AuthoredSlotReplacement, AuthoredSocketChange,
@@ -75,7 +77,7 @@ use super::{
         ItemFilter, ItemFilterScope, ItemHeader, NativePlugDefault, PickerHeight,
         SOCKET_PICKER_RESET_WIDTH, catalog_button, catalog_item_tooltip,
         draw_definition_picker_with_open_request_and_item_filter, draw_item_filter_bar,
-        draw_item_header_with_trailing_at_icon_size, draw_plug_icon_picker_with_footer,
+        draw_item_header_with_trailing_at_icon_size, draw_plug_icon_picker_with_action,
         draw_socket_picker_label, draw_socket_picker_reset, muted_item_header_fill,
         plug_picker_snapshot, socket_picker_label_width,
     },
@@ -184,6 +186,14 @@ pub(crate) fn draw_authoring_choice_row(
             }
         })
     }
+}
+
+/// The item tooltip's layout for something that is not an item.
+pub(crate) fn draw_display_tooltip(
+    ui: &mut egui::Ui,
+    tooltip: crate::investment::DisplayTooltip<'_>,
+) {
+    super::item_editor::draw_display_tooltip(ui, tooltip);
 }
 
 /// Measured for the active font and padding, shared with the native Reset renderer.
@@ -403,6 +413,15 @@ pub(crate) fn draw_weapon_donor_header_picker(
             default_weapon_type,
         );
     }
+    // Armor, Sparrows, Ships and Ghost Shells have no weapon type, damage or ammo to filter by.
+    let filter_scope = if candidates
+        .iter()
+        .any(|donor| crate::catalog::is_weapon_bucket(donor.bucket_hash))
+    {
+        ItemFilterScope::WeaponDonor
+    } else {
+        ItemFilterScope::Armor
+    };
     let action = draw_weapon_donor_picker_popup(
         ui,
         catalog,
@@ -411,7 +430,7 @@ pub(crate) fn draw_weapon_donor_header_picker(
         candidates,
         options,
         &action_button,
-        ItemFilterScope::WeaponDonor,
+        filter_scope,
     );
     if secondary_button.is_some_and(|button| button.clicked()) {
         return Some(InvestmentWeaponPickerAction::Secondary);
@@ -797,7 +816,7 @@ pub(crate) fn draw_supported_plug_choice_picker(
     item: &ItemDef,
     query: &mut String,
     options: crate::investment::PlugChoicePickerOptions<'_>,
-    footer: impl FnOnce(&mut egui::Ui) -> bool,
+    leading_action: impl FnOnce(&mut egui::Ui) -> bool,
 ) -> Option<(usize, Option<u64>)> {
     let crate::investment::PlugChoicePickerOptions {
         socket_index,
@@ -881,7 +900,7 @@ pub(crate) fn draw_supported_plug_choice_picker(
             catalog_item_tooltip(anchor, catalog, hash)
         })
     };
-    match draw_plug_icon_picker_with_footer(
+    match draw_plug_icon_picker_with_action(
         ui,
         catalog,
         (
@@ -897,7 +916,7 @@ pub(crate) fn draw_supported_plug_choice_picker(
             max: 420.0,
         },
         &anchor,
-        footer,
+        leading_action,
     ) {
         Some(ItemEditorAction::SetPlug { socket_index, hash }) => Some((socket_index, hash)),
         Some(_) | None => None,
@@ -983,7 +1002,7 @@ pub(crate) fn draw_perk_row(
         ui.spacing().interact_size.y.max(
             ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y,
         );
-    super::item_editor::draw_picker_row_with_icon(
+    super::item_editor::draw_compact_picker_row(
         ui,
         Some(catalog),
         super::item_editor::CatalogPickerRow {
@@ -1050,6 +1069,14 @@ pub(crate) fn preview_loadout(
     hash: u32,
 ) -> Option<crate::ui::model_preview::Loadout> {
     super::item_editor::appearance::loadout(catalog, u64::from(hash))
+}
+
+pub(crate) fn shader_preview(
+    catalog: &Catalog,
+    hash: u32,
+    shader: &[Vec<(i8, u16)>; 3],
+) -> Option<crate::ui::model_preview::Appearance> {
+    super::item_editor::appearance::with_shader(catalog, u64::from(hash), shader)
 }
 
 #[cfg(test)]

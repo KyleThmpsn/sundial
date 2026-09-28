@@ -10,7 +10,7 @@ pub(super) fn settings_save_note(result: &settings::SaveJsonResult) -> String {
     let limit = settings_size_label(result.size_limit_bytes);
     let mut note = if result.compacted {
         format!(
-            " Sunrise-style formatting exceeded this schema's {limit} limit, so Sundial compacted the file to {} bytes.",
+            " Compacted to {} bytes to fit the {limit} limit.",
             result.encoded_bytes,
         )
     } else {

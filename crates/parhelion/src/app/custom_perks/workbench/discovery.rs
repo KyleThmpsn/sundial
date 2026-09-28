@@ -166,12 +166,20 @@ impl Discovery {
         else {
             return Some("This effect is missing from the installed packages.");
         };
-        if let Some(error) = &perk.error {
-            return Some(error);
-        }
-        perk.action.is_none().then_some(
-            "This entry has no standalone action. It cannot be added as a custom effect yet.",
-        )
+        perk.error.as_deref()
+    }
+
+    /// Whether a stock entry declares a perk with no action of its own, as stat mods, Sparrow
+    /// traits and weapon markers such as Hard Light's alternate fire do. Unchanged, it builds as
+    /// the stock entry. Its card starts an empty program, so actions can be added to it.
+    pub fn declaration_only(&self, index: u16) -> bool {
+        self.data.as_ref().is_some_and(|data| {
+            data.perks
+                .perks
+                .get(usize::from(index))
+                .filter(|perk| perk.index == usize::from(index))
+                .is_some_and(|perk| perk.error.is_none() && perk.action.is_none())
+        })
     }
 }
 

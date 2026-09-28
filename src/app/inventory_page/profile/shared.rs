@@ -34,9 +34,7 @@ impl SundialApp {
         } else if capacity.is_some_and(|capacity| profile_item_count >= capacity) {
             ui.weak("The profile-item collection is full for this account source.");
         } else if !account_ready {
-            ui.weak(
-                    "Add controls require an account collection in the active source. Existing rows remain visible.",
-                );
+            ui.weak("Adding needs an account collection in the active source.");
         } else if bucket_usage.unresolved_count > 0 {
             draw_unresolved_bucket_warning(ui);
         }

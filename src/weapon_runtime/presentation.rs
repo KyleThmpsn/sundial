@@ -2,6 +2,11 @@
 use super::{
     WeaponRuntimeField, WeaponRuntimeFieldSource, WeaponRuntimeValue, WeaponRuntimeValueKind,
 };
+/// Whether a native consumer proves what this field means, rather than reflection naming it.
+pub fn proven(field: &WeaponRuntimeField) -> bool {
+    super::structure::proven_label(field.locator.type_handle, field.locator.value_offset).is_some()
+}
+
 pub fn value_text(field: &WeaponRuntimeField) -> String {
     if let Some(meaning) =
         super::modifiers::field_meaning(field.locator.type_handle, field.locator.value_offset)
@@ -94,20 +99,17 @@ pub fn kind_label(kind: &WeaponRuntimeValueKind) -> String {
     }
 }
 
+/// What the native consumers prove this field does, when they prove it.
+pub fn field_help(field: &WeaponRuntimeField) -> Option<&'static str> {
+    let (schema, offset) = (field.locator.type_handle, field.locator.value_offset);
+    super::modifiers::field_meaning(schema, offset)
+        .map(|meaning| meaning.help)
+        .or_else(|| super::health::field_help(schema, offset))
+        .or_else(|| super::invisibility::field_help(schema, offset))
+}
+
 pub fn field_tooltip(field: &WeaponRuntimeField) -> String {
-    let meaning =
-        super::modifiers::field_meaning(field.locator.type_handle, field.locator.value_offset)
-            .map(|meaning| meaning.help)
-            .or_else(|| {
-                super::health::field_help(field.locator.type_handle, field.locator.value_offset)
-            })
-            .or_else(|| {
-                super::invisibility::field_help(
-                    field.locator.type_handle,
-                    field.locator.value_offset,
-                )
-            })
-            .map_or(String::new(), |help| format!("\n{help}"));
+    let meaning = field_help(field).map_or(String::new(), |help| format!("\n{help}"));
     let source = match field.source {
         WeaponRuntimeFieldSource::GeneratedSchema => "generated package schema",
         WeaponRuntimeFieldSource::NativeMember => "named native member",

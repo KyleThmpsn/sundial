@@ -11,7 +11,7 @@ impl SundialApp {
             let reason = self
                 .document
                 .account_editing_blocked()
-                .unwrap_or("Equipment editing is disabled for this settings.json schema.")
+                .unwrap_or("Equipment editing is unavailable for this settings version.")
                 .to_owned();
             self.set_status(reason, true);
             false
@@ -23,7 +23,7 @@ impl SundialApp {
             true
         } else {
             let fallback = format!(
-                "Equipment lock-state editing requires a writable settings schema {} or newer",
+                "Locking equipment requires settings v{} or newer",
                 super::inventory::EQUIPMENT_FLAGS_SCHEMA_VERSION
             );
             let reason = self
@@ -63,7 +63,7 @@ impl SundialApp {
             let reason = self
                 .document
                 .account_editing_blocked()
-                .unwrap_or("Equipping a stored item requires settings.json schema 6.")
+                .unwrap_or("Equipping a stored item requires settings v6.")
                 .to_owned();
             self.set_status(reason, true);
             return false;
@@ -201,7 +201,7 @@ impl SundialApp {
             let reason = self
                 .document
                 .account_editing_blocked()
-                .unwrap_or("Unequipping to inventory requires settings.json schema 6.")
+                .unwrap_or("Unequipping to inventory requires settings v6.")
                 .to_owned();
             self.set_status(reason, true);
             return;

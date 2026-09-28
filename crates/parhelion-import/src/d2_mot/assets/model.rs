@@ -73,7 +73,7 @@ pub fn export(r: &mut Reader, entities: &[u32], direct: Option<u32>) -> Result<V
         let meshes = p.array(16, 128, Some(0x80806EC5))?;
         ensure!(meshes.len() <= 256, "mesh count exceeds export bound");
         for i in 0..meshes.len() {
-            match geometry::export_mesh(r, tag, i, false) {
+            match geometry::export_mesh(r, tag, i, false, geometry::Detail::default()) {
                 Ok(mut report) => {
                     report["mesh_index"] = json!(i);
                     for material in report["materials"].as_array().unwrap() {

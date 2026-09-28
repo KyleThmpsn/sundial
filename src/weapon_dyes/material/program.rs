@@ -1,6 +1,9 @@
 //! Bounded Shadowkeep dye-expression interpreter. Opcode numbers differ from
 //! modern TFX. Arithmetic semantics reference cohaereo/alkahest expression_vm.
-//! Unsupported externs/programs fail as a whole, preserving the static material.
+//! Game state the preview lacks reads as the game holds it when nothing drives it: global
+//! channels at their defaults from the render globals, and frame fields other than the two clocks
+//! at zero, as alkahest reads them. Unsupported externs/programs fail as a whole, preserving the
+//! static material.
 use crate::package_payload::{bytes_at, native_array_at};
 type Vector = [f32; 4];
 
@@ -19,13 +22,20 @@ enum Op {
     Permute(u8),
     Lerp(usize),
     Gradient(usize),
+    Gradient8(usize),
+    /// A value the game supplies, held at the preview's stand-in for it.
+    Value(Vector),
     Store(usize),
     PushTemp(usize),
     PopTemp(usize),
 }
 
+/// The frame extern, whose first two fields are the game and render clocks.
+const FRAME: u8 = 1;
+
 impl Program {
-    pub fn read(scope: &[u8]) -> Result<Option<Self>, String> {
+    /// `channels` holds each global channel's default value.
+    pub fn read(scope: &[u8], channels: &[Vector]) -> Result<Option<Self>, String> {
         if u64::from_le_bytes(bytes_at(scope, 0x58)?) == 0 {
             return Ok(None);
         }
@@ -58,14 +68,23 @@ impl Program {
                 0x34 => Op::Constant(arg()? as usize),
                 0x35 => Op::Lerp(arg()? as usize),
                 0x3A => Op::Gradient(arg()? as usize),
-                0x3C => {
-                    let (source, element) = (arg()?, arg()?);
-                    if source != 1 || !matches!(element, 0 | 1) {
+                0x3B => Op::Gradient8(arg()? as usize),
+                0x3C => match (arg()?, arg()?) {
+                    (FRAME, 0 | 1) => Op::Time,
+                    (FRAME, _) => Op::Value([0.0; 4]),
+                    (source, element) => {
                         return Err(format!(
                             "Shader animation requires game state unavailable in the preview ({source}:{element})"
                         ));
                     }
-                    Op::Time
+                },
+                0x4E => {
+                    let channel = arg()?;
+                    Op::Value(*channels.get(usize::from(channel)).ok_or_else(|| {
+                        format!(
+                            "Shader animation reads global channel {channel}, which is not defined"
+                        )
+                    })?)
                 }
                 0x43 => Op::Store(arg()? as usize),
                 0x45 => Op::PushTemp(arg()? as usize),
@@ -124,6 +143,13 @@ impl Program {
                         .get(i..i + 6)
                         .ok_or("Invalid shader gradient index")?,
                 ),
+                Op::Gradient8(i) => gradient8(
+                    pop(&mut stack)?,
+                    self.constants
+                        .get(i..i + 11)
+                        .ok_or("Invalid shader gradient index")?,
+                ),
+                Op::Value(value) => value,
                 Op::Store(i) => {
                     *output.get_mut(i).ok_or("Invalid shader output index")? = pop(&mut stack)?;
                     continue;
@@ -277,6 +303,36 @@ fn gradient(input: Vector, constants: &[Vector]) -> Vector {
         constants[0][i]
             + (0..4)
                 .map(|j| constants[i + 1][j] * weights[j])
+                .sum::<f32>()
+    })
+}
+
+/// The eight-stop gradient, as the game's own code evaluates it (transcribed from its SIMD form in
+/// alkahest's `bytecode_op_unk3b_const`). Constants: a base color, four weight rows (red, green,
+/// blue, alpha) for stops 0 to 3, four for stops 4 to 7, then stops 0 to 3 and 4 to 7. Each segment
+/// runs to the next stop and the last to 1. A segment with no width is a step at its stop.
+fn gradient8(input: Vector, constants: &[Vector]) -> Vector {
+    let (low, high) = (constants[9], constants[10]);
+    let low_width: Vector =
+        std::array::from_fn(|i| if i == 3 { high[0] } else { low[i + 1] } - low[i]);
+    let high_width: Vector =
+        std::array::from_fn(|i| if i == 3 { 1.0 } else { high[i + 1] } - high[i]);
+    let weight = |offset: f32, width: f32| {
+        if width.abs() > 0.0001 {
+            (offset / width).clamp(0.0, 1.0)
+        } else {
+            f32::from(u8::from(offset >= 0.0))
+        }
+    };
+    let low_weights: Vector = std::array::from_fn(|i| weight(input[i] - low[i], low_width[i]));
+    let high_weights: Vector = std::array::from_fn(|i| weight(input[i] - high[i], high_width[i]));
+    std::array::from_fn(|channel| {
+        constants[0][channel]
+            + (0..4)
+                .map(|stop| {
+                    constants[1 + channel][stop] * low_weights[stop]
+                        + constants[5 + channel][stop] * high_weights[stop]
+                })
                 .sum::<f32>()
     })
 }

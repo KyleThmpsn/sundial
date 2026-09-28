@@ -72,10 +72,47 @@ impl Report {
 /// infer a complete transitive import from aligned words, paths or an activity loading index.
 pub fn inspect(manager: &PackageManager, graph: u32) -> Result<Report, String> {
     let loaded = loading::investment(manager)?;
-    let payload = loading::read(manager, graph, 8, WEAPON_ENTITY_CLASS)?;
-    validate_weapon_entity(&payload)?;
+    Ok(report(
+        graph,
+        &loaded,
+        requirements(manager, &BTreeSet::from([graph]))?.into_values(),
+    ))
+}
+
+/// The enrollment additions of several graphs, as the union of each graph's
+/// [`Report::additions`]. Donor graphs share most of their reference closure, so one walk
+/// and one read of the loading index replace one of each per graph.
+pub fn additions(
+    manager: &PackageManager,
+    graphs: impl IntoIterator<Item = u32>,
+) -> Result<BTreeSet<u32>, String> {
+    let graphs = graphs.into_iter().collect::<BTreeSet<_>>();
+    if graphs.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let loaded = loading::investment(manager)?;
+    let required = requirements(manager, &graphs)?;
+    Ok(graphs
+        .into_iter()
+        .chain(required.into_keys())
+        .filter(|tag| !loaded.contains(tag))
+        .collect())
+}
+
+fn requirements(
+    manager: &PackageManager,
+    graphs: &BTreeSet<u32>,
+) -> Result<BTreeMap<u32, Requirement>, String> {
+    let mut owners = BTreeMap::new();
+    for &graph in graphs {
+        let payload = loading::read(manager, graph, 8, WEAPON_ENTITY_CLASS)?;
+        validate_weapon_entity(&payload)?;
+        for owner in component_owners(&payload)? {
+            owners.entry(owner).or_insert(graph);
+        }
+    }
     let mut required = BTreeMap::new();
-    for owner in component_owners(&payload)? {
+    for (owner, graph) in owners {
         required.insert(
             owner,
             Requirement {
@@ -89,7 +126,7 @@ pub fn inspect(manager: &PackageManager, graph: u32) -> Result<Report, String> {
             required.entry(requirement.tag).or_insert(requirement);
         }
     }
-    for reference in references::closure(manager, [graph])? {
+    for reference in references::closure(manager, graphs.iter().copied())? {
         required
             .entry(reference.tag)
             .or_insert_with(|| Requirement {
@@ -102,7 +139,7 @@ pub fn inspect(manager: &PackageManager, graph: u32) -> Result<Report, String> {
                 },
             });
     }
-    Ok(report(graph, &loaded, required.into_values()))
+    Ok(required)
 }
 
 fn report(
@@ -132,7 +169,8 @@ fn component_owners(payload: &[u8]) -> Result<BTreeSet<u32>, String> {
     (0..count).map(|i| u32_at(payload, rows + i * 12)).collect()
 }
 
-fn owner_requirements(
+/// Read the native layout prerequisites of a component payload, including private copies.
+pub fn owner_requirements(
     manager: &PackageManager,
     owner: u32,
     payload: &[u8],
@@ -178,6 +216,27 @@ fn owner_requirements(
             referenced_by: owner,
             role: "generated component schema".into(),
         });
+    }
+    // Optic providers also expose event inputs. Their dispatch helpers live in
+    // the component's typed resource views, independently of the entity's
+    // interface registrations. These fields are declared tag references in
+    // native class 8080393B, not a scan for tag-looking words.
+    let relative = crate::package_payload::i64_at(payload, 0x18)?;
+    if relative == 0 {
+        return Ok(result);
+    }
+    let data = crate::package_payload::relative_offset(0x18, 0, relative)?;
+    if data >= 4 && u32_at(payload, data - 4)? == 0x8080_393B {
+        crate::package_payload::bytes_at::<0x290>(payload, data)?;
+        for field in [0x50, 0x1B0, 0x1C8, 0x240, 0x258, 0x270] {
+            let helper = u32_at(payload, data + field)?;
+            loading::read(manager, helper, 8, 0x8080_9C54)?;
+            result.push(Requirement {
+                tag: helper,
+                referenced_by: owner,
+                role: format!("optic dispatch at +0x{field:X}"),
+            });
+        }
     }
     Ok(result)
 }

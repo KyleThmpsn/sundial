@@ -119,15 +119,12 @@ impl SundialApp {
         } else if let Some(warning) = warning {
             self.set_status(
                 format!(
-                    "{action} with an unexpected setting: {warning}. Correct invalid known settings before saving edited JSON. A safety copy of the loaded source will be created beside settings.json"
+                    "{action} with an unexpected setting: {warning}. Correct invalid settings before saving JSON edits. A safety copy is made beside settings.json"
                 ),
                 true,
             );
         } else if automatic {
-            self.set_status(
-                format!("Refreshed {runtime_name} data after returning to Sundial"),
-                false,
-            );
+            self.set_status(format!("Refreshed {runtime_name} data"), false);
         } else {
             self.set_status(format!("Reloaded {runtime_name} data"), false);
         }
@@ -175,7 +172,7 @@ impl SundialApp {
             return;
         }
         let Some(path) = rfd::FileDialog::new()
-            .set_title("Select Sunrise Install (Contains destiny2.exe)")
+            .set_title("Select Project Sunrise or Dawn Install (Contains destiny2.exe)")
             .set_directory(&self.install_path)
             .pick_folder()
         else {
@@ -273,7 +270,7 @@ impl SundialApp {
         self.persistence_compatibility = PersistenceCompatibility::inspect(&self.install_path);
         self.manifest = manifest;
         self.armor_stats_adjuster = equipment::ArmorStatsAdjusterState::default();
-        self.hash_inspection.close();
+        self.hash_inspection.reset();
         self.progression_ui.reset_navigation();
         self.collections_ui.reset_navigation();
         let dawn = self.dawn_account_runtime();
@@ -285,7 +282,7 @@ impl SundialApp {
             Ok(()) => match warning {
                 Some(warning) => self.set_status(
                     format!(
-                        "Install loaded with an unexpected setting: {warning}. Correct invalid known settings before saving edited JSON. A safety copy of the loaded source will be created beside settings.json"
+                        "Install loaded with an unexpected setting: {warning}. Correct invalid settings before saving JSON edits. A safety copy is made beside settings.json"
                     ),
                     true,
                 ),
@@ -375,7 +372,7 @@ impl SundialApp {
                         (CatalogTaskKind::LoadInstall(pending), Ok(manifest)) => {
                             if self.has_unsaved_changes() {
                                 self.set_status(
-                                    "Install not loaded because settings changed while its catalog was loading. Save or reload the current settings, then choose the installation again.",
+                                    "Install not loaded because settings changed during loading. Save or reload, then choose the install again.",
                                     true,
                                 );
                             } else {
@@ -386,7 +383,7 @@ impl SundialApp {
                             self.manifest = manifest;
                             self.armor_stats_adjuster =
                                 equipment::ArmorStatsAdjusterState::default();
-                            self.hash_inspection.close();
+                            self.hash_inspection.reset();
                             self.progression_ui.reset_navigation();
                             self.collections_ui.reset_navigation();
                             self.clear_picker_state();

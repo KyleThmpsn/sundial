@@ -360,14 +360,14 @@ impl WorkspaceDocument {
             AccountDocument::Sqlite(_) => AccountSourceInfo {
                 kind: AccountSourceKind::Sqlite,
                 label: "investment.sqlite3",
-                detail: "Characters, inventory, equipment, preferences, ownership and progression use investment.sqlite3. Player identity and runtime configuration use settings.json.".to_owned(),
+                detail: "Account data is saved to investment.sqlite3. Identity and runtime configuration stay in settings.json.".to_owned(),
                 database_path: self.database_path.clone(),
                 contract: "SQLite · Schema 2",
             },
             AccountDocument::Dawn(_) => AccountSourceInfo {
                 kind: AccountSourceKind::Dawn,
                 label: "player-state.db",
-                detail: "This install runs Dawn. Characters, inventory, equipment, progression and player preferences are saved to player-state.db. Dawn still reads runtime configuration, player identity and language from settings.json at startup.".to_owned(),
+                detail: "Account data is saved to player-state.db. Identity, language and runtime configuration stay in settings.json.".to_owned(),
                 database_path: self.database_path.clone(),
                 contract: DAWN_CONTRACT,
             },
@@ -376,7 +376,7 @@ impl WorkspaceDocument {
                 kind: AccountSourceKind::Blocked,
                 label: "Account Editing Blocked",
                 detail: format!(
-                    "{reason} Sundial will not fall back to possibly stale JSON account data."
+                    "{reason} Stale JSON account data is not used."
                 ),
                 database_path: self.database_path.clone(),
                 contract: "No compatible SQLite contract selected",
@@ -419,7 +419,7 @@ impl WorkspaceDocument {
         }
         if self.uses_json_account() == requires_sqlite(&self.json) {
             return Err(
-                "The settings schema changed its account source. Reload before applying or saving changes".into(),
+                "The settings version changed the account source. Reload before applying or saving changes".into(),
             );
         }
 

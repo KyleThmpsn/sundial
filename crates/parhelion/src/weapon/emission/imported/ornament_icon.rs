@@ -49,6 +49,7 @@ pub(super) fn apply(
             donor_container_tag: donor,
             icon_edit: edit,
             rarity: crate::AuthoredWeaponRarity::Exotic,
+            plain: false,
         }],
     )?;
     let container = plan

@@ -29,7 +29,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.5.1"
+version = "0.5.2"
 edition = "2024"
 rust-version = "1.88"
 license = "GPL-3.0-only"
@@ -49,12 +49,13 @@ workspace = true
 
 [dependencies]
 bcdec_rs = "0.2.0"
-eframe = { version = "0.31.1", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+eframe = { version = "0.31.1", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "wayland", "x11"] }
 egui_commonmark = { version = "0.20.0", default-features = false }
-egui-phosphor = "0.9.0"
+egui-phosphor = { version = "0.9.0", features = ["light"] }
 directories = "6.0.0"
 fs2 = "0.4.3"
 flate2 = "1.1.9"
+lewton = "0.10.2"
 pelite = { version = "0.10.0", default-features = false, features = ["std"] }
 serde_json = { version = "1.0.140", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
@@ -66,17 +67,19 @@ sundial-account = { path = "crates/sundial-account" }
 rfd = "0.15.4"
 rusqlite = { version = "0.37.0", features = ["backup", "bundled"] }
 tiger-pkg = { version = "0.21.0", features = ["ignore_caches"] }
+ww2ogg = "0.1.0"
 # Keep timestamp formatting compatible with our Rust 1.88 minimum.
 time = { version = "=0.3.47", features = ["formatting"] }
 ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-rustix = { version = "1.1.4", features = ["fs"] }
+libc = "0.2"
+rustix = { version = "1.1.4", features = ["fs", "param", "process"] }
 winit = { version = "0.30.13", default-features = false, features = ["wayland-csd-adwaita"] }
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"
-windows-sys = { version = "0.59.0", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_LibraryLoader", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59.0", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Media_Audio", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_LibraryLoader", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 winit = { version = "0.30.13", default-features = false }

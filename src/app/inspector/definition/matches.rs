@@ -23,6 +23,8 @@ pub(super) struct CatalogHashMatchIndex {
     pub(super) mission_scenario: Option<&'static str>,
     pub(super) stat_group: Option<usize>,
     pub(super) power_cap: Option<usize>,
+    /// Items carrying the inspected stat, as the item hash and the stat's position on it.
+    pub(super) investment_stat_references: Vec<(u64, usize)>,
 }
 
 pub(super) struct CatalogHashMatches<'a> {
@@ -292,6 +294,17 @@ impl CatalogHashMatchIndex {
                 .ok()
                 .and_then(|hash| catalog.power_cap_definition_by_hash(hash))
                 .map(|(index, _)| index),
+            investment_stat_references: catalog
+                .item_investment_stat_references(hash)
+                .into_iter()
+                .filter_map(|(item_hash, stat)| {
+                    let stats = &catalog.item_package_metadata(item_hash)?.investment_stats;
+                    let position = stats
+                        .iter()
+                        .position(|candidate| std::ptr::eq(candidate, stat))?;
+                    Some((item_hash, position))
+                })
+                .collect(),
         }
     }
 }
@@ -460,7 +473,14 @@ impl<'a> CatalogHashMatches<'a> {
             item: catalog.item(hash),
             item_package_metadata: catalog.item_package_metadata(hash),
             item_stat_definition: catalog.item_stat_definition_by_hash(hash),
-            investment_stat_references: catalog.item_investment_stat_references(hash),
+            investment_stat_references: index
+                .investment_stat_references
+                .iter()
+                .filter_map(|(item_hash, position)| {
+                    let metadata = catalog.item_package_metadata(*item_hash)?;
+                    Some((*item_hash, metadata.investment_stats.get(*position)?))
+                })
+                .collect(),
             inventory_metadata: catalog.inventory_metadata(hash),
             item_material_requirement_set_indices: catalog
                 .item_material_requirement_set_indices(hash),

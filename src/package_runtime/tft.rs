@@ -62,6 +62,17 @@ pub struct Index {
     pub vocabulary: Vec<ContentPath>,
     pub scanned_resources: usize,
     pub errors: Vec<String>,
+    /// How the source shards were assembled this run. Saved full indexes omit this detail.
+    #[serde(skip)]
+    pub cache_usage: Option<CacheUsage>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CacheUsage {
+    pub reused_packages: usize,
+    pub scanned_packages: usize,
+    pub reused_resources: usize,
+    pub scanned_resources: usize,
 }
 
 impl Index {

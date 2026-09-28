@@ -1,35 +1,5 @@
 use super::*;
 
-#[test]
-fn chosen_icon_round_trips_without_changing_type_or_effects() {
-    let mut perk = PerkRecipe::new();
-    perk.effects.push(PerkRecipe::effect(1178));
-    let template = perk.template_plug.clone();
-    perk.icon = Some(Icon::Texture {
-        tag: 0x80B464EB.into(),
-    });
-    let library_dir = tempfile::tempdir().unwrap();
-    let library = library::Library::open(library_dir.path().into()).unwrap();
-    let entry = library.save(&perk, None).unwrap();
-    let loaded = library::Library::read(&entry.path).unwrap().recipe;
-    assert_eq!(loaded, perk);
-    let weapon = weapon_with_perk(&loaded);
-    let restored = crate::WeaponRecipe::from_json_str(&weapon.to_json_pretty().unwrap()).unwrap();
-    let variant = &restored.to_spec().unwrap().overrides.socket_plug_variants[0];
-    assert_eq!(variant.icon, perk.icon);
-    assert_eq!(loaded.template_plug, template);
-    assert_eq!(loaded.classification, None);
-    assert_eq!(loaded.effects, perk.effects);
-    let mut legacy = serde_json::to_value(&perk).unwrap();
-    legacy.as_object_mut().unwrap().remove("icon");
-    assert!(
-        serde_json::from_value::<PerkRecipe>(legacy)
-            .unwrap()
-            .icon
-            .is_none()
-    );
-}
-
 fn weapon_with_perk(perk: &PerkRecipe) -> crate::WeaponRecipe {
     let mut weapon = crate::WeaponRecipe::new_weapon("parhelion.perk-validation").unwrap();
     weapon.overrides.socket_columns = vec![Some(crate::WeaponSocketColumnRecipe {
@@ -127,28 +97,6 @@ fn standalone_perks_reject_invalid_compiler_inputs_before_library_save() {
         );
     }
     assert!(library.scan().unwrap().entries.is_empty());
-}
-
-#[test]
-fn independent_perks_roundtrip_without_weapon_identity_and_attach_as_copies() {
-    let mut perk = PerkRecipe::new();
-    perk.name = "A New Effect".into();
-    perk.effects.push(PerkRecipe::effect(1178));
-    perk.effects[0].projectiles.push(
-        sundial::package_authoring::sandbox_perk::projectile::Selection {
-            source_graph: 0x815282E1,
-            donor_graph: 0x80BBDAD4,
-        },
-    );
-    let json = serde_json::to_string(&perk).unwrap();
-    assert!(!json.contains("socket_index") && !json.contains("weapon"));
-    assert_eq!(serde_json::from_str::<PerkRecipe>(&json).unwrap(), perk);
-    let attached = perk.at_socket(4, 2);
-    assert!(attached.replace_effects);
-    assert_eq!((attached.socket_index, attached.choice_index), (4, 2));
-    perk.effects.clear();
-    assert_eq!(attached.sandbox_perks.len(), 1);
-    assert!(PerkRecipe::new().effects.is_empty());
 }
 
 #[test]

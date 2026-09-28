@@ -183,6 +183,14 @@ fn clean_equipment(
             .and_then(|hash| u32::try_from(hash).ok())
             .filter(|hash| hashes.contains(hash))
         {
+            // Only a weapon slot can be left empty. Armor, a Ghost Shell, a Sparrow or a Ship
+            // has to be swapped for another item before the authored one is removed.
+            if !crate::account_contract::WEAPON_SLOTS.contains(&row.slot) {
+                return Err(format!(
+                    "A removed Parhelion item is equipped in the {} slot. Equip another item there first.",
+                    equipment::equipment_slot_label(row.slot)
+                ));
+            }
             equipment::set_weapon_slot_empty(document, character, row.slot)?;
             *removed.entry(hash).or_default() += 1;
         } else if let equipment::EquippedItemPlugs::Authored(values) = row.plugs {

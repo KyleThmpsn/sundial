@@ -32,14 +32,14 @@ impl Script {
 pub fn title(path: &str) -> String {
     let file = path.rsplit(['\\', '/']).next().unwrap_or(path);
     let stem = file.split('.').next().unwrap_or(file);
-    stem.split('_')
+    let words = stem
+        .split('_')
         .filter(|word| !word.is_empty())
-        .map(|word| {
-            let mut chars = word.chars();
-            chars.next().map_or_else(String::new, |first| {
-                first.to_uppercase().collect::<String>() + chars.as_str()
-            })
-        })
+        .collect::<Vec<_>>();
+    words
+        .iter()
+        .enumerate()
+        .map(|(index, word)| crate::sandbox_perk::nodes::title_word(word, index, words.len()))
         .collect::<Vec<_>>()
         .join(" ")
 }

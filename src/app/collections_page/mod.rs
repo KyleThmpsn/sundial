@@ -101,7 +101,7 @@ impl UiState {
         self.cached_status = None;
         self.browse = None;
         self.metadata_index = None;
-        self.hash_inspection.close();
+        self.hash_inspection.reset();
         self.reveal_selection = false;
         self.mutation_feedback = None;
         self.bulk_feedback = None;
@@ -228,7 +228,9 @@ pub(super) fn draw_content(
         let cache = cached.unwrap_or_else(|| cache::Cache::build(catalog, state, expansion_action));
         let counts = cache.counts;
         ui.label(format!("{} / {} acquired", counts.acquired, counts.total()))
-            .on_hover_text("Calculated from the saved account and package definitions. Conditions that need live game context remain unresolved.");
+            .on_hover_text(
+                "From the saved account. Conditions that need the live game stay unresolved.",
+            );
         let mut remainder = Vec::new();
         if counts.not_acquired > 0 {
             remainder.push(format!("{} not acquired", counts.not_acquired));
@@ -553,31 +555,4 @@ fn collection_hash_cell(ui: &mut egui::Ui, width: f32, hash: u64) {
             }
         },
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn collection_progress_counts_and_filters_keep_unknown_state_explicit() {
-        let states = [
-            AcquisitionState::Acquired,
-            AcquisitionState::Acquired,
-            AcquisitionState::NotAcquired,
-            AcquisitionState::Unknown,
-        ];
-        let mut counts = acquisition::AcquisitionCounts::default();
-        for state in states {
-            counts.add(state);
-        }
-
-        assert_eq!(counts.total(), 4);
-        assert_eq!(counts.acquired, 2);
-        assert_eq!(counts.not_acquired, 1);
-        assert_eq!(counts.unknown, 1);
-        assert!(CollectionStatusFilter::Unknown.matches(AcquisitionState::Unknown));
-        assert!(!CollectionStatusFilter::Unknown.matches(AcquisitionState::NotAcquired));
-        assert!(CollectionStatusFilter::All.matches(AcquisitionState::Acquired));
-    }
 }

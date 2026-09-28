@@ -27,8 +27,13 @@ fn projectile_preview_from_installed_packages() {
                         .flatten()
                         .all(|&v| (v as usize) < model.vertices.len())
                 );
-                let image =
-                    render::animated_image(&model, render::Camera::default(), [320, 320], 0.0);
+                let image = render::animated_image(
+                    &model,
+                    render::Camera::default(),
+                    render::Scene::default(),
+                    [320, 320],
+                    0.0,
+                );
                 let visible = image
                     .pixels
                     .iter()
@@ -41,6 +46,7 @@ fn projectile_preview_from_installed_packages() {
                     let other = render::animated_image(
                         &model,
                         render::Camera::default(),
+                        render::Scene::default(),
                         [320, 320],
                         a.duration() * 0.5,
                     );

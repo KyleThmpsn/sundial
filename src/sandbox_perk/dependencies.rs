@@ -136,9 +136,9 @@ impl Perk {
         } else if self.action.is_none() {
             "No Standalone Action"
         } else if self.graphs.is_empty() {
-            "Action With No Direct Entity Graph"
+            "Action with No Direct Entity Graph"
         } else {
-            "Action With Entity Graphs"
+            "Action with Entity Graphs"
         }
     }
 }

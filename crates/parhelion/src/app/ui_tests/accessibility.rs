@@ -44,7 +44,7 @@ fn core_fields_and_build_selection_expose_accessible_names() {
     assert!(!checkboxes.is_empty());
     assert!(checkboxes.iter().all(|(_, node)| {
         node.label().is_some_and(|label| {
-            label.starts_with("Include default Parhelion weapons") || label.starts_with("Select ")
+            label.starts_with("Include Default Weapons") || label.starts_with("Select ")
         })
     }));
 }

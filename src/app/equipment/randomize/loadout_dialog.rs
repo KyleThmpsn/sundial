@@ -73,11 +73,11 @@ pub(super) fn draw_loadout_confirmation(
                 "Replace Existing Inventory Items",
             )
             .on_hover_text(
-                "Off by default. When enabled, held items in the selected sections are removed and regenerated.",
+                "Removes and regenerates held items in the checked sections.",
             );
             ui.checkbox(&mut options.keep_locked_items, "Keep Locked Items")
                 .on_hover_text(
-                    "Preserves locked equipped and held items while randomizing the rest.",
+                    "Locked items are not randomized.",
                 );
             ui.add_space(8.0);
             ui.separator();
@@ -85,11 +85,11 @@ pub(super) fn draw_loadout_confirmation(
             ui.group(|ui| {
                 ui.strong("Perk Safety");
                 app.draw_plug_safety_controls(ui);
-                ui.label("Applies to equipped and inventory weapon and armor rolls. Compatible uses each item's native perk pool.");
+                ui.label("Applies to weapon and armor rolls. Compatible uses each item's own perk pool.");
             });
             ui.label(
                 egui::RichText::new(
-                    "Checked sections regenerate equipped items immediately. Held inventory is preserved unless its replacement option is enabled. One equipped exotic is kept per weapon and armor set.",
+                    "Checked sections replace equipped items. Held items are kept unless replacement is on. At most one Exotic weapon and one Exotic armor piece are equipped.",
                 )
                 .color(crate::app::ui::secondary_text_color(ui)),
             );

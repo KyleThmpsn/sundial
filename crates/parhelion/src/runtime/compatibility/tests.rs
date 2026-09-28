@@ -9,6 +9,10 @@ use sundial::{
     },
 };
 
+fn no_owners(tag: u32) -> Result<Vec<u8>, String> {
+    Err(format!("No package holds owner 0x{tag:08X}"))
+}
+
 fn summary(hash: u32) -> WeaponDonorSummary {
     WeaponDonorSummary {
         hash,
@@ -176,8 +180,8 @@ fn compiler_preflight_keeps_other_selected_donors_and_detects_conflicts() {
         item_hash: 3,
         source: shared_owner_source(3),
     };
-    assert!(compose(&baseline, std::slice::from_ref(&candidate)).is_ok());
-    let error = compose(&baseline, &[selected, candidate]).unwrap_err();
+    assert!(compose(&baseline, std::slice::from_ref(&candidate), &no_owners).is_ok());
+    let error = compose(&baseline, &[selected, candidate], &no_owners).unwrap_err();
     assert!(error.contains("Runtime component donor conflict"));
 }
 
@@ -199,7 +203,7 @@ fn shared_owner_preview_and_effective_provenance_include_implicit_changes() {
             source: Arc::clone(&baseline),
         },
     ];
-    compose(&baseline, &requested).unwrap();
+    compose(&baseline, &requested, &no_owners).unwrap();
     let bindings = collect_bindings(&baseline.payload).unwrap();
     let affected = affected_bindings(&bindings, WEAPON_TRIGGER_COMPONENT_KEY).unwrap();
     assert!(affected.contains(&WEAPON_TRIGGER_COMPONENT_KEY));

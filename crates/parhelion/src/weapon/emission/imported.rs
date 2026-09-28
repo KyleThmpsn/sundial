@@ -8,13 +8,63 @@ mod ornament_collections;
 mod ornament_icon;
 mod ornaments;
 
-/// Bind the assembled graph to its body slot, replacing the native carrier's assignment.
+/// An independently placed private part, either source geometry or marker-only geometry.
+struct Kept {
+    assignment: u32,
+    key: u32,
+    parent: String,
+    source_region: Option<(u64, usize)>,
+}
+
+fn kept_parts(graph: &Value) -> AuthoringResult<Vec<Kept>> {
+    graph["kept_parts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(graph["source_parts"].as_array().into_iter().flatten())
+        .map(|part| {
+            let word = |name: &str| {
+                part[name]
+                    .as_u64()
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| invalid(format!("Kept part {name} missing")))
+            };
+            Ok(Kept {
+                assignment: word("assignment")?,
+                key: word("key")?,
+                parent: part["parent"]
+                    .as_str()
+                    .ok_or_else(|| invalid("Kept part parent missing"))?
+                    .to_owned(),
+                source_region: if part["source_region"] == true {
+                    Some((
+                        part["selector"]
+                            .as_u64()
+                            .ok_or_else(|| invalid("Source art selector missing"))?,
+                        usize::try_from(
+                            part["position"]
+                                .as_u64()
+                                .ok_or_else(|| invalid("Source art position missing"))?,
+                        )
+                        .map_err(|_| invalid("Source art position overflow"))?,
+                    ))
+                } else {
+                    None
+                },
+            })
+        })
+        .collect()
+}
+
+/// Bind the assembled graph to its body slot, replacing the native carrier's assignment, and
+/// each kept donor part to its private copy.
 fn replace(
     data: &mut Vec<u8>,
     row: usize,
     key: u32,
     donor_hash: u32,
     source_key: u32,
+    kept: &[Kept],
 ) -> AuthoringResult<()> {
     let (count, _, rows, _) =
         sundial::package_authoring::native_payload::native_array_at(data, 8).map_err(invalid)?;
@@ -27,6 +77,11 @@ fn replace(
             for slot_key in keys {
                 if *slot_key == source_key {
                     *slot_key = key;
+                } else if let Some(part) = kept
+                    .iter()
+                    .find(|part| part.source_region.is_none() && part.assignment == *slot_key)
+                {
+                    *slot_key = part.key;
                 }
             }
         }
@@ -34,59 +89,112 @@ fn replace(
         if !singles.contains(&source_key) && !slots.iter().any(|(_, keys)| keys.contains(&key)) {
             return Err(invalid("Selected native assignment missing"));
         }
-        parhelion_import::d2_mot::artwork::assembled(singles, slots, key)
-            .map_err(|error| invalid(error.to_string()))
+        let keys = kept.iter().map(|part| part.key).collect::<Vec<_>>();
+        parhelion_import::d2_mot::artwork::assembled(singles, slots, key, &keys)
+            .map_err(|error| invalid(error.to_string()))?;
+        let mut regions = BTreeMap::<u64, BTreeMap<usize, u32>>::new();
+        for part in kept {
+            if let Some((selector, position)) = part.source_region {
+                if regions
+                    .entry(selector)
+                    .or_default()
+                    .insert(position, part.key)
+                    .is_some()
+                {
+                    return Err(invalid("Duplicate source art position"));
+                }
+            }
+        }
+        for (selector, positions) in regions {
+            if !positions.keys().copied().eq(0..positions.len()) {
+                return Err(invalid("Source art alternatives are discontinuous"));
+            }
+            let keys = positions.into_values().collect();
+            if let Some(slot) = slots.iter_mut().find(|slot| slot.0 == selector) {
+                slot.1 = keys;
+            } else {
+                slots.push((selector, keys));
+            }
+        }
+        Ok(())
     })
 }
-pub(super) fn apply(
-    directory: &Path,
-    emission: &mut PackageEmission,
-    weapons: &[WeaponCloneSpec],
-) -> AuthoringResult<Vec<ReplacementSpec>> {
-    let folders = weapons
+/// Checks every imported graph against the fingerprint taken when it was selected. Each
+/// graph hashes tens of megabytes of its own files, so the graphs are checked side by side.
+fn validate_graphs(weapons: &[WeaponCloneSpec]) -> AuthoringResult<()> {
+    let graphs = weapons
         .iter()
         .filter_map(|weapon| {
             weapon
                 .overrides
                 .imported_graph
                 .as_ref()
-                .map(|graph| (weapon, graph))
+                .map(|graph| (weapon.identity.item_hash, graph))
         })
-        .map(|(weapon, graph)| {
-            graph
-                .validate(weapon.identity.item_hash)
-                .map_err(|error| invalid(error.to_string()))?;
-            Ok(std::iter::once(graph.directory.clone())
-                .chain(
-                    graph
-                        .attachments
+        .collect::<Vec<_>>();
+    let workers = std::thread::available_parallelism()
+        .map_or(4, std::num::NonZeroUsize::get)
+        .clamp(1, 8);
+    let results = std::thread::scope(|scope| {
+        graphs
+            .chunks(graphs.len().div_ceil(workers).max(1))
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
                         .iter()
-                        .map(|attachment| attachment.directory.clone()),
-                )
-                .collect::<Vec<_>>())
+                        .map(|(item, graph)| graph.validate(*item).map_err(|e| e.to_string()))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|worker| worker.join())
+            .collect::<Vec<_>>()
+    });
+    // Report the first failing graph in recipe order, as a sequential check would.
+    for chunk in results {
+        for result in chunk.map_err(|_| invalid("An imported graph check stopped unexpectedly"))? {
+            result.map_err(invalid)?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn apply(
+    directory: &Path,
+    manager: &sundial::package_authoring::PackageManager,
+    emission: &mut PackageEmission,
+    weapons: &[WeaponCloneSpec],
+) -> AuthoringResult<Vec<ReplacementSpec>> {
+    validate_graphs(weapons)?;
+    let folders = weapons
+        .iter()
+        .filter_map(|weapon| weapon.overrides.imported_graph.as_ref())
+        .flat_map(|graph| {
+            std::iter::once(graph.directory.clone()).chain(
+                graph
+                    .attachments
+                    .iter()
+                    .map(|attachment| attachment.directory.clone()),
+            )
         })
-        .collect::<AuthoringResult<Vec<_>>>()?
-        .into_iter()
-        .flatten()
         .collect::<Vec<_>>();
     if folders.is_empty() {
         return Ok(Vec::new());
     }
-    let manager = sundial::package_authoring::PackageManager::new(
-        directory,
-        tiger_pkg::GameVersion::Destiny(tiger_pkg::DestinyVersion::Destiny2Shadowkeep),
-        None,
-    )
-    .map_err(|e| invalid(e.to_string()))?;
     let mut companions = linking::Companions::new();
     let mut replacements = BTreeMap::new();
+    // Custom shader dyes already extend the dye table, so imported dyes follow them.
+    if let Some(table) = &emission.dye_table {
+        replacements.insert(table.tag.0, table.payload.clone());
+    }
     for folder in folders {
         for replacement in apply_one(
             directory,
             emission,
             &folder,
             &replacements,
-            &manager,
+            manager,
             &mut companions,
         )
         .map_err(|error| error.context(format!("Imported graph {}", folder.display())))?
@@ -94,13 +202,8 @@ pub(super) fn apply(
             replacements.insert(replacement.tag.0, replacement.payload);
         }
     }
-    for weapon in weapons {
-        if let Some(graph) = &weapon.overrides.imported_graph {
-            graph
-                .validate(weapon.identity.item_hash)
-                .map_err(|error| invalid(error.to_string()))?;
-        }
-    }
+    // The files must still be the ones selected now that linking has read them.
+    validate_graphs(weapons)?;
     Ok(replacements
         .into_iter()
         .map(|(tag, payload)| ReplacementSpec {
@@ -133,7 +236,7 @@ fn apply_one(
             .as_u64()
             .ok_or_else(|| invalid("Template missing"))? as u32;
         let is_companion = name == "parent-companion" || n["shared_owner"].is_string();
-        let payload = if is_companion {
+        let mut payload = if is_companion {
             Vec::new()
         } else {
             fs::read(
@@ -145,6 +248,10 @@ fn apply_one(
             )
             .map_err(|e| invalid(e.to_string()))?
         };
+        if name == "model" {
+            parhelion_import::d2_mot::audit::draws::declare_model_draw_indices(&mut payload)
+                .map_err(|e| invalid(format!("Imported model draw indices: {e}")))?;
+        }
         let mut node = linking::Node::new(name, template, payload);
         for p in n["patches"]
             .as_array()
@@ -181,7 +288,7 @@ fn apply_one(
         companions,
         extra_bounds,
         |symbols, groups| {
-            loading::include_native_materials(manager, folder, json_nodes, symbols, groups)
+            loading::include_native_resources(manager, folder, json_nodes, symbols, groups)
         },
         Some(&folder.join("linked")),
     )?;
@@ -219,12 +326,14 @@ fn apply_one(
         sundial::package_authoring::native_payload::native_array_at(&emission.item_metadata, 8)
             .map_err(invalid)?;
     let row = start + row_index * 32;
+    let kept = kept_parts(&graph)?;
     replace(
         &mut emission.item_metadata,
         row,
         key,
         native_art_item,
         source_key,
+        &kept,
     )?;
     let ordinal = definition_ordinal(emission, item)?;
     let definition = &mut emission
@@ -250,7 +359,11 @@ fn apply_one(
         Some(data) => data.clone(),
         None => read(table_tag.0)?,
     };
-    let table = art::insert_assignments(&original, &[(key, symbol("parent")?)])?;
+    let mut assignments = vec![(key, symbol("parent")?)];
+    for part in &kept {
+        assignments.push((part.key, symbol(&part.parent)?));
+    }
+    let table = art::insert_assignments(&original, &assignments)?;
     fs::write(
         folder.join("allocated.json"),
         serde_json::to_vec_pretty(

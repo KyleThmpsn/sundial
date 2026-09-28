@@ -70,7 +70,7 @@ pub(crate) fn export_with_progress(
         let model = Payload(fs::read(source.join(format!("raw/{tag:08X}.bin")))?);
         for mesh in model.array(16, 128, None)? {
             let parts = model.array(mesh + 32, 36, None)?;
-            for stage in [0, 1, 3, 7, 9, 12] {
+            for stage in [0, 1, 3, 7, 9, 12, 14, 16] {
                 for &at in parts
                     .get(
                         model.u16(mesh + 48 + stage * 2)? as usize

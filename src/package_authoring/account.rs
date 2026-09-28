@@ -1,6 +1,7 @@
 //! App adapters for account changes accompanying Parhelion package operations.
 pub use crate::account::{
-    AuthoredAccountCleanup, AuthoredCollectionUnlock, AuthoredItemMove, AuthoredMoveOutcome,
+    AuthoredAccountCleanup, AuthoredCollectionUnlock, AuthoredGrantOutcome, AuthoredGrantReport,
+    AuthoredGrantTarget, AuthoredItemGrant, AuthoredItemMove, AuthoredMoveOutcome,
     AuthoredSlotChange, AuthoredSlotReplacement, AuthoredSocketChange,
     read_authored_account_source, replace_authored_account_source,
     validate_authored_cleanup_backend,
@@ -119,4 +120,17 @@ pub fn synchronize_authored_collection_unlocks(
         newly_set_unlocks,
         total_unlocks: rows.len(),
     })
+}
+
+/// Adds the authored items the account has no other way to obtain, such as each subclass on
+/// every character of its class and a stack of each shader. The installed runtime chooses the
+/// account source the same way it does for unlocks. Copies the account already holds and full
+/// buckets are skipped, so a repeat install adds nothing new. `bucket_of` names the native bucket
+/// of any other definition the account holds, read from the installed generation.
+pub fn grant_authored_items(
+    install: &Path,
+    grants: &[AuthoredItemGrant],
+    bucket_of: &mut dyn FnMut(u32) -> Result<Option<u8>, String>,
+) -> Result<AuthoredGrantReport, String> {
+    authoring_bridge::grant_authored_items(install, grants, bucket_of)
 }

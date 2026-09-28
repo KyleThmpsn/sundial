@@ -16,6 +16,8 @@ pub struct WeaponDyeColors {
     /// Linear RGB albedo tints, before textures, lighting, wear and shader overrides.
     pub primary: [f32; 3],
     pub secondary: [f32; 3],
+    /// Each surface's row of the global iridescence lookup, or -1 for none.
+    pub iridescence: [f32; 2],
 }
 
 fn word(data: &[u8], offset: usize) -> Result<u32, String> {
@@ -102,6 +104,209 @@ fn read_dyes<T>(
 
 pub(crate) mod material;
 
+/// A dye surface's finish, painted or worn, as the gear dye material describes it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DyeFinish {
+    /// Linear color.
+    pub albedo: [f32; 3],
+    /// Detail color, detail normal and detail smoothness strengths, then metalness.
+    pub params: [f32; 4],
+    /// The smoothness remap: offset, scale, minimum and range.
+    pub smoothness: [f32; 4],
+}
+
+/// One of a dye's two surfaces.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DyeSurfaceMaterial {
+    pub paint: DyeFinish,
+    /// What wear exposes.
+    pub worn: DyeFinish,
+    /// How the gear's wear mask becomes this surface's wear: offset, scale, minimum and range.
+    pub wear: [f32; 4],
+    /// Linear color the surface glows with where its gear allows.
+    pub emissive: [f32; 3],
+    /// The surface's row of the global iridescence lookup, or -1 for none.
+    pub iridescence: f32,
+}
+
+/// A texture's RGBA8 pixels.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DyeTexture {
+    pub width: usize,
+    pub height: usize,
+    pub rgba: Vec<u8>,
+}
+
+/// A dye's material: its primary and secondary surfaces and the detail textures they share. The
+/// detail color texture is sRGB with smoothness in alpha, and the detail normal texture is linear
+/// with the normal in red and green and occlusion in blue. Each is at most
+/// [`DYE_TEXTURE_EDGE`] pixels a side, and missing when the dye binds none or it cannot be read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DyeMaterial {
+    pub surfaces: [DyeSurfaceMaterial; 2],
+    /// The 27 vectors the surfaces are read from, which an editor writes into.
+    pub vectors: [[f32; 4]; 27],
+    /// The detail color and detail normal textures' scale (x, y) and offset (z, w).
+    pub detail_transform: [f32; 4],
+    pub normal_transform: [f32; 4],
+    /// The detail textures' tags, and their pixels.
+    pub detail_tag: Option<u32>,
+    pub normal_tag: Option<u32>,
+    pub detail: Option<DyeTexture>,
+    pub normal: Option<DyeTexture>,
+}
+
+/// The two surfaces a dye's 27 vectors describe, as [`load_dye_materials`] reads them.
+#[must_use]
+pub fn dye_surfaces(vectors: &[[f32; 4]; 27]) -> [DyeSurfaceMaterial; 2] {
+    material::properties(vectors).surfaces.map(surface_material)
+}
+
+fn surface_material(surface: material::Surface) -> DyeSurfaceMaterial {
+    let finish = |albedo, params, smoothness| DyeFinish {
+        albedo,
+        params,
+        smoothness,
+    };
+    DyeSurfaceMaterial {
+        paint: finish(surface.albedo, surface.params, surface.roughness),
+        worn: finish(
+            surface.worn_albedo,
+            surface.worn_params,
+            surface.worn_roughness,
+        ),
+        wear: surface.wear,
+        emissive: surface.emissive,
+        iridescence: surface.iridescence,
+    }
+}
+
+/// The largest side of a [`DyeMaterial`] texture.
+pub const DYE_TEXTURE_EDGE: usize = 256;
+
+/// The materials of the requested dye rows, read as the model preview reads them. Call off the UI
+/// thread and drop the result's reader before installation.
+pub fn load_dye_materials(
+    packages: &Path,
+    indices: &[u16],
+) -> Result<BTreeMap<u16, Result<DyeMaterial, String>>, String> {
+    let manager = open_shadowkeep_package_manager(packages)?;
+    let texture = |tag: Option<u32>| {
+        crate::model_preview::texture::load(&manager, tag?)
+            .ok()
+            .map(|texture| shrink(texture, DYE_TEXTURE_EDGE))
+    };
+    Ok(material::load(&manager, indices)?
+        .into_iter()
+        .map(|(index, material)| {
+            let material = material.map(|material| {
+                let detail_tag = material.detail.clone().ok().flatten();
+                let normal_tag = material.normal.clone().ok().flatten();
+                DyeMaterial {
+                    surfaces: material.surfaces.map(surface_material),
+                    vectors: material.vectors,
+                    detail_transform: material.detail_transform,
+                    normal_transform: material.normal_transform,
+                    detail_tag,
+                    normal_tag,
+                    detail: texture(detail_tag),
+                    normal: texture(normal_tag),
+                }
+            });
+            (index, material)
+        })
+        .collect())
+}
+
+/// Detail textures by tag, each at most [`DYE_TEXTURE_EDGE`] pixels a side, for showing another
+/// dye's textures on an unbuilt one. Call off the UI thread.
+pub fn load_dye_textures(
+    packages: &Path,
+    tags: &[u32],
+) -> Result<BTreeMap<u32, Result<DyeTexture, String>>, String> {
+    let manager = open_shadowkeep_package_manager(packages)?;
+    Ok(tags
+        .iter()
+        .map(|&tag| {
+            let texture = crate::model_preview::texture::load(&manager, tag)
+                .map(|texture| shrink(texture, DYE_TEXTURE_EDGE));
+            (tag, texture)
+        })
+        .collect())
+}
+
+/// Halves a texture, averaging each two by two block, until it fits `edge` pixels a side.
+fn shrink(texture: crate::model_preview::texture::Texture, edge: usize) -> DyeTexture {
+    let [mut width, mut height] = texture.size;
+    let mut rgba = texture.rgba;
+    while width > edge || height > edge {
+        let (half_width, half_height) = ((width / 2).max(1), (height / 2).max(1));
+        let mut half = vec![0; half_width * half_height * 4];
+        for y in 0..half_height {
+            for x in 0..half_width {
+                for channel in 0..4 {
+                    let sum: u32 = [(0, 0), (1, 0), (0, 1), (1, 1)]
+                        .into_iter()
+                        .map(|(dx, dy)| {
+                            let column = (x * 2 + dx).min(width - 1);
+                            let row = (y * 2 + dy).min(height - 1);
+                            u32::from(rgba[(row * width + column) * 4 + channel])
+                        })
+                        .sum();
+                    half[(y * half_width + x) * 4 + channel] = ((sum + 2) / 4) as u8;
+                }
+            }
+        }
+        (width, height, rgba) = (half_width, half_height, half);
+    }
+    DyeTexture {
+        width,
+        height,
+        rgba,
+    }
+}
+
+/// One authored row of the game's iridescence lookup: its id and its colors across the row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IridescenceRow {
+    pub id: i16,
+    pub colors: Vec<[u8; 3]>,
+}
+
+/// The rows of the game's iridescence lookup that hold authored colors, for choosing one by
+/// eye. Rows past the authored ones hold a magenta placeholder the game skips, and so does this.
+/// Call off the UI thread.
+pub fn load_iridescence_rows(packages: &Path) -> Result<Vec<IridescenceRow>, String> {
+    const SAMPLES: usize = 16;
+    let manager = open_shadowkeep_package_manager(packages)?;
+    let texture = crate::model_preview::texture::iridescence(&manager)
+        .ok_or("The iridescence lookup is missing")?;
+    let [width, height] = texture.size;
+    if width == 0 || texture.rgba.len() != width * height * 4 {
+        return Err("The iridescence lookup has an unexpected size".into());
+    }
+    let mut rows = Vec::new();
+    for row in 0..height.min(usize::from(i16::MAX as u16)) {
+        let colors = (0..SAMPLES)
+            .map(|sample| {
+                let x = (sample * (width - 1)) / (SAMPLES - 1);
+                let at = (row * width + x) * 4;
+                [texture.rgba[at], texture.rgba[at + 1], texture.rgba[at + 2]]
+            })
+            .collect::<Vec<_>>();
+        let placeholder = colors
+            .iter()
+            .all(|[red, green, blue]| *red > 200 && *green < 60 && *blue > 200);
+        if !placeholder {
+            rows.push(IridescenceRow {
+                id: i16::try_from(row).map_err(|_| "Iridescence row overflow")?,
+                colors,
+            });
+        }
+    }
+    Ok(rows)
+}
+
 fn inline_constants(scope: &[u8]) -> Result<Option<&[u8]>, String> {
     if u64::from_le_bytes(bytes_at(scope, 0x88)?) == 0 {
         return Ok(None);
@@ -133,9 +338,18 @@ fn decode_colors(constants: &[u8]) -> Result<WeaponDyeColors, String> {
         }
         Ok(rgb)
     };
+    let iridescence = |vector: usize| -> Result<f32, String> {
+        let value = f32::from_le_bytes(bytes_at(constants, vector * 16)?);
+        if value.is_finite() {
+            Ok(value)
+        } else {
+            Err("Invalid dye iridescence".into())
+        }
+    };
     Ok(WeaponDyeColors {
         primary: color(9)?,
         secondary: color(13)?,
+        iridescence: [iridescence(11)?, iridescence(15)?],
     })
 }
 
@@ -190,7 +404,8 @@ mod tests {
             decode_colors(&bytes).unwrap(),
             WeaponDyeColors {
                 primary: [0.1, 0.2, 0.3],
-                secondary: [0.4, 0.5, 0.6]
+                secondary: [0.4, 0.5, 0.6],
+                iridescence: [0.0, 0.0],
             }
         );
         assert!(decode_colors(&bytes[..21 * 16]).is_err());

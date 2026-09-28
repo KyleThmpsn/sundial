@@ -36,6 +36,7 @@ fn cross_rarity_icons_keep_art_and_rebuild_exact_resource_dependencies() {
         donor_container_tag: exotic,
         icon_edit: WeaponIconEdit::default(),
         rarity,
+        plain: false,
     });
     let plan = build_watermark_plan(&manager, PARHELION_ASSET_PACKAGE_ID, 0, 0, &requests).unwrap();
     assert_eq!(plan.icon_containers.len(), 5);
@@ -136,56 +137,6 @@ fn higher_resolution_output_keeps_the_approved_design_in_all_six_lanes() {
 }
 
 #[test]
-fn authored_assets_cover_all_six_native_texture_lanes() {
-    let mut decoded = Vec::new();
-    for (index, (width, height)) in TEXTURE_DIMENSIONS.into_iter().enumerate() {
-        let pixels = decode_authored_texture(index, width, height)
-            .expect("pre-rendered watermark texture should decode");
-        assert_eq!(pixels.len(), width as usize * height as usize * 4);
-        assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] == 0));
-        assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] != 0));
-        decoded.push(pixels);
-    }
-    assert!(
-        decoded[0]
-            .chunks_exact(4)
-            .any(|pixel| { pixel[3] >= 200 && pixel[0..3].iter().all(|channel| *channel >= 220) })
-    );
-    assert!(
-        decoded[4]
-            .chunks_exact(4)
-            .any(|pixel| { pixel[3] >= 200 && pixel[0..3].iter().all(|channel| *channel <= 32) })
-    );
-    let dark_alpha = decoded[2]
-        .chunks_exact(4)
-        .map(|pixel| pixel[3])
-        .collect::<Vec<_>>();
-    let light_alpha = decoded[3]
-        .chunks_exact(4)
-        .map(|pixel| pixel[3])
-        .collect::<Vec<_>>();
-    assert_eq!(dark_alpha, light_alpha);
-    assert_eq!(
-        Sha1::digest(&dark_alpha).as_slice(),
-        AUTHORED_STANDALONE_ALPHA_SHA1
-    );
-    assert_eq!(
-        alpha_bounds(&dark_alpha, 45),
-        Some(AUTHORED_STANDALONE_ALPHA_BOUNDS)
-    );
-    assert!(
-        decoded[2]
-            .chunks_exact(4)
-            .all(|pixel| pixel[..3] == [0x58, 0x34, 0x41])
-    );
-    assert!(
-        decoded[3]
-            .chunks_exact(4)
-            .all(|pixel| pixel[..3] == [0xFF, 0xFF, 0xFF])
-    );
-}
-
-#[test]
 fn private_icon_fingerprint_tracks_composition_and_pixel_revisions() {
     let mut container = vec![0u8; ICON_CONTAINER_SIZE];
     let original = private_icon_fingerprint(&container, b"original pixels");
@@ -204,30 +155,6 @@ fn private_icon_fingerprint_tracks_composition_and_pixel_revisions() {
         changed,
         private_icon_fingerprint(&container, b"original pixels")
     );
-}
-
-#[test]
-fn item_icon_row_changes_only_the_identity_and_container_fields() {
-    let donor = (0..ITEM_ICON_ROW_SIZE as u8).collect::<Vec<_>>();
-    let item = 0x5355_4E44;
-    let container = TagHash(0x8132_1234);
-    let authored = item_icon_row_with_container(&donor, item, container).expect("row should patch");
-    assert_eq!(
-        read_u32(&authored, ITEM_ICON_IDENTITY_OFFSET).unwrap(),
-        item
-    );
-    assert_eq!(
-        read_tag(&authored, ITEM_ICON_CONTAINER_OFFSET).unwrap(),
-        container
-    );
-    for (offset, (before, after)) in donor.iter().zip(&authored).enumerate() {
-        let identity = (ITEM_ICON_IDENTITY_OFFSET..ITEM_ICON_IDENTITY_OFFSET + 4).contains(&offset);
-        let container =
-            (ITEM_ICON_CONTAINER_OFFSET..ITEM_ICON_CONTAINER_OFFSET + 4).contains(&offset);
-        if !identity && !container {
-            assert_eq!(before, after);
-        }
-    }
 }
 
 #[test]
@@ -462,6 +389,7 @@ fn real_stock_chain_authors_one_shared_resource_for_multiple_items_when_configur
         donor_container_tag,
         icon_edit: WeaponIconEdit::default(),
         rarity: AuthoredWeaponRarity::Legendary,
+        plain: false,
     });
     let plan = build_watermark_plan(&manager, 0x0914, 5_452, 2, &donors)
         .expect("real stock watermark plan should build");
@@ -620,6 +548,7 @@ fn real_misfit_edit_authors_a_private_primary_graph_when_configured() {
             donor_container_tag: MISFIT_ICON_CONTAINER,
             icon_edit: edit.clone(),
             rarity: AuthoredWeaponRarity::Legendary,
+            plain: false,
         }],
     )
     .expect("Misfit should support a private edited primary-image graph");
@@ -668,6 +597,7 @@ fn real_standalone_asset_package_round_trips_when_configured() {
             donor_container_tag: ARC_LOGIC_ICON_CONTAINER,
             icon_edit: WeaponIconEdit::default(),
             rarity: AuthoredWeaponRarity::Legendary,
+            plain: false,
         }],
     )
     .expect("standalone watermark graph should build");

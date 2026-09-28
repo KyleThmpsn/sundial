@@ -20,6 +20,13 @@ fn stock_variant(hash: u32) -> WeaponSocketPlugVariantRecipe {
     }
 }
 
+/// A stock perk opened from its socket, named the way New from Perk names a copy.
+fn stock_copy(hash: u32, catalog: &InvestmentCatalog) -> PerkRecipe {
+    let mut recipe = templates::from_variant(&stock_variant(hash), catalog);
+    recipe.name = format!("Custom {}", recipe.name);
+    recipe
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Target {
     namespace: String,
@@ -29,6 +36,9 @@ pub(super) struct Target {
     socket_type: u16,
     choices: Arc<[u32]>,
     variant: Option<WeaponSocketPlugVariantRecipe>,
+    /// Gear sockets take only plugs of their own kind, so a gear perk is built on the plug in its
+    /// choice and never adds a choice.
+    stock_based: bool,
 }
 
 impl Target {
@@ -42,6 +52,10 @@ impl Target {
             .sockets
             .get(socket)
             .ok_or("Select an available socket")?;
+        let stock_based = !weapon.kind.is_weapon();
+        if stock_based && !crate::app::gear_view::perk_destination(row) {
+            return Err("This socket takes no custom perk.".into());
+        }
         let socket_type = weapon
             .overrides
             .socket_columns
@@ -53,7 +67,7 @@ impl Target {
         let inherited =
             inherited_socket_choices(row.native_default, &row.ordered_embedded_choices, limit);
         let choices = recipe_socket_choices(weapon, socket, &inherited)?;
-        if choice > choices.len() || choice >= limit {
+        if choice > choices.len() || choice >= limit || (stock_based && choice == choices.len()) {
             return Err("This socket has no room for that choice.".into());
         }
         let variant = weapon
@@ -73,10 +87,20 @@ impl Target {
             socket_type,
             choices: choices.into(),
             variant,
+            stock_based,
         })
     }
 
-    pub(super) fn label(&self, donor: &WeaponDonor, catalog: &InvestmentCatalog) -> String {
+    /// The stock plug a gear perk replaces. A new perk for gear starts from it, since a gear
+    /// socket only takes plugs of its own kind.
+    pub(super) fn gear_plug(&self) -> Option<u32> {
+        self.stock_based
+            .then(|| self.choices.get(self.choice).copied())
+            .flatten()
+    }
+
+    /// The socket role and the name of the perk in this choice.
+    fn reading(&self, donor: &WeaponDonor, catalog: &InvestmentCatalog) -> (String, String) {
         let role =
             socket_editor::socket_role_label(catalog, donor, self.socket, Some(self.socket_type));
         let name = self
@@ -89,16 +113,45 @@ impl Target {
                     .map(|hash| catalog.plug_label(*hash, false))
             })
             .unwrap_or_else(|| "New Choice".into());
+        (role, name)
+    }
+
+    pub(super) fn label(&self, donor: &WeaponDonor, catalog: &InvestmentCatalog) -> String {
+        let (role, name) = self.reading(donor, catalog);
         if self.choice == self.choices.len() {
             format!("Add an Alternative · {role}")
+        } else if self.stock_based && self.choices.len() == 1 {
+            format!("Replace {name} · {role}")
         } else {
             format!("Replace {name} · {role} · Choice {}", self.choice + 1)
         }
     }
 
+    /// The reading of a row that opens this choice's perk for editing.
+    fn edit_label(&self, donor: &WeaponDonor, catalog: &InvestmentCatalog) -> String {
+        let (role, name) = self.reading(donor, catalog);
+        format!("Edit {name} · {role}")
+    }
+
+    /// Whether both name the same socket choice of the same item.
+    fn same_choice(&self, other: &Self) -> bool {
+        self.namespace == other.namespace
+            && self.donor == other.donor
+            && self.socket == other.socket
+            && self.choice == other.choice
+    }
+
+    /// Whether this is the choice that would be added after the last one.
+    fn adds(&self) -> bool {
+        self.choice == self.choices.len()
+    }
+
     pub(super) fn check(&self, weapon: &WeaponRecipe, donor: &WeaponDonor) -> Result<(), String> {
         if Self::capture(weapon, donor, self.socket, self.choice).as_ref() != Ok(self) {
-            return Err("The weapon or socket choices changed while this perk was open. Select the destination again before applying.".into());
+            return Err(format!(
+                "The {} changed. Select the destination again.",
+                weapon.kind.noun()
+            ));
         }
         Ok(())
     }
@@ -121,7 +174,34 @@ impl Change {
         let target = &self.target;
         if let Some(perk) = &self.perk {
             perk.validate()?;
-            let variant = perk.at_socket(target.socket as u16, target.choice as u16);
+            let mut variant = perk.at_socket(target.socket as u16, target.choice as u16);
+            if let Some(plug) = target.gear_plug() {
+                // A gear socket only takes plugs of its own kind, so the perk is built on the
+                // plug in its choice. Its text, stats and effects are its own. The socket keeps
+                // its choices, pinned so a random roll cannot replace the perk.
+                variant.source_plug_hash = plug.into();
+                if weapon
+                    .overrides
+                    .socket_columns
+                    .get(target.socket)
+                    .and_then(Option::as_ref)
+                    .is_none()
+                {
+                    socket_editor::materialize_socket_column(
+                        weapon,
+                        donor.sockets.len(),
+                        target.socket,
+                        &target.choices,
+                        false,
+                    );
+                }
+                weapon.overrides.socket_plug_variants.retain(|entry| {
+                    usize::from(entry.socket_index) != target.socket
+                        || usize::from(entry.choice_index) != target.choice
+                });
+                weapon.overrides.socket_plug_variants.push(variant);
+                return Ok(());
+            }
             let hash = perk
                 .template_plug
                 .parse_u32()
@@ -172,7 +252,9 @@ impl Change {
                     &target.choices,
                 )
             {
-                return Err("This socket already contains the original perk. Remove the other stock choice before restoring, or remove this custom choice instead.".into());
+                return Err(
+                    "This socket already holds the stock perk. Remove one choice first.".into(),
+                );
             }
             weapon.overrides.socket_plug_variants.retain(|entry| {
                 usize::from(entry.socket_index) != target.socket
@@ -206,8 +288,12 @@ fn targets(weapon: &WeaponRecipe, donor: &WeaponDonor, include_new: bool) -> Vec
                 return Vec::new();
             };
             base.variant = None;
-            let count = (base.choices.len() + usize::from(include_new))
-                .min(authored_socket_choice_limit(base.socket_type));
+            let count = if base.stock_based {
+                base.choices.len()
+            } else {
+                (base.choices.len() + usize::from(include_new))
+                    .min(authored_socket_choice_limit(base.socket_type))
+            };
             // Every destination shares the same immutable choice snapshot, even for large columns.
             (0..count)
                 .map(|choice| Target {
@@ -228,19 +314,25 @@ impl Workbench {
         self.initialize();
         self.message = None;
         self.message_path = None;
-        if let Some(index) = self
-            .documents
-            .iter()
-            .position(|document| document.target.as_ref() == Some(&target))
-        {
+        // The copy already open for this socket choice, whatever the choice holds now. Its
+        // destination follows the choice, so applying from it updates the same place.
+        if let Some(index) = self.documents.iter().position(|document| {
+            document.from_socket
+                && document
+                    .target
+                    .as_ref()
+                    .is_some_and(|open| open.same_choice(&target))
+        }) {
+            self.documents[index].target = Some(target);
             self.select_document(index);
         } else if let Some(&hash) = target.choices.get(target.choice) {
-            let variant = target
-                .variant
-                .clone()
-                .unwrap_or_else(|| stock_variant(hash));
-            let mut document = Document::new(templates::from_variant(&variant, catalog), None);
+            let recipe = match &target.variant {
+                Some(variant) => templates::from_variant(variant, catalog),
+                None => stock_copy(hash, catalog),
+            };
+            let mut document = Document::new(recipe, None);
             document.target = Some(target);
+            document.from_socket = true;
             self.add_document(document);
         }
         self.open = true;
@@ -253,8 +345,8 @@ impl Workbench {
         donor: &WeaponDonor,
         catalog: &InvestmentCatalog,
     ) {
-        ui.strong("Weapon Sockets");
-        crate::app::style::hint(ui, &weapon.name).on_hover_text("Pick a choice to edit its perk.");
+        ui.strong(format!("{} Sockets", weapon.kind.label()));
+        crate::app::style::hint(ui, &weapon.name);
         let mut picked = None;
         egui::ScrollArea::vertical()
             .id_salt("weapon-perk-choices")
@@ -265,9 +357,10 @@ impl Workbench {
                         let selected = self
                             .documents
                             .get(self.selected)
+                            .filter(|document| document.from_socket)
                             .and_then(|document| document.target.as_ref())
                             == Some(&target);
-                        let label = target.label(donor, catalog);
+                        let label = target.edit_label(donor, catalog);
                         if crate::app::style::list_row(ui, selected, &label).clicked() {
                             picked = Some(target);
                         }
@@ -279,6 +372,42 @@ impl Workbench {
         }
     }
 
+    /// Gives the selected perk the last destination when it has none of its own, and follows
+    /// its destination when the weapon changed under it.
+    fn sync_destination(&mut self, weapon: &WeaponRecipe, donor: &WeaponDonor) {
+        let Some(document) = self.documents.get_mut(self.selected) else {
+            return;
+        };
+        if document.target.is_none()
+            && let Some(last) = &self.destination
+        {
+            // A perk with no destination of its own takes the last one, but not the custom
+            // perk another document just put there: it takes the next free choice of that
+            // socket, so applying it adds beside the other perk rather than over it.
+            let taken = last.variant.is_some() && !last.stock_based;
+            document.target = taken
+                .then(|| Target::capture(weapon, donor, last.socket, last.choices.len()).ok())
+                .flatten()
+                .or_else(|| Some(last.clone()));
+        }
+        if let Some(target) = &document.target
+            && target.check(weapon, donor).is_err()
+        {
+            // The weapon changed under this perk, such as a Recipe discard or an apply from
+            // another perk. Follow the same socket choice so the caption names what sits
+            // there now, and a choice that was to be added stays the one to be added. A
+            // choice that no longer exists clears the destination.
+            let choice = if target.adds() {
+                Target::capture(weapon, donor, target.socket, 0)
+                    .map_or(target.choice, |now| now.choices.len())
+            } else {
+                target.choice
+            };
+            document.target = Target::capture(weapon, donor, target.socket, choice).ok();
+        }
+        self.destination = document.target.clone();
+    }
+
     pub(super) fn draw_attachment(
         &mut self,
         ui: &mut egui::Ui,
@@ -286,34 +415,25 @@ impl Workbench {
         donor: Option<&WeaponDonor>,
         catalog: Option<&InvestmentCatalog>,
     ) -> Option<Change> {
-        let issue = self.validation_issue(&self.documents.get(self.selected)?.recipe);
+        self.documents.get(self.selected)?;
+        let issue = self.selected_issue();
         if let Some(issue) = &issue {
             self.draw_issue(ui, issue);
         }
         let (Some(donor), Some(catalog)) = (donor, catalog) else {
             if issue.is_none() {
-                ui.weak("Open a weapon recipe to apply this perk.");
+                ui.weak("No recipe open.");
             }
             return None;
         };
         let edit_issue = self.edit_issue();
+        self.sync_destination(weapon, donor);
         let document = self.documents.get_mut(self.selected)?;
-        if let Some(target) = &document.target
-            && target.check(weapon, donor).is_err()
-        {
-            // The weapon changed under this perk, such as a Recipe discard or an apply from
-            // another perk. Follow the same socket choice so the caption names what sits
-            // there now. A choice that no longer exists clears the destination.
-            document.target = Target::capture(weapon, donor, target.socket, target.choice).ok();
-        }
         let mut result = None;
         ui.add_enabled_ui(self.editor.is_none(), |ui| {
             ui.horizontal(|ui| {
-                ui.label("Weapon Socket");
-                sundial::investment::draw_authoring_info_icon(
-                    ui,
-                    "Apply to Weapon copies this perk into the chosen socket choice. Save Recipe to keep it. Library edits do not update weapon copies automatically.",
-                );
+                let kind = weapon.kind.label();
+                ui.label(format!("{kind} Socket"));
                 // A destination names a socket, a choice and the perk that sits there, so
                 // the reading runs long. A combo takes the width of its selected text, and
                 // an unbounded one here pushed the actions off the row. A fixed allocation
@@ -347,36 +467,58 @@ impl Workbench {
                         .on_hover_text(destination);
                     pickers::name_combo(ui, "perk-destination", "Destination Socket");
                 });
-                // The action and anything standing in its way sit together at the right.
+                // The action and anything standing in its way sit together at the right. Save
+                // Recipe closes the flow, since an applied perk lives in the unsaved recipe.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let ready = document.target.is_some() && issue.is_none() && edit_issue.is_none();
-                    let apply = crate::app::style::primary(ui, "Apply to Weapon");
-                    if ui.add_enabled(ready, apply)
-                        .on_hover_text("Update only the selected socket choice. Save Recipe to keep the weapon changes.")
-                        .on_disabled_hover_text(edit_issue.or_else(|| issue.as_ref().map(|issue| issue.message.as_str())).unwrap_or("Choose a destination socket and choice."))
-                        .clicked() {
-                        result = document.target.clone().map(|target| Change { target, perk: Some(document.recipe.clone()) });
+                    if ui
+                        .add_enabled(self.recipe_unsaved, egui::Button::new("Save Recipe"))
+                        .on_disabled_hover_text("Recipe saved.")
+                        .clicked()
+                    {
+                        self.save_recipe_requested = true;
                     }
-                    if let Some(target) = document.target.as_ref().filter(|target| target.variant.is_some())
+                    ui.separator();
+                    // A warning is shown above but does not hold the perk back.
+                    let blocking = issue.as_ref().filter(|issue| issue.blocking);
+                    let ready =
+                        document.target.is_some() && blocking.is_none() && edit_issue.is_none();
+                    let apply = crate::app::style::primary(ui, &format!("Apply to {kind}"));
+                    if ui
+                        .add_enabled(ready, apply)
+                        .on_disabled_hover_text(
+                            edit_issue
+                                .or_else(|| blocking.map(|issue| issue.message.as_str()))
+                                .unwrap_or("Choose a socket and choice."),
+                        )
+                        .clicked()
+                    {
+                        result = document.target.clone().map(|target| Change {
+                            target,
+                            perk: Some(document.recipe.clone()),
+                        });
+                    }
+                    if let Some(target) = document
+                        .target
+                        .as_ref()
+                        .filter(|target| target.variant.is_some())
                         && let Some(hash) = target.choices.get(target.choice)
                     {
                         let source = catalog.plug_label(*hash, false);
-                        if ui.add(egui::Button::new(format!("Use Stock {source}")).truncate())
-                            .on_hover_text(format!("Remove this choice's custom text, stats and effects and use its source perk, {source}."))
-                            .clicked() {
-                            result = Some(Change { target: target.clone(), perk: None });
+                        if ui
+                            .add(egui::Button::new(format!("Use Stock {source}")).truncate())
+                            .on_hover_text(format!("Use Stock {source}"))
+                            .clicked()
+                        {
+                            result = Some(Change {
+                                target: target.clone(),
+                                perk: None,
+                            });
                         }
-                    }
-                    if issue.is_none() {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new("Apply a copy, then Save Recipe.").weak())
-                                .truncate(),
-                        )
-                        .on_hover_text("This copies the current perk into the selected weapon socket. Save Recipe keeps that change. Save to Library is separate and does not update weapon copies.");
                     }
                 });
             });
         });
+        self.destination = document.target.clone();
         result
     }
 
@@ -392,12 +534,15 @@ impl Workbench {
         };
         if let Some(target) = &document.target {
             let next = Target::capture(weapon, donor, target.socket, target.choice).ok();
+            // Only an untouched copy of the socket's perk follows the socket back to stock.
+            // A copy that was edited, and any other perk sent there, stays open as it is.
             if restored
+                && document.untouched_copy()
                 && let Some(target) = &next
                 && let Some(hash) = target.choices.get(target.choice)
             {
-                let recipe = templates::from_variant(&stock_variant(*hash), catalog);
-                *document = Document::new(recipe, None);
+                *document = Document::new(stock_copy(*hash, catalog), None);
+                document.from_socket = true;
             }
             document.target = next;
         }
@@ -405,9 +550,9 @@ impl Workbench {
         self.message_path = None;
         self.message = Some(
             if restored {
-                "Replaced the custom perk with its stock source. Save Recipe to keep it."
+                "Replaced the custom perk with its stock source."
             } else {
-                "Applied to the selected choice. Save Recipe to keep it."
+                "Applied to the selected choice."
             }
             .into(),
         );
@@ -422,7 +567,7 @@ impl PackageAuthoringApp {
         }
         let mut workbench = std::mem::take(&mut self.perk_workbench);
         let donor = self
-            .current_donor()
+            .current_item_donor()
             .map(|donor| socket_editor::socket_editor_donor(&donor, &self.recipe).into_owned());
         if let Some(request) = self.perk_request.take()
             && let (Some(donor), Some(catalog)) = (&donor, &self.catalog)
@@ -463,6 +608,7 @@ impl PackageAuthoringApp {
         {
             workbench.load_authored_templates(self.recipe_library.as_ref(), &self.recipe, catalog);
         }
+        workbench.recipe_unsaved = self.recipe_dirty && self.invalid_weapon_name.is_none();
         let change = workbench.show(
             ctx,
             &self.packages,
@@ -476,10 +622,16 @@ impl PackageAuthoringApp {
                 Ok(()) => {
                     workbench.applied(&self.recipe, &donor, catalog, change.perk.is_none());
                     self.plug_queries.clear();
+                    // Save Recipe reads this on the next frame of the workbench.
+                    self.synchronize_recipe_dirty();
                 }
                 Err(error) => workbench.error = Some(error),
             }
         }
+        let save_recipe = std::mem::take(&mut workbench.save_recipe_requested);
         self.perk_workbench = workbench;
+        if save_recipe {
+            self.save_open_recipe();
+        }
     }
 }

@@ -34,30 +34,23 @@ pub(crate) fn closure(
     manager: &PackageManager,
     roots: impl IntoIterator<Item = u32>,
 ) -> Result<Vec<Reference>, String> {
-    collect(roots, &mut Registry::new()?, |tag| {
-        let entry = manager
-            .get_entry(TagHash(tag))
-            .ok_or_else(|| format!("Referenced package resource 0x{tag:08X} is missing"))?;
-        let payload = if matches!(entry.file_type, 8 | 16) {
-            let data = manager.read_tag(TagHash(tag)).map_err(|error| {
-                format!("Could not read referenced resource 0x{tag:08X}: {error}")
-            })?;
-            if data.len() != entry.file_size as usize {
-                return Err(format!(
-                    "Referenced resource 0x{tag:08X} has an invalid size"
-                ));
-            }
-            data
-        } else {
-            Vec::new()
-        };
-        Ok(Resource {
-            kind: entry.file_type,
-            class: entry.reference,
-            payload,
-        })
+    let roots = roots.into_iter().collect::<BTreeSet<_>>();
+    let mut registry = Registry::new()?;
+    // Answers the walk would otherwise read one resource at a time. The walk below still
+    // decides the order, the limit and which error is reported.
+    let mut known = cache::prefetch(manager, &roots);
+    traverse(roots, |tag| match known.remove(&tag) {
+        Some(answer) => answer,
+        None => {
+            let resource = read_resource(manager, tag)?;
+            children(tag, &resource, &mut registry, &mut |schema| {
+                read_resource(manager, schema)
+            })
+        }
     })
 }
+
+mod cache;
 
 struct Resource {
     kind: u8,
@@ -65,10 +58,78 @@ struct Resource {
     payload: Vec<u8>,
 }
 
+fn read_resource(manager: &PackageManager, tag: u32) -> Result<Resource, String> {
+    let entry = manager
+        .get_entry(TagHash(tag))
+        .ok_or_else(|| format!("Referenced package resource 0x{tag:08X} is missing"))?;
+    let payload = if matches!(entry.file_type, 8 | 16) {
+        let data = manager
+            .read_tag(TagHash(tag))
+            .map_err(|error| format!("Could not read referenced resource 0x{tag:08X}: {error}"))?;
+        if data.len() != entry.file_size as usize {
+            return Err(format!(
+                "Referenced resource 0x{tag:08X} has an invalid size"
+            ));
+        }
+        data
+    } else {
+        Vec::new()
+    };
+    Ok(Resource {
+        kind: entry.file_type,
+        class: entry.reference,
+        payload,
+    })
+}
+
+/// The resources one resource references, with the offsets they are declared at, before
+/// the package-range filter the walk applies.
+fn children(
+    tag: u32,
+    resource: &Resource,
+    registry: &mut Registry,
+    read: &mut impl FnMut(u32) -> Result<Resource, String>,
+) -> Result<BTreeMap<u32, usize>, String> {
+    Ok(match resource.kind {
+        // GPU buffer/texture, shader and state headers refer to raw backing entries
+        // through the package directory, not through reflected object fields. In
+        // particular, enrolling a shader header does not enroll its DXBC bytecode.
+        32..=34 => BTreeMap::from([(resource.class, usize::MAX)]),
+        // These describe layouts, rather than runtime objects. Generated layouts are read
+        // and validated separately when a typed object names their concrete schema.
+        8 | 16 if matches!(resource.class, 0x8080_0000 | 0x8080_9BBB) => BTreeMap::new(),
+        8 | 16 => walk(&resource.payload, resource.class, |handle| {
+            registry.record(handle, |schema_tag| {
+                let schema = read(schema_tag)?;
+                if schema.kind != 8 || schema.class != 0x8080_0000 {
+                    return Err(format!(
+                        "Generated schema 0x{schema_tag:08X} has an invalid class"
+                    ));
+                }
+                Ok(schema.payload)
+            })
+        })
+        .map_err(|error| format!("Resource 0x{tag:08X}: {error}"))?,
+        // Raw audio, texture and buffer payloads have no native object layout.
+        _ => BTreeMap::new(),
+    })
+}
+
+#[cfg(test)]
 fn collect(
     roots: impl IntoIterator<Item = u32>,
     registry: &mut Registry,
     mut read: impl FnMut(u32) -> Result<Resource, String>,
+) -> Result<Vec<Reference>, String> {
+    traverse(roots, |tag| {
+        let resource = read(tag)?;
+        children(tag, &resource, registry, &mut read)
+    })
+}
+
+fn traverse(
+    roots: impl IntoIterator<Item = u32>,
+    mut children: impl FnMut(u32) -> Result<BTreeMap<u32, usize>, String>,
 ) -> Result<Vec<Reference>, String> {
     let mut pending = roots.into_iter().collect::<BTreeSet<_>>();
     let mut visited = BTreeSet::new();
@@ -80,31 +141,7 @@ fn collect(
         if visited.len() > MAX_RESOURCES {
             return Err("Native reference traversal exceeded its resource limit".into());
         }
-        let resource = read(tag)?;
-        let children = match resource.kind {
-            // GPU buffer/texture, shader and state headers refer to raw backing entries
-            // through the package directory, not through reflected object fields. In
-            // particular, enrolling a shader header does not enroll its DXBC bytecode.
-            32..=34 => BTreeMap::from([(resource.class, usize::MAX)]),
-            // These describe layouts, rather than runtime objects. Generated layouts are read
-            // and validated separately when a typed object names their concrete schema.
-            8 | 16 if matches!(resource.class, 0x8080_0000 | 0x8080_9BBB) => BTreeMap::new(),
-            8 | 16 => walk(&resource.payload, resource.class, |handle| {
-                registry.record(handle, |schema_tag| {
-                    let schema = read(schema_tag)?;
-                    if schema.kind != 8 || schema.class != 0x8080_0000 {
-                        return Err(format!(
-                            "Generated schema 0x{schema_tag:08X} has an invalid class"
-                        ));
-                    }
-                    Ok(schema.payload)
-                })
-            })
-            .map_err(|error| format!("Resource 0x{tag:08X}: {error}"))?,
-            // Raw audio, texture and buffer payloads have no native object layout.
-            _ => BTreeMap::new(),
-        };
-        for (child, offset) in children {
+        for (child, offset) in children(tag)? {
             // This uses the client's canonical package-id range, not tiger-pkg's
             // narrower convenience predicate. Names and unshipped handles are not packages.
             if !is_reference(child) {

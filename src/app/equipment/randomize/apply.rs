@@ -33,7 +33,7 @@ pub(super) fn apply_candidate(
     discard_replaced: bool,
 ) -> Result<String, String> {
     if !account::can_mutate_equipment(document) {
-        return Err("Randomizing requires a writable equipment schema".to_owned());
+        return Err("Randomizing needs editable equipment".to_owned());
     }
     let item = catalog
         .item(candidate.item_hash)

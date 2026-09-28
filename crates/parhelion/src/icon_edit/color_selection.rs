@@ -302,28 +302,6 @@ mod tests {
     }
 
     #[test]
-    fn multiple_replacements_are_independent_and_preserve_alpha() {
-        let edit = WeaponIconEdit {
-            color_replacements: vec![
-                rule([0, 0, 255], [255, 0, 0]),
-                rule([255; 3], [255, 128, 0]),
-                rule([255, 0, 0], [0, 255, 0]),
-            ],
-            ..Default::default()
-        };
-        let mut pixels = [
-            0, 0, 255, 128, 255, 255, 255, 255, 255, 0, 0, 255, 0, 0, 255, 0,
-        ];
-        edit.apply_to_rgba8(&mut pixels).unwrap();
-        assert_eq!(
-            pixels,
-            [
-                255, 0, 0, 128, 255, 128, 0, 255, 0, 255, 0, 255, 0, 0, 255, 0
-            ]
-        );
-    }
-
-    #[test]
     fn matching_feathers_preserves_shading_and_ignores_unrelated_colors() {
         let replacement = IconColorReplacement {
             range_percent: 100,

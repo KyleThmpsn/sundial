@@ -121,7 +121,7 @@ fn native_group_swap_repairs_conflicts_and_previews_settings_without_mutating_th
     )
     .unwrap();
     recipe.overrides.weapon_pattern_index = baseline.weapon_pattern_index;
-    let graph = load_effective_runtime_graph(&packages, &key).unwrap();
+    let (graph, _) = load_effective_runtime_graph(&packages, &key).unwrap();
     let field = graph
         .fields()
         .find(|field| {

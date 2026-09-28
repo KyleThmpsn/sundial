@@ -44,28 +44,48 @@ struct Program {
 }
 
 fn texture_contract(material: &Payload, base: usize, bindings: &mut Bindings) -> Result<()> {
-    // Verified hemisphere resources. Deferred specular mips moved from +0x98
-    // to +0xD8, and the Atmosphere sky lookup from +0x90 to +0x100. Native and
-    // source shaders use the same hemisphere projection for each resource.
+    // Verified Deferred and Atmosphere resources. The integer screen-space
+    // texture moved from +0x78 to +0xB8, Deferred specular mips from +0x98
+    // to +0xD8, and the Atmosphere sky lookup from +0x90 to +0x100.
     // Preserve the material's output slot, which varies between materials.
     let code = array_bytes(material, base + 0x20, 1)?;
     let instructions = program::parse(&code)?;
     for pair in instructions.windows(2) {
         let mapped = match pair[0].args {
+            [3, 0x17] => Some([0x3F, 3, 0x0F]),
             [3, 0x1B] => Some([0x3F, 3, 0x13]),
             [7, 0x20] => Some([0x3F, 7, 0x12]),
+            // Reticle mask, verified against the native integer stencil lookup.
+            [0x4A, 0x0C] => Some([0x3F, 0x49, 0x0C]),
             _ => None,
         };
         if let Some(mapped) = mapped.filter(|_| pair[0].op == 0x4D && pair[1].op == 0x56) {
             let slot = pair[1].args[0];
             ensure!(
                 slot >> 5 == 1,
-                "sky texture has an unsupported shader stage"
+                "external texture has an unsupported shader stage"
             );
             bindings
                 .external_textures
                 .insert([0x4D, pair[0].args[0], pair[0].args[1]], mapped);
             bindings.texture_slots.insert(slot, slot);
+        }
+    }
+    // The reticle viewport and display-color externs moved as whole structs.
+    // Native reticle programs read the same viewport vector and five HDR
+    // scalars. Keep their field offsets and the source shader's equations.
+    for instruction in &instructions {
+        let mapped = match (instruction.op, instruction.args) {
+            (0x4B, [0x4A, field @ 4..=5]) => Some([0x3D, 0x49, *field]),
+            (0x4C, [2, 8]) => Some([0x3E, 2, 6]),
+            (0x4A, [0x5F, field @ 0..=4]) => Some([0x3C, 0x5C, *field]),
+            _ => None,
+        };
+        if let Some(mapped) = mapped {
+            bindings.external_textures.insert(
+                [instruction.op, instruction.args[0], instruction.args[1]],
+                mapped,
+            );
         }
     }
     if base == 0x2B0
@@ -126,8 +146,10 @@ pub(super) fn preflight(material: &Payload, base: usize) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn program(
     c: &Effect,
+    model: usize,
     material: &Payload,
     base: usize,
     text: &str,
@@ -165,7 +187,7 @@ fn program(
     let resources = material.u64(base + 0x40)? as usize;
     let code = array_bytes(material, base + 0x20, 1)?;
     let mut bindings = Bindings {
-        objects: c.objects.clone(),
+        objects: c.model_objects(model)?,
         globals: c.globals.clone(),
         constant_count: constants.len() / 16,
         output_count: count,
@@ -317,6 +339,12 @@ fn set_program(mat: &mut Vec<u8>, base: usize, p: &Program, objects: usize) -> R
     append_array(mat, base + 0x20, 0x80800009, &p.code, 1)?;
     append_array(mat, base + 0x30, 0x80800090, &p.constants, 16)?;
     append_array(mat, base + 0x50, 0x80800090, &p.values, 16)?;
+    if p.values.is_empty() {
+        // The native renderer allocates whenever this byte is nonzero, then
+        // binds the result even if the slot below is the absent-buffer sentinel.
+        // A carrier's writable flag cannot survive removal of its output table.
+        mat[base + 0x74] = 0;
+    }
     if p.evidence.iter().any(|row| row["translated"] == true) {
         ensure!(
             !p.values.is_empty(),
@@ -428,6 +456,7 @@ struct VertexResources {
 
 fn vertex_resources(
     c: &mut Effect,
+    model: usize,
     stage: usize,
     material: &Payload,
     vertex: &vertex::Vertex,
@@ -449,7 +478,16 @@ fn vertex_resources(
         .filter(|(_, r)| r["direct_sampler"] != true)
         .map(|(i, _)| Ok((u8::try_from(i)?, u8::try_from(i)?)))
         .collect::<Result<BTreeMap<_, _>>>()?;
-    let program = program(c, material, 0x70, &vertex.source, None, map, Some(binding))?;
+    let program = program(
+        c,
+        model,
+        material,
+        0x70,
+        &vertex.source,
+        None,
+        map,
+        Some(binding),
+    )?;
     for (&slot, &index) in &program.samplers {
         ensure!(
             resources
@@ -526,16 +564,6 @@ fn set_resources(
     Ok(())
 }
 
-fn decal_donor(c: &Effect, blend: u8) -> Result<Vec<u8>> {
-    ensure!(supported_blend(1, blend), "source decal blend differs");
-    let role = if blend == 29 {
-        Role::AdditiveDecal
-    } else {
-        Role::Decal
-    };
-    Ok(c.contracts()?.carrier(role)?.record.clone())
-}
-
 /// Engine render states this converter emits for stage 1 decals. These are
 /// engine constants, not asset identities: each one was confirmed to exist on
 /// a native stage 1 material in the shipped packages, so the engine already
@@ -545,7 +573,7 @@ fn decal_donor(c: &Effect, blend: u8) -> Result<Vec<u8>> {
 /// alpha tested and keeps its own exact check. 27, 33 and 36 are additional
 /// states the source arsenal uses; 27 and 36 also appear on native stage 1
 /// draws directly, while 33 appears natively only at a vertex layout this
-/// converter does not emit, so it reuses the decal carrier record.
+/// converter does not emit. The material state is retained explicitly.
 const DECAL_STATES: [u8; 6] = [26, 27, 29, 33, 36, 57];
 
 /// Blend equations this converter implements for each retained source stage.
@@ -555,7 +583,12 @@ pub(super) fn supported_blend(stage: usize, blend: u8) -> bool {
     if stage == 1 {
         DECAL_STATES.contains(&blend)
     } else {
-        blend == if matches!(stage, 0 | 3 | 12) { 0 } else { 8 }
+        blend
+            == if matches!(stage, 0 | 3 | 12 | 14) {
+                0
+            } else {
+                8
+            }
     }
 }
 
@@ -571,7 +604,6 @@ pub(super) fn auxiliary(c: &mut Effect, prepared: &Path, stage: usize) -> Result
     };
     let carrier = c.contracts()?.carrier(role)?;
     let material_tag = carrier.material;
-    let donor = carrier.record.clone();
     let shell = c.contracts()?.material(&c.refs, role)?;
     let pool = c.contracts()?.samplers.clone();
     let mut materials = BTreeMap::new();
@@ -590,8 +622,15 @@ pub(super) fn auxiliary(c: &mut Effect, prepared: &Path, stage: usize) -> Result
             );
             let vertex = vertex::build(c, &draw, &material)?;
             let binding = c.bindings[&draw.material].get("vertex").cloned();
-            let vertex_bindings =
-                vertex_resources(c, stage, &material, &vertex, binding.as_ref(), &pool)?;
+            let vertex_bindings = vertex_resources(
+                c,
+                draw.model,
+                stage,
+                &material,
+                &vertex,
+                binding.as_ref(),
+                &pool,
+            )?;
             let program = vertex_bindings.program;
             let name = format!("source-stage-{stage}-{}-{}", draw.model, draw.material);
             c.graph.program(
@@ -606,8 +645,14 @@ pub(super) fn auxiliary(c: &mut Effect, prepared: &Path, stage: usize) -> Result
             let mut patches = vec![json!({"offset":0x48,"symbol":format!("{name}-shader")})];
             fixed(&mut mat, 0x48, &vertex_bindings.textures, &mut patches)?;
             set_program(&mut mat, 0x48, &program, c.objects.len())?;
+            // The vertex program reads its samplers from this table, so a shadow or
+            // depth pass that loses it faults on the first vertex texture read.
+            let samplers = vertex_bindings.resources.rows.len() / 16;
             set_resources(&mut mat, 0x48, vertex_bindings.resources, &mut patches)?;
-            append_array(&mut mat, 0x88, 0x808073F3, &[], 16)?;
+            ensure!(
+                Payload(mat.clone()).u64(0x88)? as usize == samplers,
+                "auxiliary vertex sampler table differs from its program"
+            );
             c.graph
                 .add(&name, u64::from(material_tag), &mat, None, patches)?;
             evidence.push(json!({"model":draw.model_tag,"material":draw.material,"vertex_shader":format!("{:08X}",material.u32(0x70)?),"vertex_runtime_outputs":program.evidence,"source_vertex_equations_retained":true}));
@@ -617,7 +662,7 @@ pub(super) fn auxiliary(c: &mut Effect, prepared: &Path, stage: usize) -> Result
     }
     for (draw, name) in records {
         for (channel, faces) in &draw.groups {
-            c.draws.add(stage, &donor, &draw, *channel, faces, &name)?;
+            c.draws.add(stage, &draw, *channel, faces, &name)?;
         }
     }
     c.draws.layout(stage)?;
@@ -650,26 +695,33 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
         3 => Role::Shadow,
         12 => Role::Depth,
         7 | 9 => Role::Emission,
+        14 => Role::OpticStencil,
+        16 => Role::Reticle,
         _ => anyhow::bail!("unsupported source draw stage"),
     };
     let shell = c.contracts()?.material(&c.refs, role)?;
     let template = u64::from(c.contracts()?.carrier(role)?.material);
-    let donor = if stage == 0 {
-        c.draws.records[0]
-            .first()
-            .context("native opaque draw")?
-            .0
-            .clone()
-    } else if stage == 7 {
-        c.contracts()?.carrier(Role::Transparent)?.record.clone()
-    } else {
-        c.contracts()?.carrier(role)?.record.clone()
-    };
     let mut dyes = None;
     let mut created = BTreeMap::new();
     let mut evidence = vec![];
     let mut records = vec![];
     for draw in c.source.draws(stage)? {
+        let plated = c.source.report["models"][draw.model]["has_texture_plates"] != false;
+        if draw.material == "FFFFFFFF" {
+            let omitted = &mut c.graph.manifest["source_runtime_material_draws"];
+            if omitted.is_null() {
+                *omitted = json!([]);
+            }
+            let record = json!({"model":draw.model_tag,"stage":stage,
+                "reason":"draw requires a runtime material override absent from the source asset"});
+            let records = omitted
+                .as_array_mut()
+                .context("runtime material omissions")?;
+            if !records.contains(&record) {
+                records.push(record);
+            }
+            continue;
+        }
         let key = (draw.model, draw.material.clone());
         if !created.contains_key(&key) {
             let material = c.source.raw(&draw.material)?;
@@ -695,9 +747,14 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
                 .context("source material bindings")?
                 .clone();
             let (source, null_glow) = null_glow::specialize(&source, &material, &binding)?;
-            let (source, native_lighting) =
-                lighting::adapt(&source).map_err(crate::d2_mot::source_limit)?;
-            let dye_inputs = inputs::dye_inputs(&source, &material, &c.refs)?;
+            let (source, native_lighting) = lighting::adapt(&source)
+                .with_context(|| format!("source shader {ps:08X} material {}", draw.material))
+                .map_err(crate::d2_mot::source_limit)?;
+            let dye_inputs = if binding["implicit_dyes"] == true {
+                inputs::dye_inputs_with_palette(&source, &material, &c.refs, true)?
+            } else {
+                inputs::dye_inputs(&source, &material, &c.refs)?
+            };
             let has_dyes = !dye_inputs.is_empty();
             if has_dyes && dyes.is_none() {
                 dyes = Some(
@@ -715,6 +772,7 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
                 .collect::<Result<BTreeMap<_, _>>>()?;
             let mut pixel_program = program(
                 c,
+                draw.model,
                 &material,
                 0x2B0,
                 &source,
@@ -732,8 +790,15 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
             }
             let vertex = vertex::build(c, &draw, &material)
                 .with_context(|| format!("material {} vertex shader", draw.material))?;
-            let vertex_bindings =
-                vertex_resources(c, stage, &material, &vertex, binding.get("vertex"), &pool)?;
+            let vertex_bindings = vertex_resources(
+                c,
+                draw.model,
+                stage,
+                &material,
+                &vertex,
+                binding.get("vertex"),
+                &pool,
+            )?;
             let vertex_program = vertex_bindings.program;
             let binding = c
                 .bindings
@@ -758,15 +823,27 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
             let mut textures = BTreeMap::new();
 
             let used = inputs::slots(&source, 't')?;
-            if matches!(stage, 7 | 9) && used.contains(&22) {
-                ensure!(
-                    !used.contains(&18),
-                    "native screen-refraction slot is occupied"
-                );
-                lighting::check_refraction(&c.refs)?;
+            if matches!(stage, 7 | 9) {
+                // Either source scene color input becomes native's one resolved scene color.
+                let scene = [22u8, 23]
+                    .into_iter()
+                    .filter(|slot| used.contains(&u32::from(*slot)))
+                    .collect::<Vec<_>>();
+                if let [slot] = scene[..] {
+                    ensure!(
+                        !used.contains(&18),
+                        "native screen-refraction slot is occupied"
+                    );
+                    lighting::check_refraction(&c.refs, slot)?;
+                } else {
+                    ensure!(
+                        scene.is_empty(),
+                        "source reads both scene color inputs, which native binds as one"
+                    );
+                }
             }
             for (slot, kind) in [(0, "albedo"), (1, "normal"), (2, "gstack")] {
-                if used.contains(&slot) {
+                if plated && used.contains(&slot) {
                     textures.insert(slot, surface(c, kind)?);
                 }
             }
@@ -787,7 +864,10 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
                 .context("source fixed textures")?
             {
                 let slot = u32::try_from(number(&tex["slot"])?)?;
-                ensure!(slot >= 3, "source material overrides a native plate");
+                ensure!(
+                    !plated || slot >= 3,
+                    "source material overrides a native plate"
+                );
                 if used.contains(&slot) {
                     if slot == 26 && matches!(stage, 7 | 9) {
                         ensure!(
@@ -800,7 +880,11 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
                     }
                 }
             }
-            if used.contains(&3) && !textures.contains_key(&3) {
+            if plated
+                && used.contains(&3)
+                && !textures.contains_key(&3)
+                && !pixel_program.textures.contains_key(&0x23)
+            {
                 textures.insert(3, dyemap::texture(c, draw.model)?);
             }
             // Runtime texture outputs own their destination slots. A dye or
@@ -816,11 +900,10 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
                 .iter()
                 .copied()
                 .filter(|slot| {
-                    !(*slot < 3
-                        || textures.contains_key(slot)
+                    !(textures.contains_key(slot)
                         || pixel_program.textures.contains_key(&(0x20 | *slot as u8))
                         || (*slot == 26 && textures.contains_key(&12))
-                        || (matches!(stage, 7 | 9) && [15, 20, 21, 22].contains(slot)))
+                        || (matches!(stage, 7 | 9) && [15, 20, 21, 22, 23].contains(slot)))
                 })
                 .collect::<Vec<_>>();
             if !missing.is_empty() {
@@ -850,10 +933,14 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
                 &dye_inputs,
             )?;
             let (rect, size) = c.atlas(draw.model)?;
-            pixel = inputs::pixel(&pixel, rect, size)?;
+            pixel = if plated {
+                inputs::pixel(&pixel, rect, size)?
+            } else {
+                inputs::pixel_with_plates(&pixel, None)?
+            };
             if matches!(stage, 7 | 9) {
                 pixel = atmosphere::adapt(&pixel)?;
-                for (from, to) in [(20, 16), (21, 17), (22, 18), (26, 12)] {
+                for (from, to) in [(20, 16), (21, 17), (22, 18), (23, 18), (26, 12)] {
                     pixel = pixel.replace(
                         &format!("t{from} : register(t{from})"),
                         &format!("t{to} : register(t{to})"),
@@ -874,6 +961,12 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
                 pixel = pixel
                     .replace("t10 : register(t10)", "t5 : register(t5)")
                     .replace("t10.", "t5.");
+            }
+            let immutable =
+                constants::specialize(&pixel, &pixel_program.values, &pixel_program.code)?;
+            let static_pixel_constants = immutable.is_some();
+            if let Some(specialized) = immutable {
+                pixel = specialized;
             }
             inputs::pixel_scopes(&pixel, stage)?;
             c.graph.program(
@@ -929,6 +1022,11 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
                 }
             }
             c.graph.add(&name, template, &mat, None, patches)?;
+            // Recorded separately so refreshed graphs can verify specialization.
+            if static_pixel_constants {
+                c.graph.manifest["immutable_pixel_buffers"][&name] =
+                    json!(pixel_program.values.len() / 16);
+            }
             evidence.push(json!({"model":draw.model_tag,"material":draw.material,"pixel_shader":format!("{ps:08X}"),"vertex_shader":format!("{:08X}",material.u32(0x70)?),"source_vertex_equations_retained":true,"source_pixel_equations_retained":!native_lighting,"source_material_equations_retained":true,"native_forward_lighting":native_lighting,"null_glow_mask_specialized":null_glow,"native_plate_scope_retained":false,"fixed_surface_textures":true,"pixel_runtime_outputs":pixel_program.evidence,"vertex_runtime_outputs":vertex_program.evidence}));
             created.insert(key.clone(), name);
         }
@@ -936,14 +1034,8 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
     }
     c.draws.records[stage].clear();
     for (draw, symbol) in records {
-        let donor = if stage == 1 {
-            decal_donor(c, c.source.raw(&draw.material)?.u8(48)? & 127)?
-        } else {
-            donor.clone()
-        };
         for (channel, faces) in &draw.groups {
-            c.draws
-                .add(stage, &donor, &draw, *channel, faces, &symbol)?;
+            c.draws.add(stage, &draw, *channel, faces, &symbol)?;
         }
     }
     c.draws.layout(stage)?;
@@ -988,19 +1080,6 @@ mod tests {
     }
 
     #[test]
-    fn atmosphere_hemisphere_uses_verified_native_lookup() {
-        let code = [0x4D, 7, 0x20, 0x56, 0x24];
-        let mut material = vec![0; 0x400];
-        append_array(&mut material, 0x2D0, 0x80800009, &code, 1).unwrap();
-        let mut bindings = Bindings::default();
-        texture_contract(&Payload(material), 0x2B0, &mut bindings).unwrap();
-        let result = program::lower(&code, &bindings).unwrap();
-        assert_eq!(result.code, [0x3F, 7, 0x12, 0x47, 0x24]);
-        assert_eq!(result.textures, BTreeMap::from([(0x24, 0x24)]));
-        assert!(program::lower(&[0x4D, 7, 0x21, 0x56, 0x24], &bindings).is_err());
-    }
-
-    #[test]
     fn static_donor_gets_writable_storage_for_imported_vertex_outputs() {
         // Insidious 80D0B07C wrote output 1 through a null pointer because
         // its donor's writable-buffer flag remained zero.
@@ -1019,20 +1098,5 @@ mod tests {
         assert_eq!(material.u64(0x98).unwrap(), 3);
         assert_eq!(array_bytes(&material, 0x68, 1).unwrap(), p.code);
         assert_eq!(array_bytes(&material, 0x98, 16).unwrap(), p.values);
-    }
-
-    #[test]
-    fn sampler_only_program_keeps_static_constant_storage() {
-        let p = Program {
-            code: vec![0x4C, 0, 0x49, 0x20],
-            constants: vec![],
-            values: vec![0; 16],
-            evidence: vec![],
-            samplers: BTreeMap::new(),
-            textures: BTreeMap::new(),
-        };
-        let mut material = vec![0; 0x400];
-        set_program(&mut material, 0x2C8, &p, 2).unwrap();
-        assert_eq!(material[0x33C], 0);
     }
 }

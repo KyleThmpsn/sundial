@@ -9,7 +9,7 @@ use serde_json::Value;
 
 fn check_json_edit_baseline(baseline: &Value, current: &Value) -> Result<(), String> {
     if baseline != current {
-        return Err("The workspace changed after this JSON draft was created. Copy your draft before resetting the editor, then reapply your changes to the current document.".into());
+        return Err("The workspace changed after this draft was made. Copy your draft, reset the editor, then reapply your changes.".into());
     }
     Ok(())
 }
@@ -147,6 +147,7 @@ impl SundialApp {
             )),
             egui::ViewportBuilder::default()
                 .with_title("Sundial: JSON Editor")
+                .with_icon(crate::ui::window_icon())
                 .with_inner_size([960.0, 720.0])
                 .with_min_inner_size([640.0, 420.0]),
             |child_ctx, class| {

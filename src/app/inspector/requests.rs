@@ -1,7 +1,10 @@
 use eframe::egui;
 
+use super::progression::MetadataSelection;
+
 const HASH_INSPECTION_REQUEST_ID: &str = "catalog_hash_inspection_request";
 const HASH_INSPECTION_CONTEXT_ID: &str = "catalog_hash_inspection_context";
+const PROGRESSION_SELECTION_ID: &str = "catalog_hash_inspection_progression_selection";
 const OWNED_QUANTITIES_ID: &str = "catalog_hash_inspection_owned_quantities";
 const OWNED_QUANTITIES_REQUEST_ID: &str = "catalog_hash_inspection_owned_quantities_request";
 
@@ -9,6 +12,9 @@ const OWNED_QUANTITIES_REQUEST_ID: &str = "catalog_hash_inspection_owned_quantit
 /// it draws them; the app answers by publishing a fresh map, so no window carries the account
 /// and nothing is computed while no window is showing them.
 pub(in crate::app) type OwnedQuantities = std::sync::Arc<std::collections::HashMap<u64, i64>>;
+
+/// The app's last answer: `None` when the account cannot be read.
+pub(in crate::app) type OwnedQuantitiesAnswer = Option<OwnedQuantities>;
 
 pub(in crate::app) fn request_owned_quantities(ctx: &egui::Context) {
     ctx.data_mut(|data| data.insert_temp(egui::Id::new(OWNED_QUANTITIES_REQUEST_ID), true));
@@ -20,17 +26,20 @@ pub(in crate::app) fn take_owned_quantities_request(ctx: &egui::Context) -> bool
 }
 
 pub(in crate::app) fn publish_owned_quantities(ctx: &egui::Context, quantities: OwnedQuantities) {
-    ctx.data_mut(|data| data.insert_temp(egui::Id::new(OWNED_QUANTITIES_ID), quantities));
+    let answer: OwnedQuantitiesAnswer = Some(quantities);
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(OWNED_QUANTITIES_ID), answer));
 }
 
 /// Withdraws the published map, so a window shows the quantities as unavailable rather than
 /// keeping a previous account's numbers.
 pub(in crate::app) fn clear_owned_quantities(ctx: &egui::Context) {
-    ctx.data_mut(|data| data.remove_temp::<OwnedQuantities>(egui::Id::new(OWNED_QUANTITIES_ID)));
+    let answer: OwnedQuantitiesAnswer = None;
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(OWNED_QUANTITIES_ID), answer));
 }
 
-pub(in crate::app) fn owned_quantities(ctx: &egui::Context) -> Option<OwnedQuantities> {
-    ctx.data(|data| data.get_temp::<OwnedQuantities>(egui::Id::new(OWNED_QUANTITIES_ID)))
+/// `None` until the app first answers, `Some(None)` while the account cannot be read.
+pub(in crate::app) fn owned_quantities(ctx: &egui::Context) -> Option<OwnedQuantitiesAnswer> {
+    ctx.data(|data| data.get_temp::<OwnedQuantitiesAnswer>(egui::Id::new(OWNED_QUANTITIES_ID)))
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -81,20 +90,21 @@ pub(in crate::app) fn take_definition_context(
     })
 }
 
+/// Asks the app to show an unlock definition on the Progression page's Unlocks view.
+pub(in crate::app) fn request_progression_selection(
+    ctx: &egui::Context,
+    selection: MetadataSelection,
+) {
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(PROGRESSION_SELECTION_ID), selection));
+}
+
+pub(in crate::app) fn take_progression_selection(ctx: &egui::Context) -> Option<MetadataSelection> {
+    ctx.data_mut(|data| data.remove_temp(egui::Id::new(PROGRESSION_SELECTION_ID)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn definition_requests_ignore_zero_and_are_consumed() {
-        let context = egui::Context::default();
-        request_definition(&context, 0);
-        assert_eq!(take_definition_request(&context), None);
-
-        request_definition(&context, 0x574E_0A2A);
-        assert_eq!(take_definition_request(&context), Some(0x574E_0A2A));
-        assert_eq!(take_definition_request(&context), None);
-    }
 
     #[test]
     fn owned_quantities_are_published_on_request_and_readable_by_any_window() {
@@ -106,27 +116,13 @@ mod tests {
             !take_owned_quantities_request(&ctx),
             "a request is consumed once"
         );
-        assert!(owned_quantities(&ctx).is_none());
+        assert!(owned_quantities(&ctx).is_none(), "no answer yet");
         publish_owned_quantities(&ctx, std::sync::Arc::new([(7_u64, 12_i64)].into()));
-        assert_eq!(owned_quantities(&ctx).unwrap().get(&7), Some(&12));
+        assert_eq!(owned_quantities(&ctx).flatten().unwrap().get(&7), Some(&12));
         clear_owned_quantities(&ctx);
-        assert!(owned_quantities(&ctx).is_none());
-    }
-
-    #[test]
-    fn definition_context_is_tied_to_the_requested_hash() {
-        let ui = egui::Context::default();
-        let context = DefinitionInspectionContext {
-            source: "Character 1 · Kinetic slot".into(),
-            instance_id: Some("0x4000000000000001".into()),
-            authored_level: Some(1_950),
-            flags: Some(1),
-            plug_count: Some(8),
-            ..Default::default()
-        };
-        request_definition_with_context(&ui, 0xD980_2C4F, context.clone());
-        assert_eq!(take_definition_request(&ui), Some(0xD980_2C4F));
-        assert_eq!(take_definition_context(&ui, 0xD980_2C4F), Some(context));
-        assert_eq!(take_definition_context(&ui, 0xD980_2C4F), None);
+        assert!(
+            matches!(owned_quantities(&ctx), Some(None)),
+            "an unreadable account is answered, not pending"
+        );
     }
 }

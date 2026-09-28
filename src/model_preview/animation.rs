@@ -1,6 +1,10 @@
 //! Shadowkeep's uniform quantized clip codec (80808F71) and static pose codec
 //! (80808F6F). Layout verified against the chicken's native idle, 80BC90D2.
 //! Spline codecs, animation graphs, root motion and runtime IK are not evaluated.
+//!
+//! An object's bank lists every clip it can play. A clip identifies itself only by the FNV-1
+//! hash of its name at 0x120, never by the name, so `clips` labels the hashes it knows and
+//! numbers the rest.
 use super::*;
 mod pose;
 use pose::Transform;
@@ -70,49 +74,34 @@ impl Animation {
     }
 }
 
+/// One playable clip found on the object.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Clip {
+    /// A label for a picker: the packages' own name for the clip resource when they carry one,
+    /// the known name of its stored name hash when that hash is one this preview has verified,
+    /// and otherwise its position in the bank.
+    pub name: String,
+    pub tag: u32,
+}
+
+/// The default clip: the object's native idle, decoded as it has always been.
 pub(super) fn load(
     manager: &PackageManager,
     resources: &[Vec<u8>],
     model: &Model,
 ) -> Result<Option<Animation>, String> {
-    let component = |class| -> Result<Option<(&[u8], usize)>, String> {
-        for bytes in resources {
-            let data = pointer(bytes, 0x18)?;
-            if data >= 4 && u32_at(bytes, data - 4)? == class {
-                return Ok(Some((bytes, data)));
-            }
-        }
-        Ok(None)
-    };
-    let Some((skeleton, data)) = component(0x8080_8546)? else {
+    let Some(bank) = bank(manager, resources, Some(model))? else {
         return Ok(None);
     };
-    let Some((definition, definition_data)) = component(0x8080_344B)? else {
-        return Err("This skeleton has no supported animation bank.".into());
-    };
-    if model.tags.len() != 1 {
-        return Err("Animation for objects with multiple models is not supported yet.".into());
-    }
-    let bank = checked(
-        manager,
-        u32_at(definition, definition_data + 0x90)?,
-        0x8080_36F6,
-    )?;
-    let (count, rows) = array(&bank, 8, 0x8080_8F48, 4, 512)?;
+    let mut budget = Budget::default();
     let mut clip = None;
-    let mut scanned_bytes = 0_u64;
-    for i in 0..count {
-        let tag = u32_at(&bank, rows + i * 4)?;
-        scanned_bytes += manager
-            .get_entry(tag)
-            .ok_or("Animation clip is missing.")?
-            .file_size as u64;
-        if scanned_bytes > 32 * 1024 * 1024 {
-            return Err("Animation bank exceeds the preview read budget.".into());
-        }
-        let bytes = checked(manager, tag, 0x8080_8F49)?;
+    for &tag in &bank.tags {
+        let Some(read) = budget.read(manager, tag) else {
+            return Err(OVER_BUDGET.into());
+        };
+        let bytes = read?;
         // Native FNV-1 identifier for "idle", not a guessed first animation.
-        if u32_at(&bytes, 0x120)? == 0x6FB7_60FF {
+        if u32_at(&bytes, 0x120)? == IDLE_NAME {
             clip = Some((tag, bytes));
             break;
         }
@@ -120,7 +109,175 @@ pub(super) fn load(
     let Some((tag, bytes)) = clip else {
         return Err("No native idle clip was found in this animation bank.".into());
     };
-    let animation = decode(tag, &bytes, skeleton, data)?;
+    let animation = decode(tag, &bytes, bank.skeleton, bank.data)?;
+    skinned(model, &animation)?;
+    Ok(Some(animation))
+}
+
+/// Every clip the object exposes, in a stable order. The default clip, when one exists, is
+/// first; the rest keep the bank's own order.
+///
+/// A clip the preview cannot decode, because of its codec or its skeleton remap, is left out
+/// rather than failing the walk, so one unsupported clip does not hide the others. An object
+/// with no skeleton, no bank or an unreadable one enumerates as nothing to choose from.
+pub(crate) fn clips(manager: &PackageManager, resources: &[Vec<u8>]) -> Vec<Clip> {
+    let Ok(Some(bank)) = bank(manager, resources, None) else {
+        return Vec::new();
+    };
+    let mut budget = Budget::default();
+    let mut seen = BTreeSet::new();
+    let mut found = Vec::new();
+    for (index, &tag) in bank.tags.iter().enumerate() {
+        if !seen.insert(tag) {
+            continue;
+        }
+        let Some(read) = budget.read(manager, tag) else {
+            break;
+        };
+        let Ok(bytes) = read else {
+            continue;
+        };
+        let Ok(hash) = u32_at(&bytes, 0x120) else {
+            continue;
+        };
+        if decode(tag, &bytes, bank.skeleton, bank.data).is_err() {
+            continue;
+        }
+        let name = manager
+            .get_tag_name(tag)
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| label(hash, index));
+        found.push((hash == IDLE_NAME, Clip { name, tag }));
+    }
+    order(found)
+}
+
+/// Loads one clip the caller chose from [`clips`], with the same reasons as [`load`] when it
+/// cannot be played.
+pub(crate) fn load_clip(
+    manager: &PackageManager,
+    resources: &[Vec<u8>],
+    model: &Model,
+    tag: u32,
+) -> Result<Animation, String> {
+    let Some(bank) = bank(manager, resources, Some(model))? else {
+        return Err("This object has no animation skeleton.".into());
+    };
+    if !bank.tags.contains(&tag) {
+        return Err("This clip is not in this object's animation bank.".into());
+    }
+    let mut budget = Budget::default();
+    let Some(read) = budget.read(manager, tag) else {
+        return Err(OVER_BUDGET.into());
+    };
+    let bytes = read?;
+    // `decode` names the idle clip because the default path is the one that reports it. A clip
+    // the caller chose is not that clip, so the same reason is given without the word.
+    let animation = decode(tag, &bytes, bank.skeleton, bank.data)
+        .map_err(|error| error.replace("This idle clip uses", "This clip uses"))?;
+    skinned(model, &animation)?;
+    Ok(animation)
+}
+
+/// Native FNV-1 identifier for "idle", the clip the preview plays when nothing is chosen.
+const IDLE_NAME: u32 = 0x6FB7_60FF;
+const OVER_BUDGET: &str = "Animation bank exceeds the preview read budget.";
+/// One walk over a bank reads whole clip resources, so the walk is capped rather than the
+/// individual read.
+const MAX_BANK_BYTES: u64 = 32 * 1024 * 1024;
+
+/// The skeleton an object animates with, and the clips its bank lists.
+struct Bank<'a> {
+    skeleton: &'a [u8],
+    data: usize,
+    tags: Vec<u32>,
+}
+
+/// Locates the animation bank. `model` is checked only for a caller that means to play a clip
+/// on it, because enumerating what an object carries does not need one.
+fn bank<'a>(
+    manager: &PackageManager,
+    resources: &'a [Vec<u8>],
+    model: Option<&Model>,
+) -> Result<Option<Bank<'a>>, String> {
+    let Some((skeleton, data)) = component(resources, 0x8080_8546)? else {
+        return Ok(None);
+    };
+    let Some((definition, definition_data)) = component(resources, 0x8080_344B)? else {
+        return Err("This skeleton has no supported animation bank.".into());
+    };
+    if model.is_some_and(|model| model.tags.len() != 1) {
+        return Err("Animation for objects with multiple models is not supported yet.".into());
+    }
+    let bytes = checked(
+        manager,
+        u32_at(definition, definition_data + 0x90)?,
+        0x8080_36F6,
+    )?;
+    let (count, rows) = array(&bytes, 8, 0x8080_8F48, 4, 512)?;
+    let tags = (0..count)
+        .map(|index| u32_at(&bytes, rows + index * 4))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(Bank {
+        skeleton,
+        data,
+        tags,
+    }))
+}
+
+/// The first resource carrying a component of `class`, with the offset of its data.
+fn component(resources: &[Vec<u8>], class: u32) -> Result<Option<(&[u8], usize)>, String> {
+    for bytes in resources {
+        let data = pointer(bytes, 0x18)?;
+        if data >= 4 && u32_at(bytes, data - 4)? == class {
+            return Ok(Some((bytes.as_slice(), data)));
+        }
+    }
+    Ok(None)
+}
+
+/// The read budget for one walk over a bank, so a large bank cannot stall the preview.
+#[derive(Default)]
+struct Budget(u64);
+
+impl Budget {
+    /// Reads one clip, or `None` once the budget is spent and the walk has to stop.
+    fn read(&mut self, manager: &PackageManager, tag: u32) -> Option<Result<Vec<u8>, String>> {
+        let Some(entry) = manager.get_entry(tag) else {
+            return Some(Err("Animation clip is missing.".into()));
+        };
+        self.0 += entry.file_size as u64;
+        if self.0 > MAX_BANK_BYTES {
+            return None;
+        }
+        Some(checked(manager, tag, 0x8080_8F49))
+    }
+}
+
+/// A clip stores only the FNV-1 hash of its name, never the name, so a readable label needs a
+/// hash whose name is already known. `idle` is the one verified against native data; the rest
+/// stay positional, because offering a vocabulary at these hashes would be guessing at names
+/// rather than reading them.
+fn label(name: u32, index: usize) -> String {
+    if name == IDLE_NAME {
+        return "Idle".into();
+    }
+    format!("Clip {}", index + 1)
+}
+
+/// The default clip leads the list; everything else keeps the bank's order.
+fn order(found: Vec<(bool, Clip)>) -> Vec<Clip> {
+    let default = found.iter().position(|(default, _)| *default);
+    let mut result: Vec<Clip> = found.into_iter().map(|(_, clip)| clip).collect();
+    if let Some(index) = default {
+        let clip = result.remove(index);
+        result.insert(0, clip);
+    }
+    result
+}
+
+/// The model's skin weights have to address bones the clip's skeleton actually has.
+fn skinned(model: &Model, animation: &Animation) -> Result<(), String> {
     if model.weights.len() != model.vertices.len()
         || model.weights.iter().any(|w| {
             w.as_ref().is_none_or(|w| {
@@ -133,7 +290,7 @@ pub(super) fn load(
     {
         return Err("This model uses unsupported skin weights.".into());
     }
-    Ok(Some(animation))
+    Ok(())
 }
 
 fn float(bytes: &[u8], offset: usize) -> Result<f32, String> {

@@ -9,5 +9,4 @@ mod desktop;
 mod editing;
 mod hierarchy_presentation;
 mod installed;
-mod layout;
 mod mutations_undo;

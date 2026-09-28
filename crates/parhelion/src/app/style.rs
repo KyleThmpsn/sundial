@@ -89,14 +89,293 @@ pub(crate) fn primary(ui: &egui::Ui, label: &str) -> egui::Button<'static> {
         .fill(ui.visuals().selection.bg_fill)
 }
 
+/// The icon every overflow menu opens from. A circled ellipsis reads as a button, where bare
+/// dots read as a typed "…" and sit too close to the six-dot drag grip.
+pub(crate) const MORE: &str = egui_phosphor::regular::DOTS_THREE_CIRCLE;
+
+/// The family the host registers for Phosphor's light weight. It has the same codepoints as
+/// the regular icons, so text that names an icon matches in either.
+const ICON_LIGHT_FONT_FAMILY: &str = "Sundial Icons Light";
+/// The family the host registers for Phosphor alone. The game's symbol fonts lead ordinary
+/// text and share Phosphor's private-use range, so an icon whose codepoint a symbol also uses
+/// (CARET_DOWN and CHECK) is drawn through this family, where nothing shadows it.
+const ICON_FONT_FAMILY: &str = "Sundial Icons";
+
+/// An icon drawn from Phosphor even where a game symbol shares its codepoint.
+pub(crate) fn icon(ui: &egui::Ui, icon: &str) -> egui::RichText {
+    let text = egui::RichText::new(icon);
+    let family = egui::FontFamily::Name(ICON_FONT_FAMILY.into());
+    if ui.fonts(|fonts| fonts.families().contains(&family)) {
+        let size = egui::TextStyle::Body.resolve(ui.style()).size;
+        text.font(egui::FontId::new(size, family))
+    } else {
+        text
+    }
+}
+
+/// Text followed by an icon as one label, the icon drawn as `icon` draws it. The colors are
+/// left to the widget, so a button's label still follows its hover and selected states.
+pub(crate) fn text_with_icon(ui: &egui::Ui, text: &str, icon: &str) -> egui::text::LayoutJob {
+    let body = egui::TextStyle::Body.resolve(ui.style());
+    let family = egui::FontFamily::Name(ICON_FONT_FAMILY.into());
+    let icon_font = if ui.fonts(|fonts| fonts.families().contains(&family)) {
+        egui::FontId::new(body.size, family)
+    } else {
+        body.clone()
+    };
+    let format = |font_id| egui::TextFormat {
+        font_id,
+        color: egui::Color32::PLACEHOLDER,
+        ..Default::default()
+    };
+    let mut job = egui::text::LayoutJob::default();
+    job.append(text, 0.0, format(body));
+    job.append(icon, 0.0, format(icon_font));
+    job
+}
+
+/// An icon in the light weight when the host registered it, otherwise the regular one.
+pub(crate) fn light_icon(ui: &egui::Ui, icon: &str) -> egui::RichText {
+    let text = egui::RichText::new(icon);
+    let family = egui::FontFamily::Name(ICON_LIGHT_FONT_FAMILY.into());
+    if ui.fonts(|fonts| fonts.families().contains(&family)) {
+        let size = egui::TextStyle::Body.resolve(ui.style()).size;
+        text.font(egui::FontId::new(size, family))
+    } else {
+        text
+    }
+}
+
+/// The overflow icon at the size it is drawn, large enough for its circle to read.
+pub(crate) fn more_icon(ui: &egui::Ui) -> egui::RichText {
+    light_icon(ui, MORE).size(16.0)
+}
+
+/// Controls drawn after this read quietly: a muted text colour without a fill, brightening
+/// to the normal hover colour. For icon buttons and secondary commands beside the one a
+/// line is about. Call it inside a scope.
+pub(crate) fn quiet(ui: &mut egui::Ui) {
+    let muted = if ui.visuals().dark_mode {
+        egui::Color32::from_gray(165)
+    } else {
+        egui::Color32::from_gray(95)
+    };
+    let visuals = ui.visuals_mut();
+    visuals.override_text_color = None;
+    let inactive = &mut visuals.widgets.inactive;
+    inactive.fg_stroke.color = muted;
+    inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+    inactive.bg_fill = egui::Color32::TRANSPARENT;
+    inactive.bg_stroke = egui::Stroke::NONE;
+}
+
+/// An overflow menu, saying what it acts on.
+///
+/// A perk, one of its effects and one condition inside that effect each carry one of these,
+/// and all three are the same glyph a few pixels apart. Naming the subject is what tells them
+/// apart before the menu opens, on the hover and to a screen reader alike.
 pub(crate) fn more_menu<R>(
     ui: &mut egui::Ui,
+    subject: &str,
     contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<Option<R>> {
-    let mut menu =
-        egui::menu::menu_custom_button(ui, egui::Button::new("…").frame(false), contents);
-    menu.response = named_control(menu.response, "More Options").on_hover_text("More Options");
+    let name = if subject.is_empty() {
+        "More Options".to_owned()
+    } else {
+        format!("More {subject} Options")
+    };
+    // The quiet colours need a scope, and a scope placed at the cursor never wraps, so after
+    // a long condition title the menu ran past the line. An allocation of the button's own
+    // size wraps with the line it sits on.
+    let icon = more_icon(ui);
+    let galley = egui::WidgetText::from(icon.clone()).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Button,
+    );
+    let size = egui::vec2(
+        galley.size().x + ui.spacing().button_padding.x * 2.0,
+        (galley.size().y + ui.spacing().button_padding.y * 2.0).max(ui.spacing().interact_size.y),
+    );
+    let mut menu = ui
+        .allocate_ui_with_layout(
+            size,
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                quiet(ui);
+                egui::menu::menu_custom_button(ui, egui::Button::new(icon).frame(false), contents)
+            },
+        )
+        .inner;
+    menu.response = named_control(menu.response, &name).on_hover_text(name.clone());
     menu
+}
+
+/// Reset for one value. It appears once the value differs from its original, so a form
+/// nobody has touched carries no dead buttons.
+pub(crate) fn reset(ui: &mut egui::Ui, modified: bool) -> bool {
+    modified
+        && ui
+            .add(egui::Button::new("Reset").small())
+            .on_hover_text("Restore the original value")
+            .clicked()
+}
+
+/// The width `connector` takes for `word`, so a list can keep a gutter of that width.
+pub(crate) fn connector_width(ui: &egui::Ui, word: &str) -> f32 {
+    let galley = ui.painter().layout_no_wrap(
+        word.to_owned(),
+        egui::FontId::proportional(11.0),
+        ui.visuals().text_color(),
+    );
+    galley.size().x + 10.0
+}
+
+/// A logic word between conditions, in the theme badge style so a list of alternatives and
+/// requirements scans at a glance.
+pub(crate) fn connector(ui: &mut egui::Ui, word: &str) -> egui::Response {
+    badge(ui, word)
+}
+
+/// A few words in the theme badge style: a faint fill, a hairline border and slight corners.
+pub(crate) fn badge(ui: &mut egui::Ui, word: &str) -> egui::Response {
+    let visuals = ui.visuals();
+    let (fill, stroke, color) = (
+        visuals.faint_bg_color,
+        visuals.widgets.noninteractive.bg_stroke,
+        visuals.text_color(),
+    );
+    let galley =
+        ui.painter()
+            .layout_no_wrap(word.to_owned(), egui::FontId::proportional(11.0), color);
+    let padding = egui::vec2(5.0, 1.0);
+    let (rect, response) =
+        ui.allocate_exact_size(galley.size() + 2.0 * padding, egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        painter.rect(
+            rect,
+            egui::CornerRadius::same(3),
+            fill,
+            stroke,
+            egui::StrokeKind::Inside,
+        );
+        painter.galley(rect.min + padding, galley, color);
+    }
+    response
+}
+
+/// Secondary text: a tile's name, a folded card's summary. egui's weak text fades halfway to
+/// the widget fill, which reads at about 4.3:1 on a dark card and 2.4:1 on a light one. These
+/// hold 5:1 or better on the card and block fills of both themes.
+pub(crate) fn secondary(visuals: &egui::Visuals) -> egui::Color32 {
+    if visuals.dark_mode {
+        egui::Color32::from_gray(150)
+    } else {
+        egui::Color32::from_gray(105)
+    }
+}
+
+/// The narrowest a value tile gets before its line holds one fewer.
+const TILE_MIN_WIDTH: f32 = 150.0;
+/// The widest a value tile gets. A wide pane keeps four readable tiles and its spare room,
+/// rather than stretching a percentage across a quarter of the screen.
+const TILE_MAX_WIDTH: f32 = 240.0;
+/// The most tiles on one line, so each name stays near its value in a wide pane.
+const TILES_PER_LINE: usize = 4;
+/// Height of a tile's name line.
+const TILE_NAME_HEIGHT: f32 = 18.0;
+
+/// Values as tiles, flowing three or four to a line and fewer in a narrow pane. `content`
+/// receives the width each tile takes and draws them with `tile`.
+pub(crate) fn tiles<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui, f32) -> R) -> R {
+    let layout = egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true);
+    ui.with_layout(layout, |ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(12.0, 8.0);
+        let gap = ui.spacing().item_spacing.x;
+        let line = ui.available_width();
+        let count = (((line + gap) / (TILE_MIN_WIDTH + gap)) as usize).clamp(1, TILES_PER_LINE);
+        // Rounded down so the last tile of a line never wraps onto the next.
+        let width = ((line - gap * (count - 1) as f32) / count as f32)
+            .floor()
+            .min(TILE_MAX_WIDTH);
+        content(ui, width)
+    })
+    .inner
+}
+
+/// One value: its name, small, over the control. Reset sits beside the name once the value
+/// changed, so the control keeps the whole width of its tile. Returns the control's result and
+/// whether Reset was clicked.
+///
+/// `salt` scopes the tile's widgets. Wrapping a tile in `push_id` instead adds a scope the line
+/// places without wrapping, so every tile after it would run off the line.
+pub(crate) fn tile<R>(
+    ui: &mut egui::Ui,
+    width: f32,
+    salt: impl std::hash::Hash,
+    label: &str,
+    hint: &str,
+    modified: bool,
+    control: impl FnOnce(&mut egui::Ui) -> R,
+) -> (R, bool) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, 0.0),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            ui.set_width(width);
+            // A control wider than its tile would paint over the next one.
+            let clip = ui.clip_rect();
+            ui.set_clip_rect(egui::Rect::from_x_y_ranges(
+                ui.max_rect().x_range(),
+                clip.y_range(),
+            ));
+            ui.spacing_mut().item_spacing = egui::vec2(4.0, 2.0);
+            ui.push_id(salt, |ui| {
+                let reset = ui
+                    .allocate_ui_with_layout(
+                        egui::vec2(width, TILE_NAME_HEIGHT),
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            // One height with or without Reset, so a line of controls stays level.
+                            ui.set_min_height(TILE_NAME_HEIGHT);
+                            let reset = modified
+                                && ui
+                                    .add(
+                                        egui::Button::new(egui::RichText::new("Reset").size(11.0))
+                                            .frame(false),
+                                    )
+                                    .on_hover_text("Restore the original value")
+                                    .clicked();
+                            ui.with_layout(
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    let text = egui::RichText::new(label).size(12.0);
+                                    let text = if modified {
+                                        text
+                                    } else {
+                                        text.color(secondary(ui.visuals()))
+                                    };
+                                    let response = ui.add(egui::Label::new(text).truncate());
+                                    let hover = if hint.is_empty() {
+                                        label.to_owned()
+                                    } else {
+                                        format!("{label}\n{hint}")
+                                    };
+                                    response.on_hover_text(hover);
+                                },
+                            );
+                            reset
+                        },
+                    )
+                    .inner;
+                (control(ui), reset)
+            })
+            .inner
+        },
+    )
+    .inner
 }
 
 /// A raised card for one effect or one block: a faint fill over the window and a rounded

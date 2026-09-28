@@ -28,6 +28,25 @@ enum Action {
     Open(PathBuf),
 }
 
+/// The request a worker is running.
+#[derive(Default, PartialEq, Eq, Clone, Copy)]
+enum Job {
+    #[default]
+    Catalog,
+    Download,
+    Submit,
+}
+
+impl Job {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Catalog => "Loading Community Recipes…",
+            Self::Download => "Downloading Recipe…",
+            Self::Submit => "Submitting Recipe…",
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Window {
     pub open: bool,
@@ -43,6 +62,7 @@ pub(super) struct Window {
     remix_origins: BTreeMap<String, String>,
     refresh_local: bool,
     worker: Option<Receiver<Result<Outcome, String>>>,
+    job: Job,
     notice: String,
     error: bool,
     action: Option<Action>,
@@ -53,6 +73,7 @@ impl Window {
     fn start(
         &mut self,
         ctx: &egui::Context,
+        job: Job,
         work: impl FnOnce(Client) -> Result<Outcome, String> + Send + 'static,
     ) {
         if self.worker.is_some() {
@@ -62,6 +83,7 @@ impl Window {
         let ctx = ctx.clone();
         let (sender, receiver) = mpsc::channel();
         self.worker = Some(receiver);
+        self.job = job;
         self.notice.clear();
         thread::spawn(move || {
             let _ = sender.send(work(client));
@@ -82,7 +104,12 @@ impl Window {
         };
         self.worker = None;
         match result {
-            Err(error) => self.message(error, true),
+            Err(error) => {
+                if self.job == Job::Download {
+                    self.selected = None;
+                }
+                self.message(error, true);
+            }
             Ok(outcome) => self.accept(outcome),
         }
     }
@@ -125,9 +152,6 @@ impl Window {
             .resizable(true)
             .show(ctx, |ui| {
                 workbench_style(ui);
-                ui.heading("Guardians Make Their Own Fate");
-                ui.label("Discover community weapons, make a remix, and share your own creations.");
-                ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
                     for (tab, name) in [
                         (Tab::Browse, "Browse"),
@@ -146,7 +170,7 @@ impl Window {
                 if self.worker.is_some() {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label("Loading Community Recipes...");
+                        ui.label(self.job.label());
                     });
                     ctx.request_repaint_after(Duration::from_millis(100));
                 }
@@ -232,7 +256,7 @@ impl PackageAuthoringApp {
             .recipe_library
             .as_ref()
             .ok_or("The local recipe library is unavailable")?;
-        let (path, message) = match action {
+        let message = match action {
             Action::Open(path) => {
                 self.request_recipe_action(PendingRecipeAction::Open(library.root().join(path)));
                 return Ok(());
@@ -258,20 +282,17 @@ impl PackageAuthoringApp {
                 if self.recipe_path.as_ref() == Some(&path) {
                     self.open_recipe_path(&path);
                 }
-                (
-                    path,
-                    "Recipe saved to your library. Use Open In Workbench to customize or build it",
-                )
+                "Recipe saved."
             }
             Action::Remix(downloaded, name) => {
                 let path = service::remix(library, &downloaded, &name)?;
-                self.request_recipe_action(PendingRecipeAction::Open(path.clone()));
-                (path, "Remix saved with its own weapon identity")
+                self.request_recipe_action(PendingRecipeAction::Open(path));
+                "Remix saved."
             }
         };
         self.refresh_recipe_library();
         window.refresh_local = true;
-        window.message(format!("{message}: {}", path.display()), false);
+        window.message(message, false);
         Ok(())
     }
 }

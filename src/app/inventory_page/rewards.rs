@@ -1,5 +1,7 @@
 use crate::{
-    app::{SundialApp, account_workspace as account, equipment::class_name, item_editor},
+    app::{
+        SundialApp, account_workspace as account, equipment::class_name, inspector, item_editor,
+    },
     catalog::{Catalog, InventoryDefinition},
 };
 use eframe::egui;
@@ -65,63 +67,65 @@ impl SundialApp {
         if rewards.is_empty() {
             ui.weak("No pending rewards");
         } else {
-            ui.add_enabled_ui(editable, |ui| {
-                egui::Grid::new("pending-rewards")
-                    .striped(true)
-                    .num_columns(4)
-                    .spacing([20.0, 8.0])
-                    .show(ui, |ui| {
-                        ui.strong("Character");
-                        ui.strong("Reward");
-                        ui.strong("Quantity");
-                        ui.label("");
-                        ui.end_row();
-                        for reward in &rewards {
-                            ui.push_id(reward.id, |ui| {
-                                ui.label(characters.get(reward.character_slot).map_or_else(
-                                    || format!("Character {}", reward.character_slot + 1),
-                                    |(label, _)| label.clone(),
-                                ));
-                            });
-                            let hash = u64::from(reward.definition_hash);
-                            ui.horizontal(|ui| {
-                                if let Some(texture) = self.manifest.icon_texture(ui.ctx(), hash) {
-                                    ui.image((texture.id(), egui::vec2(24.0, 24.0)));
-                                }
-                                ui.label(self.manifest.names.get(&hash).cloned().unwrap_or_else(
+            egui::Grid::new("pending-rewards")
+                .striped(true)
+                .num_columns(4)
+                .spacing([20.0, 8.0])
+                .show(ui, |ui| {
+                    ui.strong("Character");
+                    ui.strong("Reward");
+                    ui.strong("Quantity");
+                    ui.label("");
+                    ui.end_row();
+                    for reward in &rewards {
+                        ui.push_id(reward.id, |ui| {
+                            ui.label(characters.get(reward.character_slot).map_or_else(
+                                || format!("Character {}", reward.character_slot + 1),
+                                |(label, _)| label.clone(),
+                            ));
+                        });
+                        let hash = u64::from(reward.definition_hash);
+                        ui.horizontal(|ui| {
+                            if let Some(texture) = self.manifest.icon_texture(ui.ctx(), hash) {
+                                ui.image((texture.id(), egui::vec2(24.0, 24.0)));
+                            }
+                            let name = ui
+                                .label(self.manifest.names.get(&hash).cloned().unwrap_or_else(
                                     || format!("Invalid Item · 0x{:08X}", reward.definition_hash),
                                 ))
                                 .on_hover_text(kind_label(reward.kind));
-                            });
-                            ui.push_id((reward.id, "quantity"), |ui| {
-                                if reward.kind == 1 {
-                                    let maximum = maximum_quantity(
-                                        &self.manifest,
-                                        Some(reward.definition_hash),
-                                    )
-                                    .max(reward.quantity);
-                                    let mut quantity = reward.quantity;
-                                    if ui
-                                        .add(egui::DragValue::new(&mut quantity).range(1..=maximum))
-                                        .changed()
-                                    {
-                                        edit = Some(Edit::Quantity(reward.id, quantity));
-                                    }
-                                } else {
-                                    ui.label(reward.quantity.to_string());
-                                }
-                            });
-                            ui.push_id((reward.id, "remove"), |ui| {
-                                if item_editor::draw_trash_button(ui, true, "Remove Reward")
-                                    .clicked()
+                            inspector::definition_context_menu(&name, "Inspect Definition", hash);
+                        });
+                        ui.push_id((reward.id, "quantity"), |ui| {
+                            if !editable {
+                                ui.disable();
+                            }
+                            if reward.kind == 1 {
+                                let maximum =
+                                    maximum_quantity(&self.manifest, Some(reward.definition_hash))
+                                        .max(reward.quantity);
+                                let mut quantity = reward.quantity;
+                                if ui
+                                    .add(egui::DragValue::new(&mut quantity).range(1..=maximum))
+                                    .changed()
                                 {
-                                    edit = Some(Edit::Remove(reward.id));
+                                    edit = Some(Edit::Quantity(reward.id, quantity));
                                 }
-                            });
-                            ui.end_row();
-                        }
-                    });
-            });
+                            } else {
+                                ui.label(reward.quantity.to_string());
+                            }
+                        });
+                        ui.push_id((reward.id, "remove"), |ui| {
+                            if !editable {
+                                ui.disable();
+                            }
+                            if item_editor::draw_trash_button(ui, true, "Remove Reward").clicked() {
+                                edit = Some(Edit::Remove(reward.id));
+                            }
+                        });
+                        ui.end_row();
+                    }
+                });
         }
         if editable
             && ui.is_enabled()
@@ -281,8 +285,7 @@ fn draw_add_reward(
             .and_then(|hash| catalog.inventory_definition(u64::from(hash)))
             .is_some_and(|definition| valid_reward(definition, draft.kind, class));
         let response = ui.add_enabled(valid, egui::Button::new("Add Reward"));
-        let help =
-            "Save to queue this reward for delivery in game when inventory space is available.";
+        let help = "Save to queue this reward. It arrives in game when there is inventory space.";
         add = response
             .on_hover_text(help)
             .on_disabled_hover_text(help)

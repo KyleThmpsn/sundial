@@ -6,7 +6,9 @@ use sundial::package_authoring::{
 
 #[derive(Default)]
 pub(super) struct PrivateIdentities {
-    pub(super) plugs: BTreeSet<u32>,
+    /// Each private plug and the variant that produced it. Identical definitions share one
+    /// plug across weapons, so a repeated hash is a collision only when the definitions differ.
+    pub(super) plugs: BTreeMap<u32, crate::weapon::WeaponSocketPlugVariantOverride>,
     perks: BTreeSet<u16>,
     actions: BTreeSet<TagHash>,
     values: usize,
@@ -72,10 +74,12 @@ pub(super) fn verify_private(
         .unwrap();
         let plug_hash = tables.plug_hash(plug_index);
         assert_ne!(plug_hash, variant.source_plug_hash);
-        assert!(
-            identities.plugs.insert(plug_hash),
-            "private plugs collided across weapons"
-        );
+        if let Some(previous) = identities.plugs.insert(plug_hash, variant.clone()) {
+            assert!(
+                previous.same_definition(variant),
+                "private plugs collided across weapons with different definitions"
+            );
+        }
         let (plug, _) = tables.load(manager, plug_hash);
         let (source, _) = tables.load(manager, variant.source_plug_hash);
         let perks = weapon_sandbox_perks(&plug).unwrap();
@@ -175,10 +179,13 @@ fn native_bundled_variants_keep_private_identities_separate() {
                     sundial::investment::WeaponInventorySlot::Power => RecipeInventorySlot::Power,
                 }
             });
-            recipe
-                .overrides
-                .modern_damage_type
-                .get_or_insert(RecipeDamageType::Kinetic);
+            // A variable-damage weapon rests on the first of its own elements, never Kinetic.
+            if recipe.overrides.variable_damage.is_none() {
+                recipe
+                    .overrides
+                    .modern_damage_type
+                    .get_or_insert(RecipeDamageType::Kinetic);
+            }
             recipe.overrides.rarity.get_or_insert(RecipeRarity::Exotic);
             for variant in &mut recipe.overrides.socket_plug_variants {
                 for perk in &mut variant.sandbox_perks {

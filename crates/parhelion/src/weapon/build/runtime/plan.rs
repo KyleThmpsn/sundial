@@ -7,11 +7,18 @@ pub(in crate::weapon::build) struct Payloads {
     pub sandbox_perk_indices: Vec<u8>,
     pub pattern_global_ids: Vec<Option<u32>>,
     pub weapon_tags: Vec<NewTagSpec>,
+    /// The badge artwork followed by each weapon's imported runtime assets. Linked graphs
+    /// reserve their groups after these during emission.
+    pub asset_packages: crate::asset_packages::AssetPackages,
     pub private_perk_tags: Vec<NewTagSpec>,
     pub private_perk_append_start: usize,
     /// Behavior graphs grafted into component owners, whose prerequisites still need enrolling.
     pub grafted_graphs: Vec<u32>,
     weapon_allocator: AppendedTagAllocator,
+    /// Every imported runtime asset placed in the asset packages, for the dependency index.
+    runtime_asset_tags: Vec<TagHash>,
+    /// The badge artwork's entries in the primary asset package, which the HUD icons end.
+    badge_tag_count: usize,
     private_perk_allocator: AppendedTagAllocator,
 }
 
@@ -21,12 +28,21 @@ pub(in crate::weapon::build) fn author(
     resolved: &[resolve::ResolvedWeapon],
     custom_plugs: &[ResolvedCustomPlug],
     templates: &PerkTemplates,
-    weapon_runtime_start: usize,
+    assets: &mut assets::Plan,
     progress: &mut Progress<'_>,
 ) -> AuthoringResult<(Payloads, custom_plugs::CustomPlugPayloads)> {
     let weapon_runtime_tag_allocator =
-        AppendedTagAllocator::new(HOST_PACKAGE_ID, weapon_runtime_start);
+        AppendedTagAllocator::new(HOST_PACKAGE_ID, assets.weapon_runtime_start);
     let mut weapon_runtime_new_tags = Vec::new();
+    // The badge artwork opens the asset packages. Each weapon's imported runtime assets then
+    // reserve a group of their own, so they roll over into further packages as one fills
+    // rather than filling the host package, whose id is fixed.
+    let badge_tag_count = assets.badge.new_tags.len();
+    let mut asset_packages = crate::asset_packages::AssetPackages::primary(
+        std::mem::take(&mut assets.badge.new_tags),
+        std::mem::take(&mut assets.badge.reference_overrides),
+    )?;
+    let mut runtime_asset_tags = Vec::new();
     let private_perk_runtime_append_start =
         extended_overlay_append_start(package_directory, PRIVATE_PERK_RUNTIME_PACKAGE_ID)?;
     if private_perk_runtime_append_start < PRIVATE_PERK_RUNTIME_EXPECTED_ENTRY_COUNT {
@@ -52,6 +68,10 @@ pub(in crate::weapon::build) fn author(
         },
         resolved,
         weapon_runtime_tag_allocator,
+        super::RuntimeAssets {
+            packages: &mut asset_packages,
+            placed: &mut runtime_asset_tags,
+        },
         &mut entity_assignments,
         &mut weapon_runtime_new_tags,
         progress,
@@ -79,9 +99,12 @@ pub(in crate::weapon::build) fn author(
             sandbox_perk_indices,
             pattern_global_ids: authored_pattern_global_ids,
             weapon_tags: weapon_runtime_new_tags,
+            asset_packages,
             private_perk_tags: private_perk_runtime_new_tags,
             private_perk_append_start: private_perk_runtime_append_start,
             weapon_allocator: weapon_runtime_tag_allocator,
+            runtime_asset_tags,
+            badge_tag_count,
             private_perk_allocator: private_perk_runtime_tag_allocator,
             grafted_graphs: resolved
                 .iter()
@@ -105,8 +128,9 @@ impl Payloads {
     ) -> AuthoringResult<Option<Vec<u8>>> {
         if self.private_perk_tags.is_empty()
             && self.weapon_tags.is_empty()
+            && self.runtime_asset_tags.is_empty()
             && self.grafted_graphs.is_empty()
-            && assets.hud_asset_start == assets.badge.new_tags.len()
+            && assets.hud_asset_start == self.badge_tag_count
         {
             return Ok(None);
         }
@@ -137,7 +161,7 @@ impl Payloads {
             "investment runtime dependency index",
         )?;
         let mut additions = assets.perk_icon_dependencies.clone();
-        for index in assets.hud_asset_start..assets.badge.new_tags.len() {
+        for index in assets.hud_asset_start..self.badge_tag_count {
             additions.push(
                 AppendedTagAllocator::new(PARHELION_ASSET_PACKAGE_ID, 0).assigned_tag(
                     index,
@@ -160,6 +184,7 @@ impl Payloads {
                 "weapon runtime",
             )?);
         }
+        additions.extend(self.runtime_asset_tags.iter().copied());
         additions.extend(super::dependencies::native_prerequisites(
             manager,
             [

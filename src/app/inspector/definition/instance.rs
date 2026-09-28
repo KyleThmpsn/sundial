@@ -2,7 +2,7 @@
 use eframe::egui;
 use serde_json::Value;
 
-use super::super::draw_named_catalog_hash_link;
+use super::super::{UNNAMED, draw_named_catalog_hash_link};
 use crate::{catalog::Catalog, hash::parse_hash_hex};
 
 pub(super) fn plug_source(value: &Value) -> &'static str {
@@ -60,7 +60,7 @@ fn draw_plug(ui: &mut egui::Ui, catalog: &Catalog, hash: u64) {
         ui,
         catalog,
         hash,
-        catalog.package_item_name(hash).unwrap_or("Unresolved Plug"),
+        catalog.package_item_name(hash).unwrap_or(UNNAMED),
     );
 }
 

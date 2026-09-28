@@ -13,9 +13,6 @@ impl PackageAuthoringApp {
             workbench_style(ui);
             ui.heading("Restore This Recipe?");
             ui.strong(&preview.name);
-            ui.label(
-                "Your saved recipe will be backed up, then replaced with its bundled default.",
-            );
             if has_edits {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,

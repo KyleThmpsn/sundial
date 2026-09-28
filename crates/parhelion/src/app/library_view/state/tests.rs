@@ -21,6 +21,7 @@ fn donor(hash: u32, name: &str, type_name: &str) -> WeaponDonorSummary {
 
 fn entry(name: &str, path: &str, donor_hash: u32) -> RecipeLibraryEntry {
     RecipeLibraryEntry {
+        kind: crate::ItemKind::Weapon,
         collection_destination: None,
         badge: None,
         corner_icon: None,

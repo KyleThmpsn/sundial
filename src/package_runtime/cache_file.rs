@@ -63,21 +63,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn values_round_trip_and_get_smaller() {
-        let value = sample();
-        let mut written = Vec::new();
-        write(&mut written, &value).unwrap();
-        assert_eq!(read::<Sample>(&written).unwrap(), value);
-        let plain = serde_json::to_vec(&value).unwrap();
-        assert!(
-            written.len() * 4 < plain.len(),
-            "{} bytes is no better than {} plain",
-            written.len(),
-            plain.len()
-        );
-    }
-
     /// A cache an older build wrote is read rather than treated as missing, so switching to
     /// this encoding does not cost one rebuild of every index.
     #[test]

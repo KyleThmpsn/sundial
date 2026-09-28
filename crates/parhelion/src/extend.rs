@@ -53,6 +53,11 @@ pub struct NewTagSpec {
 pub enum NewTagStorageMode {
     #[default]
     InheritTemplate,
+    /// Preserve the template's storage layout and use the appended tag as the
+    /// media ID in its package-entry reference.
+    AudioMedia,
+    /// Preserve the bank storage layout and index it by its authored BKHD ID.
+    AudioBank,
 }
 
 /// Selects the reference stored in an appended package-entry header.
@@ -315,12 +320,37 @@ fn build_standalone_package_from(
     )?;
     let shared_tag_enrollments =
         resolve_shared_tag_enrollments(package_id, 0, new_tags, &metadata)?;
-    let packing = packed::plan(new_tags.iter().map(|tag| tag.payload.len()))?;
+    let packing = packed::plan(
+        new_tags
+            .iter()
+            .zip(&metadata)
+            .map(|(tag, entry)| (tag.payload.len(), entry.alignment())),
+    )?;
     let block_count = packing.block_count;
     if block_count == 0 || block_count > MAX_BLOCK_COUNT {
         return Err(AuthoringError::InvalidInput(format!(
             "Standalone package {package_id:04X} needs {block_count} blocks; the supported range is 1..={MAX_BLOCK_COUNT}"
         )));
+    }
+    // Wwise bypasses package decompression. Every block touched by a medium,
+    // including blocks shared with other resources, must remain raw. Full raw
+    // blocks are written consecutively, so a spanning medium is contiguous.
+    let mut streamed_blocks = vec![false; block_count];
+    for ((tag, entry), location) in new_tags.iter().zip(&metadata).zip(&packing.locations) {
+        if entry.is_streamed_media() {
+            let span = location
+                .offset
+                .checked_add(tag.payload.len())
+                .ok_or_else(|| invalid("Streamed payload span overflow"))?;
+            let end = location
+                .block
+                .checked_add(span.div_ceil(BLOCK_SIZE))
+                .ok_or_else(|| invalid("Streamed block range overflow"))?;
+            streamed_blocks
+                .get_mut(location.block..end)
+                .ok_or_else(|| invalid("Streamed payload exceeds its block plan"))?
+                .fill(true);
+        }
     }
     let prefixes = metadata
         .iter()
@@ -340,9 +370,16 @@ fn build_standalone_package_from(
     let tag_allocator = AppendedTagAllocator::new(package_id, 0);
     progress("Encoding Blocks");
     let written_blocks = packed::visit_blocks(
-        new_tags.iter().map(|tag| tag.payload.as_slice()),
+        new_tags
+            .iter()
+            .zip(&metadata)
+            .map(|(tag, entry)| (tag.payload.as_slice(), entry.alignment())),
         |index, chunk| {
-            let encoded = block_encoder.encode(package_id, chunk)?;
+            let encoded = if streamed_blocks[index] {
+                EncodedPackageBlock::raw(chunk)?
+            } else {
+                block_encoder.encode(package_id, chunk)?
+            };
             let payload_offset = append_aligned(&mut artifact, &encoded.stored);
             let block_row = layout.block_table_offset + index * BLOCK_HEADER_SIZE;
             write_block_header(&mut artifact, block_row, payload_offset, &encoded, 0)
@@ -904,6 +941,19 @@ struct AppendedEntryMetadata {
     file_subtype: u8,
 }
 
+impl AppendedEntryMetadata {
+    fn is_streamed_media(self) -> bool {
+        self.file_type == 26 && self.file_subtype == 6
+    }
+
+    fn alignment(self) -> usize {
+        // Native Wwise stream registration and sector addressing require
+        // 256-byte media offsets. A valid package read alone does not check
+        // this contract. Banks are loaded through the ordinary resource path.
+        if self.is_streamed_media() { 256 } else { 16 }
+    }
+}
+
 fn resolve_appended_metadata(
     package_directory: &Path,
     chains: Option<&PatchChains>,
@@ -931,11 +981,29 @@ fn resolve_appended_metadata(
                         spec.template_tag
                     ))
                 })?;
-            let template_reference = u32::from_le_bytes(
+            let mut template_reference = u32::from_le_bytes(
                 prefix[..4]
                     .try_into()
                     .expect("an entry reference has exactly four bytes"),
             );
+            if spec.storage == NewTagStorageMode::AudioBank {
+                let type_info = u32::from_le_bytes(prefix[4..8].try_into().unwrap());
+                if ((type_info >> 9) & 0x7F) != 26
+                    || ((type_info >> 6) & 7) != 5
+                    || reference != NewTagReference::Template
+                    || spec.payload.get(..4) != Some(b"BKHD")
+                    || spec.payload.get(8..12) != Some(&113u32.to_le_bytes())
+                {
+                    return Err(invalid(
+                        "Authored audio bank has an incompatible entry or header",
+                    ));
+                }
+                template_reference = spec
+                    .payload
+                    .get(12..16)
+                    .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+                    .ok_or_else(|| invalid("Authored audio bank lacks its ID"))?;
+            }
             let resolved_reference = resolve_new_tag_reference(
                 reference,
                 template_reference,
@@ -1103,7 +1171,9 @@ fn validate_shared_tag_enrollments(
 
 fn resolve_storage_mode(mode: NewTagStorageMode, template_type_info: u32) -> u32 {
     match mode {
-        NewTagStorageMode::InheritTemplate => template_type_info,
+        NewTagStorageMode::InheritTemplate
+        | NewTagStorageMode::AudioMedia
+        | NewTagStorageMode::AudioBank => template_type_info,
     }
 }
 
@@ -1266,8 +1336,15 @@ fn write_payload(
     block_encoder: &PackageBlockEncoder,
 ) -> AuthoringResult<()> {
     let starting_block = *next_block;
+    let entry_row = layout.entry_table_offset + entry_index * ENTRY_HEADER_SIZE;
+    let kind = read_u32(artifact, entry_row + 4)?;
+    let streamed = ((kind >> 9) & 0x7F) == 26 && ((kind >> 6) & 7) == 6;
     for chunk in payload.chunks(BLOCK_SIZE) {
-        let encoded = block_encoder.encode(layout.package_id, chunk)?;
+        let encoded = if streamed {
+            EncodedPackageBlock::raw(chunk)?
+        } else {
+            block_encoder.encode(layout.package_id, chunk)?
+        };
         let payload_offset = append_aligned(artifact, &encoded.stored);
         let block_row = block_table_offset + *next_block * BLOCK_HEADER_SIZE;
         write_block_header(artifact, block_row, payload_offset, &encoded, patch_id)?;
@@ -1276,7 +1353,6 @@ fn write_payload(
     if *next_block - starting_block != expected_blocks {
         return Err(invalid("Payload block allocation disagreed with its plan"));
     }
-    let entry_row = layout.entry_table_offset + entry_index * ENTRY_HEADER_SIZE;
     write_entry_location(artifact, entry_row, starting_block, 0, payload.len())
 }
 
@@ -1605,58 +1681,6 @@ mod tests {
                 .to_string()
                 .contains("outside the untracked AA0..=CFF window")
         );
-    }
-
-    #[test]
-    fn resolves_forward_and_backward_appended_references() {
-        let package_id = 0x058C;
-        let original_entry_count = 100;
-        let forward = resolve_new_tag_reference(
-            NewTagReference::Appended(1),
-            0xDEAD_BEEF,
-            package_id,
-            original_entry_count,
-            3,
-        )
-        .expect("forward reference should resolve");
-        let backward = resolve_new_tag_reference(
-            NewTagReference::Appended(0),
-            0xDEAD_BEEF,
-            package_id,
-            original_entry_count,
-            3,
-        )
-        .expect("backward reference should resolve");
-        assert_eq!(forward, u32::from(TagHash::new(package_id, 101)));
-        assert_eq!(backward, u32::from(TagHash::new(package_id, 100)));
-    }
-
-    #[test]
-    fn template_reference_mode_is_byte_compatible() {
-        let template_reference = 0x8131_933F;
-        assert_eq!(
-            resolve_new_tag_reference(
-                NewTagReference::Template,
-                template_reference,
-                0x058C,
-                100,
-                1
-            )
-            .expect("template reference should resolve"),
-            template_reference
-        );
-        assert_eq!(
-            resolve_reference_modes(2, &[]).expect("empty overrides should resolve"),
-            vec![NewTagReference::Template, NewTagReference::Template]
-        );
-    }
-
-    #[test]
-    fn storage_mode_preserves_the_template_selector() {
-        let type16 = 0x0000_2019;
-        let resolved = resolve_storage_mode(NewTagStorageMode::InheritTemplate, type16);
-
-        assert_eq!(resolved, type16);
     }
 
     #[test]

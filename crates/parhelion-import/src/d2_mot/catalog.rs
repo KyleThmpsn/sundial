@@ -125,7 +125,8 @@ pub fn weapons_with_progress(
                 let icon_index = (icon_index != u32::MAX).then_some(icon_index);
                 let present = native_hashes.contains(&hash)
                     || native_hashes.contains(&super::service::destination_hash(hash)?);
-                weapons.push(json!({"hash":hash,"index":index,"name":name,"weapon_type":kind,"present_in_native":present,"dummy":dummy,"icon_index":icon_index}));
+                let native_item = native_hashes.contains(&hash);
+                weapons.push(json!({"hash":hash,"index":index,"name":name,"weapon_type":kind,"present_in_native":present,"native_item":native_item,"dummy":dummy,"icon_index":icon_index}));
             }
             Ok(())
         })();

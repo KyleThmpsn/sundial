@@ -48,21 +48,26 @@ pub(super) fn draw_combat_profile_control(
             let kinetic_damage = profile.damage_type == WeaponDamageType::Kinetic;
             kinetic_damage != (profile.inventory_slot == WeaponInventorySlot::Kinetic)
         });
-    let label = ui.horizontal(|ui| {
-        let label = ui.label(field_label);
-        draw_authoring_info_icon(ui, if select_slot {
-            "Chooses the Kinetic, Energy, or Power slot. Damage type and ammo type are separate choices. Test unusual combinations in game."
-        } else {
-            "Changes the weapon's damage type. Slot and ammo type are separate choices. Kinetic conversion is unavailable for some elemental weapons. Variable damage steps the element while Reload is held, the way Hard Light and Borealis do, and wears one of them. Test unusual combinations in game."
-        });
-        if experimental_pair {
-            draw_authoring_warning_icon(
+    let label = ui
+        .horizontal(|ui| {
+            let label = ui.label(field_label);
+            draw_authoring_info_icon(
                 ui,
-                "Experimental slot and damage combination. Check equipping, damage, and ammo in game.",
+                if select_slot {
+                    "Kinetic, Energy or Power Slot."
+                } else {
+                    "Variable switches it while Reload is held."
+                },
             );
-        }
-        label
-    }).inner;
+            if experimental_pair {
+                draw_authoring_warning_icon(
+                    ui,
+                    "Experimental slot and damage type pair. Test in game.",
+                );
+            }
+            label
+        })
+        .inner;
     let Some(donor) = donor else {
         ui.add_enabled(false, egui::Button::new("Load a Base Weapon"));
         return false;
@@ -156,7 +161,11 @@ pub(super) fn draw_combat_profile_control(
                         capabilities.supports(candidate_action),
                         egui::SelectableLabel::new(!variable && profile == Some(candidate), text),
                     )
-                    .on_disabled_hover_text("This damage conversion has not been verified for the base weapon and cannot be selected.")
+                    .on_disabled_hover_text(if select_slot {
+                        "Slot unavailable for this weapon."
+                    } else {
+                        "Damage type unavailable for this weapon."
+                    })
                     .clicked()
                 {
                     if select_slot {
@@ -180,8 +189,8 @@ pub(super) fn draw_combat_profile_control(
                         variable_damage_available || variable,
                         egui::SelectableLabel::new(variable, VARIABLE_DAMAGE_LABEL),
                     )
-                    .on_hover_text("Steps the damage type through Void, Arc and Solar while Reload is held, the way Hard Light and Borealis do. The Fundamentals takes the first trait socket and the weapon keeps its own appearance. Kinetic damage can be authored separately with a Perk Workbench Set Damage Type action.")
-                    .on_disabled_hover_text("This weapon family has no element-switch behavior to graft. Rifles and sniper rifles support it.")
+                    .on_hover_text("Hold Reload to switch between Void, Arc and Solar, like Hard Light. The Fundamentals takes the first trait socket.")
+                    .on_disabled_hover_text("Only rifles and sniper rifles support this.")
                     .clicked()
                 && !variable
             {
@@ -191,9 +200,11 @@ pub(super) fn draw_combat_profile_control(
         })
         .response
         .on_disabled_hover_text(if locked {
-            "The chosen Unique Weapon Behavior switches damage, so this follows it."
+            "Set by the Unique Weapon Behavior."
+        } else if select_slot {
+            "Slot change unavailable for this weapon."
         } else {
-            "This weapon cannot take a different damage type."
+            "Damage type change unavailable for this weapon."
         })
         .labelled_by(label.id);
         },
@@ -285,7 +296,7 @@ fn draw_variable_damage_elements(ui: &mut egui::Ui, overrides: &mut WeaponRecipe
                     !last_two,
                     egui::Checkbox::new(&mut on, element_label(element.into())),
                 )
-                .on_disabled_hover_text("Variable damage needs at least two elements.")
+                .on_disabled_hover_text("Variable damage needs at least two damage types.")
                 .changed()
             {
                 if on {
@@ -298,7 +309,7 @@ fn draw_variable_damage_elements(ui: &mut egui::Ui, overrides: &mut WeaponRecipe
         }
         draw_authoring_info_icon(
             ui,
-            "Each Reload hold steps Void, Arc, then Solar. A step without a chosen element keeps the current one. Kinetic damage can be authored separately with a Perk Workbench Set Damage Type action.",
+            "Each Reload hold steps Void, Arc, then Solar. An unchecked step keeps the current damage type.",
         );
     });
     changed
@@ -313,11 +324,11 @@ pub(super) fn draw_combat_profile_diagnostics(
         return;
     };
     if let Some(variable) = &overrides.variable_damage {
-        ui.weak("Hold Reload in game to step the element. The weapon keeps its own appearance.");
+        ui.weak("Hold Reload to change damage type. The weapon keeps its own appearance.");
         if variable.elements.len() < 2 {
             ui.colored_label(
                 ui.visuals().error_fg_color,
-                "Variable damage needs at least two elements.",
+                "Variable damage needs at least two damage types.",
             );
         }
         if let Some(resting) = overrides.modern_damage_type
@@ -325,7 +336,7 @@ pub(super) fn draw_combat_profile_diagnostics(
         {
             ui.colored_label(
                 ui.visuals().error_fg_color,
-                "The resting damage type is not one of the variable elements. Pick the damage type again.",
+                "The starting damage type is not checked. Pick the damage type again.",
             );
         }
     }
@@ -333,11 +344,11 @@ pub(super) fn draw_combat_profile_diagnostics(
         donor.summary.damage_profile,
         WeaponDamageProfile::PlugOrEmptyAmbiguous(Some(_))
     ) {
-        ui.weak("Kinetic damage is not yet verified for this weapon's damage socket.");
+        ui.weak("Kinetic damage is untested on this weapon.");
     }
     let capabilities = weapon_authoring_capabilities(donor);
     if capabilities.diagnostics.is_empty() && capabilities.combat_profiles.len() == 1 {
-        ui.weak("This base weapon has unresolved or dynamic damage. Slot and damage changes are unavailable.");
+        ui.weak("Slot and damage type changes are unavailable for this weapon.");
     }
     for diagnostic in &capabilities.diagnostics {
         ui.colored_label(ui.visuals().error_fg_color, &diagnostic.message);
@@ -348,7 +359,7 @@ pub(super) fn draw_combat_profile_diagnostics(
     {
         ui.colored_label(
             ui.visuals().warn_fg_color,
-            "The imported slot/element pair is not supported by the gameplay donor. Reset it before building.",
+            "The base weapon does not support this slot and damage type. Reset it before building.",
         );
     }
 }
@@ -358,14 +369,13 @@ pub(super) fn draw_ammo_type_control(
     overrides: &mut WeaponRecipeOverrides,
     gameplay_donor: Option<&WeaponDonor>,
 ) {
-    let label = ui.horizontal(|ui| {
-        let label = ui.label("Ammo Type");
-        draw_authoring_info_icon(
-            ui,
-            "Sets the ammo type for the weapon and its perk variants. Magazine size, reserve capacity, and equipment slot are separate settings.",
-        );
-        label
-    }).inner;
+    let label = ui
+        .horizontal(|ui| {
+            let label = ui.label("Ammo Type");
+            draw_authoring_info_icon(ui, "Also applies to its perk variants.");
+            label
+        })
+        .inner;
     let inherited = gameplay_donor
         .and_then(|donor| donor.summary.ammo_type)
         .map_or("unknown", WeaponAmmoType::label);
@@ -375,7 +385,7 @@ pub(super) fn draw_ammo_type_control(
     );
     if gameplay_donor.is_none_or(|donor| donor.summary.weapon_pattern_index.is_none()) {
         ui.label(selected_text);
-        ui.weak("Choose a gameplay donor with a native runtime before changing ammo type.");
+        ui.weak("Choose a base weapon with a runtime first.");
         return;
     }
     egui::ComboBox::from_id_salt("recipe_ammo_type")
@@ -422,7 +432,7 @@ pub(super) fn draw_rarity_control(
         let label = ui.label("Rarity");
         draw_authoring_info_icon(
             ui,
-            "Exotic weapons appear under Exotics in Collections. Other rarities use their weapon-type page. Both appear on your runtime’s badge. Choose perks separately below. Trace rifles require Exotic rarity because this game version has no other Collections page for them.",
+            "Exotics appear under Exotics in Collections, others on their weapon type page. Both appear on the badge. Trace rifles must be Exotic.",
         );
         label
     }).inner;
@@ -478,7 +488,7 @@ pub(super) fn draw_rarity_control(
     if gameplay_donor.is_some() && !rarity_is_supported(gameplay_donor, overrides.rarity) {
         ui.colored_label(
             ui.visuals().warn_fg_color,
-            "Choose Exotic rarity. This weapon family has no non-Exotic Collections page.",
+            "Choose Exotic. This weapon type has no other Collections page.",
         );
     }
 }
@@ -515,10 +525,7 @@ pub(super) fn draw_power_cap_control(
     let label = ui
         .horizontal(|ui| {
             let label = ui.label("Power Cap");
-            draw_authoring_info_icon(
-                ui,
-                "Sets the weapon's infusion limit. Current Power is edited separately in Sundial.",
-            );
+            draw_authoring_info_icon(ui, "Infusion limit. Current Power is set in Sundial.");
             label
         })
         .inner;
@@ -536,7 +543,7 @@ pub(super) fn draw_power_cap_control(
                         .find(|choice| choice.authoring_version_group == group)
                         .map_or_else(
                             || format!("Version group {group}"),
-                            |choice| format!("{} power", choice.power_cap),
+                            |choice| format!("{} Power", choice.power_cap),
                         )
                 },
             )
@@ -576,7 +583,7 @@ pub(super) fn draw_power_cap_control(
                     .selectable_label(
                         overrides.power_cap_groups.is_none()
                             && selected_power == Some(choice.power_cap),
-                        format!("{} power", choice.power_cap),
+                        format!("{} Power", choice.power_cap),
                     )
                     .clicked()
                 {

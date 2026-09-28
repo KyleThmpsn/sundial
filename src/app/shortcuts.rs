@@ -14,6 +14,10 @@ impl SundialApp {
             self.request_save(ctx, SaveAction::Save);
         }
 
+        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::I)) {
+            self.hash_inspection.open_search();
+        }
+
         let editing_text = ctx
             .memory(eframe::egui::Memory::focused)
             .is_some_and(|id| egui::text_edit::TextEditState::load(ctx, id).is_some());

@@ -47,6 +47,7 @@ impl Inspector {
                 Err(mpsc::TryRecvError::Empty) => {}
             }
         }
+        let mut load = false;
         if let Some(result) = self.loaded.get(&tag) {
             match result {
                 Ok(graph) => crate::ui::catalog::runtime::draw_graph(
@@ -56,6 +57,7 @@ impl Inspector {
                 ),
                 Err(error) => {
                     ui.colored_label(ui.visuals().error_fg_color, error);
+                    load = ui.button("Retry").clicked();
                 }
             }
         } else if self.pending.contains_key(&tag) {
@@ -64,34 +66,38 @@ impl Inspector {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
         } else if self.packages.is_none() {
-            ui.label("Choose a game installation to read component field values.");
-        } else if ui
-            .add_enabled(
-                self.packages.is_some(),
-                egui::Button::new("Load Component Fields"),
-            )
-            .on_disabled_hover_text("Choose a game installation to read component values.")
-            .clicked()
-        {
-            let packages = self.packages.clone().expect("enabled with packages");
-            let (sender, receiver) = mpsc::channel();
-            self.pending.insert(tag, receiver);
-            let ctx = ui.ctx().clone();
-            std::thread::spawn(move || {
-                let result = (|| {
-                    let manager = crate::investment::discovery::open_packages(&packages)?;
-                    let payload = manager
-                        .read_tag(tiger_pkg::TagHash(tag))
-                        .map_err(|e| e.to_string())?;
-                    crate::weapon_entity::validate_weapon_entity(&payload)?;
-                    crate::weapon_runtime::load_weapon_runtime_graph_for_entity(
-                        &manager, 0, 0, tag, &payload,
-                    )
-                })();
-                let _ = sender.send(result);
-                ctx.request_repaint();
-            });
+            ui.label("No game installation.");
+        } else {
+            load = ui.button("Load Component Fields").clicked();
         }
+        if load {
+            self.load(ui.ctx(), tag);
+        }
+    }
+
+    /// Reads one resource's component fields in the background, replacing a failed read.
+    fn load(&mut self, ctx: &egui::Context, tag: u32) {
+        let Some(packages) = self.packages.clone() else {
+            return;
+        };
+        self.loaded.remove(&tag);
+        let (sender, receiver) = mpsc::channel();
+        self.pending.insert(tag, receiver);
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let result = (|| {
+                let manager = crate::investment::discovery::open_packages(&packages)?;
+                let payload = manager
+                    .read_tag(tiger_pkg::TagHash(tag))
+                    .map_err(|e| e.to_string())?;
+                crate::weapon_entity::validate_weapon_entity(&payload)?;
+                crate::weapon_runtime::load_weapon_runtime_graph_for_entity(
+                    &manager, 0, 0, tag, &payload,
+                )
+            })();
+            let _ = sender.send(result);
+            ctx.request_repaint();
+        });
     }
 }
 
@@ -125,7 +131,7 @@ fn draw_structure(ui: &mut egui::Ui, data: &Catalog, tag: u32) -> bool {
         }
     }
     if components.is_empty() {
-        ui.label("No component structure was recovered for this resource.");
+        ui.label("No Component Structure");
     }
     for (owner, binding, class) in components {
         let title = crate::weapon_runtime::native_type_name(class)

@@ -2,6 +2,7 @@ use super::*;
 #[cfg(test)]
 mod tests;
 use crate::{
+    app::inspector,
     catalog::Catalog,
     persistence::dawn_account::{
         DawnAccountDocument, EDITOR_MISSION, RewardDebt, supports_currency,
@@ -83,28 +84,37 @@ fn currency(ui: &mut egui::Ui, catalog: &Catalog, debt: &RewardDebt, width: f32)
     };
     let height = ui.spacing().interact_size.y;
     let texture = catalog.icon_texture(ui.ctx(), u64::from(debt.definition_hash));
-    ui.allocate_ui_with_layout(
-        egui::vec2(width, height),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            ui.set_min_size(egui::vec2(width, height));
-            ui.spacing_mut().item_spacing.x = 6.0;
-            if let Some(texture) = texture {
-                ui.add(
-                    egui::Image::new((texture.id(), egui::vec2(height, height)))
-                        .bg_fill(crate::app::ui::package_icon_backdrop(ui)),
-                );
-            } else {
-                ui.allocate_exact_size(egui::vec2(height, height), egui::Sense::hover());
-            }
-            ui.add(egui::Label::new(&name).truncate())
-        },
-    )
-    .inner
-    .on_hover_text(format!(
-        "{name}\nSource: {origin}\nReward #{}\nCharacter: {:016X}",
-        debt.id, debt.character_soid
-    ));
+    let response = ui
+        .allocate_ui_with_layout(
+            egui::vec2(width, height),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_min_size(egui::vec2(width, height));
+                ui.spacing_mut().item_spacing.x = 6.0;
+                if let Some(texture) = texture {
+                    ui.add(
+                        egui::Image::new((texture.id(), egui::vec2(height, height)))
+                            .bg_fill(crate::app::ui::package_icon_backdrop(ui)),
+                    );
+                } else {
+                    ui.allocate_exact_size(egui::vec2(height, height), egui::Sense::hover());
+                }
+                ui.add(egui::Label::new(&name).truncate())
+            },
+        )
+        .inner
+        .on_hover_text(format!(
+            "{name}\nSource: {origin}\nReward #{}\nCharacter: {:016X}",
+            debt.id, debt.character_soid
+        ));
+    response.context_menu(|ui| {
+        let hash = u64::from(debt.definition_hash);
+        inspector::inspect_menu_button(ui, "Inspect Definition", hash);
+        if debt.mission_hash != EDITOR_MISSION {
+            inspector::inspect_menu_button(ui, "Inspect Mission", u64::from(debt.mission_hash));
+        }
+        inspector::copy_menu_buttons(ui, hash, None);
+    });
 }
 
 fn quantity(

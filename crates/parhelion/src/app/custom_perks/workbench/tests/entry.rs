@@ -1,5 +1,5 @@
 use super::*;
-use crate::app::custom_perks::editor::tests::{set_test_speed, test_speed};
+use crate::app::custom_perks::workbench::parameters::tests::{set_test_speed, test_speed};
 
 fn frame(
     ctx: &egui::Context,
@@ -21,17 +21,35 @@ fn frame(
     )
 }
 
+fn texts(output: &egui::FullOutput) -> impl Iterator<Item = (&str, egui::Rect)> {
+    output.shapes.iter().filter_map(|shape| match &shape.shape {
+        egui::Shape::Text(text) => Some((
+            text.galley.job.text.as_str(),
+            text.galley.rect.translate(text.pos.to_vec2()),
+        )),
+        _ => None,
+    })
+}
+
 fn button(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
-    output
-        .shapes
-        .iter()
-        .find_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) if text.galley.job.text == label => {
-                Some(text.galley.rect.translate(text.pos.to_vec2()).center())
-            }
-            _ => None,
-        })
+    texts(output)
+        .find_map(|(text, rect)| (text == label).then(|| rect.center()))
         .unwrap_or_else(|| panic!("Missing button: {label}"))
+}
+
+/// The menu on the first effect card's header row.
+fn effect_menu(output: &egui::FullOutput) -> egui::Pos2 {
+    let title = texts(output)
+        .find_map(|(text, rect)| text.starts_with("1. ").then_some(rect))
+        .expect("first effect card");
+    texts(output)
+        .find_map(|(text, rect)| {
+            (text == crate::app::style::MORE
+                && rect.min.x > title.max.x
+                && (rect.center().y - title.center().y).abs() < 12.0)
+                .then(|| rect.center())
+        })
+        .expect("effect menu")
 }
 
 fn click(ctx: &egui::Context, app: &mut PackageAuthoringApp, position: egui::Pos2) {
@@ -130,7 +148,12 @@ fn native_micro_missile_entry_applies_speed_without_experimental_mode() {
     app.perk_workbench.initialized = true;
     let before = app.recipe.clone();
     let ctx = egui::Context::default();
-    let output = settle(&ctx, &mut app);
+    let mut output = settle(&ctx, &mut app);
+    // A stock card that edits in place keeps Edit Behavior in its menu.
+    if !texts(&output).any(|(text, _)| text == "Edit Behavior…") {
+        click(&ctx, &mut app, effect_menu(&output));
+        output = settle(&ctx, &mut app);
+    }
     click(&ctx, &mut app, button(&output, "Edit Behavior…"));
     let start = std::time::Instant::now();
     while app

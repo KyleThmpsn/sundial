@@ -19,6 +19,19 @@ pub(super) struct Browser {
     reviews: BTreeMap<(u32, u32), Arc<Review>>,
     review_job: Option<ReviewJob>,
     last_change: Option<(WeaponRecipe, WeaponRecipe)>,
+    candidates: Option<Candidates>,
+}
+
+/// The filtered and ordered donor list, kept until a filter, the report or the donor list
+/// changes. The report is held weakly, so a new report cannot reuse its address.
+struct Candidates {
+    query: String,
+    experimental: bool,
+    rejected: bool,
+    report: std::sync::Weak<ComponentCompatibilityReport>,
+    donors: (usize, usize),
+    /// Positions in the donor list.
+    rows: Arc<Vec<usize>>,
 }
 
 struct Picker {
@@ -57,6 +70,37 @@ impl Browser {
         self.generation = self.generation.wrapping_add(1);
         self.reports.clear();
         self.reviews.clear();
+        self.candidates = None;
+    }
+
+    /// The donors the picker shows, as positions in `donors`, rebuilt only when a filter, the
+    /// report or the donor list changes.
+    fn candidate_rows(
+        &mut self,
+        donors: &[WeaponDonorSummary],
+        report: &Arc<ComponentCompatibilityReport>,
+        picker: &Picker,
+    ) -> Arc<Vec<usize>> {
+        let donor_list = (donors.as_ptr() as usize, donors.len());
+        if let Some(cached) = self.candidates.as_ref().filter(|cached| {
+            cached.query == picker.query
+                && cached.experimental == picker.experimental
+                && cached.rejected == picker.rejected
+                && cached.donors == donor_list
+                && std::ptr::eq(cached.report.as_ptr(), Arc::as_ptr(report))
+        }) {
+            return Arc::clone(&cached.rows);
+        }
+        let rows = Arc::new(collect_candidates(donors, report, picker));
+        self.candidates = Some(Candidates {
+            query: picker.query.clone(),
+            experimental: picker.experimental,
+            rejected: picker.rejected,
+            report: Arc::downgrade(report),
+            donors: donor_list,
+            rows: Arc::clone(&rows),
+        });
+        rows
     }
 }
 
@@ -164,11 +208,14 @@ fn draw_donor_row(
             });
         });
     });
-    let response = response.on_hover_text(format!(
-        "0x{:08X}\n{}",
-        donor.hash,
-        assessment.reasons.join("\n")
-    ));
+    let response = response.on_hover_ui(|ui| {
+        ui.set_max_width(ui.spacing().tooltip_width);
+        ui.label(format!(
+            "0x{:08X}\n{}",
+            donor.hash,
+            assessment.reasons.join("\n")
+        ));
+    });
     response.widget_info(|| {
         egui::WidgetInfo::selected(
             egui::WidgetType::SelectableLabel,
@@ -214,21 +261,28 @@ impl PackageAuthoringApp {
         selected_text: &str,
         current_hash: Option<u32>,
         baseline_hash: Option<u32>,
+        current_key: Option<&RuntimeGraphKey>,
     ) {
         ui.label(format!("Requested: {selected_text}"));
-        for source in self.effective_runtime_source_labels(binding_hash, baseline_hash) {
+        for source in self.effective_runtime_source_labels(binding_hash, baseline_hash, current_key)
+        {
             ui.weak(source);
         }
         ui.horizontal_wrapped(|ui| {
-            if ui.add_enabled(self.catalog.is_some(), egui::Button::new("Review Donors…"))
-                .on_hover_text("Check compatibility and review every affected component before applying a donor.")
+            if ui
+                .add_enabled(self.catalog.is_some(), egui::Button::new("Review Donors…"))
+                .on_hover_text("Check compatibility before applying a donor.")
                 .clicked()
             {
                 self.runtime_donors.picker = Some(Picker {
                     binding_hash,
-                    key: self.runtime_graph_key(),
+                    key: current_key.cloned(),
                     baseline_hash,
-                    query: self.runtime_component_queries.get(&binding_hash).cloned().unwrap_or_default(),
+                    query: self
+                        .runtime_component_queries
+                        .get(&binding_hash)
+                        .cloned()
+                        .unwrap_or_default(),
                     experimental: false,
                     rejected: false,
                     selected: current_hash,
@@ -238,15 +292,28 @@ impl PackageAuthoringApp {
                 });
             }
             if let Some(baseline) = baseline_hash
-                && ui.small_button("Use Baseline…").on_hover_text("Restore this entire component group and check your saved settings.").clicked() {
+                && ui
+                    .small_button("Use Baseline…")
+                    .on_hover_text("Restore this component group.")
+                    .clicked()
+            {
                 self.runtime_donors.picker = Some(Picker {
-                    binding_hash, key: self.runtime_graph_key(), baseline_hash,
-                    query: String::new(), experimental: false, rejected: false,
-                    selected: Some(baseline), error: None, reset_unsupported: false, reviewing: None,
+                    binding_hash,
+                    key: current_key.cloned(),
+                    baseline_hash,
+                    query: String::new(),
+                    experimental: false,
+                    rejected: false,
+                    selected: Some(baseline),
+                    error: None,
+                    reset_unsupported: false,
+                    reviewing: None,
                 });
             }
-            if baseline_hash.is_none() && current_hash.is_some()
-                && ui.small_button("Remove Saved Choice").clicked() {
+            if baseline_hash.is_none()
+                && current_hash.is_some()
+                && ui.small_button("Remove Saved Choice").clicked()
+            {
                 self.recipe.set_runtime_component_donor(binding_hash, None);
                 self.runtime_graph = None;
                 self.runtime_value_text.clear();
@@ -259,15 +326,13 @@ impl PackageAuthoringApp {
         &self,
         binding_hash: u32,
         baseline_hash: Option<u32>,
+        current_key: Option<&RuntimeGraphKey>,
     ) -> Vec<String> {
-        let current_key = self.runtime_graph_key();
         if let Some(sources) = self
             .runtime_donors
             .reports
             .values()
-            .filter(|(key, report)| {
-                Some(key) == current_key.as_ref() && report.current_error.is_none()
-            })
+            .filter(|(key, report)| Some(key) == current_key && report.current_error.is_none())
             .find_map(|(_, report)| report.current_sources.get(&binding_hash))
         {
             return sources
@@ -286,9 +351,9 @@ impl PackageAuthoringApp {
         let Some((_, graph)) = self
             .runtime_graph
             .as_ref()
-            .filter(|(key, _)| Some(key) == current_key.as_ref())
+            .filter(|(key, _)| Some(key) == current_key)
         else {
-            return vec!["Effective source: Waiting for the current runtime graph.".into()];
+            return vec!["Effective source: Waiting for the runtime.".into()];
         };
         let owners = graph
             .bindings
@@ -297,9 +362,7 @@ impl PackageAuthoringApp {
             .map(|binding| binding.owner_tag)
             .collect::<BTreeSet<_>>();
         if owners.is_empty() {
-            return vec![
-                "Effective source: This binding is absent from the current runtime.".into(),
-            ];
+            return vec!["Effective source: Binding absent from this runtime.".into()];
         }
         let mut labels = BTreeSet::new();
         for owner in owners {
@@ -317,9 +380,7 @@ impl PackageAuthoringApp {
                         .and_then(|donor| donor.weapon_pattern_index);
                     if Some(hash) == baseline_hash
                         || donor_pattern.is_some_and(|pattern| {
-                            current_key
-                                .as_ref()
-                                .is_some_and(|key| key.pattern_index == Some(pattern))
+                            current_key.is_some_and(|key| key.pattern_index == Some(pattern))
                         })
                     {
                         return None;
@@ -429,12 +490,11 @@ impl PackageAuthoringApp {
         };
         if picker.key != key {
             picker.selected = None;
-            picker.error = Some("The runtime selection changed. Close this window and reopen Review Donors for the new baseline.".into());
+            picker.error = Some("The runtime changed. Reopen Review Donors.".into());
             return;
         }
         let Some(key) = key else {
-            picker.error =
-                Some("Select a runtime baseline before choosing component donors.".into());
+            picker.error = Some("Choose a runtime first.".into());
             return;
         };
         if picker.error.is_some()
@@ -473,33 +533,34 @@ impl PackageAuthoringApp {
         ui: &mut egui::Ui,
         ctx: &egui::Context,
         picker: &mut Picker,
-        report: Option<&ComponentCompatibilityReport>,
+        report: Option<&Arc<ComponentCompatibilityReport>>,
         current_key: Option<&RuntimeGraphKey>,
         review: Option<&Review>,
     ) -> bool {
         ui.heading(binding_label(picker.binding_hash));
         ui.colored_label(
             ui.visuals().warn_fg_color,
-            "Component mixing can cause crashes. Review details before applying and test in-game.",
+            "Component mixing can crash the game.",
         );
         if let Some(error) = &picker.error {
             ui.colored_label(ui.visuals().error_fg_color, error);
             return picker.key.as_ref() == current_key && ui.button("Retry Scan").clicked();
         }
-        let Some(report) = report else {
+        let Some(shared_report) = report else {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label("Checking donor structures and shared dependencies…");
+                ui.label("Checking donors…");
             });
             return false;
         };
+        let report: &ComponentCompatibilityReport = shared_report;
         if let Some(error) = &report.current_error {
             egui::Frame::group(ui.style())
                 .inner_margin(egui::Margin::same(8))
                 .show(ui, |ui| {
                     ui.colored_label(
                         ui.visuals().warn_fg_color,
-                        "The current combination needs repair. Selecting a donor replaces conflicting choices in this group.",
+                        "Current combination needs repair.",
                     )
                     .on_hover_text(error);
                 });
@@ -513,7 +574,9 @@ impl PackageAuthoringApp {
                 counts[usize::from(status_rank(assessment.status))] += 1;
                 counts
             });
-        let candidates = collect_candidates(&self.donor_summaries, report, picker);
+        let candidates =
+            self.runtime_donors
+                .candidate_rows(&self.donor_summaries, shared_report, picker);
         ui.horizontal_wrapped(|ui| {
             ui.weak(format!(
                 "{} donors shown · {} Lower Risk · {} Experimental · {} Rejected",
@@ -528,7 +591,14 @@ impl PackageAuthoringApp {
         } else {
             (ctx.screen_rect().height() * 0.28).clamp(120.0, 300.0)
         };
-        draw_candidate_list(ui, candidates, picker, list_height);
+        draw_candidate_list(
+            ui,
+            &self.donor_summaries,
+            report,
+            &candidates,
+            picker,
+            list_height,
+        );
         ui.separator();
         let Some((hash, assessment)) = picker.selected.and_then(|hash| {
             report
@@ -536,7 +606,6 @@ impl PackageAuthoringApp {
                 .get(&hash)
                 .map(|assessment| (hash, assessment))
         }) else {
-            ui.weak("Select a donor to review the result before applying it.");
             return false;
         };
         let review_height = (ctx.screen_rect().height() * 0.2).clamp(70.0, 170.0);
@@ -610,7 +679,7 @@ impl PackageAuthoringApp {
                             ui,
                             ctx,
                             &mut picker,
-                            report.as_deref(),
+                            report.as_ref(),
                             current_key.as_ref(),
                             review.as_deref(),
                         );
@@ -628,11 +697,15 @@ impl PackageAuthoringApp {
                     apply = ui
                         .add_enabled(apply_enabled, egui::Button::new("Apply Donor"))
                         .clicked();
-                    ui.weak(donor_apply_hint(
+                    if let Some(hint) = donor_apply_hint(
                         &picker,
                         report.is_some(),
                         selected_assessment,
-                    ));
+                        review.as_deref(),
+                        apply_enabled,
+                    ) {
+                        ui.weak(hint);
+                    }
                 });
             });
         self.runtime_component_queries
@@ -698,7 +771,7 @@ fn draw_current_sources(
     let Some(sources) = report.current_sources.get(&binding_hash) else {
         ui.horizontal(|ui| {
             ui.strong("Current Source");
-            ui.weak("Inherited from the current runtime baseline.");
+            ui.weak("Inherited from the runtime.");
         });
         return;
     };
@@ -743,16 +816,18 @@ fn draw_donor_search_controls(
         });
 }
 
-/// Applies the picker filters to the donor list and orders it by status, then name.
-fn collect_candidates<'a>(
-    donor_summaries: &'a [WeaponDonorSummary],
-    report: &'a ComponentCompatibilityReport,
+/// Applies the picker filters to the donor list and orders it by status, then name. Returns
+/// positions in `donor_summaries`.
+fn collect_candidates(
+    donor_summaries: &[WeaponDonorSummary],
+    report: &ComponentCompatibilityReport,
     picker: &Picker,
-) -> Vec<(&'a WeaponDonorSummary, &'a ComponentDonorAssessment)> {
+) -> Vec<usize> {
     let query = picker.query.trim().to_ascii_lowercase();
     let mut candidates = donor_summaries
         .iter()
-        .filter_map(|donor| {
+        .enumerate()
+        .filter_map(|(position, donor)| {
             let assessment = report.candidates.get(&donor.hash)?;
             if (assessment.status == DonorCompatibility::Experimental && !picker.experimental)
                 || (assessment.status == DonorCompatibility::Incompatible && !picker.rejected)
@@ -763,21 +838,26 @@ fn collect_candidates<'a>(
                 || donor.name.to_ascii_lowercase().contains(&query)
                 || donor.type_name.to_ascii_lowercase().contains(&query)
                 || format!("0x{:08x}", donor.hash).contains(&query))
-            .then_some((donor, assessment))
+            .then_some((position, donor, assessment.status))
         })
         .collect::<Vec<_>>();
-    candidates.sort_by(|(left, left_assessment), (right, right_assessment)| {
-        status_rank(left_assessment.status)
-            .cmp(&status_rank(right_assessment.status))
+    candidates.sort_by(|(_, left, left_status), (_, right, right_status)| {
+        status_rank(*left_status)
+            .cmp(&status_rank(*right_status))
             .then_with(|| left.name.cmp(&right.name))
             .then_with(|| left.hash.cmp(&right.hash))
     });
     candidates
+        .into_iter()
+        .map(|(position, ..)| position)
+        .collect()
 }
 
 fn draw_candidate_list(
     ui: &mut egui::Ui,
-    candidates: Vec<(&WeaponDonorSummary, &ComponentDonorAssessment)>,
+    donor_summaries: &[WeaponDonorSummary],
+    report: &ComponentCompatibilityReport,
+    candidates: &[usize],
     picker: &mut Picker,
     max_height: f32,
 ) {
@@ -787,12 +867,16 @@ fn draw_candidate_list(
         .auto_shrink([false, true])
         .show(ui, |ui| {
             if candidates.is_empty() {
-                ui.weak(
-                    "No donors match these filters. Enable additional match types above to broaden the list.",
-                );
+                ui.weak("No matching donors.");
             }
             let mut last_status = None;
-            for (donor, assessment) in candidates {
+            for donor in candidates
+                .iter()
+                .map(|&position| &donor_summaries[position])
+            {
+                let Some(assessment) = report.candidates.get(&donor.hash) else {
+                    continue;
+                };
                 if last_status != Some(assessment.status) {
                     draw_donor_group_label(ui, assessment.status);
                     last_status = Some(assessment.status);
@@ -818,8 +902,10 @@ fn draw_compatibility_details(
     ui: &mut egui::Ui,
     report: &ComponentCompatibilityReport,
     assessment: &ComponentDonorAssessment,
+    hash: u32,
 ) {
     egui::CollapsingHeader::new("Compatibility Details")
+        .id_salt(("compat-details", hash))
         .default_open(assessment.status == DonorCompatibility::Incompatible)
         .show(ui, |ui| {
             for reason in &assessment.reasons {
@@ -840,6 +926,7 @@ fn draw_selected_donor_review(
     ui: &mut egui::Ui,
     report: &ComponentCompatibilityReport,
     assessment: &ComponentDonorAssessment,
+    hash: u32,
     max_height: f32,
 ) {
     egui::ScrollArea::vertical()
@@ -859,7 +946,7 @@ fn draw_selected_donor_review(
                 }
                 ui.weak("Other donor choices in this group will be replaced.");
             }
-            draw_compatibility_details(ui, report, assessment);
+            draw_compatibility_details(ui, report, assessment, hash);
         });
 }
 
@@ -901,7 +988,7 @@ fn draw_selected_donor_panel(
             } else {
                 ui.label(format!("0x{hash:08X}"));
             }
-            draw_selected_donor_review(ui, report, assessment, review_height);
+            draw_selected_donor_review(ui, report, assessment, hash, review_height);
             if assessment.status != DonorCompatibility::Incompatible {
                 let current_review =
                     review.filter(|review| Some(review.donor_hash) == picker.selected);
@@ -911,28 +998,48 @@ fn draw_selected_donor_panel(
     clear_review
 }
 
-/// Explains why Apply Donor is unavailable, or what still has to finish before it is.
+/// Names what still blocks Apply Donor. Nothing while Apply is enabled or while the blocker is
+/// already shown with the review.
 fn donor_apply_hint(
     picker: &Picker,
     has_report: bool,
     selected_assessment: Option<&ComponentDonorAssessment>,
-) -> &'static str {
+    review: Option<&Review>,
+    apply_enabled: bool,
+) -> Option<&'static str> {
+    if apply_enabled {
+        return None;
+    }
     if picker.error.is_some() {
-        "Resolve the scan error before applying."
-    } else if !has_report {
-        "Waiting for the compatibility scan."
-    } else if picker.selected.is_none() {
-        "Select a donor to enable apply."
-    } else if selected_assessment
-        .is_some_and(|assessment| assessment.status == DonorCompatibility::Incompatible)
-    {
-        "This donor is rejected because its structure is incompatible."
-    } else if !picker.experimental
-        && selected_assessment
-            .is_some_and(|assessment| assessment.status == DonorCompatibility::Experimental)
-    {
-        "Enable Experimental Matches to apply this donor."
-    } else {
-        "Apply after the settings check completes."
+        return Some("Resolve the scan error before applying.");
+    }
+    if !has_report {
+        return Some("Waiting for the compatibility scan.");
+    }
+    let Some(assessment) = selected_assessment else {
+        return Some("Select a donor.");
+    };
+    match assessment.status {
+        DonorCompatibility::Incompatible => Some("Rejected donor."),
+        DonorCompatibility::Experimental if !picker.experimental => {
+            Some("Turn on Show Experimental Matches to apply this donor.")
+        }
+        _ => settings_hint(picker, review),
+    }
+}
+
+/// What the settings check still needs before Apply Donor. A failed check and a recipe
+/// conflict are shown with the review, so they add nothing here.
+fn settings_hint(picker: &Picker, review: Option<&Review>) -> Option<&'static str> {
+    let Some(review) = review.filter(|review| Some(review.donor_hash) == picker.selected) else {
+        return Some("Checking settings…");
+    };
+    match &review.result {
+        Ok(plan)
+            if plan.error.is_none() && !plan.resets.is_empty() && !picker.reset_unsupported =>
+        {
+            Some("Confirm Reset Listed Edits.")
+        }
+        _ => None,
     }
 }

@@ -67,6 +67,79 @@ pub(super) fn author_project_localized_strings(
     })
 }
 
+/// A weapon's own text in one locale: the required strings, then each optional one it carries.
+fn weapon_text<'a>(
+    weapon: &'a WeaponCloneSpec,
+    locale_index: usize,
+    custom_values: &mut Vec<(u32, &'a str)>,
+) {
+    let locale = weapon
+        .text
+        .locale_overrides
+        .iter()
+        .find(|locale| usize::from(locale.locale_index) == locale_index);
+    custom_values.extend([
+        (
+            weapon.identity.flavor_hash,
+            locale
+                .and_then(|locale| locale.flavor.as_deref())
+                .unwrap_or(&weapon.text.flavor),
+        ),
+        (
+            weapon.identity.name_hash,
+            locale
+                .and_then(|locale| locale.name.as_deref())
+                .unwrap_or(&weapon.text.name),
+        ),
+        (
+            weapon.identity.source_hash,
+            locale
+                .and_then(|locale| locale.source.as_deref())
+                .unwrap_or(&weapon.text.source),
+        ),
+    ]);
+    if let Some(type_name) = &weapon.text.type_name {
+        custom_values.push((
+            weapon.identity.type_hash,
+            locale
+                .and_then(|locale| locale.type_name.as_deref())
+                .unwrap_or(type_name),
+        ));
+    }
+    if let Some(value) = &weapon.text.collection_name {
+        custom_values.push((
+            weapon.identity.collection_name_hash,
+            locale
+                .and_then(|locale| locale.collection_name.as_deref())
+                .unwrap_or(value),
+        ));
+    }
+    if let Some(value) = &weapon.text.collection_description {
+        custom_values.push((
+            weapon.identity.collection_description_hash,
+            locale
+                .and_then(|locale| locale.collection_description.as_deref())
+                .unwrap_or(value),
+        ));
+    }
+    if let Some(value) = &weapon.text.inventory_hint {
+        custom_values.push((
+            weapon.identity.inventory_hint_hash,
+            locale
+                .and_then(|locale| locale.inventory_hint.as_deref())
+                .unwrap_or(value),
+        ));
+    }
+    if let Some(value) = &weapon.text.collection_requirement {
+        custom_values.push((
+            weapon.identity.collection_requirement_hash,
+            locale
+                .and_then(|locale| locale.collection_requirement.as_deref())
+                .unwrap_or(value),
+        ));
+    }
+}
+
 pub(super) fn project_authored_localized_values<'a>(
     weapons: &'a [WeaponCloneSpec],
     custom_plugs: &'a [ResolvedCustomPlug],
@@ -74,72 +147,17 @@ pub(super) fn project_authored_localized_values<'a>(
     branding: crate::branding::Branding,
 ) -> AuthoringResult<Vec<(u32, &'a str)>> {
     let mut custom_values = Vec::with_capacity(weapons.len() * 4 + custom_plugs.len() + 2);
+    let pages = weapons
+        .iter()
+        .filter_map(|weapon| weapon.overrides.collection_destination)
+        .collect::<BTreeSet<_>>();
+    for page in pages {
+        if let Some(hash) = page.name_hash() {
+            custom_values.push((hash, page.family.label()));
+        }
+    }
     for weapon in weapons {
-        let locale = weapon
-            .text
-            .locale_overrides
-            .iter()
-            .find(|locale| usize::from(locale.locale_index) == locale_index);
-        custom_values.extend([
-            (
-                weapon.identity.flavor_hash,
-                locale
-                    .and_then(|locale| locale.flavor.as_deref())
-                    .unwrap_or(&weapon.text.flavor),
-            ),
-            (
-                weapon.identity.name_hash,
-                locale
-                    .and_then(|locale| locale.name.as_deref())
-                    .unwrap_or(&weapon.text.name),
-            ),
-            (
-                weapon.identity.source_hash,
-                locale
-                    .and_then(|locale| locale.source.as_deref())
-                    .unwrap_or(&weapon.text.source),
-            ),
-        ]);
-        if let Some(type_name) = &weapon.text.type_name {
-            custom_values.push((
-                weapon.identity.type_hash,
-                locale
-                    .and_then(|locale| locale.type_name.as_deref())
-                    .unwrap_or(type_name),
-            ));
-        }
-        if let Some(value) = &weapon.text.collection_name {
-            custom_values.push((
-                weapon.identity.collection_name_hash,
-                locale
-                    .and_then(|locale| locale.collection_name.as_deref())
-                    .unwrap_or(value),
-            ));
-        }
-        if let Some(value) = &weapon.text.collection_description {
-            custom_values.push((
-                weapon.identity.collection_description_hash,
-                locale
-                    .and_then(|locale| locale.collection_description.as_deref())
-                    .unwrap_or(value),
-            ));
-        }
-        if let Some(value) = &weapon.text.inventory_hint {
-            custom_values.push((
-                weapon.identity.inventory_hint_hash,
-                locale
-                    .and_then(|locale| locale.inventory_hint.as_deref())
-                    .unwrap_or(value),
-            ));
-        }
-        if let Some(value) = &weapon.text.collection_requirement {
-            custom_values.push((
-                weapon.identity.collection_requirement_hash,
-                locale
-                    .and_then(|locale| locale.collection_requirement.as_deref())
-                    .unwrap_or(value),
-            ));
-        }
+        weapon_text(weapon, locale_index, &mut custom_values);
     }
     for custom_plug in custom_plugs {
         if let (Some(hash), Some(name)) = (
@@ -161,6 +179,7 @@ pub(super) fn project_authored_localized_values<'a>(
     ]);
     let mut badges = BTreeMap::new();
     for weapon in weapons {
+        custom_values.extend(super::subclass::authored_text(weapon));
         if let Some(lore) = &weapon.overrides.lore {
             custom_values.push((
                 crate::presentation::text_hash(&weapon.namespace, "lore"),

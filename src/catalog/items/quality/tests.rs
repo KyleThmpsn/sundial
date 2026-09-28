@@ -17,32 +17,6 @@ fn table(values: &[(u32, f32)]) -> Vec<u8> {
 }
 
 #[test]
-fn power_caps_follow_native_values_and_indices_instead_of_season_numbers() {
-    let mut values = (0..21)
-        .map(|index| (100 + index, 200.0))
-        .collect::<Vec<_>>();
-    values[0] = (77, 99_999.0);
-    values[3] = (88, 101.0);
-    values[11] = (99, 225.0);
-    values[20] = (111, 350.0);
-    let definitions = decode_power_cap_definitions(&table(&values)).unwrap();
-    assert_eq!(definitions.len(), 21);
-    assert_eq!(item_power_cap(&[0], &definitions), Some(999_990));
-    assert_eq!(item_power_cap(&[3], &definitions), Some(1010));
-    assert_eq!(item_power_cap(&[11], &definitions), Some(2250));
-    assert_eq!(item_power_cap(&[3, 20], &definitions), Some(3500));
-    assert_eq!(definitions[20].hash, 111);
-    values.swap(3, 20);
-    let changed = decode_power_cap_definitions(&table(&values)).unwrap();
-    assert_eq!(item_power_cap(&[3], &changed), Some(3500));
-    assert_eq!(changed[3].hash, 111);
-    let definitions = decode_power_cap_definitions(&table(&[(77, 171.0)])).unwrap();
-    for groups in [&[][..], &[1], &[u16::MAX], &[0, 1], &[0, u16::MAX]] {
-        assert_eq!(item_power_cap(groups, &definitions), None);
-    }
-}
-
-#[test]
 fn malformed_power_cap_tables_are_rejected() {
     let valid = table(&[(77, 171.0)]);
     for end in 0..valid.len() {

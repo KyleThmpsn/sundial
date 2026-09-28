@@ -31,5 +31,12 @@ fn native_reclamation_order_uses_special_ammo() {
     );
     assert!(variants > 0, "Native ammo properties must be inspected");
     fs::remove_file(stock.path().parent().unwrap().join("destiny2.exe")).unwrap();
-    stock.close().unwrap();
+    // A view whose packages something still holds open is kept for a later cleanup, the
+    // same outcome the build reports as a warning rather than a failure.
+    if let Err(error) = stock.close() {
+        assert!(
+            error.contains("preserved for a later cleanup attempt"),
+            "{error}"
+        );
+    }
 }

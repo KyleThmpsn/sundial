@@ -16,10 +16,6 @@ pub(super) fn append(
     Ok(())
 }
 
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "One pass over the part list keeps stage, LOD and material decisions together"
-)]
 fn append_stages(
     manager: &PackageManager,
     tag: u32,
@@ -121,19 +117,13 @@ fn append_stages(
         } else {
             u32_at(&bytes, part)
         };
-        // Transparent-stage parts with no textures are flat emissive panels, coloured by the
-        // second pixel constant (Better Devils' cylinder screens: white at 3.0). Other
-        // transparents need their own shader and are skipped.
+        // Textureless transparent parts can carry a flat emissive constant. Other parts in
+        // this stage still carry real geometry and material references, so keep their mesh.
         let constant = if stage == Some(7) {
-            match material
+            material
                 .as_ref()
                 .ok()
                 .and_then(|&tag| constant_emissive(manager, tag))
-            {
-                Some(colour) => Some(colour),
-                None if lenient => None,
-                None => continue,
-            }
         } else {
             None
         };
@@ -247,8 +237,12 @@ fn read_mesh(
     {
         return Err("Unsupported model position buffer layout".into());
     }
+    // Native input layout 13 is POSITION float3, TEXCOORD float2, NORMAL float3 in a
+    // single 32-byte stream. Other 32-byte layouts use the packed position reader below.
+    let float_layout = stride == 32
+        && (0..23).all(|stage| u16_at(bytes, mesh + 0x58 + stage * 2).ok() == Some(13));
     let base = model.vertices.len();
-    let uv = read_uvs(manager, bytes, mesh, &vertex, stride);
+    let uv = read_uvs(manager, bytes, mesh, &vertex, stride, float_layout);
     let has_uv = uv.is_ok();
     match uv {
         Ok(uv) => model.uvs.extend(uv),
@@ -265,9 +259,13 @@ fn read_mesh(
     for row in vertex.1.chunks_exact(stride) {
         let mut position = [0.0; 3];
         for axis in 0..3 {
-            let packed = i16::from_le_bytes(bytes_at(row, axis * 2)?);
-            position[axis] =
-                (f32::from(packed) / 32767.0).max(-1.0) * scale[axis] + translation[axis];
+            let value = if float_layout {
+                f32::from_le_bytes(bytes_at(row, axis * 4)?)
+            } else {
+                let packed = i16::from_le_bytes(bytes_at(row, axis * 2)?);
+                (f32::from(packed) / 32767.0).max(-1.0)
+            };
+            position[axis] = value * scale[axis] + translation[axis];
         }
         if position.iter().any(|v| !v.is_finite()) {
             return Err("The model contains invalid positions".into());
@@ -280,7 +278,7 @@ fn read_mesh(
                 bones: row[12..16].try_into().unwrap(),
             }));
     }
-    match read_normals(manager, bytes, mesh, &vertex, stride, scale) {
+    match read_normals(manager, bytes, mesh, &vertex, stride, scale, float_layout) {
         Ok(normals) => model.normals.extend(normals),
         Err(_) => model.normals.resize(model.vertices.len(), [0.0; 3]),
     }
@@ -387,7 +385,31 @@ fn read_uvs(
     mesh: usize,
     positions: &(Vec<u8>, Vec<u8>),
     stride: usize,
+    float_layout: bool,
 ) -> Result<Vec<[f32; 2]>, String> {
+    let transform = (0..4)
+        .map(|i| u32_at(model, 0x70 + i * 4).map(f32::from_bits))
+        .collect::<Result<Vec<_>, _>>()?;
+    if transform.iter().any(|v| !v.is_finite()) {
+        return Err("Invalid texture coordinate transform".into());
+    }
+    if float_layout {
+        return positions
+            .1
+            .chunks_exact(32)
+            .map(|row| {
+                let u = f32::from_le_bytes(bytes_at(row, 12)?);
+                let v = f32::from_le_bytes(bytes_at(row, 16)?);
+                if !u.is_finite() || !v.is_finite() {
+                    return Err("Invalid float texture coordinates".into());
+                }
+                Ok([
+                    u * transform[0] + transform[2],
+                    v * transform[1] + transform[3],
+                ])
+            })
+            .collect();
+    }
     let second = buffer(manager, u32_at(model, mesh + 4)?, 4)?;
     let other_stride = usize::from(u16_at(&second.0, 4)?);
     let (data, uv_stride, offset) =
@@ -400,12 +422,6 @@ fn read_uvs(
         };
     if data.len() % uv_stride != 0 || data.len() / uv_stride != positions.1.len() / stride {
         return Err("The texture coordinate buffer does not match the positions.".into());
-    }
-    let transform = (0..4)
-        .map(|i| u32_at(model, 0x70 + i * 4).map(f32::from_bits))
-        .collect::<Result<Vec<_>, _>>()?;
-    if transform.iter().any(|v| !v.is_finite()) {
-        return Err("Invalid texture coordinate transform".into());
     }
     data.chunks_exact(uv_stride)
         .map(|row| {
@@ -428,7 +444,27 @@ fn read_normals(
     positions: &(Vec<u8>, Vec<u8>),
     stride: usize,
     scale: [f32; 3],
+    float_layout: bool,
 ) -> Result<Vec<[f32; 3]>, String> {
+    if float_layout {
+        return positions
+            .1
+            .chunks_exact(32)
+            .map(|row| {
+                let mut normal = [0.0; 3];
+                for axis in 0..3 {
+                    normal[axis] = f32::from_le_bytes(bytes_at(row, 20 + axis * 4)?);
+                    if !normal[axis].is_finite() {
+                        return Err("Invalid float normal".into());
+                    }
+                    if scale[axis].abs() > 1e-8 {
+                        normal[axis] /= scale[axis];
+                    }
+                }
+                Ok(super::shader::normal::normalize(normal).unwrap_or([0.0; 3]))
+            })
+            .collect();
+    }
     let second = buffer(manager, u32_at(model, mesh + 4)?, 4)?;
     let other = usize::from(u16_at(&second.0, 4)?);
     let (data, row_stride, offset) = if matches!(stride, 28 | 32) {

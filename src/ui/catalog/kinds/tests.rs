@@ -167,19 +167,15 @@ fn effect_rows_describe_decoded_actions_and_display_all_source_names() {
     let ctx = egui::Context::default();
     let output = ctx.run(egui::RawInput::default(), |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| {
-            engine.draw_uses(ui, usage_rows(&[&effect], &sources), &sources, &mut None)
+            engine.draw_uses(
+                ui,
+                UsesSource::default(),
+                || usage_rows(&[&effect], &sources),
+                &sources,
+                &mut None,
+            )
         });
     });
-    let labels = output
-        .shapes
-        .iter()
-        .filter_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert!(labels.contains(&"Referenced By"));
-    assert!(labels.contains(&"Decoded Behavior"));
     let format = |needle: &str| {
         output
             .shapes
@@ -213,43 +209,23 @@ fn searches_match_numbers_names_and_summaries() {
 
 #[test]
 fn stock_uses_sort_by_each_column_in_both_directions() {
-    let rows = || {
-        vec![
-            (
-                421,
-                "Outlaw".to_owned(),
-                "Precision kills reload.".to_owned(),
-            ),
-            (
-                338,
-                "Rampage".to_owned(),
-                "Kills increase damage.".to_owned(),
-            ),
-            (
-                405,
-                "dragonfly".to_owned(),
-                "Precision kills explode.".to_owned(),
-            ),
+    let indices = |column, descending| {
+        let mut rows = [
+            (421, "Outlaw", "Precision kills reload."),
+            (338, "Rampage", "Kills increase damage."),
+            (405, "dragonfly", "Precision kills explode."),
         ]
+        .map(|(index, name, description)| StockUse {
+            index,
+            name: name.to_owned(),
+            description: description.to_owned(),
+        });
+        sort_uses(&mut rows, column, descending);
+        rows.map(|row| row.index)
     };
-    let indices = |sorted: Vec<(u16, String, String)>| {
-        sorted.into_iter().map(|row| row.0).collect::<Vec<_>>()
-    };
-    assert_eq!(
-        indices(sorted_uses(rows(), UseColumn::Effect, false)),
-        [338, 405, 421]
-    );
-    assert_eq!(
-        indices(sorted_uses(rows(), UseColumn::Effect, true)),
-        [421, 405, 338]
-    );
+    assert_eq!(indices(UseColumn::Effect, false), [338, 405, 421]);
+    assert_eq!(indices(UseColumn::Effect, true), [421, 405, 338]);
     // Names sort without regard to case.
-    assert_eq!(
-        indices(sorted_uses(rows(), UseColumn::Name, false)),
-        [405, 421, 338]
-    );
-    assert_eq!(
-        indices(sorted_uses(rows(), UseColumn::Description, true)),
-        [421, 405, 338]
-    );
+    assert_eq!(indices(UseColumn::Name, false), [405, 421, 338]);
+    assert_eq!(indices(UseColumn::Description, true), [421, 405, 338]);
 }

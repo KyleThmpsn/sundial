@@ -38,6 +38,7 @@ fn icon_dialog_keeps_its_draft_while_package_operations_run() {
             TagHash(1),
             crate::AuthoredWeaponRarity::Legendary,
             app.recipe.overrides.icon_edit.clone(),
+            false,
         ));
         let before = app.recipe.clone();
         set_operation(&mut app, installing);

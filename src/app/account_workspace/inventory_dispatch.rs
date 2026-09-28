@@ -72,11 +72,19 @@ pub(in crate::app) fn character_inventory_storage_len(
     document: &WorkspaceDocument,
     character_index: usize,
 ) -> Result<usize, InventoryError> {
+    Ok(character_inventory_storage(document, character_index)?.len())
+}
+
+/// Every stored row, including Dawn Postmaster rows hidden from ordinary inventory pickers.
+pub(in crate::app) fn character_inventory_storage(
+    document: &WorkspaceDocument,
+    character_index: usize,
+) -> Result<Vec<InventoryItemSnapshot>, InventoryError> {
     let items = match &document.account {
         AccountDocument::Dawn(document) => sqlite::character_inventory(document, character_index)?,
         _ => character_inventory(document, character_index)?,
     };
-    Ok(items.map_or(0, |items| items.len()))
+    Ok(items.unwrap_or_default())
 }
 
 pub(in crate::app) fn apply_profile_item_action(

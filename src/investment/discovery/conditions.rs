@@ -27,7 +27,8 @@ impl Family {
         }
     }
 
-    fn of(condition: &action::DecodedCondition) -> Self {
+    /// The family a decoded condition belongs to, keyed by the same name `name` gives it.
+    pub fn of(condition: &action::DecodedCondition) -> Self {
         if condition.kind == 2 {
             let labels = condition
                 .facts
@@ -47,7 +48,7 @@ impl Family {
         }
         match condition.kind {
             6 | 8 | 12 | 20 | 35 => {
-                known_name(condition).map_or(Self::Kind(condition.kind), |name| Self::Named {
+                name(condition).map_or(Self::Kind(condition.kind), |name| Self::Named {
                     kind: condition.kind,
                     name,
                 })
@@ -60,7 +61,7 @@ impl Family {
 #[derive(Clone, Debug)]
 pub struct Condition {
     pub family: Family,
-    /// Gameplay name when the source identifies this exact condition configuration.
+    /// The name `name` gives this configuration, when it has one.
     pub name: Option<String>,
     pub description: String,
     pub source: String,
@@ -105,7 +106,7 @@ pub(super) fn from_decoded(decoded: &action::DecodedAction) -> Result<Vec<Condit
                         name: all_conditions
                             .iter()
                             .find(|condition| condition.native == node.bytes)
-                            .and_then(|condition| known_name(condition)),
+                            .and_then(|condition| name(condition)),
                         description: line.text,
                         source: format!("{} · {role}", group.label),
                         kind: node.kind,
@@ -127,7 +128,7 @@ pub(super) fn from_decoded(decoded: &action::DecodedAction) -> Result<Vec<Condit
         while let Some(condition) = pending.pop() {
             result.push(Condition {
                 family: Family::of(condition),
-                name: known_name(condition),
+                name: name(condition),
                 description: condition.description(),
                 source: format!(
                     "{} · Matching Condition",
@@ -150,7 +151,10 @@ pub(super) fn from_decoded(decoded: &action::DecodedAction) -> Result<Vec<Condit
     Ok(result)
 }
 
-fn known_name(condition: &action::DecodedCondition) -> Option<String> {
+/// The name a condition carries wherever it is offered or shown: the kill trigger it matches,
+/// the name of a configuration the stock perks identify, or its kind's name for the kinds
+/// named by kind alone. `None` leaves the configuration unnamed.
+pub fn name(condition: &action::DecodedCondition) -> Option<String> {
     if condition.kind == 2
         && let Family::Kill {
             labels,
@@ -169,51 +173,35 @@ fn known_name(condition: &action::DecodedCondition) -> Option<String> {
     {
         return None;
     }
-    match condition.kind {
-        0 => return Some("On Perk Activation".into()),
-        14 => return Some("On Equip".into()),
-        15 => return Some("On Unequip".into()),
-        16 => return Some("On Draw".into()),
-        17 => return Some("On Holster".into()),
-        1 => return Some("After a Timer".into()),
-        26 => return Some("Counter Reaches Threshold".into()),
-        31 => return Some("All Requirements Met".into()),
-        35 => return Some("Predicate and Nested Condition Pass".into()),
-        _ => {}
+    if matches!(condition.kind, 0 | 1 | 14..=17 | 26 | 31 | 35) {
+        return Some(crate::sandbox_perk::nodes::condition_title(condition.kind).to_owned());
     }
     let description = condition.description();
-    let recognized = matches!(condition.kind, 0 | 1 | 2 | 14..=17)
-        || matches!(condition.kind, 6 | 8 | 12 | 20 | 35)
+    // A state known only by its hash reads as unnamed. The hash stays in the description,
+    // which the picker's detail line shows, and on hover over the card's State field.
+    if description.starts_with("While in the unnamed state 0x") {
+        return Some("While in an Unnamed State".into());
+    }
+    if description.starts_with("While not in the unnamed state 0x") {
+        return Some("While Not in an Unnamed State".into());
+    }
+    let recognized = condition.kind == 2
+        || matches!(condition.kind, 6 | 8 | 12 | 20)
             && condition
                 .catalog()
                 .is_some_and(|kind| description != kind.summary);
     recognized.then(|| {
-        description
-            .split_whitespace()
+        let words = description.split_whitespace().collect::<Vec<_>>();
+        words
+            .iter()
             .enumerate()
             .map(|(index, word)| {
-                if index > 0
-                    && matches!(
-                        word,
-                        "a" | "an"
-                            | "the"
-                            | "and"
-                            | "or"
-                            | "of"
-                            | "to"
-                            | "from"
-                            | "by"
-                            | "with"
-                            | "at"
-                            | "in"
-                    )
-                {
-                    return word.to_owned();
+                // A label such as hammer_throw_melee is the engine's own identifier, and
+                // arc_ball and "arc ball" are two different labels, so it stays verbatim.
+                if word.contains('_') {
+                    return (*word).to_owned();
                 }
-                let mut chars = word.chars();
-                chars.next().map_or_else(String::new, |first| {
-                    first.to_uppercase().chain(chars).collect()
-                })
+                crate::sandbox_perk::nodes::title_word(word, index, words.len())
             })
             .collect::<Vec<_>>()
             .join(" ")

@@ -55,31 +55,47 @@ pub(super) fn cell_width(ui: &egui::Ui) -> f32 {
 /// inside a wrapping layout, because available width there reports the whole line, so every
 /// cell claims the full row and nothing wraps. A cell of known width lets a wrapping row
 /// place as many side by side as the pane affords and move the rest to the next line.
+///
+/// `salt` scopes the cell's widgets. It is pushed inside the allocation, since a scope
+/// around the cell would place it at the cursor without wrapping.
 pub(super) fn cell<R>(
     ui: &mut egui::Ui,
+    salt: impl std::hash::Hash,
     label: &str,
     hint: &str,
     content: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
     let width = cell_width(ui);
     if ui.available_width() < width {
-        return super::properties::field(ui, label, hint, content);
+        // A row takes a line of its own. In a wrapping line it starts one, or it would sit
+        // after a row that already fills the line and push the pane wider.
+        if ui.cursor().left() > ui.max_rect().left() + 0.5 {
+            ui.end_row();
+        }
+        return ui
+            .push_id(salt, |ui| {
+                super::properties::field(ui, label, hint, content)
+            })
+            .inner;
     }
     sized(ui, width, |ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(CELL_LABEL_WIDTH, ui.spacing().interact_size.y),
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
-                ui.set_min_width(CELL_LABEL_WIDTH);
-                ui.add(egui::Label::new(label).halign(egui::Align::Max).truncate())
-                    .on_hover_text(if hint.is_empty() {
-                        label.to_owned()
-                    } else {
-                        format!("{label}\n{hint}")
-                    });
-            },
-        );
-        content(ui)
+        ui.push_id(salt, |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(CELL_LABEL_WIDTH, ui.spacing().interact_size.y),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    ui.set_min_width(CELL_LABEL_WIDTH);
+                    ui.add(egui::Label::new(label).halign(egui::Align::Max).truncate())
+                        .on_hover_text(if hint.is_empty() {
+                            label.to_owned()
+                        } else {
+                            format!("{label}\n{hint}")
+                        });
+                },
+            );
+            content(ui)
+        })
+        .inner
     })
 }
 
@@ -88,44 +104,27 @@ pub(super) fn column<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -
     sized(ui, COLUMN_WIDTH, content)
 }
 
-/// A millisecond field shown and edited in seconds.
-pub(super) fn seconds(ui: &mut egui::Ui, label: &str, hint: &str, millis: &mut u32, minimum: u32) {
-    if !label.is_empty() {
-        ui.label(label).on_hover_text(hint);
-    }
-    let mut value = *millis as f32 / 1000.0;
-    let control = ui
-        .add_sized(
-            [CONTROL_WIDTH, ui.spacing().interact_size.y],
-            egui::DragValue::new(&mut value)
-                .speed(0.05)
-                .range((minimum as f32 / 1000.0)..=3600.0)
-                .suffix(" s"),
-        )
-        .on_hover_text(hint);
-    // The visible label sits beside the control without being linked to it, so the control
-    // takes the label as its accessible name.
-    if !label.is_empty() {
-        super::pickers::name_response(ui, &control, label);
-    }
-    if control.changed() {
-        *millis = (value * 1000.0).round() as u32;
-    }
-}
-
 /// A float stored as its bit pattern, so a recipe round-trips the exact native value.
 /// Returns the control's response so the caller can give it an accessible name.
 pub(super) fn float_field(ui: &mut egui::Ui, bits: &mut u32) -> egui::Response {
+    float_field_with(ui, bits, "")
+}
+
+/// A float with its unit inside the field, as the Timing tiles read seconds, so the unit never
+/// takes room beside the control or sits apart from the number it measures.
+pub(super) fn float_field_with(ui: &mut egui::Ui, bits: &mut u32, unit: &str) -> egui::Response {
     let mut value = f32::from_bits(*bits);
     if !value.is_finite() {
         return ui.monospace(value.to_string());
     }
-    let response = ui.add(
-        egui::DragValue::new(&mut value)
-            .speed(0.01)
-            .clamp_existing_to_range(false)
-            .custom_formatter(|value, _| format!("{:?}", value as f32)),
-    );
+    let mut drag = egui::DragValue::new(&mut value)
+        .speed(0.01)
+        .clamp_existing_to_range(false)
+        .custom_formatter(|value, _| format!("{:?}", value as f32));
+    if !unit.trim().is_empty() {
+        drag = drag.suffix(format!(" {}", unit.trim()));
+    }
+    let response = ui.add(drag);
     if response.changed() && value.is_finite() {
         *bits = value.to_bits();
     }
@@ -140,15 +139,39 @@ pub(super) fn hex_key(
     key: &mut u32,
 ) -> egui::Response {
     let id = ui.make_persistent_id(("hex-key", salt));
+    // Zero and the hash of an empty name both mean no key, so neither reads as digits.
+    let empty = matches!(*key, 0 | 0x811C_9DC5);
     let mut text = ui
         .data_mut(|state| state.get_temp::<String>(id))
-        .unwrap_or_else(|| format!("0x{key:08X}"));
-    let response = ui.add(egui::TextEdit::singleline(&mut text).desired_width(110.0));
-    let parsed = text
-        .trim()
+        .unwrap_or_else(|| {
+            if empty {
+                String::new()
+            } else {
+                format!("0x{key:08X}")
+            }
+        });
+    // In a tile the control is as wide as the tile. A row keeps its own width.
+    let width = ui
+        .spacing()
+        .interact_size
+        .x
+        .max(110.0)
+        .min(ui.available_width());
+    let response = ui.add(
+        egui::TextEdit::singleline(&mut text)
+            .desired_width(width)
+            .hint_text("None"),
+    );
+    let trimmed = text.trim();
+    let digits = trimmed
         .strip_prefix("0x")
-        .or_else(|| text.trim().strip_prefix("0X"))
-        .and_then(|digits| u32::from_str_radix(digits, 16).ok());
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
+    let parsed = if trimmed.is_empty() {
+        Some(0)
+    } else {
+        u32::from_str_radix(digits, 16).ok()
+    };
     if response.changed() {
         if let Some(parsed) = parsed {
             *key = parsed;
@@ -159,25 +182,7 @@ pub(super) fn hex_key(
         ui.data_mut(|state| state.remove_temp::<String>(id));
     }
     if parsed.is_none() {
-        ui.colored_label(ui.visuals().warn_fg_color, "Use 0x and 8 hex digits.");
+        ui.colored_label(ui.visuals().warn_fg_color, "Use up to 8 hex digits.");
     }
     response
-}
-
-/// Comma separated numbers for a stock evidence line.
-pub(super) fn numbers(values: &[f32]) -> String {
-    values
-        .iter()
-        .map(|value| value.to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// Alternatives for a stock evidence line, joined with "or".
-pub(super) fn bytes(values: &[u8]) -> String {
-    values
-        .iter()
-        .map(|value| value.to_string())
-        .collect::<Vec<_>>()
-        .join(" or ")
 }

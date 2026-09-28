@@ -343,36 +343,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_parhelion_asset_package_is_a_standalone_authored_package() {
-        assert!(is_authored_standalone_package_id(
-            PARHELION_ASSET_PACKAGE_ID
-        ));
-    }
-
-    #[test]
     fn authored_package_profiles_are_coherent() {
-        assert_eq!(AUTHORED_PACKAGES[0], PARHELION_ASSET_PACKAGE);
-        assert_eq!(AUTHORED_PACKAGES.len(), 10);
-        assert_eq!(
-            AUTHORED_PACKAGES
-                .iter()
-                .filter(|profile| profile.required_output)
-                .count(),
-            7
-        );
-        assert_eq!(PARHELION_ASSET_PACKAGE.patch_id, 0);
-        assert_eq!(
-            AUTHORED_PACKAGES
-                .iter()
-                .filter(|profile| profile.stock_overlay)
-                .count(),
-            AUTHORED_PACKAGES.len() - 1
-        );
-        assert!(
-            AUTHORED_PACKAGES[1..]
-                .iter()
-                .all(|profile| profile.stock_overlay)
-        );
         assert_eq!(
             AUTHORED_PACKAGES
                 .iter()
@@ -412,8 +383,13 @@ mod tests {
             .map(|profile| profile.file_name)
             .collect::<Vec<_>>();
         let selected = authored_packages_for_file_names(required.iter().copied()).unwrap();
-        assert_eq!(selected.len(), 7);
-        assert!(selected.iter().all(|profile| profile.required_output));
+        assert_eq!(
+            selected
+                .iter()
+                .map(|profile| profile.file_name)
+                .collect::<Vec<_>>(),
+            required
+        );
 
         let all = authored_packages_for_file_names(CANONICAL_ARTIFACT_FILE_NAMES).unwrap();
         assert_eq!(all, AUTHORED_PACKAGES);

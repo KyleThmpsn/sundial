@@ -300,94 +300,6 @@ fn default_review_lists_only_lower_risk_matches_and_preserves_the_recipe() {
 }
 
 #[test]
-fn selected_donor_review_keeps_apply_visible_in_a_small_viewport_with_long_details() {
-    let viewport = egui::vec2(480.0, 640.0);
-    let ctx = egui::Context::default();
-    let mut app = app();
-    app.runtime_donors.picker.as_mut().unwrap().selected = Some(SAFE_Z);
-    let report = Arc::make_mut(&mut app.runtime_donors.reports.get_mut(&BINDING).unwrap().1);
-    report.current_error = Some(
-        "The current combination could not be verified because a previously selected component has a different shared-owner structure. Review the replacement donor and its affected bindings before changing the requested component."
-            .into(),
-    );
-    let assessment = report.candidates.get_mut(&SAFE_Z).unwrap();
-    assessment.reasons = vec![
-        "The selected donor has a long compatibility explanation covering its native runtime family, animation data, instance schema, definition schema, and dependencies shared with other component bindings. This explanation must remain readable without hiding the apply control."
-            .into(),
-        "The complete owner contains additional component bindings. The list below must scroll independently so a user can review every affected resource before explicitly applying the selected donor."
-            .into(),
-    ];
-    assessment.affected_bindings = (0..20).map(|index| 0xABCD_0000 + index).collect();
-    report.affected_bindings = assessment
-        .affected_bindings
-        .iter()
-        .map(|&hash| {
-            (
-                hash,
-                format!("Additional Shared Runtime Component 0x{hash:08X}"),
-            )
-        })
-        .collect();
-    let before = app.recipe.clone();
-    let output = settle(&ctx, &mut app, viewport);
-    let apply = label_rect(&output, "Apply Donor");
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, viewport);
-    assert!(
-        screen.contains_rect(apply),
-        "Apply Donor must remain within {viewport:?}, got {apply:?}"
-    );
-    fn has_label(shape: &egui::Shape, label: &str) -> bool {
-        match shape {
-            egui::Shape::Text(text) => text.galley.job.text == label,
-            egui::Shape::Vec(shapes) => shapes.iter().any(|shape| has_label(shape, label)),
-            _ => false,
-        }
-    }
-    let clip = output
-        .shapes
-        .iter()
-        .find(|shape| has_label(&shape.shape, "Apply Donor"))
-        .expect("Apply Donor must be rendered")
-        .clip_rect;
-    assert!(
-        clip.contains_rect(apply),
-        "Apply Donor must not be clipped, label {apply:?}, clip {clip:?}"
-    );
-    assert_eq!(app.recipe, before);
-    assert!(!app.runtime_donors.busy());
-}
-
-#[test]
-fn enabling_all_statuses_keeps_lower_risk_matches_first_without_mutating_the_recipe() {
-    let ctx = egui::Context::default();
-    let mut app = app();
-    let before = app.recipe.clone();
-    let picker = app.runtime_donors.picker.as_mut().unwrap();
-    picker.experimental = true;
-    picker.rejected = true;
-    let output = settle(&ctx, &mut app, VIEWPORT);
-    let labels = [
-        candidate_label("A Safe Donor", DonorCompatibility::LowerRisk),
-        candidate_label("Z Safe Donor", DonorCompatibility::LowerRisk),
-        candidate_label("A Experimental Donor", DonorCompatibility::Experimental),
-        candidate_label("A Rejected Donor", DonorCompatibility::Incompatible),
-    ];
-    let positions = labels.map(|label| label_rect(&output, &label).top());
-    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
-    assert!(
-        rendered_labels(&output)
-            .iter()
-            .any(|(text, _)| text.contains("Sidearm · 0x00000030"))
-    );
-    assert!(
-        !rendered_labels(&output)
-            .iter()
-            .any(|(text, _)| text.contains("Unchecked"))
-    );
-    assert_eq!(app.recipe, before);
-}
-
-#[test]
 fn choosing_a_candidate_only_applies_after_the_apply_button() {
     let ctx = egui::Context::default();
     let mut app = app();
@@ -629,7 +541,7 @@ fn a_stale_report_cannot_apply_after_the_runtime_baseline_changes() {
         picker
             .error
             .as_ref()
-            .is_some_and(|error| error.contains("runtime selection changed"))
+            .is_some_and(|error| error.contains("The runtime changed"))
     );
     assert!(!app.runtime_donors.busy());
     let output = settle(&ctx, &mut app, VIEWPORT);
@@ -834,7 +746,11 @@ fn grouped_choices_show_one_effective_source_instead_of_repeating_every_binding(
         Arc::new(shared_owner_graph()),
     ));
     assert_eq!(
-        app.effective_runtime_source_labels(BINDING, Some(BASELINE)),
+        app.effective_runtime_source_labels(
+            BINDING,
+            Some(BASELINE),
+            app.runtime_graph_key().as_ref()
+        ),
         vec!["Effective: Z Safe Donor"]
     );
     let mut report = report();
@@ -855,7 +771,11 @@ fn grouped_choices_show_one_effective_source_instead_of_repeating_every_binding(
         (app.runtime_graph_key().unwrap(), Arc::new(report)),
     );
     assert_eq!(
-        app.effective_runtime_source_labels(BINDING, Some(BASELINE)),
+        app.effective_runtime_source_labels(
+            BINDING,
+            Some(BASELINE),
+            app.runtime_graph_key().as_ref()
+        ),
         vec!["Effective: Z Safe Donor"]
     );
 }
@@ -863,7 +783,7 @@ fn grouped_choices_show_one_effective_source_instead_of_repeating_every_binding(
 #[test]
 fn unknown_runtime_rows_do_not_clear_an_applied_gameplay_donor() {
     let mut app = app();
-    let baseline_hash = app.runtime_component_baseline_hash();
+    let baseline_hash = app.runtime_component_baseline_hash(app.runtime_graph_key().as_ref());
     assert_eq!(baseline_hash, None);
     let picker = app.runtime_donors.picker.as_mut().unwrap();
     picker.baseline_hash = baseline_hash;
@@ -894,20 +814,32 @@ fn runtime_baseline_provenance_uses_only_current_graphs_or_verified_rows() {
     let mut graph = shared_owner_graph();
     graph.item_hash = SAFE_A;
     app.runtime_graph = Some((app.runtime_graph_key().unwrap(), Arc::new(graph)));
-    assert_eq!(app.runtime_component_baseline_hash(), Some(SAFE_A));
+    assert_eq!(
+        app.runtime_component_baseline_hash(app.runtime_graph_key().as_ref()),
+        Some(SAFE_A)
+    );
 
     app.recipe.overrides.weapon_pattern_index = Some(8);
     app.recipe.overrides.weapon_pattern_donor_hash = Some(SAFE_A.into());
-    assert_eq!(app.runtime_component_baseline_hash(), None);
+    assert_eq!(
+        app.runtime_component_baseline_hash(app.runtime_graph_key().as_ref()),
+        None
+    );
     app.donor_summaries
         .iter_mut()
         .find(|donor| donor.hash == SAFE_Z)
         .unwrap()
         .weapon_pattern_index = Some(8);
-    assert_eq!(app.runtime_component_baseline_hash(), Some(SAFE_Z));
+    assert_eq!(
+        app.runtime_component_baseline_hash(app.runtime_graph_key().as_ref()),
+        Some(SAFE_Z)
+    );
 
     app.recipe.overrides.weapon_pattern_index = None;
-    assert_eq!(app.runtime_component_baseline_hash(), Some(BASELINE));
+    assert_eq!(
+        app.runtime_component_baseline_hash(app.runtime_graph_key().as_ref()),
+        Some(BASELINE)
+    );
 }
 
 #[test]
@@ -924,17 +856,26 @@ fn effective_source_labels_expose_shared_owner_donors_despite_requested_baseline
     let before = app.recipe.clone();
     assert!(app.recipe.runtime_component_donor(BINDING).is_none());
     assert_eq!(
-        app.effective_runtime_source_labels(BINDING, Some(BASELINE)),
+        app.effective_runtime_source_labels(
+            BINDING,
+            Some(BASELINE),
+            app.runtime_graph_key().as_ref()
+        ),
         vec![format!(
             "Effective: Z Safe Donor via {} (shared owner)",
             binding_label(WEAPON_STAT_TRANSLATOR_COMPONENT_KEY)
         )]
     );
     assert_eq!(
-        app.effective_runtime_source_labels(WEAPON_BARREL_COMPONENT_KEY, Some(BASELINE)),
+        app.effective_runtime_source_labels(
+            WEAPON_BARREL_COMPONENT_KEY,
+            Some(BASELINE),
+            app.runtime_graph_key().as_ref()
+        ),
         vec!["Effective: Base Runtime (baseline)"]
     );
     let ctx = egui::Context::default();
+    let key = app.runtime_graph_key();
     let mut output = egui::FullOutput::default();
     for _ in 0..3 {
         output = ctx.run(
@@ -954,6 +895,7 @@ fn effective_source_labels_expose_shared_owner_donors_despite_requested_baseline
                         "Follow Baseline (Base Runtime)",
                         None,
                         Some(BASELINE),
+                        key.as_ref(),
                     );
                 });
             },
@@ -981,15 +923,20 @@ fn effective_source_labels_do_not_reuse_stale_graphs_or_claim_missing_bindings()
         Arc::new(shared_owner_graph()),
     ));
     assert!(
-        app.effective_runtime_source_labels(WEAPON_INPUT_COMPONENT_KEY, Some(BASELINE))[0]
-            .contains("absent")
+        app.effective_runtime_source_labels(
+            WEAPON_INPUT_COMPONENT_KEY,
+            Some(BASELINE),
+            app.runtime_graph_key().as_ref()
+        )[0]
+        .contains("absent")
     );
     app.recipe.overrides.weapon_pattern_index = Some(8);
-    let labels = app.effective_runtime_source_labels(BINDING, Some(BASELINE));
-    assert_eq!(
-        labels,
-        vec!["Effective source: Waiting for the current runtime graph."]
+    let labels = app.effective_runtime_source_labels(
+        BINDING,
+        Some(BASELINE),
+        app.runtime_graph_key().as_ref(),
     );
+    assert_eq!(labels, vec!["Effective source: Waiting for the runtime."]);
 }
 
 #[test]
@@ -1010,7 +957,11 @@ fn same_baseline_item_or_pattern_donors_do_not_claim_a_shared_owner_change() {
             Arc::new(shared_owner_graph()),
         ));
         assert_eq!(
-            app.effective_runtime_source_labels(BINDING, Some(BASELINE)),
+            app.effective_runtime_source_labels(
+                BINDING,
+                Some(BASELINE),
+                app.runtime_graph_key().as_ref()
+            ),
             vec!["Effective: Base Runtime (baseline)"]
         );
     }

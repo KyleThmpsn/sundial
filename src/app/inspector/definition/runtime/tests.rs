@@ -66,7 +66,7 @@ fn disconnected_reader_returns_an_actionable_error() {
             .as_ref()
             .as_ref()
             .unwrap_err()
-            .contains("retry")
+            .contains("stopped")
     );
 }
 

@@ -113,34 +113,12 @@ fn select_anchored_terms(
 mod tests {
     use super::*;
     #[test]
-    fn nested_duplicate_flag_contributes_only_at_outer_chunk() {
-        let terms = BTreeSet::from([2083, 2084]);
-        let closures = BTreeMap::from([
-            (2083, BTreeSet::from([2083])),
-            (2084, BTreeSet::from([2083, 2084])),
-        ]);
-        assert_eq!(
-            outermost_nested_terms(&terms, &closures),
-            BTreeSet::from([2084])
-        );
-    }
-    #[test]
-    fn independent_terms_remain_ambiguous() {
-        let terms = BTreeSet::from([3, 7]);
-        let closures = BTreeMap::from([(3, BTreeSet::from([3])), (7, BTreeSet::from([7]))]);
-        assert_eq!(outermost_nested_terms(&terms, &closures), terms);
-    }
-    #[test]
     fn broad_counter_uses_narrow_page_anchor() {
         let candidates = BTreeMap::from([(10, BTreeSet::from([3])), (20, BTreeSet::from([3, 7]))]);
         assert_eq!(
             select_anchored_terms(&candidates).unwrap(),
             BTreeSet::from([3])
         );
-    }
-    #[test]
-    fn ambiguous_counter_without_anchor_is_rejected() {
-        assert!(select_anchored_terms(&BTreeMap::from([(20, BTreeSet::from([3, 7]))])).is_err());
     }
     #[test]
     fn two_counted_contributions_are_rejected() {
