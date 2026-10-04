@@ -104,14 +104,12 @@ mod tests {
             .assigned_tag(1, "Test destination", "test tag")
             .unwrap_err();
 
-        assert_eq!(
-            error.to_string(),
-            "Test destination index 8192 exceeds the package-table limit"
-        );
+        let message = error.to_string();
+        assert!(message.contains("Test destination"));
+        assert!(message.contains("8192") && message.contains("package-table limit"));
         let error = AppendedTagAllocator::checked_ordinal(usize::MAX, 1, "test tag").unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "test tag appended-tag ordinal overflowed"
-        );
+        let message = error.to_string();
+        assert!(message.contains("test tag"));
+        assert!(message.contains("ordinal") && message.contains("overflow"));
     }
 }

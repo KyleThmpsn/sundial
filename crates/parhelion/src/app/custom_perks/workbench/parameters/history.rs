@@ -6,7 +6,7 @@ pub(in crate::app::custom_perks) struct Snapshot {
     values: Vec<WeaponRuntimeValueOverride>,
     actions: Vec<crate::WeaponSandboxPerkActionFloatRecipe>,
     projectiles: Vec<ProjectileSelection>,
-    movement: Option<(u32, Vec<(projectile::parameters::Kind, u32)>)>,
+    movement: Option<(u32, Vec<(entity::projectile::parameters::Kind, u32)>)>,
 }
 
 impl PerkEditor {

@@ -79,7 +79,7 @@ impl PackageAuthoringApp {
                         .add_enabled_ui(!busy, |ui| {
                             draw_library_row(
                                 ui,
-                                &self.library_icons,
+                                &mut self.library_icons,
                                 entry,
                                 details,
                                 LibraryRowState {
@@ -95,6 +95,7 @@ impl PackageAuthoringApp {
                                         .contains(&entry.path),
                                     reveal: self.library_state.reveal.as_ref() == Some(&entry.path),
                                     can_restore: !(current && self.recipe_dirty),
+                                    installed: self.installed.contains(entry.identity_hash),
                                 },
                             )
                         })
@@ -114,7 +115,7 @@ impl PackageAuthoringApp {
                     }
                 }
                 if shown.is_empty() {
-                    ui.label("No matching recipes.");
+                    ui.label("No Matching Results");
                 }
             });
         shown.len()
@@ -147,9 +148,11 @@ impl PackageAuthoringApp {
                 self.library_state.export_selection = None;
             }
         } else {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let noun = if matches == 1 { "recipe" } else { "recipes" };
-                ui.weak(format!("{matches} {noun}"));
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let noun = if matches == 1 { "recipe" } else { "recipes" };
+                    ui.weak(format!("{matches} {noun}"));
+                });
             });
         }
     }

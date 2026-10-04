@@ -612,6 +612,8 @@ fn browse_shaders(
 impl PackageAuthoringApp {
     pub(super) fn draw_shader_editor(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing.y = 4.0;
+        #[cfg(feature = "d2-model-importer")]
+        self.dye_materials.update_source(ui.ctx(), &self.recipe);
         let inherited = self
             .recipe
             .donor
@@ -632,7 +634,7 @@ impl PackageAuthoringApp {
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
                         ui.set_width(base_width);
-                        self.draw_gear_base(ui);
+                        self.draw_shader_source(ui);
                         ui.add_space(8.0);
                         self.draw_shader_icon(ui);
                     },
@@ -647,7 +649,7 @@ impl PackageAuthoringApp {
                 );
             });
         } else {
-            self.draw_gear_base(ui);
+            self.draw_shader_source(ui);
             ui.add_space(8.0);
             self.draw_shader_icon(ui);
             ui.separator();
@@ -683,12 +685,70 @@ impl PackageAuthoringApp {
         }
     }
 
+    fn source_shader(&self) -> bool {
+        #[cfg(feature = "d2-model-importer")]
+        {
+            self.recipe.overrides.imported_graph.is_some()
+        }
+        #[cfg(not(feature = "d2-model-importer"))]
+        {
+            false
+        }
+    }
+
+    fn draw_shader_source(&mut self, ui: &mut egui::Ui) {
+        #[cfg(feature = "d2-model-importer")]
+        if let Some(graph) = &self.recipe.overrides.imported_graph {
+            draw_donor_section_label(
+                ui,
+                "Source Shader",
+                Some("Materials, textures and animation come from the imported source."),
+            );
+            let icon = self.dye_materials.source_icon(ui.ctx());
+            let source = self.dye_materials.source.as_ref();
+            let action = sundial::investment::draw_authoring_item_header(
+                ui,
+                sundial::investment::AuthoringItemHeader {
+                    name: source
+                        .and_then(|s| s.name.as_deref())
+                        .unwrap_or(&self.recipe.name),
+                    type_name: "Shader",
+                    hash: source.and_then(|s| s.hash),
+                    icon: icon.as_ref(),
+                },
+                "Open Imported Assets",
+            );
+            if action.clicked() {
+                if let Err(error) = sundial::package_authoring::open_directory(&graph.directory) {
+                    self.log.push(LogEntry::error(error));
+                }
+            }
+            return;
+        }
+        self.draw_gear_base(ui);
+    }
+
+    fn shader_base_rows(&self) -> DyeRows {
+        #[cfg(feature = "d2-model-importer")]
+        if self.source_shader() {
+            return crate::shader::rows(self.dye_materials.sources.keys().copied());
+        }
+        self.catalog
+            .as_ref()
+            .and_then(|catalog| {
+                self.recipe
+                    .donor
+                    .item_hash
+                    .parse_u32()
+                    .ok()
+                    .map(|base| stock_rows(catalog, base))
+            })
+            .unwrap_or_default()
+    }
+
     /// The shader on an item of any gear type, with the page's unbuilt colors for that type.
     fn draw_shader_preview(&mut self, ui: &mut egui::Ui) {
-        let (Some(catalog), Ok(base)) = (
-            self.catalog.as_ref(),
-            self.recipe.donor.item_hash.parse_u32(),
-        ) else {
+        let Some(catalog) = self.catalog.as_ref() else {
             return;
         };
         ui.heading("Preview");
@@ -713,6 +773,7 @@ impl PackageAuthoringApp {
                 secondary_action_label: None,
                 clear: None,
                 row_detail: None,
+                selected_detail: None,
             },
         );
         let shown = match picked {
@@ -729,27 +790,114 @@ impl PackageAuthoringApp {
             .overrides
             .render_dye_rows
             .clone()
-            .unwrap_or_else(|| stock_rows(catalog, base))
+            .unwrap_or_else(|| self.shader_base_rows())
             .map(|rows| {
                 rows.iter()
                     .map(|row| (row.channel_index, row.dye_reference_index))
                     .collect::<Vec<_>>()
             });
+        #[cfg(feature = "d2-model-importer")]
+        let sources = if self.source_shader() {
+            let mut sources = BTreeMap::new();
+            for channel in DyeChannel::ALL {
+                if let Some(index) = rows
+                    .iter()
+                    .flatten()
+                    .find(|(key, _)| *key == gear.key(channel))
+                    .map(|(_, index)| *index)
+                    && let Some(source_channel) = crate::shader::source_channel(index)
+                    && let Some(source) = self.dye_materials.sources.get(&source_channel)
+                {
+                    let mut source = source.clone();
+                    if let Some(edit) =
+                        texture_edit(&self.recipe.overrides.dye_texture_edits, gear, channel)
+                    {
+                        for (own, tag) in [
+                            (&mut source.detail, edit.detail),
+                            (&mut source.normal, edit.normal),
+                        ] {
+                            if let Some(tag) = tag {
+                                *own = self
+                                    .dye_materials
+                                    .sources
+                                    .values()
+                                    .flat_map(|s| [&s.detail, &s.normal])
+                                    .flatten()
+                                    .find(|t| t.tag() == tag)
+                                    .cloned()
+                                    .or(Some(crate::shader::DyeTextureSource::Native(tag)));
+                            }
+                        }
+                    }
+                    sources.insert(channel.index(), source);
+                }
+            }
+            Some(std::sync::Arc::new(sources))
+        } else {
+            None
+        };
         let textures = &self.recipe.overrides.dye_texture_edits;
+        // Local source rows never go through the installed dye-table lookup.
+        let native_rows = rows.map(|rows| {
+            rows.into_iter()
+                .filter(|(_, _index)| {
+                    #[cfg(feature = "d2-model-importer")]
+                    if self.source_shader() && crate::shader::source_channel(*_index).is_some() {
+                        return false;
+                    }
+                    true
+                })
+                .collect::<Vec<_>>()
+        });
         let appearance = shown
-            .and_then(|hash| catalog.shader_preview_appearance(hash, &rows))
+            .and_then(|hash| catalog.shader_preview_appearance(hash, &native_rows))
             .map(|mut appearance| {
-                appearance.dye_textures = texture_overrides(textures, gear);
+                #[cfg(feature = "d2-model-importer")]
+                if let Some(sources) = &sources {
+                    appearance.dyes.retain(|(key, _)| {
+                        crate::dye::slot_of_key(*key)
+                            .is_none_or(|(_, channel)| !sources.contains_key(&channel.index()))
+                    });
+                }
+                appearance.dye_textures = texture_overrides(textures, gear)
+                    .into_iter()
+                    .filter(|_edit| {
+                        #[cfg(feature = "d2-model-importer")]
+                        if sources
+                            .as_ref()
+                            .is_some_and(|s| s.contains_key(&_edit.channel))
+                        {
+                            return false;
+                        }
+                        true
+                    })
+                    .collect();
                 appearance
             });
+        #[cfg(feature = "d2-model-importer")]
+        let appearance = if self.source_shader() && self.dye_materials.sources.is_empty() {
+            None
+        } else {
+            appearance
+        };
         let width = ui.available_width();
-        still::show(
+        still::show_sources(
             ui,
             egui::Id::new("shader-preview"),
             &self.packages,
             appearance,
             &surface_overrides(&self.recipe.overrides.dye_edits, textures, gear),
             egui::vec2(width, (width * 0.75).clamp(220.0, 340.0)),
+            {
+                #[cfg(feature = "d2-model-importer")]
+                {
+                    sources
+                }
+                #[cfg(not(feature = "d2-model-importer"))]
+                {
+                    None
+                }
+            },
         )
         .on_hover_text("Drag to rotate · Double-click to reset");
     }
@@ -761,6 +909,12 @@ impl PackageAuthoringApp {
             .checkbox(&mut self.recipe.overrides.icon_from_dyes, "Icon From Dyes")
             .on_hover_text("Draw the icon from the dyes.");
         if checkbox.changed() && !self.recipe.overrides.icon_from_dyes {
+            #[cfg(feature = "d2-model-importer")]
+            if self.source_shader() {
+                self.recipe.overrides.icon_edit.imported_image =
+                    crate::shader::source_icon(&self.recipe).ok();
+                return;
+            }
             self.recipe.overrides.icon_edit.imported_image = None;
         }
     }
@@ -782,19 +936,17 @@ impl PackageAuthoringApp {
     }
 
     fn draw_shader_dyes(&mut self, ui: &mut egui::Ui) {
-        let Ok(base) = self.recipe.donor.item_hash.parse_u32() else {
-            return;
-        };
         let shaders = self.gear_donors_for(ItemKind::Shader).to_vec();
         // A pick names its source shader and one channel, or every channel.
         let mut take: Option<(u32, Option<i8>)> = None;
         self.draw_dyes_header(ui, &shaders, &mut take);
         let gear = self.draw_gear_tabs(ui);
         ui.add_space(4.0);
-        let Some(catalog) = self.catalog.as_ref() else {
-            return;
-        };
-        let base_rows = stock_rows(catalog, base);
+        let base_rows = self.shader_base_rows();
+        #[cfg(feature = "d2-model-importer")]
+        if let Some(error) = &self.dye_materials.source_error {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
         let rows = self
             .recipe
             .overrides
@@ -808,7 +960,11 @@ impl PackageAuthoringApp {
         });
         let stock_dye = |shader: u32, gear: Option<GearType>, channel: DyeChannel| {
             gear_row(
-                &stock_rows(catalog, shader),
+                &self
+                    .catalog
+                    .as_ref()
+                    .map(|catalog| stock_rows(catalog, shader))
+                    .unwrap_or_default(),
                 gear.unwrap_or(GearType::Armor),
                 channel,
             )
@@ -904,7 +1060,14 @@ impl PackageAuthoringApp {
                 }
             });
             if ui
-                .add_enabled(customized, egui::Button::new("Restore Base Dyes"))
+                .add_enabled(
+                    customized,
+                    egui::Button::new(if self.source_shader() {
+                        "Restore Source Dyes"
+                    } else {
+                        "Restore Base Dyes"
+                    }),
+                )
                 .clicked()
             {
                 let overrides = &mut self.recipe.overrides;

@@ -71,12 +71,19 @@ pub(super) fn update_investment_stat_value(
     }
 }
 
+/// Rounds Per Minute's definition hash, which the build is known to convert at another weapon
+/// type's rates in some cases.
+pub(super) const ROUNDS_PER_MINUTE_HASH: u32 = 0xFF66_4809;
+
+/// Draws the stat table. `warnings` pairs a stat definition hash with why its in-game effect
+/// differs from what the table suggests.
 pub(super) fn draw_investment_stats(
     ui: &mut egui::Ui,
     values: &mut Vec<WeaponStatOverride>,
     removed_definitions: &mut Vec<u16>,
     donor: &WeaponDonor,
     show_internal_stats: bool,
+    warnings: &[(u32, String)],
 ) {
     ui.add_space(3.0);
 
@@ -150,19 +157,45 @@ pub(super) fn draw_investment_stats(
                     )
                     .on_hover_text(id_details);
                 }
-                let name_response = left_cell(
-                    ui,
-                    stat_width,
-                    egui::Label::new(if *is_removed {
-                        format!("{}  ·  Removed", stat.name)
-                    } else if *is_added {
-                        format!("{}  ·  Added", stat.name)
-                    } else {
-                        stat.name.clone()
-                    })
-                    .truncate()
-                    .halign(egui::Align::LEFT),
-                );
+                let name = if *is_removed {
+                    format!("{}  ·  Removed", stat.name)
+                } else if *is_added {
+                    format!("{}  ·  Added", stat.name)
+                } else {
+                    stat.name.clone()
+                };
+                let warning = warnings
+                    .iter()
+                    .find(|(hash, _)| Some(*hash) == stat.definition_hash)
+                    .map(|(_, warning)| warning.as_str());
+                let name_response = match warning {
+                    None => left_cell(
+                        ui,
+                        stat_width,
+                        egui::Label::new(name).truncate().halign(egui::Align::LEFT),
+                    ),
+                    // The warning sits right after the name, inside the same cell.
+                    Some(warning) => {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(stat_width, ui.spacing().interact_size.y),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.set_width(stat_width);
+                                let icon_width =
+                                    ui.spacing().interact_size.y + ui.spacing().item_spacing.x;
+                                let label = ui
+                                    .scope(|ui| {
+                                        ui.set_max_width((stat_width - icon_width).max(40.0));
+                                        ui.add(egui::Label::new(name).truncate())
+                                    })
+                                    .inner;
+                                draw_authoring_warning_icon(ui, warning);
+                                label
+                            },
+                        )
+                        .inner
+                    }
+                };
                 if *is_added {
                     name_response.on_hover_text(
                         "Not on the gameplay donor. Its effect depends on the weapon.",

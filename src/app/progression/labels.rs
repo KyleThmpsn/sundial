@@ -74,6 +74,7 @@ pub(super) fn unlock(catalog: &Catalog, index: usize, value: bool) -> Label {
     let context = definition
         .tested_by
         .iter()
+        .map(|context| &**context)
         .min_by_key(|context| context_rank(context, catalog));
     if value && definition.bank() == 1 && definition.compact_slot == Some(2115) {
         label.text = "Triumph Score".into();

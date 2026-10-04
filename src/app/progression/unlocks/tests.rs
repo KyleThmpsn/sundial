@@ -164,7 +164,7 @@ fn browsing_content_tables_preserves_documents_and_invalidates_saved_state() {
 }
 
 #[test]
-fn large_unlock_tables_reuse_filtered_rows_and_only_draw_the_viewport() {
+fn large_unlock_tables_only_draw_the_viewport() {
     let catalog = Catalog::for_test(Vec::new(), Default::default()).with_test_progression(
         (0..23_000)
             .map(|index| UnlockDefinition {
@@ -206,21 +206,19 @@ fn large_unlock_tables_reuse_filtered_rows_and_only_draw_the_viewport() {
             break;
         }
     }
-    let allocation = state.unlock_browser.filtered.as_ref().unwrap().1.as_ptr();
     let started = std::time::Instant::now();
     for _ in 0..30 {
         let output = render(&mut state);
+        assert!(output.shapes.iter().any(|shape| matches!(
+            &shape.shape, egui::Shape::Text(text) if text.galley.job.text.starts_with("Unlock 000")
+        )), "the viewport must paint actual unlock rows");
         assert!(
             output.shapes.len() < 1000,
             "Only visible rows should be painted"
         );
-        assert_eq!(
-            state.unlock_browser.filtered.as_ref().unwrap().1.as_ptr(),
-            allocation
-        );
     }
     eprintln!(
-        "23,000 unlocks, cached frame average: {:?}",
+        "23,000 unlocks, frame average: {:?}",
         started.elapsed() / 30
     );
     state.query = "Unlock 22999".into();

@@ -1,6 +1,6 @@
 //! Component editing, including values reached through linked native records.
 use super::*;
-use sundial::package_authoring::weapon_runtime::{
+use sundial::package_authoring::runtime::{
     WeaponRuntimePathElement, decode_weapon_runtime_field_value, encode_weapon_runtime_field_value,
 };
 
@@ -76,7 +76,7 @@ impl PerkEditor {
                 });
         }
         if !visible {
-            ui.label("No matching component properties.");
+            ui.label("No Matching Results");
         }
         true
     }
@@ -176,7 +176,7 @@ impl PerkEditor {
         let range = page(ui, "Records", records.len());
         for (path, fields) in records.into_iter().skip(range.start).take(range.len()) {
             if multiple {
-                let title = record_label(&path, fields[0].locator.type_handle);
+                let title = record_label(&path, fields[0].locator.type_handle.get());
                 egui::CollapsingHeader::new(title)
                     .id_salt(&path)
                     .open(expanded.then_some(true))
@@ -197,7 +197,7 @@ impl PerkEditor {
         owner: u32,
         fields: &[&WeaponRuntimeField],
     ) {
-        let parameters = projectile::parameters::discover(graph);
+        let parameters = entity::projectile::parameters::discover(graph);
         for field in &fields[page(ui, "Fields", fields.len())] {
             let carrier = carrier(graph, owner, field);
             let parameter = parameters
@@ -214,7 +214,7 @@ impl PerkEditor {
         loaded: &PrivatePerkRuntimeGraph,
         field: &WeaponRuntimeField,
         carrier: Option<&WeaponRuntimeField>,
-        parameter: Option<&projectile::parameters::Parameter>,
+        parameter: Option<&entity::projectile::parameters::Parameter>,
         layout: Layout,
     ) -> Drawn {
         if !matches!(layout, Layout::Peek) {
@@ -248,7 +248,7 @@ fn edit_value(
     loaded: &PrivatePerkRuntimeGraph,
     field: &WeaponRuntimeField,
     carrier: Option<&WeaponRuntimeField>,
-    parameter: Option<&projectile::parameters::Parameter>,
+    parameter: Option<&entity::projectile::parameters::Parameter>,
     layout: Layout,
     draft: &mut Vec<WeaponRuntimeValueOverride>,
     text: &mut BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
@@ -356,6 +356,17 @@ pub(in crate::app::custom_perks) fn draw_card_values(
             &entry.field.value,
         )
     });
+    // A flag word's established bit is a tile of its own, after the named values.
+    let flags = super::flags::discover(loaded);
+    if !flags.is_empty() {
+        crate::app::style::tiles(ui, |ui, width| {
+            for flag in &flags {
+                if let Some(edited) = super::flags::draw(ui, width, loaded, flag, draft) {
+                    result = Some(edited);
+                }
+            }
+        });
+    }
     let more = groups
         .iter()
         .flat_map(|group| &group.fields)
@@ -416,21 +427,21 @@ struct Group<'a> {
     graph: &'a WeaponRuntimeGraph,
     owner: u32,
     binding: &'a str,
-    root: &'a sundial::package_authoring::weapon_runtime::WeaponRuntimeRoot,
+    root: &'a sundial::package_authoring::runtime::WeaponRuntimeRoot,
     fields: Vec<&'a WeaponRuntimeField>,
 }
 
 impl Group<'_> {
     /// The component's native type name, or the binding that reaches it.
     fn component(&self) -> &str {
-        sundial::package_authoring::weapon_runtime::native_type_name(self.root.schema)
+        sundial::package_authoring::runtime::native_type_name(self.root.schema)
             .unwrap_or(self.binding)
     }
 
     /// Which of the component's roots holds the values.
     fn root_label(&self) -> &'static str {
         match self.root.kind {
-            sundial::package_authoring::weapon_runtime::WeaponRuntimeRootKind::ComponentInstance => {
+            sundial::package_authoring::runtime::WeaponRuntimeRootKind::ComponentInstance => {
                 "Initial Values"
             }
             _ => "Configuration",
@@ -460,7 +471,7 @@ fn component_groups(loaded: &PrivatePerkRuntimeGraph) -> Vec<Group<'_>> {
     let mut seen = std::collections::BTreeSet::new();
     let mut groups = Vec::new();
     for (tag, graph) in &loaded.graphs {
-        let movement = projectile::parameters::discover(graph);
+        let movement = entity::projectile::parameters::discover(graph);
         let roots = graph
             .resources
             .iter()
@@ -478,7 +489,7 @@ fn component_groups(loaded: &PrivatePerkRuntimeGraph) -> Vec<Group<'_>> {
         for (owner, binding, root) in roots {
             // Reflection can name a field without identifying its component's role.
             // Keep those records in Advanced, using the same checked writer.
-            if sundial::package_authoring::weapon_runtime::native_type_name(root.schema).is_none()
+            if sundial::package_authoring::runtime::native_type_name(root.schema).is_none()
                 && (binding.starts_with("Binding 0x") || binding == "Shared Component")
             {
                 continue;
@@ -570,8 +581,7 @@ fn property_hint(field: &WeaponRuntimeField) -> String {
         field.path_label,
         value_text(&field.value)
     );
-    if let Some(help) = sundial::package_authoring::weapon_runtime::presentation::field_help(field)
-    {
+    if let Some(help) = sundial::package_authoring::runtime::presentation::field_help(field) {
         hint.push('\n');
         hint.push_str(help);
     }
@@ -625,8 +635,11 @@ fn property_control(
         }
         _ => {
             ui.horizontal_wrapped(|ui| {
-                // Integers fill the tile as the numbers do, beside their hex reading.
-                let room = if matches!(current, WeaponRuntimeValue::Unsigned(_)) {
+                // Integers fill the tile as the numbers do, beside their hex reading. A flag
+                // word is its own hex reading.
+                let room = if matches!(current, WeaponRuntimeValue::Unsigned(_))
+                    && !matches!(field.kind, WeaponRuntimeValueKind::BitFlags { .. })
+                {
                     60.0
                 } else {
                     0.0
@@ -709,9 +722,50 @@ fn changes(
     let mut lines = Vec::new();
     let mut covered =
         BTreeMap::<WeaponRuntimeFieldLocator, std::collections::BTreeSet<usize>>::new();
-    for (_, graph) in &loaded.graphs {
-        let parameters = projectile::parameters::discover(graph);
-        for parameter in &parameters {
+    let lengths = super::effect_length::discover(loaded);
+    let flags = super::flags::discover(loaded);
+    for (tag, graph) in &loaded.graphs {
+        let guided = Guided {
+            tag: *tag,
+            parameters: entity::projectile::parameters::discover(graph),
+            lengths: lengths
+                .iter()
+                .filter(|length| length.graph == *tag)
+                .collect(),
+            flags: &flags,
+        };
+        guided.changes(loaded, draft, &mut lines)?;
+        field_changes(
+            loaded,
+            draft,
+            listed,
+            graph,
+            &guided,
+            &mut covered,
+            &mut lines,
+        )?;
+        append_unmapped_changes(graph, loaded, draft, &covered, &mut lines);
+    }
+    Ok(lines)
+}
+
+/// The guided readings of one graph's edits: projectile parameters, attachment lengths and
+/// retirement-delay flags, each in its own words.
+struct Guided<'a> {
+    tag: u32,
+    parameters: Vec<entity::projectile::parameters::Parameter>,
+    lengths: Vec<&'a super::effect_length::Length>,
+    flags: &'a [super::flags::Flag<'a>],
+}
+
+impl Guided<'_> {
+    fn changes(
+        &self,
+        loaded: &PrivatePerkRuntimeGraph,
+        draft: &[WeaponRuntimeValueOverride],
+        lines: &mut Vec<String>,
+    ) -> Result<(), String> {
+        for parameter in &self.parameters {
             if parameter.is_modified(draft) {
                 lines.push(format!(
                     "{}: {}{}",
@@ -721,66 +775,116 @@ fn changes(
                 ));
             }
         }
-        let roots = graph
-            .resources
-            .iter()
-            .flat_map(|resource| {
-                std::iter::once(&resource.instance)
-                    .chain(resource.definition.iter())
-                    .map(move |root| (resource.owner_tag, root))
-            })
-            .chain(
-                graph
-                    .owners
-                    .iter()
-                    .flat_map(|owner| owner.roots.iter().map(move |root| (owner.owner_tag, root))),
-            );
-        for (owner, root) in roots {
-            for field in root.fields.iter().filter(|field| {
-                field.source != WeaponRuntimeFieldSource::OpaqueNativeType
-                    && !matches!(field.value, WeaponRuntimeValue::Bytes(_))
-            }) {
-                let carrier = carrier(graph, owner, field);
-                let value = current_value(loaded, field, carrier, draft)?;
-                if value == field.value {
-                    continue;
-                }
-                if let Some(carrier) = carrier {
-                    let start = (field.owner_offset - carrier.owner_offset) as usize;
-                    for edit in draft
-                        .iter()
-                        .filter(|edit| guided::equivalent(loaded, &carrier.locator, &edit.locator))
-                    {
-                        covered
-                            .entry(edit.locator.clone())
-                            .or_default()
-                            .extend(start..start + field.locator.byte_size as usize);
-                    }
-                }
-                if parameters
-                    .iter()
-                    .any(|parameter| parameter.targets_field(owner, field))
-                    || listed.contains(&field.locator)
-                {
-                    continue;
-                }
-                let name = if named_property(field) {
-                    field.name.clone()
-                } else {
-                    format!(
-                        "Type 0x{:08X} +0x{:X}",
-                        field.locator.type_handle, field.locator.value_offset
-                    )
-                };
-                let line = format!("{name}: {}", value_text(&value));
-                if !lines.contains(&line) {
-                    lines.push(line);
-                }
+        for length in &self.lengths {
+            if length.is_modified(loaded, draft) {
+                lines.push(format!(
+                    "Attachment Length: {} s",
+                    length.value(loaded, draft)?
+                ));
             }
         }
-        append_unmapped_changes(graph, loaded, draft, &covered, &mut lines);
+        for flag in self.flags.iter().filter(|flag| flag.graph == self.tag) {
+            if flag.is_modified(loaded, draft) {
+                lines.push(format!(
+                    "Use Retirement Delay: {}",
+                    if flag.value(loaded, draft)? {
+                        "On"
+                    } else {
+                        "Off"
+                    }
+                ));
+            }
+        }
+        Ok(())
     }
-    Ok(lines)
+
+    /// Whether a guided reading already shows this field, so it is not listed by name too.
+    fn reads(
+        &self,
+        loaded: &PrivatePerkRuntimeGraph,
+        draft: &[WeaponRuntimeValueOverride],
+        owner: u32,
+        field: &WeaponRuntimeField,
+    ) -> bool {
+        self.parameters
+            .iter()
+            .any(|parameter| parameter.targets_field(owner, field))
+            || self
+                .lengths
+                .iter()
+                .any(|length| length.targets_field(owner, field))
+            || self
+                .flags
+                .iter()
+                .any(|flag| flag.targets_field(owner, field) && flag.covers(loaded, draft))
+    }
+}
+
+/// Every edited field of one graph that no guided reading shows, by name or by its type and
+/// offset. Records which bytes of each carrier the edits cover along the way.
+fn field_changes(
+    loaded: &PrivatePerkRuntimeGraph,
+    draft: &[WeaponRuntimeValueOverride],
+    listed: &std::collections::BTreeSet<&WeaponRuntimeFieldLocator>,
+    graph: &WeaponRuntimeGraph,
+    guided: &Guided<'_>,
+    covered: &mut BTreeMap<WeaponRuntimeFieldLocator, std::collections::BTreeSet<usize>>,
+    lines: &mut Vec<String>,
+) -> Result<(), String> {
+    let roots = graph
+        .resources
+        .iter()
+        .flat_map(|resource| {
+            std::iter::once(&resource.instance)
+                .chain(resource.definition.iter())
+                .map(move |root| (resource.owner_tag, root))
+        })
+        .chain(
+            graph
+                .owners
+                .iter()
+                .flat_map(|owner| owner.roots.iter().map(move |root| (owner.owner_tag, root))),
+        );
+    for (owner, root) in roots {
+        for field in root.fields.iter().filter(|field| {
+            field.source != WeaponRuntimeFieldSource::OpaqueNativeType
+                && !matches!(field.value, WeaponRuntimeValue::Bytes(_))
+        }) {
+            let carrier = carrier(graph, owner, field);
+            let value = current_value(loaded, field, carrier, draft)?;
+            if value == field.value {
+                continue;
+            }
+            if let Some(carrier) = carrier {
+                let start = (field.owner_offset - carrier.owner_offset) as usize;
+                for edit in draft
+                    .iter()
+                    .filter(|edit| guided::equivalent(loaded, &carrier.locator, &edit.locator))
+                {
+                    covered
+                        .entry(edit.locator.clone())
+                        .or_default()
+                        .extend(start..start + field.locator.byte_size as usize);
+                }
+            }
+            if guided.reads(loaded, draft, owner, field) || listed.contains(&field.locator) {
+                continue;
+            }
+            let name = if named_property(field) {
+                field.name.clone()
+            } else {
+                format!(
+                    "Type 0x{:08X} +0x{:X}",
+                    field.locator.type_handle, field.locator.value_offset
+                )
+            };
+            let line = format!("{name}: {}", value_text(&value));
+            if !lines.contains(&line) {
+                lines.push(line);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn append_unmapped_changes(
@@ -821,12 +925,10 @@ fn append_unmapped_changes(
     }
 }
 
-use sundial::package_authoring::weapon_runtime::presentation::{
-    proven, summary_value as value_text,
-};
+use sundial::package_authoring::runtime::presentation::{proven, summary_value as value_text};
 
 fn write_parameter(
-    parameter: &projectile::parameters::Parameter,
+    parameter: &entity::projectile::parameters::Parameter,
     draft: &mut Vec<WeaponRuntimeValueOverride>,
     value: Option<&WeaponRuntimeValue>,
 ) -> Result<(), String> {
@@ -884,7 +986,7 @@ fn matches_query(field: &WeaponRuntimeField, binding: &str, query: &str) -> bool
 }
 
 /// Typed controls inside legacy byte ranges keep the same saved source as convenience controls.
-fn carrier<'a>(
+pub(super) fn carrier<'a>(
     graph: &'a WeaponRuntimeGraph,
     owner: u32,
     field: &WeaponRuntimeField,
@@ -929,7 +1031,7 @@ fn saved<'a>(
     Ok(first)
 }
 
-fn current_value(
+pub(super) fn current_value(
     loaded: &PrivatePerkRuntimeGraph,
     field: &WeaponRuntimeField,
     carrier: Option<&WeaponRuntimeField>,
@@ -962,7 +1064,7 @@ fn current_value(
     )
 }
 
-fn write_value(
+pub(super) fn write_value(
     loaded: &PrivatePerkRuntimeGraph,
     field: &WeaponRuntimeField,
     carrier: Option<&WeaponRuntimeField>,

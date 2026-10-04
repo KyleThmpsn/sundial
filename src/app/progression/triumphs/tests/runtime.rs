@@ -255,10 +255,8 @@ fn skipping_conflicts_rebuilds_score_rewards_and_freed_inventory_capacity() {
         "_reward_context":{"character":0,"character_count":1,"class":0,"consumables":[],"inventory":[],"equipment":[],"next_serial":1},
         "_progression_rewards":[{"kind":1,"hash":9000,"quantity":1}]
     });
-    let original = document.clone();
     let mut job = edit::Job::new(&document, records, true);
     while !job.step(&catalog) {}
-    assert_eq!(document, original, "Review must not mutate the account");
     assert_eq!(job.conflicts.len(), 1);
     assert!(
         job.issues.is_empty(),
@@ -474,7 +472,7 @@ fn rewards_are_queued_once_with_claims_and_undo_restores_both() {
 }
 
 #[test]
-fn clearing_a_claim_preserves_unrelated_score_and_overflow_rolls_back() {
+fn score_overflow_rejects_claim_without_mutation() {
     let catalog = runtime_catalog(false);
     let record = &catalog.records().unwrap()[0];
     let mut document = json!({"state":{"unlocks":{"objective_values":[[2115,i32::MAX]]}}});

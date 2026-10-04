@@ -8,7 +8,8 @@ fn installed_progression_coverage_and_frame_cost() {
     let install = std::path::PathBuf::from(
         std::env::var_os("SUNDIAL_PROGRESSION_INSTALL").expect("install path"),
     );
-    let cache = std::path::PathBuf::from("examples/progression-ui-check/installed-catalog.json");
+    let directory = crate::test_support::TestDirectory::new("installed-progression-coverage");
+    let cache = directory.0.join("catalog.json");
     let catalog = Catalog::load_or_scan_with_progress(&install, cache, false, |progress| {
         eprintln!("{}", progress.message)
     })

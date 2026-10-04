@@ -31,7 +31,7 @@ pub(in crate::app) fn loadout(
         }
         None => geometry.arrangement,
     };
-    let dyes = recipe
+    let mut dyes = recipe
         .overrides
         .render_dye_rows
         .as_ref()
@@ -44,6 +44,26 @@ pub(in crate::app) fn loadout(
             })
         })
         .unwrap_or(colors.dyes);
+    if recipe.kind == crate::ItemKind::Weapon {
+        let mut rows = dyes.map(|layer| {
+            layer
+                .into_iter()
+                .map(
+                    |(channel_index, dye_reference_index)| crate::WeaponDyeReferenceOverride {
+                        channel_index,
+                        dye_reference_index,
+                    },
+                )
+                .collect()
+        });
+        crate::dye::unlock_base_colors(&mut rows);
+        dyes = rows.map(|layer| {
+            layer
+                .into_iter()
+                .map(|row| (row.channel_index, row.dye_reference_index))
+                .collect()
+        });
+    }
     let plugs = (0..donor.plugs.len().max(recipe.overrides.socket_columns.len()))
         .map(|index| {
             match recipe

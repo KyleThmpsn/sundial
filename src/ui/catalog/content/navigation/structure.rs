@@ -1,6 +1,6 @@
 //! On-demand component inspection shares the main inspector's decoder and renderer.
 use super::*;
-use crate::weapon_runtime::WeaponRuntimeGraph;
+use crate::runtime::WeaponRuntimeGraph;
 use std::{
     path::{Path, PathBuf},
     sync::mpsc,
@@ -90,10 +90,8 @@ impl Inspector {
                 let payload = manager
                     .read_tag(tiger_pkg::TagHash(tag))
                     .map_err(|e| e.to_string())?;
-                crate::weapon_entity::validate_weapon_entity(&payload)?;
-                crate::weapon_runtime::load_weapon_runtime_graph_for_entity(
-                    &manager, 0, 0, tag, &payload,
-                )
+                crate::entity::validate_weapon_entity(&payload)?;
+                crate::runtime::load_weapon_runtime_graph_for_entity(&manager, 0, 0, tag, &payload)
             })();
             let _ = sender.send(result);
             ctx.request_repaint();
@@ -134,15 +132,15 @@ fn draw_structure(ui: &mut egui::Ui, data: &Catalog, tag: u32) -> bool {
         ui.label("No Component Structure");
     }
     for (owner, binding, class) in components {
-        let title = crate::weapon_runtime::native_type_name(class)
+        let title = crate::runtime::native_type_name(class)
             .map(str::to_owned)
-            .unwrap_or_else(|| crate::weapon_runtime::component_binding_label(binding));
+            .unwrap_or_else(|| crate::runtime::component_binding_label(binding));
         egui::CollapsingHeader::new(title)
             .id_salt((owner, binding, class))
             .show(ui, |ui| {
-                ui.label(crate::weapon_runtime::component_binding_label(binding));
+                ui.label(crate::runtime::component_binding_label(binding));
                 ui.monospace(format!("Resource 0x{owner:08X} · Type 0x{class:08X}"));
-                for field in crate::weapon_runtime::native_member_names(class) {
+                for field in crate::runtime::native_member_names(class) {
                     ui.label(field);
                 }
             });

@@ -1,6 +1,7 @@
 //! Source material equations with native runtime and fixed surface bindings.
 use super::super::contracts::Role;
 use super::*;
+use std::collections::BTreeSet;
 
 fn surface(c: &mut Effect, kind: &str) -> Result<String> {
     let name = format!("source-surface-{kind}");
@@ -10,24 +11,13 @@ fn surface(c: &mut Effect, kind: &str) -> Result<String> {
     let mut header = c.graph.read(&format!("texture-{kind}-header"))?.0;
     let data = c.graph.read(&format!("texture-{kind}-data"))?.0;
     let format = Payload(header.clone()).u32(4)?;
-    let donor = if matches!(format, 72 | 99) {
-        "dye-4-texture-0"
-    } else {
-        "dye-4-texture-1"
-    };
-    let resident = c.graph.read(donor)?;
+    let (resident, ht, dt) = c.texture_template(matches!(format, 29 | 72 | 75 | 78 | 99))?;
     ensure!(
-        header.len() == 40 && resident.0.len() == 40,
+        header.len() == 40 && resident.len() == 40,
         "surface header differs"
     );
-    header[24..36].copy_from_slice(&resident.0[24..36]);
+    header[24..36].copy_from_slice(&resident[24..36]);
     crate::d2_mot::texture::resident(&mut header, data.len())?;
-    let ht = c.graph.node(donor)?["template"]
-        .as_u64()
-        .context("surface header template")?;
-    let dt = c.graph.node(&format!("{donor}-data"))?["template"]
-        .as_u64()
-        .context("surface data template")?;
     let body = format!("{name}-data");
     c.graph.add(&name, ht, &header, Some(&body), vec![])?;
     c.graph.add(&body, dt, &data, Some(&name), vec![])?;
@@ -163,20 +153,27 @@ fn program(
     } else {
         let manifest = load(&c.bindings_root.join("source-manifest.json"))?;
         let entry = &manifest["tags"][format!("{external:08X}")];
-        let reference = entry["reference"]
-            .as_u64()
-            .context("external source constant buffer")?;
+        let reference = u32::try_from(
+            entry["reference"]
+                .as_u64()
+                .context("external source constant buffer")?,
+        )?;
+        let data_entry = &manifest["tags"][format!("{reference:08X}")];
+        ensure!(
+            entry["type"] == 32
+                && entry["subtype"] == 7
+                && data_entry["type"] == 40
+                && data_entry["subtype"] == 7
+                && data_entry["reference"].as_u64() == Some(u64::from(external)),
+            "source external constant buffer package pair differs"
+        );
         let header = Payload(fs::read(
             c.bindings_root.join(format!("raw/{external:08X}.bin")),
         )?);
         let bytes = fs::read(c.bindings_root.join(format!("raw/{reference:08X}.bin")))?;
-        ensure!(
-            header.0.len() == 16
-                && header.u32(0)? as usize == bytes.len()
-                && bytes.len().is_multiple_of(16),
-            "source external constant buffer differs"
-        );
-        bytes
+        super::super::MaterialBuffer::read(&header.0, bytes)?
+            .data()
+            .to_vec()
     };
     let count = values.len() / 16;
     ensure!(
@@ -610,6 +607,10 @@ pub(super) fn auxiliary(c: &mut Effect, prepared: &Path, stage: usize) -> Result
     let mut records = vec![];
     let mut evidence = vec![];
     for draw in c.source.draws(stage)? {
+        // build() already records this runtime-supplied draw as an omission.
+        if draw.material == "FFFFFFFF" {
+            continue;
+        }
         let key = (draw.model, draw.material.clone());
         if !materials.contains_key(&key) {
             let material = c.source.raw(&draw.material)?;
@@ -756,7 +757,8 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
                 inputs::dye_inputs(&source, &material, &c.refs)?
             };
             let has_dyes = !dye_inputs.is_empty();
-            if has_dyes && dyes.is_none() {
+            let runtime_dyes = has_dyes && c.source.report["independent_art_entity"].is_string();
+            if has_dyes && !runtime_dyes && dyes.is_none() {
                 dyes = Some(
                     dyemap::dyes(prepared)
                         .context("source dyes")
@@ -781,6 +783,15 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
                 Some(&binding),
             )
             .with_context(|| format!("stage {stage} material {} pixel program", draw.material))?;
+            if runtime_dyes {
+                ensure!(
+                    !pixel_program
+                        .textures
+                        .keys()
+                        .any(|slot| slot >> 5 == 1 && (3..=9).contains(&(slot & 31))),
+                    "Source material writes over the native runtime dye texture bindings"
+                );
+            }
             if native_lighting {
                 pixel_program.code.extend(lighting::bindings(&c.refs)?);
                 for slot in 27..=31 {
@@ -847,7 +858,7 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
                     textures.insert(slot, surface(c, kind)?);
                 }
             }
-            if has_dyes {
+            if has_dyes && !runtime_dyes {
                 for channel in 4..=6 {
                     for detail in 0..2 {
                         let slot = 4 + (channel - 4) * 2 + detail;
@@ -869,6 +880,10 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
                     "source material overrides a native plate"
                 );
                 if used.contains(&slot) {
+                    ensure!(
+                        !runtime_dyes || !(4..=9).contains(&slot),
+                        "Source fixed texture overrides a runtime dye texture"
+                    );
                     if slot == 26 && matches!(stage, 7 | 9) {
                         ensure!(
                             !used.contains(&12),
@@ -901,6 +916,7 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
                 .copied()
                 .filter(|slot| {
                     !(textures.contains_key(slot)
+                        || (runtime_dyes && (4..=9).contains(slot))
                         || pixel_program.textures.contains_key(&(0x20 | *slot as u8))
                         || (*slot == 26 && textures.contains_key(&12))
                         || (matches!(stage, 7 | 9) && [15, 20, 21, 22, 23].contains(slot)))
@@ -927,17 +943,31 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
                 inputs::validate_pixel_view(&c.refs)?;
             }
             let mut pixel = inputs::model_constants(&source, scale)?;
-            pixel = inputs::merge_dyes(
-                &pixel,
-                dyes.as_ref().map_or(0, |dyes| dyes.values.len() / 16),
-                &dye_inputs,
-            )?;
+            let mut dye_scope_mask = 0;
+            let mut dye_slots = BTreeSet::new();
+            if runtime_dyes {
+                (pixel, dye_scope_mask, dye_slots) =
+                    inputs::runtime_dyes(&pixel, &dye_inputs, &c.refs)?;
+            } else {
+                pixel = inputs::merge_dyes(
+                    &pixel,
+                    dyes.as_ref().map_or(0, |dyes| dyes.values.len() / 16),
+                    &dye_inputs,
+                )?;
+            }
             let (rect, size) = c.atlas(draw.model)?;
             pixel = if plated {
                 inputs::pixel(&pixel, rect, size)?
             } else {
                 inputs::pixel_with_plates(&pixel, None)?
             };
+            if runtime_dyes {
+                pixel = inputs::dye_textures(&pixel);
+                textures = textures
+                    .into_iter()
+                    .map(|(slot, value)| (inputs::dye_texture_slot(slot), value))
+                    .collect();
+            }
             if matches!(stage, 7 | 9) {
                 pixel = atmosphere::adapt(&pixel)?;
                 for (from, to) in [(20, 16), (21, 17), (22, 18), (23, 18), (26, 12)] {
@@ -968,7 +998,11 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
             if let Some(specialized) = immutable {
                 pixel = specialized;
             }
-            inputs::pixel_scopes(&pixel, stage)?;
+            if runtime_dyes {
+                inputs::pixel_scopes_with_dyes(&pixel, stage, &dye_slots)?;
+            } else {
+                inputs::pixel_scopes(&pixel, stage)?;
+            }
             c.graph.program(
                 &name,
                 &pixel,
@@ -993,7 +1027,7 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
             for at in [24, 28] {
                 // These source atlases are fixed resident resources. The gear
                 // scope otherwise replaces their explicit pixel bindings.
-                let mut scopes = shell.u32(at)? & !0x1E000000;
+                let mut scopes = (shell.u32(at)? & !0x1E000000) | u32::try_from(dye_scope_mask)?;
                 if inputs::cb_count(&pixel, 8)?.is_some() {
                     scopes |= 1 << 14;
                 }
@@ -1027,7 +1061,7 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
                 c.graph.manifest["immutable_pixel_buffers"][&name] =
                     json!(pixel_program.values.len() / 16);
             }
-            evidence.push(json!({"model":draw.model_tag,"material":draw.material,"pixel_shader":format!("{ps:08X}"),"vertex_shader":format!("{:08X}",material.u32(0x70)?),"source_vertex_equations_retained":true,"source_pixel_equations_retained":!native_lighting,"source_material_equations_retained":true,"native_forward_lighting":native_lighting,"null_glow_mask_specialized":null_glow,"native_plate_scope_retained":false,"fixed_surface_textures":true,"pixel_runtime_outputs":pixel_program.evidence,"vertex_runtime_outputs":vertex_program.evidence}));
+            evidence.push(json!({"model":draw.model_tag,"material":draw.material,"pixel_shader":format!("{ps:08X}"),"vertex_shader":format!("{:08X}",material.u32(0x70)?),"source_vertex_equations_retained":true,"source_pixel_equations_retained":!native_lighting,"source_material_equations_retained":true,"native_forward_lighting":native_lighting,"null_glow_mask_specialized":null_glow,"native_plate_scope_retained":false,"native_runtime_dyes":runtime_dyes,"fixed_surface_textures":true,"pixel_runtime_outputs":pixel_program.evidence,"vertex_runtime_outputs":vertex_program.evidence}));
             created.insert(key.clone(), name);
         }
         records.push((draw, created[&key].clone()));
@@ -1050,7 +1084,7 @@ mod tests {
 
     #[test]
     fn decal_resource_mapping_follows_the_program_across_supported_blend_states() {
-        for blend in DECAL_STATES {
+        for blend in [26, 27, 29, 33, 36, 57] {
             let code = [0x4D, 0x2D, 1, 0x56, 0x2A];
             let mut material = vec![0; 0x400];
             material[48] = blend | 0x80;

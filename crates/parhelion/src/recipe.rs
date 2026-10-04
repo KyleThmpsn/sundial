@@ -4,16 +4,17 @@ mod copy;
 mod variant;
 
 use std::{
+    collections::BTreeMap,
     fmt, fs, io,
     path::{Path, PathBuf},
     str::FromStr,
 };
 
 use crate::{
-    AuthoredWeaponRarity, AuthoringError, ItemKind, ModernDamageType, WeaponAmmoType,
-    WeaponArtArrangementOverride, WeaponCloneIdentity, WeaponCloneOverrides, WeaponCloneSpec,
-    WeaponCloneText, WeaponDyeReferenceOverride, WeaponIconEdit, WeaponInventorySlot,
-    WeaponLocaleTextOverride, WeaponNumericInstruction, WeaponRawPayloadPatch,
+    AuthoredWeaponRarity, AuthoringError, ItemKind, ModernDamageType, SwordProfileOverride,
+    WeaponAmmoType, WeaponArtArrangementOverride, WeaponCloneIdentity, WeaponCloneOverrides,
+    WeaponCloneSpec, WeaponCloneText, WeaponDyeReferenceOverride, WeaponIconEdit,
+    WeaponInventorySlot, WeaponLocaleTextOverride, WeaponNumericInstruction, WeaponRawPayloadPatch,
     WeaponRawPayloadTarget, WeaponRenderGearDonorReference, WeaponSandboxPerkActionFloatOverride,
     WeaponSandboxPerkRuntimeOverride, WeaponSocketColumnOverride, WeaponSocketPlugVariantOverride,
     WeaponVariableDamage,
@@ -21,7 +22,7 @@ use crate::{
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sundial::investment::MAX_AUTHORED_EMBEDDED_SOCKET_CHOICES;
 use sundial::package_authoring::{
-    weapon_entity::WEAPON_BARREL_COMPONENT_KEY, weapon_runtime::WeaponRuntimeValueOverride,
+    entity::WEAPON_BARREL_COMPONENT_KEY, runtime::WeaponRuntimeValueOverride,
 };
 
 pub const RECIPE_SCHEMA: u32 = 1;
@@ -226,11 +227,44 @@ pub enum RecipeCollectionPlacement {
     SunriseBadge,
 }
 
+/// One gear-art marker moved from where the appearance puts it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarkerOffsetRecipe {
+    /// The FNV-1 hash of the marker's name, as the gear art stores it.
+    pub marker: HexHash,
+    /// How far it moves, in micrometres along the model's forward, side and up axes.
+    pub offset_um: [i32; 3],
+}
+
+/// A first-person action a weapon can play from another weapon's animations on the same rig.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnimationAction {
+    Fire,
+    AimFire,
+    Holster,
+    Sprint,
+    Slide,
+    Alert,
+    Reload,
+}
+
+/// The farthest a marker may move on any axis, in micrometres. A weapon is under a metre long.
+pub const MARKER_OFFSET_LIMIT_UM: i32 = 500_000;
+
+/// The farthest the weapon may move in the hand on any axis, in micrometres.
+pub const HELD_OFFSET_LIMIT_UM: i32 = 200_000;
+
+fn is_zero_offset(offset: &[i32; 3]) -> bool {
+    *offset == [0; 3]
+}
+
 /// One exotic behavior record grafted from another weapon of the same family.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdditionalBehaviorRecipe {
-    /// Catalogue identifier from [`crate::weapon_behavior::CATALOG`].
+    /// Catalogue identifier from [`crate::weapon::behavior::CATALOG`].
     pub behavior: String,
 }
 
@@ -244,7 +278,7 @@ pub enum RecipeBehaviorFiring {
     Weapon,
 }
 
-impl From<RecipeBehaviorFiring> for crate::weapon_behavior::BehaviorFiring {
+impl From<RecipeBehaviorFiring> for crate::weapon::behavior::BehaviorFiring {
     fn from(value: RecipeBehaviorFiring) -> Self {
         match value {
             RecipeBehaviorFiring::Behavior => Self::Behavior,
@@ -313,6 +347,15 @@ impl From<ModernDamageType> for RecipeDamageType {
 pub struct WeaponDonorReference {
     pub item_hash: HexHash,
     pub expected_name: Option<String>,
+}
+
+/// One gameplay component, such as the barrel, whose values come from another weapon while the
+/// weapon keeps its own runtime.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentSpliceRecipe {
+    pub binding_hash: HexHash,
+    pub donor: WeaponDonorReference,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -514,7 +557,7 @@ pub struct WeaponSandboxPerkRuntimeRecipe {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program: Option<sundial::package_authoring::sandbox_perk::program::Program>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub projectiles: Vec<sundial::package_authoring::sandbox_perk::projectile::Selection>,
+    pub projectiles: Vec<sundial::package_authoring::sandbox_perk::entity::Selection>,
     pub source_perk_index: u16,
     /// Experimental kill-filter override. Omitted means the original activation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -817,6 +860,15 @@ pub struct WeaponRuntimeResourcePatchRecipe {
     pub graph_values: Vec<WeaponRuntimeValueOverride>,
 }
 
+/// A private keyed sword profile with source-derived angular scale bits.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SwordProfileRecipe {
+    pub key: HexHash,
+    pub near_scale_bits: u32,
+    pub far_scale_bits: u32,
+}
+
 impl Default for WeaponRuntimeResourcePatchRecipe {
     fn default() -> Self {
         Self {
@@ -977,6 +1029,36 @@ pub struct WeaponRecipeOverrides {
     /// fires none of its own, and the most it is raised to. Absent means the default boost.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behavior_projectile_speed_bits: Option<u32>,
+    /// A stock projectile graph, privately cloned with checked owner patches and definition
+    /// appends, that the weapon fires as its own instead of through a perk's pattern override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fired_graph: Option<crate::weapon::behavior::FiredGraph>,
+    /// Another weapon whose first-person animations the weapon plays, such as a 140 RPM hand
+    /// cannon's on a model whose own row plays a 180's. Absent follows the model's own row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub animation_donor: Option<WeaponDonorReference>,
+    /// Single actions, such as Fire or Holster, played from another weapon's animations on the
+    /// same rig while every other action follows `animation_donor` or the model's own row.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub animation_actions: BTreeMap<AnimationAction, WeaponDonorReference>,
+    /// Another weapon whose type markers (its type name, frame key and type label) the runtime
+    /// carries, such as `pulse_rifle` on a scout rifle. Absent keeps the base weapon's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_marker_donor: Option<WeaponDonorReference>,
+    /// Gear-art markers moved from where the appearance puts them: the sight, the muzzle and the
+    /// other named points. Every row of one name moves together. Changing the appearance clears
+    /// them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marker_offsets: Vec<MarkerOffsetRecipe>,
+    /// How far the whole model and its markers move from the handle the hand holds, in
+    /// micrometres along the model's forward, side and up axes. First person shows it most, since
+    /// the hands stay where the animations put them. Changing the appearance clears it.
+    #[serde(default, skip_serializing_if = "is_zero_offset")]
+    pub held_offset_um: [i32; 3],
+    /// Gameplay components whose values come from other weapons, one donor each, while the
+    /// weapon keeps its own runtime and wiring.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub component_splices: Vec<ComponentSpliceRecipe>,
     pub power_cap_group: Option<u16>,
     /// Complete native quality/version group sequence. This advanced form preserves the number
     /// and order of the gameplay donor's version rows while allowing every row to differ.
@@ -984,6 +1066,9 @@ pub struct WeaponRecipeOverrides {
     pub power_cap_groups: Option<Vec<u16>>,
     /// Optional stock rarity tier. `None` preserves the gameplay donor byte.
     pub rarity: Option<RecipeRarity>,
+    /// Armor equip eligibility. Omitted follows the donor, Any removes its class requirement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub armor_class: Option<crate::ArmorClass>,
     /// Optional stock gear-art/runtime row used as the runtime entity source. Compilation combines
     /// its runtime global identity with the appearance donor's gear-art data. `None` follows the
     /// gameplay donor.
@@ -1006,6 +1091,9 @@ pub struct WeaponRecipeOverrides {
     /// Stock weapon selected in the UI for [`Self::stat_group_index`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stat_group_donor_hash: Option<HexHash>,
+    /// A stat display group of the recipe's own, in place of [`Self::stat_group_index`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_stat_group: Option<crate::stat_group::CustomStatGroup>,
     /// Complete translation-art rows. `None` preserves the selected geometry donor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub art_arrangements: Option<Vec<WeaponArtArrangementRecipe>>,
@@ -1019,9 +1107,16 @@ pub struct WeaponRecipeOverrides {
     /// A subclass's abilities and attunements taken from other stock subclasses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subclass_abilities: Option<crate::subclass::SubclassAbilities>,
+    /// A subclass every character receives and every class may equip. The item loses its
+    /// donor-class equip requirement and defaults to the Guardian Subclass type label.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub subclass_every_class: bool,
     /// A shader's custom surface values, by gear type, channel and surface.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dye_edits: Vec<crate::dye::DyeEdit>,
+    /// Allow the weapon's private materials to consume shader glow on existing glow masks.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shader_glow: bool,
     /// A shader's custom detail textures and tiling, by gear type and channel.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dye_texture_edits: Vec<crate::dye::DyeTextureEdit>,
@@ -1029,6 +1124,15 @@ pub struct WeaponRecipeOverrides {
     /// compiles that image like any other.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub icon_from_dyes: bool,
+    /// An emblem's nameplate images. `None` keeps the base emblem's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nameplate: Option<crate::emblem::Nameplate>,
+    /// A subclass's screen pictures. `None` keeps the base subclass's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_art: Option<crate::subclass::ScreenArt>,
+    /// Allowed native tracker categories. Absence follows the base emblem.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stat_trackers: Option<crate::emblem::StatTrackers>,
     /// Complete positional socket columns. An empty vector inherits every donor socket unchanged.
     /// A non-empty vector contains every donor socket and may append explicitly typed columns up
     /// to the native socket limit. `None` preserves donor socket content. Added columns must be
@@ -1042,6 +1146,9 @@ pub struct WeaponRecipeOverrides {
     /// donor graph before compilation, so stale offsets cannot be written silently.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_values: Vec<WeaponRuntimeValueOverride>,
+    /// Private sword profile selected by a matching effect in an authored private perk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sword_profile: Option<SwordProfileRecipe>,
     /// Technical same-size edits inside concrete runtime-component resources.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_resource_patches: Vec<WeaponRuntimeResourcePatchRecipe>,
@@ -1130,6 +1237,14 @@ impl WeaponRecipeOverrides {
         if let Some(hash) = &self.stat_group_donor_hash {
             parse_recipe_hash("stat-group donor", hash)?;
         }
+        if let Some(group) = &self.custom_stat_group {
+            if self.stat_group_index.is_some() {
+                return Err(RecipeError::Validation(
+                    "Choose either a stock stat group or a custom one".into(),
+                ));
+            }
+            group.validate().map_err(RecipeError::Validation)?;
+        }
         if self.remove_lore && self.lore.is_some() {
             return Err(RecipeError::Validation(
                 "Choose either source lore text or no lore tab".into(),
@@ -1174,11 +1289,74 @@ impl WeaponRecipeOverrides {
             skip_behavior_perks: self.skip_behavior_perks,
             behavior_firing: self.behavior_firing.map(Into::into).unwrap_or_default(),
             behavior_projectile_speed: self.behavior_projectile_speed_bits.map(f32::from_bits),
+            fired_graph: self.fired_graph.clone(),
+            animation_donor: self
+                .animation_donor
+                .as_ref()
+                .map(|donor| parse_recipe_hash("animation donor", &donor.item_hash))
+                .transpose()?,
+            animation_actions: self
+                .animation_actions
+                .iter()
+                .map(|(action, donor)| {
+                    Ok((
+                        *action,
+                        parse_recipe_hash("animation action donor", &donor.item_hash)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, RecipeError>>()?,
+            type_marker_donor: self
+                .type_marker_donor
+                .as_ref()
+                .map(|donor| parse_recipe_hash("type marker donor", &donor.item_hash))
+                .transpose()?,
+            marker_offsets: self
+                .marker_offsets
+                .iter()
+                .map(|offset| {
+                    if offset
+                        .offset_um
+                        .iter()
+                        .any(|um| um.abs() > MARKER_OFFSET_LIMIT_UM)
+                    {
+                        return Err(RecipeError::Validation(
+                            "A marker can move at most 50 cm".into(),
+                        ));
+                    }
+                    Ok((
+                        parse_recipe_hash("marker", &offset.marker)?,
+                        offset.offset_um.map(|um| um as f32 / 1_000_000.0),
+                    ))
+                })
+                .collect::<Result<Vec<_>, RecipeError>>()?,
+            held_offset: if self
+                .held_offset_um
+                .iter()
+                .any(|um| um.abs() > HELD_OFFSET_LIMIT_UM)
+            {
+                return Err(RecipeError::Validation(
+                    "The weapon can move at most 20 cm in the hand".into(),
+                ));
+            } else {
+                (!is_zero_offset(&self.held_offset_um))
+                    .then(|| self.held_offset_um.map(|um| um as f32 / 1_000_000.0))
+            },
+            component_splices: self
+                .component_splices
+                .iter()
+                .map(|splice| {
+                    Ok((
+                        parse_recipe_hash("component binding", &splice.binding_hash)?,
+                        parse_recipe_hash("component donor", &splice.donor.item_hash)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, RecipeError>>()?,
             power_cap_group: self.power_cap_group,
             power_cap_groups: self.power_cap_groups.clone(),
             rarity: self.rarity.map(AuthoredWeaponRarity::from),
             weapon_pattern_index: self.weapon_pattern_index,
             stat_group_index: self.stat_group_index,
+            custom_stat_group: self.custom_stat_group.clone(),
             art_arrangements: self.art_arrangements.as_ref().map(|rows| {
                 rows.iter()
                     .map(|row| WeaponArtArrangementOverride {
@@ -1208,6 +1386,9 @@ impl WeaponRecipeOverrides {
                         .map_err(RecipeError::Validation)
                 })
                 .transpose()?,
+            subclass_every_class: self.subclass_every_class,
+            armor_class: self.armor_class,
+            shader_glow: self.shader_glow,
             dye_edits: {
                 crate::dye::validate_edits(&self.dye_edits).map_err(RecipeError::Validation)?;
                 self.dye_edits.clone()
@@ -1217,6 +1398,37 @@ impl WeaponRecipeOverrides {
                     .map_err(RecipeError::Validation)?;
                 self.dye_texture_edits.clone()
             },
+            stat_trackers: self
+                .stat_trackers
+                .as_ref()
+                .map(|trackers| {
+                    trackers
+                        .validate()
+                        .map(|()| trackers.clone())
+                        .map_err(RecipeError::Validation)
+                })
+                .transpose()?,
+            nameplate: self
+                .nameplate
+                .as_ref()
+                .filter(|nameplate| !nameplate.is_empty())
+                .map(|nameplate| {
+                    nameplate
+                        .validate()
+                        .map(|()| nameplate.clone())
+                        .map_err(RecipeError::Validation)
+                })
+                .transpose()?,
+            screen_art: self
+                .screen_art
+                .as_ref()
+                .filter(|art| !art.is_empty())
+                .map(|art| {
+                    art.validate()
+                        .map(|()| art.clone())
+                        .map_err(RecipeError::Validation)
+                })
+                .transpose()?,
             socket_columns,
             socket_plug_variants: self
                 .socket_plug_variants
@@ -1225,6 +1437,17 @@ impl WeaponRecipeOverrides {
                 .map(|(index, variant)| variant.to_compiler(index))
                 .collect::<Result<Vec<_>, RecipeError>>()?,
             runtime_values: self.runtime_values.clone(),
+            sword_profile: self
+                .sword_profile
+                .as_ref()
+                .map(|profile| {
+                    Ok::<_, RecipeError>(SwordProfileOverride {
+                        key: parse_recipe_hash("sword profile key", &profile.key)?,
+                        near_scale_bits: profile.near_scale_bits,
+                        far_scale_bits: profile.far_scale_bits,
+                    })
+                })
+                .transpose()?,
             runtime_resource_patches: self
                 .runtime_resource_patches
                 .iter()
@@ -1239,6 +1462,8 @@ impl WeaponRecipeOverrides {
                         offset: patch.offset,
                         bytes: parse_raw_patch_bytes(&patch.bytes, index)?,
                         graph_values: patch.graph_values.clone(),
+                        graph_removals: Vec::new(),
+                        graph_trajectories: None,
                     })
                 })
                 .collect::<Result<Vec<_>, RecipeError>>()?,
@@ -1453,10 +1678,13 @@ impl WeaponRecipe {
         Ok(recipe)
     }
 
-    /// A new recipe of `kind` with no base item yet. Weapons keep their original defaults.
+    /// A new recipe of `kind` with no base item yet. A new weapon starts with shader glow on.
+    /// Saved recipes without the field keep it off, so they build as they did.
     pub(crate) fn new_unbound_kind(kind: ItemKind) -> Result<Self, RecipeError> {
         if kind.is_weapon() {
-            return Self::new_unbound("New Recipe");
+            let mut recipe = Self::new_unbound("New Recipe")?;
+            recipe.overrides.shader_glow = kind == ItemKind::Weapon;
+            return Ok(recipe);
         }
         let mut recipe = Self::new_unbound(format!("New {}", kind.label()))?;
         recipe.kind = kind;
@@ -1487,6 +1715,10 @@ impl WeaponRecipe {
             icon_edit: previous.icon_edit,
             hud_icon: previous.hud_icon,
             icon_from_dyes: previous.icon_from_dyes,
+            nameplate: previous.nameplate,
+            screen_art: previous.screen_art,
+            stat_trackers: previous.stat_trackers,
+            shader_glow: previous.shader_glow,
             ..Default::default()
         };
     }
@@ -1503,6 +1735,42 @@ impl WeaponRecipe {
         self.icon_donor = None;
         self.overrides.art_arrangements = None;
         self.overrides.render_dye_rows = None;
+        // Another model can use another rig, which the borrowed animations may not fit, and
+        // carries its own markers.
+        self.overrides.animation_donor = None;
+        self.overrides.animation_actions.clear();
+        self.overrides.marker_offsets.clear();
+        self.overrides.held_offset_um = [0; 3];
+    }
+
+    /// The weapon a gameplay component's values come from, when another one is chosen.
+    pub(crate) fn component_splice(&self, binding_hash: u32) -> Option<&WeaponDonorReference> {
+        self.overrides
+            .component_splices
+            .iter()
+            .find(|splice| splice.binding_hash.parse_u32() == Ok(binding_hash))
+            .map(|splice| &splice.donor)
+    }
+
+    pub(crate) fn set_component_splice(
+        &mut self,
+        binding_hash: u32,
+        donor: Option<WeaponDonorReference>,
+    ) {
+        self.overrides
+            .component_splices
+            .retain(|splice| splice.binding_hash.parse_u32() != Ok(binding_hash));
+        if let Some(donor) = donor {
+            self.overrides
+                .component_splices
+                .push(ComponentSpliceRecipe {
+                    binding_hash: binding_hash.into(),
+                    donor,
+                });
+            self.overrides
+                .component_splices
+                .sort_by_key(|splice| splice.binding_hash.parse_u32().unwrap_or(u32::MAX));
+        }
     }
 
     pub(crate) fn runtime_component_donor(
@@ -1571,6 +1839,31 @@ impl WeaponRecipe {
                 "Unsupported recipe schema {}; expected {RECIPE_SCHEMA}",
                 self.schema
             )));
+        }
+        if self.overrides.subclass_every_class && self.kind != ItemKind::Subclass {
+            return Err(RecipeError::Validation(
+                "Only a subclass can be given to every class".to_owned(),
+            ));
+        }
+        if self.overrides.armor_class.is_some() && self.kind != ItemKind::Armor {
+            return Err(RecipeError::Validation(
+                "Only armor can select an armor class".into(),
+            ));
+        }
+        if self.overrides.nameplate.is_some() && self.kind != ItemKind::Emblem {
+            return Err(RecipeError::Validation(
+                "Only an emblem has a nameplate".to_owned(),
+            ));
+        }
+        if self.overrides.screen_art.is_some() && self.kind != ItemKind::Subclass {
+            return Err(RecipeError::Validation(
+                "Only a subclass has screen art".to_owned(),
+            ));
+        }
+        if self.overrides.stat_trackers.is_some() && self.kind != ItemKind::Emblem {
+            return Err(RecipeError::Validation(
+                "Only an emblem can select stat tracker categories".into(),
+            ));
         }
         let spec = WeaponCloneSpec {
             kind: self.kind,
@@ -1666,6 +1959,13 @@ impl WeaponRecipe {
     }
 
     pub fn from_json_str(encoded: &str) -> Result<Self, RecipeError> {
+        #[cfg(feature = "d2-model-importer")]
+        let mut recipe: Self = {
+            let mut document = sundial::package_authoring::parse_json(encoded)?;
+            crate::imported::archive::expand(&mut document).map_err(RecipeError::Validation)?;
+            serde_json::from_value(document)?
+        };
+        #[cfg(not(feature = "d2-model-importer"))]
         let mut recipe: Self = sundial::package_authoring::parse_json(encoded)?;
         if recipe.schema != RECIPE_SCHEMA {
             return Err(RecipeError::Validation(format!(
@@ -1682,6 +1982,12 @@ impl WeaponRecipe {
         self.validate()?;
         let mut canonical = self.clone();
         canonical.canonicalize_investment_stats();
+        #[cfg(feature = "d2-model-importer")]
+        if crate::imported::kind(canonical.kind).is_some()
+            && canonical.overrides.imported_graph.is_some()
+        {
+            return crate::imported::archive::encode(&canonical).map_err(RecipeError::Validation);
+        }
         Ok(serde_json::to_string_pretty(&canonical)?)
     }
 
@@ -1695,6 +2001,15 @@ impl WeaponRecipe {
         let mut right = other.clone();
         left.canonicalize_investment_stats();
         right.canonicalize_investment_stats();
+        #[cfg(feature = "d2-model-importer")]
+        for recipe in [&mut left, &mut right] {
+            if crate::imported::kind(recipe.kind).is_some()
+                && let Some(reference) = &mut recipe.overrides.imported_graph
+            {
+                // Portable recipes restore the same pinned bytes to a different local folder.
+                reference.directory.clear();
+            }
+        }
         left == right
     }
 

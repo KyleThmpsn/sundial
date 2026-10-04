@@ -1,4 +1,5 @@
 use super::*;
+use crate::sandbox_perk::action::native::NodeKind as NativeNodeKind;
 use crate::sandbox_perk::{
     action::{self, FactValue, layout},
     program::decompile,
@@ -10,11 +11,11 @@ fn ability_adjustments_default_to_no_limit_and_preserve_authored_gates() {
         trigger: Trigger::Always,
         duration_ms: 0,
         actions: vec![
-            Action::adjust_component(1),
+            Action::adjust_component(AbilityTarget::Super),
             Action::AbilityProperty {
-                target: 2,
+                target: AbilityTarget::Melee,
                 key: 0x1234_5678,
-                option: 0,
+                option: PropertyOperation::Apply,
             },
         ],
         ..Program::default()
@@ -38,12 +39,12 @@ fn ability_adjustments_default_to_no_limit_and_preserve_authored_gates() {
             ..
         } = &mut program.actions[0]
         {
-            *flag = state;
-            *option = version;
+            *flag = state.into();
+            *option = version.into();
             *limit_bits = limit.to_bits();
         }
         if let Action::AbilityProperty { option, .. } = &mut program.actions[1] {
-            *option = version;
+            *option = version.into();
         }
         let compiled = assemble(&program, None).unwrap();
         let decoded = action::decode(&compiled.payload).unwrap();
@@ -71,6 +72,7 @@ fn native_pickups_and_world_objects_spawn_without_becoming_weapon_patterns() {
             graph,
             path: String::new(),
             values: Vec::new(),
+            hud_status: None,
         };
         let mut program = Program {
             trigger: Trigger::WeaponKill,
@@ -117,7 +119,12 @@ fn every_native_kind_compiles_against_clean_client_resources() {
         let source = manager
             .read_tag(TagHash(tag))
             .unwrap_or_else(|error| panic!("{} template source 0x{tag:08X}: {error}", entry.name));
-        let bytes = crate::sandbox_perk::action::native::template(condition, kind).unwrap();
+        let bytes = crate::sandbox_perk::action::native::template(if condition {
+            NativeNodeKind::Condition(kind)
+        } else {
+            NativeNodeKind::Effect(kind)
+        })
+        .unwrap();
         let template =
             crate::sandbox_perk::action::native::Graph::read(&bytes, 0, entry.class).unwrap();
         let clean =
@@ -181,6 +188,7 @@ fn every_authorable_catalog_kind_has_a_checked_compiler_path() {
         graph: 0x80BC_5810,
         path: String::new(),
         values: Vec::new(),
+        hud_status: None,
     };
     let mut conditions = BTreeSet::new();
     let mut effects = BTreeSet::new();

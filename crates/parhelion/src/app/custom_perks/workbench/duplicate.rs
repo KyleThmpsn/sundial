@@ -145,13 +145,16 @@ mod tests {
 
     #[test]
     fn pending_copy_blocks_committing_its_document_but_not_other_documents() {
-        let recipe = PerkRecipe::new();
+        // A library and named perks, so the copy is the only thing that could block a save.
+        let temp = tempfile::tempdir().unwrap();
+        let mut recipe = PerkRecipe::new();
+        recipe.name = "Copying".into();
         let id = recipe.id.clone();
+        let mut other = PerkRecipe::new();
+        other.name = "Other".into();
         let mut workbench = Workbench {
-            documents: vec![
-                Document::new(recipe, None),
-                Document::new(PerkRecipe::new(), None),
-            ],
+            library: Some(crate::perk::library::Library::open(temp.path().to_owned()).unwrap()),
+            documents: vec![Document::new(recipe, None), Document::new(other, None)],
             ..Default::default()
         };
         let (send, receive) = std::sync::mpsc::channel();
@@ -163,13 +166,11 @@ mod tests {
                 Ok(Program::default())
             }),
         });
-        assert_eq!(
-            workbench.edit_issue(),
-            Some("Wait for the effect copy to finish.")
-        );
-        assert_eq!(workbench.save_issue(), workbench.edit_issue());
+        assert!(workbench.edit_issue().is_some());
+        assert!(workbench.save_issue().is_some());
         workbench.selected = 1;
         assert_eq!(workbench.edit_issue(), None);
+        assert_eq!(workbench.save_issue(), None);
         send.send(()).unwrap();
         workbench
             .duplicating

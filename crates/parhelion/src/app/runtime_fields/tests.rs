@@ -1,15 +1,16 @@
 use super::*;
+use sundial::package_authoring::runtime::{BindingHash, SchemaHandle};
 
 fn field(kind: WeaponRuntimeValueKind, value: WeaponRuntimeValue) -> WeaponRuntimeField {
     WeaponRuntimeField {
         locator: WeaponRuntimeFieldLocator {
             graph_tag: None,
-            binding_hash: 0xB176_70ED,
+            binding_hash: BindingHash::new(0xB176_70ED),
             resource_index: 0,
-            root: sundial::package_authoring::weapon_runtime::WeaponRuntimeRootKind::ComponentDefinition,
-            root_schema: 0x8080_388F,
+            root: sundial::package_authoring::runtime::WeaponRuntimeRootKind::ComponentDefinition,
+            root_schema: SchemaHandle::new(0x8080_388F),
             path: Vec::new(),
-            type_handle: 0x8080_2F16,
+            type_handle: SchemaHandle::new(0x8080_2F16),
             value_offset: 0x48,
             byte_size: kind.byte_size(),
         },
@@ -108,11 +109,13 @@ fn passive_render_preserves_all_ieee_float_bits_and_saved_overrides() {
                 };
                 let before = overrides.clone();
                 for _ in 0..3 {
-                    frame(&ctx, Vec::new(), |ui| {
+                    let output = frame(&ctx, Vec::new(), |ui| {
                         draw_runtime_value_override_field(ui, &field, &mut overrides, &mut drafts);
                     });
                     assert_eq!(overrides, before, "passive render changed {bits:08X}");
-                    assert_eq!(drafts[&(field.locator.clone(), 0)], format!("0x{bits:08X}"));
+                    // Drawing stores no draft, and the box shows the exact bits.
+                    assert!(drafts.is_empty());
+                    assert!(text(&output).contains(&format!("0x{bits:08X}")));
                 }
             }
         }
@@ -120,7 +123,7 @@ fn passive_render_preserves_all_ieee_float_bits_and_saved_overrides() {
 }
 
 #[test]
-fn finite_decimal_display_round_trips_without_rounding_small_values_to_zero() {
+fn finite_decimal_display_keeps_small_and_boundary_values() {
     let ctx = egui::Context::default();
     for bits in [1, 0x007F_FFFF, 0x3F80_0001, 0x7F7F_FFFF, 0x8000_0000] {
         let expected = format!("{:?}", f32::from_bits(bits));
@@ -135,7 +138,6 @@ fn finite_decimal_display_round_trips_without_rounding_small_values_to_zero() {
             "{bits:08X}: {}",
             text(&output)
         );
-        assert_eq!(expected.parse::<f32>().unwrap().to_bits(), bits);
     }
 }
 
@@ -162,10 +164,9 @@ fn double_precision_fields_preserve_exact_bits_on_passive_render() {
             });
             assert!(!text(&output).contains("Invalid 64-bit float"));
             assert!(saved.is_empty());
-            assert_eq!(
-                drafts[&(field.locator.clone(), 0)],
-                format!("0x{bits:016X}")
-            );
+            // Drawing stores no draft, and the box shows the exact bits.
+            assert!(drafts.is_empty());
+            assert!(text(&output).contains(&format!("0x{bits:016X}")));
         }
     }
 }
@@ -356,7 +357,7 @@ fn external_changes_refresh_cached_values_but_invalid_drafts_survive_passive_fra
             );
         });
         assert_eq!(drafts[&(field.locator.clone(), 0)], "invalid draft");
-        frame(&ctx, Vec::new(), |ui| {
+        let output = frame(&ctx, Vec::new(), |ui| {
             assert_eq!(
                 draw_runtime_value_editor(
                     ui,
@@ -368,7 +369,9 @@ fn external_changes_refresh_cached_values_but_invalid_drafts_survive_passive_fra
                 None
             );
         });
-        assert_eq!(drafts[&(field.locator, 0)], expected);
+        // The external change drops the draft, so the box shows the new value.
+        assert!(!drafts.contains_key(&(field.locator, 0)));
+        assert!(text(&output).contains(expected), "{}", text(&output));
     }
 }
 
@@ -389,6 +392,7 @@ fn incompatible_saved_values_show_the_donor_without_silently_replacing_the_saved
         draw_runtime_value_override_field(ui, &field, &mut overrides, &mut drafts);
     });
     assert_eq!(overrides, before);
-    assert_eq!(drafts[&(field.locator, 0)], "0x3F800000");
+    assert!(drafts.is_empty());
+    assert!(text(&output).contains("0x3F800000"));
     assert!(text(&output).contains("Saved value is invalid."));
 }

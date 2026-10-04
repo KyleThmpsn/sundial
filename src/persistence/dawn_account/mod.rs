@@ -10,7 +10,7 @@
 
 mod activity;
 mod carried;
-mod contract;
+pub(crate) mod contract;
 mod dismantle;
 mod document;
 mod error;
@@ -51,6 +51,20 @@ pub(crate) struct DawnAccountSnapshot {
     settings: AccountSettingsState,
 }
 
+/// The account as it was loaded or last saved. A save writes only what differs from it, and
+/// adopting another copy's revision takes all of it at once.
+#[derive(Clone, Debug, PartialEq)]
+struct Loaded {
+    carried: carried::Carried,
+    characters: CharacterState,
+    profile: ProfileState,
+    activity: ActivityState,
+    settings: AccountSettingsState,
+    progression: progression::Progression,
+    dismantle: Vec<(u32, i32)>,
+    reward_debts: Vec<RewardDebt>,
+}
+
 /// One loaded player-state database, with the runtime bookkeeping a later write must respect.
 ///
 /// Not `Eq`: the carried `characters.appearance` is a float.
@@ -63,27 +77,17 @@ pub(crate) struct DawnAccountDocument {
     /// Rows this build does not model. A save replaces the account graph, so they are read with
     /// it and put back after it.
     carried: carried::Carried,
-    loaded_carried: carried::Carried,
-    loaded_characters: CharacterState,
-    loaded_profile: ProfileState,
     activity: ActivityState,
-    loaded_activity: ActivityState,
     /// Where each modelled setting was read from, so an edit is written back to that exact row.
     settings_index: settings::SettingsIndex,
-    /// The settings as loaded. A save writes only what differs from this.
-    loaded_settings: AccountSettingsState,
     progression: progression::Progression,
-    loaded_progression: progression::Progression,
-    loaded_dismantle: Vec<(u32, i32)>,
     reward_debts: Vec<RewardDebt>,
-    loaded_reward_debts: Vec<RewardDebt>,
+    loaded: Loaded,
     reward_sequence: i64,
     editor_cancelled_debts: std::collections::BTreeSet<i64>,
 }
 
-/// Read surface for the loaded account. The writer reads the revision and allocators through the
-/// document's own fields, so these accessors exist for callers and tests rather than for it.
-#[allow(dead_code)]
+/// Read surface for the loaded account.
 impl DawnAccountDocument {
     pub(crate) fn primary_soid(&self) -> InstanceSoid {
         self.snapshot.primary_soid
@@ -97,7 +101,6 @@ impl DawnAccountDocument {
     pub(crate) fn settings(&self) -> &AccountSettingsState {
         &self.snapshot.settings
     }
-    /// The revision a write must advance, mirroring Dawn's own compare and swap.
     /// Whether the editable account differs from another copy of it.
     ///
     /// The comparison is the account and the rows carried with it, never `account_revision`: a
@@ -121,19 +124,18 @@ impl DawnAccountDocument {
                 .max(source.allocators.profile_item);
         }
         self.metadata.account_revision = source.metadata.account_revision;
-        self.loaded_settings = source.loaded_settings.clone();
-        self.loaded_progression = source.loaded_progression.clone();
-        self.loaded_activity = source.loaded_activity.clone();
-        self.loaded_carried = source.loaded_carried.clone();
-        self.loaded_characters = source.loaded_characters.clone();
-        self.loaded_profile = source.loaded_profile.clone();
-        self.loaded_dismantle = source.loaded_dismantle.clone();
-        self.loaded_reward_debts = source.loaded_reward_debts.clone();
+        self.loaded = source.loaded.clone();
         self.reward_sequence = self.reward_sequence.max(source.reward_sequence);
         self.editor_cancelled_debts
             .extend(&source.editor_cancelled_debts);
     }
+}
 
+/// What tests read back. The writer reads the revision and allocators through the document's own
+/// fields.
+#[cfg(test)]
+impl DawnAccountDocument {
+    /// The revision a write must advance, mirroring Dawn's own compare and swap.
     pub(crate) fn account_revision(&self) -> i64 {
         self.metadata.account_revision
     }

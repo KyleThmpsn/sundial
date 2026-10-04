@@ -50,6 +50,10 @@ impl Card {
     }
 
     pub(super) fn controls(self, ui: &mut egui::Ui) {
+        if self.position >= crate::perk::SANDBOX_PERK_CAPACITY {
+            ui.colored_label(ui.visuals().warn_fg_color, "Inactive")
+                .on_hover_text("The runtime reads only the first four effects. Open Perk Diagnostics to resolve the budget.");
+        }
         let expanded = self.expanded(ui.ctx());
         let label = if expanded {
             "Collapse Effect"

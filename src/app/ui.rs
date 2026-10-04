@@ -410,33 +410,3 @@ mod contrast_tests {
         }
     }
 }
-
-#[cfg(test)]
-mod destiny_font_tests {
-    use super::*;
-
-    #[test]
-    fn destiny_font_id_prefers_the_symbol_first_family_when_available() {
-        let ctx = egui::Context::default();
-        let mut fonts = egui::FontDefinitions::default();
-        let family = destiny_text_font_family();
-        let fallbacks = fonts.families[&egui::FontFamily::Proportional].clone();
-        fonts.families.insert(family.clone(), fallbacks);
-        ctx.set_fonts(fonts);
-
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                let original = egui::TextStyle::Button.resolve(ui.style());
-                assert_eq!(destiny_font_id(ui, original).family, family);
-            });
-        });
-    }
-
-    #[test]
-    fn destiny_font_id_keeps_the_requested_family_without_symbol_fonts() {
-        egui::__run_test_ui(|ui| {
-            let original = egui::TextStyle::Button.resolve(ui.style());
-            assert_eq!(destiny_font_id(ui, original.clone()), original);
-        });
-    }
-}

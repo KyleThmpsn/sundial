@@ -2,6 +2,16 @@
 
 use crate::package_payload::{i64_at, relative_offset, u16_at, u32_at, u64_at};
 
+mod armor;
+pub use armor::{armor_equipment_class, set_armor_equipment_class};
+mod emblem;
+mod subclass;
+pub use emblem::emblem_metric_categories;
+pub const ITEM_METRIC_BLOCK_POINTER_OFFSET: usize = 0x38;
+pub const ITEM_METRIC_BLOCK_CLASS: u32 = 0x8080_2C9A;
+pub const ITEM_METRIC_CATEGORY_ROW_CLASS: u32 = 0x8080_2CA9;
+pub use subclass::subclass_equipment_class;
+
 pub const NESTED_ARRAY_TRAILER: [u8; 8] = [0, 0, 0, 0, 0xBD, 0x9F, 0x80, 0x80];
 
 pub const INVESTMENT_ROOT_CLASS: u32 = 0x8080_7D84;
@@ -92,6 +102,8 @@ pub const ITEM_INVENTORY_SLOT_OFFSET: usize = 0xB8;
 pub const ITEM_RARITY_OFFSET: usize = 0xBA;
 pub const ITEM_INSTANCED_OFFSET: usize = 0xBB;
 pub const ITEM_STRING_ICON_INDEX_OFFSET: usize = 0x80;
+/// A second icon row: an emblem's 474x96 nameplate, and a subclass's large art.
+pub const ITEM_STRING_SECONDARY_ICON_INDEX_OFFSET: usize = 0x82;
 pub const ITEM_STRING_NAME_REFERENCE_OFFSET: usize = 0x84;
 pub const ITEM_STRING_TYPE_REFERENCE_OFFSET: usize = 0x90;
 /// Item-specific UI template hash, consumed by the native inspection list renderer.

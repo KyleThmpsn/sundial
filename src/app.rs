@@ -776,6 +776,10 @@ impl SundialApp {
         self.package_authoring_busy = update.busy;
         self.package_authoring_dirty = update.dirty;
         self.package_authoring_packages_changed |= update.packages_changed;
+        if update.account_changed {
+            self.workspace_refresh_pending = true;
+            self.next_workspace_refresh_poll = Instant::now();
+        }
         let preference_save_error = update.preferences_changed.and_then(|preferences| {
             self.preferences.show_parhelion_experimental_options =
                 preferences.show_parhelion_experimental_options;
@@ -1063,6 +1067,9 @@ impl SundialApp {
     }
 
     fn draw_supporting_windows(&mut self, ctx: &egui::Context) {
+        if let Err(error) = item_editor::open_requested_preview(ctx, &self.manifest) {
+            self.set_status(error, true);
+        }
         if inspector::take_owned_quantities_request(ctx) {
             self.publish_owned_quantities(ctx);
         }
@@ -1289,7 +1296,7 @@ pub fn run(package_authoring: Box<dyn PackageAuthoringUtility>) -> eframe::Resul
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 impl SundialApp {
     /// What the account holds per item hash, for the inspector's owned-quantity columns. Runs

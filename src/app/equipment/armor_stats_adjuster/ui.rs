@@ -395,6 +395,7 @@ fn draw_controls(
                     PlugSelectionMode::SocketAndGearType,
                     PlugSelectionMode::MatchingSocketType,
                     PlugSelectionMode::GearType,
+                    PlugSelectionMode::GearKind,
                     PlugSelectionMode::AnyPlug,
                 ] {
                     ui.selectable_value(requested_mode, mode, mode.label());

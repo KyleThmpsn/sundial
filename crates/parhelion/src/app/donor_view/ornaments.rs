@@ -14,7 +14,7 @@
 //! appearance donor, and the ornament's rows then replace its model. The build writes the donor's
 //! rows first and the recipe's overrides second, so the pair lands in that order by itself.
 use super::*;
-use sundial::investment::{WeaponOrnament, WeaponOrnamentAppearance};
+use sundial::investment::{WeaponChoiceFilter, WeaponOrnament, WeaponOrnamentAppearance};
 
 /// The ornaments one weapon may wear, rebuilt when the weapon or its appearance changes.
 #[derive(Default)]
@@ -279,12 +279,34 @@ impl PackageAuthoringApp {
     }
 
     /// Draws the ornament section, offering every ornament this weapon could wear.
-    pub(in crate::app) fn draw_appearance_ornaments(&mut self, ui: &mut egui::Ui) {
+    /// Whether any ornament is offered for the current appearance.
+    pub(in crate::app) fn appearance_ornaments_offered(&mut self) -> bool {
         let Some(catalog) = self.catalog.as_ref() else {
-            return;
+            return false;
         };
         let Some((gameplay_hash, appearance, target)) = self.ornament_context() else {
-            return;
+            return false;
+        };
+        !self
+            .appearance_ornaments
+            .list(
+                catalog,
+                &self.ornament_appearances,
+                &self.donor_summaries,
+                gameplay_hash,
+                appearance,
+                target,
+            )
+            .is_empty()
+    }
+
+    /// The ornament chooser on the Appearance tab's Model row. Returns whether one is offered.
+    pub(in crate::app) fn draw_appearance_ornaments(&mut self, ui: &mut egui::Ui) -> bool {
+        let Some(catalog) = self.catalog.as_ref() else {
+            return false;
+        };
+        let Some((gameplay_hash, appearance, target)) = self.ornament_context() else {
+            return false;
         };
         let appearances = self.appearance_ornaments.list(
             catalog,
@@ -294,14 +316,20 @@ impl PackageAuthoringApp {
             appearance,
             target,
         );
-        draw(
+        if appearances.is_empty() {
+            return false;
+        }
+        let base_type = base_weapon_type(&self.donor_summaries, gameplay_hash);
+        draw_chooser(
             ui,
+            "appearance-tab",
             catalog,
             appearances,
-            gameplay_hash,
+            (gameplay_hash, base_type),
             &mut self.recipe,
             &self.packages,
         );
+        true
     }
 
     /// The same chooser, offered beside the appearance picker so an ornament can be taken
@@ -324,58 +352,36 @@ impl PackageAuthoringApp {
         if appearances.is_empty() {
             return;
         }
+        let base_type = base_weapon_type(&self.donor_summaries, gameplay_hash);
         draw_chooser(
             ui,
             "weapon-tab",
             catalog,
             appearances,
-            gameplay_hash,
+            (gameplay_hash, base_type),
             &mut self.recipe,
             &self.packages,
         );
     }
 }
 
-fn draw(
-    ui: &mut egui::Ui,
-    catalog: &InvestmentCatalog,
-    appearances: &[WeaponOrnamentAppearance],
-    gameplay_hash: u32,
-    recipe: &mut WeaponRecipe,
-    packages: &Path,
-) {
-    if appearances.is_empty() {
-        return;
-    }
-    draw_donor_section_label(
-        ui,
-        "Ornament",
-        Some(
-            "Ornaments from any compatible weapon. Sets the model, colors and icon, all editable on the Appearance tab.",
-        ),
-    );
-    draw_chooser(
-        ui,
-        "appearance-tab",
-        catalog,
-        appearances,
-        gameplay_hash,
-        recipe,
-        packages,
-    );
-    ui.add_space(12.0);
-    ui.separator();
-    ui.add_space(8.0);
+/// The base weapon's type, which the chooser's filter opens on.
+fn base_weapon_type(donors: &[WeaponDonorSummary], gameplay_hash: u32) -> Option<&str> {
+    donors
+        .iter()
+        .find(|donor| donor.hash == gameplay_hash)
+        .map(|donor| donor.type_name.trim())
+        .filter(|name| !name.is_empty())
 }
 
 /// The chooser on its own, so the main page and the Appearance tab offer the same thing.
-/// `place` keeps each page's browser state separate.
+/// `place` keeps each page's browser state separate. `base` is the base weapon and its type.
 fn draw_chooser(
     ui: &mut egui::Ui,
     place: &str,
     catalog: &InvestmentCatalog,
     appearances: &[WeaponOrnamentAppearance],
-    gameplay_hash: u32,
+    (gameplay_hash, base_type): (u32, Option<&str>),
     recipe: &mut WeaponRecipe,
     packages: &Path,
 ) {
@@ -391,7 +397,10 @@ fn draw_chooser(
     }
     let mut action = None;
     ui.horizontal_wrapped(|ui| {
-        let opened = ui.button(&label).clicked();
+        let opened = ui
+            .button(&label)
+            .on_hover_text("Ornaments from any compatible weapon.")
+            .clicked();
         let id = egui::Id::new(("ornament-preview-browser", place));
         if let Some(hash) = sundial::ui::model_preview::chooser::show(
             ui,
@@ -411,13 +420,41 @@ fn draw_chooser(
                 if opened {
                     search.request_focus();
                 }
+                // The donor pickers' filters, read off the weapon that offers each ornament.
+                // Without ornaments of its own, the base weapon's type leads, as the appearance
+                // picker opens.
+                let filter_id = id.with("filter");
+                let mut filter = if opened {
+                    let own = appearances
+                        .iter()
+                        .any(|candidate| candidate.host_item_hash == gameplay_hash);
+                    base_type
+                        .filter(|_| !own)
+                        .map(WeaponChoiceFilter::of_weapon_type)
+                        .unwrap_or_default()
+                } else {
+                    ui.data(|data| data.get_temp::<WeaponChoiceFilter>(filter_id))
+                        .unwrap_or_default()
+                };
+                let hosts: Vec<u32> = appearances
+                    .iter()
+                    .map(|candidate| candidate.host_item_hash)
+                    .collect();
+                let filtered = catalog.draw_weapon_choice_filters(
+                    ui,
+                    filter_id.with("bar"),
+                    &hosts,
+                    &mut filter,
+                );
                 let visible: Vec<_> = appearances
                     .iter()
                     .filter(|candidate| {
-                        crate::app::pickers::matches(&query, &candidate.ornament.name)
-                            || crate::app::pickers::matches(&query, &candidate.host_name)
+                        catalog.weapon_choice_passes(candidate.host_item_hash, &filter)
+                            && (crate::app::pickers::matches(&query, &candidate.ornament.name)
+                                || crate::app::pickers::matches(&query, &candidate.host_name))
                     })
                     .collect();
+                ui.data_mut(|data| data.insert_temp(filter_id, filter));
                 let keys: Vec<_> = std::iter::once(0)
                     .chain(
                         visible
@@ -437,7 +474,7 @@ fn draw_chooser(
                 sundial::ui::catalog::BrowserList {
                     keys: &keys,
                     height: (ui.available_height() - 30.0).max(180.0),
-                    reset: search.changed(),
+                    reset: search.changed() || filtered,
                     row_height: 48.0,
                     select: None,
                 }
@@ -464,9 +501,6 @@ fn draw_chooser(
                         if let Some(picked) = picked {
                             apply_appearance(&mut candidate, picked, gameplay_hash);
                         }
-                        // A double-click uses the ornament, as the button does.
-                        let chosen = (ui.button("Use Ornament").clicked() || activated)
-                            .then_some(keys[index]);
                         if let Some(loadout) = super::preview::loadout(catalog, &candidate) {
                             sundial::ui::model_preview::chooser::preview(
                                 ui,
@@ -479,7 +513,18 @@ fn draw_chooser(
                         } else {
                             ui.label("No model for this appearance.");
                         }
-                        chosen
+                        // The use action closes the row at the right. A double-click uses the
+                        // ornament, as the button does.
+                        let used = ui
+                            .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.add(
+                                    crate::app::style::primary(ui, "Use Ornament")
+                                        .min_size(egui::vec2(0.0, 24.0)),
+                                )
+                                .clicked()
+                            })
+                            .inner;
+                        (used || activated).then_some(keys[index])
                     },
                 )
             },

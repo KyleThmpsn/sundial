@@ -5,10 +5,8 @@
 //! (cohaereo/alkahest, GPL-3.0). Every offset used here was re-checked against installed
 //! pre-Beyond Light packages; the ignored tests name the tags that pin each result.
 //!
-//! A static quantises its positions exactly as an entity model does - three signed-normalized
-//! 16-bit axes - but expands them with one uniform scale instead of a per-axis one. The vertex,
-//! texture coordinate and index buffers are otherwise the same shapes `decode` already reads,
-//! so triangle assembly is shared with it and only the enclosing tables differ.
+//! Statics expand their declared positions with a uniform scale and offset. Vertex formats,
+//! stream selection and indices share the checked readers used by entity models.
 use super::*;
 use std::collections::{BTreeMap, btree_map::Entry};
 
@@ -38,16 +36,17 @@ pub(crate) fn load(manager: &PackageManager, tag: u32) -> Result<Model, String> 
         .get_entry(tag)
         .ok_or("The selected resource is missing")?;
     let mut model = Model::default();
+    let layouts = vertex::Layouts::read(manager)?;
     match entry.reference {
         STATIC_MESH => {
-            let geometry = read_static(manager, tag, &mut model)?;
+            let geometry = read_static(manager, tag, &layouts, &mut model)?;
             if !fits(&geometry, &model) {
                 return Err("This static exceeds the preview budget.".into());
             }
             place(&geometry, Placement::IDENTITY, &mut model);
             model.tags.push(tag);
         }
-        STATIC_INSTANCES => load_instances(manager, tag, &mut model)?,
+        STATIC_INSTANCES => load_instances(manager, tag, &layouts, &mut model)?,
         _ => return Err("This resource is not a static mesh.".into()),
     }
     if model.triangles.is_empty() {
@@ -168,6 +167,7 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 /// One drawn range, from either the opaque mesh groups or the special mesh list.
 struct Draw {
     stage: u8,
+    layout: u16,
     lod: u8,
     primitive: u16,
     start: u32,
@@ -177,7 +177,12 @@ struct Draw {
     technique: u32,
 }
 
-fn read_static(manager: &PackageManager, tag: u32, model: &mut Model) -> Result<Geometry, String> {
+fn read_static(
+    manager: &PackageManager,
+    tag: u32,
+    layouts: &vertex::Layouts,
+    model: &mut Model,
+) -> Result<Geometry, String> {
     let bytes = checked(manager, tag, STATIC_MESH)?;
     let transform = Transform::read(&bytes)?;
     let mut draws = opaque_draws(manager, &bytes)?;
@@ -191,7 +196,7 @@ fn read_static(manager: &PackageManager, tag: u32, model: &mut Model) -> Result<
         );
     }
     draws.retain(|draw| lod_visible(draw.lod, level) && (lenient || stage_drawn(draw.stage)));
-    build(manager, &transform, &draws, model)
+    build(manager, &transform, &draws, layouts, model)
 }
 
 /// The opaque half of a static. Each group names a part and a render stage, and the technique
@@ -217,6 +222,7 @@ fn opaque_draws(manager: &PackageManager, bytes: &[u8]) -> Result<Vec<Draw>, Str
         let set = sets + set * 16;
         draws.push(Draw {
             stage: byte(&data, group_row + 2)?,
+            layout: u16::from(byte(&data, group_row + 4)?),
             lod: byte(&data, part + 10)?,
             primitive: u16::from(byte(&data, part + 11)?),
             start: u32_at(&data, part)?,
@@ -245,6 +251,8 @@ fn special_draws(bytes: &[u8]) -> Result<Vec<Draw>, String> {
         let row = rows + index * 0x20;
         draws.push(Draw {
             stage: byte(bytes, row)?,
+            // Native Shadowkeep stores this as a u16 at +2. The byte at +1 is padding.
+            layout: u16_at(bytes, row + 2)?,
             lod: byte(bytes, row + 4)?,
             primitive: u16::from(byte(bytes, row + 6)?),
             start: u32_at(bytes, row + 0x14)?,
@@ -293,7 +301,7 @@ fn lod_visible(category: u8, level: u8) -> bool {
 #[derive(Default)]
 struct Cache {
     /// Keyed by the vertex buffer pair: the first vertex it added and how many it holds.
-    meshes: BTreeMap<[u32; 2], (usize, usize)>,
+    meshes: BTreeMap<([u32; 2], u16), (usize, usize, bool)>,
     /// Keyed by the index buffer: its index width and payload.
     indices: BTreeMap<u32, (usize, Vec<u8>)>,
     materials: BTreeMap<u32, Option<usize>>,
@@ -303,6 +311,7 @@ fn build(
     manager: &PackageManager,
     transform: &Transform,
     draws: &[Draw],
+    layouts: &vertex::Layouts,
     model: &mut Model,
 ) -> Result<Geometry, String> {
     let mut geometry = Geometry::default();
@@ -310,8 +319,16 @@ fn build(
     let mut drawn = BTreeSet::new();
     for draw in draws {
         // Stages that survived the filter still repeat index ranges; draw each range once.
-        if drawn.insert((draw.buffers, draw.start, draw.count, draw.primitive)) {
-            append_draw(manager, transform, draw, &mut cache, &mut geometry, model)?;
+        if draw.count > 0 && drawn.insert((draw.buffers, draw.start, draw.count, draw.primitive)) {
+            append_draw(
+                manager,
+                transform,
+                draw,
+                layouts,
+                &mut cache,
+                &mut geometry,
+                model,
+            )?;
         }
     }
     Ok(geometry)
@@ -321,17 +338,27 @@ fn append_draw(
     manager: &PackageManager,
     transform: &Transform,
     draw: &Draw,
+    layouts: &vertex::Layouts,
     cache: &mut Cache,
     geometry: &mut Geometry,
     model: &mut Model,
 ) -> Result<(), String> {
     let vertices = [draw.buffers[1], draw.buffers[2]];
-    if let Entry::Vacant(slot) = cache.meshes.entry(vertices) {
-        slot.insert(read_mesh(manager, vertices, transform, geometry, model)?);
+    let key = (vertices, draw.layout);
+    if let Entry::Vacant(slot) = cache.meshes.entry(key) {
+        slot.insert(read_mesh(
+            manager,
+            vertices,
+            draw.layout,
+            layouts,
+            transform,
+            geometry,
+            model,
+        )?);
     }
-    let (base, count) = cache.meshes[&vertices];
+    let (base, count, has_uv) = cache.meshes[&key];
     if let Entry::Vacant(slot) = cache.indices.entry(draw.buffers[0]) {
-        slot.insert(read_indices(manager, draw.buffers[0])?);
+        slot.insert(vertex::indices(manager, draw.buffers[0])?);
     }
     let triangles = {
         let (width, data) = &cache.indices[&draw.buffers[0]];
@@ -347,7 +374,11 @@ fn append_draw(
     if geometry.triangles.len() + triangles.len() > MAX_TRIANGLES {
         return Err("This static exceeds the preview triangle budget.".into());
     }
-    let texture = technique_texture(manager, draw.technique, cache, model);
+    let texture = if has_uv {
+        technique_texture(manager, draw.technique, cache, model)
+    } else {
+        None
+    };
     geometry
         .textures
         .extend(std::iter::repeat_n(texture, triangles.len()));
@@ -387,37 +418,45 @@ fn technique_texture(
 fn read_mesh(
     manager: &PackageManager,
     buffers: [u32; 2],
+    layout: u16,
+    layouts: &vertex::Layouts,
     transform: &Transform,
     geometry: &mut Geometry,
     model: &mut Model,
-) -> Result<(usize, usize), String> {
-    let positions = buffer(manager, buffers[0], 4)?;
-    let stride = position_stride(&positions.0, &positions.1)?;
-    let count = positions.1.len() / stride;
+) -> Result<(usize, usize, bool), String> {
     let base = geometry.vertices.len();
-    if base + count > MAX_VERTICES {
-        return Err("This static exceeds the preview vertex budget.".into());
+    let mut decoded = layouts.read_vertices(
+        manager,
+        layout,
+        [buffers[0], buffers[1], 0, 0],
+        MAX_VERTICES - base,
+    )?;
+    decoded.transform(
+        [transform.scale; 3],
+        transform.offset,
+        [
+            transform.uv_scale[0],
+            transform.uv_scale[1],
+            transform.uv_offset[0],
+            transform.uv_offset[1],
+        ],
+    )?;
+    let count = decoded.positions.len();
+    geometry
+        .vertices
+        .extend(decoded.positions.into_iter().map(|p| [p[0], p[1], p[2]]));
+    geometry.uvs.extend(decoded.uvs);
+    geometry.normals.extend(decoded.normals);
+    for notice in decoded.notices {
+        note(model, notice);
     }
-    read_positions(&positions.1, stride, transform, geometry)?;
-    let secondary = buffer(manager, buffers[1], 4).ok();
-    let second = secondary.as_ref().and_then(|second| paired(second, count));
-    match read_uvs(&positions.1, stride, second, transform) {
-        Ok(uvs) => geometry.uvs.extend(uvs),
-        Err(error) => {
-            geometry.uvs.resize(base + count, [0.0; 2]);
-            note(model, error);
-        }
-    }
-    match read_normals(&positions.1, stride, second) {
-        Ok(normals) => geometry.normals.extend(normals),
-        Err(_) => geometry.normals.resize(base + count, [0.0; 3]),
-    }
-    Ok((base, count))
+    Ok((base, count, decoded.has_uv))
 }
 
 /// The position stride, rejecting anything this module has not been shown to read. Each
 /// accepted stride was checked by decoding a whole buffer and reproducing the model-space
 /// bounding box centre the static stores at +0x50.
+#[cfg(test)]
 fn position_stride(header: &[u8], payload: &[u8]) -> Result<usize, String> {
     let stride = usize::from(u16_at(header, 4)?);
     if !matches!(stride, 8 | 12 | 28 | 32)
@@ -430,113 +469,12 @@ fn position_stride(header: &[u8], payload: &[u8]) -> Result<usize, String> {
     Ok(stride)
 }
 
-/// The second buffer's rows, when it holds exactly one per position.
-fn paired(second: &(Vec<u8>, Vec<u8>), count: usize) -> Option<(&[u8], usize)> {
-    let stride = usize::from(u16_at(&second.0, 4).ok()?);
-    (stride > 0 && second.1.len() == stride * count).then_some((second.1.as_slice(), stride))
-}
-
-fn read_positions(
-    data: &[u8],
-    stride: usize,
-    transform: &Transform,
-    geometry: &mut Geometry,
+fn load_instances(
+    manager: &PackageManager,
+    tag: u32,
+    layouts: &vertex::Layouts,
+    model: &mut Model,
 ) -> Result<(), String> {
-    for row in data.chunks_exact(stride) {
-        let axis = |at: usize| -> Result<f32, String> {
-            Ok((f32::from(i16::from_le_bytes(bytes_at(row, at)?)) / 32767.0).max(-1.0))
-        };
-        let point = [
-            axis(0)? * transform.scale + transform.offset[0],
-            axis(2)? * transform.scale + transform.offset[1],
-            axis(4)? * transform.scale + transform.offset[2],
-        ];
-        if point.iter().any(|value| !value.is_finite()) {
-            return Err("The static contains invalid positions".into());
-        }
-        geometry.vertices.push(point);
-    }
-    Ok(())
-}
-
-/// Texture coordinates. A stride-8 position buffer carries positions only and leaves them to
-/// the second buffer; every wider layout keeps them in the position buffer at +8.
-fn read_uvs(
-    positions: &[u8],
-    stride: usize,
-    second: Option<(&[u8], usize)>,
-    transform: &Transform,
-) -> Result<Vec<[f32; 2]>, String> {
-    let (data, row_stride, at) = match (stride, second) {
-        (12 | 28 | 32, _) => (positions, stride, 8),
-        (8, Some((data, row_stride))) if row_stride >= 4 => (data, row_stride, 0),
-        _ => return Err("This static vertex layout has no supported texture coordinates.".into()),
-    };
-    data.chunks_exact(row_stride)
-        .map(|row| {
-            let coordinate = |at: usize| -> Result<f32, String> {
-                Ok(f32::from(i16::from_le_bytes(bytes_at(row, at)?)) / 32767.0)
-            };
-            Ok([
-                coordinate(at)? * transform.uv_scale[0] + transform.uv_offset[0],
-                coordinate(at + 2)? * transform.uv_scale[1] + transform.uv_offset[1],
-            ])
-        })
-        .collect()
-}
-
-/// Normals. The second buffer starts with the normal when the position buffer already holds
-/// the texture coordinates, and with the texture coordinates otherwise.
-fn read_normals(
-    positions: &[u8],
-    stride: usize,
-    second: Option<(&[u8], usize)>,
-) -> Result<Vec<[f32; 3]>, String> {
-    let (data, row_stride, at) = match (stride, second) {
-        (28 | 32, _) => (positions, stride, 12),
-        (12, Some((data, row_stride))) if row_stride >= 6 => (data, row_stride, 0),
-        (8, Some((data, row_stride))) if row_stride >= 10 => (data, row_stride, 4),
-        _ => return Err("This static vertex layout has no supported normals".into()),
-    };
-    data.chunks_exact(row_stride)
-        .map(|row| {
-            let axis = |at: usize| -> Result<f32, String> {
-                Ok(f32::from(i16::from_le_bytes(bytes_at(row, at)?)) / 32767.0)
-            };
-            let normal = [axis(at)?, axis(at + 2)?, axis(at + 4)?];
-            Ok(super::shader::normal::normalize(normal).unwrap_or([0.0; 3]))
-        })
-        .collect()
-}
-
-fn read_indices(manager: &PackageManager, tag: u32) -> Result<(usize, Vec<u8>), String> {
-    let index = buffer(manager, tag, 6)?;
-    let width = if bool_at(&index.0, 1)? { 4 } else { 2 };
-    if u64_at(&index.0, 8)? != index.1.len() as u64 {
-        return Err("The static index buffer has an invalid size".into());
-    }
-    Ok((width, index.1))
-}
-
-/// A buffer header and its payload. Statics use the same buffer entries as entity models:
-/// file type 32, subtype 4 for vertices and 6 for indices, with the payload in the reference.
-fn buffer(manager: &PackageManager, tag: u32, subtype: u8) -> Result<(Vec<u8>, Vec<u8>), String> {
-    let entry = manager
-        .get_entry(tag)
-        .ok_or("The static buffer is missing")?;
-    if entry.file_type != 32 || entry.file_subtype != subtype {
-        return Err("Unsupported static buffer type".into());
-    }
-    let data = manager
-        .get_entry(entry.reference)
-        .ok_or("The static buffer payload is missing")?;
-    if data.file_size > 32 * 1024 * 1024 {
-        return Err("This buffer exceeds the preview size budget.".into());
-    }
-    Ok((manager.read_tag(tag)?, manager.read_tag(entry.reference)?))
-}
-
-fn load_instances(manager: &PackageManager, tag: u32, model: &mut Model) -> Result<(), String> {
     let bytes = checked(manager, tag, STATIC_INSTANCES)?;
     let (transform_count, transforms) = array(&bytes, 0x40, 0x8080_71A3, 0x30, MAX_INSTANCES)?;
     let (static_count, statics) = array(&bytes, 0x58, 0x8080_967D, 4, MAX_STATICS)?;
@@ -556,7 +494,7 @@ fn load_instances(manager: &PackageManager, tag: u32, model: &mut Model) -> Resu
             return Err("A static placement points outside its tables".into());
         }
         let child = u32_at(&bytes, statics + index * 4)?;
-        let Some(geometry) = instance_geometry(manager, child, &mut cache, model) else {
+        let Some(geometry) = instance_geometry(manager, child, layouts, &mut cache, model) else {
             skipped += count;
             continue;
         };
@@ -584,6 +522,7 @@ fn load_instances(manager: &PackageManager, tag: u32, model: &mut Model) -> Resu
 fn instance_geometry<'a>(
     manager: &PackageManager,
     tag: u32,
+    layouts: &vertex::Layouts,
     cache: &'a mut BTreeMap<u32, Option<Geometry>>,
     model: &mut Model,
 ) -> Option<&'a Geometry> {
@@ -592,12 +531,14 @@ fn instance_geometry<'a>(
         if model.vertices.len() >= MAX_VERTICES || model.triangles.len() >= MAX_TRIANGLES {
             return None;
         }
-        let decoded = match read_static(manager, tag, model) {
+        let textures = model.textures.len();
+        let decoded = match read_static(manager, tag, layouts, model) {
             Ok(decoded) => {
                 model.tags.push(tag);
                 Some(decoded)
             }
             Err(error) => {
+                model.textures.truncate(textures);
                 note(model, error);
                 None
             }
@@ -674,6 +615,7 @@ mod tests {
     fn draw(stage: u8, lod: u8) -> Draw {
         Draw {
             stage,
+            layout: 0,
             lod,
             primitive: 3,
             start: 0,

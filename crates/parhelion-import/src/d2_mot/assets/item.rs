@@ -3,6 +3,30 @@ use crate::d2_mot::reader::Reader;
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+
+/// Native inventory lookup without model, animation or weapon-pattern assumptions.
+pub(crate) fn find_native(r: &mut Reader, hash: u32) -> Result<u32> {
+    let tag = r
+        .manager
+        .lookup
+        .named_tags
+        .iter()
+        .find(|t| t.name == "investment_globals")
+        .context("native globals")?
+        .hash
+        .0;
+    let globals = r.tag(tag, None)?;
+    let root = r.tag(globals.u32(16)?, Some(0x80807D84))?;
+    let items = r.tag(root.u32(8 + 48 * 16)?, None)?;
+    let mut matches = Vec::new();
+    for row in items.array(8, 24, Some(0x80807BE8))? {
+        if items.u32(row)? == hash {
+            matches.push(items.u32(row + 16)?);
+        }
+    }
+    ensure!(matches.len() == 1, "native item missing or ambiguous");
+    Ok(matches[0])
+}
 pub fn find(r: &mut Reader, hash: u32) -> Result<(usize, u32)> {
     let mut matches = vec![];
     for t in r.classes(0x80807997) {

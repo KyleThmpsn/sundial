@@ -31,7 +31,12 @@ fn installed_filter_uses_decoded_entries_and_waits_for_available_content() {
         (rows[0].0, rows[0].1.kind, rows[0].2),
         (Family::Effects, 1, Some(1))
     );
-    assert!(kinds.visible_kinds(None).len() > 1);
+    assert!(
+        kinds
+            .visible_kinds(None)
+            .iter()
+            .any(|(_, node, _)| node.name == "Create Entity")
+    );
     kinds.query = "no such kind".into();
     assert!(kinds.visible_kinds(Some(&index)).is_empty());
 }

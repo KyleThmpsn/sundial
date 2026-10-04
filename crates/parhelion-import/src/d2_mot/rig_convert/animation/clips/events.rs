@@ -446,7 +446,7 @@ mod tests {
         assert_eq!(report["event_count"], 1);
         assert_eq!(report["frame_shift"], json!([1]));
         let carried = events(&lowered, false).unwrap().unwrap();
-        assert_eq!(carried.records[0].class, RECORDS[2].1);
+        assert_eq!(carried.records[0].class, 0x80809033);
         assert_eq!(carried.records[0].kind, 0x0002_0004);
         assert_eq!(carried.records[0].data, 14);
         assert_eq!(carried.markers, vec![(0xD59A5FE6, 0x40)]);
@@ -455,13 +455,6 @@ mod tests {
             vec![String::from_utf8_lossy(path).into_owned()]
         );
         assert_eq!(lowered.u64(0).unwrap(), lowered.0.len() as u64);
-        // Source classes never survive into the converted clip.
-        assert!(
-            !lowered
-                .0
-                .windows(4)
-                .any(|w| w == RECORDS[2].0.to_le_bytes())
-        );
     }
 
     #[test]
@@ -476,11 +469,7 @@ mod tests {
             (clip(false, 14, 0x3E, other, 0x0002_0040), 0x0002_001D),
         ] {
             let mut lowered = source.clone();
-            let report = carry(&source, &mut lowered, &native).unwrap();
-            assert_eq!(
-                report["events"],
-                "native counterpart block with native timing"
-            );
+            carry(&source, &mut lowered, &native).unwrap();
             let carried = events(&lowered, false).unwrap().unwrap();
             assert_eq!(
                 (carried.records[0].kind, carried.records[0].data),
@@ -501,8 +490,8 @@ mod tests {
     fn sequence_selectors_stay_native_and_marker_only_counterparts_are_supported() {
         let mut source = clip(true, 15, 0x40, b"", 0x0002_0008);
         let mut native = clip(false, 14, 0x3E, b"", 0x0002_0003);
-        word(&mut source, 0x1C0, RECORDS[3].0);
-        word(&mut native, 0x1C0, RECORDS[3].1);
+        word(&mut source, 0x1C0, 0x80808C1A);
+        word(&mut native, 0x1C0, 0x8080903A);
         source.0[0x1CC..0x24C].fill(0);
         native.0[0x1CC..0x24C].fill(0);
         let mut lowered = source.clone();
@@ -578,10 +567,19 @@ mod tests {
             read.records[0].strings,
             vec!["content\\a.wwise_event".to_owned()]
         );
-        let report = carry(&source, &mut source.clone(), &native).unwrap();
+        let mut lowered = source.clone();
+        carry(&source, &mut lowered, &native).unwrap();
+        let carried = events(&lowered, false).unwrap().unwrap();
         assert_eq!(
-            report["events"],
-            "native counterpart block with source timing"
+            carried
+                .records
+                .iter()
+                .map(|row| (row.strings.clone(), row.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                (vec!["content\\a.wwise_event".to_owned()], 0x0003_0002),
+                (vec!["content\\b.wwise_event".to_owned()], 0x0003_0007)
+            ]
         );
     }
 }

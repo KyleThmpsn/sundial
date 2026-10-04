@@ -9,16 +9,14 @@ impl PerkEditor {
     ) {
         let mut remove = None;
         for (index, value) in self.draft.iter().enumerate() {
-            if validation::fields_for(loaded, &value.locator).len() != 1 {
-                ui.horizontal_wrapped(|ui| {
-                    ui.colored_label(
-                        ui.visuals().error_fg_color,
-                        format!("Saved field {} cannot be resolved", index + 1),
-                    );
-                    if ui.button("Remove Saved Edit").clicked() {
-                        remove = Some(index);
-                    }
-                });
+            if validation::fields_for(loaded, &value.locator).len() != 1
+                && crate::app::style::missing(
+                    ui,
+                    &format!("Missing Parameter {}", index + 1),
+                    "Matches no single field.",
+                )
+            {
+                remove = Some(index);
             }
         }
         if let Some(index) = remove {
@@ -37,15 +35,7 @@ impl PerkEditor {
         ui.add_space(8.0);
         ui.strong("Package Parameters");
         ui.horizontal_wrapped(|ui| {
-            ui.label("Filter");
-            named_control(
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.query)
-                        .desired_width(220.0)
-                        .hint_text("Parameter name or type"),
-                ),
-                "Filter Custom Perk Parameters",
-            );
+            sundial::ui::catalog::search(ui, &mut self.query, false, 220.0, "Search Parameters");
             if experimental {
                 ui.checkbox(&mut self.show_all_native_values, "Show Unknown Bytes");
             }
@@ -92,7 +82,11 @@ impl PerkEditor {
         }
         visible += self.draw_native_fields(ui, loaded, &query);
         if visible == 0 {
-            ui.label("No supported package fields match this view.");
+            ui.label(if query.is_empty() {
+                "No Package Fields"
+            } else {
+                "No Matching Results"
+            });
         }
         structure::draw(ui, loaded, &query);
     }

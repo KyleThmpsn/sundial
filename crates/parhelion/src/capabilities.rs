@@ -14,11 +14,13 @@ use sundial::investment::{
 };
 
 use crate::ModernDamageType;
+use crate::item::WeaponSocketPlugVariantOverride;
 use crate::recipe::{
     RecipeDamageType, RecipeInventorySlot, WeaponRecipe, WeaponRecipeOverrides,
     WeaponSocketPlugVariantRecipe,
 };
-use crate::weapon::{WeaponSocketPlugVariantOverride, variable_damage::resting_element};
+use crate::weapon::variable_damage::resting_element;
+use sundial::package_authoring::investment_schema::ELEMENTAL_DAMAGE_SOCKET_TYPE;
 
 /// The recipe field associated with a capability or validation diagnostic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +52,7 @@ pub enum AuthoringDiagnosticCode {
     TooManySocketColumnChoices,
     DuplicateSocketColumnPlug,
     DisabledSocketOverride,
+    DamageSocketRole,
     ZeroPlugHash,
 }
 
@@ -288,7 +291,7 @@ pub(crate) fn reconcile_presentation_donor(
 /// resolves the record for real and reports a clear error when a family has none.
 #[must_use]
 pub(crate) fn variable_damage_supported(gameplay_donor: &WeaponDonorSummary) -> bool {
-    crate::weapon_behavior::switches_element_for_type(&gameplay_donor.type_name)
+    crate::weapon::behavior::switches_element_for_type(&gameplay_donor.type_name)
 }
 
 /// The element a variable-damage weapon rests on: the first chosen one in selector order.
@@ -726,6 +729,23 @@ fn validate_socket_column_overrides_with_choice_identity(
         supported_plug_sets,
         &mut diagnostics,
     );
+    // A weapon has at most one damage socket, its base's own. Giving that socket another role is
+    // fine, since the build then carries the damage type on the weapon itself.
+    for (socket_index, socket_type) in socket_types.iter().copied().enumerate() {
+        let base = donor
+            .sockets
+            .get(socket_index)
+            .map(|socket| socket.socket_type);
+        if socket_type == Some(ELEMENTAL_DAMAGE_SOCKET_TYPE)
+            && base != Some(ELEMENTAL_DAMAGE_SOCKET_TYPE)
+        {
+            diagnostics.push(AuthoringDiagnostic {
+                field: AuthoringField::SocketColumn { socket_index },
+                code: AuthoringDiagnosticCode::DamageSocketRole,
+                message: format!("Socket {} cannot hold the damage type.", socket_index + 1),
+            });
+        }
+    }
     for (socket_index, value) in overrides.iter().enumerate().take(MAX_WEAPON_SOCKETS) {
         if invalid_plug_set_indices.contains(&socket_index) {
             continue;

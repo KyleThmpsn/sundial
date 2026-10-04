@@ -277,14 +277,18 @@ fn replacement_build_retires_only_obsolete_authored_overlays() {
     omit_optional_overlays(&fixture);
     let stock = fixture.source_artifact_json();
     let report = install_staged_packages(&fixture.request()).unwrap();
-    assert_eq!(report.removed_obsolete_packages.len(), 3);
+    let optional = AUTHORED_PACKAGES
+        .iter()
+        .filter(|profile| !profile.required_output)
+        .count();
+    assert_eq!(report.removed_obsolete_packages.len(), optional);
     assert!(
         report
             .removed_obsolete_packages
             .iter()
             .any(|p| p.file_name().is_some_and(|n| n == "w64_ui_037e_6.pkg"))
     );
-    assert_eq!(report.artifacts.len(), AUTHORED_PACKAGES.len() - 3);
+    assert_eq!(report.artifacts.len(), AUTHORED_PACKAGES.len() - optional);
     for profile in AUTHORED_PACKAGES {
         assert_eq!(
             fixture.target.join(profile.file_name).exists(),

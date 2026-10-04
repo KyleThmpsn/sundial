@@ -73,21 +73,8 @@ fn settle(ctx: &egui::Context, app: &mut PackageAuthoringApp, width: f32) -> egu
 }
 
 fn click(ctx: &egui::Context, app: &mut PackageAuthoringApp, width: f32, pos: egui::Pos2) {
-    for pressed in [true, false] {
-        frame(
-            ctx,
-            app,
-            width,
-            vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    pressed,
-                    button: egui::PointerButton::Primary,
-                    modifiers: Default::default(),
-                },
-            ],
-        );
+    for events in crate::test_support::driver::tap(pos) {
+        frame(ctx, app, width, events);
     }
 }
 
@@ -418,10 +405,6 @@ fn verify_empty_picker(app: &mut PackageAuthoringApp, donor: &WeaponDonor) {
         let output = settle(&ctx, app, width);
         let create = label(&output, "Create Custom Perk…", false);
         assert!(create.left() >= 0.0 && create.right() <= width && create.bottom() <= 760.0);
-        label(
-            &output,
-            "No custom perks yet. Create one to use it in this choice.",
-            false,
-        );
+        label(&output, "No Custom Perks", false);
     }
 }

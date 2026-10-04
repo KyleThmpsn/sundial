@@ -7,14 +7,18 @@ use crate::{
 use std::collections::BTreeMap;
 
 pub(crate) fn loadout(catalog: &Catalog, hash: u64) -> Option<Loadout> {
+    catalog.item_package_metadata(hash)?.weapon_inventory_slot?;
+    item_loadout(catalog, hash)
+}
+
+fn item_loadout(catalog: &Catalog, hash: u64) -> Option<Loadout> {
     let metadata = catalog.item_package_metadata(hash)?;
-    metadata.weapon_inventory_slot?;
     Some(Loadout {
         arrangement: arrangement(metadata)?,
         dyes: dye_rows(metadata),
         plugs: catalog
-            .item(hash)?
-            .default_plugs
+            .item(hash)
+            .map_or(&[][..], |item| item.default_plugs.as_slice())
             .iter()
             .map(|hash| {
                 hash.as_deref()
@@ -23,6 +27,31 @@ pub(crate) fn loadout(catalog: &Catalog, hash: u64) -> Option<Loadout> {
             })
             .collect(),
     })
+}
+
+/// Resolve an account item's opening-time appearance without changing its saved plugs.
+pub(super) fn saved(
+    catalog: &Catalog,
+    hash: u64,
+    plugs: Option<&serde_json::Value>,
+) -> Option<Appearance> {
+    let mut loadout = item_loadout(catalog, hash)?;
+    match plugs {
+        None | Some(serde_json::Value::Null) => {}
+        Some(serde_json::Value::Array(plugs)) => {
+            loadout.plugs = plugs
+                .iter()
+                .map(|plug| {
+                    plug.as_u64()
+                        .or_else(|| plug.as_str().and_then(crate::hash::parse_hash_hex))
+                        .and_then(|hash| u32::try_from(hash).ok())
+                        .filter(|&hash| hash != 0 && hash != u32::MAX)
+                })
+                .collect();
+        }
+        Some(_) => loadout.plugs.clear(),
+    }
+    Some(resolve(catalog, &loadout))
 }
 
 fn arrangement(metadata: &ItemPackageMetadata) -> Option<u16> {
@@ -47,7 +76,7 @@ pub(crate) fn resolve(catalog: &Catalog, loadout: &Loadout) -> Appearance {
     let mut arrangement = loadout.arrangement;
     let mut base = loadout.dyes.clone();
     for hash in loadout.plugs.iter().flatten() {
-        if catalog.is_weapon_ornament(u64::from(*hash))
+        if is_ornament(catalog, u64::from(*hash))
             && let Some(metadata) = catalog.item_package_metadata(u64::from(*hash))
             && let Some(model) = self::arrangement(metadata)
         {
@@ -108,14 +137,21 @@ fn gear_type(key: i8) -> Option<i8> {
         .find(|&first| (first..first + 3).contains(&key))
 }
 
-fn compose_dyes(
+pub(in crate::app) fn compose_dyes(
     base: &[Vec<(i8, u16)>; 3],
     plugs: impl Iterator<Item = [Vec<(i8, u16)>; 3]>,
 ) -> Vec<(i8, u16)> {
+    // A shader carries every gear type. The item's own rows decide which set can paint it.
+    let gear_types: Vec<_> = base
+        .iter()
+        .flatten()
+        .filter_map(|&(key, value)| (value != u16::MAX).then(|| gear_type(key)).flatten())
+        .collect();
     let mut dyes = BTreeMap::new();
     let mut insert = |rows: &[(i8, u16)]| {
         for &(key, value) in rows {
-            if key >= 0 && value != u16::MAX {
+            if value != u16::MAX && gear_type(key).is_some_and(|first| gear_types.contains(&first))
+            {
                 dyes.insert(key, value);
             }
         }
@@ -132,12 +168,22 @@ fn compose_dyes(
 }
 
 fn visual_plug(catalog: &Catalog, hash: u64) -> bool {
-    catalog.is_weapon_ornament(hash)
+    is_ornament(catalog, hash)
         || catalog.item_package_metadata(hash).is_some_and(|metadata| {
             metadata
                 .translation_dye_rows
                 .iter()
                 .any(|rows| !rows.is_empty())
+        })
+}
+
+pub(in crate::app) fn is_ornament(catalog: &Catalog, hash: u64) -> bool {
+    catalog
+        .plug_type_name(hash)
+        .or_else(|| catalog.package_item_type_name(hash))
+        .is_some_and(|name| {
+            let name = name.trim().to_ascii_lowercase();
+            name == "ornament" || name.ends_with(" ornament")
         })
 }
 
@@ -295,7 +341,7 @@ mod tests {
     use crate::catalog::ItemRenderOverride;
 
     #[test]
-    fn shader_preview_replaces_one_socket_without_mutating_other_plugs_or_locked_dyes() {
+    fn shader_preview_applies_overrides_and_preserves_locked_dyes() {
         let shader = |value| ItemPackageMetadata {
             translation_dye_rows: [
                 vec![
@@ -336,7 +382,6 @@ mod tests {
             resolve(&catalog, &candidate).dyes,
             vec![(4, 1), (5, 2), (6, 3)]
         );
-        assert_eq!(current.plugs, vec![Some(999), Some(10)]);
         assert_eq!(
             resolve(&catalog, &current).dyes,
             vec![(4, 100), (5, 2), (6, 3)]

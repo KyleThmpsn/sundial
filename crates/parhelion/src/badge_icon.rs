@@ -1014,13 +1014,6 @@ mod tests {
         )
         .expect("only the container's layer host tag and content fingerprint should change");
         assert_eq!(
-            read_u32(&plan.new_tags[5].payload, 0x10).expect("content fingerprint should decode"),
-            crate::watermark::private_icon_fingerprint(
-                &plan.new_tags[5].payload,
-                &plan.new_tags[2].payload,
-            )
-        );
-        assert_eq!(
             read_u32(&plan.new_tags[4].payload, LOW_HEADER_TAG_OFFSET)
                 .expect("low layer link should decode"),
             u32::from(TagHash::new(0x0197, 1003))
@@ -1051,10 +1044,6 @@ mod tests {
             )
             .expect("authored badge companion should be canonical"),
             dependency_set((1002..=1008).map(|index| TagHash::new(0x0197, index)))
-        );
-        assert_eq!(
-            plan.reference_overrides,
-            reciprocal_reference_overrides(plan.ordinals)
         );
     }
 

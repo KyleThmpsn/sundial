@@ -42,29 +42,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
-    fn installed_scripts_extend_the_stock_perk_examples() {
-        let path =
-            std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-        let manager = super::super::open_packages(&path).unwrap();
-        let index = tft::cached(&path, &manager, |_, _| {}).unwrap();
-        let found = choices(&index);
-        assert!(found.len() > scripts::SCRIPTS.len());
-        println!(
-            "{} installed object-behavior scripts, compared with {} stock-perk examples",
-            found.len(),
-            scripts::SCRIPTS.len()
-        );
-        for entry in found
-            .iter()
-            .filter(|entry| scripts::by_tag(entry.tag).is_none())
-            .take(12)
-        {
-            println!("{:08X}: {}", entry.tag, entry.path);
-        }
-    }
-
-    #[test]
     fn package_wide_scripts_include_non_perk_sources_and_require_valid_targets() {
         let sample = |tag, class, path: &str| tft::Reference {
             source: 1,

@@ -13,9 +13,27 @@ pub(in crate::app) fn resolve_picked_perk(
     if crate::package_profile::is_stock_item_definition(tag) {
         return Ok(None);
     }
+    // A shader is an authored item referenced by its own hash. Resolve its recipe before
+    // searching private perk variants, even when its edited dyes differ from stock donors.
+    if draft.is_some_and(|recipe| {
+        recipe.kind == crate::ItemKind::Shader
+            && recipe.identity.item_hash.parse_u32().ok() == Some(hash)
+    }) {
+        return Ok(None);
+    }
+    let scan = library.map(RecipeLibrary::scan).transpose()?;
+    if let Some(scan) = &scan
+        && !scan.shader_entries(&BTreeSet::from([hash]))?.is_empty()
+    {
+        return Ok(None);
+    }
+    if catalog.is_shader(hash) {
+        return Err(format!(
+            "The recipe for custom shader 0x{hash:08X} is not in the library. Import it, then select the shader again."
+        ));
+    }
     let mut recipes = draft.cloned().into_iter().collect::<Vec<_>>();
-    if let Some(library) = library {
-        let scan = library.scan()?;
+    if let Some(scan) = scan {
         for entry in scan.entries {
             let recipe = WeaponRecipe::load_json(&entry.path).map_err(|error| error.to_string())?;
             if draft.is_none_or(|draft| recipe.namespace != draft.namespace) {
@@ -166,8 +184,10 @@ pub(in crate::app) fn repair_socket_picks(
                     choice + 1
                 ));
             }
-            let private = resolve_picked_perk(library, Some(recipe), catalog, hash)?
-                .ok_or_else(|| format!("Could not resolve custom perk 0x{hash:08X}"))?;
+            // A library shader stays selected as its own item.
+            let Some(private) = resolve_picked_perk(library, Some(recipe), catalog, hash)? else {
+                continue;
+            };
             repaired.overrides.socket_columns[socket]
                 .as_mut()
                 .expect("existing column")

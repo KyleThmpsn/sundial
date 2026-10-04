@@ -2,14 +2,14 @@
 use super::*;
 use crate::{
     WeaponDonorReference, WeaponRecipe,
-    weapon::{preflight_runtime_edits, runtime_hud_key},
+    item::{preflight_runtime_edits, runtime_hud_key},
 };
 use sundial::package_authoring::PackageManager;
 use sundial::{
     investment::WeaponDonorSummary,
     package_authoring::{
-        weapon_entity::{coupled_weapon_component_bindings, weapon_component_bindings},
-        weapon_runtime::{
+        entity::{coupled_weapon_component_bindings, weapon_component_bindings},
+        runtime::{
             WeaponRuntimeField, WeaponRuntimeFieldLocator, WeaponRuntimeValueKind,
             WeaponRuntimeValueOverride, encode_weapon_runtime_value, resolve_weapon_runtime_field,
             runtime_fields_share_semantics,
@@ -162,13 +162,16 @@ fn portable_target<'a>(
     let candidates = graph
         .fields()
         .filter(|field| {
-            let binding = (field.locator.binding_hash, field.locator.resource_index);
-            let matches_binding = binding == (locator.binding_hash, locator.resource_index)
+            let binding = (
+                field.locator.binding_hash.get(),
+                field.locator.resource_index,
+            );
+            let matches_binding = binding == (locator.binding_hash.get(), locator.resource_index)
                 || graph.resources.iter().any(|resource| {
                     (resource.binding_hash, resource.resource_index) == binding
                         && resource
                             .alias_bindings
-                            .contains(&(locator.binding_hash, locator.resource_index))
+                            .contains(&(locator.binding_hash.get(), locator.resource_index))
                 });
             matches_binding && runtime_fields_share_semantics(source, field).unwrap_or(false)
         })
@@ -188,8 +191,12 @@ fn transfer_value(
 ) -> Option<(WeaponRuntimeValueOverride, Option<String>)> {
     let locator = &value.locator;
     if let Ok(resolved) = resolve_weapon_runtime_field(manager, &target.payload, locator)
-        && (!changed(source, target, locator.binding_hash, locator.resource_index)
-            || carries_value(&resolved.field.kind))
+        && (!changed(
+            source,
+            target,
+            locator.binding_hash.get(),
+            locator.resource_index,
+        ) || carries_value(&resolved.field.kind))
         && encode_weapon_runtime_value(&resolved.field.kind, &value.value).is_ok()
     {
         return Some((value.clone(), None));
@@ -240,7 +247,7 @@ fn transfer_settings(
                 result.kept += 1;
             }
             result.after.overrides.runtime_values.push(mapped);
-        } else if result.group.contains(&value.locator.binding_hash) {
+        } else if result.group.contains(&value.locator.binding_hash.get()) {
             result
                 .resets
                 .push(setting_label(manager, source, &value.locator));

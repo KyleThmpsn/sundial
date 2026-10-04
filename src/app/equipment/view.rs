@@ -665,6 +665,9 @@ impl SundialApp {
                         )
                     })
                     .inner;
+                if let Some(ItemEditorAction::SetPlugSelectionMode { mode }) = action {
+                    self.request_plug_selection_mode(mode);
+                }
                 if let Some(ItemEditorAction::SetPlug { socket_index, hash }) = action {
                     self.select_plug(
                         character_index,

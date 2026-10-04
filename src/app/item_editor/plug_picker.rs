@@ -18,7 +18,7 @@ pub(crate) fn plug_choices_for_socket_type(
 ) -> (Vec<PlugChoice>, bool) {
     let show_types = matches!(
         mode,
-        PlugSelectionMode::GearType | PlugSelectionMode::AnyPlug
+        PlugSelectionMode::GearType | PlugSelectionMode::GearKind | PlugSelectionMode::AnyPlug
     );
     let allowed = crate::investment::plug_selection::candidates_for_socket_type(
         catalog,
@@ -75,7 +75,50 @@ pub(crate) fn plug_picker_snapshot(
         },
         choices,
         show_types,
+        mode,
+        scope_labels: scope_labels(item, socket.map_or("", |socket| socket.label.as_str())),
     }
+}
+
+/// Every selection scope labeled in the words of the socket and item being picked for.
+pub(crate) fn scope_labels(item: &ItemDef, socket_label: &str) -> Vec<(PlugSelectionMode, String)> {
+    PlugSelectionMode::ALL
+        .iter()
+        .map(|mode| (*mode, mode.contextual_label(item, socket_label)))
+        .collect()
+}
+
+/// The scope control at the top of a plug browser. Returns the scope the user asked for.
+fn draw_plug_scope_selector(
+    ui: &mut egui::Ui,
+    scope: impl Hash,
+    snapshot: &PlugPickerSnapshot,
+) -> Option<PlugSelectionMode> {
+    let mut requested = snapshot.mode;
+    ui.horizontal(|ui| {
+        ui.label("Plugs");
+        egui::ComboBox::from_id_salt(("plug-scope", scope))
+            .width(180.0)
+            .selected_text(
+                snapshot
+                    .scope_labels
+                    .iter()
+                    .find(|(mode, _)| *mode == snapshot.mode)
+                    .map_or_else(
+                        || snapshot.mode.label().to_owned(),
+                        |(_, label)| label.clone(),
+                    ),
+            )
+            .show_ui(ui, |ui| {
+                for (mode, label) in &snapshot.scope_labels {
+                    ui.selectable_value(&mut requested, *mode, label);
+                }
+            })
+            .response
+            .on_hover_text("Broader choices can include incompatible plugs.");
+    });
+    ui.separator();
+    (requested != snapshot.mode).then_some(requested)
 }
 
 pub(crate) const SOCKET_PICKER_RESET_WIDTH: f32 = 48.0;
@@ -148,6 +191,7 @@ pub(crate) fn draw_plug_picker(
             query.clear();
         }
         let mut selection = None::<Option<u64>>;
+        let mut requested_mode = None::<PlugSelectionMode>;
         ui.horizontal(|ui| {
             let row_height = ui.spacing().interact_size.y;
             let spacing = ui.spacing().item_spacing.x;
@@ -223,6 +267,8 @@ pub(crate) fn draw_plug_picker(
                 egui::PopupCloseBehavior::CloseOnClickOutside,
                 |ui| {
                     ui.set_style(picker_style);
+                    ui.set_min_width(popup_width);
+                    requested_mode = draw_plug_scope_selector(ui, popup_id, snapshot);
                     draw_plug_browser_contents(
                         ui,
                         catalog,
@@ -263,10 +309,15 @@ pub(crate) fn draw_plug_picker(
                 ui.memory_mut(egui::Memory::close_popup);
             }
         });
-        selection.map(|hash| ItemEditorAction::SetPlug {
-            socket_index: snapshot.socket_index,
-            hash,
-        })
+        // A scope change keeps the browser open; the caller rebuilds the snapshot with it.
+        requested_mode
+            .map(|mode| ItemEditorAction::SetPlugSelectionMode { mode })
+            .or_else(|| {
+                selection.map(|hash| ItemEditorAction::SetPlug {
+                    socket_index: snapshot.socket_index,
+                    hash,
+                })
+            })
     })
     .inner
 }

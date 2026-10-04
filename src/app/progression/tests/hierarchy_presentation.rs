@@ -26,7 +26,7 @@ fn definition_contexts_have_no_cap_and_merge_identical_visible_contexts() {
     });
     let definition = UnlockDefinition {
         runtime_writers: Vec::new(),
-        tested_by: contexts,
+        tested_by: contexts.into_iter().map(std::sync::Arc::new).collect(),
         ..UnlockDefinition::default()
     };
 

@@ -20,6 +20,20 @@ pub(crate) fn window_icon() -> Arc<eframe::egui::IconData> {
     .clone()
 }
 
+/// Phosphor alone, for an icon whose codepoint a game symbol also uses.
+pub(crate) const ICON_FONT_FAMILY: &str = "Sundial Icons";
+
+/// A Phosphor icon's font at `size`. The game's symbol fonts lead the proportional family and
+/// share Phosphor's codepoints, so this goes through the Phosphor-only family when it is set up.
+pub(crate) fn icon_font(ui: &eframe::egui::Ui, size: f32) -> eframe::egui::FontId {
+    let family = eframe::egui::FontFamily::Name(ICON_FONT_FAMILY.into());
+    if ui.fonts(|fonts| fonts.families().contains(&family)) {
+        eframe::egui::FontId::new(size, family)
+    } else {
+        eframe::egui::FontId::proportional(size)
+    }
+}
+
 /// Text for a native window title, which the desktop draws without the game's symbol fonts:
 /// the private-use symbols are dropped and the spacing around them closed up.
 pub(crate) fn native_title(text: &str) -> String {

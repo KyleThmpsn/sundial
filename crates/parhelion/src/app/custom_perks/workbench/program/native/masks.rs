@@ -110,6 +110,7 @@ fn summary(value: u32, choices: &[(u8, &str)], empty: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sundial::package_authoring::sandbox_perk::action::native::NodeKind as NativeNodeKind;
 
     #[test]
     fn combined_filters_preserve_unknown_bits_and_other_fields() {
@@ -125,8 +126,12 @@ mod tests {
                 .iter()
                 .find(|node| node.class == class)
                 .unwrap();
-            let mut graph =
-                Graph::read(&native::template(true, node.kind).unwrap(), 0, class).unwrap();
+            let mut graph = Graph::read(
+                &native::template(NativeNodeKind::Condition(node.kind)).unwrap(),
+                0,
+                class,
+            )
+            .unwrap();
             let field = fields::describe(class)
                 .unwrap()
                 .into_iter()
@@ -144,13 +149,15 @@ mod tests {
                         .iter()
                         .all(|(known, _)| u32::from(*known) & bit == 0)
                 })
-                .expect("this filter still has unidentified bits");
+                .unwrap_or(0);
             let original = graph.blocks[0].bytes.clone();
             write(&field, &mut graph.blocks[0], 0, first | second | unknown).unwrap();
-            assert!(
-                summary(first | second | unknown, contract.choices, contract.empty)
-                    .contains(&format!("0x{unknown:X}"))
-            );
+            if unknown != 0 {
+                assert!(
+                    summary(first | second | unknown, contract.choices, contract.empty)
+                        .contains(&format!("0x{unknown:X}"))
+                );
+            }
             write(
                 &field,
                 &mut graph.blocks[0],

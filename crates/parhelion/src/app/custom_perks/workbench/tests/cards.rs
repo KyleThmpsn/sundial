@@ -246,10 +246,19 @@ fn projectile_properties_edit_inline_for_typed_and_native_effects_and_undo_toget
                 .unwrap()
                 .asset(0)
                 .unwrap();
-            let parameters = projectile::parameters::discover(&loaded.graphs[0].1);
-            assert!(parameters[0].value(&asset.values).unwrap() > 1.0);
-            assert_eq!(parameters[1].value(&asset.values).unwrap(), 0.0);
-            assert_eq!(parameters[2].value(&asset.values).unwrap(), 300.0);
+            let parameters = entity::projectile::parameters::discover(&loaded.graphs[0].1);
+            let value = |kind| {
+                parameters
+                    .iter()
+                    .find(|parameter| parameter.kind == kind)
+                    .unwrap()
+                    .value(&asset.values)
+                    .unwrap()
+            };
+            use entity::projectile::parameters::Kind;
+            assert!(value(Kind::Speed) > 1.0);
+            assert_eq!(value(Kind::Gravity), 0.0);
+            assert_eq!(value(Kind::TravelDistance), 300.0);
             workbench.restore_history(false);
             assert_eq!(workbench.documents[0].recipe, before);
             workbench.restore_history(true);
@@ -489,7 +498,7 @@ fn native_validation_reveals_the_required_asset_in_execution_order() {
     pointer(&ctx, &mut workbench, size, button, true);
     pointer(&ctx, &mut workbench, size, button, false);
     let output = render(&ctx, &mut workbench, size);
-    assert!(label(&output, "Object: choose an object or effect.").is_some());
+    assert!(label_starting_with(&output, "Object:").is_some());
     assert_eq!(workbench.documents[0].recipe, before);
     capture::write(&ctx, &output, "native-required-asset");
 }

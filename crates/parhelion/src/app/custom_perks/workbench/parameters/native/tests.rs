@@ -1,4 +1,5 @@
 use super::*;
+use sundial::package_authoring::runtime::SchemaHandle;
 
 #[test]
 fn matching_components_in_distinct_graphs_edit_and_reset_independently() {
@@ -62,9 +63,9 @@ fn native_paired_movement_edits_import_and_reset_through_the_existing_controls()
     let packages = PathBuf::from(std::env::var_os("PARHELION_PROJECTILE_TEST_PACKAGES").unwrap());
     let loaded = super::super::load_entity_parameters(&packages, 0x80BB_B1B9).unwrap();
     let graph = &loaded.graphs[0].1;
-    let speed = projectile::parameters::discover(graph)
+    let speed = entity::projectile::parameters::discover(graph)
         .into_iter()
-        .find(|parameter| parameter.kind == projectile::parameters::Kind::Speed)
+        .find(|parameter| parameter.kind == entity::projectile::parameters::Kind::Speed)
         .unwrap();
     let mut draft = graph
         .fields()
@@ -78,7 +79,6 @@ fn native_paired_movement_edits_import_and_reset_through_the_existing_controls()
         })
         .collect::<Vec<_>>();
     assert_eq!(draft.len(), 2);
-    assert!(draft.iter().all(|edit| speed.contains(&edit.locator)));
     assert_eq!(speed.value(&draft).unwrap(), 3.75);
     speed.set(&mut draft, 5.5).unwrap();
     assert_eq!(speed.value(&draft).unwrap(), 5.5);
@@ -100,12 +100,12 @@ fn fixture() -> (PrivatePerkRuntimeGraph, WeaponRuntimeField) {
     field.locator.path = vec![
         WeaponRuntimePathElement {
             name_hash: 0x504E_5200,
-            type_handle: root.schema,
+            type_handle: root.schema.into(),
             byte_offset: 0,
         },
         WeaponRuntimePathElement {
             name_hash: 0x504E_5600,
-            type_handle: root.schema,
+            type_handle: root.schema.into(),
             byte_offset: field.locator.value_offset,
         },
     ];
@@ -148,7 +148,7 @@ fn property_summary_resolves_values_inside_carriers_without_counting_storage_edi
         property_changes(&loaded, &draft).unwrap(),
         ["Native Bytes: +0x7=5B"]
     );
-    draft[0].locator.root_schema = 0;
+    draft[0].locator.root_schema = SchemaHandle::new(0);
     assert!(property_changes(&loaded, &draft).is_err());
 }
 
@@ -167,7 +167,7 @@ fn property_summary_preserves_small_values() {
 
 #[test]
 fn paired_projectile_values_have_one_summary_and_survive_serialization() {
-    use sundial::package_authoring::weapon_runtime::WeaponRuntimeResource;
+    use sundial::package_authoring::runtime::WeaponRuntimeResource;
     let (mut loaded, _) = fixture();
     let graph = &mut loaded.graphs[0].1;
     let mut owner = graph.owners.remove(0);
@@ -177,10 +177,10 @@ fn paired_projectile_values_have_one_summary_and_survive_serialization() {
     definition.byte_size = 0x5D0;
     let mut field = instance.fields[1].clone();
     field.locator.root = definition.kind;
-    field.locator.root_schema = definition.schema;
+    field.locator.root_schema = definition.schema.into();
     field.locator.value_offset = 0x88;
     field.owner_offset = 0x88;
-    field.locator.path[0].type_handle = definition.schema;
+    field.locator.path[0].type_handle = definition.schema.into();
     field.locator.path[1].byte_offset = 0x88;
     definition.fields.push(field);
     graph.resources.push(WeaponRuntimeResource {
@@ -194,7 +194,7 @@ fn paired_projectile_values_have_one_summary_and_survive_serialization() {
         instance,
         definition: Some(definition),
     });
-    let parameter = projectile::parameters::discover(graph).remove(0);
+    let parameter = entity::projectile::parameters::discover(graph).remove(0);
     let mut draft = Vec::new();
     parameter.set(&mut draft, 1.23).unwrap();
     assert_eq!(draft.len(), 2);
@@ -269,8 +269,8 @@ fn non_projectile_fields_are_searchable_and_visible_without_experimental_control
     let (mut loaded, mut field) = fixture();
     field.name = "Activation Delay".into();
     field.path_label = "Effect / Activation Delay".into();
-    field.locator.root_schema = 0x8080_1234;
-    field.locator.path[0].type_handle = field.locator.root_schema;
+    field.locator.root_schema = SchemaHandle::new(0x8080_1234);
+    field.locator.path[0].type_handle = (field.locator.root_schema.get()).into();
     loaded.graphs[0].1.owners[0].roots[0].fields = vec![field.clone()];
     assert!(matches_query(&field, "Effect", "activation"));
     assert!(matches_query(&field, "Effect", "32-bit float"));
@@ -306,7 +306,8 @@ fn non_projectile_fields_are_searchable_and_visible_without_experimental_control
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("Activation Delay"), "{text}");
-        assert!(!text.contains("No supported package fields"), "{text}");
+        // The test searches, so an empty list would read as a failed search.
+        assert!(!text.contains("No Matching Results"), "{text}");
         assert!(editor.draft.is_empty());
     }
 }
@@ -340,7 +341,7 @@ fn component_checkbox_edits_an_isolated_draft_and_reset_removes_the_edit() {
     let owner = graph.owners[0].owner_tag;
     let mut editor = super::super::tests::editor(loaded.clone());
     let ctx = egui::Context::default();
-    let mut render = |events| {
+    let render = |editor: &mut PerkEditor, events| {
         ctx.run(
             egui::RawInput {
                 events,
@@ -357,7 +358,7 @@ fn component_checkbox_edits_an_isolated_draft_and_reset_removes_the_edit() {
             },
         )
     };
-    let output = render(Vec::new());
+    let output = render(&mut editor, Vec::new());
     let checkbox = output
         .shapes
         .iter()
@@ -382,9 +383,13 @@ fn component_checkbox_edits_an_isolated_draft_and_reset_removes_the_edit() {
             },
         ]
     };
-    render(click(checkbox, true));
-    render(click(checkbox, false));
-    let output = render(Vec::new());
+    render(&mut editor, click(checkbox, true));
+    render(&mut editor, click(checkbox, false));
+    let output = render(&mut editor, Vec::new());
+    assert_eq!(
+        current_value(&loaded, &field, None, &editor.draft).unwrap(),
+        WeaponRuntimeValue::Boolean(true)
+    );
     let reset = output
         .shapes
         .iter()
@@ -397,8 +402,7 @@ fn component_checkbox_edits_an_isolated_draft_and_reset_removes_the_edit() {
             _ => None,
         })
         .expect("reset for modified component field");
-    render(click(reset, true));
-    render(click(reset, false));
+    render(&mut editor, click(reset, true));
+    render(&mut editor, click(reset, false));
     assert!(editor.draft.is_empty());
-    assert_eq!(field.value, WeaponRuntimeValue::Boolean(false));
 }

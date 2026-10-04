@@ -1,6 +1,40 @@
 use super::*;
 
 #[test]
+fn failed_preferences_persistence_is_visible_while_session_choices_remain_available() {
+    let mut app = PackageAuthoringApp {
+        preferences_open: true,
+        preferences_error: Some(
+            "Unsupported Parhelion preferences schema 2. The saved file was preserved.".into(),
+        ),
+        show_technical_build: true,
+        ..Default::default()
+    };
+    let ctx = egui::Context::default();
+    let mut output = egui::FullOutput::default();
+    for _ in 0..3 {
+        output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1100.0, 850.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| app.draw_preferences_window(ctx),
+        );
+    }
+    assert!(text(&output).contains("Unsupported Parhelion preferences schema 2"));
+    assert!(text(&output).contains("Show Technical Build"));
+    assert!(app.show_technical_build);
+    crate::app::custom_perks::workbench::tests::capture::write(
+        &ctx,
+        &output,
+        "preferences-save-error",
+    );
+}
+
+#[test]
 fn build_preferences_stay_locked_during_installation_review() {
     let mut app = PackageAuthoringApp {
         preferences_open: true,

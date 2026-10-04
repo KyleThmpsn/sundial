@@ -2,7 +2,7 @@
 use super::*;
 use crate::runtime::compatibility::{
     ComponentCompatibilityReport, ComponentDonorAssessment, DonorCompatibility,
-    EffectiveComponentSource, assess_component_donors,
+    assess_component_donors,
 };
 mod preview;
 use preview::{Review, ReviewJob};
@@ -19,19 +19,31 @@ pub(super) struct Browser {
     reviews: BTreeMap<(u32, u32), Arc<Review>>,
     review_job: Option<ReviewJob>,
     last_change: Option<(WeaponRecipe, WeaponRecipe)>,
-    candidates: Option<Candidates>,
+    listing: Option<CachedListing>,
 }
 
-/// The filtered and ordered donor list, kept until a filter, the report or the donor list
-/// changes. The report is held weakly, so a new report cannot reuse its address.
-struct Candidates {
+/// The donors a search matches, kept until the search, the report or the donor list changes.
+/// The report is held weakly, so a new report cannot reuse its address.
+struct CachedListing {
     query: String,
-    experimental: bool,
-    rejected: bool,
     report: std::sync::Weak<ComponentCompatibilityReport>,
     donors: (usize, usize),
-    /// Positions in the donor list.
-    rows: Arc<Vec<usize>>,
+    listing: Arc<Listing>,
+}
+
+/// The donors one search matches.
+struct Listing {
+    /// Positions in the donor list, one list per status in `status_rank` order, each by name.
+    rows: [Vec<usize>; 3],
+    /// Names more than one donor has. Their rows add the hash to tell them apart.
+    repeated: BTreeSet<String>,
+}
+
+impl Listing {
+    /// The rows of one status tab.
+    fn for_status(&self, status: DonorCompatibility) -> &[usize] {
+        &self.rows[usize::from(status_rank(status))]
+    }
 }
 
 struct Picker {
@@ -39,12 +51,40 @@ struct Picker {
     key: Option<RuntimeGraphKey>,
     baseline_hash: Option<u32>,
     query: String,
+    /// The status tab, chosen when the report arrives.
+    status: Option<DonorCompatibility>,
+    /// Accept Crash Risk, which an experimental donor needs before it applies.
     experimental: bool,
-    rejected: bool,
     selected: Option<u32>,
+    /// Selects `selected` in the list and scrolls to it on the next draw.
+    reveal: bool,
     error: Option<String>,
     reset_unsupported: bool,
     reviewing: Option<(u32, WeaponRecipe)>,
+}
+
+impl Picker {
+    fn new(
+        binding_hash: u32,
+        key: Option<RuntimeGraphKey>,
+        baseline_hash: Option<u32>,
+        query: String,
+        selected: Option<u32>,
+    ) -> Self {
+        Self {
+            binding_hash,
+            key,
+            baseline_hash,
+            query,
+            status: None,
+            experimental: false,
+            selected,
+            reveal: true,
+            error: None,
+            reset_unsupported: false,
+            reviewing: None,
+        }
+    }
 }
 
 struct Job {
@@ -70,39 +110,44 @@ impl Browser {
         self.generation = self.generation.wrapping_add(1);
         self.reports.clear();
         self.reviews.clear();
-        self.candidates = None;
+        self.listing = None;
     }
 
-    /// The donors the picker shows, as positions in `donors`, rebuilt only when a filter, the
-    /// report or the donor list changes.
-    fn candidate_rows(
+    /// The donors `query` matches, rebuilt only when the search, the report or the donor list
+    /// changes.
+    fn listing_for(
         &mut self,
         donors: &[WeaponDonorSummary],
         report: &Arc<ComponentCompatibilityReport>,
-        picker: &Picker,
-    ) -> Arc<Vec<usize>> {
+        query: &str,
+    ) -> Arc<Listing> {
         let donor_list = (donors.as_ptr() as usize, donors.len());
-        if let Some(cached) = self.candidates.as_ref().filter(|cached| {
-            cached.query == picker.query
-                && cached.experimental == picker.experimental
-                && cached.rejected == picker.rejected
+        if let Some(cached) = self.listing.as_ref().filter(|cached| {
+            cached.query == query
                 && cached.donors == donor_list
                 && std::ptr::eq(cached.report.as_ptr(), Arc::as_ptr(report))
         }) {
-            return Arc::clone(&cached.rows);
+            return Arc::clone(&cached.listing);
         }
-        let rows = Arc::new(collect_candidates(donors, report, picker));
-        self.candidates = Some(Candidates {
-            query: picker.query.clone(),
-            experimental: picker.experimental,
-            rejected: picker.rejected,
+        let listing = Arc::new(collect_listing(donors, report, query));
+        self.listing = Some(CachedListing {
+            query: query.to_owned(),
             report: Arc::downgrade(report),
             donors: donor_list,
-            rows: Arc::clone(&rows),
+            listing: Arc::clone(&listing),
         });
-        rows
+        listing
     }
 }
+
+/// The statuses in tab order.
+const STATUSES: [DonorCompatibility; 3] = [
+    DonorCompatibility::LowerRisk,
+    DonorCompatibility::Experimental,
+    DonorCompatibility::Incompatible,
+];
+
+const MIXING_WARNING: &str = "Component mixing can crash the game.";
 
 fn status_label(status: DonorCompatibility) -> &'static str {
     match status {
@@ -112,122 +157,21 @@ fn status_label(status: DonorCompatibility) -> &'static str {
     }
 }
 
+/// A status as its tab names it.
+fn tab_label(status: DonorCompatibility) -> &'static str {
+    match status {
+        DonorCompatibility::LowerRisk => "Lower Risk",
+        DonorCompatibility::Experimental => "Experimental",
+        DonorCompatibility::Incompatible => "Rejected",
+    }
+}
+
 fn status_color(ui: &egui::Ui, status: DonorCompatibility) -> egui::Color32 {
     match status {
         DonorCompatibility::LowerRisk => crate::app::style::success_color(ui.visuals()),
         DonorCompatibility::Experimental => ui.visuals().warn_fg_color,
         DonorCompatibility::Incompatible => ui.visuals().error_fg_color,
     }
-}
-
-fn draw_donor_group_label(ui: &mut egui::Ui, status: DonorCompatibility) {
-    ui.horizontal(|ui| {
-        ui.colored_label(
-            status_color(ui, status),
-            egui::RichText::new(status_label(status)).strong(),
-        );
-        ui.separator();
-    });
-}
-
-fn draw_donor_row(
-    ui: &mut egui::Ui,
-    donor: &WeaponDonorSummary,
-    assessment: &ComponentDonorAssessment,
-    selected: bool,
-    baseline: bool,
-) -> egui::Response {
-    let name_size = egui::TextStyle::Body.resolve(ui.style()).size.max(15.0);
-    let row_height = (name_size + 34.0).max(56.0);
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), row_height),
-        egui::Sense::hover(),
-    );
-    let response = ui.interact(
-        rect,
-        ui.make_persistent_id(("runtime-donor-row", donor.hash)),
-        egui::Sense::click(),
-    );
-    let visuals = ui.style().interact_selectable(&response, selected);
-    let fill = if selected {
-        ui.visuals().selection.bg_fill
-    } else if response.hovered() || response.has_focus() {
-        visuals.weak_bg_fill
-    } else {
-        ui.visuals().faint_bg_color
-    };
-    ui.painter().rect_filled(rect, visuals.corner_radius, fill);
-    ui.painter().rect_stroke(
-        rect,
-        visuals.corner_radius,
-        egui::Stroke::new(
-            if selected { 1.5 } else { 1.0 },
-            if selected {
-                ui.visuals().selection.stroke.color
-            } else {
-                visuals.bg_stroke.color
-            },
-        ),
-        egui::StrokeKind::Inside,
-    );
-
-    let text_rect = rect.shrink2(egui::vec2(10.0, 5.0));
-    ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect), |ui| {
-        let trailing_width = if baseline { 72.0 } else { 0.0 };
-        ui.horizontal(|ui| {
-            ui.allocate_ui_with_layout(
-                egui::vec2(
-                    (ui.available_width() - trailing_width).max(40.0),
-                    ui.available_height(),
-                ),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(&donor.name).size(name_size).strong())
-                            .truncate()
-                            .selectable(false),
-                    );
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(format!(
-                                "{} · 0x{:08X}",
-                                donor.type_name, donor.hash
-                            ))
-                            .small()
-                            .color(ui.visuals().weak_text_color()),
-                        )
-                        .truncate()
-                        .selectable(false),
-                    );
-                },
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if baseline {
-                    ui.label(egui::RichText::new("Baseline").small().strong());
-                }
-            });
-        });
-    });
-    let response = response.on_hover_ui(|ui| {
-        ui.set_max_width(ui.spacing().tooltip_width);
-        ui.label(format!(
-            "0x{:08X}\n{}",
-            donor.hash,
-            assessment.reasons.join("\n")
-        ));
-    });
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(
-            egui::WidgetType::SelectableLabel,
-            ui.is_enabled(),
-            selected,
-            format!(
-                "{} · {} · 0x{:08X}",
-                donor.name, donor.type_name, donor.hash
-            ),
-        )
-    });
-    response
 }
 
 fn status_rank(status: DonorCompatibility) -> u8 {
@@ -253,81 +197,246 @@ fn binding_label(binding_hash: u32) -> String {
     )
 }
 
-impl PackageAuthoringApp {
-    pub(super) fn draw_checked_runtime_donor_header(
-        &mut self,
-        ui: &mut egui::Ui,
-        binding_hash: u32,
-        selected_text: &str,
-        current_hash: Option<u32>,
-        baseline_hash: Option<u32>,
-        current_key: Option<&RuntimeGraphKey>,
-    ) {
-        ui.label(format!("Requested: {selected_text}"));
-        for source in self.effective_runtime_source_labels(binding_hash, baseline_hash, current_key)
-        {
-            ui.weak(source);
+/// A donor's name, or its hash when the donor list does not have it.
+fn donor_name(donor_summaries: &[WeaponDonorSummary], hash: u32) -> String {
+    donor_summaries
+        .iter()
+        .find(|donor| donor.hash == hash)
+        .map_or_else(|| format!("0x{hash:08X}"), |donor| donor.name.clone())
+}
+
+/// One runtime component, as a row or a detail pane draws it.
+pub(super) struct ComponentRow<'a> {
+    pub(super) binding_hash: u32,
+    pub(super) label: &'a str,
+    /// What the component does, empty for a binding Parhelion does not name.
+    pub(super) tooltip: &'a str,
+    pub(super) baseline_hash: Option<u32>,
+    pub(super) current_key: Option<&'a RuntimeGraphKey>,
+}
+
+impl ComponentRow<'_> {
+    /// The name's hover: what the component does and its binding hash.
+    fn hover(&self) -> String {
+        if self.tooltip.is_empty() {
+            format!("0x{:08X}", self.binding_hash)
+        } else {
+            format!("{}\n0x{:08X}", self.tooltip, self.binding_hash)
         }
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(self.catalog.is_some(), egui::Button::new("Review Donors…"))
-                .on_hover_text("Check compatibility before applying a donor.")
-                .clicked()
-            {
-                self.runtime_donors.picker = Some(Picker {
-                    binding_hash,
-                    key: current_key.cloned(),
-                    baseline_hash,
-                    query: self
-                        .runtime_component_queries
-                        .get(&binding_hash)
-                        .cloned()
-                        .unwrap_or_default(),
-                    experimental: false,
-                    rejected: false,
-                    selected: current_hash,
-                    error: None,
-                    reset_unsupported: false,
-                    reviewing: None,
-                });
-            }
-            if let Some(baseline) = baseline_hash
-                && ui
-                    .small_button("Use Baseline…")
-                    .on_hover_text("Restore this component group.")
-                    .clicked()
-            {
-                self.runtime_donors.picker = Some(Picker {
-                    binding_hash,
-                    key: current_key.cloned(),
-                    baseline_hash,
-                    query: String::new(),
-                    experimental: false,
-                    rejected: false,
-                    selected: Some(baseline),
-                    error: None,
-                    reset_unsupported: false,
-                    reviewing: None,
-                });
-            }
-            if baseline_hash.is_none()
-                && current_hash.is_some()
-                && ui.small_button("Remove Saved Choice").clicked()
-            {
-                self.recipe.set_runtime_component_donor(binding_hash, None);
-                self.runtime_graph = None;
-                self.runtime_value_text.clear();
-                self.runtime_donors.invalidate();
-            }
+    }
+}
+
+/// What a component's row shows and what its actions need.
+struct ComponentState {
+    source: String,
+    /// The donor the recipe saved for the component.
+    chosen: Option<u32>,
+    /// Whether a saved choice or a shared owner moved the component off its baseline.
+    off_baseline: bool,
+    /// "Requested: X" when the saved donor is not the one the runtime uses.
+    requested: Option<String>,
+}
+
+/// Where a component's runtime comes from now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ComponentSource {
+    /// No runtime has been read for the current recipe.
+    NotLoaded,
+    /// The runtime has no such binding.
+    Absent,
+    /// The donors feeding the binding.
+    Donors(Vec<SourceDonor>),
+}
+
+/// One donor feeding a component.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) struct SourceDonor {
+    /// The donor item, or `None` for a baseline no donor names.
+    pub(super) hash: Option<u32>,
+    pub(super) route: SourceRoute,
+}
+
+/// How a donor reaches a component.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) enum SourceRoute {
+    /// The runtime's own component.
+    Baseline,
+    /// The recipe's choice for this component.
+    Chosen,
+    /// The recipe's choice for another binding that shares this one's owner.
+    Shared(u32),
+}
+
+impl PackageAuthoringApp {
+    /// One component on a line: its name, where it comes from now, and Change…. A saved choice
+    /// the runtime does not follow shows under it.
+    pub(super) fn draw_runtime_component_row(&mut self, ui: &mut egui::Ui, row: &ComponentRow<'_>) {
+        let state = self.component_state(row);
+        // The same label column as the component rows above it, so every value lines up.
+        let name_width = Self::component_label_width(ui).min(ui.available_width() * 0.4);
+        ui.horizontal(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(name_width, ui.spacing().interact_size.y),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.set_width(name_width);
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.add(egui::Label::new(egui::RichText::new(row.label).weak()).truncate());
+                    draw_authoring_info_icon(ui, row.hover());
+                },
+            );
+            // The source, then its action beside it, as a part row's value and reset sit.
+            let action_width = sundial::investment::authoring_button_width(ui, "Change…")
+                + ui.spacing().item_spacing.x;
+            // Inset as a part row's value text is inside its field, so the values line up.
+            ui.add_space(ui.spacing().button_padding.x);
+            ui.scope(|ui| {
+                ui.set_max_width((ui.available_width() - action_width).max(80.0));
+                // A cut-off source shows its whole text on hover by itself.
+                ui.add(egui::Label::new(&state.source).truncate());
+            });
+            self.draw_component_actions(ui, row, &state, false);
         });
+        if let Some(requested) = &state.requested {
+            ui.horizontal(|ui| {
+                ui.add_space(name_width + ui.spacing().item_spacing.x);
+                ui.label(
+                    egui::RichText::new(requested)
+                        .color(crate::app::style::secondary(ui.visuals())),
+                );
+            });
+        }
     }
 
-    fn effective_runtime_source_labels(
+    /// The selected binding in Advanced Runtime Bindings: what it is, where it comes from now,
+    /// and its actions.
+    pub(super) fn draw_runtime_component_detail(
+        &mut self,
+        ui: &mut egui::Ui,
+        row: &ComponentRow<'_>,
+    ) {
+        let state = self.component_state(row);
+        let secondary = crate::app::style::secondary(ui.visuals());
+        let heading = ui.heading(row.label);
+        if !row.tooltip.is_empty() {
+            heading.on_hover_text(row.tooltip);
+        }
+        ui.label(egui::RichText::new(format!("0x{:08X}", row.binding_hash)).color(secondary));
+        section(ui, "Source");
+        ui.label(&state.source);
+        if let Some(requested) = &state.requested {
+            ui.label(egui::RichText::new(requested).color(secondary));
+        }
+        ui.add_space(10.0);
+        ui.horizontal_wrapped(|ui| self.draw_component_actions(ui, row, &state, true));
+    }
+
+    /// Where a component comes from now, as its row says it.
+    pub(super) fn component_source_text(
         &self,
         binding_hash: u32,
         baseline_hash: Option<u32>,
         current_key: Option<&RuntimeGraphKey>,
-    ) -> Vec<String> {
+    ) -> String {
+        self.source_text(&self.component_source(binding_hash, baseline_hash, current_key))
+    }
+
+    fn component_state(&self, row: &ComponentRow<'_>) -> ComponentState {
+        let source = self.component_source(row.binding_hash, row.baseline_hash, row.current_key);
+        let chosen = self
+            .recipe
+            .runtime_component_donor(row.binding_hash)
+            .and_then(|donor| donor.item_hash.parse_u32().ok());
+        let donors = match &source {
+            ComponentSource::Donors(donors) => donors.as_slice(),
+            ComponentSource::NotLoaded | ComponentSource::Absent => &[],
+        };
+        let requested = chosen
+            .filter(|&hash| {
+                !donors.contains(&SourceDonor {
+                    hash: Some(hash),
+                    route: SourceRoute::Chosen,
+                })
+            })
+            .map(|hash| format!("Requested: {}", donor_name(&self.donor_summaries, hash)));
+        ComponentState {
+            source: self.source_text(&source),
+            chosen,
+            off_baseline: chosen.is_some()
+                || donors
+                    .iter()
+                    .any(|donor| donor.route != SourceRoute::Baseline),
+            requested,
+        }
+    }
+
+    /// Change…, and a way back to the baseline once the component is off it. `primary` draws
+    /// Change… as a detail pane's one action.
+    fn draw_component_actions(
+        &mut self,
+        ui: &mut egui::Ui,
+        row: &ComponentRow<'_>,
+        state: &ComponentState,
+        primary: bool,
+    ) {
+        let change = if primary {
+            crate::app::style::primary(ui, "Change…")
+        } else {
+            egui::Button::new("Change…")
+        };
+        let change = ui.add_enabled(self.catalog.is_some(), change);
+        if named_control(change, format!("Change {} Donor", row.label)).clicked() {
+            self.runtime_donors.picker = Some(Picker::new(
+                row.binding_hash,
+                row.current_key.cloned(),
+                row.baseline_hash,
+                self.runtime_component_queries
+                    .get(&row.binding_hash)
+                    .cloned()
+                    .unwrap_or_default(),
+                state.chosen,
+            ));
+        }
+        if let Some(baseline) = row.baseline_hash
+            && state.off_baseline
+            && named_control(
+                ui.small_button("Use Baseline…"),
+                format!("Use Baseline for {}", row.label),
+            )
+            .clicked()
+        {
+            self.runtime_donors.picker = Some(Picker::new(
+                row.binding_hash,
+                row.current_key.cloned(),
+                row.baseline_hash,
+                String::new(),
+                Some(baseline),
+            ));
+        }
+        if row.baseline_hash.is_none()
+            && state.chosen.is_some()
+            && named_control(
+                ui.small_button("Remove Saved Choice"),
+                format!("Remove Saved Choice for {}", row.label),
+            )
+            .clicked()
+        {
+            self.recipe
+                .set_runtime_component_donor(row.binding_hash, None);
+            self.runtime_graph = None;
+            self.runtime_value_text.clear();
+            self.runtime_donors.invalidate();
+        }
+    }
+
+    /// Where a component's runtime comes from now: the compatibility report's sources when one
+    /// was read for this runtime, otherwise the owners the runtime graph shows.
+    fn component_source(
+        &self,
+        binding_hash: u32,
+        baseline_hash: Option<u32>,
+        current_key: Option<&RuntimeGraphKey>,
+    ) -> ComponentSource {
         if let Some(sources) = self
             .runtime_donors
             .reports
@@ -335,25 +444,27 @@ impl PackageAuthoringApp {
             .filter(|(key, report)| Some(key) == current_key && report.current_error.is_none())
             .find_map(|(_, report)| report.current_sources.get(&binding_hash))
         {
-            return sources
-                .iter()
-                .map(|source| {
-                    self.runtime_source_label(
-                        binding_hash,
-                        source.donor_item_hash,
-                        source.via_binding_hash,
-                    )
-                })
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
+            return ComponentSource::Donors(
+                sources
+                    .iter()
+                    .map(|source| {
+                        self.source_donor(
+                            binding_hash,
+                            source.donor_item_hash,
+                            source.via_binding_hash,
+                        )
+                    })
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
+            );
         }
         let Some((_, graph)) = self
             .runtime_graph
             .as_ref()
             .filter(|(key, _)| Some(key) == current_key)
         else {
-            return vec!["Effective source: Waiting for the runtime.".into()];
+            return ComponentSource::NotLoaded;
         };
         let owners = graph
             .bindings
@@ -362,9 +473,9 @@ impl PackageAuthoringApp {
             .map(|binding| binding.owner_tag)
             .collect::<BTreeSet<_>>();
         if owners.is_empty() {
-            return vec!["Effective source: Binding absent from this runtime.".into()];
+            return ComponentSource::Absent;
         }
-        let mut labels = BTreeSet::new();
+        let mut sources = BTreeSet::new();
         for owner in owners {
             let requests = self
                 .recipe
@@ -393,43 +504,69 @@ impl PackageAuthoringApp {
                 })
                 .collect::<Vec<_>>();
             if requests.is_empty() {
-                let name = baseline_hash
-                    .and_then(|hash| self.donor_summaries.iter().find(|donor| donor.hash == hash))
-                    .map_or("Runtime Baseline", |donor| donor.name.as_str());
-                labels.insert(format!("Effective: {name} (baseline)"));
+                sources.insert(SourceDonor {
+                    hash: baseline_hash,
+                    route: SourceRoute::Baseline,
+                });
             } else {
                 let mut donors = BTreeMap::new();
                 for (via, hash) in requests {
                     donors.entry(hash).or_insert(via);
                 }
                 for (hash, via) in donors {
-                    labels.insert(self.runtime_source_label(binding_hash, hash, Some(via)));
+                    sources.insert(self.source_donor(binding_hash, hash, Some(via)));
                 }
             }
         }
-        labels.into_iter().collect()
+        ComponentSource::Donors(sources.into_iter().collect())
     }
 
-    fn runtime_source_label(&self, binding: u32, hash: u32, via: Option<u32>) -> String {
-        let name = self
-            .donor_summaries
-            .iter()
-            .find(|donor| donor.hash == hash)
-            .map_or_else(|| format!("0x{hash:08X}"), |donor| donor.name.clone());
-        let Some(via) = via else {
-            return format!("Effective: {name} (baseline)");
+    /// How donor `hash` feeds `binding`: as the baseline when it arrives through no binding,
+    /// otherwise as the recipe's choice for `binding` or through the binding `via`.
+    fn source_donor(&self, binding: u32, hash: u32, via: Option<u32>) -> SourceDonor {
+        let route = match via {
+            None => SourceRoute::Baseline,
+            Some(_)
+                if self
+                    .recipe
+                    .runtime_component_donor(binding)
+                    .is_some_and(|donor| donor.item_hash.parse_u32() == Ok(hash)) =>
+            {
+                SourceRoute::Chosen
+            }
+            Some(via) => SourceRoute::Shared(via),
         };
-        if self
-            .recipe
-            .runtime_component_donor(binding)
-            .is_some_and(|donor| donor.item_hash.parse_u32() == Ok(hash))
-        {
-            format!("Effective: {name}")
-        } else {
-            format!(
-                "Effective: {name} via {} (shared owner)",
-                binding_label(via)
-            )
+        SourceDonor {
+            hash: Some(hash),
+            route,
+        }
+    }
+
+    /// A component's source as text: "Age-Old Bond", "Ace of Spades" or "Ace of Spades via
+    /// Weapon Stat Translator". The baseline reads as the weapon the runtime starts from, as the
+    /// other part rows do, not the item that owns its pattern row, which can be a hidden one.
+    fn source_text(&self, source: &ComponentSource) -> String {
+        let baseline = self
+            .runtime_base()
+            .map(|hash| donor_name(&self.donor_summaries, hash));
+        match source {
+            ComponentSource::NotLoaded => "Not Loaded".to_owned(),
+            ComponentSource::Absent => "Not in This Runtime".to_owned(),
+            ComponentSource::Donors(donors) => donors
+                .iter()
+                .map(|donor| {
+                    let name = donor.hash.map_or_else(
+                        || "Runtime Baseline".to_owned(),
+                        |hash| donor_name(&self.donor_summaries, hash),
+                    );
+                    match donor.route {
+                        SourceRoute::Baseline => baseline.clone().unwrap_or(name),
+                        SourceRoute::Chosen => name,
+                        SourceRoute::Shared(via) => format!("{name} via {}", binding_label(via)),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
         }
     }
 
@@ -490,7 +627,7 @@ impl PackageAuthoringApp {
         };
         if picker.key != key {
             picker.selected = None;
-            picker.error = Some("The runtime changed. Reopen Review Donors.".into());
+            picker.error = Some("The runtime changed. Reopen this window.".into());
             return;
         }
         let Some(key) = key else {
@@ -527,21 +664,16 @@ impl PackageAuthoringApp {
         });
     }
 
-    /// Draws the scrollable body of the donor browser. Returns true when a rescan was requested.
+    /// Draws the body of the donor browser: the current source, the search and status tabs, and
+    /// the donors beside the selected one. Returns true when a rescan was requested.
     fn draw_donor_browser_body(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &egui::Context,
         picker: &mut Picker,
         report: Option<&Arc<ComponentCompatibilityReport>>,
         current_key: Option<&RuntimeGraphKey>,
         review: Option<&Review>,
     ) -> bool {
-        ui.heading(binding_label(picker.binding_hash));
-        ui.colored_label(
-            ui.visuals().warn_fg_color,
-            "Component mixing can crash the game.",
-        );
         if let Some(error) = &picker.error {
             ui.colored_label(ui.visuals().error_fg_color, error);
             return picker.key.as_ref() == current_key && ui.button("Retry Scan").clicked();
@@ -554,73 +686,95 @@ impl PackageAuthoringApp {
             return false;
         };
         let report: &ComponentCompatibilityReport = shared_report;
+        let source =
+            self.component_source_text(picker.binding_hash, picker.baseline_hash, current_key);
+        draw_header(ui, &source);
         if let Some(error) = &report.current_error {
-            egui::Frame::group(ui.style())
-                .inner_margin(egui::Margin::same(8))
-                .show(ui, |ui| {
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
-                        "Current combination needs repair.",
-                    )
-                    .on_hover_text(error);
-                });
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                "Current combination needs repair.",
+            )
+            .on_hover_text(error);
         }
-        draw_current_sources(ui, &self.donor_summaries, report, picker.binding_hash);
-        draw_donor_search_controls(ui, picker, report);
-        let counts = report
-            .candidates
-            .values()
-            .fold([0_usize; 3], |mut counts, assessment| {
-                counts[usize::from(status_rank(assessment.status))] += 1;
-                counts
-            });
-        let candidates =
+        ui.add_space(4.0);
+        // A search remembered from the last review must not hide the donor this one opened on,
+        // or the list would select another donor in its place.
+        if picker.reveal
+            && let Some(hash) = picker.selected
+            && report.candidates.contains_key(&hash)
+            && !self
+                .runtime_donors
+                .listing_for(&self.donor_summaries, shared_report, &picker.query)
+                .rows
+                .iter()
+                .flatten()
+                .any(|&position| self.donor_summaries[position].hash == hash)
+        {
+            picker.query.clear();
+        }
+        let listing =
             self.runtime_donors
-                .candidate_rows(&self.donor_summaries, shared_report, picker);
-        ui.horizontal_wrapped(|ui| {
-            ui.weak(format!(
-                "{} donors shown · {} Lower Risk · {} Experimental · {} Rejected",
-                candidates.len(),
-                counts[0],
-                counts[1],
-                counts[2]
-            ));
-        });
-        let list_height = if picker.selected.is_some() {
-            (ctx.screen_rect().height() * 0.2).clamp(100.0, 180.0)
-        } else {
-            (ctx.screen_rect().height() * 0.28).clamp(120.0, 300.0)
-        };
-        draw_candidate_list(
+                .listing_for(&self.donor_summaries, shared_report, &picker.query);
+        let opened = picker.status.is_none();
+        if opened {
+            picker.status = Some(opening_status(report, &listing, picker.selected));
+        }
+        let changed = draw_toolbar(ui, picker, &listing, report, opened);
+        // A search typed this frame lists different donors.
+        let listing =
+            self.runtime_donors
+                .listing_for(&self.donor_summaries, shared_report, &picker.query);
+        let rows = listing.for_status(picker.status.unwrap_or(DonorCompatibility::LowerRisk));
+        ui.add_space(4.0);
+        if rows.is_empty() {
+            picker.selected = None;
+        }
+        let keys = rows
+            .iter()
+            .map(|&position| u64::from(self.donor_summaries[position].hash))
+            .collect::<Vec<_>>();
+        if picker.reveal && picker.selected.is_none() {
+            // A review opened without a donor starts on the first row, not on the row the last
+            // review of another component left selected.
+            let id = ui.make_persistent_id("inspected-choice");
+            ui.data_mut(|data| data.remove::<u64>(id));
+        }
+        let select = picker.selected.filter(|_| picker.reveal).map(u64::from);
+        let reset = changed || picker.reveal;
+        picker.reveal = false;
+        let donors = &self.donor_summaries;
+        let catalog = self.catalog.as_ref();
+        let baseline = picker.baseline_hash;
+        let retry_settings = crate::app::pickers::BrowserList {
+            keys: &keys,
+            height: (ui.available_height() - 4.0).max(160.0),
+            reset,
+            row_height: sundial::investment::authoring_choice_row_height(ui),
+            select,
+        }
+        .draw_body(
             ui,
-            &self.donor_summaries,
-            report,
-            &candidates,
-            picker,
-            list_height,
-        );
-        ui.separator();
-        let Some((hash, assessment)) = picker.selected.and_then(|hash| {
-            report
-                .candidates
-                .get(&hash)
-                .map(|assessment| (hash, assessment))
-        }) else {
-            return false;
-        };
-        let review_height = (ctx.screen_rect().height() * 0.2).clamp(70.0, 170.0);
-        if draw_selected_donor_panel(
-            ui,
-            &self.donor_summaries,
-            picker,
-            &SelectedDonor {
-                hash,
-                assessment,
-                report,
+            |ui, index, selected| {
+                let donor = &donors[rows[index]];
+                let detail = row_detail(
+                    donor,
+                    listing.repeated.contains(&donor.name),
+                    baseline == Some(donor.hash),
+                );
+                draw_donor_row(ui, catalog, donor, &detail, selected)
             },
-            review,
-            review_height,
-        ) {
+            |ui, index| {
+                let donor = &donors[rows[index]];
+                let assessment = report.candidates.get(&donor.hash)?;
+                if picker.selected != Some(donor.hash) {
+                    picker.selected = Some(donor.hash);
+                    picker.reset_unsupported = false;
+                }
+                draw_donor_detail(ui, donor, assessment, report, picker, review)
+                    .then_some(donor.hash)
+            },
+        );
+        if let Some(hash) = retry_settings {
             self.runtime_donors
                 .reviews
                 .remove(&(picker.binding_hash, hash));
@@ -653,37 +807,39 @@ impl PackageAuthoringApp {
         let mut open = true;
         let mut apply = false;
         let mut retry = false;
-        let width = (ctx.screen_rect().width() - 40.0).clamp(280.0, 900.0);
-        egui::Window::new("Review Component Donors")
+        let screen = ctx.screen_rect();
+        let width = (screen.width() - 40.0).clamp(280.0, 900.0);
+        let height = (screen.height() - 64.0).clamp(240.0, 780.0);
+        egui::Window::new(format!("{} Donors", binding_label(picker.binding_hash)))
             .id(egui::Id::new("parhelion-runtime-donor-browser"))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
             .default_width(width)
-            .default_height((ctx.screen_rect().height() - 64.0).clamp(240.0, 780.0))
+            .default_height(height)
+            .min_width(width.min(480.0))
+            .min_height(height.min(360.0))
             .show(ctx, |ui| {
                 workbench_style(ui);
-                // Keep the explicit action reachable even when warnings and shared-owner
-                // details need more room than a small viewport can provide. The window
-                // may be shorter than the screen, so reserve its actual footer space.
-                let footer_height = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
-                let body_height = (ui.available_height() - footer_height)
-                    .min(ctx.screen_rect().height() - 120.0)
-                    .max(0.0);
-                egui::ScrollArea::vertical()
-                    .id_salt("component-donor-browser-body")
-                    .max_height(body_height)
-                    .min_scrolled_height(0.0)
-                    .show(ui, |ui| {
+                // The footer holds Apply Donor wherever the body is, so the body takes the
+                // rest of the window.
+                let footer_height =
+                    ui.spacing().interact_size.y + ui.spacing().item_spacing.y * 2.0 + 8.0;
+                let body_height = (ui.available_height() - footer_height).max(0.0);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), body_height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_min_height(body_height);
                         retry = self.draw_donor_browser_body(
                             ui,
-                            ctx,
                             &mut picker,
                             report.as_ref(),
                             current_key.as_ref(),
                             review.as_deref(),
                         );
-                    });
+                    },
+                );
                 let selected_assessment = picker
                     .selected
                     .and_then(|hash| report.as_ref()?.candidates.get(&hash));
@@ -693,9 +849,15 @@ impl PackageAuthoringApp {
                             && preview::can_apply(review.as_deref(), &self.recipe, &picker)
                     });
                 ui.separator();
+                // The consent comes before the action it unlocks, on screen and in the Tab order.
                 ui.horizontal_wrapped(|ui| {
+                    if selected_assessment.is_some_and(|assessment| {
+                        assessment.status == DonorCompatibility::Experimental
+                    }) {
+                        ui.checkbox(&mut picker.experimental, "Accept Crash Risk");
+                    }
                     apply = ui
-                        .add_enabled(apply_enabled, egui::Button::new("Apply Donor"))
+                        .add_enabled(apply_enabled, crate::app::style::primary(ui, "Apply Donor"))
                         .clicked();
                     if let Some(hint) = donor_apply_hint(
                         &picker,
@@ -704,7 +866,10 @@ impl PackageAuthoringApp {
                         review.as_deref(),
                         apply_enabled,
                     ) {
-                        ui.weak(hint);
+                        ui.label(
+                            egui::RichText::new(hint)
+                                .color(crate::app::style::secondary(ui.visuals())),
+                        );
                     }
                 });
             });
@@ -739,267 +904,268 @@ impl PackageAuthoringApp {
     }
 }
 
-/// Names the donors currently feeding a binding, including the binding each one arrives through.
-fn current_source_names(
-    donor_summaries: &[WeaponDonorSummary],
-    sources: &[EffectiveComponentSource],
-) -> Vec<String> {
-    sources
-        .iter()
-        .map(|source| {
-            let name = donor_summaries
-                .iter()
-                .find(|donor| donor.hash == source.donor_item_hash)
-                .map_or_else(
-                    || format!("0x{:08X}", source.donor_item_hash),
-                    |donor| donor.name.clone(),
-                );
-            source.via_binding_hash.map_or_else(
-                || format!("{name} (baseline)"),
-                |via| format!("{name} via {}", binding_label(via)),
-            )
-        })
-        .collect()
+/// The donor the component comes from now, with the crash warning on the same line when it
+/// fits and under it when it does not.
+fn draw_header(ui: &mut egui::Ui, sources: &str) {
+    let secondary = crate::app::style::secondary(ui.visuals());
+    let warn = ui.visuals().warn_fg_color;
+    let font_id = egui::TextStyle::Body.resolve(ui.style());
+    let text_width = |text: &str| {
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), font_id.clone(), warn)
+            .size()
+            .x
+    };
+    let fits = text_width("Current Source")
+        + text_width(sources)
+        + text_width(MIXING_WARNING)
+        + ui.spacing().item_spacing.x * 2.0
+        + 24.0
+        <= ui.available_width();
+    if fits {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Current Source").color(secondary));
+            ui.label(sources);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.colored_label(warn, MIXING_WARNING);
+            });
+        });
+    } else {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Current Source").color(secondary));
+            ui.label(sources);
+        });
+        ui.colored_label(warn, MIXING_WARNING);
+    }
 }
 
-fn draw_current_sources(
+/// A status tab's name and how many donors it holds. The count is in the secondary colour except
+/// on the selected tab, whose accent fill the secondary colour does not read on.
+fn tab_text(
+    ui: &egui::Ui,
+    status: DonorCompatibility,
+    count: usize,
+    selected: bool,
+) -> egui::text::LayoutJob {
+    let font_id = egui::TextStyle::Button.resolve(ui.style());
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        tab_label(status),
+        0.0,
+        egui::TextFormat {
+            font_id: font_id.clone(),
+            // The tab's own text colour, which follows its hover and selected states.
+            color: egui::Color32::PLACEHOLDER,
+            ..Default::default()
+        },
+    );
+    job.append(
+        &format!(" {count}"),
+        0.0,
+        egui::TextFormat {
+            font_id,
+            color: if selected {
+                egui::Color32::PLACEHOLDER
+            } else {
+                crate::app::style::secondary(ui.visuals())
+            },
+            ..Default::default()
+        },
+    );
+    job
+}
+
+/// The search and the status tabs, each tab counting the donors the search matches. Returns
+/// true when the list to show changed.
+fn draw_toolbar(
     ui: &mut egui::Ui,
-    donor_summaries: &[WeaponDonorSummary],
+    picker: &mut Picker,
+    listing: &Listing,
     report: &ComponentCompatibilityReport,
-    binding_hash: u32,
-) {
-    let Some(sources) = report.current_sources.get(&binding_hash) else {
-        ui.horizontal(|ui| {
-            ui.strong("Current Source");
-            ui.weak("Inherited from the runtime.");
-        });
-        return;
-    };
-    let source_names = current_source_names(donor_summaries, sources);
+    opened: bool,
+) -> bool {
+    let mut changed = false;
     ui.horizontal_wrapped(|ui| {
-        ui.strong("Current Source");
-        for source in source_names {
-            ui.weak(source);
+        let width = (ui.available_width() * 0.35).clamp(160.0, 280.0);
+        changed |=
+            sundial::ui::catalog::search(ui, &mut picker.query, opened, width, "Search Weapons");
+        ui.add_space(12.0);
+        for status in STATUSES {
+            let count = listing.for_status(status).len();
+            let selected = picker.status == Some(status);
+            if ui
+                .selectable_label(selected, tab_text(ui, status, count, selected))
+                .clicked()
+                && picker.status != Some(status)
+            {
+                picker.status = Some(status);
+                changed = true;
+            }
+        }
+        if let Some(hash) = picker.baseline_hash
+            && picker.selected != Some(hash)
+            && let Some(assessment) = report.candidates.get(&hash)
+        {
+            ui.add_space(12.0);
+            if ui.button("Select Baseline").clicked() {
+                picker.query.clear();
+                picker.status = Some(assessment.status);
+                picker.selected = Some(hash);
+                picker.reveal = true;
+                picker.reset_unsupported = false;
+                changed = true;
+            }
         }
     });
+    changed
 }
 
-fn draw_donor_search_controls(
-    ui: &mut egui::Ui,
-    picker: &mut Picker,
+/// The tab a review opens on: the selected donor's, else the first that lists any donor.
+fn opening_status(
     report: &ComponentCompatibilityReport,
-) {
-    egui::Frame::group(ui.style())
-        .inner_margin(egui::Margin::same(8))
-        .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.strong("Search");
-                named_control(
-                    ui.add(
-                        egui::TextEdit::singleline(&mut picker.query)
-                            .hint_text("Weapon name, family or hash")
-                            .desired_width(260.0),
-                    ),
-                    "Filter Component Donors",
-                );
-                ui.checkbox(&mut picker.experimental, "Show Experimental Matches");
-                ui.checkbox(&mut picker.rejected, "Show Rejected Donors");
-                if let Some(hash) = picker.baseline_hash
-                    && report.candidates.contains_key(&hash)
-                    && ui.button("Select Baseline").clicked()
-                {
-                    picker.selected = Some(hash);
-                    picker.query.clear();
-                    picker.reset_unsupported = false;
-                }
-            });
-        });
-}
-
-/// Applies the picker filters to the donor list and orders it by status, then name. Returns
-/// positions in `donor_summaries`.
-fn collect_candidates(
-    donor_summaries: &[WeaponDonorSummary],
-    report: &ComponentCompatibilityReport,
-    picker: &Picker,
-) -> Vec<usize> {
-    let query = picker.query.trim().to_ascii_lowercase();
-    let mut candidates = donor_summaries
-        .iter()
-        .enumerate()
-        .filter_map(|(position, donor)| {
-            let assessment = report.candidates.get(&donor.hash)?;
-            if (assessment.status == DonorCompatibility::Experimental && !picker.experimental)
-                || (assessment.status == DonorCompatibility::Incompatible && !picker.rejected)
-            {
-                return None;
-            }
-            (query.is_empty()
-                || donor.name.to_ascii_lowercase().contains(&query)
-                || donor.type_name.to_ascii_lowercase().contains(&query)
-                || format!("0x{:08x}", donor.hash).contains(&query))
-            .then_some((position, donor, assessment.status))
+    listing: &Listing,
+    selected: Option<u32>,
+) -> DonorCompatibility {
+    selected
+        .and_then(|hash| report.candidates.get(&hash))
+        .map(|assessment| assessment.status)
+        .or_else(|| {
+            STATUSES
+                .into_iter()
+                .find(|&status| !listing.for_status(status).is_empty())
         })
-        .collect::<Vec<_>>();
-    candidates.sort_by(|(_, left, left_status), (_, right, right_status)| {
-        status_rank(*left_status)
-            .cmp(&status_rank(*right_status))
-            .then_with(|| left.name.cmp(&right.name))
-            .then_with(|| left.hash.cmp(&right.hash))
-    });
-    candidates
-        .into_iter()
-        .map(|(position, ..)| position)
-        .collect()
+        .unwrap_or(DonorCompatibility::LowerRisk)
 }
 
-fn draw_candidate_list(
-    ui: &mut egui::Ui,
+/// The donors matching `query`, by status and then name, as positions in `donor_summaries`.
+fn collect_listing(
     donor_summaries: &[WeaponDonorSummary],
     report: &ComponentCompatibilityReport,
-    candidates: &[usize],
-    picker: &mut Picker,
-    max_height: f32,
-) {
-    egui::ScrollArea::vertical()
-        .id_salt("component-donor-candidates")
-        .max_height(max_height)
-        .auto_shrink([false, true])
-        .show(ui, |ui| {
-            if candidates.is_empty() {
-                ui.weak("No matching donors.");
-            }
-            let mut last_status = None;
-            for donor in candidates
-                .iter()
-                .map(|&position| &donor_summaries[position])
-            {
-                let Some(assessment) = report.candidates.get(&donor.hash) else {
-                    continue;
-                };
-                if last_status != Some(assessment.status) {
-                    draw_donor_group_label(ui, assessment.status);
-                    last_status = Some(assessment.status);
-                }
-                if draw_donor_row(
-                    ui,
-                    donor,
-                    assessment,
-                    picker.selected == Some(donor.hash),
-                    picker.baseline_hash == Some(donor.hash),
-                )
-                .clicked()
-                {
-                    picker.selected = Some(donor.hash);
-                    picker.reset_unsupported = false;
-                }
-                ui.add_space(4.0);
-            }
+    query: &str,
+) -> Listing {
+    let query = query.trim().to_ascii_lowercase();
+    let mut rows: [Vec<usize>; 3] = Default::default();
+    for (position, donor) in donor_summaries.iter().enumerate() {
+        let Some(assessment) = report.candidates.get(&donor.hash) else {
+            continue;
+        };
+        if query.is_empty()
+            || donor.name.to_ascii_lowercase().contains(&query)
+            || donor.type_name.to_ascii_lowercase().contains(&query)
+            || format!("0x{:08x}", donor.hash).contains(&query)
+        {
+            rows[usize::from(status_rank(assessment.status))].push(position);
+        }
+    }
+    for rows in &mut rows {
+        rows.sort_by(|&left, &right| {
+            let (left, right) = (&donor_summaries[left], &donor_summaries[right]);
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.hash.cmp(&right.hash))
         });
+    }
+    let mut seen = BTreeSet::new();
+    let repeated = donor_summaries
+        .iter()
+        .filter(|donor| !seen.insert(donor.name.as_str()))
+        .map(|donor| donor.name.clone())
+        .collect();
+    Listing { rows, repeated }
 }
 
-fn draw_compatibility_details(
+/// A row's line under the name: the weapon type, the hash when another donor has the same
+/// name, and whether it is the runtime baseline.
+fn row_detail(donor: &WeaponDonorSummary, repeated: bool, baseline: bool) -> String {
+    let hash = format!("0x{:08X}", donor.hash);
+    [
+        Some(donor.type_name.as_str()).filter(|type_name| !type_name.is_empty()),
+        repeated.then_some(hash.as_str()),
+        baseline.then_some("Baseline"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ")
+}
+
+/// One donor in the list, with its weapon icon when the catalog has one.
+fn draw_donor_row(
     ui: &mut egui::Ui,
-    report: &ComponentCompatibilityReport,
+    catalog: Option<&InvestmentCatalog>,
+    donor: &WeaponDonorSummary,
+    detail: &str,
+    selected: bool,
+) -> egui::Response {
+    match catalog {
+        Some(catalog) => catalog.draw_authoring_choice_row(
+            ui,
+            Some(donor.hash),
+            &donor.name,
+            Some(detail),
+            selected,
+        ),
+        None => sundial::investment::draw_asset_choice_row_plain(ui, &donor.name, detail, selected),
+    }
+}
+
+/// A titled part of the selected donor's details.
+fn section(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(10.0);
+    ui.strong(title);
+}
+
+/// The selected donor: its status and the reasons for it, what applying it changes and how
+/// your settings carry over. Returns true when its settings check should run again.
+fn draw_donor_detail(
+    ui: &mut egui::Ui,
+    donor: &WeaponDonorSummary,
     assessment: &ComponentDonorAssessment,
-    hash: u32,
-) {
-    egui::CollapsingHeader::new("Compatibility Details")
-        .id_salt(("compat-details", hash))
-        .default_open(assessment.status == DonorCompatibility::Incompatible)
-        .show(ui, |ui| {
-            for reason in &assessment.reasons {
-                ui.label(reason);
-            }
-            for affected in &assessment.affected_bindings {
-                let label = report
-                    .affected_bindings
-                    .iter()
-                    .find(|(hash, _)| hash == affected)
-                    .map_or_else(|| binding_label(*affected), |(_, label)| label.clone());
-                ui.label(label).on_hover_text(format!("0x{affected:08X}"));
-            }
-        });
-}
-
-fn draw_selected_donor_review(
-    ui: &mut egui::Ui,
     report: &ComponentCompatibilityReport,
-    assessment: &ComponentDonorAssessment,
-    hash: u32,
-    max_height: f32,
-) {
-    egui::ScrollArea::vertical()
-        .id_salt("component-donor-review")
-        .max_height(max_height)
-        .show(ui, |ui| {
-            if !assessment.affected_bindings.is_empty() {
-                ui.strong("Changes Together");
-                let named = assessment
-                    .affected_bindings
-                    .iter()
-                    .filter_map(|hash| runtime_component_control(*hash))
-                    .map(|control| control.label)
-                    .collect::<Vec<_>>();
-                if !named.is_empty() {
-                    ui.label(named.join(", "));
-                }
-                ui.weak("Other donor choices in this group will be replaced.");
-            }
-            draw_compatibility_details(ui, report, assessment, hash);
-        });
-}
-
-/// The donor the picker currently points at, with the report that assessed it.
-#[derive(Clone, Copy)]
-struct SelectedDonor<'a> {
-    hash: u32,
-    assessment: &'a ComponentDonorAssessment,
-    report: &'a ComponentCompatibilityReport,
-}
-
-/// Draws the selected donor panel. Returns true when its cached review should be dropped.
-fn draw_selected_donor_panel(
-    ui: &mut egui::Ui,
-    donor_summaries: &[WeaponDonorSummary],
     picker: &mut Picker,
-    selected: &SelectedDonor<'_>,
     review: Option<&Review>,
-    review_height: f32,
 ) -> bool {
-    let SelectedDonor {
-        hash,
-        assessment,
-        report,
-    } = *selected;
-    let donor = donor_summaries.iter().find(|donor| donor.hash == hash);
-    let mut clear_review = false;
-    egui::Frame::group(ui.style())
-        .inner_margin(egui::Margin::same(10))
-        .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.strong("Selected Donor");
-                let color = status_color(ui, assessment.status);
-                ui.colored_label(color, status_label(assessment.status));
-            });
-            if let Some(donor) = donor {
-                ui.label(egui::RichText::new(&donor.name).size(16.0).strong());
-                ui.weak(format!("{} · 0x{:08X}", donor.type_name, donor.hash));
-            } else {
-                ui.label(format!("0x{hash:08X}"));
-            }
-            draw_selected_donor_review(ui, report, assessment, hash, review_height);
-            if assessment.status != DonorCompatibility::Incompatible {
-                let current_review =
-                    review.filter(|review| Some(review.donor_hash) == picker.selected);
-                clear_review = preview::draw_review(ui, picker, current_review);
-            }
-        });
-    clear_review
+    ui.heading(&donor.name);
+    ui.label(
+        egui::RichText::new(format!("{} · 0x{:08X}", donor.type_name, donor.hash))
+            .color(crate::app::style::secondary(ui.visuals())),
+    );
+    ui.colored_label(
+        status_color(ui, assessment.status),
+        status_label(assessment.status),
+    );
+    if !assessment.reasons.is_empty() {
+        section(ui, "Compatibility");
+        for reason in &assessment.reasons {
+            ui.label(reason);
+        }
+    }
+    if assessment
+        .affected_bindings
+        .iter()
+        .any(|&affected| affected != picker.binding_hash)
+    {
+        section(ui, "Changes Together");
+        for affected in &assessment.affected_bindings {
+            let label = report
+                .affected_bindings
+                .iter()
+                .find(|(hash, _)| hash == affected)
+                .map_or_else(|| binding_label(*affected), |(_, label)| label.clone());
+            ui.label(label).on_hover_text(format!("0x{affected:08X}"));
+        }
+        ui.weak("Other donor choices in this group will be replaced.");
+    }
+    if assessment.status == DonorCompatibility::Incompatible {
+        return false;
+    }
+    let review = review.filter(|review| Some(review.donor_hash) == picker.selected);
+    preview::draw_review(ui, picker, review)
 }
 
-/// Names what still blocks Apply Donor. Nothing while Apply is enabled or while the blocker is
-/// already shown with the review.
+/// Names what still blocks Apply Donor. Nothing while Apply is enabled, or while the blocker
+/// shows beside it already: a rejected status, the unticked Accept Crash Risk box, or a failed
+/// check shown with the review.
 fn donor_apply_hint(
     picker: &Picker,
     has_report: bool,
@@ -1020,10 +1186,8 @@ fn donor_apply_hint(
         return Some("Select a donor.");
     };
     match assessment.status {
-        DonorCompatibility::Incompatible => Some("Rejected donor."),
-        DonorCompatibility::Experimental if !picker.experimental => {
-            Some("Turn on Show Experimental Matches to apply this donor.")
-        }
+        DonorCompatibility::Incompatible => None,
+        DonorCompatibility::Experimental if !picker.experimental => None,
         _ => settings_hint(picker, review),
     }
 }

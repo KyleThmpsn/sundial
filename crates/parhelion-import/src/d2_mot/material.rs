@@ -179,10 +179,14 @@ fn native_draws(
 }
 
 pub fn vertex_colors(r: &mut Reader, tag: u32) -> Result<Value> {
+    vertex_colors_for(r, &json!({"model":format!("{tag:08X}")}))
+}
+
+pub(crate) fn vertex_colors_for(r: &mut Reader, entry: &Value) -> Result<Value> {
+    let tag = crate::d2_mot::profile::hash(entry, "model")?;
     let model = r.tag(tag, Some(0x80806F07))?;
-    let meshes = model.array(16, 128, Some(0x80806EC5))?;
-    ensure!(meshes.len() == 1, "expected single mesh for color export");
-    let tag = model.u32(meshes[0] + 20)?;
+    let mesh = super::geometry::selected_mesh(&model, entry)?;
+    let tag = model.u32(mesh + 20)?;
     if [0, u32::MAX, 0x811C9DC5].contains(&tag) {
         return Ok(json!({"buffer":null,"source_has_color_buffer":false}));
     }

@@ -6,7 +6,7 @@ mod context_menu;
 mod definition_picker;
 mod filters;
 mod flags;
-pub(crate) use context_menu::{draw_context_menu, draw_header_lock};
+pub(crate) use context_menu::{draw_context_menu, draw_header_lock, open_requested_preview};
 pub(crate) use flags::{draw_seen_flag, draw_state_flags};
 mod header;
 mod layout;
@@ -46,7 +46,7 @@ pub(crate) use numeric::{displayed_item_power, draw_level_and_quantity, new_inve
 pub(crate) use plug_picker::{
     SOCKET_PICKER_RESET_WIDTH, draw_plug_icon_picker, draw_plug_icon_picker_with_action,
     draw_plug_picker, draw_socket_picker_label, draw_socket_picker_reset, measured_button_width,
-    plug_choices_for_socket, plug_choices_for_socket_type, plug_picker_snapshot,
+    plug_choices_for_socket, plug_choices_for_socket_type, plug_picker_snapshot, scope_labels,
     socket_picker_label_width, socket_picker_reset_width,
 };
 

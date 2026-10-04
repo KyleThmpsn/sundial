@@ -200,7 +200,7 @@ pub(super) fn draw_combat_profile_control(
         })
         .response
         .on_disabled_hover_text(if locked {
-            "Set by the Unique Weapon Behavior."
+            "Set by Behavior."
         } else if select_slot {
             "Slot change unavailable for this weapon."
         } else {
@@ -340,10 +340,12 @@ pub(super) fn draw_combat_profile_diagnostics(
             );
         }
     }
-    if matches!(
-        donor.summary.damage_profile,
-        WeaponDamageProfile::PlugOrEmptyAmbiguous(Some(_))
-    ) {
+    if overrides.modern_damage_type == Some(crate::recipe::RecipeDamageType::Kinetic)
+        && matches!(
+            donor.summary.damage_profile,
+            WeaponDamageProfile::PlugOrEmptyAmbiguous(Some(_))
+        )
+    {
         ui.weak("Kinetic damage is untested on this weapon.");
     }
     let capabilities = weapon_authoring_capabilities(donor);

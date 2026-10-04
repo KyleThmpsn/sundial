@@ -7,10 +7,10 @@ use super::{
     texture::{AddressMode, Sampler, Texture},
 };
 pub(super) mod normal;
-use crate::weapon_dyes::material::{Frame, Surface, apply_writes, properties};
+use crate::dyes::material::{Frame, Surface, apply_writes, properties};
 
 #[derive(Clone, Copy)]
-pub(super) struct Dye {
+pub(crate) struct Dye {
     pub surface: Surface,
     pub detail: Option<usize>,
     pub transform: [f32; 4],
@@ -21,13 +21,21 @@ pub(super) struct Dye {
 }
 
 pub(super) fn dyes(model: &Model, seconds: f32) -> [Option<Dye>; 6] {
-    let mut dyes = model.dyes;
-    // An editor's unbuilt values go where a build writes them, into the dye's vectors before its
-    // program runs. A program that writes a value still wins, as it does in the game.
     let overrides = model
         .surface_overrides
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    dyes_with_overrides(model, seconds, &overrides)
+}
+
+pub(super) fn dyes_with_overrides(
+    model: &Model,
+    seconds: f32,
+    overrides: &[super::SurfaceOverride],
+) -> [Option<Dye>; 6] {
+    let mut dyes = model.dyes;
+    // Gather sparse edits for each channel. Its animation applies them in native emission order.
     // Both of a channel's surfaces share one dye, so its writes gather from both.
     let writes = |channel: usize| -> Vec<(usize, usize, f32)> {
         overrides
@@ -42,6 +50,7 @@ pub(super) fn dyes(model: &Model, seconds: f32) -> [Option<Dye>; 6] {
                 dye.surface = frame.surfaces[i];
                 dye.transform = frame.detail_transform;
                 dye.normal_transform = frame.normal_transform;
+                dye.vectors = frame.vectors;
             }
         }
     };
@@ -82,15 +91,57 @@ pub(super) struct Bindings<'a> {
     pub clip: Option<&'a Texture>,
     /// Flat emissive colour that replaces every material term.
     pub constant: Option<[f32; 3]>,
-    gearstack: Option<&'a Texture>,
-    dye: Option<&'a Dye>,
-    detail: Option<&'a Texture>,
-    normal: Option<&'a Texture>,
-    detail_normal: Option<&'a Texture>,
+    pub(in crate::model_preview) gearstack: Option<&'a Texture>,
+    pub(in crate::model_preview) dye: Option<&'a Dye>,
+    pub(in crate::model_preview) detail: Option<&'a Texture>,
+    pub(in crate::model_preview) normal: Option<&'a Texture>,
+    pub(in crate::model_preview) detail_normal: Option<&'a Texture>,
     iridescence: Option<&'a Texture>,
+    dye_map: Option<(&'a Texture, super::texture::DyeMap, u8)>,
 }
 
 impl<'a> Bindings<'a> {
+    /// The transparent gear programs output color and authored smoothness together.
+    pub(super) fn effect_base(&self, uv: [f32; 2], detail_uv: [f32; 2]) -> [f32; 4] {
+        let base = self.albedo.map_or([0.0; 4], |t| t.sample_color(uv));
+        let mask = self.gearstack.map_or([0.0; 4], |t| t.sample_rgba(uv));
+        let raw = mask[1] / 255.0;
+        let Some(dye) = self.dye.filter(|_| mask[3] >= 40.0) else {
+            return [base[0], base[1], base[2], raw];
+        };
+        let detail_uv =
+            std::array::from_fn(|i| detail_uv[i] * dye.transform[i] + dye.transform[i + 2]);
+        let detail = self
+            .detail
+            .map_or([0.25, 0.25, 0.25, 0.25], |t| t.sample_color(detail_uv));
+        let map = |value: f32, m: [f32; 4]| saturate(m[2] + m[3] * saturate(m[0] + m[1] * value));
+        let surface = |color: [f32; 3], params: [f32; 4], rough: [f32; 4]| {
+            let mapped = map(raw, rough);
+            let color: [f32; 3] = std::array::from_fn(|i| {
+                mix(color[i], saturate(overlay(detail[i], color[i])), params[0])
+            });
+            [
+                overlay(base[0], color[0]),
+                overlay(base[1], color[1]),
+                overlay(base[2], color[2]),
+                mix(mapped, map(overlay(mapped, detail[3]), rough), params[2]),
+            ]
+        };
+        let s = &dye.surface;
+        let intact = map(saturate((mask[3] - 48.0) / 207.0), s.wear);
+        let a = surface(s.worn_albedo, s.worn_params.map(saturate), s.worn_roughness);
+        let b = surface(s.albedo, s.params, s.roughness);
+        std::array::from_fn(|i| mix(a[i], b[i], intact))
+    }
+
+    pub(super) fn effect_plate(&self, uv: [f32; 2]) -> [f32; 4] {
+        self.albedo.map_or([0.0; 4], |t| t.sample_color(uv))
+    }
+
+    pub(super) fn effect_mask(&self, uv: [f32; 2]) -> [f32; 4] {
+        self.gearstack
+            .map_or([0.0; 4], |t| t.sample_rgba(uv).map(|v| v / 255.0))
+    }
     pub fn new(model: &'a Model, triangle: usize, dyes: &'a [Option<Dye>; 6]) -> Self {
         let dye = model
             .triangle_dyes
@@ -119,6 +170,18 @@ impl<'a> Bindings<'a> {
                 .and_then(|i| model.textures.get(i)),
             dye,
             iridescence: model.iridescence.as_ref(),
+            dye_map: model
+                .triangle_dye_maps
+                .get(triangle)
+                .copied()
+                .flatten()
+                .and_then(|map| {
+                    Some((
+                        model.textures.get(map.texture)?,
+                        map,
+                        *model.triangle_dyes.get(triangle)?,
+                    ))
+                }),
         }
     }
 
@@ -133,7 +196,10 @@ impl<'a> Bindings<'a> {
     /// Whether an alpha-clipped part covers this texel. The template shader's rule:
     /// `saturate(gstack.b * 7.96875)` is the coverage, clipped at one half.
     pub fn covers(&self, uv: [f32; 2]) -> bool {
-        self.clip
+        self.dye_map.is_none_or(|(texture, map, slot)| {
+            super::texture::DyeMap::slot(texture.sample_rgba(map.uv(uv))) == slot
+        }) && self
+            .clip
             .is_none_or(|texture| texture.sample_rgba(uv)[2] * 7.96875 / 255.0 >= 0.5)
     }
 
@@ -143,14 +209,19 @@ impl<'a> Bindings<'a> {
 
     /// Continuous coverage for an alpha-clipped part, before the one-half clip `covers` applies.
     pub fn coverage(&self, uv: [f32; 2]) -> Option<f32> {
+        if self.dye_map.is_some() && !self.covers(uv) {
+            return Some(0.0);
+        }
         self.clip
             .map(|texture| saturate(texture.sample_rgba(uv)[2] * 7.96875 / 255.0))
+            .or_else(|| self.dye_map.map(|_| 1.0))
     }
 
     /// The unlit material at one point of the plate. The preview lights this, and an export
     /// bakes it, so the two share one evaluation and cannot drift apart.
     pub fn texel(&self, uv: [f32; 2]) -> Option<Texel> {
-        let base = self.albedo?.sample(uv).map(|v| linear(v / 255.0));
+        let color = self.albedo?.sample_color(uv);
+        let base = [color[0], color[1], color[2]];
         let mask = self.gearstack.map(|t| t.sample_rgba(uv));
         let surface = match (self.dye, mask) {
             (Some(dye), Some(mask)) => {
@@ -159,7 +230,7 @@ impl<'a> Bindings<'a> {
                 evaluate(
                     base,
                     mask,
-                    self.detail.map(|t| t.sample_rgba(detail_uv)),
+                    self.detail.map(|t| t.sample_color(detail_uv)),
                     &dye.surface,
                 )
             }
@@ -288,6 +359,7 @@ pub(super) struct Sample {
     pub emission: [f32; 3],
 }
 
+/// Color inputs are filtered linear light, mask channels retain their native 0..255 packing.
 fn evaluate(base: [f32; 3], mask: [f32; 4], detail: Option<[f32; 4]>, dye: &Surface) -> Sample {
     let [ao, smoothness, emission, alpha] = mask;
     let mut sample = Sample {
@@ -311,13 +383,13 @@ fn evaluate(base: [f32; 3], mask: [f32; 4], detail: Option<[f32; 4]>, dye: &Surf
         sample.albedo = std::array::from_fn(|i| {
             mix(
                 sample.albedo[i],
-                overlay(linear(detail[i] / 255.0), sample.albedo[i]),
+                overlay(detail[i], sample.albedo[i]),
                 saturate(params[0]),
             )
         });
         smoothness = mix(
             smoothness,
-            overlay(smoothness, detail[3] / 255.0),
+            overlay(smoothness, detail[3]),
             saturate(params[2]),
         );
     }
@@ -467,8 +539,12 @@ pub(super) fn linear(value: f32) -> f32 {
     lookup(LINEAR.get_or_init(|| table(linear_exact)), value)
 }
 pub(super) fn encode(value: f32) -> u8 {
+    (encoded(value) * 255.0).round() as u8
+}
+
+pub(super) fn encoded(value: f32) -> f32 {
     static SRGB: std::sync::OnceLock<[f32; TABLE + 1]> = std::sync::OnceLock::new();
-    (lookup(SRGB.get_or_init(|| table(encode_exact)), value) * 255.0).round() as u8
+    lookup(SRGB.get_or_init(|| table(encode_exact)), value)
 }
 
 #[cfg(test)]

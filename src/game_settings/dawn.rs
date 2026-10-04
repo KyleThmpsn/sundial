@@ -2,7 +2,13 @@
 mod page;
 pub(crate) use page::draw;
 
-use crate::hash::parse_unsigned_value;
+// Limits a Dawn runtime compiles in come from the contract its account reader checks. The
+// engine no-definition hash cannot identify an authored item or plug.
+use crate::account_contract::{CHARACTER_CAPACITY, MAX_ITEM_PLUGS as PLUG_CAPACITY};
+use crate::hash::{FNV1_EMPTY_HASH as NO_DEFINITION_HASH, parse_unsigned_value};
+use crate::persistence::dawn_account::contract::{
+    CHARACTER_ITEM_CAPACITY, CHARACTER_RANGES, EQUIPMENT_SLOTS,
+};
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -42,44 +48,6 @@ const CLIENT_FLAGS: [(&str, &str, bool); 7] = [
 const CLIENT_SPAWN_HOLD_MS: &str = "/client/spawn_hold_ms";
 const DEFAULT_SPAWN_HOLD_MS: u64 = 30_000;
 const MAXIMUM_SPAWN_HOLD_MS: u64 = 600_000;
-
-/// Limits a Dawn runtime compiles in, mirrored from its account and inventory state headers.
-const CHARACTER_CAPACITY: usize = 3;
-const CHARACTER_ITEM_CAPACITY: usize = 135;
-const PLUG_CAPACITY: usize = 12;
-/// The engine no-definition hash cannot identify an authored item or plug.
-const NO_DEFINITION_HASH: u32 = 0x811C_9DC5;
-/// The 16 named equipment slots, in the order Dawn's EquipmentSlot enum declares them.
-const EQUIPMENT_SLOTS: [&str; 16] = [
-    "kinetic",
-    "energy",
-    "heavy",
-    "helmet",
-    "gauntlets",
-    "chest",
-    "legs",
-    "class_item",
-    "ghost",
-    "vehicle",
-    "ship",
-    "subclass",
-    "clan_banner",
-    "emblem",
-    "emote",
-    "finisher",
-];
-/// Character fields Dawn range checks when it reads them back, with each inclusive maximum.
-const CHARACTER_RANGES: [(&str, u8); 9] = [
-    ("race", 2),
-    ("gender", 1),
-    ("class", 2),
-    ("level", 255),
-    ("movement_ability", 255),
-    ("grenade_ability", 255),
-    ("super_ability", 255),
-    ("melee_ability", 255),
-    ("class_ability", 255),
-];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Runtime {
@@ -212,7 +180,7 @@ pub(crate) fn account_issues(json: &Value) -> Vec<String> {
         let label = format!("Character {}", index + 1);
         for (field, limit) in CHARACTER_RANGES {
             if let Some(value) = character.get(field).and_then(Value::as_i64)
-                && (value < 0 || value > i64::from(limit))
+                && (value < 0 || value > limit)
             {
                 issues.push(format!(
                     "{label} has {field} {value}, outside 0 to {limit}."

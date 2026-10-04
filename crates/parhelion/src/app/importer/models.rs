@@ -64,6 +64,7 @@ impl PackageAuthoringApp {
                 let mut choices = Vec::new();
                 for path in paths {
                     if let Ok(recipe) = WeaponRecipe::load_json(&path)
+                        && recipe.kind.is_weapon()
                         && recipe.overrides.imported_graph.is_some()
                     {
                         choices.push(Model {
@@ -180,6 +181,7 @@ impl PackageAuthoringApp {
                                         tooltip: "No reconversion.",
                                         selected: current.is_none(),
                                     }),
+                                    selected_detail: None,
                                 },
                             );
                             match selection {
@@ -355,7 +357,7 @@ impl PackageAuthoringApp {
                     .map_err(|error| format!("{error:#}"))?;
                     let weapon = weapons
                         .iter()
-                        .find(|weapon| weapon.hash == source)
+                        .find(|weapon| weapon.hash == source && !weapon.is_shader())
                         .ok_or("Source weapon missing from this build")?;
                     let folder =
                         service::model_directory(&root.join("models"), &weapon.name, source)
@@ -430,6 +432,8 @@ impl PackageAuthoringApp {
             {
                 self.recipe.set_presentation_donor(Some(donor));
                 self.recipe.overrides.imported_graph = Some(graph);
+                // An imported model keeps its own materials, which shader glow does not support.
+                self.recipe.overrides.shader_glow = false;
                 self.recipe_dirty = true;
                 self.invalidate_results();
                 ("Model applied.".to_owned(), false)

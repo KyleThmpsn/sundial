@@ -31,6 +31,21 @@ fn keeps_only_the_newest_completed_build() {
 }
 
 #[test]
+fn a_completion_write_failure_is_reported_and_preserves_the_previous_build() {
+    let root = tempfile::tempdir().unwrap();
+    let previous = completed(root.path(), "previous");
+    let run = StagedRun::begin(root.path(), "failed-completion").unwrap();
+    write_payload(&run);
+    let failed = run.directory.clone();
+    fs::write(failed.join(COMPLETE_FILE), b"blocked completion").unwrap();
+    let error = run.finish(Ok(())).unwrap_err();
+    assert!(error.contains("completed staged run"), "{error}");
+    assert!(!failed.exists());
+    assert!(previous.join(MANIFEST_FILE_NAME).is_file());
+    assert!(lease_for_read(&previous).unwrap().is_some());
+}
+
+#[test]
 fn active_builds_survive_and_failed_builds_are_removed() {
     let root = tempfile::tempdir().unwrap();
     let active = StagedRun::begin(root.path(), "active").unwrap();
@@ -182,8 +197,8 @@ fn staged_recipe_writes_match_normalized_saves_without_overwriting_or_temp_files
     let path = root.path().join("weapon.parhelion.json");
     super::super::write_staged_recipe(&recipe, &path).unwrap();
     assert_eq!(
-        fs::read_to_string(&path).unwrap(),
-        format!("{}\n", recipe.to_json_pretty().unwrap())
+        crate::recipe::WeaponRecipe::load_json(&path).unwrap(),
+        recipe
     );
     assert!(super::super::write_staged_recipe(&recipe, &path).is_err());
     assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);

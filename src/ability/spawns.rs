@@ -1,0 +1,191 @@
+//! The entity graphs an entity names from its component owners: the projectiles, explosions and
+//! hop-ons an ability spawns or attaches. A stock grenade names 4 to 17 of them, most from its
+//! bank and its throw component. Each is found as a live entity tag in an owner's payload and
+//! placed by the component binding resource it sits in, with its offset into that resource,
+//! which is how a runtime resource patch names a place.
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::entity::{
+    WEAPON_ENTITY_CLASS, weapon_component_binding_hashes, weapon_component_bindings,
+};
+use crate::package_payload::u32_at;
+use crate::package_runtime::reader::PackageManager;
+use crate::sandbox_perk::entity::catalog::Catalog;
+
+/// Where an entity graph keeps the client's object type.
+const OBJECT_TYPE: usize = 0x96;
+const PROJECTILE_OBJECT_TYPE: u8 = 18;
+
+/// Components that set a spawned graph apart, in the order a name prefers them, with the words
+/// the name uses. Each is a class `runtime::native_type_name` names from evidence.
+const DISTINCT: [(u32, &str); 7] = [
+    (0x8080_43DF, "Invisibility"),
+    (0x8080_3F8B, "Incoming Damage Modifiers"),
+    (0x8080_3B00, "Property Modifiers"),
+    (0x8080_4BEE, "Health and Shields"),
+    (0x8080_4211, "Status Icon"),
+    (0x8080_3C50, "Self-Destruct Timer"),
+    (0x8080_72B8, "Gear Model"),
+];
+
+/// One place an entity names another entity graph.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct Spawn {
+    pub graph: u32,
+    /// The component owner whose payload names it.
+    pub owner: u32,
+    pub binding_hash: u32,
+    pub resource_index: u16,
+    /// Byte offset of the tag from the start of that resource.
+    pub offset: u32,
+}
+
+/// Every place `entity`'s component owners name another entity graph, by owner and offset.
+pub fn spawns(
+    manager: &PackageManager,
+    entity_tag: u32,
+    entity: &[u8],
+) -> Result<Vec<Spawn>, String> {
+    // Each owner's resources, by where they start in its payload.
+    let mut resources = BTreeMap::<u32, Vec<(u64, u32, u16)>>::new();
+    for binding in weapon_component_binding_hashes(entity)? {
+        for resource in weapon_component_bindings(entity, binding)? {
+            let index = u16::try_from(resource.resource_index)
+                .map_err(|_| "A component binding selects too many resources".to_owned())?;
+            resources.entry(resource.owner_tag).or_default().push((
+                resource.resource_offset,
+                binding,
+                index,
+            ));
+        }
+    }
+    let mut found = Vec::new();
+    for (owner, mut starts) in resources {
+        starts.sort_unstable();
+        starts.dedup_by_key(|(start, ..)| *start);
+        let payload = manager.read_tag(owner)?;
+        for at in (0..payload.len().saturating_sub(3)).step_by(4) {
+            let value = u32_at(&payload, at)?;
+            if value == entity_tag || value == owner || !(0x8080_0000..0x8200_0000).contains(&value)
+            {
+                continue;
+            }
+            if manager
+                .get_entry(value)
+                .is_none_or(|entry| entry.reference != WEAPON_ENTITY_CLASS)
+            {
+                continue;
+            }
+            let at = at as u64;
+            // A word before the owner's first resource belongs to no binding a patch can name.
+            let Some(&(start, binding_hash, resource_index)) =
+                starts.iter().rev().find(|(start, ..)| *start <= at)
+            else {
+                continue;
+            };
+            found.push(Spawn {
+                graph: value,
+                owner,
+                binding_hash,
+                resource_index,
+                offset: u32::try_from(at - start)
+                    .map_err(|_| "A spawned graph sits too far into its resource".to_owned())?,
+            });
+        }
+    }
+    Ok(found)
+}
+
+/// The graphs `entity` spawns outside its ability bank, each once, in the order `spawns` finds
+/// them. The build keeps banks stock, so their graphs are not the ability's own to change.
+pub fn spawned_graphs(
+    manager: &PackageManager,
+    entity_tag: u32,
+    entity: &[u8],
+) -> Result<Vec<u32>, String> {
+    let mut graphs = Vec::new();
+    for spawn in spawns(manager, entity_tag, entity)? {
+        if !super::modifier::is_bank(spawn.owner) && !graphs.contains(&spawn.graph) {
+            graphs.push(spawn.graph);
+        }
+    }
+    Ok(graphs)
+}
+
+/// What the client's object type makes a graph, in the words a list shows.
+const fn kind(object_type: u8) -> &'static str {
+    match object_type {
+        1 => "Static Mesh",
+        2..=9 => "Prop",
+        11 => "Interactive Object",
+        12 => "Biped",
+        13 => "Creature",
+        14 => "Weapon",
+        15 => "Vehicle",
+        16 => "Turret",
+        17 => "Emitter",
+        18 => "Projectile",
+        19..=21 => "Pickup",
+        22 => "Gear",
+        23..=27 => "Hop-On",
+        28 => "System",
+        _ => "Entity",
+    }
+}
+
+/// A spawned graph's name from its own data: its kind, from the client's object type, and the
+/// one component that sets it apart, when it has one. A projectile's kind says enough.
+pub fn describe(entity: &[u8]) -> Result<String, String> {
+    let object_type = *entity
+        .get(OBJECT_TYPE)
+        .ok_or("The entity graph has no object type")?;
+    let kind = kind(object_type);
+    if object_type == PROJECTILE_OBJECT_TYPE {
+        return Ok(kind.to_owned());
+    }
+    let mut classes = BTreeSet::new();
+    for binding in weapon_component_binding_hashes(entity)? {
+        for resource in weapon_component_bindings(entity, binding)? {
+            classes.insert(resource.concrete_class);
+        }
+    }
+    Ok(DISTINCT
+        .iter()
+        .find(|(class, _)| classes.contains(class))
+        .map_or_else(|| kind.to_owned(), |(_, words)| format!("{kind} · {words}")))
+}
+
+/// Names for graphs an entity spawns, in order: the object catalog's native name when it has
+/// one, else what `describe` reads. Names that repeat are numbered after their kind.
+pub fn names(manager: &PackageManager, graphs: &[u32], objects: Option<&Catalog>) -> Vec<String> {
+    let mut names = graphs
+        .iter()
+        .map(|&graph| {
+            objects
+                .and_then(|objects| objects.entries.iter().find(|entry| entry.graph == graph))
+                .filter(|entry| entry.label_rank() == 0)
+                .map(|entry| entry.label())
+                .or_else(|| {
+                    let payload = manager.read_tag(graph).ok()?;
+                    describe(&payload).ok()
+                })
+                .unwrap_or_else(|| format!("Graph 0x{graph:08X}"))
+        })
+        .collect::<Vec<_>>();
+    let mut counts = BTreeMap::<String, usize>::new();
+    for name in &names {
+        *counts.entry(name.clone()).or_default() += 1;
+    }
+    let mut seen = BTreeMap::<String, usize>::new();
+    for name in &mut names {
+        if counts.get(name.as_str()).is_some_and(|count| *count > 1) {
+            let number = seen.entry(name.clone()).or_default();
+            *number += 1;
+            *name = match name.split_once(" · ") {
+                Some((kind, rest)) => format!("{kind} {number} · {rest}"),
+                None => format!("{name} {number}"),
+            };
+        }
+    }
+    names
+}

@@ -1,5 +1,6 @@
 use super::*;
-use sundial::package_authoring::weapon_runtime::{
+use sundial::package_authoring::runtime::{BindingHash, SchemaHandle};
+use sundial::package_authoring::runtime::{
     WeaponRuntimeFieldLocator, WeaponRuntimePathElement, WeaponRuntimeRootKind, WeaponRuntimeValue,
 };
 
@@ -79,16 +80,16 @@ fn private_perk_runtime_value() -> WeaponRuntimeValueOverride {
     WeaponRuntimeValueOverride {
         locator: WeaponRuntimeFieldLocator {
             graph_tag: None,
-            binding_hash: 0x39AF_D7D3,
+            binding_hash: BindingHash::new(0x39AF_D7D3),
             resource_index: 0,
             root: WeaponRuntimeRootKind::ComponentInstance,
-            root_schema: 0x80BF_DFEA,
+            root_schema: SchemaHandle::new(0x80BF_DFEA),
             path: vec![WeaponRuntimePathElement {
                 name_hash: 0x1234_5678,
-                type_handle: 0x8080_000F,
+                type_handle: 0x8080_000F.into(),
                 byte_offset: 0xBD4,
             }],
-            type_handle: 0x8080_000F,
+            type_handle: SchemaHandle::new(0x8080_000F),
             value_offset: 0xBD4,
             byte_size: 4,
         },
@@ -142,11 +143,7 @@ fn socket_plug_variants_reject_invalid_positions_and_perks() {
         },
     ];
     let error = recipe.validate().unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("more than one edit for socket 4 choice 0")
-    );
+    assert!(error.to_string().contains("more than one edit"));
 
     recipe.overrides.socket_plug_variants.truncate(1);
     let before = recipe.clone();
@@ -268,7 +265,13 @@ fn changing_geometry_donor_restores_dependent_presentation_sources() {
     assert!(recipe.overrides.art_arrangements.is_none());
     assert!(recipe.overrides.render_dye_rows.is_none());
     assert_eq!(recipe.overrides.icon_edit, icon_edit);
-    assert_eq!(recipe.overrides.investment_stats.len(), 1);
+    assert_eq!(
+        recipe.overrides.investment_stats,
+        vec![WeaponStatOverride {
+            definition_index: 14,
+            value: 50
+        }]
+    );
 }
 
 #[test]
@@ -286,20 +289,39 @@ fn gameplay_profile_overrides_round_trip_and_compile() {
     });
 
     let encoded = recipe.to_json_pretty().unwrap();
-    assert!(encoded.contains(r#""rarity": "exotic""#));
-    assert!(encoded.contains(r#""modern_damage_type": "void""#));
+    let document: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(document["overrides"]["rarity"], serde_json::json!("exotic"));
+    assert_eq!(
+        document["overrides"]["modern_damage_type"],
+        serde_json::json!("void")
+    );
     let legacy = encoded.replace("weapon_pattern_index", "gear_art_index");
     let canonical = WeaponRecipe::from_json_str(&legacy)
         .unwrap()
         .to_json_pretty()
         .unwrap();
-    assert_eq!(canonical, encoded);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&canonical).unwrap(),
+        document
+    );
     assert!(!canonical.contains("gear_art_index"));
-    assert!(encoded.contains(r#""weapon_pattern_index": 285"#));
-    assert!(encoded.contains(r#""weapon_pattern_donor_hash": "0xEE06B019""#));
+    assert_eq!(
+        document["overrides"]["weapon_pattern_index"],
+        serde_json::json!(285)
+    );
+    assert_eq!(
+        document["overrides"]["weapon_pattern_donor_hash"],
+        serde_json::json!("0xEE06B019")
+    );
     assert!(encoded.contains(r#""render_gear_donor""#));
-    assert!(encoded.contains(r#""stat_group_index": 42"#));
-    assert!(encoded.contains(r#""stat_group_donor_hash": "0xEE06B019""#));
+    assert_eq!(
+        document["overrides"]["stat_group_index"],
+        serde_json::json!(42)
+    );
+    assert_eq!(
+        document["overrides"]["stat_group_donor_hash"],
+        serde_json::json!("0xEE06B019")
+    );
     let decoded = WeaponRecipe::from_json_str(&encoded).unwrap();
     assert_eq!(decoded, recipe);
     let overrides = decoded.to_spec().unwrap().overrides;
@@ -429,12 +451,6 @@ fn rename_updates_name_namespace_and_all_hashes_atomically() {
     assert_ne!(recipe.identity, before.identity);
     assert_eq!(recipe.donor, before.donor);
     assert_eq!(recipe.overrides, before.overrides);
-    assert_eq!(
-        recipe.identity,
-        WeaponIdentity::from(
-            WeaponCloneIdentity::from_namespace("parhelion.a-better-tomorrow").unwrap()
-        )
-    );
     assert!(recipe.identity_is_name_derived());
 
     let valid = recipe.clone();

@@ -2,6 +2,8 @@
 use super::*;
 use sundial::package_authoring::sandbox_perk::program::Asset;
 
+mod hud;
+
 /// One Properties entry point for action and condition settings.
 pub(super) struct Panel {
     id: egui::Id,
@@ -172,13 +174,14 @@ pub(super) fn edit_object(ui: &mut egui::Ui, asset: &Asset) -> bool {
 #[derive(Default)]
 pub(super) struct Properties {
     packages: PathBuf,
-    source: Option<Arc<projectile::catalog::Catalog>>,
+    source: Option<Arc<entity::catalog::Catalog>>,
     graphs: BTreeMap<u32, Result<Arc<PrivatePerkRuntimeGraph>, String>>,
     pending: Option<(u32, Receiver<Result<PrivatePerkRuntimeGraph, String>>)>,
     /// Summaries of recent assets' property changes.
     changes: Vec<Changes>,
     /// Text typed into an asset's value rows and not yet parsed, by asset.
     text: BTreeMap<u32, BTreeMap<(WeaponRuntimeFieldLocator, u8), String>>,
+    hud: hud::HudStatuses,
 }
 
 /// One asset's property change lines, read from a loaded graph and the asset's values.
@@ -284,7 +287,7 @@ impl Properties {
             }
         }
     }
-    pub fn sync(&mut self, packages: &Path, source: Option<&Arc<projectile::catalog::Catalog>>) {
+    pub fn sync(&mut self, packages: &Path, source: Option<&Arc<entity::catalog::Catalog>>) {
         let same_source = match (&self.source, source) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
             (None, None) => true,
@@ -297,7 +300,9 @@ impl Properties {
             self.pending = None;
             self.changes.clear();
             self.text.clear();
+            self.hud = hud::HudStatuses::default();
         }
+        self.hud.poll();
         if let Some((tag, receiver)) = &self.pending {
             let result = match receiver.try_recv() {
                 Ok(result) => Some(result),
@@ -372,6 +377,41 @@ impl Properties {
             open
         })
         .inner
+    }
+
+    /// The attachment's length, a tile at `width` beside the action's Lifetime. Nothing while
+    /// the asset has no length or its properties are still being read.
+    pub fn length_tile(&mut self, ui: &mut egui::Ui, width: f32, asset: &mut Asset) {
+        if matches!(asset.graph, 0 | u32::MAX) {
+            return;
+        }
+        let graph = match self.graphs.get(&asset.graph) {
+            Some(Ok(graph)) => graph.clone(),
+            Some(Err(_)) => return,
+            None => {
+                self.request(ui, asset.graph);
+                return;
+            }
+        };
+        let lengths = parameters::effect_length::discover(&graph);
+        if lengths.is_empty() {
+            return;
+        }
+        let id = ui.id().with(("attachment-length-error", asset.graph));
+        for length in &lengths {
+            if let Some(result) =
+                parameters::effect_length::draw(ui, width, &graph, length, &mut asset.values)
+            {
+                ui.ctx().data_mut(|data| data.insert_temp(id, result.err()));
+            }
+        }
+        if let Some(error) = ui
+            .ctx()
+            .data(|data| data.get_temp::<Option<String>>(id))
+            .flatten()
+        {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
     }
 
     /// The asset's named values as rows, then a summary of the changes those rows do not show.

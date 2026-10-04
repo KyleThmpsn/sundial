@@ -38,6 +38,11 @@ pub fn refresh_optics(prepared: &Path, graph: &Path, out: &Path) -> Result<Value
     effects::refresh_optics(prepared, graph, &refs, &bindings, out)
 }
 
+/// The pinned shader decompiler, fetched on first use.
+pub(crate) fn decompiler(progress: &mut dyn FnMut(String)) -> Result<PathBuf> {
+    decompiler::prepare(progress)
+}
+
 const TEMPLATES: &[(u32, &str)] = &[
     (
         0x81532FC4,

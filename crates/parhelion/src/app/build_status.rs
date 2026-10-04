@@ -2,7 +2,6 @@
 use super::*;
 
 mod progress;
-pub(super) use progress::message as progress_message;
 pub(super) use progress::{Activity, InstallStatus};
 #[cfg(test)]
 mod tests;
@@ -272,6 +271,7 @@ impl PackageAuthoringApp {
             install_requested = ui
                 .add_enabled(
                     self.install_receiver.is_none()
+                        && self.account_resync_receiver.is_none()
                         && matches!(self.replacement_review, Some(Ok(_)))
                         && self.replacement_receiver.is_none()
                         && self.catalog_receiver.is_none()

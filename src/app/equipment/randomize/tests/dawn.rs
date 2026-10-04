@@ -372,7 +372,7 @@ fn shared_storage_limit_includes_mail_without_charging_its_weapon_bucket() {
 
 #[test]
 fn single_item_discard_does_not_inherit_the_replaced_saved_roll() {
-    let (_dir, mut doc) = fixture();
+    let (dir, mut doc) = fixture();
     let old = helmet(&doc).instance_soid;
     // Unknown placement of the old item requires the explicit discard route.
     let source = catalog();
@@ -393,7 +393,20 @@ fn single_item_discard_does_not_inherit_the_replaced_saved_roll() {
     )
     .unwrap();
     assert_ne!(helmet(&doc).instance_soid, old);
+    let generated = helmet(&doc).instance_soid.get();
+    assert_eq!(
+        doc.dawn_account().unwrap().saved_roll(generated).unwrap(),
+        dawn::SavedRoll::default()
+    );
     doc.save_dawn().unwrap();
+    assert_eq!(
+        open(dir.path())
+            .dawn_account()
+            .unwrap()
+            .saved_roll(generated)
+            .unwrap(),
+        dawn::SavedRoll::default()
+    );
 }
 
 #[test]

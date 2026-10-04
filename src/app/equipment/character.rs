@@ -736,14 +736,19 @@ impl SundialApp {
             ui.checkbox(&mut self.show_dummy_items, "Dummy Items")
                 .on_hover_text("Include display-only items that cannot be obtained");
         }
-        if requested_plug_selection_mode != self.plug_selection_mode {
-            if requested_plug_selection_mode == PlugSelectionMode::AnyPlug
+        self.request_plug_selection_mode(requested_plug_selection_mode);
+    }
+
+    /// Switches the plug selection scope, through the acknowledgement that **All** requires.
+    pub(in crate::app) fn request_plug_selection_mode(&mut self, requested: PlugSelectionMode) {
+        if requested != self.plug_selection_mode {
+            if requested == PlugSelectionMode::AnyPlug
                 && !self.preferences.really_unsafe_warning_acknowledged
             {
                 self.remember_plug_selection_mode_after_confirmation = false;
                 self.confirmation = Some(ConfirmationDialog::ReallyUnsafe);
             } else {
-                self.plug_selection_mode = requested_plug_selection_mode;
+                self.plug_selection_mode = requested;
             }
         }
     }

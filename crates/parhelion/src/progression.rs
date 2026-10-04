@@ -14,10 +14,13 @@ pub(crate) mod presentation;
 use conditions::*;
 pub(crate) use conditions::{
     classify_sunrise_count_pools, numeric_program_layout, numeric_program_stack_depth,
-    patch_project_acquired_count_programs, patch_project_collection_objectives,
+    patch_project_acquired_count_programs, patch_project_collection_objectives_with_members,
     presentation_ancestor_nodes, shared_numeric_instruction_template,
     validate_shared_expression_table,
 };
+// Only imported ornaments patch a collection's objectives directly.
+#[cfg(feature = "d2-model-importer")]
+pub(crate) use conditions::patch_project_collection_objectives;
 
 mod collectibles;
 #[cfg(test)]
@@ -69,12 +72,12 @@ use sundial::package_authoring::investment_schema::{
 use crate::{
     AuthoringError, AuthoringResult,
     error::{invalid, validation},
+    item::WeaponCloneIdentity,
     tag_payload::{
         array_at, read_array, read_i32, read_u16, read_u32, read_u64, relative_target,
         set_array_count, write_i32, write_localized_reference, write_relative_pointer, write_u16,
         write_u32, write_u64,
     },
-    weapon::WeaponCloneIdentity,
 };
 
 pub(crate) const COLLECTIBLE_CURATED_ACQUISITION_FLAG_OFFSET: usize = 0x00;
@@ -225,7 +228,8 @@ impl SunriseAcquiredPoolSelection {
 pub(crate) struct ProjectAuthoredRow {
     pub(crate) donor_collectible_index: usize,
     pub(crate) authored_collectible_index: usize,
-    pub(crate) weapon_page: u16,
+    pub(crate) pages: crate::collection::CollectionPages,
+    pub(crate) classes: crate::collection::Classes,
     pub(crate) source_acquired_flag: u16,
     pub(crate) authored_unlock_index: u16,
     pub(crate) count_selection: SunriseAcquiredPoolSelection,

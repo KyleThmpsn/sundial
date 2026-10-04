@@ -1,5 +1,163 @@
 use super::*;
 
+fn unsaved_frame(
+    app: &mut PackageAuthoringApp,
+    ctx: &egui::Context,
+    width: f32,
+    events: Vec<egui::Event>,
+) -> egui::FullOutput {
+    ctx.run(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, 700.0),
+            )),
+            events,
+            ..Default::default()
+        },
+        |ctx| {
+            egui::CentralPanel::default().show(ctx, workbench_style);
+            app.draw_discard_confirmation(ctx);
+        },
+    )
+}
+
+#[test]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "End-to-end verification keeps the ordered workflow and its independent assertions together"
+)]
+fn unsaved_dialog_saves_before_close_or_navigation_and_keeps_build_membership() {
+    use crate::test_support::driver::{label, tap};
+    for width in [380.0, 900.0] {
+        for closing in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
+            let path = library.root().join("every-end.parhelion.json");
+            let mut app = PackageAuthoringApp {
+                recipe_library: Some(library),
+                ..Default::default()
+            };
+            assert!(app.open_recipe_path(&path));
+            app.enabled_recipe_paths.clear();
+            app.recipe.flavor = "Saved from the unsaved changes dialog".into();
+            app.synchronize_recipe_dirty();
+            let saved = app.recipe.clone();
+            app.request_recipe_action(if closing {
+                PendingRecipeAction::Close
+            } else {
+                PendingRecipeAction::New(ItemKind::Weapon)
+            });
+            let ctx = egui::Context::default();
+            ctx.set_theme(egui::Theme::Dark);
+            let mut output = egui::FullOutput::default();
+            for _ in 0..3 {
+                output = unsaved_frame(&mut app, &ctx, width, vec![]);
+            }
+            let save_label = if closing {
+                "Save and Close"
+            } else {
+                "Save and Continue"
+            };
+            for name in [
+                save_label,
+                "Cancel",
+                if closing {
+                    "Discard and Close"
+                } else {
+                    "Discard and Continue"
+                },
+            ] {
+                let rect = label(&output, name).unwrap();
+                assert!(
+                    rect.left() >= 0.0
+                        && rect.right() <= width
+                        && rect.top() >= 0.0
+                        && rect.bottom() <= 700.0,
+                    "{name}: {rect:?}"
+                );
+            }
+            crate::app::custom_perks::workbench::tests::capture::write(
+                &ctx,
+                &output,
+                &format!("unsaved-{width}-{closing}"),
+            );
+            let position = label(&output, save_label).unwrap().center();
+            for events in tap(position) {
+                unsaved_frame(&mut app, &ctx, width, events);
+            }
+            assert_eq!(WeaponRecipe::load_json(&path).unwrap(), saved);
+            assert!(app.pending_recipe_action.is_none());
+            assert_eq!(app.take_close_approved(), closing);
+            assert!(!app.recipe_dirty);
+            assert!(app.enabled_recipe_paths.is_empty());
+        }
+    }
+}
+
+#[test]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "End-to-end verification keeps the ordered workflow and its independent assertions together"
+)]
+fn failed_save_keeps_the_dialog_and_draft_with_cancel_and_discard_available() {
+    use crate::test_support::driver::{label, tap};
+    let directory = tempfile::tempdir().unwrap();
+    let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
+    let path = library.root().join("every-end.parhelion.json");
+    let mut app = PackageAuthoringApp {
+        recipe_library: Some(library.clone()),
+        ..Default::default()
+    };
+    assert!(app.open_recipe_path(&path));
+    let mut external = app.recipe.clone();
+    external.flavor = "External editor's version".into();
+    library.save_existing(&path, &external).unwrap();
+    app.recipe.flavor = "Preserve this unsaved draft".into();
+    app.synchronize_recipe_dirty();
+    let draft = app.recipe.clone();
+    app.request_recipe_action(PendingRecipeAction::Close);
+    let ctx = egui::Context::default();
+    let mut output = egui::FullOutput::default();
+    for _ in 0..3 {
+        output = unsaved_frame(&mut app, &ctx, 480.0, vec![]);
+    }
+    let position = label(&output, "Save and Close").unwrap().center();
+    for events in tap(position) {
+        unsaved_frame(&mut app, &ctx, 480.0, events);
+    }
+    for _ in 0..3 {
+        output = unsaved_frame(&mut app, &ctx, 480.0, vec![]);
+    }
+    assert!(text(&output).contains("changed on disk"));
+    assert!(app.pending_recipe_action.is_some());
+    assert!(!app.take_close_approved());
+    assert_eq!(app.recipe, draft);
+    assert!(app.recipe_dirty);
+    assert_eq!(WeaponRecipe::load_json(&path).unwrap(), external);
+    crate::app::custom_perks::workbench::tests::capture::write(
+        &ctx,
+        &output,
+        "unsaved-save-conflict",
+    );
+    let position = label(&output, "Cancel").unwrap().center();
+    for events in tap(position) {
+        unsaved_frame(&mut app, &ctx, 480.0, events);
+    }
+    assert!(app.pending_recipe_action.is_none());
+    assert_eq!(app.recipe, draft);
+    app.request_recipe_action(PendingRecipeAction::Close);
+    for _ in 0..3 {
+        output = unsaved_frame(&mut app, &ctx, 480.0, vec![]);
+    }
+    let position = label(&output, "Discard and Close").unwrap().center();
+    for events in tap(position) {
+        unsaved_frame(&mut app, &ctx, 480.0, events);
+    }
+    assert!(app.take_close_approved());
+    assert_eq!(WeaponRecipe::load_json(&path).unwrap(), external);
+}
+
 #[test]
 fn incomplete_name_edits_are_retained_but_cannot_be_saved_or_built() {
     let directory = tempfile::tempdir().unwrap();
@@ -187,20 +345,8 @@ fn visible_plug_safety_selection_survives_menu_close() {
         )
     }
     fn click(ctx: &egui::Context, app: &mut PackageAuthoringApp, pos: egui::Pos2) {
-        for pressed in [true, false] {
-            frame(
-                ctx,
-                app,
-                vec![
-                    egui::Event::PointerMoved(pos),
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
-            );
+        for events in crate::test_support::driver::tap(pos) {
+            frame(ctx, app, events);
         }
     }
     let ctx = egui::Context::default();
@@ -257,6 +403,7 @@ fn duplicate_preserves_draft_mechanics_and_allocates_a_fresh_identity() {
     app.recipe_entries.push(RecipeLibraryEntry {
         kind: first_copy.kind,
         collection_destination: None,
+        armor_class: None,
         badge: None,
         corner_icon: None,
         path: PathBuf::from("existing-copy.parhelion.json"),

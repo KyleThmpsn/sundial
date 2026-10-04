@@ -208,7 +208,17 @@ mod tests {
     fn pointers_resolve_escaped_keys_arrays_and_unicode_to_exact_source() {
         let text = r#"{ "a/b": [{"~é": "🔥\\\""}, 42], "empty": {} }"#;
         let value: Value = crate::strict_json::from_str(text).unwrap();
-        for location in locations(text, &value) {
+        let locations = locations(text, &value);
+        assert_eq!(
+            locations
+                .iter()
+                .map(|location| location.pointer.as_str())
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["", "/a~1b", "/a~1b/0", "/a~1b/0/~0é", "/a~1b/1", "/empty"]
+                .into_iter()
+                .collect()
+        );
+        for location in locations {
             let actual: Value =
                 crate::strict_json::from_str(&text[location.range.0..location.range.1]).unwrap();
             assert_eq!(Some(&actual), value.pointer(&location.pointer));

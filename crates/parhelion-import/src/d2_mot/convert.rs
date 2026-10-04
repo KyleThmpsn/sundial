@@ -73,9 +73,7 @@ pub fn convert_mapped(
         .context("model index outside report")?;
     let tag = modern["model"].as_str().context("model tag")?;
     let model = Payload(fs::read(source.join("raw").join(format!("{tag}.bin")))?);
-    let meshes = model.array(16, 128, Some(0x80806EC5))?;
-    ensure!(meshes.len() == 1, "expected single mesh");
-    let mesh = meshes[0];
+    let mesh = super::geometry::selected_mesh(&model, modern)?;
     let buffer = |offset| -> Result<Vec<u8>> {
         let h = model.u32(mesh + offset)?;
         let reference = provenance["tags"][format!("{h:08X}")]["reference"]
@@ -122,14 +120,29 @@ pub fn convert_mapped(
     }
     let compatible = compatible.context("no compatible native position/attribute template")?;
     let ih_tag = model.u32(mesh + 16)?;
-    let ih = Payload(fs::read(
+    let mut ih = Payload(fs::read(
         source.join("raw").join(format!("{ih_tag:08X}.bin")),
     )?);
-    let indices = buffer(16)?;
-    ensure!(
-        ih.u8(1)? == 0 && ih.u32(8)? as usize == indices.len() && indices.len() % 2 == 0,
-        "expected 16-bit index payload"
-    );
+    let (source_indices, restart) = super::geometry::indices(&ih, &Payload(buffer(16)?))?;
+    let indices = source_indices
+        .into_iter()
+        .map(|index| {
+            if index == restart {
+                Ok(u16::MAX)
+            } else {
+                ensure!(
+                    index < u32::from(u16::MAX),
+                    "Source geometry exceeds the native 16-bit vertex range"
+                );
+                Ok(index as u16)
+            }
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    ih.0[1] = 0;
+    ih.0[8..12].copy_from_slice(&u32::try_from(indices.len())?.to_le_bytes());
     let count = positions.len() / 8;
     // Validate every LOD and render pass, not just the OBJ's LOD0 selection.
     let mut part_plan = vec![];

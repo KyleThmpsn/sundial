@@ -7,8 +7,8 @@
 /// `PRAGMA user_version` Dawn writes when it creates the database.
 pub(crate) const SCHEMA_VERSION: i64 = 5;
 
-/// Dawn's own schema, used to build a database a test can read the way Dawn would.
-#[allow(dead_code)]
+/// Dawn's own schema. The writer checks a database's layout against it before rewriting, and
+/// tests build databases from it that read the way Dawn's would.
 pub(super) const SCHEMA: &str = include_str!("fixtures/player_state_schema.sql");
 
 /// The three metadata rows Dawn reads in `ORDER BY key` sequence. A fourth row fails the load.
@@ -27,14 +27,14 @@ pub(super) const INVENTORY_LOCATION: i64 = 1;
 pub(super) const CHARACTER_CAPACITY: usize = crate::account_contract::CHARACTER_CAPACITY;
 // Dawn inventory_state.h: kCharacterItemCapacity. Includes ordinary and recovery rows.
 // Bucket limits are independent. Postmaster rows never consume weapon or armor slots.
-pub(super) const CHARACTER_ITEM_CAPACITY: usize = 334;
+pub(crate) const CHARACTER_ITEM_CAPACITY: usize = 334;
 pub(super) const PROFILE_ITEM_CAPACITY: usize = 701;
 pub(crate) const PROFILE_ACTION_SOURCE_CAPACITY: usize = 100;
 pub(super) const DISMANTLE_REWARD_CAPACITY: usize = 8;
 pub(super) const PLUG_CAPACITY: usize = crate::account_contract::MAX_ITEM_PLUGS;
 
 /// Dawn's `EquipmentSlot` enum, in declaration order. Position is the array index.
-pub(super) const EQUIPMENT_SLOTS: [&str; 16] = {
+pub(crate) const EQUIPMENT_SLOTS: [&str; 16] = {
     let mut slots = [""; 16];
     let metadata = crate::account_contract::EQUIPMENT_SLOTS;
     let mut index = 0;
@@ -46,7 +46,7 @@ pub(super) const EQUIPMENT_SLOTS: [&str; 16] = {
 };
 
 /// Inclusive maximum for each range-checked character column.
-pub(super) const CHARACTER_RANGES: [(&str, i64); 9] = [
+pub(crate) const CHARACTER_RANGES: [(&str, i64); 9] = [
     ("race", 2),
     ("gender", 1),
     ("class", 2),

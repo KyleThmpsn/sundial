@@ -70,30 +70,15 @@ impl RecipeLibrary {
         &self,
         preview: &RestoreDefaults,
     ) -> Result<Option<PathBuf>, String> {
-        let restored = self.restore_defaults_with(preview, |path, bytes, exists| {
-            if exists {
-                atomic_write_replace(path, bytes)
-            } else {
-                atomic_write_create_new(path, bytes).map_err(|e| match e {
-                    WriteNewError::AlreadyExists => {
-                        format!("{} appeared during restore", path.display())
-                    }
-                    WriteNewError::Other(e) => e,
-                })
-            }
-        })?;
-        // Every bundled recipe is back on disk, so none of them is recorded as deleted.
-        // Failing to clear the record only stops a later deletion outside Parhelion from
-        // being undone on the next launch, so the restore itself still succeeds.
-        let _ = self.write_removed_bundled(&BTreeSet::new());
-        Ok(restored)
+        self.restore_defaults_with(preview, mutation::publish)
     }
 
     fn restore_defaults_with(
         &self,
         preview: &RestoreDefaults,
-        mut write: impl FnMut(&Path, &[u8], bool) -> Result<(), String>,
+        mut write: impl FnMut(&Path, &[u8], Option<&[u8]>) -> Result<(), String>,
     ) -> Result<Option<PathBuf>, String> {
+        let _lock = self.lock()?;
         if &self.prepare_restore_defaults()? != preview {
             return Err(
                 "A default recipe changed after the preview. Review the restore again.".into(),
@@ -105,6 +90,7 @@ impl RecipeLibrary {
             .filter(|(i, (_, json))| preview.originals[*i].as_deref() != Some(json.as_bytes()))
             .collect();
         if changed.is_empty() {
+            let _ = self.write_removed_bundled(&BTreeSet::new());
             return Ok(None);
         }
         let backup = self.create_restore_backup()?;
@@ -124,7 +110,7 @@ impl RecipeLibrary {
             let path = self.root.join(name);
             let result = self
                 .prepare_restore_target(&path, &preview.originals[i])
-                .and_then(|()| write(&path, json.as_bytes(), preview.originals[i].is_some()));
+                .and_then(|()| write(&path, json.as_bytes(), preview.originals[i].as_deref()));
             if let Err(error) = result {
                 let mut recovery_errors = Vec::new();
                 for index in written.into_iter().rev() {
@@ -133,8 +119,8 @@ impl RecipeLibrary {
                     let rollback = self
                         .prepare_restore_target(&path, &Some(json.as_bytes().to_vec()))
                         .and_then(|()| match &preview.originals[index] {
-                            Some(bytes) => atomic_write_replace(&path, bytes),
-                            None => fs::remove_file(&path).map_err(|e| e.to_string()),
+                            Some(bytes) => mutation::publish(&path, bytes, Some(json.as_bytes())),
+                            None => mutation::remove(&path, json.as_bytes()),
                         });
                     if let Err(e) = rollback {
                         recovery_errors.push(e);
@@ -148,6 +134,9 @@ impl RecipeLibrary {
             }
             written.push(i);
         }
+        // Keep the deletion record under the same write lease as the restore.
+        // A failed cleanup is harmless while the restored files remain present.
+        let _ = self.write_removed_bundled(&BTreeSet::new());
         Ok(Some(backup))
     }
 

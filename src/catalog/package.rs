@@ -150,24 +150,19 @@ mod tests {
     fn fingerprint_detects_same_size_valid_header_rewrites_without_timestamp_help() {
         let root = TestDirectory::new("package-fingerprint-header");
         let path = write_fixture(&root, &package_fixture(0x31, 0x51));
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
         let before = install_fingerprint(&root.0).expect("first fingerprint should succeed");
         fs::write(&path, package_fixture(0x32, 0x51))
             .expect("same-size valid-header rewrite should succeed");
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
         let after = install_fingerprint(&root.0).expect("second fingerprint should succeed");
 
         assert_ne!(before, after);
-    }
-
-    #[test]
-    fn fingerprint_does_not_hash_package_payload_bodies() {
-        let root = TestDirectory::new("package-fingerprint-payload");
-        let path = write_fixture(&root, &package_fixture(0x31, 0x51));
-        let before = install_fingerprint(&root.0).expect("first fingerprint should succeed");
-        fs::write(&path, package_fixture(0x31, 0x52))
-            .expect("same-size payload rewrite should succeed");
-        let after = install_fingerprint(&root.0).expect("second fingerprint should succeed");
-
-        assert_eq!(before, after);
     }
 
     #[test]

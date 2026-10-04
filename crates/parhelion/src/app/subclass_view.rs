@@ -1,25 +1,37 @@
-//! The main page for subclasses. A subclass keeps its base's class and element. Each ability slot
-//! and attunement can come from another stock subclass of any class, which the build writes into
-//! a socket-entry list of the subclass's own. An attunement can also be built node by node, each
-//! node from any stock node, with a name, a description and perks of its own.
+//! The main page for subclasses. A subclass keeps its base's class and element. Each ability
+//! and each attunement path node is based on a stock one of any class, and can be authored: a
+//! name, a description, an icon and perks of its own, including custom perks from the perk
+//! workbench. An attunement can come from another stock subclass and take its own name.
 //!
 //! The page lists the subclass at the left in the game's order: its abilities by slot, then its
-//! attunements with their nodes. Clicking any of them shows it at the right, with its own values
-//! and every stock choice for it, a line to each stock subclass grouped by class.
+//! attunements with their nodes. Clicking any of them shows it at the right: an ability or node
+//! leads with the stock one it is based on, a row whose choices open below it, a line to each
+//! stock subclass grouped by class. Its own name, description, icon, perks, charges, modifiers and
+//! tuning follow.
 use super::*;
 use crate::app::style;
-use crate::subclass::{AbilitySlot, AttunementPath, SubclassAbilities, SubclassPathNode, layout};
+use crate::subclass::{
+    AbilitySlot, AttunementPath, EntryEdits, EntryIcon, MOST_CHARGES, Place, SubclassAbilities,
+    SubclassPathNode, layout,
+};
 use sundial::investment::{DisplayTooltip, SubclassSummary, draw_display_tooltip};
+
+mod appearance;
+mod choices;
+mod colors;
+mod detail;
+mod icon;
+mod list;
+mod modifiers;
+mod perks;
+mod tuning;
+mod values;
 
 /// The list's width beside the detail panel, and the narrowest pane that keeps the two side by
 /// side.
 const LIST_WIDTH: f32 = 360.0;
 const SIDE_BY_SIDE_WIDTH: f32 = 860.0;
-/// The list's rows, the column that names each row's slot or attunement, and the icons in rows,
-/// in choices and in the detail panel's heading.
-const ROW_HEIGHT: f32 = 28.0;
-const GROUP_WIDTH: f32 = 96.0;
-const ROW_ICON: f32 = 22.0;
+/// The icons in choices and chips, and in the detail panel's heading.
 const CHOICE_ICON: f32 = 18.0;
 const HEADING_ICON: f32 = 48.0;
 /// The detail panel's field labels, and the column that names each choice's subclass.
@@ -32,77 +44,126 @@ const DISPLAY_PATHS: [AttunementPath; 3] = [
     AttunementPath::Bottom,
 ];
 
-/// What the detail panel shows: an ability, an attunement, or one node of its path.
+/// What the detail panel shows: an ability or node, or an attunement.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SubclassSelection {
-    /// The ability in a socket entry.
-    Ability(u8),
+    Entry(Place),
     Path(AttunementPath),
-    Node(AttunementPath, u8),
 }
 
 impl Default for SubclassSelection {
     fn default() -> Self {
-        Self::Ability(layout::CLASS_ABILITIES[0])
+        Self::Entry(Place::Ability(layout::CLASS_ABILITIES[0]))
+    }
+}
+
+/// The subclass page's own state.
+pub(super) struct PageState {
+    pub(super) selection: SubclassSelection,
+    /// The search of the detail panel's choices.
+    search: String,
+    /// The selection whose Based On choices are open below its row.
+    pub(super) choosing: Option<SubclassSelection>,
+    /// The attunement the list shows.
+    path_tab: AttunementPath,
+    /// Artwork for an ability's or node's own icon.
+    artwork: crate::artwork_browser::Picker,
+    artwork_query: String,
+    /// The abilities' entities and the list of their values.
+    values: values::Values,
+    /// The Tuning field's open tab, its parameter filter and the Spawns tab's trail.
+    tuning: tuning::Tab,
+    parameter_query: String,
+    trail: tuning::Trail,
+    /// The modifier Add Modifier is putting together.
+    modifier_draft: Option<modifiers::Draft>,
+    /// The palettes each ability's effects draw with, and their swatches.
+    colors: colors::Colors,
+    /// The Appearance page's Screen Art.
+    art: appearance::ArtPage,
+}
+
+impl Default for PageState {
+    fn default() -> Self {
+        Self {
+            selection: SubclassSelection::default(),
+            search: String::new(),
+            choosing: None,
+            path_tab: AttunementPath::Top,
+            artwork: crate::artwork_browser::Picker::for_purpose(
+                crate::artwork_browser::Purpose::Perk,
+            ),
+            artwork_query: String::new(),
+            values: values::Values::default(),
+            tuning: tuning::Tab::default(),
+            parameter_query: String::new(),
+            trail: tuning::Trail::default(),
+            modifier_draft: None,
+            colors: colors::Colors::default(),
+            art: appearance::ArtPage::default(),
+        }
+    }
+}
+
+impl PageState {
+    /// Whether the Add Modifier form is open.
+    #[cfg(test)]
+    pub(super) const fn adding_modifier(&self) -> bool {
+        self.modifier_draft.is_some()
     }
 }
 
 /// One change the page makes to the recipe's abilities.
 enum AbilityEdit {
-    Choice(u8, Option<(u32, u8)>),
+    /// Bases the ability in an entry on another stock ability, keeping its edits.
+    AbilitySource(u8, (u32, u8)),
+    ResetAbility(u8),
     /// Restores the base's own attunement, nodes and name.
     ResetAttunement(AttunementPath),
     PathSource(AttunementPath, (u32, AttunementPath)),
     PathName(AttunementPath, Option<String>),
-    PathNode(AttunementPath, u8, Option<SubclassPathNode>),
+    /// Bases a node on another stock node, keeping its edits.
+    NodeSource(AttunementPath, u8, (u32, AttunementPath, u8)),
+    ResetNode(AttunementPath, u8),
+    Edits(Place, Box<EntryEdits>),
+    /// Opens a custom perk of an ability or node in the workbench.
+    OpenPerk(Place, custom_perks::workbench::AbilityPerk),
     Restore,
 }
 
-/// The node at `position` of `path`: the recipe's own, or its source path's.
-fn node_of(
-    abilities: &SubclassAbilities,
-    base: u32,
-    path: AttunementPath,
-    position: u8,
-) -> SubclassPathNode {
-    let (source, source_path) = attunement_of(abilities, base, path);
-    abilities
-        .attunement(path)
-        .and_then(|attunement| attunement.node(position))
-        .cloned()
-        .unwrap_or_else(|| SubclassPathNode::stock(position, source, source_path, position))
+/// The stock ability an entry is based on: its subclass and its entry there.
+fn source_of(abilities: &SubclassAbilities, base: u32, place: Place) -> (u32, u8) {
+    match place {
+        Place::Ability(entry) => {
+            let choice = abilities.ability(base, entry);
+            (choice.source, choice.source_entry)
+        }
+        Place::Node(path, position) => {
+            let node = abilities.node(base, path, position);
+            (node.source, node.source_entry())
+        }
+    }
 }
 
-/// The edit that sets `node`, or restores the path's own node when `node` is just that.
-fn node_edit(
-    abilities: &SubclassAbilities,
-    base: u32,
-    path: AttunementPath,
-    node: SubclassPathNode,
-) -> AbilityEdit {
-    let (source, source_path) = attunement_of(abilities, base, path);
-    let own = SubclassPathNode::stock(node.position, source, source_path, node.position);
-    let position = node.position;
-    AbilityEdit::PathNode(path, position, (node != own).then_some(node))
+/// The stock ability an entry holds when the recipe leaves it alone.
+fn own_source(abilities: &SubclassAbilities, base: u32, place: Place) -> (u32, u8) {
+    match place {
+        Place::Ability(entry) => (base, entry),
+        Place::Node(path, position) => {
+            let (source, source_path) = abilities.attunement_source(base, path);
+            (source, source_path.entries()[usize::from(position)])
+        }
+    }
 }
 
-/// The ability in `entry` and the subclass it comes from.
-fn choice_of(abilities: &SubclassAbilities, base: u32, entry: u8) -> (u32, u8) {
-    abilities
-        .choice(entry)
-        .map_or((base, entry), |choice| (choice.source, choice.source_entry))
-}
-
-fn attunement_of(
-    abilities: &SubclassAbilities,
-    base: u32,
-    path: AttunementPath,
-) -> (u32, AttunementPath) {
-    abilities
-        .attunement(path)
-        .map_or((base, path), |attunement| {
-            (attunement.source, attunement.source_path)
-        })
+/// Whether the recipe changes the entry at `place` from what its path or base holds.
+fn is_own(abilities: &SubclassAbilities, place: Place) -> bool {
+    match place {
+        Place::Ability(entry) => abilities.choice(entry).is_some(),
+        Place::Node(path, position) => abilities
+            .attunement(path)
+            .is_some_and(|attunement| attunement.node(position).is_some()),
+    }
 }
 
 fn find_subclass(subclasses: &[SubclassSummary], hash: u32) -> Option<&SubclassSummary> {
@@ -123,20 +184,6 @@ fn attunement_name(subclass: &SubclassSummary, path: AttunementPath) -> &str {
         .map_or(path.label(), String::as_str)
 }
 
-/// The stock node a path node is based on.
-fn node_entry(node: &SubclassPathNode) -> u8 {
-    node.source_path.entries()[usize::from(node.source_position)]
-}
-
-/// A slot's name for one of its entries: "Grenade 2", or "Super" for a slot of one.
-fn slot_entry_label(slot: AbilitySlot, position: usize) -> String {
-    if slot.entries().len() == 1 {
-        slot.label().to_owned()
-    } else {
-        format!("{} {}", slot.label(), position + 1)
-    }
-}
-
 /// Where something comes from, when that is another subclass than the base: its name and class.
 fn from_label(subclass: Option<&SubclassSummary>, base: u32) -> Option<String> {
     let subclass = subclass.filter(|subclass| subclass.hash != base)?;
@@ -152,23 +199,6 @@ fn from_subtitle(kind: &str, subclass: Option<&SubclassSummary>) -> String {
         Some(subclass) => format!("{kind} · {}", subclass.name),
         None => kind.to_owned(),
     }
-}
-
-/// Stock subclasses grouped by class, the base's class first.
-fn class_groups(
-    subclasses: &[SubclassSummary],
-    class_type: u8,
-) -> Vec<(u8, Vec<&SubclassSummary>)> {
-    let mut options = subclasses.iter().collect::<Vec<_>>();
-    options.sort_by_key(|option| (option.class_type != class_type, option.class_type));
-    let mut groups: Vec<(u8, Vec<&SubclassSummary>)> = Vec::new();
-    for subclass in options {
-        match groups.last_mut() {
-            Some((class, members)) if *class == subclass.class_type => members.push(subclass),
-            _ => groups.push((subclass.class_type, vec![subclass])),
-        }
-    }
-    groups
 }
 
 /// Text on one line, cut with an ellipsis where it would run past `width`.
@@ -191,421 +221,13 @@ fn quiet(ui: &egui::Ui, text: impl Into<String>) -> egui::RichText {
         .color(style::secondary(ui.visuals()))
 }
 
-/// The quiet icon that restores one value.
-fn reset_icon(ui: &mut egui::Ui) -> bool {
-    let hover = "Restore the original value";
-    let button = ui.add(
-        egui::Button::new(style::light_icon(
-            ui,
-            egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE,
-        ))
-        .frame(false),
-    );
-    style::named_control(button, hover)
-        .on_hover_text(hover)
-        .clicked()
-}
-
-/// A row of the list: its slot or attunement's name when it starts one, its number in a path,
-/// its name, the subclass it comes from when that is another, and a dot when it has edits of its
-/// own. The selected row is outlined.
-struct ListRow<'a> {
-    group: &'a str,
-    number: Option<u8>,
-    /// Whether the row has an icon column, and its icon once loaded. An attunement has none.
-    icon_column: bool,
-    icon: Option<&'a egui::TextureHandle>,
-    name: &'a str,
-    detail: Option<&'a str>,
-    edited: bool,
-    selected: bool,
-}
-
-impl ListRow<'_> {
-    fn show(self, ui: &mut egui::Ui) -> egui::Response {
-        let (rect, response) = ui.allocate_exact_size(
-            egui::vec2(ui.available_width(), ROW_HEIGHT),
-            egui::Sense::click(),
-        );
-        if ui.is_rect_visible(rect) {
-            let visuals = ui.visuals();
-            let painter = ui.painter_at(rect);
-            if self.selected {
-                painter.rect(
-                    rect,
-                    3.0,
-                    visuals.widgets.hovered.weak_bg_fill,
-                    visuals.selection.stroke,
-                    egui::StrokeKind::Inside,
-                );
-            } else if response.hovered() {
-                painter.rect_filled(rect, 3.0, visuals.widgets.hovered.weak_bg_fill);
-            }
-            let secondary = style::secondary(visuals);
-            let text = visuals.text_color();
-            let middle = rect.center().y;
-            let small = egui::FontId::proportional(12.0);
-            if !self.group.is_empty() {
-                let group = one_line(ui, self.group, small.clone(), secondary, GROUP_WIDTH - 12.0);
-                let height = group.size().y;
-                painter.galley(
-                    egui::pos2(rect.left() + 8.0, middle - height / 2.0),
-                    group,
-                    secondary,
-                );
-            }
-            let mut left = rect.left() + GROUP_WIDTH;
-            if let Some(number) = self.number {
-                painter.text(
-                    egui::pos2(left, middle),
-                    egui::Align2::LEFT_CENTER,
-                    number.to_string(),
-                    small.clone(),
-                    secondary,
-                );
-                left += 16.0;
-            }
-            if self.icon_column {
-                if let Some(icon) = self.icon {
-                    painter.image(
-                        icon.id(),
-                        egui::Rect::from_min_size(
-                            egui::pos2(left, middle - ROW_ICON / 2.0),
-                            egui::Vec2::splat(ROW_ICON),
-                        ),
-                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
-                }
-                left += ROW_ICON + 6.0;
-            }
-            let right = rect.right() - 8.0;
-            let mut name_right = right;
-            if let Some(detail) = self.detail {
-                let detail = one_line(ui, detail, small, secondary, (right - left) * 0.4);
-                let size = detail.size();
-                painter.galley(
-                    egui::pos2(right - size.x, middle - size.y / 2.0),
-                    detail,
-                    secondary,
-                );
-                name_right = right - size.x - 8.0;
-            } else if self.edited {
-                painter.circle_filled(egui::pos2(right - 3.0, middle), 3.0, text);
-                name_right = right - 14.0;
-            }
-            let name = one_line(
-                ui,
-                self.name,
-                egui::FontId::proportional(13.0),
-                text,
-                name_right - left,
-            );
-            let height = name.size().y;
-            painter.galley(egui::pos2(left, middle - height / 2.0), name, text);
-        }
-        style::named_control(response, self.name)
-    }
-}
-
-/// One stock choice in the detail panel.
-struct Choice<K> {
-    key: K,
-    label: String,
-    icon: Option<egui::TextureHandle>,
-    /// Its tooltip's line under its name, and its description.
-    subtitle: String,
-    description: Option<String>,
-    current: bool,
-    /// Another place already has it.
-    taken: bool,
-    /// It starts a group of its subclass's choices, such as one path's nodes.
-    starts_group: bool,
-}
-
-/// Every stock subclass's choices, grouped by class, a line to each subclass with its choices
-/// beside its name. `search` keeps the subclasses whose names hold it, and elsewhere the choices
-/// whose names do. Returns the choice clicked.
-fn draw_choices<K: Copy>(
-    ui: &mut egui::Ui,
-    groups: &[(u8, Vec<&SubclassSummary>)],
-    search: &str,
-    choices: impl Fn(&SubclassSummary) -> Vec<Choice<K>>,
-) -> Option<K> {
-    let needle = search.trim().to_lowercase();
-    let mut picked = None;
-    let mut shown = false;
-    for (class_type, members) in groups {
-        let lines = members
-            .iter()
-            .filter_map(|subclass| {
-                let whole = needle.is_empty() || subclass.name.to_lowercase().contains(&needle);
-                let kept = choices(subclass)
-                    .into_iter()
-                    .filter(|choice| whole || choice.label.to_lowercase().contains(&needle))
-                    .collect::<Vec<_>>();
-                (!kept.is_empty()).then_some((*subclass, kept))
-            })
-            .collect::<Vec<_>>();
-        if lines.is_empty() {
-            continue;
-        }
-        shown = true;
-        ui.add_space(6.0);
-        ui.label(quiet(
-            ui,
-            gear_view::class_label(*class_type).unwrap_or("Other"),
-        ));
-        for (subclass, choices) in lines {
-            ui.horizontal_top(|ui| {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(LABEL_WIDTH, 22.0),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        // A column of its own, so every subclass's choices start at one edge.
-                        ui.set_min_width(LABEL_WIDTH);
-                        ui.add(egui::Label::new(subclass.name.as_str()).truncate())
-                    },
-                );
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                    for (index, choice) in choices.into_iter().enumerate() {
-                        if choice.starts_group && index > 0 {
-                            ui.add_space(10.0);
-                        }
-                        let button = match &choice.icon {
-                            Some(icon) => egui::Button::image_and_text(
-                                egui::Image::new(icon)
-                                    .fit_to_exact_size(egui::Vec2::splat(CHOICE_ICON)),
-                                choice.label.as_str(),
-                            ),
-                            None => egui::Button::new(choice.label.as_str()),
-                        };
-                        let response =
-                            ui.add_enabled(!choice.taken, button.selected(choice.current));
-                        let response = if choice.taken {
-                            response.on_disabled_hover_text("Already Chosen")
-                        } else {
-                            response.on_hover_ui(|ui| {
-                                draw_display_tooltip(
-                                    ui,
-                                    DisplayTooltip {
-                                        icon: choice.icon.as_ref(),
-                                        name: &choice.label,
-                                        subtitle: Some(&choice.subtitle),
-                                        description: choice.description.as_deref(),
-                                    },
-                                );
-                            })
-                        };
-                        if response.clicked() && !choice.current {
-                            picked = Some(choice.key);
-                        }
-                    }
-                });
-            });
-        }
-    }
-    if !shown {
-        ui.label(quiet(ui, "No Matches"));
-    }
-    picked
-}
-
-/// A perk as a chip: its icon and name in a button's frame, and a remove icon at its end. It is
-/// measured before it is placed, so a full line wraps it whole. Returns the chip's response,
-/// whether the remove icon was clicked, and whether the pointer is on it.
-fn perk_chip(
-    ui: &mut egui::Ui,
-    icon: Option<&egui::TextureHandle>,
-    name: &str,
-) -> (egui::Response, bool, bool) {
-    let text_color = ui.visuals().text_color();
-    let galley = ui.painter().layout_no_wrap(
-        name.to_owned(),
-        egui::TextStyle::Button.resolve(ui.style()),
-        text_color,
-    );
-    let padding = ui.spacing().button_padding;
-    let icon_width = if icon.is_some() {
-        CHOICE_ICON + 4.0
-    } else {
-        0.0
-    };
-    let remove_width = 20.0;
-    let height = ui
-        .spacing()
-        .interact_size
-        .y
-        .max(galley.size().y + 2.0 * padding.y)
-        .max(CHOICE_ICON + 2.0);
-    let width = padding.x + icon_width + galley.size().x + 2.0 + remove_width;
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-    let remove_rect = egui::Rect::from_min_max(
-        egui::pos2(rect.right() - remove_width, rect.top()),
-        rect.max,
-    );
-    let remove = ui.interact(
-        remove_rect,
-        response.id.with("remove"),
-        egui::Sense::click(),
-    );
-    if ui.is_rect_visible(rect) {
-        let visuals = ui.style().interact(&response);
-        let painter = ui.painter();
-        painter.rect(
-            rect,
-            visuals.corner_radius,
-            visuals.weak_bg_fill,
-            visuals.bg_stroke,
-            egui::StrokeKind::Inside,
-        );
-        let mut left = rect.left() + padding.x;
-        if let Some(icon) = icon {
-            painter.image(
-                icon.id(),
-                egui::Rect::from_min_size(
-                    egui::pos2(left, rect.center().y - CHOICE_ICON / 2.0),
-                    egui::Vec2::splat(CHOICE_ICON),
-                ),
-                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                egui::Color32::WHITE,
-            );
-            left += icon_width;
-        }
-        painter.galley(
-            egui::pos2(left, rect.center().y - galley.size().y / 2.0),
-            galley,
-            text_color,
-        );
-        let mark = if remove.hovered() {
-            text_color
-        } else {
-            style::secondary(ui.visuals())
-        };
-        painter.text(
-            remove_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            egui_phosphor::regular::X,
-            egui::FontId::proportional(12.0),
-            mark,
-        );
-    }
-    let on_remove = remove.hovered();
-    let removed = style::named_control(remove, "Remove Perk")
-        .on_hover_text("Remove Perk")
-        .clicked();
-    (response, removed, on_remove)
-}
-
-/// The icon a detail heading leads with: an ability's or a node's once it loads, or none for an
-/// attunement.
-#[derive(Clone, Copy)]
-enum HeadingIcon<'a> {
-    None,
-    Node(Option<&'a egui::TextureHandle>),
-}
-
-/// The detail panel's heading: what it shows, small, then its name, then where it comes from and
-/// what it does, with a button that restores the base's own at the right. Returns whether that
-/// button was clicked.
-fn detail_header(
-    ui: &mut egui::Ui,
-    (kind, name, icon): (&str, &str, HeadingIcon<'_>),
-    lines: &[String],
-    restore: Option<&str>,
-) -> bool {
-    let mut clicked = false;
-    ui.horizontal_top(|ui| {
-        if let HeadingIcon::Node(icon) = icon {
-            let (rect, _) =
-                ui.allocate_exact_size(egui::Vec2::splat(HEADING_ICON), egui::Sense::hover());
-            if let Some(icon) = icon {
-                ui.painter().image(
-                    icon.id(),
-                    rect,
-                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-            }
-        }
-        let restore_width = if restore.is_some() { 220.0 } else { 0.0 };
-        let width = (ui.available_width() - restore_width).max(120.0);
-        ui.allocate_ui_with_layout(
-            egui::vec2(width, 0.0),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ui.set_width(width);
-                ui.label(quiet(ui, kind));
-                ui.label(egui::RichText::new(name).size(18.0).strong());
-                for line in lines {
-                    ui.add(egui::Label::new(quiet(ui, line.as_str())).wrap());
-                }
-            },
-        );
-        if let Some(restore) = restore {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                clicked = ui.button(restore).clicked();
-            });
-        }
-    });
-    ui.add_space(6.0);
-    clicked
-}
-
-/// A labeled field in the detail panel, with a quiet reset at its end once it differs. Returns
-/// the control's result and whether the reset was clicked.
-fn field<R>(
-    ui: &mut egui::Ui,
-    label: &str,
-    modified: bool,
-    control: impl FnOnce(&mut egui::Ui) -> R,
-) -> (R, bool) {
-    ui.horizontal_top(|ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(LABEL_WIDTH, 22.0),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                // A column of its own, so every field starts at one edge.
-                ui.set_min_width(LABEL_WIDTH);
-                let text = egui::RichText::new(label).size(12.0);
-                let text = if modified {
-                    text
-                } else {
-                    text.color(style::secondary(ui.visuals()))
-                };
-                ui.label(text);
-            },
-        );
-        let width = (ui.available_width() - 32.0).max(80.0);
-        let result = ui
-            .allocate_ui_with_layout(
-                egui::vec2(width, 0.0),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    ui.set_width(width);
-                    control(ui)
-                },
-            )
-            .inner;
-        (result, modified && reset_icon(ui))
-    })
-    .inner
-}
-
-/// The heading of the detail panel's choices, and their search. The original is always among the
-/// choices, so picking it again restores it.
-fn choices_heading(ui: &mut egui::Ui, name: &str, search: &mut String) {
-    ui.add_space(8.0);
-    ui.separator();
-    ui.label(egui::RichText::new(name).strong());
-    ui.add(
-        egui::TextEdit::singleline(search)
-            .hint_text(format!(
-                "{} Search",
-                egui_phosphor::regular::MAGNIFYING_GLASS
-            ))
-            .desired_width(f32::INFINITY),
+/// Paints a texture into `rect`.
+fn paint_icon(ui: &egui::Ui, icon: &egui::TextureHandle, rect: egui::Rect) {
+    ui.painter().image(
+        icon.id(),
+        rect,
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+        egui::Color32::WHITE,
     );
 }
 
@@ -621,6 +243,7 @@ impl PackageAuthoringApp {
                     |ui| {
                         ui.set_width(base_width);
                         self.draw_gear_base(ui);
+                        self.draw_every_class(ui);
                         ui.add_space(8.0);
                         self.draw_icon_donor_picker(ui);
                     },
@@ -630,16 +253,31 @@ impl PackageAuthoringApp {
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
                         ui.set_width(definition_width);
-                        self.draw_item_text(ui, Some("Subclass"));
+                        self.draw_item_text(
+                            ui,
+                            Some(if self.recipe.overrides.subclass_every_class {
+                                crate::subclass::EVERY_CLASS_TYPE_NAME
+                            } else {
+                                "Subclass"
+                            }),
+                        );
                     },
                 );
             });
         } else {
             self.draw_gear_base(ui);
+            self.draw_every_class(ui);
             ui.add_space(8.0);
             self.draw_icon_donor_picker(ui);
             ui.separator();
-            self.draw_item_text(ui, Some("Subclass"));
+            self.draw_item_text(
+                ui,
+                Some(if self.recipe.overrides.subclass_every_class {
+                    crate::subclass::EVERY_CLASS_TYPE_NAME
+                } else {
+                    "Subclass"
+                }),
+            );
         }
         ui.add_space(4.0);
         ui.separator();
@@ -647,16 +285,33 @@ impl PackageAuthoringApp {
         self.draw_subclass_abilities(ui);
     }
 
-    fn draw_subclass_abilities(&mut self, ui: &mut egui::Ui) {
-        let Some(base) = self
-            .recipe
+    /// Whether the subclass equips on and is granted to every character class.
+    fn draw_every_class(&mut self, ui: &mut egui::Ui) {
+        let mut every = self.recipe.overrides.subclass_every_class;
+        if ui
+            .checkbox(&mut every, "Every Class")
+            .on_hover_text(
+                "Allows every class to equip this subclass and installs it on every character.",
+            )
+            .changed()
+        {
+            self.recipe.overrides.subclass_every_class = every;
+        }
+    }
+
+    /// The base subclass the open recipe builds on, once the catalog has it.
+    fn subclass_base(&self) -> Option<SubclassSummary> {
+        self.recipe
             .donor
             .item_hash
             .parse_u32()
             .ok()
             .and_then(|hash| find_subclass(&self.subclasses, hash))
             .cloned()
-        else {
+    }
+
+    fn draw_subclass_abilities(&mut self, ui: &mut egui::Ui) {
+        let Some(base) = self.subclass_base() else {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
                 "Base subclass not found in the catalog.",
@@ -669,7 +324,12 @@ impl PackageAuthoringApp {
             .subclass_abilities
             .clone()
             .unwrap_or_default();
-        let mut search = std::mem::take(&mut self.subclass_search);
+        let mut page = std::mem::take(&mut self.subclass_page);
+        page.artwork.poll();
+        if page.artwork.busy() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+        }
         let ((clicked, restore), edit) = if ui.available_width() >= SIDE_BY_SIDE_WIDTH {
             ui.horizontal_top(|ui| {
                 let clicked = ui
@@ -678,7 +338,7 @@ impl PackageAuthoringApp {
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
                             ui.set_width(LIST_WIDTH);
-                            self.draw_subclass_list(ui, &base, &abilities)
+                            self.draw_subclass_list(ui, &base, &abilities, &page)
                         },
                     )
                     .inner;
@@ -689,7 +349,7 @@ impl PackageAuthoringApp {
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
                             ui.set_width(width);
-                            self.draw_subclass_detail(ui, &base, &abilities, &mut search)
+                            self.draw_subclass_detail(ui, &base, &abilities, &mut page)
                         },
                     )
                     .inner;
@@ -697,706 +357,129 @@ impl PackageAuthoringApp {
             })
             .inner
         } else {
-            let clicked = self.draw_subclass_list(ui, &base, &abilities);
+            let clicked = self.draw_subclass_list(ui, &base, &abilities, &page);
             ui.add_space(8.0);
-            let edit = self.draw_subclass_detail(ui, &base, &abilities, &mut search);
+            let edit = self.draw_subclass_detail(ui, &base, &abilities, &mut page);
             (clicked, edit)
         };
-        self.subclass_search = search;
         let edit = if restore {
             Some(AbilityEdit::Restore)
         } else {
             edit
         };
         if let Some(selection) = clicked
-            && selection != self.subclass_selection
+            && selection != page.selection
         {
-            self.subclass_selection = selection;
-            self.subclass_search.clear();
+            page.selection = selection;
+            page.search.clear();
+            // An open form belongs to the row it was opened on.
+            page.modifier_draft = None;
         }
         // The attunement tabs follow the selection.
-        if let SubclassSelection::Path(path) | SubclassSelection::Node(path, _) =
-            self.subclass_selection
+        if let SubclassSelection::Path(path) | SubclassSelection::Entry(Place::Node(path, _)) =
+            page.selection
         {
-            self.subclass_path_tab = path;
+            page.path_tab = path;
         }
+        self.subclass_page = page;
         if let Some(edit) = edit {
-            let mut abilities = abilities;
-            match edit {
-                AbilityEdit::Choice(entry, source) => abilities.set_choice(entry, source),
-                AbilityEdit::ResetAttunement(path) => abilities.set_attunement(path, None),
-                AbilityEdit::PathSource(path, source) => {
-                    abilities.set_path_source(path, base.hash, source);
-                }
-                AbilityEdit::PathName(path, name) => abilities.set_path_name(path, base.hash, name),
-                AbilityEdit::PathNode(path, position, node) => {
-                    abilities.set_path_node(path, base.hash, position, node);
-                }
-                AbilityEdit::Restore => abilities = SubclassAbilities::default(),
-            }
-            self.recipe.overrides.subclass_abilities = (!abilities.is_empty()).then_some(abilities);
+            self.apply_ability_edit(base.hash, abilities, edit);
         }
     }
 
-    /// The subclass in the game's order: each ability slot's abilities, then each attunement and
-    /// its nodes. Returns the row clicked, and whether Restore Base Abilities was.
-    fn draw_subclass_list(
-        &self,
-        ui: &mut egui::Ui,
-        base: &SubclassSummary,
-        abilities: &SubclassAbilities,
-    ) -> (Option<SubclassSelection>, bool) {
-        let mut clicked = None;
-        let mut restore = false;
-        style::card(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 1.0;
-            ui.horizontal(|ui| {
-                ui.label(quiet(ui, "Abilities"));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    restore = ui
-                        .add_enabled(
-                            !abilities.is_empty(),
-                            egui::Button::new("Restore Base Abilities").small(),
-                        )
-                        .clicked();
-                });
-            });
-            for (index, slot) in AbilitySlot::ALL.into_iter().enumerate() {
-                if index > 0 {
-                    ui.add_space(4.0);
-                }
-                for (position, &entry) in slot.entries().iter().enumerate() {
-                    let (source, source_entry) = choice_of(abilities, base.hash, entry);
-                    let summary = find_subclass(&self.subclasses, source);
-                    let group = if position == 0 { slot.label() } else { "" };
-                    let name = summary.map_or("Unknown Ability", |summary| {
-                        entry_name(summary, source_entry)
-                    });
-                    let icon = self.entry_icon(ui.ctx(), summary, source_entry);
-                    let row = ListRow {
-                        group,
-                        number: None,
-                        icon_column: true,
-                        icon: icon.as_ref(),
-                        name,
-                        detail: summary
-                            .filter(|summary| summary.hash != base.hash)
-                            .map(|summary| summary.name.as_str()),
-                        edited: abilities.choice(entry).is_some(),
-                        selected: self.subclass_selection == SubclassSelection::Ability(entry),
-                    }
-                    .show(ui)
-                    .on_hover_ui(|ui| {
-                        draw_display_tooltip(
-                            ui,
-                            DisplayTooltip {
-                                icon: icon.as_ref(),
-                                name,
-                                subtitle: Some(&from_subtitle(slot.label(), summary)),
-                                description: self
-                                    .entry_description(summary, source_entry)
-                                    .as_deref(),
-                            },
-                        );
-                    });
-                    if row.clicked() {
-                        clicked = Some(SubclassSelection::Ability(entry));
-                    }
-                }
-            }
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.label(quiet(ui, "Attunements"));
-                draw_authoring_info_icon(
-                    ui,
-                    "Top and bottom attunements trade places. A middle one fills only the middle.",
-                );
-            });
-            // One attunement at a time, as the game shows one tree, each tab marked once its
-            // attunement has edits of its own.
-            ui.horizontal(|ui| {
-                for path in DISPLAY_PATHS {
-                    let label = if abilities.attunement(path).is_some() {
-                        format!("{} •", path.label())
-                    } else {
-                        path.label().to_owned()
-                    };
-                    if ui
-                        .selectable_label(self.subclass_path_tab == path, label)
-                        .clicked()
-                    {
-                        clicked = Some(SubclassSelection::Path(path));
-                    }
-                }
-            });
-            ui.add_space(4.0);
-            if let Some(selection) =
-                self.draw_path_rows(ui, base, abilities, self.subclass_path_tab)
-            {
-                clicked = Some(selection);
-            }
+    /// Values belong to the entity they were edited on, and stock modifier removals and parameters
+    /// to the pool and bank of the ability they changed. An entry based on another stock ability
+    /// keeps only the values its new source's entity has.
+    fn keep_own_values(&self, edits: &mut EntryEdits, (source, entry): (u32, u8)) {
+        let entity = find_subclass(&self.subclasses, source)
+            .and_then(|subclass| subclass.entry_entities.get(&entry).copied());
+        edits.ability_values.retain(|value| {
+            value.locator.graph_tag.is_some()
+                && value.locator.graph_tag.map(|tag| tag.get()) == entity
         });
-        (clicked, restore)
+        // A stock modifier and a parameter belong to the pool and bank of the ability it was.
+        edits.removed_modifiers.clear();
+        edits.parameters.clear();
     }
 
-    /// An attunement's row, then a row to each of its nodes. Returns the one clicked.
-    fn draw_path_rows(
-        &self,
-        ui: &mut egui::Ui,
-        base: &SubclassSummary,
-        abilities: &SubclassAbilities,
-        path: AttunementPath,
-    ) -> Option<SubclassSelection> {
-        let (source, source_path) = attunement_of(abilities, base.hash, path);
-        let summary = find_subclass(&self.subclasses, source);
-        let own = abilities.attunement(path);
-        let name = own
-            .and_then(|attunement| attunement.name.as_deref())
-            .unwrap_or_else(|| {
-                summary.map_or(path.label(), |summary| {
-                    attunement_name(summary, source_path)
-                })
-            });
-        let mut clicked = None;
-        let row = ListRow {
-            group: "",
-            number: None,
-            icon_column: false,
-            icon: None,
-            name,
-            detail: summary
-                .filter(|summary| summary.hash != base.hash)
-                .map(|summary| summary.name.as_str()),
-            edited: (source, source_path) != (base.hash, path)
-                || own.is_some_and(|attunement| attunement.name.is_some()),
-            selected: self.subclass_selection == SubclassSelection::Path(path),
-        }
-        .show(ui)
-        .on_hover_ui(|ui| {
-            draw_display_tooltip(
-                ui,
-                DisplayTooltip {
-                    icon: None,
-                    name,
-                    subtitle: Some(&from_subtitle(
-                        &format!("{} Attunement", path.label()),
-                        summary,
-                    )),
-                    description: Some(&self.path_nodes(base, abilities, path)),
-                },
-            );
-        });
-        if row.clicked() {
-            clicked = Some(SubclassSelection::Path(path));
-        }
-        for position in 0..layout::PATH_NODES {
-            let node = node_of(abilities, base.hash, path, position);
-            let node_source = find_subclass(&self.subclasses, node.source);
-            let stock_name = node_source.map_or("Unknown Ability", |node_source| {
-                entry_name(node_source, node_entry(&node))
-            });
-            let node_name = node.name.as_deref().unwrap_or(stock_name);
-            let node_icon = self.entry_icon(ui.ctx(), node_source, node_entry(&node));
-            let description = node
-                .description
-                .clone()
-                .or_else(|| self.entry_description(node_source, node_entry(&node)));
-            let row = ListRow {
-                group: "",
-                number: Some(position + 1),
-                icon_column: true,
-                icon: node_icon.as_ref(),
-                name: node_name,
-                detail: node_source
-                    .filter(|node_source| node_source.hash != source)
-                    .map(|node_source| node_source.name.as_str()),
-                edited: own.is_some_and(|attunement| attunement.node(position).is_some()),
-                selected: self.subclass_selection == SubclassSelection::Node(path, position),
+    fn apply_ability_edit(
+        &mut self,
+        base: u32,
+        mut abilities: SubclassAbilities,
+        edit: AbilityEdit,
+    ) {
+        match edit {
+            AbilityEdit::AbilitySource(entry, (source, source_entry)) => {
+                let mut choice = crate::subclass::SubclassChoice {
+                    source,
+                    source_entry,
+                    ..abilities.ability(base, entry)
+                };
+                self.keep_own_values(&mut choice.edits, (source, source_entry));
+                abilities.set_ability(base, choice);
             }
-            .show(ui)
-            .on_hover_ui(|ui| {
-                draw_display_tooltip(
-                    ui,
-                    DisplayTooltip {
-                        icon: node_icon.as_ref(),
-                        name: node_name,
-                        subtitle: Some(&format!("{name} · Node {}", position + 1)),
-                        description: description.as_deref(),
-                    },
-                );
-            });
-            if row.clicked() {
-                clicked = Some(SubclassSelection::Node(path, position));
+            AbilityEdit::ResetAbility(entry) => abilities.reset_ability(entry),
+            AbilityEdit::ResetAttunement(path) => abilities.reset_attunement(path),
+            AbilityEdit::PathSource(path, source) => abilities.set_path_source(path, base, source),
+            AbilityEdit::PathName(path, name) => abilities.set_path_name(path, base, name),
+            AbilityEdit::NodeSource(path, position, (source, source_path, source_position)) => {
+                let mut node = SubclassPathNode {
+                    source,
+                    source_path,
+                    source_position,
+                    ..abilities.node(base, path, position)
+                };
+                let source_entry = node.source_entry();
+                self.keep_own_values(&mut node.edits, (source, source_entry));
+                abilities.set_path_node(path, base, node);
             }
+            AbilityEdit::ResetNode(path, position) => {
+                let (source, source_path) = abilities.attunement_source(base, path);
+                let own = SubclassPathNode::stock(position, source, source_path, position);
+                abilities.set_path_node(path, base, own);
+            }
+            AbilityEdit::Edits(place, edits) => abilities.set_edits(base, place, *edits),
+            AbilityEdit::OpenPerk(place, perk) => {
+                self.perk_request = Some(custom_perks::workbench::Request::Ability { place, perk });
+                return;
+            }
+            AbilityEdit::Restore => abilities = SubclassAbilities::default(),
         }
-        ui.add_space(4.0);
-        clicked
+        self.recipe.overrides.subclass_abilities = (!abilities.is_empty()).then_some(abilities);
     }
 
-    /// The selected ability, attunement or node.
-    fn draw_subclass_detail(
-        &self,
-        ui: &mut egui::Ui,
-        base: &SubclassSummary,
-        abilities: &SubclassAbilities,
-        search: &mut String,
-    ) -> Option<AbilityEdit> {
-        style::card(ui, |ui| match self.subclass_selection {
-            SubclassSelection::Ability(entry) => {
-                self.draw_ability_detail(ui, base, abilities, (entry, search))
-            }
-            SubclassSelection::Path(path) => {
-                self.draw_attunement_detail(ui, base, abilities, (path, search))
-            }
-            SubclassSelection::Node(path, position) => {
-                self.draw_node_detail(ui, base, abilities, (path, position, search))
-            }
-        })
-    }
-
-    /// An ability: which it is and where it comes from, then every stock ability for its slot.
-    fn draw_ability_detail(
-        &self,
-        ui: &mut egui::Ui,
-        base: &SubclassSummary,
-        abilities: &SubclassAbilities,
-        (entry, search): (u8, &mut String),
-    ) -> Option<AbilityEdit> {
-        let slot = AbilitySlot::of_entry(entry)?;
-        let entries = slot.entries();
-        let position = entries.iter().position(|each| *each == entry).unwrap_or(0);
-        let (source, source_entry) = choice_of(abilities, base.hash, entry);
-        let summary = find_subclass(&self.subclasses, source);
-        let name = summary.map_or("Unknown Ability", |summary| {
-            entry_name(summary, source_entry)
-        });
-        let lines = from_label(summary, base.hash)
-            .into_iter()
-            .chain(self.entry_description(summary, source_entry))
-            .collect::<Vec<_>>();
-        let restore = abilities
-            .choice(entry)
-            .is_some()
-            .then(|| format!("Restore {}", entry_name(base, entry)));
-        let icon = self.entry_icon(ui.ctx(), summary, source_entry);
-        let mut edit = None;
-        if detail_header(
-            ui,
-            (
-                &slot_entry_label(slot, position),
-                name,
-                HeadingIcon::Node(icon.as_ref()),
-            ),
-            &lines,
-            restore.as_deref(),
-        ) {
-            edit = Some(AbilityEdit::Choice(entry, None));
+    /// Every ability and node of the open subclass recipe with its name, which a custom perk can
+    /// go on. Empty for other recipes.
+    pub(super) fn subclass_places(&self) -> Vec<(Place, String)> {
+        if self.recipe.kind != ItemKind::Subclass {
+            return Vec::new();
         }
-        // Choosing one ability twice in a slot would offer it twice.
-        let chosen = entries
-            .iter()
-            .enumerate()
-            .filter(|(other, _)| *other != position)
-            .filter_map(|(_, &other)| {
-                let (source, source_entry) = choice_of(abilities, base.hash, other);
-                find_subclass(&self.subclasses, source)
-                    .map(|source| entry_name(source, source_entry).to_owned())
-            })
-            .collect::<Vec<_>>();
-        choices_heading(ui, "Replace With", search);
-        let ctx = ui.ctx().clone();
-        let picked = draw_choices(
-            ui,
-            &class_groups(&self.subclasses, base.class_type),
-            search,
-            |option| {
-                entries
-                    .iter()
-                    .map(|&option_entry| {
-                        let label = entry_name(option, option_entry).to_owned();
-                        Choice {
-                            key: (option.hash, option_entry),
-                            icon: self.entry_icon(&ctx, Some(option), option_entry),
-                            subtitle: format!("{} · {}", slot.label(), option.name),
-                            description: self.entry_description(Some(option), option_entry),
-                            current: (option.hash, option_entry) == (source, source_entry),
-                            taken: chosen.contains(&label),
-                            starts_group: false,
-                            label,
-                        }
-                    })
-                    .collect()
-            },
-        );
-        if let Some(pick) = picked {
-            let own = (base.hash, entry);
-            edit = Some(AbilityEdit::Choice(entry, (pick != own).then_some(pick)));
-        }
-        edit
-    }
-
-    /// An attunement: its name, then every stock attunement that fits its place.
-    fn draw_attunement_detail(
-        &self,
-        ui: &mut egui::Ui,
-        base: &SubclassSummary,
-        abilities: &SubclassAbilities,
-        (path, search): (AttunementPath, &mut String),
-    ) -> Option<AbilityEdit> {
-        let (source, source_path) = attunement_of(abilities, base.hash, path);
-        let summary = find_subclass(&self.subclasses, source);
-        let stock_name = summary.map_or(path.label(), |summary| {
-            attunement_name(summary, source_path)
-        });
-        let own = abilities.attunement(path);
-        let name = own.and_then(|attunement| attunement.name.clone());
-        let lines = from_label(summary, base.hash)
-            .into_iter()
-            .collect::<Vec<_>>();
-        let restore = own
-            .is_some()
-            .then(|| format!("Restore {}", attunement_name(base, path)));
-        let mut edit = None;
-        if detail_header(
-            ui,
-            (
-                &format!("{} Attunement", path.label()),
-                name.as_deref().unwrap_or(stock_name),
-                HeadingIcon::None,
-            ),
-            &lines,
-            restore.as_deref(),
-        ) {
-            edit = Some(AbilityEdit::ResetAttunement(path));
-        }
-        let (named, reset) = field(ui, "Name", name.is_some(), |ui| {
-            let mut text = name.clone().unwrap_or_default();
-            ui.add(
-                egui::TextEdit::singleline(&mut text)
-                    .hint_text(stock_name)
-                    .desired_width(f32::INFINITY),
-            )
-            .changed()
-            .then_some(text)
-        });
-        if let Some(text) = named {
-            let text = (!text.trim().is_empty()).then_some(text);
-            edit = Some(AbilityEdit::PathName(path, text));
-        } else if reset {
-            edit = Some(AbilityEdit::PathName(path, None));
-        }
-        choices_heading(ui, "Replace With", search);
-        let chosen = AttunementPath::ALL
-            .into_iter()
-            .filter(|other| *other != path)
-            .map(|other| attunement_of(abilities, base.hash, other))
-            .collect::<Vec<_>>();
-        let picked = draw_choices(
-            ui,
-            &class_groups(&self.subclasses, base.class_type),
-            search,
-            |option| {
-                DISPLAY_PATHS
-                    .into_iter()
-                    .filter(|option_path| option_path.fits(path))
-                    .map(|option_path| Choice {
-                        key: (option.hash, option_path),
-                        label: attunement_name(option, option_path).to_owned(),
-                        icon: None,
-                        subtitle: format!("{} Attunement · {}", option_path.label(), option.name),
-                        description: Some(
-                            option_path
-                                .entries()
-                                .iter()
-                                .map(|&entry| entry_name(option, entry))
-                                .collect::<Vec<_>>()
-                                .join("\n"),
-                        ),
-                        current: (option.hash, option_path) == (source, source_path),
-                        taken: chosen.contains(&(option.hash, option_path)),
-                        starts_group: false,
-                    })
-                    .collect()
-            },
-        );
-        if let Some(pick) = picked {
-            edit = Some(AbilityEdit::PathSource(path, pick));
-        }
-        edit
-    }
-
-    /// A path node: its name, description and perks, then every stock node it can be based on.
-    fn draw_node_detail(
-        &self,
-        ui: &mut egui::Ui,
-        base: &SubclassSummary,
-        abilities: &SubclassAbilities,
-        (path, position, search): (AttunementPath, u8, &mut String),
-    ) -> Option<AbilityEdit> {
-        let node = node_of(abilities, base.hash, path, position);
-        let (source, source_path) = attunement_of(abilities, base.hash, path);
-        let stock = SubclassPathNode::stock(position, source, source_path, position);
-        let summary = find_subclass(&self.subclasses, node.source);
-        let entry = node_entry(&node);
-        let stock_name = summary.map_or("Unknown Ability", |summary| entry_name(summary, entry));
-        let own = abilities
-            .attunement(path)
-            .is_some_and(|attunement| attunement.node(position).is_some());
-        let mut lines = Vec::new();
-        if node.name.is_some()
-            || (node.source, node.source_path, node.source_position)
-                != (stock.source, stock.source_path, stock.source_position)
-        {
-            let basis = summary.map_or_else(
-                || stock_name.to_owned(),
-                |summary| format!("Based on {stock_name} · {}", summary.name),
-            );
-            lines.push(basis);
-        }
-        let mut edit = None;
-        let restore_name = find_subclass(&self.subclasses, stock.source)
-            .map_or("Node", |stock_source| {
-                entry_name(stock_source, node_entry(&stock))
-            });
-        let restore = own.then(|| format!("Restore {restore_name}"));
-        let icon = self.entry_icon(ui.ctx(), summary, entry);
-        if detail_header(
-            ui,
-            (
-                &format!("{} Path · Node {}", path.label(), position + 1),
-                node.name.as_deref().unwrap_or(stock_name),
-                HeadingIcon::Node(icon.as_ref()),
-            ),
-            &lines,
-            restore.as_deref(),
-        ) {
-            edit = Some(AbilityEdit::PathNode(path, position, None));
-        }
-        let mut changed = None;
-        let (named, reset) = field(ui, "Name", node.name.is_some(), |ui| {
-            let mut text = node.name.clone().unwrap_or_default();
-            ui.add(
-                egui::TextEdit::singleline(&mut text)
-                    .hint_text(stock_name)
-                    .desired_width(f32::INFINITY),
-            )
-            .changed()
-            .then_some(text)
-        });
-        if let Some(text) = named {
-            let name = (!text.trim().is_empty()).then_some(text);
-            changed = Some(SubclassPathNode {
-                name,
-                ..node.clone()
-            });
-        } else if reset {
-            changed = Some(SubclassPathNode {
-                name: None,
-                ..node.clone()
-            });
-        }
-        let (described, reset) = field(ui, "Description", node.description.is_some(), |ui| {
-            let mut text = node.description.clone().unwrap_or_default();
-            ui.add(
-                egui::TextEdit::multiline(&mut text)
-                    .desired_rows(2)
-                    .desired_width(f32::INFINITY),
-            )
-            .changed()
-            .then_some(text)
-        });
-        if let Some(text) = described {
-            let description = (!text.trim().is_empty()).then_some(text);
-            changed = Some(SubclassPathNode {
-                description,
-                ..node.clone()
-            });
-        } else if reset {
-            changed = Some(SubclassPathNode {
-                description: None,
-                ..node.clone()
-            });
-        }
-        let stock_perks = summary
-            .and_then(|summary| summary.entry_perks.get(&entry))
-            .cloned()
-            .unwrap_or_default();
-        let perks_edited = !node.added_perks.is_empty() || !node.removed_perks.is_empty();
-        let (perked, reset) = field(ui, "Perks", perks_edited, |ui| {
-            self.draw_node_perks(ui, base, &node, &stock_perks)
-        });
-        if perked.is_some() {
-            changed = perked;
-        } else if reset {
-            changed = Some(SubclassPathNode {
-                added_perks: Vec::new(),
-                removed_perks: Vec::new(),
-                ..node.clone()
-            });
-        }
-        choices_heading(ui, "Based On", search);
-        let lead = position == layout::LEAD_NODE;
-        // The first node a path offers here, which starts its group.
-        let first = if lead {
-            layout::LEAD_NODE
-        } else {
-            layout::LEAD_NODE + 1
+        let Some(base) = self.subclass_base() else {
+            return Vec::new();
         };
-        let ctx = ui.ctx().clone();
-        let picked = draw_choices(
-            ui,
-            &class_groups(&self.subclasses, base.class_type),
-            search,
-            |option| {
-                DISPLAY_PATHS
-                    .into_iter()
-                    .filter(|option_path| !lead || option_path.fits(path))
-                    .flat_map(|option_path| {
-                        (0..layout::PATH_NODES)
-                            .filter(move |option_position| {
-                                (*option_position == layout::LEAD_NODE) == lead
-                            })
-                            .map(move |option_position| (option_path, option_position))
-                    })
-                    .map(|(option_path, option_position)| {
-                        let option_entry = option_path.entries()[usize::from(option_position)];
-                        Choice {
-                            key: (option.hash, option_path, option_position),
-                            label: entry_name(option, option_entry).to_owned(),
-                            icon: self.entry_icon(&ctx, Some(option), option_entry),
-                            subtitle: format!(
-                                "{}, Node {} · {}",
-                                attunement_name(option, option_path),
-                                option_position + 1,
-                                option.name
-                            ),
-                            description: self.entry_description(Some(option), option_entry),
-                            current: (option.hash, option_path, option_position)
-                                == (node.source, node.source_path, node.source_position),
-                            taken: false,
-                            // Each path's nodes read as one group.
-                            starts_group: option_position == first,
-                        }
-                    })
-                    .collect()
-            },
-        );
-        if let Some((option, option_path, option_position)) = picked {
-            changed = Some(SubclassPathNode {
-                source: option,
-                source_path: option_path,
-                source_position: option_position,
-                ..node.clone()
-            });
-        }
-        edit.or_else(|| changed.map(|node| node_edit(abilities, base.hash, path, node)))
+        let abilities = self
+            .recipe
+            .overrides
+            .subclass_abilities
+            .clone()
+            .unwrap_or_default();
+        Place::all()
+            .map(|place| {
+                let name = self.entry_title(&abilities, base.hash, place);
+                (place, format!("{} · {name}", place.label()))
+            })
+            .collect()
     }
 
-    /// A node's perks: its source's, less the ones it removes, and the ones it adds, each with a
-    /// remove button, then a menu of every stock node's perks.
-    fn draw_node_perks(
-        &self,
-        ui: &mut egui::Ui,
-        base: &SubclassSummary,
-        node: &SubclassPathNode,
-        stock_perks: &[u16],
-    ) -> Option<SubclassPathNode> {
-        let mut changed = None;
-        let perks = stock_perks
-            .iter()
-            .filter(|perk| !node.removed_perks.contains(perk))
-            .chain(&node.added_perks)
-            .copied()
-            .collect::<Vec<_>>();
-        ui.horizontal_wrapped(|ui| {
-            for &perk in &perks {
-                let label = self.perk_label(perk);
-                let source = self.perk_source(perk);
-                let icon = source.and_then(|(subclass, entry, _)| {
-                    self.entry_icon(ui.ctx(), Some(subclass), entry)
-                });
-                let (chip, removed, on_remove) = perk_chip(ui, icon.as_ref(), &label);
-                if !on_remove {
-                    chip.on_hover_ui(|ui| {
-                        draw_display_tooltip(
-                            ui,
-                            DisplayTooltip {
-                                icon: icon.as_ref(),
-                                name: &label,
-                                subtitle: source.map(|(subclass, _, _)| subclass.name.as_str()),
-                                description: Some(&self.perk_description(perk)),
-                            },
-                        );
-                    });
-                }
-                if removed {
-                    let mut edited = node.clone();
-                    if edited.added_perks.contains(&perk) {
-                        edited.added_perks.retain(|added| *added != perk);
-                    } else {
-                        edited.removed_perks.push(perk);
-                    }
-                    changed = Some(edited);
-                }
-            }
-            ui.menu_button("Add Perk", |ui| {
-                workbench_style(ui);
-                egui::ScrollArea::vertical()
-                    .max_height(360.0)
-                    .show(ui, |ui| {
-                        if let Some(perk) = self.draw_perk_menu(ui, base, &perks) {
-                            let mut edited = node.clone();
-                            if edited.removed_perks.contains(&perk) {
-                                edited.removed_perks.retain(|removed| *removed != perk);
-                            } else {
-                                edited.added_perks.push(perk);
-                            }
-                            changed = Some(edited);
-                            ui.close_menu();
-                        }
-                    });
-            });
-        });
-        changed
-    }
-
-    /// Every stock node's perks that a node does not have yet, grouped by class. Returns the one
-    /// clicked.
-    fn draw_perk_menu(
-        &self,
-        ui: &mut egui::Ui,
-        base: &SubclassSummary,
-        perks: &[u16],
-    ) -> Option<u16> {
-        let mut picked = None;
-        for (class_type, members) in class_groups(&self.subclasses, base.class_type) {
-            ui.label(quiet(
-                ui,
-                gear_view::class_label(class_type).unwrap_or("Other"),
-            ));
-            for option in members {
-                for (entry, entry_perks) in &option.entry_perks {
-                    for (ordinal, perk) in entry_perks.iter().enumerate() {
-                        if perks.contains(perk) {
-                            continue;
-                        }
-                        let mut label = format!("{} · {}", entry_name(option, *entry), option.name);
-                        if entry_perks.len() > 1 {
-                            label = format!("{label} {}", ordinal + 1);
-                        }
-                        if ui
-                            .selectable_label(false, label)
-                            .on_hover_text(self.perk_description(*perk))
-                            .clicked()
-                        {
-                            picked = Some(*perk);
-                        }
-                    }
-                }
-            }
-            ui.separator();
-        }
-        picked
+    /// An ability's or node's name: its own, or the stock one it is based on.
+    fn entry_title(&self, abilities: &SubclassAbilities, base: u32, place: Place) -> String {
+        abilities.edits(base, place).name.unwrap_or_else(|| {
+            let (source, entry) = source_of(abilities, base, place);
+            find_subclass(&self.subclasses, source).map_or_else(
+                || "Unknown Ability".to_owned(),
+                |subclass| entry_name(subclass, entry).to_owned(),
+            )
+        })
     }
 
     /// What a stock subclass's entry does: its node's own description, or else the first of its
@@ -1427,55 +510,25 @@ impl PackageAuthoringApp {
         self.catalog.as_ref()?.subclass_icon(ctx, container)
     }
 
-    /// An attunement's nodes by name, a line each, as its tooltip lists them.
-    fn path_nodes(
+    /// The icon an ability or node shows: its own, or its source's.
+    fn place_icon(
         &self,
-        base: &SubclassSummary,
+        ctx: &egui::Context,
         abilities: &SubclassAbilities,
-        path: AttunementPath,
-    ) -> String {
-        (0..layout::PATH_NODES)
-            .map(|position| {
-                let node = node_of(abilities, base.hash, path, position);
-                node.name.clone().unwrap_or_else(|| {
-                    find_subclass(&self.subclasses, node.source).map_or_else(
-                        || "Unknown Ability".to_owned(),
-                        |source| entry_name(source, node_entry(&node)).to_owned(),
-                    )
-                })
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    /// The first stock node that grants a sandbox perk: its subclass, its entry, and the perk's
-    /// number among that node's perks when it grants several.
-    fn perk_source(&self, perk: u16) -> Option<(&SubclassSummary, u8, Option<usize>)> {
-        self.subclasses.iter().find_map(|subclass| {
-            subclass.entry_perks.iter().find_map(|(entry, perks)| {
-                let ordinal = perks.iter().position(|each| *each == perk)?;
-                Some((subclass, *entry, (perks.len() > 1).then_some(ordinal + 1)))
-            })
-        })
-    }
-
-    /// A sandbox perk by the first stock node that grants it, numbered as the Add Perk list
-    /// numbers it when that node grants several, or by its number.
-    fn perk_label(&self, perk: u16) -> String {
-        self.perk_source(perk).map_or_else(
-            || format!("Perk {perk}"),
-            |(subclass, entry, number)| {
-                let name = entry_name(subclass, entry);
-                number.map_or_else(|| name.to_owned(), |number| format!("{name} {number}"))
-            },
-        )
-    }
-
-    fn perk_description(&self, perk: u16) -> String {
-        self.catalog
-            .as_ref()
-            .and_then(|catalog| catalog.perk_component_description(perk))
-            .filter(|text| !text.trim().is_empty())
-            .map_or_else(|| format!("Perk {perk}"), str::to_owned)
+        base: u32,
+        place: Place,
+    ) -> Option<egui::TextureHandle> {
+        match abilities.edits(base, place).icon {
+            Some(EntryIcon::Ability { subclass, entry }) => {
+                self.entry_icon(ctx, find_subclass(&self.subclasses, subclass), entry)
+            }
+            Some(EntryIcon::Artwork { artwork }) => {
+                crate::artwork_browser::preview::texture(ctx, self.catalog.as_ref()?, &artwork)
+            }
+            None => {
+                let (source, entry) = source_of(abilities, base, place);
+                self.entry_icon(ctx, find_subclass(&self.subclasses, source), entry)
+            }
+        }
     }
 }

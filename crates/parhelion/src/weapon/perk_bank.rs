@@ -1,4 +1,5 @@
 //! Advisory projection of authored effects into Sunrise's replicated weapon bank.
+use crate::perk::SANDBOX_PERK_CAPACITY;
 use crate::recipe::WeaponRecipe;
 use sundial::investment::{WeaponDamageCarrierFamily, WeaponDamageProfile, WeaponDonor};
 
@@ -30,12 +31,12 @@ pub(crate) fn project(
     {
         let marker = base
             .iter()
-            .position(|p| super::item_fields::fixed_damage_perk(*p).is_some());
+            .position(|p| crate::item::fixed_damage_perk(*p).is_some());
         let family = match donor.summary.damage_profile {
             WeaponDamageProfile::LegacyFixed(_) => WeaponDamageCarrierFamily::LegacyFixed,
             _ => WeaponDamageCarrierFamily::ModernFixed,
         };
-        let damage = super::ModernDamageType::from(damage);
+        let damage = crate::ModernDamageType::from(damage);
         match (marker, family.base_sandbox_perk_index(damage.shared())) {
             (Some(index), Some(perk)) => base[index] = perk,
             (None, Some(perk)) => base.push(perk),
@@ -48,7 +49,7 @@ pub(crate) fn project(
     let active = |rows: Vec<u16>| {
         rows.into_iter()
             .filter(|p| *p != u16::MAX)
-            .take(4)
+            .take(SANDBOX_PERK_CAPACITY)
             .collect::<Vec<_>>()
     };
     let base = active(base);
@@ -65,7 +66,7 @@ pub(crate) fn project(
             .elements
             .iter()
             .copied()
-            .map(super::ModernDamageType::from)
+            .map(crate::ModernDamageType::from)
             .filter_map(super::variable_damage::element_perk_index)
             .collect::<Vec<_>>();
         let lane = donor

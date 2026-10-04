@@ -2,6 +2,7 @@
 use super::*;
 use crate::recipe::RecipeDamageType;
 use sundial::investment::WeaponDamageType;
+use sundial::package_authoring::investment_schema::ELEMENTAL_DAMAGE_SOCKET_TYPE;
 
 mod row;
 use row::{SocketRowContext, draw_socket_picker_row};
@@ -107,6 +108,21 @@ fn sort_socket_type_choices(choices: &mut [sundial::investment::WeaponSocketType
     });
 }
 
+/// The roles a socket can take or be added with: the socket types installed items of the base's
+/// type carry, less the armor energy sockets, which keep their role, and the weapon damage socket,
+/// which only the base's own socket can be.
+fn socket_type_choices(
+    catalog: &InvestmentCatalog,
+    donor: &WeaponDonor,
+) -> Result<Vec<sundial::investment::WeaponSocketTypeChoice>, String> {
+    let mut choices = catalog.socket_type_choices(donor.summary.hash)?;
+    choices.retain(|choice| {
+        !crate::item::ENERGY_SOCKET_TYPES.contains(&choice.socket_type)
+            && choice.socket_type != ELEMENTAL_DAMAGE_SOCKET_TYPE
+    });
+    Ok(choices)
+}
+
 fn draw_add_socket(
     ui: &mut egui::Ui,
     catalog: &InvestmentCatalog,
@@ -121,7 +137,7 @@ fn draw_add_socket(
     ui.horizontal(|ui| {
         ui.add_enabled_ui(can_add, |ui| {
             ui.menu_button("+ Add Socket", |ui| {
-                match catalog.weapon_socket_type_choices(donor.summary.hash) {
+                match socket_type_choices(catalog, donor) {
                     Ok(mut choices) => {
                         sort_socket_type_choices(&mut choices);
                         egui::ScrollArea::vertical()
@@ -147,7 +163,7 @@ fn draw_add_socket(
                 }
             })
             .response
-            .on_hover_text("Add a socket to this weapon");
+            .on_hover_text(format!("Add a socket to this {}", recipe.kind.noun()));
         });
         ui.weak(format!(
             "{socket_count} / {} sockets",
@@ -171,8 +187,8 @@ pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContex
         donor,
         log,
     } = context;
-    // Gear keeps its base's sockets and has no replicated effect bank. Its energy sockets belong
-    // to their own controls, and a disabled socket stays off.
+    // Gear has no replicated effect bank. Its energy sockets belong to their own controls, and a
+    // socket its base leaves disabled stays off.
     let gear = !recipe.kind.is_weapon();
     ui.add_space(3.0);
     draw_socket_override_diagnostics(ui, catalog, recipe, donor, show_plug_safety_warnings);
@@ -253,6 +269,7 @@ pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContex
         draw_row(ui, socket.index);
     }
     if gear {
+        draw_add_socket(ui, catalog, recipe, donor);
         return;
     }
     if !unused.is_empty() {
@@ -288,7 +305,7 @@ fn draw_weapon_socket_notes(
     // say is when there is no trait socket for it to lead. A socket the author gave the trait
     // role, or appended, counts as one, so this asks the lanes the same way the build does.
     if recipe.overrides.variable_damage.is_some()
-        && !crate::weapon_behavior::effective_socket_types(
+        && !crate::weapon::behavior::effective_socket_types(
             &authored_socket_roles(recipe),
             &donor
                 .sockets
@@ -390,7 +407,7 @@ pub(super) fn draw_socket_override_diagnostics(
             .collect::<BTreeSet<_>>();
         match (
             parsed,
-            supported_plug_sets(catalog, recipe, donor, &socket_types),
+            catalog.supported_plug_sets(donor.summary.hash, &socket_types),
         ) {
             (Ok(parsed), Ok(sets)) => {
                 let sets = sets
@@ -452,7 +469,7 @@ pub(super) fn draw_socket_override_diagnostics(
                     }
                     if let Some(socket_type) = socket_type
                         && socket_type != u16::MAX
-                        && !catalog.weapon_socket_type_is_known(donor.summary.hash, socket_type)
+                        && !catalog.socket_type_is_known(donor.summary.hash, socket_type)
                     {
                         ui.colored_label(
                             ui.visuals().error_fg_color,
@@ -468,21 +485,6 @@ pub(super) fn draw_socket_override_diagnostics(
                 ui.colored_label(ui.visuals().error_fg_color, error);
             }
         }
-    }
-}
-
-/// The plugs each socket accepts. Gear keeps its base's socket types, so its plugs come from the
-/// base alone.
-fn supported_plug_sets(
-    catalog: &InvestmentCatalog,
-    recipe: &WeaponRecipe,
-    donor: &WeaponDonor,
-    socket_types: &[Option<u16>],
-) -> Result<Vec<sundial::investment::WeaponSupportedPlugSet>, String> {
-    if recipe.kind.is_weapon() {
-        catalog.weapon_supported_plug_sets_with_socket_types(donor.summary.hash, socket_types)
-    } else {
-        catalog.gear_supported_plug_sets(donor.summary.hash)
     }
 }
 
@@ -526,12 +528,10 @@ pub(super) fn socket_role_label(
             let choices = if matches!(value, 176 | 92) {
                 Vec::new()
             } else {
-                catalog
-                    .weapon_socket_type_choices(donor.summary.hash)
-                    .unwrap_or_default()
+                socket_type_choices(catalog, donor).unwrap_or_default()
             };
-            // Gear has no weapon socket-type list, so its own socket keeps its native label,
-            // read without the "3. " position the catalog puts in front of it.
+            // A type the list leaves out keeps its native label, read without the "3. " position
+            // the catalog puts in front of it.
             let native = (value == socket.socket_type)
                 .then(|| socket.label.split_once(". ").map(|(_, name)| name))
                 .flatten();
@@ -577,13 +577,11 @@ pub(super) fn draw_socket_role_label(
                 .width(width)
                 .truncate()
                 .show_ui(ui, |ui| {
-                    let mut choices = catalog
-                        .weapon_socket_type_choices(donor.summary.hash)
-                        .unwrap_or_default();
+                    let mut choices = socket_type_choices(catalog, donor).unwrap_or_default();
                     sort_socket_type_choices(&mut choices);
                     ui.weak("Socket Role");
                     if !is_added {
-                        ui.selectable_value(role, None, "Keep Base Weapon Role");
+                        ui.selectable_value(role, None, "Keep Base Role");
                     }
                     for (value, label) in [(176, "Intrinsic"), (92, "Trait")] {
                         if choices.iter().any(|choice| choice.socket_type == value) {
@@ -600,9 +598,7 @@ pub(super) fn draw_socket_role_label(
                 .response
                 .on_hover_ui(|ui| {
                     sundial::investment::tooltip_title(ui, label);
-                    ui.label(
-                        "For example, Trait to Intrinsic. Custom perks keep their display type.",
-                    );
+                    ui.label("Custom perks keep their display type.");
                 });
         },
     );
@@ -756,12 +752,10 @@ fn draw_socket_type_row(
             return;
         };
         ui.add(egui::DragValue::new(value).range(0..=u16::MAX));
-        let socket_type_choices = catalog
-            .weapon_socket_type_choices(donor.summary.hash)
-            .unwrap_or_default();
+        let choices = socket_type_choices(catalog, donor).unwrap_or_default();
         egui::ComboBox::from_id_salt(("socket-type-choice", socket_index))
             .selected_text(
-                socket_type_choices
+                choices
                     .iter()
                     .find(|choice| choice.socket_type == *value)
                     .map_or_else(
@@ -776,7 +770,7 @@ fn draw_socket_type_row(
                     ),
             )
             .show_ui(ui, |ui| {
-                for choice in socket_type_choices {
+                for choice in choices {
                     ui.selectable_value(
                         value,
                         choice.socket_type,
@@ -789,7 +783,7 @@ fn draw_socket_type_row(
                 }
             });
         ui.weak(format!("donor {donor_socket_type}"));
-        if !catalog.weapon_socket_type_is_known(donor.summary.hash, *value) {
+        if !catalog.socket_type_is_known(donor.summary.hash, *value) {
             ui.colored_label(
                 ui.visuals().error_fg_color,
                 "Choose an installed socket type.",
@@ -1009,7 +1003,16 @@ pub(super) fn draw_socket_technical_fields(ui: &mut egui::Ui, fields: SocketTech
                         );
                         return;
                     }
-                    if !is_added && draw_restore_donor_row(ui, recipe, socket_index, queries) {
+                    if !is_added
+                        && draw_restore_donor_row(
+                            ui,
+                            recipe,
+                            donor.sockets.len(),
+                            socket_index,
+                            inherited,
+                            queries,
+                        )
+                    {
                         return;
                     }
                     let column = recipe.overrides.socket_columns[socket_index]
@@ -1113,7 +1116,9 @@ fn draw_inherited_socket_summary(
 fn draw_restore_donor_row(
     ui: &mut egui::Ui,
     recipe: &mut WeaponRecipe,
+    socket_count: usize,
     socket_index: usize,
+    inherited: &[u32],
     queries: &mut BTreeMap<usize, String>,
 ) -> bool {
     let restore = ui
@@ -1125,12 +1130,30 @@ fn draw_restore_donor_row(
     if !restore {
         return false;
     }
-    recipe.overrides.socket_columns[socket_index] = None;
-    if recipe.overrides.socket_columns.iter().all(Option::is_none) {
-        recipe.overrides.socket_columns.clear();
-    }
+    restore_socket_column(recipe, socket_count, socket_index, inherited);
     queries.clear();
     true
+}
+
+/// Drops a base socket's overrides so it reads as its base again. Custom perks keep their place
+/// only where the base's choices still hold their plug.
+pub(super) fn restore_socket_column(
+    recipe: &mut WeaponRecipe,
+    socket_count: usize,
+    socket_index: usize,
+    inherited: &[u32],
+) {
+    let columns = &mut recipe.overrides.socket_columns;
+    if columns.len() < socket_count {
+        columns.resize_with(socket_count, || None);
+    }
+    if let Some(column) = columns.get_mut(socket_index) {
+        *column = None;
+    }
+    if columns.iter().all(Option::is_none) {
+        columns.clear();
+    }
+    reconcile_socket_plug_variants(recipe, socket_index, inherited, None);
 }
 
 pub(super) fn recipe_socket_choices(
@@ -1393,7 +1416,7 @@ pub(super) fn sync_behavior_socket_pins(
     // The lane roles and authored plugs the build reads, so the sockets drawn here are the
     // sockets that get built: a column the author gave the trait role, or appended, is a trait
     // socket to both.
-    let socket_types = crate::weapon_behavior::effective_socket_types(
+    let socket_types = crate::weapon::behavior::effective_socket_types(
         &authored_socket_roles(recipe),
         &donor_socket_types,
     );
@@ -1407,8 +1430,8 @@ pub(super) fn sync_behavior_socket_pins(
     };
     let skip = recipe.overrides.skip_behavior_perks;
     let mut required =
-        crate::weapon_behavior::socket_pins(behaviors(), skip, &socket_types, &placed);
-    let mut claimed = crate::weapon_behavior::claimed_plugs(behaviors(), skip);
+        crate::weapon::behavior::socket_pins(behaviors(), skip, &socket_types, &placed);
+    let mut claimed = crate::weapon::behavior::claimed_plugs(behaviors(), skip);
     // Variable damage carries The Fundamentals into a trait lane whether or not the element-switch
     // behavior is listed, which is how the build reads it.
     if recipe.overrides.variable_damage.is_some() {
@@ -1419,7 +1442,7 @@ pub(super) fn sync_behavior_socket_pins(
                 .iter()
                 .enumerate()
                 .filter(|(_, socket_type)| {
-                    **socket_type == crate::weapon_behavior::TRAIT_SOCKET_TYPE
+                    **socket_type == crate::weapon::behavior::TRAIT_SOCKET_TYPE
                 })
                 .map(|(lane, _)| lane)
         };
@@ -1473,7 +1496,7 @@ pub(super) fn sync_behavior_socket_pins(
         // of it, so while a behavior claims the intrinsic lane it holds borrowed frames alone,
         // and once none does the lane goes back to the donor's own. A plug carrying a custom perk
         // the author wrote is their own frame, not the donor's, so it is never the one replaced.
-        if *socket_type == crate::weapon_behavior::INTRINSIC_SOCKET_TYPE {
+        if *socket_type == crate::weapon::behavior::INTRINSIC_SOCKET_TYPE {
             let authored = recipe
                 .overrides
                 .socket_plug_variants

@@ -286,7 +286,7 @@ fn equipment_flag_mutation_follows_schema_introduction_and_is_atomic() {
         let before = document.clone();
         let result = set_equipment_item_flags(&mut document, 0, "kinetic", Some(3));
 
-        if version < super::super::inventory::EQUIPMENT_FLAGS_SCHEMA_VERSION {
+        if version < 4 {
             assert!(
                 result.is_err(),
                 "schema {version} unexpectedly allowed flags"
@@ -393,6 +393,10 @@ fn subclass_equipping_updates_definition_and_default_abilities_atomically() {
             entry_perks: Default::default(),
             entry_icons: Default::default(),
             entry_descriptions: Default::default(),
+            entry_entities: Default::default(),
+            entry_rows: Default::default(),
+            entry_modifiers: Default::default(),
+            authored: false,
         },
     };
 
@@ -610,6 +614,10 @@ fn arcstrider_and_sentinel_subclass_edits_keep_the_base_super_lane() {
                 entry_perks: Default::default(),
                 entry_icons: Default::default(),
                 entry_descriptions: Default::default(),
+                entry_entities: Default::default(),
+                entry_rows: Default::default(),
+                entry_modifiers: Default::default(),
+                authored: false,
             },
         };
 

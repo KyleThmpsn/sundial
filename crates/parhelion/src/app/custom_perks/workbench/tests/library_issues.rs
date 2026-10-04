@@ -8,6 +8,7 @@
 //! (the report directory). A perk that never ends joins the copy, so one row is always flagged.
 //! `PARHELION_UI_CAPTURE_DIR` also captures the list.
 use super::*;
+use crate::test_support::driver::texts;
 use sundial::package_authoring::sandbox_perk::program::{Action, NativeNode, Trigger};
 
 fn env_path(name: &str) -> PathBuf {
@@ -30,20 +31,6 @@ fn draw(ctx: &egui::Context, app: &mut crate::app::PackageAuthoringApp) -> egui:
     )
 }
 
-fn texts(output: &egui::FullOutput) -> Vec<(String, egui::Rect)> {
-    output
-        .shapes
-        .iter()
-        .filter_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) => Some((
-                text.galley.job.text.clone(),
-                text.galley.rect.translate(text.pos.to_vec2()),
-            )),
-            _ => None,
-        })
-        .collect()
-}
-
 #[test]
 #[ignore = "requires PARHELION_WORKBENCH_INSTALL, PARHELION_WORKBENCH_CATALOG, PARHELION_LIBRARY_ROOT and PARHELION_LIBRARY_ISSUES_OUT"]
 fn a_real_library_marks_exactly_the_perks_with_problems() {
@@ -60,6 +47,10 @@ fn a_real_library_marks_exactly_the_perks_with_problems() {
         }
     }
     let library = Library::open(root.path().to_path_buf()).unwrap();
+    assert!(
+        !library.scan().unwrap().entries.is_empty(),
+        "no configured library perks were copied"
+    );
     let mut endless = PerkRecipe::new();
     endless.name = "Library Issues Never Ends".into();
     let mut effect = program::new_effect(1178);
@@ -96,22 +87,7 @@ fn a_real_library_marks_exactly_the_perks_with_problems() {
 
     // Discovery reads the install in the background, and the list checks saved perks a few
     // at a time, so frames run until both are done.
-    let start = std::time::Instant::now();
-    loop {
-        draw(&ctx, &mut app);
-        let workbench = &app.perk_workbench;
-        if !workbench.busy()
-            && workbench.library_issues_ready
-            && workbench.library_issues.len() == workbench.entries.len()
-        {
-            break;
-        }
-        assert!(
-            start.elapsed() < std::time::Duration::from_secs(600),
-            "the list never finished checking the library"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    wait_for_library(&ctx, &mut app);
     let output = draw(&ctx, &mut app);
     capture::write(&ctx, &output, "library-issues");
 
@@ -127,6 +103,7 @@ fn a_real_library_marks_exactly_the_perks_with_problems() {
     );
     let mut failures = Vec::new();
     let mut flagged = 0;
+    let mut checked = 0;
     for entry in &workbench.entries {
         // What the status bar would show with the perk open: a problem, else a warning.
         let issue = workbench.validation_issue(&entry.recipe);
@@ -138,14 +115,8 @@ fn a_real_library_marks_exactly_the_perks_with_problems() {
             .collect::<Vec<_>>();
         let marked = match rows.as_slice() {
             [(_, name)] => {
-                let icon = icons.iter().find(|icon| {
-                    icon.center().y > name.min.y - 4.0 && icon.center().y < name.max.y + 4.0
-                });
-                if let Some(icon) = icon
-                    && name.max.x > icon.min.x + 1.0
-                {
-                    failures.push(format!("{}: the icon covers the name", entry.recipe.name));
-                }
+                checked += 1;
+                let icon = row_icon(&icons, name, &entry.recipe.name, &mut failures);
                 if icon.is_some() != issue.is_some() {
                     failures.push(format!(
                         "{}: marked {}, issue {:?}",
@@ -188,6 +159,46 @@ fn a_real_library_marks_exactly_the_perks_with_problems() {
         .validation_issue(&planted.recipe)
         .expect("the perk that never ends is not flagged");
     assert!(!planted.blocking, "a behavior that never ends blocks Apply");
+    assert!(
+        checked > 0,
+        "no visible library rows were checked:\n{report}"
+    );
     assert!(flagged > 0, "no perk was flagged:\n{report}");
     assert!(failures.is_empty(), "{}\n\n{report}", failures.join("\n"));
+}
+
+fn row_icon<'a>(
+    icons: &'a [egui::Rect],
+    name: &egui::Rect,
+    perk: &str,
+    failures: &mut Vec<String>,
+) -> Option<&'a egui::Rect> {
+    let icon = icons
+        .iter()
+        .find(|icon| icon.center().y > name.min.y - 4.0 && icon.center().y < name.max.y + 4.0);
+    if let Some(icon) = icon
+        && name.max.x > icon.min.x + 1.0
+    {
+        failures.push(format!("{perk}: the icon covers the name"));
+    }
+    icon
+}
+
+fn wait_for_library(ctx: &egui::Context, app: &mut crate::app::PackageAuthoringApp) {
+    let start = std::time::Instant::now();
+    loop {
+        draw(ctx, app);
+        let workbench = &app.perk_workbench;
+        if !workbench.busy()
+            && workbench.library_issues_ready
+            && workbench.library_issues.len() == workbench.entries.len()
+        {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(600),
+            "the list never finished checking the library"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }

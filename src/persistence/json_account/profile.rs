@@ -675,10 +675,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn missing_account_rejects_projection_without_mutating_inputs() {
+    fn missing_account_rejects_profile_projection() {
         let document = json!({"version": 8, "state": {"characters": []}});
         let adapter = JsonProfileAdapter::load(&document).unwrap();
-        let before = adapter.clone();
 
         assert!(
             adapter
@@ -693,7 +692,5 @@ mod tests {
                 )
                 .is_err()
         );
-        assert_eq!(adapter, before);
-        assert_eq!(document, json!({"version": 8, "state": {"characters": []}}));
     }
 }

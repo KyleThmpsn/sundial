@@ -127,10 +127,7 @@ pub fn opus_ogg(media: &[u8]) -> Result<Vec<u8>> {
     ensure!(word(fmt, 0)? == 0x3041, "Wwise media is not Opus 0x3041");
     ensure!(fmt.len() >= 36, "short Wwise Opus format chunk");
     let channels = word(fmt, 2)?;
-    ensure!(
-        (1..=2).contains(&channels),
-        "unsupported Wwise Opus channel count"
-    );
+    let mapping = opus_mapping(fmt)?;
     let rate = dword(fmt, 4)?;
     ensure!(rate == 48_000, "unsupported Wwise Opus sample rate");
     let sample_count = dword(fmt, 24)?;
@@ -139,6 +136,10 @@ pub fn opus_ogg(media: &[u8]) -> Result<Vec<u8>> {
     ensure!(
         !seek.is_empty() && seek.len() % 2 == 0,
         "invalid Wwise Opus packet index"
+    );
+    ensure!(
+        dword(fmt, 28)? as usize == seek.len() / 2,
+        "Wwise Opus packet count disagrees with index"
     );
     let data = get(*b"data").context("Wwise Opus packet data missing")?;
     let mut packets = Vec::new();
@@ -169,7 +170,8 @@ pub fn opus_ogg(media: &[u8]) -> Result<Vec<u8>> {
     head.extend_from_slice(&[1, channels as u8]);
     head.extend_from_slice(&pre_skip.to_le_bytes());
     head.extend_from_slice(&rate.to_le_bytes());
-    head.extend_from_slice(&[0, 0, 0]);
+    head.extend_from_slice(&[0, 0]); // Output gain.
+    head.extend_from_slice(&mapping);
     let mut tags = Vec::new();
     tags.extend_from_slice(b"OpusTags");
     tags.extend_from_slice(&9u32.to_le_bytes());
@@ -192,9 +194,32 @@ pub fn opus_ogg(media: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Wwise 0x3041 stores an implicit stream map, not an OpusHead map.
+/// The standard side-quad layout consists of two coupled streams in channel
+/// order. Other multichannel layouts need their own validated stream mapping.
+/// Format reference: vgmstream/src/meta/wwise.c, OPUSWW ChannelConfigToMapping.
+fn opus_mapping(fmt: &[u8]) -> Result<Vec<u8>> {
+    let channels = word(fmt, 2)?;
+    ensure!(fmt.get(34) == Some(&1), "unsupported Wwise Opus version");
+    let config = dword(fmt, 20)?;
+    ensure!(
+        config & 0xff == u32::from(channels) && (config >> 8) & 0xf == 1,
+        "unsupported Wwise Opus channel configuration"
+    );
+    match (channels, fmt.get(35), config >> 12) {
+        (1, Some(0), 4) | (2, Some(0), 3) => Ok(vec![0]),
+        // A mono low-frequency stream is written as mapping family 255, but one uncoupled stream
+        // carries it, so it decodes exactly as the family 0 mono stream does.
+        (1, Some(255), 8) => Ok(vec![0]),
+        (4, Some(1), 0x603) => Ok(vec![1, 2, 2, 0, 1, 2, 3]),
+        _ => bail!("unsupported Wwise Opus channel mapping"),
+    }
+}
+
 /// Decode Wwise Opus into 16-bit PCM RIFF media with ffmpeg. The output is not
 /// independently playable in Dawn until its legacy bank and event are authored.
 pub fn pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
+    crate::cancellation::check()?;
     let ogg = opus_ogg(media)?;
     let chunks = chunks(media)?;
     let fmt = chunks
@@ -233,7 +258,10 @@ pub fn pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
     // input concurrently with draining both output pipes to avoid a deadlock.
     let (output, written) = std::thread::scope(|scope| {
         let writer = scope.spawn(move || input.write_all(&ogg));
-        (process.wait_with_output(), writer.join())
+        (
+            crate::cancellation::wait_with_output(process),
+            writer.join(),
+        )
     });
     let output = output?;
     if !output.status.success() {
@@ -250,7 +278,11 @@ pub fn pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
         !data.is_empty() && data.len() % (usize::from(channels) * 2) == 0,
         "decoded PCM samples are incomplete"
     );
-    riff_pcm(channels, rate, data)
+    ensure!(
+        data.len() / (usize::from(channels) * 2) == dword(fmt, 24)? as usize,
+        "decoded PCM frame count disagrees with Wwise source"
+    );
+    riff_pcm_layout(channels, rate, dword(fmt, 20)? >> 12, data)
 }
 
 const PCM_SUBFORMAT: [u8; 16] = [
@@ -279,7 +311,7 @@ pub fn normalize_pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
     let channels = word(fmt, 2)?;
     let rate = dword(fmt, 4)?;
     ensure!(
-        matches!(channels, 1 | 2) && (8_000..=192_000).contains(&rate),
+        matches!(channels, 1 | 2 | 4) && (8_000..=192_000).contains(&rate),
         "unsupported PCM channel count or sample rate"
     );
     ensure!(
@@ -288,28 +320,34 @@ pub fn normalize_pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
             && dword(fmt, 8)? == rate * u32::from(channels) * 2,
         "invalid 16-bit PCM sample layout"
     );
-    match word(fmt, 0)? {
-        1 => ensure!(
-            fmt.len() == 16 || (fmt.len() == 18 && word(fmt, 16)? == 0),
-            "unsupported PCM format extension"
-        ),
-        0xFFFE => ensure!(
-            fmt.len() == 40
-                && word(fmt, 16)? == 22
-                && word(fmt, 18)? == 16
-                && dword(fmt, 20)? == channel_mask(channels)
-                && fmt[24..40] == PCM_SUBFORMAT,
-            "unsupported extensible PCM format"
-        ),
+    let mask = match word(fmt, 0)? {
+        1 => {
+            ensure!(
+                matches!(channels, 1 | 2)
+                    && (fmt.len() == 16 || (fmt.len() == 18 && word(fmt, 16)? == 0)),
+                "unsupported PCM format extension"
+            );
+            channel_mask(channels)
+        }
+        0xFFFE => {
+            ensure!(
+                fmt.len() == 40
+                    && word(fmt, 16)? == 22
+                    && word(fmt, 18)? == 16
+                    && fmt[24..40] == PCM_SUBFORMAT,
+                "unsupported extensible PCM format"
+            );
+            dword(fmt, 20)?
+        }
         _ => bail!("media is not PCM"),
-    }
+    };
     ensure!(
         chunks
             .iter()
             .all(|(id, _)| matches!(*id, b"fmt " | b"data" | b"JUNK" | b"LIST")),
         "PCM media has unsupported playback metadata"
     );
-    riff_pcm(channels, rate, samples[0])
+    riff_pcm_layout(channels, rate, mask, samples[0])
 }
 
 fn channel_mask(channels: u16) -> u32 {
@@ -318,11 +356,16 @@ fn channel_mask(channels: u16) -> u32 {
 
 /// A 16-bit WAVEFORMATEXTENSIBLE PCM WEM.
 fn riff_pcm(channels: u16, rate: u32, data: &[u8]) -> Result<Vec<u8>> {
+    riff_pcm_layout(channels, rate, channel_mask(channels), data)
+}
+
+fn riff_pcm_layout(channels: u16, rate: u32, mask: u32, data: &[u8]) -> Result<Vec<u8>> {
     ensure!(
-        matches!(channels, 1 | 2)
+        // Mono center, mono low frequency, stereo and side quad.
+        matches!((channels, mask), (1, 4) | (1, 8) | (2, 3) | (4, 0x603))
             && !data.is_empty()
             && data.len().is_multiple_of(usize::from(channels) * 2),
-        "incomplete PCM samples"
+        "unsupported PCM speaker layout or incomplete samples"
     );
     let mut wem = Vec::with_capacity(68 + data.len());
     wem.extend_from_slice(b"RIFF");
@@ -342,7 +385,7 @@ fn riff_pcm(channels: u16, rate: u32, data: &[u8]) -> Result<Vec<u8>> {
     wem.extend_from_slice(&16u16.to_le_bytes());
     wem.extend_from_slice(&22u16.to_le_bytes());
     wem.extend_from_slice(&16u16.to_le_bytes());
-    wem.extend_from_slice(&channel_mask(channels).to_le_bytes());
+    wem.extend_from_slice(&mask.to_le_bytes());
     wem.extend_from_slice(&PCM_SUBFORMAT);
     wem.extend_from_slice(b"data");
     wem.extend_from_slice(&u32::try_from(data.len())?.to_le_bytes());
@@ -375,8 +418,8 @@ pub fn mix_pcm(layers: &[Vec<u8>]) -> Result<Vec<u8>> {
             .context("PCM data missing")?
             .1;
         ensure!(
-            word(fmt, 0)? == 0xFFFE && word(fmt, 14)? == 16,
-            "only 16-bit PCM layers mix"
+            word(fmt, 0)? == 0xFFFE && word(fmt, 14)? == 16 && matches!(word(fmt, 2)?, 1 | 2),
+            "only mono or stereo 16-bit PCM layers mix"
         );
         decoded.push((word(fmt, 2)?, dword(fmt, 4)?, data));
     }
@@ -558,15 +601,5 @@ mod tests {
             chunks[1].1.len(),
             dword(source_fmt, 24).unwrap() as usize * word(source_fmt, 2).unwrap() as usize * 2
         );
-    }
-
-    #[test]
-    #[ignore = "Requires explicitly configured Dawn Wwise Vorbis bank"]
-    fn configured_native_bank_adapts_to_pcm() {
-        let path = std::env::var_os("PARHELION_AUDIO_NATIVE_BANK").expect("configured bank");
-        let bank = std::fs::read(path).unwrap();
-        let adapted = pcm_bank_template(&bank).unwrap();
-        assert_eq!(adapted.len(), bank.len());
-        assert_ne!(adapted, bank);
     }
 }

@@ -25,6 +25,7 @@ pub(super) struct Plate {
     albedo: usize,
     gearstack: Option<usize>,
     normal: Option<usize>,
+    dye_map: Option<super::super::texture::DyeMap>,
 }
 
 impl Plate {
@@ -47,6 +48,7 @@ impl Plate {
             albedo: slot(&model.triangle_textures)?,
             gearstack: slot(&model.triangle_gearstacks),
             normal: slot(&model.triangle_normals),
+            dye_map: model.triangle_dye_maps.get(triangle).copied().flatten(),
         })
     }
 }
@@ -110,7 +112,11 @@ pub(super) fn bake(
     for &triangle in triangles {
         let finish = Finish {
             dye: model.triangle_dyes.get(triangle).copied().unwrap_or(0),
-            clip: model.triangle_clip.get(triangle).copied().unwrap_or(false),
+            clip: model.triangle_clip.get(triangle).copied().unwrap_or(false)
+                || model
+                    .triangle_dye_maps
+                    .get(triangle)
+                    .is_some_and(Option::is_some),
         };
         finishes.entry(finish).or_default().push(triangle);
     }

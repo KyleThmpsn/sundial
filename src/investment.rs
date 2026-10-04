@@ -17,7 +17,9 @@ mod perk_patterns;
 mod perk_sources;
 pub use perk_sources::{PerkSource, PerkSources};
 pub mod discovery;
+mod emblem;
 mod ingredients;
+pub use emblem::{EmblemTrackerCategory, load_emblem_tracker_categories};
 pub use ingredients::{IngredientCatalog, IngredientSource};
 
 /// The Shaders inventory bucket, and the plug category every shader carries.
@@ -38,23 +40,25 @@ fn is_stock_shader(metadata: &crate::catalog::ItemPackageMetadata) -> bool {
 }
 pub(crate) mod seasonal;
 pub use controls::{
-    AUTHORING_SOCKET_RESET_WIDTH, CatalogLoadingView, DisplayTooltip, IconOverride,
-    PlugChoicePickerButton, PlugChoicePickerOptions, PlugSelection, PlugTooltip,
-    WeaponDonorPickerAction, WeaponDonorPickerClearChoice, WeaponDonorPickerOptions,
-    authoring_button_width, authoring_choice_row_height, authoring_socket_label_width,
-    authoring_socket_reset_width, configure_authoring_fonts, default_plug_selection_mode,
-    draw_asset_choice_row, draw_asset_choice_row_plain, draw_authoring_info_icon,
-    draw_authoring_socket_label, draw_authoring_socket_reset, draw_authoring_toolbar,
+    AUTHORING_SOCKET_RESET_WIDTH, AuthoringItemHeader, CatalogLoadingView, DisplayTooltip,
+    IconOverride, PlugChoicePickerButton, PlugChoicePickerOptions, PlugSelection, PlugTooltip,
+    WeaponChoiceFilter, WeaponDonorPickerAction, WeaponDonorPickerClearChoice,
+    WeaponDonorPickerOptions, authoring_button_width, authoring_choice_row_height,
+    authoring_socket_label_width, authoring_socket_reset_width, configure_authoring_fonts,
+    default_plug_selection_mode, draw_asset_choice_row, draw_asset_choice_row_plain,
+    draw_authoring_info_icon, draw_authoring_item_header, draw_authoring_socket_label,
+    draw_authoring_socket_reset, draw_authoring_tile, draw_authoring_toolbar,
     draw_authoring_warning_icon, draw_catalog_loading_view, draw_display_tooltip,
     draw_plug_safety_selector, draw_plug_safety_warning, progress_bar, show_plug_safety_warnings,
     tooltip_title,
 };
 pub use definitions::{
-    PowerCapChoice, SubclassSummary, WeaponAmmoType, WeaponArtArrangement,
-    WeaponDamageCarrierFamily, WeaponDamageProfile, WeaponDamageType, WeaponDonor,
-    WeaponDonorSummary, WeaponDyeReference, WeaponInventorySlot, WeaponInvestmentStat,
-    WeaponOrnament, WeaponOrnamentAppearance, WeaponRarity, WeaponSandboxPerkChoice, WeaponSocket,
-    WeaponSocketTypeChoice, WeaponStatDisplayPoint, WeaponSupportedPlugSet, WeaponTraitChoice,
+    AbilityKey, AbilityParameter, AbilityRowSummary, PowerCapChoice, SubclassSummary,
+    WeaponAmmoType, WeaponArtArrangement, WeaponDamageCarrierFamily, WeaponDamageProfile,
+    WeaponDamageType, WeaponDonor, WeaponDonorSummary, WeaponDyeReference, WeaponInventorySlot,
+    WeaponInvestmentStat, WeaponOrnament, WeaponOrnamentAppearance, WeaponRarity,
+    WeaponSandboxPerkChoice, WeaponSocket, WeaponSocketTypeChoice, WeaponStatDisplayPoint,
+    WeaponSupportedPlugSet, WeaponTraitChoice,
 };
 pub use perk_patterns::PerkPatternUse;
 
@@ -189,29 +193,6 @@ impl InvestmentCatalog {
             catalog,
             authorable_weapon_stat_indices,
         })
-    }
-
-    /// Describes the authored private plug, including its effective native classification.
-    /// Stock source metadata is only a fallback for fields the recipe does not override.
-    #[must_use]
-    pub fn private_plug_tooltip(
-        &self,
-        source: u32,
-        classification: Option<u32>,
-        name: Option<&str>,
-        description: Option<&str>,
-    ) -> String {
-        let name = name
-            .or_else(|| self.catalog.display_name(u64::from(source)))
-            .unwrap_or("Private perk");
-        let type_name = self
-            .catalog
-            .plug_type_name(u64::from(classification.unwrap_or(source)))
-            .unwrap_or("");
-        let description = description
-            .or_else(|| self.catalog.description(u64::from(source)))
-            .unwrap_or("");
-        format!("{name}\n{type_name}\n\n{description}")
     }
 
     /// Returns the localized stock label, optionally including its hash for disambiguation.
@@ -413,13 +394,6 @@ impl InvestmentCatalog {
             .unwrap_or_default()
     }
 
-    /// Lists every active sandbox-perk index referenced by an installed item. The representative
-    /// item is display metadata only; recipes store and author the finished numeric index.
-    #[must_use]
-    pub fn weapon_sandbox_perk_choices(&self) -> Vec<WeaponSandboxPerkChoice> {
-        self.weapon_sandbox_perk_choices_from(|_| true)
-    }
-
     /// Lists effect sources from accepted native item-definition tags. Authoring clients can
     /// exclude generated items whose private effect indices are absent from their build source.
     /// Every sandbox-perk index an installed item references, including declaration-only rows.
@@ -600,6 +574,21 @@ impl InvestmentCatalog {
         self.catalog.socket_entry_list_count()
     }
 
+    /// Every row of the ability tables, with its entity and bank.
+    #[must_use]
+    pub fn ability_rows(&self) -> &[AbilityRowSummary] {
+        self.catalog.ability_rows()
+    }
+
+    /// One row of the ability tables.
+    #[must_use]
+    pub fn ability_row(&self, row: u8) -> Option<&AbilityRowSummary> {
+        self.catalog
+            .ability_rows()
+            .iter()
+            .find(|summary| summary.row == row)
+    }
+
     #[must_use]
     pub fn weapon_donor(&self, hash: u32) -> Option<WeaponDonor> {
         self.weapon_donor_with_stat_group_index(hash, None)
@@ -704,6 +693,23 @@ impl InvestmentCatalog {
                         .iter()
                         .filter_map(|(entry, description)| {
                             Some((u8::try_from(*entry).ok()?, description.clone()))
+                        })
+                        .collect(),
+                    entry_entities: abilities
+                        .entry_entities
+                        .iter()
+                        .filter_map(|(entry, entity)| Some((u8::try_from(*entry).ok()?, *entity)))
+                        .collect(),
+                    entry_rows: abilities
+                        .entry_rows
+                        .iter()
+                        .filter_map(|(entry, row)| Some((u8::try_from(*entry).ok()?, *row)))
+                        .collect(),
+                    entry_modifiers: abilities
+                        .entry_modifiers
+                        .iter()
+                        .filter_map(|(entry, modifiers)| {
+                            Some((u8::try_from(*entry).ok()?, modifiers.clone()))
                         })
                         .collect(),
                 })
@@ -1065,63 +1071,24 @@ impl InvestmentCatalog {
         })
     }
 
-    /// Returns the normalized compatible plug hashes for every socket on a donor.
+    /// Returns the normalized compatible plug hashes for every socket on a base item.
     ///
-    /// These broad, sorted picker pools combine compatible package data across weapons of the
+    /// These broad, sorted picker pools combine compatible package data across items of the
     /// same gear and socket type. They are intentionally different from
-    /// [`WeaponSocket::ordered_embedded_choices`], which preserves only the donor's native
+    /// [`WeaponSocket::ordered_embedded_choices`], which preserves only the base's native
     /// embedded column. The native default is retained when a pool omits it. A disabled value is
-    /// exposed only for a natively disabled `FFFF` socket.
-    pub fn weapon_supported_plug_sets(
-        &self,
-        donor_hash: u32,
-    ) -> Result<Vec<WeaponSupportedPlugSet>, String> {
-        self.weapon_supported_plug_sets_with_socket_types(donor_hash, &[])
-    }
-
-    /// Returns compatible plug hashes for replaced and appended socket types.
-    pub fn weapon_supported_plug_sets_with_socket_types(
+    /// exposed only for a natively disabled `FFFF` socket. With `socket_types`, the pools follow
+    /// replaced and appended socket types.
+    pub fn supported_plug_sets(
         &self,
         donor_hash: u32,
         socket_types: &[Option<u16>],
     ) -> Result<Vec<WeaponSupportedPlugSet>, String> {
-        let item = self
-            .catalog
-            .item(u64::from(donor_hash))
-            .ok_or_else(|| format!("Unknown donor weapon 0x{donor_hash:08X}"))?;
-        if !is_authorable_weapon_item(item) {
-            return Err(format!(
-                "Item 0x{donor_hash:08X} is not an authorable weapon"
-            ));
-        }
-        self.supported_plug_sets(item, donor_hash, socket_types)
-    }
-
-    /// Compatible plugs for every socket on an armor piece, Sparrow, Ship or Ghost Shell.
-    pub fn gear_supported_plug_sets(
-        &self,
-        donor_hash: u32,
-    ) -> Result<Vec<WeaponSupportedPlugSet>, String> {
-        let item = self
-            .catalog
-            .item(u64::from(donor_hash))
-            .ok_or_else(|| format!("Unknown base item 0x{donor_hash:08X}"))?;
-        if is_weapon_bucket(item.bucket_hash) {
-            return Err(format!("Item 0x{donor_hash:08X} is a weapon"));
-        }
-        self.supported_plug_sets(item, donor_hash, &[])
-    }
-
-    fn supported_plug_sets(
-        &self,
-        item: &crate::catalog::ItemDef,
-        donor_hash: u32,
-        socket_types: &[Option<u16>],
-    ) -> Result<Vec<WeaponSupportedPlugSet>, String> {
+        let item = self.socket_base(donor_hash)?;
         let socket_count = item.sockets.len().max(socket_types.len());
         if socket_count > MAX_WEAPON_SOCKETS {
             return Err(format!(
-                "Weapons support at most {MAX_WEAPON_SOCKETS} ordinary sockets"
+                "Items support at most {MAX_WEAPON_SOCKETS} ordinary sockets"
             ));
         }
         (0..socket_count)
@@ -1142,7 +1109,7 @@ impl InvestmentCatalog {
                     .transpose()
                     .map_err(|_| {
                         format!(
-                            "Donor weapon 0x{donor_hash:08X} socket {socket_index} has a default plug hash larger than 32 bits"
+                            "Base item 0x{donor_hash:08X} socket {socket_index} has a default plug hash larger than 32 bits"
                         )
                     })?;
                 let unchanged_type = socket.is_some_and(|socket| socket_type == socket.socket_type);
@@ -1159,7 +1126,7 @@ impl InvestmentCatalog {
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|_| {
                         format!(
-                            "Donor weapon 0x{donor_hash:08X} socket {socket_index} has a compatible plug hash larger than 32 bits"
+                            "Base item 0x{donor_hash:08X} socket {socket_index} has a compatible plug hash larger than 32 bits"
                         )
                     })?;
                 if unchanged_type
@@ -1178,20 +1145,13 @@ impl InvestmentCatalog {
             .collect()
     }
 
-    /// Socket categories present in the installed package catalog, sorted by native ID.
-    pub fn weapon_socket_type_choices(
+    /// The socket categories installed items of the base's own type carry, sorted by native ID,
+    /// which an author can add to the item or give one of its sockets.
+    pub fn socket_type_choices(
         &self,
         donor_hash: u32,
     ) -> Result<Vec<WeaponSocketTypeChoice>, String> {
-        let item = self
-            .catalog
-            .item(u64::from(donor_hash))
-            .ok_or_else(|| format!("Unknown donor weapon 0x{donor_hash:08X}"))?;
-        if !is_authorable_weapon_item(item) {
-            return Err(format!(
-                "Item 0x{donor_hash:08X} is not an authorable weapon"
-            ));
-        }
+        let item = self.socket_base(donor_hash)?;
         Ok(self
             .catalog
             .socket_and_gear_type_option_counts(item)
@@ -1207,19 +1167,29 @@ impl InvestmentCatalog {
             .collect())
     }
 
-    /// Whether a native socket category is represented by the donor's installed weapon family.
+    /// Whether a native socket category is one installed items of the base's type carry.
     #[must_use]
-    pub fn weapon_socket_type_is_known(&self, donor_hash: u32, socket_type: u16) -> bool {
+    pub fn socket_type_is_known(&self, donor_hash: u32, socket_type: u16) -> bool {
         socket_type != u16::MAX
-            && self
-                .catalog
-                .item(u64::from(donor_hash))
-                .is_some_and(|item| {
-                    is_authorable_weapon_item(item)
-                        && self
-                            .catalog
-                            .socket_type_is_known_for_item(item, socket_type)
-                })
+            && self.socket_base(donor_hash).is_ok_and(|item| {
+                self.catalog
+                    .socket_type_is_known_for_item(item, socket_type)
+            })
+    }
+
+    /// A base item whose sockets can be authored: any item but a weapon ornament, which sits in a
+    /// weapon bucket without being a weapon.
+    fn socket_base(&self, donor_hash: u32) -> Result<&crate::catalog::ItemDef, String> {
+        let item = self
+            .catalog
+            .item(u64::from(donor_hash))
+            .ok_or_else(|| format!("Unknown base item 0x{donor_hash:08X}"))?;
+        if is_weapon_bucket(item.bucket_hash) && !is_authorable_weapon_item(item) {
+            return Err(format!(
+                "Item 0x{donor_hash:08X} is not an authorable weapon"
+            ));
+        }
+        Ok(item)
     }
 }
 
@@ -1275,30 +1245,21 @@ mod tests {
             ),
             authorable_weapon_stat_indices: Vec::new(),
         };
-        let pools = catalog
-            .weapon_supported_plug_sets_with_socket_types(1, &[None, Some(700)])
-            .unwrap();
+        let pools = catalog.supported_plug_sets(1, &[None, Some(700)]).unwrap();
         assert_eq!(pools.len(), 2);
         assert_eq!(pools[1].socket_index, 1);
         assert_eq!(pools[1].plug_hashes, pools[0].plug_hashes);
         assert_eq!(pools[1].plug_hashes, vec![101, 102]);
         assert!(!pools[1].allows_disabled);
+        assert!(catalog.supported_plug_sets(1, &[None, None]).is_err());
         assert!(
             catalog
-                .weapon_supported_plug_sets_with_socket_types(1, &[None, None])
-                .is_err()
-        );
-        assert!(
-            catalog
-                .weapon_supported_plug_sets_with_socket_types(1, &[Some(700); MAX_WEAPON_SOCKETS])
+                .supported_plug_sets(1, &[Some(700); MAX_WEAPON_SOCKETS])
                 .is_ok()
         );
         assert!(
             catalog
-                .weapon_supported_plug_sets_with_socket_types(
-                    1,
-                    &[Some(700); MAX_WEAPON_SOCKETS + 1]
-                )
+                .supported_plug_sets(1, &[Some(700); MAX_WEAPON_SOCKETS + 1])
                 .is_err()
         );
     }
@@ -1307,8 +1268,8 @@ mod tests {
     #[ignore = "requires SUNDIAL_TEST_INSTALL; native item and plug effect catalog"]
     fn sandbox_effect_choices_include_conditional_plug_effects() {
         let install = std::path::PathBuf::from(std::env::var_os("SUNDIAL_TEST_INSTALL").unwrap());
-        let catalog = InvestmentCatalog::load(&install, false, |_| {}).unwrap();
-        let choices = catalog.weapon_sandbox_perk_choices();
+        let catalog = crate::test_support::catalog(&install).unwrap();
+        let choices = catalog.weapon_sandbox_perk_choices_from(|_| true);
         for (index, name) in [
             (421, "Outlaw"),
             (351, "Rampage"),
@@ -1327,41 +1288,5 @@ mod tests {
                     .contains(&index)
             );
         }
-    }
-
-    #[test]
-    #[ignore = "requires SUNDIAL_TEST_INSTALL; reads native plug classification without changing the shared cache"]
-    fn private_tooltip_uses_authored_intrinsic_without_relabeling_stock_trait() {
-        let install = std::path::PathBuf::from(std::env::var_os("SUNDIAL_TEST_INSTALL").unwrap());
-        let temporary = crate::test_support::TestDirectory::new("private-plug-tooltip");
-        let catalog = InvestmentCatalog {
-            catalog: Catalog::load_or_scan_with_progress(
-                &install,
-                temporary.0.join("catalog.json"),
-                true,
-                |_| {},
-            )
-            .unwrap(),
-            authorable_weapon_stat_indices: Vec::new(),
-        };
-        let source = 0xDD5C_B37A;
-        let stock = catalog.private_plug_tooltip(source, None, None, None);
-        assert_eq!(stock.lines().nth(1), Some("Trait"));
-        let description = "This weapon fires a high-speed micro-missile in a straight line. Move faster with this weapon equipped.";
-        for intrinsic in [0xC684_24BC, 0x6185_084A] {
-            assert_eq!(
-                catalog.private_plug_tooltip(
-                    source,
-                    Some(intrinsic),
-                    Some("Micro-Missile Frame"),
-                    Some(description),
-                ),
-                format!("Micro-Missile Frame\nIntrinsic\n\n{description}")
-            );
-        }
-        assert_eq!(
-            catalog.private_plug_tooltip(source, None, None, None),
-            stock
-        );
     }
 }

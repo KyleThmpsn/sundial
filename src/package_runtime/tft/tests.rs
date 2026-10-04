@@ -140,7 +140,7 @@ fn native_paths_do_not_name_unpaired_or_unresolved_assets() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_PROJECTILE_TEST_PACKAGES"]
+#[ignore = "requires PARHELION_PROJECTILE_TEST_PACKAGES and PARHELION_PROJECTILE_TEST_OUTPUT"]
 fn native_tft_map_and_effect_catalog_preserve_evidence() {
     let packages =
         std::path::PathBuf::from(std::env::var_os("PARHELION_PROJECTILE_TEST_PACKAGES").unwrap());
@@ -162,7 +162,7 @@ fn native_tft_map_and_effect_catalog_preserve_evidence() {
     }));
     let dependencies = crate::sandbox_perk::dependencies::inspect(&manager, |_, _| {}).unwrap();
     let catalog =
-        crate::sandbox_perk::projectile::catalog::inspect(&manager, &dependencies, &names).unwrap();
+        crate::sandbox_perk::entity::catalog::inspect(&manager, &dependencies, &names).unwrap();
     // A handful of attachable graphs carry a component map the entity reader rejects. They
     // are reported rather than listed. A read failure would be a different problem.
     assert!(
@@ -187,15 +187,13 @@ fn native_tft_map_and_effect_catalog_preserve_evidence() {
             .iter()
             .find(|entry| entry.graph == graph)
             .expect("observed projectile included");
-        assert_eq!(
-            entry.kind,
-            crate::sandbox_perk::projectile::Kind::Projectile
-        );
+        assert_eq!(entry.kind, crate::sandbox_perk::entity::Kind::Projectile);
     }
     assert!(catalog.entries.iter().any(|entry| entry.kind
-        == crate::sandbox_perk::projectile::Kind::Emitter
+        == crate::sandbox_perk::entity::Kind::Emitter
         && !entry.native_paths.is_empty()));
-    let output = std::path::PathBuf::from("tmp/projectile-picker-20260910/native-map");
+    let output =
+        std::path::PathBuf::from(std::env::var_os("PARHELION_PROJECTILE_TEST_OUTPUT").unwrap());
     std::fs::create_dir_all(&output).unwrap();
     std::fs::write(
         output.join("tft-index.json"),
@@ -214,12 +212,12 @@ fn native_tft_map_and_effect_catalog_preserve_evidence() {
         catalog
             .entries
             .iter()
-            .filter(|entry| entry.kind == crate::sandbox_perk::projectile::Kind::Projectile)
+            .filter(|entry| entry.kind == crate::sandbox_perk::entity::Kind::Projectile)
             .count(),
         catalog
             .entries
             .iter()
-            .filter(|entry| entry.kind == crate::sandbox_perk::projectile::Kind::Emitter)
+            .filter(|entry| entry.kind == crate::sandbox_perk::entity::Kind::Emitter)
             .count()
     );
 }

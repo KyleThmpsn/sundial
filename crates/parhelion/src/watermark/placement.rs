@@ -245,41 +245,4 @@ mod tests {
             }
         }
     }
-
-    #[test]
-    fn optical_adjustment_enlarges_glyph_and_applies_lane_placement() {
-        for (index, center_x) in [(0, 18.0), (1, 36.0)] {
-            let source = image::load_from_memory(AUTHORED_TEXTURE_PNGS[index])
-                .unwrap()
-                .into_rgba8();
-            let adjusted = adjust_corner_glyph(
-                index,
-                source.width(),
-                source.height(),
-                source.as_raw().clone(),
-            )
-            .unwrap();
-            let (before_mass, before_x) = glyph_mass_and_center(source.as_raw(), source.width());
-            let (after_mass, after_x) = glyph_mass_and_center(&adjusted, source.width());
-            assert!(
-                (after_mass / before_mass - glyph_scale(index) * glyph_height_scale(index)).abs()
-                    < 0.02
-            );
-            let expected_x =
-                (before_x - center_x) * glyph_scale(index) + center_x - glyph_left_shift(index);
-            assert!((after_x - expected_x).abs() < 0.1);
-            assert!(after_x < before_x - glyph_left_shift(index) + 0.2);
-        }
-    }
-
-    fn glyph_mass_and_center(pixels: &[u8], width: u32) -> (f64, f64) {
-        let mut mass = 0.0;
-        let mut weighted_x = 0.0;
-        for (index, pixel) in pixels.chunks_exact(4).enumerate() {
-            let weight = f64::from(pixel[0]) * f64::from(pixel[3]) / 255.0;
-            mass += weight;
-            weighted_x += weight * f64::from(index as u32 % width);
-        }
-        (mass, weighted_x / mass)
-    }
 }

@@ -108,3 +108,34 @@ fn clicking_library_name_opens_the_recipe_instead_of_selecting_text() {
     assert!(app.enabled_recipe_paths.is_empty());
     assert!(!app.recipe_dirty);
 }
+
+#[test]
+fn a_library_notice_sits_above_the_search_and_leaves_the_list_in_view() {
+    let directory = tempfile::tempdir().unwrap();
+    let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
+    let mut app = PackageAuthoringApp {
+        recipe_entries: library.scan().unwrap().entries,
+        library_open: true,
+        ..Default::default()
+    };
+    let name = app.recipe_entries[0].name.clone();
+    let count = recipe_count_line(app.recipe_entries.len());
+    app.library_state.notice = Some("Imported 1 recipe.".into());
+    let (output, _) = render(900.0, |ui| app.draw_library_windows(ui.ctx()));
+    let notice = text_origin(&output, "Imported 1 recipe.");
+    let row = text_origin(&output, &name);
+    let footer = text_origin(&output, &count);
+    // The notice is one line under the toolbar, and the list and its count follow it on screen.
+    assert!(
+        notice.y < row.y && row.y < footer.y,
+        "{notice:?} {row:?} {footer:?}"
+    );
+    assert!(
+        notice.y < 120.0,
+        "the notice sits under the toolbar: {notice:?}"
+    );
+}
+
+fn recipe_count_line(count: usize) -> String {
+    format!("{count} {}", if count == 1 { "recipe" } else { "recipes" })
+}

@@ -15,7 +15,8 @@ pub mod consumers;
 pub mod controls;
 pub mod dispatch;
 pub mod markers;
-mod poses;
+pub mod motion;
+pub(crate) mod poses;
 pub mod profile;
 mod states;
 use crate::d2_mot::{
@@ -104,7 +105,7 @@ fn first_person(rig: &Value, lookup_class: &str) -> Result<Option<FirstPerson>> 
 /// both sides, and two source bones may never land on one native bone. Bones
 /// with no counterpart map to `u16::MAX`. Slot alignment independently rejects
 /// dropping animated tracks.
-fn bone_map(source: &[Value], native: &[Value]) -> Result<Vec<u16>> {
+pub(super) fn bone_map(source: &[Value], native: &[Value]) -> Result<Vec<u16>> {
     for (label, bones) in [("source", source), ("native", native)] {
         ensure!(
             bones
@@ -158,7 +159,7 @@ fn bone_map(source: &[Value], native: &[Value]) -> Result<Vec<u16>> {
 }
 
 /// Read a lookup owner's bank rows as clip tags with the clip names they carry.
-fn bank(r: &mut Reader, owner: u32, modern: bool) -> Result<(u32, Vec<(u32, u32)>)> {
+pub(super) fn bank(r: &mut Reader, owner: u32, modern: bool) -> Result<(u32, Vec<(u32, u32)>)> {
     let p = r.tag(owner, Some(if modern { 0x80809B06 } else { 0x80809C36 }))?;
     let bank_tag = p.u32(p.pointer(24)? + if modern { 0xA8 } else { 0x90 })?;
     let bank = r.tag(bank_tag, Some(if modern { 0x8080289F } else { 0x808036F6 }))?;
@@ -220,7 +221,7 @@ fn word_occurrences(payload: &[u8], tag: u32) -> usize {
 
 /// A native clip and the source clip sharing its name: native tag, source tag,
 /// name hash, source payload and native payload.
-type ClipPair = (u32, u32, u32, Arc<Payload>, Arc<Payload>);
+pub(super) type ClipPair = (u32, u32, u32, Arc<Payload>, Arc<Payload>);
 
 /// An extra source clip's native template tag, source template tag, playback
 /// mode, converted payload and conversion report.
@@ -266,7 +267,7 @@ fn chain_files(
 }
 
 /// Pair every name-matched native clip with its source clip payloads.
-fn clip_pairs(
+pub(super) fn clip_pairs(
     sr: &mut Reader,
     nr: &mut Reader,
     native: &[(u32, u32)],
@@ -331,7 +332,7 @@ fn calibration_clips(
 
 /// The event library from every paired clip, the explicit event calibration
 /// pairs and the native bank.
-fn events(
+pub(super) fn events(
     sr: &mut Reader,
     nr: &mut Reader,
     calibration: Option<&Value>,
@@ -370,7 +371,7 @@ fn events(
 
 /// Convert every paired source clip onto its native counterpart's slots. Returns
 /// the converted and unconverted reports with the count of clips carrying events.
-fn convert_pairs(
+pub(super) fn convert_pairs(
     pairs: &[ClipPair],
     event_library: &clips::EventLibrary,
     slots: &clips::slots::Table,
@@ -814,7 +815,7 @@ pub fn prepare_with_rig(
     if calibration.is_some() {
         let profile =
             profile::requested_with_category(&mut sr, source_rig, native_rig, &attachments, true)?;
-        let (bindings, layers) = poses::bindings(
+        let (mut bindings, layers) = poses::bindings(
             &mut sr,
             &mut nr,
             source_rig,
@@ -824,6 +825,14 @@ pub fn prepare_with_rig(
             &profile,
             graph,
         )?;
+        bindings.extend(motion::bindings(
+            &mut sr,
+            &mut nr,
+            source_rig,
+            native_rig,
+            &source_clips,
+            &native_clips,
+        )?);
         pose_layers = layers;
         for (native_tag, source_tag, layer) in bindings {
             let source_clip = sr.tag(source_tag, Some(0x80808BE0))?;

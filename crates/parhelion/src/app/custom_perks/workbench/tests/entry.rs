@@ -53,20 +53,8 @@ fn effect_menu(output: &egui::FullOutput) -> egui::Pos2 {
 }
 
 fn click(ctx: &egui::Context, app: &mut PackageAuthoringApp, position: egui::Pos2) {
-    for pressed in [true, false] {
-        frame(
-            ctx,
-            app,
-            vec![
-                egui::Event::PointerMoved(position),
-                egui::Event::PointerButton {
-                    pos: position,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: Default::default(),
-                },
-            ],
-        );
+    for events in crate::test_support::driver::tap(position) {
+        frame(ctx, app, events);
     }
 }
 
@@ -117,7 +105,7 @@ fn native_micro_missile_entry_applies_speed_without_experimental_mode() {
     let install = std::env::var_os("PARHELION_PROJECTILE_CATALOG_INSTALL")
         .map(PathBuf::from)
         .unwrap_or_else(|| packages.parent().unwrap().to_path_buf());
-    let catalog = InvestmentCatalog::load(&install, false, |_| {}).unwrap();
+    let catalog = crate::test_support::catalog(&install).unwrap();
     let donor = catalog.weapon_donor(0x23DB_942F).unwrap();
     let mut recipe = WeaponRecipe::new_named_weapon_for_donor(
         "Speed Editor Entry",

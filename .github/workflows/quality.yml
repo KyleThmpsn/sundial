@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Check out source
+      - name: Check Out Source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust 1.88
@@ -22,7 +22,7 @@ jobs:
           rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt --no-self-update
           rustup default 1.88.0
 
-      - name: Install build tools
+      - name: Install Build Tools
         run: |
           sudo apt-get update
           sudo apt-get install --yes \
@@ -38,62 +38,69 @@ jobs:
             desktop-file-utils \
             python3-gi
 
-      - name: Test Linux desktop installation
+      - name: Test Linux Desktop Installation
         run: sh packaging/linux/tests/install.sh
 
-      # Downloaded crate sources only. These are content addressed, so a restored entry can
-      # never be stale, and both jobs otherwise refetch the whole dependency graph every run.
-      - name: Cache downloaded crates
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      # Cache compiled dependencies as well as downloaded crates. Release uses the
+      # same key, with toolchain, manifests and compiler settings checked by rust-cache.
+      - name: Cache Rust Dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ${{ runner.os }}-cargo-crates-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-crates-
+          shared-key: release-${{ runner.os }}
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/upstream' }}
 
       # The auditor is pinned to one version, so it is compiled once and reused. Its own root
       # keeps it clear of the rustup shims that live in ~/.cargo/bin.
-      - name: Cache dependency auditor
+      - name: Cache Dependency Auditor
         id: dependency-auditor
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cargo-audit
           key: ${{ runner.os }}-cargo-audit-0.22.2
 
-      - name: Install dependency auditor
+      - name: Install Dependency Auditor
         if: steps.dependency-auditor.outputs.cache-hit != 'true'
         run: cargo install cargo-audit --version 0.22.2 --locked --root ~/.cargo-audit
 
-      - name: Put the dependency auditor on PATH
+      - name: Put the Dependency Auditor on PATH
         run: echo "$HOME/.cargo-audit/bin" >> "$GITHUB_PATH"
 
-      - name: Check formatting
+      - name: Check Formatting
         run: cargo fmt --all -- --check
 
-      - name: Lint Sundial and Parhelion Across All Targets
+      - name: Lint Sundial and Parhelion across All Targets
         run: cargo clippy --release --workspace --all-targets --locked -- -D warnings
 
       - name: Test Sundial and Parhelion
-        run: cargo test --release --workspace --locked
+        run: |
+          rm -f target/cargo-timings/cargo-timing.html
+          cargo test --release --workspace --locked --timings
 
-      - name: Check documentation
+      - name: Check Documentation
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --release --workspace --no-deps --locked --lib
 
       # Narrow Linux accessibility XML exceptions. Any other RustSec vulnerability
       # still fails this check.
-      - name: Audit dependencies
+      - name: Audit Dependencies
         run: cargo audit --deny yanked --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
+
+      - name: Upload Build Timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cargo-timings-quality-${{ runner.os }}
+          path: target/cargo-timings/cargo-timing.html
+          if-no-files-found: ignore
+          retention-days: 14
 
   windows:
     runs-on: windows-2022
 
     steps:
-      - name: Check out source
+      - name: Check Out Source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust 1.88
@@ -102,18 +109,14 @@ jobs:
           rustup toolchain install 1.88.0 --profile minimal --component clippy --no-self-update
           rustup default 1.88.0
 
-      - name: Cache downloaded crates
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Cache Rust Dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ${{ runner.os }}-cargo-crates-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-crates-
+          shared-key: release-${{ runner.os }}
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/upstream' }}
 
-      - name: Lint Sundial and Parhelion Windows targets
+      - name: Lint Sundial and Parhelion Windows Targets
         run: cargo clippy --release --workspace --all-targets --locked -- -D warnings
 
       - name: Check Upstream D2 Model Importer
@@ -121,4 +124,15 @@ jobs:
         run: cargo check --release --locked -p sundial-suite --features d2-model-importer
 
       - name: Test Sundial and Parhelion on Windows
-        run: cargo test --release --workspace --locked
+        run: |
+          Remove-Item -LiteralPath target/cargo-timings/cargo-timing.html -ErrorAction SilentlyContinue
+          cargo test --release --workspace --locked --timings
+
+      - name: Upload Build Timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cargo-timings-quality-${{ runner.os }}
+          path: target/cargo-timings/cargo-timing.html
+          if-no-files-found: ignore
+          retention-days: 14

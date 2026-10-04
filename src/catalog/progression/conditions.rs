@@ -8,10 +8,13 @@ pub(super) struct ConditionReferences {
     pub(super) programs: Vec<Vec<[u32; 2]>>,
 }
 
+/// Adds `context` to what tests one definition. The definition shares the context with every other
+/// it tests, unless it already had one from the same source, which then takes a merged copy of
+/// its own.
 pub(super) fn add_progression_context(
     definitions: &mut [UnlockDefinition],
     definition_index: usize,
-    context: &ProgressionContextDef,
+    context: &Arc<ProgressionContextDef>,
 ) {
     let Some(definition) = definitions.get_mut(definition_index) else {
         return;
@@ -21,6 +24,10 @@ pub(super) fn add_progression_context(
         .iter_mut()
         .find(|existing| existing.kind == context.kind && existing.hash == context.hash)
     {
+        if Arc::ptr_eq(existing, context) {
+            return;
+        }
+        let existing = Arc::make_mut(existing);
         if existing.name.trim().is_empty() && !context.name.trim().is_empty() {
             existing.name.clone_from(&context.name);
         }
@@ -45,17 +52,23 @@ pub(super) fn add_progression_context(
                 existing.direct_references.push(reference.clone());
             }
         }
+        sort_paths(existing);
         return;
     }
-    definition.tested_by.push(context.clone());
+    definition.tested_by.push(Arc::clone(context));
 }
 
+/// A context's paths in order, once each. A shared context cannot be changed in place, so its
+/// paths are put in order when it is made rather than afterwards.
+pub(super) fn sort_paths(context: &mut ProgressionContextDef) {
+    context.paths.sort();
+    context.paths.dedup();
+}
+
+/// Orders what tests each definition, then gives contexts with the same content one shared copy,
+/// so the catalog holds and the cache writes each once.
 pub(in crate::catalog) fn sort_progression_contexts(definitions: &mut [UnlockDefinition]) {
-    for definition in definitions {
-        for context in &mut definition.tested_by {
-            context.paths.sort();
-            context.paths.dedup();
-        }
+    for definition in definitions.iter_mut() {
         definition.tested_by.sort_by_cached_key(|context| {
             (
                 progression_context_priority(context.kind),
@@ -64,6 +77,36 @@ pub(in crate::catalog) fn sort_progression_contexts(definitions: &mut [UnlockDef
                 context.hash,
             )
         });
+    }
+    share_equal_contexts(definitions);
+}
+
+/// Replaces each context with the first one of the same content. Contexts already shared are
+/// looked up by address, so each distinct one is compared once.
+fn share_equal_contexts(definitions: &mut [UnlockDefinition]) {
+    let mut canonical = HashSet::<Arc<ProgressionContextDef>>::new();
+    // The original stays in the map, so its address cannot be reused while the map is in use.
+    let mut replaced = HashMap::<
+        *const ProgressionContextDef,
+        (Arc<ProgressionContextDef>, Arc<ProgressionContextDef>),
+    >::new();
+    for definition in definitions {
+        for context in &mut definition.tested_by {
+            let address = Arc::as_ptr(context);
+            if let Some((_, shared)) = replaced.get(&address) {
+                *context = Arc::clone(shared);
+                continue;
+            }
+            let shared = match canonical.get(&**context) {
+                Some(shared) => Arc::clone(shared),
+                None => {
+                    canonical.insert(Arc::clone(context));
+                    Arc::clone(context)
+                }
+            };
+            replaced.insert(address, (Arc::clone(context), Arc::clone(&shared)));
+            *context = shared;
+        }
     }
 }
 
@@ -99,6 +142,9 @@ pub(super) fn attach_condition_context(
             context.condition_programs.push(program.clone());
         }
     }
+    sort_paths(&mut context);
+    // One context for every definition these conditions name.
+    let context = Arc::new(context);
     for &index in &references.flags {
         add_progression_context(flag_definitions, index, &context);
     }

@@ -134,7 +134,8 @@ impl DawnAccountDocument {
         for character in self.characters().characters() {
             for item in character.equipment.values().flatten() {
                 let already_equipped = self
-                    .loaded_characters
+                    .loaded
+                    .characters
                     .characters()
                     .iter()
                     .flat_map(|c| c.equipment.values().flatten())
@@ -150,13 +151,15 @@ impl DawnAccountDocument {
             {
                 let soid = item.instance_soid.get();
                 let old = self
-                    .loaded_characters
+                    .loaded
+                    .characters
                     .characters()
                     .iter()
                     .flat_map(|c| c.inventory.iter().chain(c.equipment.values().flatten()))
                     .find(|old| old.instance_soid == item.instance_soid);
                 let baseline = self
-                    .loaded_carried
+                    .loaded
+                    .carried
                     .item_rolls
                     .iter()
                     .find(|r| u64::from_str_radix(&r.instance_soid, 16).ok() == Some(soid));

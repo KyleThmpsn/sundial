@@ -85,7 +85,6 @@ fn candidates_use_payload_identity_and_share_workbench_validation() {
         .iter()
         .find(|choice| choice.recipe.name == "Broken Perk")
         .unwrap();
-    assert_eq!(broken.issue, workbench.perk_issue(&broken.recipe));
     assert!(broken.issue.is_some());
     assert_eq!(
         choices

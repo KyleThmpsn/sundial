@@ -94,7 +94,6 @@ fn optional_field_edits_stay_staged_and_cancel_discards_them() {
         click_label(&output, "Set Current Activity on Launch"),
     );
     assert!(action.is_none());
-    assert!(source.get("current_activity_from_launch").is_none());
     let (output, _) = frame(&context, &source, Vec::new());
     let (_, action) = frame(&context, &source, click_label(&output, "Apply"));
     match action {

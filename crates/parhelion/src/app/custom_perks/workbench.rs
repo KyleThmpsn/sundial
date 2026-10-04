@@ -12,7 +12,9 @@ mod attachment;
 mod behaviors;
 pub(super) mod canvas;
 mod cards;
+mod catalog_insert;
 mod controls;
+mod diagnostics;
 mod discovery;
 mod duplicate;
 mod engine;
@@ -24,9 +26,11 @@ mod library;
 mod markers;
 mod parameters;
 pub(super) use crate::app::pickers;
+pub(in crate::app) use program::native::remember_abilities;
 mod program;
 mod properties;
 mod reading;
+mod referrers;
 mod selection;
 mod stats;
 mod stock;
@@ -35,18 +39,41 @@ mod test_plan;
 #[cfg(test)]
 pub(crate) mod tests;
 mod validation;
+mod verification_ui;
 use parameters::{PerkEditor, PrivatePerkRuntimeGraph};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::app) enum Request {
-    EditChoice { socket: usize, choice: usize },
-    SelectChoice { socket: usize, choice: usize },
+    EditChoice {
+        socket: usize,
+        choice: usize,
+    },
+    SelectChoice {
+        socket: usize,
+        choice: usize,
+    },
+    /// A custom perk of a subclass ability or node.
+    Ability {
+        place: crate::subclass::Place,
+        perk: AbilityPerk,
+    },
+}
+
+/// Which custom perk of a subclass ability or node the workbench opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::app) enum AbilityPerk {
+    New,
+    /// One of its custom perks, by its place among them.
+    Custom(usize),
+    /// A copy of one of its stock perks, which takes that perk's place once applied.
+    Stock(u16),
 }
 
 impl Request {
-    pub(in crate::app) fn socket(self) -> usize {
+    pub(in crate::app) fn socket(self) -> Option<usize> {
         match self {
-            Self::EditChoice { socket, .. } | Self::SelectChoice { socket, .. } => socket,
+            Self::EditChoice { socket, .. } | Self::SelectChoice { socket, .. } => Some(socket),
+            Self::Ability { .. } => None,
         }
     }
 }
@@ -67,6 +94,9 @@ struct Document {
     /// Opened from a weapon socket as a copy of the perk there.
     #[serde(skip)]
     from_socket: bool,
+    /// The subclass ability or node it goes on.
+    #[serde(skip)]
+    ability: Option<attachment::AbilityTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending_effect: Option<EffectDraft>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -99,6 +129,7 @@ impl Document {
             baseline,
             target: None,
             from_socket: false,
+            ability: None,
             pending_effect: None,
         }
     }
@@ -159,7 +190,7 @@ struct EffectDraft {
     projectiles: Vec<ProjectileSelection>,
     field_text: Vec<((WeaponRuntimeFieldLocator, u8), String)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pending_movement: Option<(u32, Vec<(projectile::parameters::Kind, u32)>)>,
+    pending_movement: Option<(u32, Vec<(entity::projectile::parameters::Kind, u32)>)>,
 }
 
 /// Whether the Details row of the open perk is unfolded. The description, icon and category
@@ -213,9 +244,11 @@ pub(in crate::app) struct Workbench {
     effect_names: Option<forms::EffectNames>,
     ingredient_source: Option<sundial::investment::IngredientSource>,
     /// Weapon names by item hash, for assets named after the pattern that fires them.
-    item_names: BTreeMap<u32, projectile::catalog::ItemName>,
+    item_names: BTreeMap<u32, entity::catalog::ItemName>,
     /// Names are cached by native catalog identity and invalidated when source labels change.
-    asset_label_source: Option<Arc<projectile::catalog::Catalog>>,
+    asset_label_source: Option<Arc<entity::catalog::Catalog>>,
+    /// The game-name registration the labels were computed with.
+    asset_label_generation: u64,
     asset_labels: BTreeMap<u32, String>,
     properties: properties::Properties,
     editor: Option<PerkEditor>,
@@ -228,6 +261,10 @@ pub(in crate::app) struct Workbench {
     editing_program_action: Option<usize>,
     discovery: discovery::Discovery,
     engine: engine::EngineCatalog,
+    diagnostics_open: bool,
+    diagnostic_cache: Option<diagnostics::Cache>,
+    consolidation: (usize, usize),
+    verification: verification_ui::Window,
     message: Option<String>,
     message_path: Option<PathBuf>,
     error: Option<String>,
@@ -249,6 +286,9 @@ pub(in crate::app) struct Workbench {
     pub(in crate::app) recipe_unsaved: bool,
     /// The footer asked the host to save the weapon recipe.
     pub(in crate::app) save_recipe_requested: bool,
+    /// A subclass recipe's abilities and path nodes with their names, set by the host each
+    /// frame, which its perks can go on.
+    pub(in crate::app) ability_places: Vec<(crate::subclass::Place, String)>,
 }
 
 enum HeaderAction {
@@ -330,6 +370,8 @@ impl Workbench {
 
     pub(in crate::app) fn busy(&self) -> bool {
         self.discovery.busy()
+            || self.engine.export.busy()
+            || self.verification.busy()
             || self.duplicating.is_some()
             || self.preparing_stock_effect()
             || self.properties.busy()
@@ -347,7 +389,9 @@ impl Workbench {
     /// Stops reads that only feed a view, so work that needs the packages to itself can go
     /// ahead. The Markers view can read again after package work finishes.
     pub(in crate::app) fn stop_optional_reads(&mut self) {
+        self.discovery.stop();
         self.engine.markers.stop();
+        self.engine.referrers.stop();
     }
 
     pub(in crate::app) fn editing(&self) -> bool {
@@ -396,6 +440,8 @@ impl Workbench {
         // The marker index describes the packages that were open, so a reload drops it.
         self.engine.markers.stop();
         self.engine.markers.invalidate();
+        self.engine.referrers.stop();
+        self.engine.referrers.invalidate();
         self.icons.invalidate();
         self.behaviors = behaviors::Picker::default();
         self.keys = program::Keys::default();
@@ -467,6 +513,8 @@ impl Workbench {
         choices: &[WeaponSandboxPerkChoice],
     ) {
         self.poll_duplicate(ctx, choices);
+        self.engine.export.poll();
+        self.verification.poll();
         self.poll_stock_programs();
         if let Some(editor) = &mut self.editor {
             editor.poll();
@@ -489,6 +537,12 @@ impl Workbench {
             self.engine.markers.cancel();
         }
         self.engine.markers.poll();
+        // Every use of a resource is read only when a resource page asks, and the read runs
+        // to the end wherever the reader goes next, since the packages it finished are kept.
+        if self.engine.referrers.wanted() && packages.is_dir() && !self.discovery.busy() {
+            self.engine.referrers.start(packages, ctx);
+        }
+        self.engine.referrers.poll();
         // An effect opened before discovery finished shows the index notice until the
         // index exists; once discovery has data, the index does.
         if self.discovery.data.is_some()
@@ -507,7 +561,7 @@ impl Workbench {
         choices: &[WeaponSandboxPerkChoice],
         experimental: bool,
         attachment: (&WeaponRecipe, Option<&WeaponDonor>),
-    ) -> Option<attachment::Change> {
+    ) -> Option<attachment::Applied> {
         let (weapon, donor) = attachment;
         self.item_kind = weapon.kind;
         self.poll_background_work(ctx, packages, choices);
@@ -561,7 +615,7 @@ impl Workbench {
             self.discovery.data.as_ref().map(|data| &data.effects),
         );
         self.refresh_editor_context();
-        if self.busy() || self.engine.markers.busy() {
+        if self.busy() || self.engine.markers.busy() || self.engine.referrers.busy() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
         if self.engine.open {
@@ -571,6 +625,11 @@ impl Workbench {
         // Taken before the call, because `show` borrows the catalog mutably while the object
         // page needs the same index the Markers view read.
         let marker_index = self.engine.markers.index();
+        self.engine.insertion.destination = self
+            .documents
+            .get(self.selected)
+            .filter(|document| self.editor.is_none() && document.pending_effect.is_none())
+            .map(|document| document.recipe.clone());
         self.engine.show(
             ctx,
             choices,
@@ -588,7 +647,28 @@ impl Workbench {
             },
             experimental,
         );
+        if self.engine.stop_requested {
+            self.engine.stop_requested = false;
+            self.discovery.stop();
+        }
         self.retry_discovery(packages, ctx);
+        if let Some(request) = self.engine.insertion.requested.take()
+            && let Some(document) = self.documents.get_mut(self.selected)
+        {
+            let before = document.recipe.clone();
+            match request.apply(&mut document.recipe) {
+                Ok(()) => {
+                    document.history.record_step(before);
+                    document.modified = Some(SystemTime::now());
+                    self.message =
+                        Some("Inserted the native configuration into the current perk.".into());
+                    self.open = true;
+                    self.page = Page::Effects;
+                    self.persist_drafts();
+                }
+                Err(error) => self.error = Some(error),
+            }
+        }
         if let Some(index) = self.engine.copy_requested.take()
             && let Some(choice) = choices.iter().find(|choice| choice.perk_index == index)
         {
@@ -596,6 +676,15 @@ impl Workbench {
             self.copy_behavior(choice);
         }
         if !self.open {
+            self.show_diagnostics(ctx);
+            if let Some(document) = self.documents.get(self.selected) {
+                self.verification.show(
+                    ctx,
+                    &document.recipe,
+                    self.item_kind,
+                    self.library.as_ref().map(Library::root),
+                );
+            }
             return None;
         }
         self.initialize();
@@ -701,7 +790,13 @@ impl Workbench {
                 );
                 let footer_top = ui.cursor().top();
                 ui.separator();
-                attachment = self.draw_attachment(ui, weapon, donor, catalog);
+                attachment = if weapon.kind == crate::ItemKind::Subclass {
+                    self.draw_ability_attachment(ui)
+                        .map(|change| attachment::Applied::Ability(Box::new(change)))
+                } else {
+                    self.draw_attachment(ui, weapon, donor, catalog)
+                        .map(|change| attachment::Applied::Socket(Box::new(change)))
+                };
                 ctx.data_mut(|data| {
                     data.insert_temp(footer_id, (ui.cursor().top() - footer_top + 8.0).max(40.0))
                 });
@@ -726,6 +821,15 @@ impl Workbench {
             self.message_path = None;
         }
         self.capture_effect_draft();
+        self.show_diagnostics(ctx);
+        if let Some(document) = self.documents.get(self.selected) {
+            self.verification.show(
+                ctx,
+                &document.recipe,
+                self.item_kind,
+                self.library.as_ref().map(Library::root),
+            );
+        }
         if self.busy() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
@@ -770,6 +874,14 @@ impl Workbench {
                         }
                     }
                     ui.separator();
+                    if ui.button("Perk Diagnostics…").clicked() {
+                        self.diagnostics_open = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Gameplay Verification…").clicked() {
+                        self.verification.open = true;
+                        ui.close_menu();
+                    }
                     if ui
                         .add_enabled(
                             !editing && !recipe.effects.is_empty(),
@@ -1063,7 +1175,7 @@ impl Workbench {
             .pattern_items
             .iter()
             .map(|&item| {
-                let name = projectile::catalog::ItemName::new(
+                let name = entity::catalog::ItemName::new(
                     catalog.plug_label(item, false),
                     catalog.item_type_name(item).unwrap_or_default(),
                 );
@@ -1079,17 +1191,25 @@ impl Workbench {
             self.asset_label_source = None;
             return;
         };
+        let generation = entity::catalog::game_names_generation();
         if self
             .asset_label_source
             .as_ref()
             .is_some_and(|source| Arc::ptr_eq(source, &data.effects))
+            && self.asset_label_generation == generation
         {
             return;
         }
+        // A perk an ability grants is listed as "Ability <list> / <entry>", a placeholder
+        // the naming ignores, so what it attaches is named after the ability instead.
         self.asset_labels = data.effects.discovery_labels_with(
-            |index| self.perk_names.get(&index).cloned(),
+            |index| match self.perk_names.get(&index) {
+                Some(name) if !name.starts_with("Ability ") => Some(name.clone()),
+                listed => crate::app::ability_names::perk_owner(index).or_else(|| listed.cloned()),
+            },
             |item| self.item_names.get(&item).cloned(),
         );
         self.asset_label_source = Some(data.effects.clone());
+        self.asset_label_generation = generation;
     }
 }

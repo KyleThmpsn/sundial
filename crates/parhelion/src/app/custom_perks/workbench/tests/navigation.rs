@@ -303,7 +303,7 @@ fn a_requested_conversion_replaces_the_stock_effect() {
     let size = egui::vec2(1000.0, 720.0);
     frame(&ctx, &mut workbench, false, size, vec![]);
     assert!(workbench.editor.is_some());
-    // What Convert to Editable Program leaves for the host to take.
+    // What Convert Anyway leaves for the host to take.
     workbench.editor.as_mut().unwrap().conversion = Some(converted());
     frame(&ctx, &mut workbench, false, size, vec![]);
     let effect = &workbench.documents[0].recipe.effects[0];

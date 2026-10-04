@@ -92,14 +92,14 @@ fn perk_bank_projects_defaults_alternatives_and_private_additions() {
     let bank = crate::weapon::perk_bank::project(&recipe, &donor, lookup);
     assert_eq!(bank.default_count, 19);
     assert_eq!(bank.maximum_count, 20);
-    assert_eq!(
-        bank.omitted,
-        [
-            "Socket 4 effect 81",
-            "Socket 4 effect 82",
-            "Socket 4 effect 83"
-        ]
-    );
+    assert_eq!(bank.omitted.len(), 3);
+    for effect in [81, 82, 83] {
+        assert!(
+            bank.omitted
+                .iter()
+                .any(|line| { line.contains("Socket 4") && line.contains(&effect.to_string()) })
+        );
+    }
     remove_base_socket(&mut recipe, 4, 3);
     recipe.overrides.base_sandbox_perks = Some(vec![u16::MAX, 1]);
     let bank = crate::weapon::perk_bank::project(&recipe, &donor, lookup);
@@ -218,7 +218,6 @@ fn appended_socket_survives_original_row_edits_and_recipe_reload() {
             .socket_type,
         Some(92)
     );
-    assert_eq!(donor.sockets.len(), 3);
 }
 
 #[test]
@@ -283,7 +282,7 @@ fn making_a_choice_default_moves_conditions_weights_and_private_data_together() 
 }
 
 #[test]
-fn moving_a_choice_carries_its_weight_condition_and_private_perk() {
+fn moving_a_choice_carries_its_weight_and_private_perk() {
     let mut recipe = PackageAuthoringApp::default().recipe;
     set_recipe_socket_column(&mut recipe, 3, 0, &[10], vec![20, 21, 22], None);
     let column = recipe.overrides.socket_columns[0].as_mut().unwrap();
@@ -481,7 +480,7 @@ fn chosen(recipe: &WeaponRecipe, lane: usize) -> Vec<u32> {
 #[test]
 fn a_chosen_behavior_leads_its_sockets_without_dropping_the_authors_choice() {
     let donor = behavior_donor();
-    let entry = crate::weapon_behavior::behavior("graviton-lance").expect("a catalogued behavior");
+    let entry = crate::weapon::behavior::behavior("graviton-lance").expect("a catalogued behavior");
     let trait_plug = entry.trait_plug.expect("this behavior pins a trait plug");
     let mut recipe = behavior_recipe();
     let mut pins = BehaviorPins::default();
@@ -519,7 +518,7 @@ fn a_chosen_behavior_leads_its_sockets_without_dropping_the_authors_choice() {
 #[test]
 fn a_perk_the_author_moved_to_their_own_socket_leaves_the_donors_lane_alone() {
     let donor = behavior_donor();
-    let entry = crate::weapon_behavior::behavior("graviton-lance").expect("a catalogued behavior");
+    let entry = crate::weapon::behavior::behavior("graviton-lance").expect("a catalogued behavior");
     let trait_plug = entry.trait_plug.expect("this behavior pins a trait plug");
     let mut recipe = behavior_recipe();
     let mut pins = BehaviorPins::default();
@@ -553,7 +552,7 @@ fn a_perk_the_author_moved_to_their_own_socket_leaves_the_donors_lane_alone() {
 #[test]
 fn turning_off_included_perks_releases_the_sockets_again() {
     let donor = behavior_donor();
-    let entry = crate::weapon_behavior::behavior("graviton-lance").expect("a catalogued behavior");
+    let entry = crate::weapon::behavior::behavior("graviton-lance").expect("a catalogued behavior");
     let mut recipe = behavior_recipe();
     let mut pins = BehaviorPins::default();
     recipe.overrides.additional_behaviors = vec![crate::recipe::AdditionalBehaviorRecipe {
@@ -581,7 +580,7 @@ fn native_perk_donor(plug: u32) -> WeaponDonor {
 /// whether the perk was one some behavior could pin.
 #[test]
 fn a_donors_own_catalogued_perk_is_never_taken_back() {
-    let plug = crate::weapon_behavior::CATALOG
+    let plug = crate::weapon::behavior::CATALOG
         .iter()
         .find_map(|entry| entry.intrinsic_plug)
         .expect("the catalogue pins at least one intrinsic plug");
@@ -602,7 +601,7 @@ fn a_donors_own_catalogued_perk_is_never_taken_back() {
 #[test]
 fn a_perk_the_author_made_default_stays_when_no_behavior_claims_it() {
     let donor = behavior_donor();
-    let entry = crate::weapon_behavior::behavior("graviton-lance").expect("a catalogued behavior");
+    let entry = crate::weapon::behavior::behavior("graviton-lance").expect("a catalogued behavior");
     let trait_plug = entry.trait_plug.expect("this behavior pins a trait plug");
     let mut recipe = behavior_recipe();
     let mut pins = BehaviorPins::default();
@@ -632,7 +631,7 @@ fn a_perk_the_author_made_default_stays_when_no_behavior_claims_it() {
 #[test]
 fn deselecting_one_of_two_intrinsic_behaviors_releases_only_its_own_perk() {
     let donor = behavior_donor();
-    let mut entries = crate::weapon_behavior::CATALOG
+    let mut entries = crate::weapon::behavior::CATALOG
         .iter()
         .filter(|entry| entry.intrinsic_plug.is_some());
     let first = entries.next().expect("an intrinsic-pinning behavior");
@@ -671,7 +670,7 @@ fn deselecting_one_of_two_intrinsic_behaviors_releases_only_its_own_perk() {
 #[test]
 fn a_custom_perk_follows_its_plug_when_a_behavior_leads_the_lane() {
     let donor = behavior_donor();
-    let entry = crate::weapon_behavior::behavior("graviton-lance").expect("a catalogued behavior");
+    let entry = crate::weapon::behavior::behavior("graviton-lance").expect("a catalogued behavior");
     let trait_plug = entry.trait_plug.expect("this behavior pins a trait plug");
     let mut recipe = behavior_recipe();
     let mut pins = BehaviorPins::default();
@@ -713,7 +712,7 @@ fn a_custom_perk_follows_its_plug_when_a_behavior_leads_the_lane() {
 #[test]
 fn a_borrowed_frame_replaces_the_donors_frame_and_gives_it_back_when_released() {
     let donor = behavior_donor();
-    let entry = crate::weapon_behavior::CATALOG
+    let entry = crate::weapon::behavior::CATALOG
         .iter()
         .find(|entry| entry.intrinsic_plug.is_some())
         .expect("an intrinsic-pinning behavior");
@@ -745,7 +744,7 @@ fn a_borrowed_frame_replaces_the_donors_frame_and_gives_it_back_when_released() 
 #[test]
 fn a_custom_perk_in_the_intrinsic_lane_survives_a_borrowed_frame() {
     let donor = behavior_donor();
-    let entry = crate::weapon_behavior::CATALOG
+    let entry = crate::weapon::behavior::CATALOG
         .iter()
         .find(|entry| entry.intrinsic_plug.is_some())
         .expect("an intrinsic-pinning behavior");

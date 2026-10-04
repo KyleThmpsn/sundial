@@ -197,7 +197,12 @@ fn carrier_mapping_rebuilds_native_records_and_relocations() {
     assert_eq!(native.u32(part).unwrap(), u32::MAX);
     assert_eq!(native.u32(part + 12).unwrap(), 3);
     assert_eq!(native.u16(mesh + 88).unwrap(), 137);
-    for fixup in report["relocations"].as_array().unwrap() {
+    let relocations = report["relocations"].as_array().unwrap();
+    assert!(
+        !relocations.is_empty(),
+        "native resource placeholders require relocations"
+    );
+    for fixup in relocations {
         assert_eq!(
             native
                 .u32(fixup["offset"].as_u64().unwrap() as usize)

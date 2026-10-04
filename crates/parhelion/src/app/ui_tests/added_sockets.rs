@@ -25,21 +25,8 @@ fn frame(
 }
 
 fn click(ctx: &egui::Context, app: &mut PackageAuthoringApp, donor: &WeaponDonor, pos: egui::Pos2) {
-    for pressed in [true, false] {
-        frame(
-            ctx,
-            app,
-            donor,
-            vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
-        );
+    for events in crate::test_support::driver::tap(pos) {
+        frame(ctx, app, donor, events);
     }
 }
 
@@ -91,7 +78,7 @@ fn drag(
 #[ignore = "requires PARHELION_DEFAULT_WEAPONS_PACKAGES; read-only socket reorder UI check"]
 fn dragging_a_choice_grip_reorders_its_socket() {
     let packages = PathBuf::from(std::env::var_os("PARHELION_DEFAULT_WEAPONS_PACKAGES").unwrap());
-    let catalog = InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {}).unwrap();
+    let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     let donor = catalog.weapon_donor(0x4CE3_CE93).unwrap();
     let mut app = PackageAuthoringApp {
         catalog: Some(catalog),
@@ -123,10 +110,28 @@ fn dragging_a_choice_grip_reorders_its_socket() {
         first + egui::vec2(3.0, 6.0),
         second + egui::vec2(3.0, 6.0),
     );
-    assert_ne!(
-        app.recipe, before,
-        "dragging a grip onto the next choice changed nothing"
-    );
+    let changed: Vec<_> = donor
+        .sockets
+        .iter()
+        .filter_map(|socket| {
+            let inherited = socket_editor::inherited_socket_choices(
+                socket.native_default,
+                &socket.ordered_embedded_choices,
+                authored_socket_choice_limit(socket.socket_type),
+            );
+            let original =
+                socket_editor::recipe_socket_choices(&before, socket.index, &inherited).unwrap();
+            let reordered =
+                socket_editor::recipe_socket_choices(&app.recipe, socket.index, &inherited)
+                    .unwrap();
+            (original != reordered).then_some((original, reordered))
+        })
+        .collect();
+    assert_eq!(changed.len(), 1, "the drag must reorder exactly one socket");
+    let (original, reordered) = &changed[0];
+    let mut expected = original.clone();
+    expected.swap(0, 1);
+    assert_eq!(*reordered, expected);
 }
 
 #[test]
@@ -220,7 +225,7 @@ fn extra_choice_context_menu_promotes_its_private_definition() {
 #[ignore = "requires PARHELION_DEFAULT_WEAPONS_PACKAGES; read-only package-backed socket UI check"]
 fn added_socket_menu_appends_reloads_and_removes_a_real_row() {
     let packages = PathBuf::from(std::env::var_os("PARHELION_DEFAULT_WEAPONS_PACKAGES").unwrap());
-    let catalog = InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {}).unwrap();
+    let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     let donor = catalog
         .weapon_donors()
         .iter()
@@ -231,7 +236,7 @@ fn added_socket_menu_appends_reloads_and_removes_a_real_row() {
         })
         .expect("An installed weapon with space for another socket");
     let role = catalog
-        .weapon_socket_type_choices(donor.summary.hash)
+        .socket_type_choices(donor.summary.hash)
         .unwrap()
         .into_iter()
         .find(|choice| choice.socket_type == 92)
@@ -285,7 +290,7 @@ fn added_socket_menu_appends_reloads_and_removes_a_real_row() {
         .catalog
         .as_ref()
         .unwrap()
-        .weapon_supported_plug_sets_with_socket_types(donor.summary.hash, &socket_types)
+        .supported_plug_sets(donor.summary.hash, &socket_types)
         .unwrap();
     let plug = sets[index].plug_hashes[0];
     let plug_label = app.catalog.as_ref().unwrap().plug_label(plug, true);
@@ -341,7 +346,7 @@ fn added_socket_menu_appends_reloads_and_removes_a_real_row() {
 #[ignore = "requires PARHELION_DEFAULT_WEAPONS_PACKAGES; read-only socket removal UI check"]
 fn base_socket_menu_removes_and_restores_choices() {
     let packages = PathBuf::from(std::env::var_os("PARHELION_DEFAULT_WEAPONS_PACKAGES").unwrap());
-    let catalog = InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {}).unwrap();
+    let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     let donor = catalog.weapon_donor(0x4CE3_CE93).unwrap();
     let mut app = PackageAuthoringApp {
         catalog: Some(catalog),

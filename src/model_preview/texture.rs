@@ -1,6 +1,8 @@
 //! Shadowkeep pixel-shader texture bindings and bounded base-color decoding.
 use super::*;
+mod gear;
 mod plate;
+pub(super) use gear::{DyeMap, Gear, gear};
 pub(super) use plate::{albedo, gearstack, normal};
 
 #[derive(Clone)]
@@ -47,36 +49,58 @@ pub(super) fn material(
     // Prefer explicitly sRGB color bindings over linear normal/data bindings.
     // This is a preview policy, not an evaluation of the material's TFX shader.
     let mut candidates = Vec::new();
+    let mut failures = Vec::new();
     for (slot, tag) in material_bindings(manager, tag)? {
         if let Some(entry) = manager.get_entry(tag)
             && entry.file_type == 32
             && matches!(entry.file_subtype, 1..=3)
         {
-            let header = manager.read_tag(tag)?;
-            let format = u32_at(&header, 4)?;
+            let format = match manager.read_tag(tag).and_then(|header| u32_at(&header, 4)) {
+                Ok(format) => format,
+                Err(error) => {
+                    failures.push(format!("Texture 0x{tag:08X} could not be read: {error}"));
+                    continue;
+                }
+            };
             if let Some(rank) = color_rank(format, slot) {
                 candidates.push((rank, slot, tag, format));
             }
         }
     }
     candidates.sort_unstable();
-    let &(_, _, tag, format) = candidates
-        .first()
-        .ok_or("No supported color texture binding")?;
-    if let Some(index) = model.textures.iter().position(|t| t.tag == tag) {
-        return Ok(index);
+    for (_, _, tag, format) in candidates {
+        if let Some(index) = model.textures.iter().position(|t| t.tag == tag) {
+            model.notices.extend(failures);
+            return Ok(index);
+        }
+        if model.textures.len() >= MAX_TEXTURES {
+            // A later binding may reuse a texture already in the model.
+            continue;
+        }
+        let texture = match load(manager, tag) {
+            Ok(texture) => texture,
+            Err(error) => {
+                failures.push(format!("Texture 0x{tag:08X} could not be shown: {error}"));
+                continue;
+            }
+        };
+        model.notices.extend(failures);
+        if matches!(format, 61 | 80) {
+            model.notices.push(format!(
+                "Texture 0x{tag:08X} is shown in grayscale. Shader coloring is not shown."
+            ));
+        }
+        model.textures.push(texture);
+        return Ok(model.textures.len() - 1);
     }
     if model.textures.len() >= MAX_TEXTURES {
-        return Err("The preview texture budget is full".into());
+        failures.push("The preview texture budget is full".into());
     }
-    let texture = load(manager, tag)?;
-    if matches!(format, 61 | 80) {
-        model.notices.push(format!(
-            "Texture 0x{tag:08X} is shown in grayscale. Shader coloring is not shown."
-        ));
-    }
-    model.textures.push(texture);
-    Ok(model.textures.len() - 1)
+    Err(if failures.is_empty() {
+        "No supported color texture binding".into()
+    } else {
+        failures.join("\n")
+    })
 }
 
 fn color_rank(format: u32, slot: u32) -> Option<u8> {
@@ -108,17 +132,6 @@ pub(crate) fn load(manager: &PackageManager, tag: u32) -> Result<Texture, String
         return Err("Unsupported texture header type".into());
     }
     let header = manager.read_tag(tag)?;
-    let width = usize::from(u16_at(&header, 0x0E)?);
-    let height = usize::from(u16_at(&header, 0x10)?);
-    if width == 0
-        || height == 0
-        || width > 8192
-        || height > 8192
-        || u16_at(&header, 0x12)? != 1
-        || u16_at(&header, 0x14)? != 1
-    {
-        return Err("Only 2D textures up to 8192 pixels are supported".into());
-    }
     let large = u32_at(&header, 0x24)?;
     let data_tag = if matches!(large, 0 | u32::MAX) {
         entry.reference
@@ -131,8 +144,26 @@ pub(crate) fn load(manager: &PackageManager, tag: u32) -> Result<Texture, String
     if data_entry.file_size > 32 * 1024 * 1024 {
         return Err("Texture data exceeds the preview budget".into());
     }
-    let bytes = manager.read_tag(data_tag)?;
-    let format = u32_at(&header, 4)?;
+    from_payload(tag, &header, &manager.read_tag(data_tag)?)
+}
+
+/// Decode a complete local native texture without looking up a package tag.
+pub(crate) fn from_payload(tag: u32, header: &[u8], bytes: &[u8]) -> Result<Texture, String> {
+    if bytes.len() > 32 * 1024 * 1024 {
+        return Err("Texture data exceeds the preview budget".into());
+    }
+    let width = usize::from(u16_at(header, 0x0E)?);
+    let height = usize::from(u16_at(header, 0x10)?);
+    if width == 0
+        || height == 0
+        || width > 8192
+        || height > 8192
+        || u16_at(header, 0x12)? != 1
+        || u16_at(header, 0x14)? != 1
+    {
+        return Err("Only 2D textures up to 8192 pixels are supported".into());
+    }
+    let format = u32_at(header, 4)?;
     let (width, height, offset) = preview_mip(format, width, height)?;
     let rgba = decode(
         bytes
@@ -420,8 +451,12 @@ pub(super) fn material_samplers(manager: &PackageManager, material: u32) -> Vec<
             }
             Some(Sampler { u, v, border })
         })
-        .collect::<Option<Vec<_>>>()
-        .unwrap_or_default()
+        // A native resource table can retain unused non-sampler entries after the
+        // shader's sampler prefix. Preserve its registers without compacting holes.
+        // Material contracts still reject any sampled slot beyond this prefix.
+        .take_while(Option::is_some)
+        .flatten()
+        .collect()
 }
 
 fn material_bindings(manager: &PackageManager, tag: u32) -> Result<Vec<(u32, u32)>, String> {
@@ -483,9 +518,47 @@ impl Texture {
     }
 
     pub(super) fn sample_with_sampler(&self, uv: [f32; 2], sampler: &Sampler) -> [f32; 4] {
+        self.sample_filtered(uv, sampler, false)
+    }
+
+    pub(super) fn sample_material(&self, uv: [f32; 2], sampler: &Sampler, color: bool) -> [f32; 4] {
+        let value = self.sample_filtered(uv, sampler, color);
+        if color {
+            value
+        } else {
+            value.map(|v| v / 255.0)
+        }
+    }
+
+    /// Color plates and detail color are decoded before interpolation, like an sRGB GPU
+    /// texture. RGB is linear light in 0..1. Alpha remains linear coverage in 0..1.
+    pub(super) fn sample_color(&self, uv: [f32; 2]) -> [f32; 4] {
+        self.sample_filtered(
+            uv,
+            &Sampler {
+                u: AddressMode::Wrap,
+                v: AddressMode::Wrap,
+                border: [0.0; 4],
+            },
+            true,
+        )
+    }
+
+    fn sample_filtered(&self, uv: [f32; 2], sampler: &Sampler, color: bool) -> [f32; 4] {
+        static LINEAR: std::sync::OnceLock<[f32; 256]> = std::sync::OnceLock::new();
+        let linear = color.then(|| {
+            LINEAR.get_or_init(|| {
+                std::array::from_fn(|value| super::shader::linear(value as f32 / 255.0))
+            })
+        });
+        let decode = |channel: usize, value: f32| match linear {
+            Some(table) if channel < 3 => table[value.clamp(0.0, 255.0) as usize],
+            Some(_) => value / 255.0,
+            None => value,
+        };
         let [width, height] = self.size;
         if !uv.iter().all(|value| value.is_finite()) || width == 0 || height == 0 {
-            return sampler.border;
+            return std::array::from_fn(|channel| decode(channel, sampler.border[channel]));
         }
         let position = |coordinate: f32, size: usize, mode: AddressMode| {
             let coordinate = match mode {
@@ -515,12 +588,12 @@ impl Texture {
         };
         let pixel = |dx: i32, dy: i32, channel: usize| {
             let Some(px) = address(x.floor() as i32 + dx, width, sampler.u) else {
-                return sampler.border[channel];
+                return decode(channel, sampler.border[channel]);
             };
             let Some(py) = address(y.floor() as i32 + dy, height, sampler.v) else {
-                return sampler.border[channel];
+                return decode(channel, sampler.border[channel]);
             };
-            self.rgba[(py * width + px) * 4 + channel] as f32
+            decode(channel, self.rgba[(py * width + px) * 4 + channel] as f32)
         };
         std::array::from_fn(|c| {
             let top = pixel(0, 0, c) * (1.0 - tx) + pixel(1, 0, c) * tx;

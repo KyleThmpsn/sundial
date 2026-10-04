@@ -103,7 +103,6 @@ fn fixed_and_empty_carriers_allow_independent_slot_and_damage() {
             let donor = summary(Some(slot), profile);
             let capabilities = weapon_summary_authoring_capabilities(&donor);
             assert!(capabilities.is_authorable());
-            assert_eq!(capabilities.combat_profiles.len(), 12);
             for target in [
                 WeaponInventorySlot::Kinetic,
                 WeaponInventorySlot::Energy,
@@ -135,22 +134,39 @@ fn fixed_and_empty_carriers_allow_independent_slot_and_damage() {
 
 #[test]
 fn plug_driven_damage_keeps_its_carrier_while_slot_is_independent() {
-    let capabilities = weapon_summary_authoring_capabilities(&summary(
+    let donor = summary(
         Some(WeaponInventorySlot::Energy),
         WeaponDamageProfile::PlugOrEmptyAmbiguous(Some(WeaponDamageType::Solar)),
-    ));
-    assert_eq!(capabilities.combat_profiles.len(), 9);
+    );
+    let capabilities = weapon_summary_authoring_capabilities(&donor);
     assert!(
         explicit_profiles(&capabilities)
             .iter()
             .all(|p| p.damage_type != WeaponDamageType::Kinetic)
     );
-    assert!(
-        capabilities.supports(CombatProfileAction::Set(CombatProfile {
-            inventory_slot: WeaponInventorySlot::Kinetic,
-            damage_type: WeaponDamageType::Arc,
-        }))
-    );
+    for slot in [
+        WeaponInventorySlot::Kinetic,
+        WeaponInventorySlot::Energy,
+        WeaponInventorySlot::Power,
+    ] {
+        for damage in [
+            WeaponDamageType::Arc,
+            WeaponDamageType::Solar,
+            WeaponDamageType::Void,
+        ] {
+            // The base's own slot and damage is kept rather than set again.
+            let action = if slot == WeaponInventorySlot::Energy && donor.damage_type == Some(damage)
+            {
+                CombatProfileAction::Preserve
+            } else {
+                CombatProfileAction::Set(CombatProfile {
+                    inventory_slot: slot,
+                    damage_type: damage,
+                })
+            };
+            assert!(capabilities.supports(action), "{action:?}");
+        }
+    }
 }
 
 #[test]
@@ -373,7 +389,7 @@ fn kinetic_energy_appearance_keeps_only_the_slot_gate() {
 }
 
 #[test]
-fn profile_reconciliation_clears_incompatible_or_malformed_presentation_donors() {
+fn profile_reconciliation_preserves_appearance_and_rejects_malformed_selection() {
     let gameplay = summary(
         Some(WeaponInventorySlot::Kinetic),
         WeaponDamageProfile::KineticEmpty,
@@ -1003,12 +1019,14 @@ fn socket_column_validation_rejects_duplicate_sets_without_choosing_one() {
     );
 
     assert_eq!(
-        diagnostics,
-        vec![AuthoringDiagnostic {
-            field: AuthoringField::SocketColumn { socket_index: 0 },
-            code: AuthoringDiagnosticCode::DuplicateSupportedPlugSet,
-            message: "Compatible-plug set socket index 0 is supplied 2 times".to_owned(),
-        }]
+        diagnostics
+            .iter()
+            .map(|diagnostic| (diagnostic.field, diagnostic.code))
+            .collect::<Vec<_>>(),
+        vec![(
+            AuthoringField::SocketColumn { socket_index: 0 },
+            AuthoringDiagnosticCode::DuplicateSupportedPlugSet
+        )]
     );
 }
 

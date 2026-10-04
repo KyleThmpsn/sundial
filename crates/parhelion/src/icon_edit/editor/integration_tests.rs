@@ -227,12 +227,12 @@ fn editor_pages_keep_controls_and_footer_inside_the_viewport_without_scrolling()
 }
 
 #[test]
-fn editor_cancel_and_reset_do_not_modify_the_recipe_artwork() {
+fn editor_reset_changes_the_draft_and_escape_returns_cancel() {
     let saved = imported_edit();
     let mut editor = WeaponIconEditor {
         donor_hash: 1,
         donor_name: "Test donor".to_owned(),
-        draft: saved.clone(),
+        draft: saved,
         preview: Err("No packages required for draft test".to_owned()),
         source_texture: None,
         edited_texture: None,
@@ -295,7 +295,6 @@ fn editor_cancel_and_reset_do_not_modify_the_recipe_artwork() {
     }]);
     assert_eq!(action, Some(WeaponIconEditorAction::Cancel));
     assert!(editor.draft.is_identity());
-    assert_eq!(saved, imported_edit());
 }
 
 #[test]
@@ -309,6 +308,10 @@ fn real_import_matches_preview_and_preserves_native_texture_graph() {
     let donor_layer = read_primary_layer_tag(&manager, container).unwrap();
     let donor_payload = read_icon_layer(&manager, donor_layer, container).unwrap();
     let references = texture_reference_offsets(&donor_payload, donor_layer).unwrap();
+    assert!(
+        !references.is_empty(),
+        "the configured icon has no texture references"
+    );
     let plan = build_weapon_icon_edit_plan(&manager, 0x0914, 5300, 0, container, &edit)
         .unwrap()
         .unwrap();

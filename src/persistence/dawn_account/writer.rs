@@ -60,14 +60,14 @@ fn save_candidate(document: &mut DawnAccountDocument) -> Result<DawnSaveReceipt,
     let before = snapshot::capture(&transaction).map_err(DawnAccountError::Unwritable)?;
     document
         .progression
-        .save(&transaction, &document.loaded_progression)?;
+        .save(&transaction, &document.loaded.progression)?;
     super::dismantle::save(
         &transaction,
-        &document.loaded_dismantle,
+        &document.loaded.dismantle,
         &document.snapshot.profile,
     )?;
     let debts = super::rewards::save(&transaction, document)?;
-    if document.activity != document.loaded_activity {
+    if document.activity != document.loaded.activity {
         document
             .activity
             .validate(document)
@@ -75,11 +75,11 @@ fn save_candidate(document: &mut DawnAccountDocument) -> Result<DawnSaveReceipt,
     }
     document
         .activity
-        .save(&transaction, &document.loaded_activity)?;
+        .save(&transaction, &document.loaded.activity)?;
     document
         .validate_item_state()
         .map_err(DawnAccountError::Unwritable)?;
-    if super::carried::read(&transaction, &document.loaded_profile)? != document.loaded_carried {
+    if super::carried::read(&transaction, &document.loaded.profile)? != document.loaded.carried {
         return Err(DawnAccountError::Unwritable(
             "Dawn's inventory bookkeeping changed. Reload before saving".into(),
         ));
@@ -93,7 +93,7 @@ fn save_candidate(document: &mut DawnAccountDocument) -> Result<DawnSaveReceipt,
     super::settings::save(
         &transaction,
         &document.settings_index,
-        &document.loaded_settings,
+        &document.loaded.settings,
         &document.snapshot.settings,
     )?;
 
@@ -113,19 +113,20 @@ fn save_candidate(document: &mut DawnAccountDocument) -> Result<DawnSaveReceipt,
     transaction.commit()?;
 
     document.metadata.account_revision = revision + 1;
-    document.loaded_settings = document.snapshot.settings.clone();
-    document.loaded_carried = committed_carried;
-    document.carried = document.loaded_carried.clone();
-    document.loaded_activity = document.activity.clone();
-    document.loaded_characters = document.snapshot.characters.clone();
-    document.loaded_profile = document.snapshot.profile.clone();
-    document.loaded_progression = document.progression.clone();
-    document.loaded_dismantle = super::dismantle::rows(&document.snapshot.profile);
+    document.loaded.settings = document.snapshot.settings.clone();
+    document.loaded.carried = committed_carried;
+    document.carried = document.loaded.carried.clone();
+    document.loaded.activity = document.activity.clone();
+    document.loaded.characters = document.snapshot.characters.clone();
+    document.loaded.profile = document.snapshot.profile.clone();
+    document.loaded.progression = document.progression.clone();
+    document.loaded.dismantle = super::dismantle::rows(&document.snapshot.profile);
     for debt in &debts {
         if debt.delivered
             && debt.credited == 0
             && !document
-                .loaded_reward_debts
+                .loaded
+                .reward_debts
                 .iter()
                 .any(|before| before.id == debt.id && before.delivered)
         {
@@ -133,7 +134,7 @@ fn save_candidate(document: &mut DawnAccountDocument) -> Result<DawnSaveReceipt,
         }
     }
     document.reward_debts = debts;
-    document.loaded_reward_debts = document.reward_debts.clone();
+    document.loaded.reward_debts = document.reward_debts.clone();
     Ok(DawnSaveReceipt {
         backup,
         revision: document.metadata.account_revision,
@@ -203,7 +204,7 @@ fn write_account(
         .carried
         .profile_rows
         .values()
-        .chain(document.loaded_carried.profile_rows.values())
+        .chain(document.loaded.carried.profile_rows.values())
         .map(|row| row.serial)
         .max()
         .unwrap_or_default();
@@ -212,13 +213,15 @@ fn write_account(
         let carried = document.carried.profile_rows.get(&item.id);
         let mut serial = carried.map_or(0, |row| row.serial);
         let old = document
-            .loaded_profile
+            .loaded
+            .profile
             .profile_items()
             .iter()
             .find(|old| old.id == item.id);
         let changed = old.is_none_or(|old| old != item);
         let previous_serial = document
-            .loaded_carried
+            .loaded
+            .carried
             .profile_rows
             .get(&item.id)
             .map_or(0, |row| row.serial);

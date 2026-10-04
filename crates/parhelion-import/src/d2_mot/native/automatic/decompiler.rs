@@ -32,7 +32,7 @@ pub(super) fn prepare(progress: &mut dyn FnMut(String)) -> Result<PathBuf> {
         .read(true)
         .write(true)
         .open(root.join("download.lock"))?;
-    fs2::FileExt::lock_exclusive(&lock)?;
+    crate::cancellation::lock(&lock)?;
     if FILES
         .iter()
         .all(|(name, hash)| fs::read(root.join(name)).is_ok_and(|b| matches(&b, hash)))
@@ -44,17 +44,20 @@ pub(super) fn prepare(progress: &mut dyn FnMut(String)) -> Result<PathBuf> {
         .timeout_global(Some(std::time::Duration::from_secs(120)))
         .build()
         .into();
-    let mut response = agent
-        .get(URL)
-        .header("User-Agent", "Sundial-Parhelion-Importer")
-        .call()
-        .context("Download the source shader conversion tool")?;
-    let mut bytes = Vec::new();
-    response
-        .body_mut()
-        .as_reader()
-        .take(16 * 1024 * 1024)
-        .read_to_end(&mut bytes)?;
+    let bytes = crate::cancellation::compute(move || {
+        let mut response = agent
+            .get(URL)
+            .header("User-Agent", "Sundial-Parhelion-Importer")
+            .call()
+            .context("Download the source shader conversion tool")?;
+        let mut bytes = Vec::new();
+        response
+            .body_mut()
+            .as_reader()
+            .take(16 * 1024 * 1024)
+            .read_to_end(&mut bytes)?;
+        Ok(bytes)
+    })?;
     ensure!(
         matches(&bytes, ARCHIVE),
         "Shader tool archive checksum differs"
@@ -71,6 +74,7 @@ pub(super) fn prepare(progress: &mut dyn FnMut(String)) -> Result<PathBuf> {
         files.push((name, bytes));
     }
     for (name, bytes) in files {
+        crate::cancellation::check()?;
         let path = root.join(name);
         fs::write(&path, bytes)?;
     }

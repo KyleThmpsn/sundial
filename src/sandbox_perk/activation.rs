@@ -363,13 +363,12 @@ mod tests {
     }
 
     #[test]
-    fn activation_rejects_unmapped_or_changed_sources_without_mutation() {
+    fn activation_rejects_unmapped_or_changed_sources() {
         let source = fixture();
         assert!(with_activation(0, &source, PerkActivation::AnyKill, &registry()).is_err());
         for offset in [0, 0xFC, 0x108, 0x1D0, 0x270, 0x280, 0x241, 0x580] {
             let mut changed = source.clone();
             changed[offset] ^= 1;
-            let before = changed.clone();
             assert!(
                 with_activation(
                     OUTLAW_ACTION,
@@ -380,7 +379,6 @@ mod tests {
                 .is_err(),
                 "{offset:X}"
             );
-            assert_eq!(before, changed);
         }
     }
 

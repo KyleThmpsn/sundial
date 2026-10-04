@@ -5,7 +5,7 @@
 //! record to a row. A record type with a reading order of its own is a table even alone, so a
 //! property adjustment always reads as what it changes, then how.
 use super::*;
-use sundial::package_authoring::weapon_runtime::modifiers;
+use sundial::package_authoring::runtime::modifiers;
 
 /// The narrowest a table column gets before each record reads as its own tiles instead.
 const MIN_COLUMN: f32 = 80.0;
@@ -92,7 +92,7 @@ struct Row<'f> {
 
 /// Whether a record of `schema` with `fields` joins the table `other` already belongs to.
 fn joins_record(other: &[Entry<'_>], schema: u32, fields: &[Entry<'_>]) -> bool {
-    let theirs = other[0].field.locator.type_handle;
+    let theirs = other[0].field.locator.type_handle.get();
     theirs == schema
         || modifiers::column_order(theirs).is_none()
             && modifiers::column_order(schema).is_none()
@@ -116,7 +116,7 @@ fn columns<'f>(
         && set
             .iter()
             .flat_map(|(_, fields)| fields)
-            .all(|entry| entry.field.locator.type_handle == schema)
+            .all(|entry| entry.field.locator.type_handle.get() == schema)
     {
         columns.sort_by_key(|(_, offset)| {
             order
@@ -139,7 +139,7 @@ pub(super) fn arrange<'f>(entries: &[Entry<'f>], source: impl Fn(usize) -> Sourc
         let locator = &entry.field.locator;
         let key = (
             entry.group,
-            locator.type_handle,
+            locator.type_handle.get(),
             entry.field.owner_offset.wrapping_sub(locator.value_offset),
         );
         match records.iter_mut().rev().find(|(found, _)| *found == key) {
@@ -174,7 +174,7 @@ pub(super) fn arrange<'f>(entries: &[Entry<'f>], source: impl Fn(usize) -> Sourc
         captions: BTreeMap::new(),
     };
     for set in sets {
-        let schema = set[0].1[0].field.locator.type_handle;
+        let schema = set[0].1[0].field.locator.type_handle.get();
         let order = modifiers::column_order(schema);
         if set.len() < 2 && order.is_none() {
             for (group, fields) in set {
@@ -301,7 +301,7 @@ fn row_labels(set: &[(usize, Vec<Entry<'_>>)], source: &impl Fn(usize) -> Source
 /// component it changes.
 fn row_choices(entry: Entry<'_>, row: &[(u32, i64)]) -> Option<Choices> {
     modifiers::row_choices(
-        entry.field.locator.type_handle,
+        entry.field.locator.type_handle.get(),
         entry.field.locator.value_offset,
         row,
     )
@@ -355,7 +355,7 @@ impl<'f> Table<'f> {
                 row.cells[column].is_some_and(|entry| {
                     !numbers[column].is_some_and(|value| {
                         modifiers::unread(
-                            entry.field.locator.type_handle,
+                            entry.field.locator.type_handle.get(),
                             entry.field.locator.value_offset,
                             value,
                         )
@@ -514,7 +514,7 @@ mod tests {
         let loaded = crate::app::custom_perks::workbench::parameters::tests::fixture();
         let mut field = loaded.graphs[0].1.owners[0].roots[0].fields[0].clone();
         field.name = name.into();
-        field.locator.type_handle = schema;
+        field.locator.type_handle = schema.into();
         field.locator.value_offset = offset;
         field.owner_offset = start + offset;
         field

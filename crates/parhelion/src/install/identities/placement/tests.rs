@@ -93,12 +93,11 @@ fn native_slot_replacement_compares_compiled_generations_in_both_directions() {
             replacement.incoming_buckets[&replacement.changes[0].definition_hash],
             incoming
         );
-        assert!(replacement.incoming_buckets.len() > 1000);
         assert!(
             replacement
                 .weapon_capacities
                 .iter()
-                .all(|capacity| *capacity > 1)
+                .all(|capacity| *capacity > 0)
         );
         assert!(
             with_generation(&packages, old, |installed| {

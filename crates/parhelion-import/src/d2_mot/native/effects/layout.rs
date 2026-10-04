@@ -17,11 +17,14 @@ const LAYOUTS: &[Layout] = &[
         symbol: "object-channels",
         class: 0x8080979F,
         arrays: &[
-            (0x30, 88, 0x808097A7),
+            (0x30, 80, 0x808097A7),
+            (0x40, 4, 0x8080000B),
             (0x50, 16, 0x80800090),
             (0x60, 16, 0x80800090),
             (0x80, 8, 0x8080979D),
             (0x90, 16, 0x8080979C),
+            (0xA0, 4, 0x8080000B),
+            (0xB8, 24, 0x8080979A),
         ],
     },
 ];
@@ -47,6 +50,35 @@ fn bounds(p: &Payload, layout: &Layout) -> Result<(usize, usize, usize)> {
 
 fn seal(p: &mut Payload, patches: &mut Vec<Value>, layout: &Layout) -> Result<Option<Value>> {
     let (instance, schema, end) = bounds(p, layout)?;
+    let result = seal_span(p, patches, end)?;
+    let (_, after, required) = bounds(p, layout)?;
+    ensure!(
+        required <= after,
+        "mutable component data exceeds runtime span"
+    );
+    Ok(result.map(|mut evidence| {
+        evidence["symbol"] = json!(layout.symbol);
+        evidence["instance"] = json!(instance);
+        evidence["schema_before"] = json!(schema);
+        evidence
+    }))
+}
+
+/// The component builder supplies the end of all mutable records, including
+/// nested instances. Keep the original record addresses valid while moving the
+/// loader's schema boundary beyond them. Unknown pointer fields are not scanned
+/// or guessed. The complete record stream moves as a single relative unit.
+pub(super) fn seal_span(
+    p: &mut Payload,
+    patches: &mut Vec<Value>,
+    end: usize,
+) -> Result<Option<Value>> {
+    let instance = p.pointer(16)?;
+    let schema = p.pointer(24)?;
+    ensure!(
+        instance < schema && schema < p.0.len() && end <= p.0.len(),
+        "component runtime span is outside its owner"
+    );
     if end <= schema {
         return Ok(None);
     }
@@ -103,14 +135,13 @@ fn seal(p: &mut Payload, patches: &mut Vec<Value>, layout: &Layout) -> Result<Op
     )?;
     let length = p.0.len() as u64;
     put(&mut p.0, 0, &length.to_le_bytes())?;
-    let (_, after, required) = bounds(p, layout)?;
     ensure!(
-        required <= after,
+        end <= new_schema,
         "mutable component data exceeds runtime span"
     );
     Ok(Some(json!({
-        "symbol":layout.symbol,"instance":instance,"schema_before":schema,
-        "schema_after":after,"instance_data_end":required,"original_size":original_size,
+        "instance":instance,"schema_before":schema,
+        "schema_after":new_schema,"instance_data_end":end,"original_size":original_size,
         "copied_record_start":first,"copy_delta":delta
     })))
 }
@@ -164,15 +195,16 @@ mod tests {
 
     #[test]
     fn runtime_copy_contains_appended_rows_and_schema_references_survive() {
+        let layout = LAYOUTS.iter().find(|row| row.class == 0x8080979F).unwrap();
         let mut p = fixture();
         let before = p.clone();
         let mut patches = vec![
             json!({"offset":68,"symbol":"allocation"}),
             json!({"offset":0x80,"symbol":"bank"}),
         ];
-        let proof = seal(&mut p, &mut patches, &LAYOUTS[1]).unwrap().unwrap();
+        let proof = seal(&mut p, &mut patches, layout).unwrap().unwrap();
         let delta = proof["copy_delta"].as_u64().unwrap() as usize;
-        let (instance, schema, end) = bounds(&p, &LAYOUTS[1]).unwrap();
+        let (instance, schema, end) = bounds(&p, layout).unwrap();
         assert!(end <= schema);
         assert_eq!(&p.0[0x60..before.0.len()], &before.0[0x60..]);
         assert_eq!(&p.0[delta + 0x64..], &before.0[0x64..]);
@@ -184,7 +216,11 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(&copied_instance.0[rows[0]..rows[1] + 16], &[0xAB; 32]);
         assert_eq!(patches.len(), 3);
-        assert_eq!(patches[2]["offset"], delta + 0x80);
-        assert!(seal(&mut p, &mut patches, &LAYOUTS[1]).unwrap().is_none());
+        assert!(
+            patches
+                .iter()
+                .any(|patch| patch["offset"] == delta + 0x80 && patch["symbol"] == "bank")
+        );
+        assert!(seal(&mut p, &mut patches, layout).unwrap().is_none());
     }
 }

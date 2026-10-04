@@ -2,6 +2,7 @@
 mod atmosphere;
 mod channels;
 pub mod constants;
+pub mod controller;
 mod decals;
 mod dyemap;
 mod emission;
@@ -9,9 +10,12 @@ mod inputs;
 mod layout;
 mod lighting;
 mod null_glow;
+pub mod particle;
 mod parts;
 mod procedural;
+pub(crate) use procedural::lower_program;
 mod reflection;
+pub mod resources;
 mod shader;
 mod source;
 mod variants;
@@ -337,6 +341,48 @@ struct Effect {
     bindings_root: PathBuf,
 }
 impl Effect {
+    /// Fixed texture storage is independent of whether an item has weapon dye channel 4.
+    /// Reuse an existing detail texture when present, otherwise a validated 2D renderer lookup.
+    fn texture_template(&self, srgb: bool) -> Result<(Vec<u8>, u64, u64)> {
+        let name = if srgb {
+            "dye-4-texture-0"
+        } else {
+            "dye-4-texture-1"
+        };
+        if self.graph.node(name).is_ok() {
+            return Ok((
+                self.graph.read(name)?.0,
+                self.graph.node(name)?["template"]
+                    .as_u64()
+                    .context("texture template")?,
+                self.graph.node(&format!("{name}-data"))?["template"]
+                    .as_u64()
+                    .context("texture data template")?,
+            ));
+        }
+        let context = load(&self.refs.join("tfx-native/context.json"))?;
+        for row in context["lookup_textures"]
+            .as_array()
+            .context("native renderer textures")?
+        {
+            let header = Payload(hex::decode(
+                row["header"].as_str().context("native texture header")?,
+            )?);
+            if header.0.len() == 40
+                && header.u16(12)? == 0xCAFE
+                && header.u16(18)? == 1
+                && header.u16(20)? == 1
+            {
+                return Ok((
+                    header.0,
+                    u64::from(tag(&row["tag"])?),
+                    u64::from(tag(&row["buffer"])?),
+                ));
+            }
+        }
+        anyhow::bail!("No native 2D texture storage template is available")
+    }
+
     fn model_objects(&self, model: usize) -> Result<BTreeMap<String, u8>> {
         let mut objects = self.objects.clone();
         let tag = self.source.report["models"][model]["model"]
@@ -477,6 +523,11 @@ pub(crate) fn check_source_blends(root: &Path) -> Result<()> {
     let mut checked = std::collections::BTreeSet::new();
     for stage in [0, 1, 7, 9, 14, 16] {
         for draw in source.draws(stage)? {
+            // The conversion stage records draws whose material is supplied by
+            // the runtime. A null material is not a missing exported payload.
+            if draw.material == "FFFFFFFF" {
+                continue;
+            }
             ensure!(
                 source::supported_blend(stage, source.raw(&draw.material)?.u8(48)? & 127),
                 "source stage {stage}: source blend differs"
@@ -520,6 +571,7 @@ impl Source {
         })
     }
     fn raw(&self, tag: &str) -> Result<Payload> {
+        crate::cancellation::check()?;
         let path = self.root.join(format!("raw/{tag}.bin"));
         Ok(Payload(fs::read(&path).with_context(|| {
             format!("source payload {}", path.display())
@@ -542,29 +594,28 @@ impl Source {
         {
             let model_tag = entry["model"].as_str().context("source model")?;
             let h = self.raw(model_tag)?;
-            let meshes = h.array(16, 128, None)?;
-            ensure!(
-                meshes.len() == 1,
-                "effect source requires single-mesh models"
-            );
-            let mesh = meshes[0];
+            let mesh = geometry::selected_mesh(&h, entry)?;
             let vertices = self.buffer(h.u32(mesh)?)?;
             ensure!(
                 vertices.0.len().is_multiple_of(24),
                 "effect vertex stride differs"
             );
-            let indices = self.buffer(h.u32(mesh + 16)?)?;
+            let index_tag = h.u32(mesh + 16)?;
+            let (indices, restart) = geometry::indices(
+                &self.raw(&format!("{index_tag:08X}"))?,
+                &self.buffer(index_tag)?,
+            )?;
             let rows = h.array(mesh + 32, 36, None)?;
             let range =
                 h.u16(mesh + 48 + 2 * stage)? as usize..h.u16(mesh + 50 + 2 * stage)? as usize;
             for &row in rows.get(range).context("source stage outside draw table")? {
                 let start = h.u32(row + 8)? as usize;
                 let count = h.u32(row + 12)? as usize;
-                let input = (start..start.checked_add(count).context("source index overflow")?)
-                    .map(|i| Ok(indices.u16(i * 2)? as u32))
-                    .collect::<Result<Vec<_>>>()?;
+                let input = indices
+                    .get(start..start.checked_add(count).context("source index overflow")?)
+                    .context("Source draw exceeds index buffer")?;
                 let mut groups: Vec<(u8, Vec<[u32; 3]>)> = vec![];
-                for face in geometry::triangles(&input, vertices.0.len() / 24, 65535)? {
+                for face in geometry::triangles(input, vertices.0.len() / 24, restart)? {
                     let channel = (vertices.u16(face[0] as usize * 24 + 14)? & 7) as u8;
                     ensure!(
                         face.iter().all(|v| vertices
@@ -752,26 +803,6 @@ impl Draws {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    #[ignore = "Requires PARHELION_IMPORT_CASES with source/native export paths and render owners"]
-    fn configured_exports_pass_early_validation() {
-        let path = std::env::var_os("PARHELION_IMPORT_CASES")
-            .expect("Set PARHELION_IMPORT_CASES to a JSON array of exported test cases");
-        let cases = super::load(Path::new(&path)).unwrap();
-        for case in cases.as_array().expect("test cases") {
-            let source = Path::new(case["source"].as_str().unwrap());
-            let native = Path::new(case["native"].as_str().unwrap());
-            super::check_source_blends(source)
-                .unwrap_or_else(|e| panic!("Source {}: {e:#}", source.display()));
-            super::check_channels(
-                source,
-                native,
-                u32::try_from(case["owner"].as_u64().unwrap()).unwrap(),
-            )
-            .unwrap_or_else(|e| panic!("Channels {}: {e:#}", source.display()));
-        }
-    }
-
     use super::*;
 
     #[test]

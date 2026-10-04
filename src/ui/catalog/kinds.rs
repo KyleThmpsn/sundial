@@ -211,6 +211,10 @@ fn sort_uses(rows: &mut [StockUse], column: UseColumn, descending: bool) {
 }
 
 impl Kinds {
+    /// Selected stock configuration, separate from the selected kind.
+    pub fn selected_stock_use(&self) -> Option<u16> {
+        self.selected_use
+    }
     /// Show one kind, clearing any filter that would hide it.
     pub fn open(&mut self, family: Family, kind: u8) {
         self.query.clear();
@@ -442,6 +446,14 @@ impl Kinds {
             });
         });
         ui.label(node.summary);
+        ui.label(format!("Compiler: {}", node.support.label()));
+        ui.label(format!("Semantics: {}", node.semantics()));
+        ui.weak(format!(
+            "Evidence: Client {} · {} Surveyed Occurrences",
+            crate::sandbox_perk::nodes::CLIENT_BUILD,
+            node.occurrences
+        ));
+        ui.weak("Gameplay: Unverified for the current perk and destination. Record results in the workbench.");
         egui::CollapsingHeader::new("Technical Details")
             .id_salt((family.label(), kind))
             .show(ui, |ui| {

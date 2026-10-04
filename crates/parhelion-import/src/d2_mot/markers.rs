@@ -122,6 +122,7 @@ pub fn read_native(payload: &Payload) -> Result<Vec<Marker>> {
 pub fn read_source(payload: &Payload) -> Result<Vec<Marker>> {
     let mut found: Option<Vec<Marker>> = None;
     for descriptor in (0..payload.0.len().saturating_sub(16)).step_by(8) {
+        crate::cancellation::check()?;
         let Ok(markers) = read(payload, descriptor, SOURCE) else {
             continue;
         };
@@ -323,6 +324,7 @@ pub fn read_export(raw: &std::path::Path) -> Result<Vec<Vec<Marker>>> {
     entries.sort();
     let mut sets = Vec::new();
     for path in entries {
+        crate::cancellation::check()?;
         if path.extension().is_none_or(|extension| extension != "bin") {
             continue;
         }
@@ -331,6 +333,37 @@ pub fn read_export(raw: &std::path::Path) -> Result<Vec<Vec<Marker>>> {
             sets.push(found);
         }
     }
+    Ok(sets)
+}
+
+/// A gear view owns one art entity. Its raw directory also contains shared
+/// runtime and character dependencies, whose markers must not be transplanted
+/// onto this model because they happen to share an attachment name.
+fn source_sets(source: &std::path::Path) -> Result<Vec<Vec<Marker>>> {
+    use anyhow::Context;
+    let report_path = source.join("report.json");
+    if !report_path.exists() {
+        return read_export(&source.join("raw"));
+    }
+    let report: serde_json::Value = serde_json::from_slice(&std::fs::read(&report_path)?)?;
+    let Some(entity) = report.get("independent_art_entity") else {
+        return read_export(&source.join("raw"));
+    };
+    let entity = u32::from_str_radix(entity.as_str().context("Source art entity")?, 16)?;
+    let entity = Payload(std::fs::read(source.join(format!("raw/{entity:08X}.bin")))?);
+    let mut sets = Vec::new();
+    for row in entity.array(8, 12, Some(0x80809ACD))? {
+        crate::cancellation::check()?;
+        let owner = entity.u32(row)?;
+        let payload = Payload(std::fs::read(source.join(format!("raw/{owner:08X}.bin")))?);
+        if let Ok(markers) = read_source(&payload) {
+            sets.push(markers);
+        }
+    }
+    ensure!(
+        sets.len() <= 1,
+        "Source art entity has ambiguous marker sets"
+    );
     Ok(sets)
 }
 
@@ -366,12 +399,13 @@ pub fn carry(
     source: &std::path::Path,
     entity: &Payload,
 ) -> Result<Option<(u32, usize, Payload, Plan)>> {
-    let source_sets = read_export(&source.join("raw"))?;
+    let source_sets = source_sets(source)?;
     if source_sets.is_empty() {
         return Ok(None);
     }
     let mut found = None;
     for row in entity.array(0x10, 12, None)? {
+        crate::cancellation::check()?;
         let tag = entity.u32(row)?;
         let Ok(payload) = reader.tag(tag, Some(0x8080_9C36)) else {
             continue;
@@ -557,12 +591,20 @@ mod tests {
         // Every matched row now holds the source's position, and nothing else moved.
         let after = read_native(&rewritten).unwrap();
         for carried in &plan.matched {
+            let expected = source_markers
+                .iter()
+                .find(|marker| marker.name == carried.name)
+                .unwrap();
             let row = after.iter().find(|m| m.name == carried.name).unwrap();
-            assert_eq!(row.position, carried.position);
-            assert_eq!(row.orientation, carried.orientation);
+            assert_eq!(row.position, expected.position);
+            assert_eq!(row.orientation, expected.orientation);
+            assert_eq!(row.binding, expected.binding);
         }
         for marker in &carrier_markers {
-            if plan.carrier_only.contains(&marker.name) {
+            if !source_markers
+                .iter()
+                .any(|source| source.name == marker.name)
+            {
                 let row = after.iter().find(|m| m.name == marker.name).unwrap();
                 assert_eq!(row.position, marker.position);
             }

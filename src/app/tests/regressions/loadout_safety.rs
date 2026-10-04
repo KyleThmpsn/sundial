@@ -67,7 +67,7 @@ fn loadout_perk_safety_is_visible_and_selectable_with_warnings_hidden() {
     frame(&mut app, &ctx, vec![]);
     let output = frame(&mut app, &ctx, vec![]);
     text_position(&output, "Perk Safety");
-    let selector = text_position(&output, "Socket + Gear Type");
+    let selector = text_position(&output, "Socket + Item Subtype");
     click(&mut app, &ctx, selector);
     let output = frame(&mut app, &ctx, vec![]);
     for mode in PlugSelectionMode::ALL {

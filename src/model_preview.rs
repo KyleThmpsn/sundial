@@ -4,8 +4,12 @@
 use crate::{package_payload::*, package_runtime::reader::PackageManager};
 use std::{collections::BTreeSet, path::Path};
 pub(crate) mod animation;
+pub(crate) mod appearance;
 pub(crate) mod assets;
+#[cfg(test)]
+mod compatibility_tests;
 mod decode;
+mod effects;
 pub(crate) mod export;
 pub(crate) mod gpu;
 mod light;
@@ -14,12 +18,13 @@ mod particles;
 #[cfg(test)]
 mod projectile_tests;
 pub(crate) mod render;
-mod shader;
+pub(crate) mod shader;
 mod statics;
+mod terrain;
 #[cfg(test)]
 mod tests;
 pub(crate) mod texture;
-pub(crate) mod weapon;
+mod vertex;
 
 #[derive(Default)]
 pub(crate) struct Model {
@@ -27,6 +32,8 @@ pub(crate) struct Model {
     pub triangles: Vec<[u32; 3]>,
     pub tags: Vec<u32>,
     pub uvs: Vec<[f32; 2]>,
+    /// Native secondary UVs used by transparent gear passes.
+    pub detail_uvs: Vec<[f32; 2]>,
     pub triangle_textures: Vec<Option<usize>>,
     /// Emitter shape triangles are shown only in solid and wireframe inspection modes.
     pub triangle_emitter: Vec<bool>,
@@ -36,6 +43,7 @@ pub(crate) struct Model {
     pub textures: Vec<texture::Texture>,
     pub notices: Vec<String>,
     pub weights: Vec<Option<animation::Weights>>,
+    pub(crate) motions: Vec<effects::Motion>,
     pub animation: Option<animation::Animation>,
     pub animation_notice: Option<String>,
     /// Every clip the object can play, for the viewer's picker.
@@ -46,17 +54,23 @@ pub(crate) struct Model {
     /// Outlines of native light volumes, without the game's illumination shader.
     pub light_geometry: bool,
     pub triangle_dyes: Vec<u8>,
+    pub(crate) triangle_dye_maps: Vec<Option<texture::DyeMap>>,
     /// Parts flagged alpha-clipped: the gearstack blue channel is coverage, not emission.
     pub triangle_clip: Vec<bool>,
     /// Flat emissive colour for textureless transparent parts.
     pub triangle_constant: Vec<Option<[f32; 3]>>,
+    pub triangle_effects: Vec<Option<usize>>,
+    pub(crate) effects: Vec<effects::Material>,
     pub triangle_gearstacks: Vec<Option<usize>>,
     pub triangle_normals: Vec<Option<usize>>,
     pub normals: Vec<[f32; 3]>,
+    /// Stored tangent handedness and vertex colors used by native transparent programs.
+    pub tangents: Vec<[f32; 4]>,
+    pub colors: Vec<[f32; 4]>,
     /// The game's iridescence lookup: one row per dye id, view angle along the row.
     pub iridescence: Option<texture::Texture>,
-    dyes: [Option<shader::Dye>; 6],
-    dye_animations: Vec<(usize, crate::weapon_dyes::material::Animation)>,
+    pub(crate) dyes: [Option<shader::Dye>; 6],
+    pub(crate) dye_animations: Vec<(usize, crate::dyes::material::Animation)>,
     /// Surfaces drawn with an editor's colors instead of their dyes'. A shown model takes new
     /// ones in place, so a color edit never reads the model again.
     surface_overrides: std::sync::Mutex<Vec<SurfaceOverride>>,
@@ -74,6 +88,24 @@ pub struct SurfaceOverride {
 }
 
 impl Model {
+    /// Shared stored-pose, material motion and skeletal deformation for every renderer/export.
+    pub(crate) fn pose(&self, seconds: f32) -> Option<animation::Deformed> {
+        if self.motions.is_empty() {
+            return self
+                .animation
+                .as_ref()
+                .map(|a| a.sample(self, a.looped_seconds(seconds)));
+        }
+        let mut stored = animation::Deformed::stored(self);
+        for motion in &self.motions {
+            motion.apply(self, seconds, &mut stored);
+        }
+        Some(if let Some(a) = &self.animation {
+            a.sample_from(self, a.looped_seconds(seconds), Some(&stored))
+        } else {
+            stored
+        })
+    }
     /// Draws surfaces with an editor's colors.
     pub(crate) fn set_surface_overrides(&self, overrides: &[SurfaceOverride]) {
         let mut current = self
@@ -86,7 +118,12 @@ impl Model {
     }
 
     pub(crate) fn has_shader_animation(&self) -> bool {
-        !self.dye_animations.is_empty()
+        self.motions.iter().any(effects::Motion::animated)
+            || !self.dye_animations.is_empty()
+            || self.effects.iter().any(|m| {
+                m.program.as_ref().is_some_and(|p| p.animated())
+                    || m.native.as_ref().is_some_and(|n| n.animated())
+            })
     }
 
     pub(crate) fn has_particle_material_study(&self) -> bool {
@@ -129,7 +166,7 @@ const RESOURCE: u32 = 0x8080_9C36;
 const MODEL: u32 = 0x8080_73A5;
 const MAX_VERTICES: usize = 500_000;
 const MAX_TRIANGLES: usize = 500_000;
-const MAX_TEXTURES: usize = 24;
+pub(crate) const MAX_TEXTURES: usize = 24;
 
 /// What the reader is doing right now, for the waiting viewer.
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -253,6 +290,15 @@ fn load_with_manager(
             cancel.say("Reading static mesh", 0, 0);
             return statics::load(manager, tag);
         }
+        terrain::TERRAIN => {
+            cancel.say("Reading terrain", 0, 0);
+            return terrain::load(manager, tag);
+        }
+        terrain::RESOURCE => {
+            let bytes = checked(manager, tag, terrain::RESOURCE)?;
+            cancel.say("Reading terrain", 0, 0);
+            return terrain::load(manager, u32_at(&bytes, 0x18)?);
+        }
         light::SHADOWING_LIGHT | light::LIGHT_COLLECTION => {
             return light::load(manager, tag);
         }
@@ -316,9 +362,29 @@ fn load_with_manager(
                 == Some(tag)
         });
         let first_triangle = model.triangles.len();
-        match decode::append(manager, tag, component.map(Vec::as_slice), &mut model) {
+        let inputs = effects::inputs(component.map(Vec::as_slice), &components);
+        let cloth = component.is_some_and(|bytes| {
+            pointer(bytes, 0x18)
+                .ok()
+                .and_then(|data| data.checked_sub(4))
+                .and_then(|at| u32_at(bytes, at).ok())
+                == Some(0x8080_7286)
+        });
+        match decode::append(
+            manager,
+            tag,
+            component.map(Vec::as_slice),
+            &inputs,
+            &mut model,
+        ) {
             Ok(()) => {
                 model.tags.push(tag);
+                if cloth {
+                    model.notices.push(
+                        "Cloth is shown in its stored pose. Live cloth simulation is not previewed."
+                            .into(),
+                    );
+                }
                 if emitter_only {
                     model.triangle_emitter.resize(model.triangles.len(), false);
                     model.triangle_emitter[first_triangle..].fill(true);
@@ -577,11 +643,17 @@ fn collect_component(
         resources.push(bytes.to_vec());
     }
     let header = pointer(bytes, 0x10)?;
-    if header < 4 || u32_at(bytes, header - 4)? != 0x8080_72B8 {
+    if header < 4 {
         return Ok(());
     }
+    let expected = match u32_at(bytes, header - 4)? {
+        0x8080_72B8 => 0x8080_72BD,
+        // Cloth owns a separate model, with the same model and plate fields in this prefix.
+        0x8080_7273 => 0x8080_7286,
+        _ => return Ok(()),
+    };
     let data = pointer(bytes, 0x18)?;
-    if data < 4 || u32_at(bytes, data - 4)? != 0x8080_72BD {
+    if data < 4 || u32_at(bytes, data - 4)? != expected {
         return Err("The entity model component has an unsupported layout".into());
     }
     tags.insert(u32_at(bytes, data + 0x1DC)?);

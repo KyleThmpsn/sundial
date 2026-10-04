@@ -1,6 +1,102 @@
 use super::*;
 
 #[test]
+fn pending_audio_can_be_canceled_without_playing_a_late_result() {
+    let ctx = egui::Context::default();
+    let (sender, receiver) = mpsc::channel();
+    let mut preview = Preview {
+        audio_pending: Some(receiver),
+        audio_tag: Some(42),
+        audio_status: Some("Decoding audio".into()),
+        ..Default::default()
+    };
+    let mut model = Model::default();
+    model.assets.sounds.push(model_preview::assets::Sound {
+        tag: 10,
+        name: Some("Fixture Sound".into()),
+        notice: None,
+        clips: vec![model_preview::assets::AudioClip {
+            tag: 42,
+            name: Some("Fixture Clip".into()),
+            size: 44,
+            codec: 1,
+            channels: 1,
+            sample_rate: 8_000,
+        }],
+    });
+    let frame = |preview: &mut Preview, events| {
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(820.0, 400.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| preview.draw_assets(ui, &model));
+            },
+        );
+        crate::app::tests::capture::record(&output);
+        output
+    };
+    let _ = frame(&mut preview, Vec::new());
+    let output = frame(&mut preview, Vec::new());
+    let cancel = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::epaint::Shape::Text(text) if text.galley.text() == "Cancel" => {
+                Some(text.pos + text.galley.size() * 0.5)
+            }
+            _ => None,
+        })
+        .expect("pending clips need an available cancel action");
+    crate::app::tests::capture::write(&ctx, &output, "pending-audio-cancel");
+    for pressed in [true, false] {
+        let _ = frame(
+            &mut preview,
+            vec![
+                egui::Event::PointerMoved(cancel),
+                egui::Event::PointerButton {
+                    pos: cancel,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+    }
+    assert!(preview.audio_pending.is_none());
+    assert!(preview.audio_tag.is_none());
+    assert!(preview.audio_status.is_none());
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let path = file.path().to_owned();
+    let late = sender.send(Ok((file, std::time::Duration::from_secs(1))));
+    assert!(late.is_err(), "a canceled decode has no playback receiver");
+    drop(late);
+    assert!(!path.exists());
+    preview.poll_audio(&ctx);
+    assert!(preview.playback.is_none());
+    let (next, receiver) = mpsc::channel();
+    preview.audio_pending = Some(receiver);
+    preview.audio_tag = Some(43);
+    next.send(Err("A later decode completed".into())).unwrap();
+    preview.poll_audio(&ctx);
+    assert_eq!(
+        preview.audio_status.as_deref(),
+        Some("A later decode completed")
+    );
+    crate::test_support::artifact(
+        "audio-cancellation.json",
+        &serde_json::json!({
+            "late_result_discarded": true, "temporary_file_removed": true, "later_result_received": true,
+        }),
+    );
+}
+
+#[test]
 fn comparison_keeps_the_camera_when_the_candidate_model_changes() {
     let target = |arrangement| {
         (
@@ -91,7 +187,7 @@ fn native_shader_playback_starts_and_pause_preserves_time() {
         dye_textures: Vec::new(),
         dyes: vec![(4, 8054), (5, 8054), (6, 8054)],
     };
-    let model = model_preview::weapon::load_reported(
+    let model = model_preview::appearance::load_reported(
         &packages,
         &appearance,
         &crate::model_preview::Load::default(),
@@ -195,4 +291,147 @@ fn switching_selection_discards_stale_geometry_without_starting_parallel_reads()
     preview.sync(&ctx, next.clone());
     assert!(preview.error.is_none());
     assert_eq!(preview.pending.as_ref().unwrap().0, next);
+}
+
+/// The viewer on Age-Old Bond, headless: captures of the loading and loaded screens under
+/// `PARHELION_UI_CAPTURE_DIR`, and under `SUNDIAL_PROBE_OUT` a textured frame of the model with
+/// the dye each slot resolved to. The weapon's cream body and its dark metal panels must both
+/// reach the frame: its hologram shell in the transparent stage, drawn opaque in the body's
+/// slot, once covered the panels and turned the whole gun cream.
+#[test]
+#[ignore = "requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_PROBE_OUT, and builds a catalog"]
+fn age_old_bond_viewer_draws_every_dye_slot() {
+    let packages = PathBuf::from(std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").unwrap());
+    let out = PathBuf::from(std::env::var_os("SUNDIAL_PROBE_OUT").unwrap());
+    std::fs::create_dir_all(&out).unwrap();
+    let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
+    let loadout = catalog.preview_loadout(0x23DB_942F).expect("Age-Old Bond");
+    let appearance = catalog.preview_appearance(&loadout);
+    let mut report = format!(
+        "arrangement {} dyes {:?}\n",
+        appearance.arrangement, appearance.dyes
+    );
+    let selection: Selection = (packages.clone(), Target::Weapon(appearance, None));
+    let mut preview = Preview {
+        selection: Some(selection.clone()),
+        ..Default::default()
+    };
+    let ctx = egui::Context::default();
+    let frame = |preview: &mut Preview, name: Option<&str>| {
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(820.0, 640.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    preview.sync(ctx, selection.clone());
+                    preview.draw(ui, "Age-Old Bond");
+                });
+            },
+        );
+        crate::app::tests::capture::record(&output);
+        if let Some(name) = name {
+            crate::app::tests::capture::write(&ctx, &output, name);
+        }
+    };
+    frame(&mut preview, Some("preview-loading"));
+    let started = std::time::Instant::now();
+    while preview.model.is_none() {
+        assert!(
+            started.elapsed().as_secs() < 180,
+            "the model did not arrive: {:?}",
+            preview.error
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        frame(&mut preview, None);
+    }
+    frame(&mut preview, None);
+    frame(&mut preview, Some("preview-loaded"));
+    let model = preview.model.clone().unwrap();
+    let mut counts = [0usize; 6];
+    for &slot in &model.triangle_dyes {
+        if let Some(count) = counts.get_mut(usize::from(slot)) {
+            *count += 1;
+        }
+    }
+    for (slot, dye) in model.dyes.iter().enumerate() {
+        report += &format!(
+            "slot {slot}: {} triangles, {}\n",
+            counts[slot],
+            dye.as_ref().map_or("no dye".to_owned(), |dye| format!(
+                "albedo {:?} worn {:?} iridescence {}",
+                dye.surface.albedo, dye.surface.worn_albedo, dye.surface.iridescence
+            ))
+        );
+    }
+    let image = render::styled_image(
+        &model,
+        Camera::default(),
+        Scene::default(),
+        [720, 450],
+        0.0,
+        render::Style::Textured,
+    );
+    let mut ppm = format!("P6\n{} {}\n255\n", image.size[0], image.size[1]).into_bytes();
+    for pixel in &image.pixels {
+        ppm.extend([pixel.r(), pixel.g(), pixel.b()]);
+    }
+    std::fs::write(out.join("age-old-bond.ppm"), ppm).unwrap();
+    // Each channel in a flat colour of its own, the body's cream red and its panels' dark
+    // metal green, written where a build writes a dye's intact and worn albedos. The panels
+    // must reach the frame, so a shell drawn over the body cannot pass.
+    let overrides: Vec<crate::model_preview::SurfaceOverride> = (0..3)
+        .map(|channel| crate::model_preview::SurfaceOverride {
+            slot: channel * 2,
+            writes: [9, 13, 17, 21]
+                .into_iter()
+                .flat_map(|vector| {
+                    (0..3).map(move |lane| (vector, lane, f32::from(u8::from(lane == channel))))
+                })
+                .collect(),
+        })
+        .collect();
+    model.set_surface_overrides(&overrides);
+    let flat = render::styled_image(
+        &model,
+        Camera::default(),
+        Scene::default(),
+        [720, 450],
+        0.0,
+        render::Style::Textured,
+    );
+    model.set_surface_overrides(&[]);
+    let mut ppm = format!("P6\n{} {}\n255\n", flat.size[0], flat.size[1]).into_bytes();
+    for pixel in &flat.pixels {
+        ppm.extend([pixel.r(), pixel.g(), pixel.b()]);
+    }
+    std::fs::write(out.join("age-old-bond-channels.ppm"), ppm).unwrap();
+    let [red, green, blue] = Scene::default().background;
+    let background = egui::Color32::from_rgb(red, green, blue);
+    let mut drawn = 0usize;
+    let mut hues = [0usize; 3];
+    for pixel in flat.pixels.iter().filter(|pixel| **pixel != background) {
+        drawn += 1;
+        let rgb = [pixel.r(), pixel.g(), pixel.b()];
+        let lead = (0..3).max_by_key(|&i| rgb[i]).unwrap();
+        let peak = u32::from(rgb[lead]);
+        if peak > 40 && (0..3).all(|i| i == lead || peak * 3 >= u32::from(rgb[i]) * 4) {
+            hues[lead] += 1;
+        }
+    }
+    report += &format!(
+        "drawn {drawn} pixels, red {} green {} blue {}\n",
+        hues[0], hues[1], hues[2]
+    );
+    std::fs::write(out.join("age-old-bond-slots.txt"), &report).unwrap();
+    eprintln!("{report}");
+    assert!(drawn > 0, "the model must reach the frame:\n{report}");
+    assert!(
+        hues[0] >= drawn / 20 && hues[1] >= drawn / 20,
+        "the body and its panels must both show:\n{report}"
+    );
 }

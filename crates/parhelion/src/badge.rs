@@ -23,6 +23,7 @@ use tiger_pkg::TagHash;
 use crate::{
     AuthoringResult,
     error::{invalid, validation},
+    item::STOCK_ITEM_ICON_COUNT,
     progression::{
         BADGES_ROOT_NODE_HASH, BADGES_ROOT_NODE_INDEX, BADGES_ROOT_OBJECTIVE_INDEX,
         NESTED_ARRAY_TRAILER, NUMERIC_ADD_INSTRUCTION, NUMERIC_AND_INSTRUCTION,
@@ -45,7 +46,6 @@ use crate::{
         read_u32, read_u64, relative_target, set_array_count, write_i32, write_localized_reference,
         write_relative_pointer, write_u16, write_u32, write_u64,
     },
-    weapon::STOCK_ITEM_ICON_COUNT,
 };
 
 pub(crate) const LUNAR_BADGE_ICON_ROW_INDEX: usize = 0x2F3E;
@@ -87,6 +87,7 @@ pub(crate) const SUNRISE_BADGE_DESCRIPTION: &str =
     "Artifacts forged from a future written outside the lines.";
 const SUNRISE_CLASS_FLAG_OPERANDS: [u16; 3] = [0x108, 0xEF, 0x10F];
 
+#[derive(Clone, Copy)]
 struct Layout {
     node_start: usize,
     record_start: usize,
@@ -124,7 +125,8 @@ pub struct SunriseProjectMetadata {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SunriseBadgePlacement {
-    pub weapon_page: u16,
+    pub pages: crate::collection::CollectionPages,
+    pub classes: crate::collection::Classes,
     pub donor_collectible_index: usize,
     pub authored_collectible_index: usize,
     pub authored_unlock_index: u16,
@@ -152,13 +154,21 @@ pub(crate) struct SunriseBadgeGraphInput<'a> {
     pub placements: &'a [SunriseBadgePlacement],
 }
 
-pub(crate) fn sunrise_badge_collectible_parents(weapon_page: u16) -> [u16; 4] {
-    [
-        SUNRISE_BADGE_TITAN_NODE_INDEX as u16,
-        SUNRISE_BADGE_HUNTER_NODE_INDEX as u16,
-        SUNRISE_BADGE_WARLOCK_NODE_INDEX as u16,
-        weapon_page,
-    ]
+pub(crate) fn sunrise_badge_collectible_parents(
+    pages: crate::collection::CollectionPages,
+    classes: crate::collection::Classes,
+) -> Vec<u16> {
+    classes
+        .iter()
+        .map(|class| {
+            [
+                SUNRISE_BADGE_TITAN_NODE_INDEX,
+                SUNRISE_BADGE_HUNTER_NODE_INDEX,
+                SUNRISE_BADGE_WARLOCK_NODE_INDEX,
+            ][usize::from(class)] as u16
+        })
+        .chain(pages.iter())
+        .collect()
 }
 
 pub(crate) fn append_badge_icon_row(
@@ -262,14 +272,17 @@ fn author_graph(
     }
     if layout.node_start == STOCK_PRESENTATION_NODE_COUNT {
         let mut pages = BTreeMap::<u16, Vec<(usize, usize)>>::new();
-        for placement in placements
-            .iter()
-            .filter(|placement| usize::from(placement.weapon_page) < STOCK_PRESENTATION_NODE_COUNT)
-        {
-            pages.entry(placement.weapon_page).or_default().push((
-                placement.donor_collectible_index,
-                placement.authored_collectible_index,
-            ));
+        for placement in placements {
+            for page in placement
+                .pages
+                .iter()
+                .filter(|&page| usize::from(page) < STOCK_PRESENTATION_NODE_COUNT)
+            {
+                pages.entry(page).or_default().push((
+                    placement.donor_collectible_index,
+                    placement.authored_collectible_index,
+                ));
+            }
         }
         for (page, members) in pages {
             prepend_collectible_children_to_node(&mut nodes, usize::from(page), &members)?;
@@ -281,14 +294,16 @@ fn author_graph(
         badge_icon_index,
         layout,
     )?;
-    Ok(SunriseBadgeGraph {
+    let mut graph = SunriseBadgeGraph {
         nodes,
         node_strings,
         objectives,
         objective_strings,
         records,
         record_strings,
-    })
+    };
+    membership::set_members(&mut graph, placements, shared_expression_pools, layout)?;
+    Ok(graph)
 }
 
 /// Extends the stock badge-root objective with an acquired-all term for each authored badge.
@@ -769,13 +784,12 @@ fn append_objective(
     localization_table_index: u32,
     layout: &Layout,
 ) -> AuthoringResult<(Vec<u8>, Vec<u8>, u16)> {
-    if authored_unlock_indices.is_empty()
-        || authored_unlock_indices
-            .iter()
-            .copied()
-            .collect::<BTreeSet<_>>()
-            .len()
-            != authored_unlock_indices.len()
+    if authored_unlock_indices
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .len()
+        != authored_unlock_indices.len()
     {
         return Err(invalid(
             "Sunrise badge objective requires distinct authored unlock flags",
@@ -841,7 +855,7 @@ fn append_objective(
         NUMERIC_ADD_INSTRUCTION,
         Some(u16::MAX),
     )?;
-    let mut instructions = Vec::with_capacity(authored_unlock_indices.len() * 2 - 1);
+    let mut instructions = Vec::with_capacity(authored_unlock_indices.len().saturating_mul(2));
     for (position, flag) in authored_unlock_indices.iter().copied().enumerate() {
         instructions.push(
             flag_template
@@ -851,6 +865,11 @@ fn append_objective(
         if position != 0 {
             instructions.push(add_template.serialized);
         }
+    }
+    if instructions.is_empty() {
+        let constant =
+            shared_numeric_instruction_template(shared_expression_pools, pool_rows, 11, None)?;
+        instructions.push(constant.with_semantics(11, 0).serialized);
     }
     append_numeric_program(
         &mut objectives,

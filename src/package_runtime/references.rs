@@ -10,11 +10,19 @@ use tiger_pkg::TagHash;
 
 use crate::package_payload::{bytes_at, i64_at, relative_offset, u32_at, u64_at};
 
+pub(crate) mod referrers;
 pub(crate) mod schema;
 use schema::{Record, Registry};
 
 const MAX_OBJECTS: usize = 200_000;
+/// Resources one root's closure may reach. A walk from many roots, such as every graph a whole
+/// project authors, may reach that many for each, since their closures are each bounded.
 const MAX_RESOURCES: usize = 50_000;
+
+/// The most resources a walk from `roots` roots may visit.
+fn resource_limit(roots: usize) -> usize {
+    MAX_RESOURCES.saturating_mul(roots.max(1))
+}
 
 fn is_reference(tag: u32) -> bool {
     tag != 0x811C_9DC5 && super::is_valid_package_tag(TagHash(tag))
@@ -132,13 +140,14 @@ fn traverse(
     mut children: impl FnMut(u32) -> Result<BTreeMap<u32, usize>, String>,
 ) -> Result<Vec<Reference>, String> {
     let mut pending = roots.into_iter().collect::<BTreeSet<_>>();
+    let limit = resource_limit(pending.len());
     let mut visited = BTreeSet::new();
     let mut references = BTreeMap::new();
     while let Some(tag) = pending.pop_first() {
         if !visited.insert(tag) {
             continue;
         }
-        if visited.len() > MAX_RESOURCES {
+        if visited.len() > limit {
             return Err("Native reference traversal exceeded its resource limit".into());
         }
         for (child, offset) in children(tag)? {

@@ -13,8 +13,6 @@ autoexamples = false
 [features]
 default = []
 d2-model-importer = ["dep:parhelion-import"]
-# Long-term community work is opt-in and excluded from normal app builds.
-community-recipes = []
 
 [lints]
 workspace = true

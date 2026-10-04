@@ -6,13 +6,13 @@ use crate::package_runtime::reader::PackageManager;
 use crate::{
     investment_schema::{GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, investment_globals_table_tag},
     package_runtime::{open_shadowkeep_packages, resolve_live_named_tag},
+    runtime::{
+        WeaponRuntimeGraph, load_weapon_runtime_entity_at_pattern_index_with_manager,
+        load_weapon_runtime_graph_for_entity,
+    },
     sandbox_perk::{
         FinishedSandboxPerk, finished_sandbox_perk_at, load_sandbox_perk_runtime_action,
         validate_finished_sandbox_perk_catalog,
-    },
-    weapon_runtime::{
-        WeaponRuntimeGraph, load_weapon_runtime_entity_at_pattern_index_with_manager,
-        load_weapon_runtime_graph_for_entity,
     },
 };
 use tiger_pkg::TagHash;
@@ -28,7 +28,7 @@ pub enum RuntimeTarget {
 pub enum LoadedDetails {
     Weapon(WeaponRuntimeGraph),
     Perk(PerkDetails),
-    Dye(crate::weapon_dyes::WeaponDyeColors),
+    Dye(crate::dyes::WeaponDyeColors),
 }
 
 #[derive(Debug)]
@@ -52,7 +52,7 @@ pub struct PerkGraph {
 
 pub fn load(install: &Path, target: RuntimeTarget) -> Result<LoadedDetails, String> {
     if let RuntimeTarget::Dye(index) = target {
-        return crate::weapon_dyes::load_weapon_dye_colors(&install.join("packages"), &[index])?
+        return crate::dyes::load_weapon_dye_colors(&install.join("packages"), &[index])?
             .remove(&index)
             .ok_or_else(|| "The dye reader returned no result".to_owned())?
             .map(LoadedDetails::Dye);

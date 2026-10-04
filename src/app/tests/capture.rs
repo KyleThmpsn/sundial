@@ -10,7 +10,7 @@ thread_local! {
 
 /// Keeps the images a frame uploaded. Each frame reports only the textures it changed, so a
 /// test whose captures show icons calls this after every frame it runs.
-pub(in crate::app) fn record(output: &egui::FullOutput) {
+pub(crate) fn record(output: &egui::FullOutput) {
     IMAGES.with_borrow_mut(|images| {
         for (id, delta) in &output.textures_delta.set {
             if let (egui::ImageData::Color(image), None) = (&delta.image, delta.pos) {
@@ -23,7 +23,7 @@ pub(in crate::app) fn record(output: &egui::FullOutput) {
     });
 }
 
-pub(in crate::app) fn write(ctx: &egui::Context, output: &egui::FullOutput, name: &str) {
+pub(crate) fn write(ctx: &egui::Context, output: &egui::FullOutput, name: &str) {
     let Some(directory) = std::env::var_os("PARHELION_UI_CAPTURE_DIR") else {
         return;
     };

@@ -8,37 +8,21 @@ use sundial::investment::PlugChoicePickerOptions;
 /// Width of the socket role column, shared by every row so the choices line up.
 const ROLE_WIDTH: f32 = 168.0;
 
-/// The socket's role, which a weapon's author can change. Gear keeps its base's sockets, so there
-/// the column names the socket instead.
+/// The socket's role, which the author can change.
 fn draw_role(
     ui: &mut egui::Ui,
     context: &SocketRowContext<'_>,
     role: &mut Option<u16>,
     width: f32,
 ) {
-    if context.recipe.kind.is_weapon() {
-        draw_socket_role_label(
-            ui,
-            context.catalog,
-            context.donor,
-            context.socket_index,
-            context.is_added,
-            role,
-            width,
-        );
-        return;
-    }
-    let label = &context.donor.sockets[context.socket_index].label;
-    let name = label
-        .split_once(". ")
-        .map_or(label.as_str(), |(_, name)| name);
-    ui.allocate_ui_with_layout(
-        egui::vec2(width, ui.spacing().interact_size.y),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            ui.set_width(width);
-            ui.add(egui::Label::new(name).truncate());
-        },
+    draw_socket_role_label(
+        ui,
+        context.catalog,
+        context.donor,
+        context.socket_index,
+        context.is_added,
+        role,
+        width,
     );
 }
 
@@ -148,16 +132,37 @@ pub(super) fn draw_active(
             egui::Layout::top_down(egui::Align::Min),
             |ui| {
                 ui.set_width(choice_area_width);
-                ui.horizontal_wrapped(|ui| {
-                    for (choice_offset, hash) in current_page.iter().copied().enumerate() {
-                        let choice_index = page_start + choice_offset;
-                        if let Some(command) =
-                            draw_choice(ui, context, choices, choice_index, hash, button_width)
-                        {
-                            selection = Some(command);
+                if current_len > 0 {
+                    ui.horizontal_wrapped(|ui| {
+                        for (choice_offset, hash) in current_page.iter().copied().enumerate() {
+                            let choice_index = page_start + choice_offset;
+                            if let Some(command) =
+                                draw_choice(ui, context, choices, choice_index, hash, button_width)
+                            {
+                                selection = Some(command);
+                            }
                         }
-                    }
-                });
+                    });
+                }
+                // An edited recipe needs a default for each random socket. Keep that warning
+                // in this socket's choice area, leaving it available as a drop target.
+                if current_len == 0
+                    && !choices.is_overridden
+                    && socket.randomized_plug_set_index.is_some()
+                    && !context.recipe.overrides.socket_columns.is_empty()
+                    && !egui::DragAndDrop::has_payload_of_type::<ChoiceDrag>(ui.ctx())
+                {
+                    let message = "Rolls at random with no default. Set a plug to build.";
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(message).color(ui.visuals().warn_fg_color),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(message);
+                    });
+                }
                 if current_len == 0
                     && can_add
                     && let Some(command) = draw_empty_choice_drop(
@@ -592,20 +597,12 @@ fn draw_options(
     let is_overridden = choices.is_overridden;
     let is_added = context.is_added;
     let can_remove_added = context.can_remove_added;
-    // Gear keeps its base's sockets and their roles, so a gear socket only resets its choices.
-    let removable = context.recipe.kind.is_weapon();
-    let (reset, reset_hint, menu_hint) = if !removable {
-        (
-            "Reset Choices",
-            "Restore the base item's choices.",
-            "Reset this socket",
-        )
-    } else if is_added {
+    let (reset, reset_hint, menu_hint) = if is_added {
         ("", "", "Remove this socket")
     } else {
         (
             "Reset Choices & Role",
-            "Restore the base weapon's choices and role. Kept choices keep their overrides.",
+            "Restore the base item's choices and role. Kept choices keep their overrides.",
             "Remove or reset this socket",
         )
     };
@@ -629,13 +626,12 @@ fn draw_options(
                         ui.close_menu();
                     }
                 } else {
-                    if removable
-                        && ui
-                            .button("Remove Socket")
-                            .on_hover_text(
-                                "Remove its choices and custom perks. Other sockets stay in place.",
-                            )
-                            .clicked()
+                    if ui
+                        .button("Remove Socket")
+                        .on_hover_text(
+                            "Remove its choices and custom perks. Other sockets stay in place.",
+                        )
+                        .clicked()
                     {
                         command = Some(RowCommand::Remove);
                         ui.close_menu();

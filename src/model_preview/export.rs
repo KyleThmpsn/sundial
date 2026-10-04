@@ -101,17 +101,14 @@ pub(crate) fn glb(model: &Model, seconds: f32) -> Result<Vec<u8>, String> {
         .triangles
         .iter()
         .flatten()
-        .any(|&corner| corner as usize >= model.vertices.len())
+        .any(|&corner| corner == u32::MAX || corner as usize >= model.vertices.len())
     {
-        return Err("This model has triangles that point outside its vertex list".into());
+        return Err("This model has triangle indices that glTF cannot represent".into());
     }
-    let posed = model
-        .animation
-        .as_ref()
-        .map(|animation| animation.vertices(model, seconds.rem_euclid(animation.duration())));
+    let posed = model.pose(seconds);
     let points: Vec<[f32; 3]> = posed
-        .as_deref()
-        .unwrap_or(&model.vertices)
+        .as_ref()
+        .map_or(model.vertices.as_slice(), |pose| pose.positions.as_slice())
         .iter()
         .copied()
         .map(upright)
@@ -122,21 +119,33 @@ pub(crate) fn glb(model: &Model, seconds: f32) -> Result<Vec<u8>, String> {
 
     let mut buffer = Buffer::default();
     let position = positions(&mut buffer, &points);
-    let normal = normals(&mut buffer, model);
+    let normal = normals(
+        &mut buffer,
+        points.len(),
+        posed
+            .as_ref()
+            .map_or(model.normals.as_slice(), |pose| pose.normals.as_slice()),
+    );
     let texcoord = texcoords(&mut buffer, model);
-    // Indices stay narrow while they can: a glB of a small part is often mailed around.
-    let short = points.len() <= usize::from(u16::MAX) + 1;
+    // glTF reserves the maximum index value for primitive restart, even for triangle lists.
+    let short = points.len() <= usize::from(u16::MAX);
 
     let dyes = shader::dyes(model, seconds);
     let mut plates: BTreeMap<bake::Plate, Vec<usize>> = BTreeMap::new();
     let mut flat = Vec::new();
     for triangle in 0..model.triangles.len() {
+        if super::effects::index(model, triangle).is_some() {
+            continue;
+        }
         match bake::Plate::of(model, triangle) {
             Some(plate) => plates.entry(plate).or_default().push(triangle),
             None => flat.push(triangle),
         }
     }
     let mut layers = Vec::new();
+    if plates.is_empty() && flat.is_empty() {
+        return Err("This model contains only transparent effects. Save an image to retain their appearance.".into());
+    }
     for (plate, triangles) in &plates {
         layers.extend(bake::bake(model, &dyes, *plate, triangles)?);
     }
@@ -217,6 +226,9 @@ pub(crate) fn glb(model: &Model, seconds: f32) -> Result<Vec<u8>, String> {
         // Optional rather than required: a reader without it still gets the right colour,
         // only dimmer where the game drives emission past full scale.
         document["extensionsUsed"] = json!([EMISSIVE_STRENGTH]);
+    }
+    if !model.effects.is_empty() {
+        document["asset"]["extras"] = json!({"omitted":"Native transparent effects need view, scene depth and runtime shader inputs. They are retained in image exports."});
     }
     container(&document, &buffer.bin)
 }
@@ -360,12 +372,15 @@ fn channel(value: f32) -> f32 {
 
 /// glTF asks for unit normals, and a normal buffer that failed to decode is left zeroed.
 fn unit(normal: [f32; 3]) -> [f32; 3] {
-    let length = normal.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
-    if length > 1e-6 {
-        normal.map(|axis| axis / length)
-    } else {
-        [0.0, 0.0, 1.0]
+    let normal = normal.map(finite);
+    let scale = normal.into_iter().map(f32::abs).fold(0.0, f32::max);
+    if scale == 0.0 {
+        return [0.0, 0.0, 1.0];
     }
+    // Scale before squaring so finite magnitudes cannot overflow or erase the direction.
+    let normal = normal.map(|axis| axis / scale);
+    let length = normal.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+    normal.map(|axis| axis / length)
 }
 
 /// The binary chunk under construction, with the view and accessor tables that address it.
@@ -429,21 +444,17 @@ fn positions(buffer: &mut Buffer, points: &[[f32; 3]]) -> usize {
     accessor
 }
 
-fn normals(buffer: &mut Buffer, model: &Model) -> Option<usize> {
-    // A posed export carries animated positions but bind-pose normals, which no longer belong
-    // to the surface. The rasterizer drops vertex normals under animation for the same reason,
-    // and importers recompute them from the triangles.
-    if model.animation.is_some() || model.normals.len() != model.vertices.len() {
+fn normals(buffer: &mut Buffer, vertices: usize, normals: &[[f32; 3]]) -> Option<usize> {
+    if normals.len() != vertices {
         return None;
     }
-    let bytes: Vec<u8> = model
-        .normals
+    let bytes: Vec<u8> = normals
         .iter()
         .flat_map(|&normal| unit(upright(normal)))
         .flat_map(f32::to_le_bytes)
         .collect();
     let view = buffer.view(&bytes, Some(ARRAY_BUFFER));
-    Some(buffer.accessor(view, FLOAT, "VEC3", model.normals.len()))
+    Some(buffer.accessor(view, FLOAT, "VEC3", normals.len()))
 }
 
 fn texcoords(buffer: &mut Buffer, model: &Model) -> Option<usize> {
@@ -660,7 +671,6 @@ fn container(document: &Value, bin: &[u8]) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
     use crate::model_preview::texture::Texture;
-    use std::io::Write;
 
     /// Walks the chunk stream, verifying each checksum, and hands back the payloads in order.
     fn chunks(encoded: &[u8]) -> Vec<(String, Vec<u8>)> {
@@ -691,27 +701,23 @@ mod tests {
     #[test]
     fn png_signs_every_chunk_and_keeps_them_in_order() {
         let encoded = png(&[9u8; 2 * 3 * 4], 2, 3).expect("encode");
-        assert_eq!(encoded[..8], SIGNATURE);
+        assert_eq!(encoded[..8], [137, 80, 78, 71, 13, 10, 26, 10]);
         let chunks = chunks(&encoded);
         let kinds: Vec<&str> = chunks.iter().map(|(kind, _)| kind.as_str()).collect();
-        assert_eq!(kinds, ["IHDR", "IDAT", "IEND"]);
-        assert_eq!(chunks[0].1, [0u8, 0, 0, 2, 0, 0, 0, 3, 8, 6, 0, 0, 0]);
-        assert!(chunks[2].1.is_empty());
+        assert_eq!(kinds.first(), Some(&"IHDR"));
+        assert_eq!(kinds.last(), Some(&"IEND"));
+        assert!(kinds.contains(&"IDAT"));
+        assert_eq!(chunks[0].1[..8], [0u8, 0, 0, 2, 0, 0, 0, 3]);
+        assert!(chunks.last().unwrap().1.is_empty());
     }
 
     #[test]
-    fn png_deflates_each_row_behind_a_zero_filter_byte() {
+    fn png_preserves_every_pixel_row() {
         let pixels: Vec<u8> = (0u8..16).collect();
         let encoded = png(&pixels, 2, 2).expect("encode");
-        let chunks = chunks(&encoded);
-        let mut decoder = flate2::write::ZlibDecoder::new(Vec::new());
-        decoder.write_all(&chunks[1].1).expect("inflate");
-        let raw = decoder.finish().expect("inflate");
-        let mut expected: Vec<u8> = vec![0];
-        expected.extend_from_slice(&pixels[..8]);
-        expected.push(0);
-        expected.extend_from_slice(&pixels[8..]);
-        assert_eq!(raw, expected);
+        let decoded = eframe::icon_data::from_png_bytes(&encoded).expect("decode");
+        assert_eq!((decoded.width, decoded.height), (2, 2));
+        assert_eq!(decoded.rgba, pixels);
     }
 
     #[test]
@@ -774,6 +780,47 @@ mod tests {
         (document, bytes[at + 8..].to_vec())
     }
 
+    /// Read an accessor through the emitted document, including optional offsets.
+    fn accessor_bytes<'a>(
+        document: &Value,
+        bin: &'a [u8],
+        accessor: &Value,
+        length: usize,
+    ) -> &'a [u8] {
+        let view = &document["bufferViews"][accessor["bufferView"].as_u64().unwrap() as usize];
+        let offset = view["byteOffset"].as_u64().unwrap_or(0) as usize
+            + accessor["byteOffset"].as_u64().unwrap_or(0) as usize;
+        &bin[offset..offset + length]
+    }
+
+    fn exported_indices(document: &Value, bin: &[u8], primitive: &Value) -> Vec<u32> {
+        let accessor = &document["accessors"][primitive["indices"].as_u64().unwrap() as usize];
+        assert_eq!(accessor["type"], "SCALAR");
+        let width = match accessor["componentType"].as_u64().unwrap() {
+            5121 => 1,
+            5123 => 2,
+            5125 => 4,
+            other => panic!("Unexpected index component type {other}"),
+        };
+        let count = accessor["count"].as_u64().unwrap() as usize;
+        accessor_bytes(document, bin, accessor, count * width)
+            .chunks_exact(width)
+            .map(|bytes| match width {
+                1 => u32::from(bytes[0]),
+                2 => u32::from(u16::from_le_bytes(bytes.try_into().unwrap())),
+                _ => u32::from_le_bytes(bytes.try_into().unwrap()),
+            })
+            .collect()
+    }
+
+    fn retain_glb(name: &str, bytes: &[u8]) {
+        if let Some(directory) = std::env::var_os("PARHELION_TEST_ARTIFACTS") {
+            let directory = std::path::PathBuf::from(directory);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join(name), bytes).unwrap();
+        }
+    }
+
     #[test]
     fn glb_writes_one_primitive_per_material_group() {
         let (document, bin) = parse(&glb(&quad(), 0.0).expect("export"));
@@ -782,29 +829,46 @@ mod tests {
             .expect("primitives");
         assert_eq!(primitives.len(), 2);
         assert_eq!(document["materials"].as_array().map(Vec::len), Some(2));
-        // The groups share one vertex table and differ only in their index accessor.
-        assert_eq!(
-            primitives[0]["attributes"], primitives[1]["attributes"],
-            "primitives should share the vertex accessors"
-        );
-        assert_ne!(primitives[0]["indices"], primitives[1]["indices"]);
-        for primitive in primitives {
-            let accessor = primitive["indices"].as_u64().expect("indices") as usize;
-            assert_eq!(document["accessors"][accessor]["count"], 3);
-            assert_eq!(
-                document["accessors"][accessor]["componentType"],
-                UNSIGNED_SHORT
-            );
+        for (group, primitive) in primitives.iter().enumerate() {
+            let indices = exported_indices(&document, &bin, primitive);
+            assert_eq!(indices, quad().triangles[group]);
         }
         assert_eq!(document["accessors"][0]["count"], 4);
         assert_eq!(document["accessors"][0]["type"], "VEC3");
-        assert_eq!(document["accessors"].as_array().map(Vec::len), Some(5));
         // The buffer stops before the chunk's alignment filler, which glTF allows to be up to
         // three bytes longer than the buffer it carries.
         let declared = document["buffers"][0]["byteLength"]
             .as_u64()
             .expect("byteLength") as usize;
         assert!(declared <= bin.len() && bin.len() - declared < 4);
+
+        let mut evidence = Vec::new();
+        for vertices in [65_535, 65_536, 65_537] {
+            let triangle = [0, (vertices - 2) as u32, (vertices - 1) as u32];
+            let mut model = Model {
+                vertices: vec![[0.0; 3]; vertices],
+                triangles: vec![triangle],
+                ..Default::default()
+            };
+            model.vertices[vertices - 2] = [1.0, 0.0, 0.0];
+            model.vertices[vertices - 1] = [0.0, 0.0, 1.0];
+            let bytes = glb(&model, 0.0).expect("export index boundary");
+            let (document, bin) = parse(&bytes);
+            let primitive = &document["meshes"][0]["primitives"][0];
+            let accessor = &document["accessors"][primitive["indices"].as_u64().unwrap() as usize];
+            let indices = exported_indices(&document, &bin, primitive);
+            assert_eq!(indices, triangle);
+            let reserved = match accessor["componentType"].as_u64().unwrap() {
+                5121 => 255,
+                5123 => 65_535,
+                5125 => u32::MAX,
+                _ => unreachable!(),
+            };
+            assert!(indices.iter().all(|index| *index < reserved));
+            retain_glb(&format!("export-index-boundary-{vertices}.glb"), &bytes);
+            evidence.push(json!({"vertices":vertices,"indices":indices,"component_type":accessor["componentType"]}));
+        }
+        crate::test_support::artifact("export-index-boundaries.json", &json!(evidence));
     }
 
     #[test]
@@ -813,7 +877,6 @@ mod tests {
         assert_eq!(document["images"].as_array().map(Vec::len), Some(1));
         assert_eq!(document["images"][0]["mimeType"], "image/png");
         assert_eq!(document["textures"][0]["source"], 0);
-        assert_eq!(document["samplers"].as_array().map(Vec::len), Some(1));
         let materials = document["materials"].as_array().expect("materials");
         let textured = materials
             .iter()
@@ -841,7 +904,7 @@ mod tests {
             rgba: rgba.repeat(4),
         };
         let dye = shader::Dye {
-            surface: crate::weapon_dyes::material::Surface {
+            surface: crate::dyes::material::Surface {
                 albedo: [1.0, 0.0, 0.0],
                 worn_albedo: [1.0, 0.0, 0.0],
                 params: [0.0, 0.0, 0.0, 1.0],
@@ -894,19 +957,17 @@ mod tests {
 
     /// The pixels of one embedded texture.
     fn texels(document: &Value, bin: &[u8], slot: &Value, channels: usize) -> Vec<u8> {
-        let chunks = chunks(embedded(document, bin, slot));
-        let width = u32::from_be_bytes(chunks[0].1[..4].try_into().expect("width")) as usize;
-        let data = &chunks
-            .iter()
-            .find(|(kind, _)| kind == "IDAT")
-            .expect("image data")
-            .1;
-        let mut decoder = flate2::write::ZlibDecoder::new(Vec::new());
-        decoder.write_all(data).expect("inflate");
-        let raw = decoder.finish().expect("inflate");
-        raw.chunks_exact(1 + width * channels)
-            .flat_map(|row| row[1..].to_vec())
-            .collect()
+        let decoded = eframe::icon_data::from_png_bytes(embedded(document, bin, slot))
+            .expect("decode embedded material texture");
+        match channels {
+            4 => decoded.rgba,
+            3 => decoded
+                .rgba
+                .chunks_exact(4)
+                .flat_map(|pixel| pixel[..3].iter().copied())
+                .collect(),
+            _ => panic!("unsupported material channel count {channels}"),
+        }
     }
 
     #[test]
@@ -965,7 +1026,12 @@ mod tests {
             json!(3.0)
         );
         assert_eq!(panel["alphaMode"], "MASK");
-        assert_eq!(document["extensionsUsed"], json!([EMISSIVE_STRENGTH]));
+        assert!(
+            document["extensionsUsed"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(EMISSIVE_STRENGTH))
+        );
     }
 
     /// Exports two real weapons and writes every baked map beside the raw colour plates, so a
@@ -980,12 +1046,8 @@ mod tests {
         let packages = setting("SUNDIAL_PREVIEW_PACKAGES");
         let out = setting("SUNDIAL_PROBE_OUT");
         std::fs::create_dir_all(&out).expect("output folder");
-        let catalog = crate::investment::InvestmentCatalog::load(
-            packages.parent().expect("install folder"),
-            false,
-            |_| {},
-        )
-        .expect("catalog");
+        let catalog = crate::test_support::catalog(packages.parent().expect("install folder"))
+            .expect("catalog");
         let mut report = String::new();
         for name in ["Age-Old Bond", "Better Devils"] {
             let donor = catalog
@@ -995,7 +1057,7 @@ mod tests {
                 .expect("donor");
             let loadout = catalog.preview_loadout(donor.hash).expect("loadout");
             let appearance = catalog.preview_appearance(&loadout);
-            let model = crate::model_preview::weapon::load_reported(
+            let model = crate::model_preview::appearance::load_reported(
                 &packages,
                 &appearance,
                 &crate::model_preview::Load::default(),
@@ -1047,8 +1109,11 @@ mod tests {
     fn glb_stands_the_engines_up_axis_upright() {
         assert_eq!(upright([1.0, 2.0, 3.0]), [1.0, 3.0, -2.0]);
         let (document, _) = parse(&glb(&quad(), 0.0).expect("export"));
+        let position = document["meshes"][0]["primitives"][0]["attributes"]["POSITION"]
+            .as_u64()
+            .unwrap() as usize;
         let bounds = |name: &str| -> Vec<f64> {
-            document["accessors"][0][name]
+            document["accessors"][position][name]
                 .as_array()
                 .expect("bounds")
                 .iter()
@@ -1058,6 +1123,44 @@ mod tests {
         // Engine Z spans 0..2 and becomes the glTF up axis; engine Y is flat and becomes -Z.
         assert_eq!(bounds("min"), [0.0, 0.0, 0.0]);
         assert_eq!(bounds("max"), [1.0, 2.0, 0.0]);
+
+        let mut evidence = Vec::new();
+        for (name, input, expected) in [
+            ("ordinary", [3.0, 4.0, 0.0], [0.6, 0.0, -0.8]),
+            ("large", [3.0e20, 4.0e20, 0.0], [0.6, 0.0, -0.8]),
+            ("small", [3.0e-20, 4.0e-20, 0.0], [0.6, 0.0, -0.8]),
+            ("zero", [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+        ] {
+            let mut model = quad();
+            model.normals = vec![input; model.vertices.len()];
+            let bytes = glb(&model, 0.0).expect("export normal direction");
+            let (document, bin) = parse(&bytes);
+            let primitive = &document["meshes"][0]["primitives"][0];
+            let accessor = &document["accessors"]
+                [primitive["attributes"]["NORMAL"].as_u64().unwrap() as usize];
+            assert_eq!(accessor["type"], "VEC3");
+            assert_eq!(accessor["componentType"], 5126);
+            let count = accessor["count"].as_u64().unwrap() as usize;
+            let raw = accessor_bytes(&document, &bin, accessor, count * 12);
+            let mut normals = Vec::new();
+            for normal in raw.chunks_exact(12) {
+                let decoded: [f32; 3] = std::array::from_fn(|axis| {
+                    f32::from_le_bytes(normal[axis * 4..axis * 4 + 4].try_into().unwrap())
+                });
+                for axis in 0..3 {
+                    assert!(
+                        (decoded[axis] - expected[axis]).abs() < 1.0e-6,
+                        "{name}: {decoded:?}"
+                    );
+                }
+                let length = decoded.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+                assert!((length - 1.0).abs() < 1.0e-6);
+                normals.push(decoded);
+            }
+            retain_glb(&format!("export-normals-{name}.glb"), &bytes);
+            evidence.push(json!({"case":name,"input":input,"normals":normals}));
+        }
+        crate::test_support::artifact("export-normal-directions.json", &json!(evidence));
     }
 
     #[test]

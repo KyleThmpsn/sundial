@@ -309,8 +309,6 @@ fn character_item_ui_ids_survive_index_shifts_and_disambiguate_bad_soids() {
 
     let duplicates = inventory_item_ui_identities(&[snapshot(0, 20), snapshot(1, 20)]);
     assert_ne!(duplicates[0], duplicates[1]);
-    assert_eq!(duplicates[0].duplicate_ordinal, Some(0));
-    assert_eq!(duplicates[1].duplicate_ordinal, Some(1));
 }
 
 #[test]

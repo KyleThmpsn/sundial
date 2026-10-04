@@ -2,7 +2,7 @@
 //! output instructions have one-byte ordinals instead of renderer externs.
 use anyhow::{Context, Result, ensure};
 
-pub(super) fn lower(code: &[u8], constants: usize, inputs: usize) -> Result<Vec<u8>> {
+pub(crate) fn lower(code: &[u8], constants: usize, inputs: usize) -> Result<Vec<u8>> {
     ensure!(
         constants <= 256 && inputs <= 64,
         "sequencer tables exceed byte indices"
@@ -13,11 +13,21 @@ pub(super) fn lower(code: &[u8], constants: usize, inputs: usize) -> Result<Vec<
     let mut result = Vec::new();
     while at < code.len() {
         let op = code[at];
+        // Actual paired channel programs retain this unary instruction while
+        // shifting Source 2D to Native 26. Keep it scoped to sequencers until a
+        // material-expression corpus establishes the same renderer contract.
+        if op == 0x2D {
+            ensure!(stack > 0, "sequencer stack underflow");
+            result.push(0x26);
+            at += 1;
+            continue;
+        }
         if matches!(op, 0x4A | 0x4C) {
             let index = *code.get(at + 1).context("truncated sequencer ordinal")?;
             if op == 0x4A {
                 ensure!((index as usize) < inputs, "sequencer input outside table");
                 stack += 1;
+                ensure!(stack <= 64, "sequencer stack exceeds capacity");
                 result.extend([0x3C, index]);
             } else {
                 ensure!(

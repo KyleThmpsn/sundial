@@ -2,6 +2,7 @@
 use super::*;
 use std::collections::BTreeSet;
 mod program;
+pub(crate) use program::lower as lower_program;
 mod state;
 pub(super) use state::interpolation_allocation;
 
@@ -68,19 +69,21 @@ impl Declaration {
             .iter()
             .position(|r| *r == row)
             .context("source procedure ordinal")?;
-        ensure!(
-            ordinal < 64,
-            "procedure dependency ordinal exceeds one word"
-        );
         for at in p.array(row + 56, 4, Some(0x80800007))? {
             let output = *rows
                 .get(p.u32(at)? as usize)
                 .context("procedure output declaration")?;
-            let deps = p.array(output + 80, 8, Some(0x8080000B))?;
+            let deps = p.array(output + 80, 4, Some(0x8080000B))?;
+            let reciprocal = deps
+                .get(ordinal / 32)
+                .map(|at| p.u32(*at).map(|word| word & (1u32 << (ordinal % 32)) != 0))
+                .transpose()?
+                .unwrap_or(false);
+            // Constant channels have no writable storage or reverse dependency
+            // mask. They remain valid procedure inputs without dirty propagation.
+            let constant = deps.is_empty() && constant_input(p, output, rows)?;
             ensure!(
-                p.u32(output + 8)? == 0
-                    && deps.len() == 1
-                    && p.u64(deps[0])? & (1u64 << ordinal) != 0,
+                p.u64(output + 8)? == 0 && (reciprocal || constant),
                 "procedure output lacks reciprocal dependency"
             );
             outputs.push(format!("{:08X}", p.u32(output)?));
@@ -209,6 +212,35 @@ impl Declaration {
     }
 }
 
+fn constant_input(p: &Payload, row: usize, rows: &[usize]) -> Result<bool> {
+    if p.u64(row + 8)? != 0
+        || p.0[row + 16..row + 72].iter().any(|v| *v != 0)
+        || p.u16(row + 72)? != u16::MAX
+        || p.u16(row + 74)? != 0
+        || p.u64(row + 96)? != 0
+        || p.u16(row + 106)? != u16::MAX
+    {
+        return Ok(false);
+    }
+    let definition = p.pointer(24)?;
+    ensure!(
+        p.u32(definition - 4)? == 0x80809597,
+        "constant input bank type differs"
+    );
+    let index = rows
+        .iter()
+        .position(|at| *at == row)
+        .context("constant input ordinal")?;
+    for field in [0x168, 0x178, 0x188] {
+        for name in p.array(definition + field, 12, Some(0x808095A8))? {
+            if p.u32(name + 8)? as usize == index {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
 pub(super) fn validate_source(
     source_assets: &Source,
     bank: &Payload,
@@ -251,8 +283,8 @@ pub(super) fn validate_source(
         source.u32(link + 32)? == 0x64590948 && source.u64(link + 8)? == inputs[0] as u64,
         "source variable input differs"
     );
-    let runtime = bank.array(bank.pointer(16)? + 0x30, 88, Some(0x808095AF))?;
-    let static_inputs = bank.array(bank.pointer(24)? + 0x138, 40, Some(0x808095B0))?;
+    let runtime = bank.array(bank.pointer(16)? + 0x30, 80, Some(0x808095AF))?;
+    let static_inputs = bank.array(bank.pointer(24)? + 0x138, 32, Some(0x808095B0))?;
     ensure!(
         runtime.len() == 1
             && static_inputs.len() == 1
@@ -693,10 +725,10 @@ pub(super) fn attach(
     let mut row = current.0[vector..vector + 72].to_vec();
     component_indices(&mut row, bank_component, component)?;
     let bank = c.graph.read("object-channels")?;
-    let input = bank.array(bank_schema + 0xC8, 40, Some(0x808097A8))?[0];
+    let input = bank.array(bank_schema + 0xC8, 32, Some(0x808097A8))?[0];
     ensure!(
         bank.u64(input + 24)? == 0x80809AE2
-            && template.u64(template.array(template.pointer(24)? + 0xC8, 40, None)?[0] + 24)?
+            && template.u64(template.array(template.pointer(24)? + 0xC8, 32, None)?[0] + 24)?
                 == 0x80809AE2,
         "native variable resource input type differs"
     );

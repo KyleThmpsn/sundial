@@ -1,6 +1,56 @@
 use super::*;
 
 #[test]
+fn account_resync_owns_the_busy_lifetime_and_reports_account_changes() {
+    let (sender, receiver) = mpsc::channel();
+    let mut app = PackageAuthoringApp {
+        account_resync_receiver: Some(receiver),
+        ..Default::default()
+    };
+    app.poll_account_resync();
+    assert!(app.has_background_work());
+    app.start_uninstall_review(false);
+    assert!(
+        !app.uninstall.open,
+        "uninstall must wait for account resync"
+    );
+    assert!(!app.account_changed);
+    sender
+        .send(Ok(AccountResyncReport {
+            authored_unlocks: 2,
+            profile_sync: Err("A partial account operation requires attention".into()),
+            item_grants: None,
+        }))
+        .unwrap();
+    app.poll_account_resync();
+    assert!(!app.has_background_work());
+    assert!(
+        app.account_changed,
+        "the host must refresh even when an account step reports an error"
+    );
+    assert!(!app.packages_changed);
+}
+
+#[test]
+fn a_disconnected_resync_releases_busy_and_keeps_the_failure_visible() {
+    let (sender, receiver) = mpsc::channel();
+    let mut app = PackageAuthoringApp {
+        account_resync_receiver: Some(receiver),
+        ..Default::default()
+    };
+    drop(sender);
+    app.poll_account_resync();
+    assert!(!app.has_background_work());
+    assert!(
+        app.log
+            .notice
+            .as_deref()
+            .unwrap()
+            .contains("without a result")
+    );
+}
+
+#[test]
 fn invalidated_build_does_not_become_installable_when_its_worker_finishes() {
     let mut app = PackageAuthoringApp::default();
     let (sender, receiver) = mpsc::channel();

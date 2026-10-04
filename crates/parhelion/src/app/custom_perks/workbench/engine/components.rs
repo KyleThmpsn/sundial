@@ -1,7 +1,7 @@
 //! Component classes used by installed objects and perk entities.
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
-use sundial::package_authoring::weapon_runtime::{self as runtime, NativeMember};
+use sundial::package_authoring::runtime::{self, NativeMember};
 use sundial::ui::catalog::BrowserList;
 
 struct Resource {

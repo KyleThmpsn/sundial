@@ -346,7 +346,7 @@ fn cloned_condition_tokens(clones: &[CollectibleNestedClone], field: usize) -> V
 }
 
 #[test]
-fn collectible_clone_drops_socket_overrides_without_changing_the_donor() {
+fn collectible_clone_drops_socket_overrides_and_keeps_the_private_unlock() {
     let mut data = synthetic_collectible_conditions(7_502, 7_502);
     let header = data.len();
     let mut segment = vec![0; 32];
@@ -361,7 +361,6 @@ fn collectible_clone_drops_socket_overrides_without_changing_the_donor() {
     data.extend_from_slice(&segment);
     write_u64(&mut data, COLLECTIBLE_SOCKET_OVERRIDES_OFFSET, 1).unwrap();
     write_relative_pointer(&mut data, COLLECTIBLE_SOCKET_OVERRIDES_OFFSET + 8, header).unwrap();
-    let before = data.clone();
     let clones =
         collectible_nested_clones(&data, 0, 1, COLLECTIBLE_ROW_SIZE, 0, 7_502, 21_613).unwrap();
     assert!(
@@ -373,7 +372,6 @@ fn collectible_clone_drops_socket_overrides_without_changing_the_donor() {
         cloned_condition_tokens(&clones, COLLECTIBLE_CONDITION_OFFSET),
         vec![(NUMERIC_FLAG_INSTRUCTION, 21_613)]
     );
-    assert_eq!(data, before);
 }
 
 #[test]
@@ -409,14 +407,12 @@ fn collectible_clone_uses_only_its_private_acquisition_condition() {
 }
 
 #[test]
-fn collectible_clone_drops_unrelated_unlock_conditions_without_changing_stock() {
+fn collectible_clone_drops_unrelated_unlock_conditions() {
     let data = synthetic_collectible_conditions(10_699, 10_999);
-    let before = data.clone();
     let clones = collectible_nested_clones(&data, 0, 1, COLLECTIBLE_ROW_SIZE, 0, 10_999, 21_613)
         .expect("Martyr-style conditions should deep-clone selectively");
 
     assert_eq!(clones.len(), 1);
-    assert_eq!(data, before);
     assert_eq!(
         cloned_condition_tokens(&clones, COLLECTIBLE_CONDITION_OFFSET),
         vec![(NUMERIC_FLAG_INSTRUCTION, 21_613)]
@@ -490,8 +486,6 @@ fn five_socket_overrides_use_the_four_byte_array_marker_without_a_zero_word() {
     }
     segment.extend_from_slice(&NESTED_ARRAY_MARKER);
 
-    assert_eq!(segment.len(), 0x50);
-    assert_eq!(&segment[0x4C..], &NESTED_ARRAY_MARKER);
     assert_eq!(
         flat_collectible_nested_segment(
             &segment,

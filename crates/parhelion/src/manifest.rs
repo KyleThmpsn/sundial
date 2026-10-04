@@ -168,6 +168,8 @@ impl ManifestProject {
                     class_type: (recipe.kind == ItemKind::Subclass)
                         .then(|| subclass_classes.get(&plan.template_item_hash).copied())
                         .flatten(),
+                    every_class: recipe.kind == ItemKind::Subclass
+                        && recipe.overrides.subclass_every_class,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -283,6 +285,9 @@ pub(crate) struct ManifestWeapon {
     /// from, the install adds the subclass to each character of this class.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) class_type: Option<u8>,
+    /// A subclass the install adds to every character, equipping it only on its own class's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) every_class: bool,
 }
 
 impl ManifestWeapon {
@@ -299,6 +304,13 @@ impl ManifestWeapon {
         if self.class_type.is_some_and(|class| !subclass || class > 2) {
             return Err(format!(
                 "Manifest {} {} has an invalid class",
+                self.kind.noun(),
+                self.namespace
+            ));
+        }
+        if self.every_class && (!subclass || self.class_type.is_none()) {
+            return Err(format!(
+                "Manifest {} {} is for every class without being a subclass with a class",
                 self.kind.noun(),
                 self.namespace
             ));
@@ -643,7 +655,7 @@ mod tests {
             incomplete
                 .validate()
                 .unwrap_err()
-                .contains("0 authored weapons but 1 watermarked icon containers")
+                .contains("watermarked icon containers")
         );
     }
 }

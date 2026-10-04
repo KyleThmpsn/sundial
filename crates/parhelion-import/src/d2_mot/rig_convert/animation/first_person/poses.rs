@@ -21,7 +21,7 @@ fn static_pose(p: &Payload, frames: usize) -> Result<bool> {
             .all(|at| p.u64(at).ok() == Some(0)))
 }
 
-pub(super) fn controller(
+pub(crate) fn controller(
     reader: &mut Reader,
     rig: &Value,
     modern: bool,

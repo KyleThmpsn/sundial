@@ -17,6 +17,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use super::ui::destiny_text_font_family;
+use crate::ui::ICON_FONT_FAMILY;
 
 const DESTINY_SYMBOL_FONTS: &[(&str, &str)] = &[
     ("Destiny Symbols PC", "Destiny_Symbols_PC.otf"),
@@ -138,8 +139,6 @@ pub(super) fn normalized_automatic_backup_limit(limit: u16) -> u16 {
 
 /// The family holding Phosphor's light weight. Parhelion names it too, to draw quiet icons.
 const ICON_LIGHT_FONT_FAMILY: &str = "Sundial Icons Light";
-/// Phosphor alone, for an icon whose codepoint a game symbol also uses.
-const ICON_FONT_FAMILY: &str = "Sundial Icons";
 
 pub(super) fn configure_destiny_symbol_fonts(
     ctx: &egui::Context,

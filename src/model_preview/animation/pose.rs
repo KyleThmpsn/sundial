@@ -4,7 +4,7 @@ use super::*;
 pub(super) struct Transform {
     pub rotation: [f32; 4],
     pub translation: [f32; 3],
-    scale: f32,
+    pub scale: f32,
 }
 
 impl Transform {
@@ -24,13 +24,13 @@ impl Transform {
             result.translation[i] = float(bytes, offset + 16 + i * 4)?;
         }
         result.scale = float(bytes, offset + 28)?;
-        if (result.scale - 1.0).abs() > 0.0001 {
-            return Err("Scaled skeletons are not supported yet.".into());
-        }
         result.normalize()?;
         Ok(result)
     }
     pub fn normalize(&mut self) -> Result<(), String> {
+        if !self.scale.is_finite() || !self.translation.iter().all(|v| v.is_finite()) {
+            return Err("Animation contains a non-finite joint transform.".into());
+        }
         let norm = self.rotation.iter().map(|v| v * v).sum::<f32>().sqrt();
         if !norm.is_finite() || !(0.95..=1.05).contains(&norm) {
             return Err("Animation contains an invalid joint rotation.".into());
@@ -39,8 +39,11 @@ impl Transform {
         Ok(())
     }
     pub fn point(&self, point: [f32; 3]) -> [f32; 3] {
+        let rotated = self.rotate(point.map(|v| v * self.scale));
+        std::array::from_fn(|i| rotated[i] + self.translation[i])
+    }
+    fn rotate(&self, p: [f32; 3]) -> [f32; 3] {
         let q = self.rotation;
-        let p = point.map(|v| v * self.scale);
         let cross = |a: [f32; 3], b: [f32; 3]| {
             [
                 a[1] * b[2] - a[2] * b[1],
@@ -51,7 +54,27 @@ impl Transform {
         let v = [q[0], q[1], q[2]];
         let t = cross(v, p).map(|v| v * 2.0);
         let c = cross(v, t);
-        std::array::from_fn(|i| p[i] + q[3] * t[i] + c[i] + self.translation[i])
+        std::array::from_fn(|i| p[i] + q[3] * t[i] + c[i])
+    }
+    pub fn normal(&self, normal: [f32; 3]) -> [f32; 3] {
+        if self.scale.abs() <= 1e-8 {
+            return [0.0; 3];
+        }
+        self.rotate(normal).map(|v| v / self.scale)
+    }
+    pub fn inverse(&self) -> Result<Self, String> {
+        if self.scale.abs() <= 1e-8 {
+            return Err("Animation skeleton contains a singular bind transform.".into());
+        }
+        let [x, y, z, w] = self.rotation;
+        let mut result = Self {
+            rotation: [-x, -y, -z, w],
+            translation: [0.0; 3],
+            scale: 1.0 / self.scale,
+        };
+        result.translation = result.point(self.translation.map(|v| -v));
+        result.normalize()?;
+        Ok(result)
     }
     pub fn compose(&self, child: Self) -> Self {
         let [x, y, z, w] = self.rotation;

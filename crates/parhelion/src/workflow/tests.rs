@@ -180,8 +180,8 @@ fn configured_additional_weapon_family_matrix_builds_and_stages() {
     let install = packages
         .parent()
         .expect("configured packages need an install root");
-    let catalog = sundial::investment::InvestmentCatalog::load(install, false, |_| {})
-        .expect("configured clean-stock catalog should load");
+    let catalog =
+        crate::test_support::catalog(install).expect("configured clean-stock catalog should load");
     let cases = [
         Case {
             name: "Matrix Hand Cannon",
@@ -384,7 +384,7 @@ fn configured_additional_weapon_family_matrix_builds_and_stages() {
             }
 
             let supported = catalog
-                .weapon_supported_plug_sets(case.donor_hash)
+                .supported_plug_sets(case.donor_hash, &[])
                 .expect("matrix donor compatible plugs should decode");
             recipe.overrides.socket_columns = vec![None; donor.sockets.len()];
             if let Some(set) = supported.iter().find(|set| {
@@ -423,7 +423,7 @@ fn configured_additional_weapon_family_matrix_builds_and_stages() {
     .expect("additional family matrix should snapshot");
     let report = build_and_stage_snapshot(&snapshot)
         .expect("additional family matrix should build and stage");
-    assert_eq!(report.weapons.len(), 14);
+    assert_eq!(report.weapons.len(), snapshot.request.recipes.len());
     authored_packages_for_file_names(
         report
             .artifacts
@@ -503,16 +503,16 @@ fn configured_staged_run_reopens_with_complete_stock_shaped_icon_graphs() {
 
 #[test]
 #[ignore = "requires SUNDIAL_TEST_PACKAGES pointing to Shadowkeep packages"]
-fn semantic_preflight_authors_three_ordered_choices_in_one_gameplay_donor_column() {
+fn semantic_preflight_accepts_a_three_choice_donor_column() {
     let packages = configured_real_packages()
         .expect("SUNDIAL_TEST_PACKAGES must point to Shadowkeep packages");
     let install = packages
         .parent()
         .expect("configured package directory should have an install root");
-    let catalog = sundial::investment::InvestmentCatalog::load(install, false, |_| {})
-        .expect("configured donor catalog should load");
+    let catalog =
+        crate::test_support::catalog(install).expect("configured donor catalog should load");
     let barrel_choices = catalog
-        .weapon_supported_plug_sets(crate::ARC_LOGIC_DONOR_HASH)
+        .supported_plug_sets(crate::ARC_LOGIC_DONOR_HASH, &[])
         .expect("Gameplay donor compatible plug sets should decode")
         .into_iter()
         .find(|set| set.socket_index == 1)
@@ -544,7 +544,7 @@ fn semantic_preflight_authors_three_ordered_choices_in_one_gameplay_donor_column
 
 #[test]
 #[ignore = "requires SUNDIAL_TEST_PACKAGES pointing to Shadowkeep packages"]
-fn semantic_preflight_rejects_an_override_absent_from_the_donor() {
+fn semantic_preflight_rejects_an_invalid_stat_override() {
     let packages = configured_real_packages()
         .expect("SUNDIAL_TEST_PACKAGES must point to Shadowkeep packages");
     let directory = tempfile::tempdir().expect("temporary directory should be created");
@@ -559,12 +559,8 @@ fn semantic_preflight_rejects_an_override_absent_from_the_donor() {
         });
     let request = snapshot_with_recipe(packages, staging.clone(), recipe);
 
-    let error = preflight_snapshot(&request).expect_err("donor-incompatible override must fail");
+    preflight_snapshot(&request).expect_err("an invalid stat override must fail");
 
-    assert!(
-        error.contains("is not present in"),
-        "unexpected error: {error}"
-    );
     assert!(
         !staging.exists(),
         "failed preflight must not create staging output"
@@ -579,10 +575,20 @@ fn semantic_preflight_allows_a_forced_plug_outside_the_donor_socket_pool() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
     let staging = directory.path().join("staging");
     let mut recipe = WeaponRecipe::every_end();
+    let forced_plug = 0xDD5C_B37A; // Micro-Missile is a real grenade-launcher intrinsic plug.
+    let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
+    let pools = catalog
+        .supported_plug_sets(crate::ARC_LOGIC_DONOR_HASH, &[])
+        .unwrap();
+    assert!(
+        pools
+            .iter()
+            .all(|pool| !pool.plug_hashes.contains(&forced_plug))
+    );
     recipe.overrides.socket_columns[0]
         .as_mut()
         .expect("Every End has an explicit first socket")
-        .choices[0] = crate::HexHash::new(crate::ARC_LOGIC_DONOR_HASH);
+        .choices[0] = crate::HexHash::new(forced_plug);
     let request = snapshot_with_recipe(packages, staging.clone(), recipe);
 
     preflight_snapshot(&request).expect("an explicitly forced plug should pass preflight");
@@ -598,7 +604,7 @@ fn source_inspection_ignores_a_recognized_partial_authored_set() {
     let packages = stock_source(directory.path());
     let profile = CANONICAL_PACKAGES[0];
     package(
-        &packages.join(CANONICAL_ARTIFACT_FILE_NAMES[0]),
+        &packages.join(profile.authored_file_name),
         profile.package_id,
         profile.authored_patch_id,
         SUNDIAL_BUILD_SIGNATURE,
@@ -610,7 +616,7 @@ fn source_inspection_ignores_a_recognized_partial_authored_set() {
 
     assert_eq!(
         report.ignored_authored_files,
-        vec![CANONICAL_ARTIFACT_FILE_NAMES[0].to_owned()]
+        vec![profile.authored_file_name.to_owned()]
     );
 }
 
@@ -695,7 +701,12 @@ fn source_fingerprint_covers_sparse_stock_generations_and_detects_changes() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
     let packages = stock_source(directory.path());
     let sparse = packages.join(CANONICAL_PACKAGES[0].stock_file_name(1));
-    package(&sparse, CANONICAL_PACKAGE_IDS[0], 1, 0xF6F1_7D76_7F79_5A39);
+    package(
+        &sparse,
+        CANONICAL_PACKAGES[0].package_id,
+        1,
+        0xF6F1_7D76_7F79_5A39,
+    );
 
     let before = source_artifact_reports(&packages).unwrap();
     assert_eq!(before.len(), CANONICAL_PACKAGE_IDS.len() + 1);

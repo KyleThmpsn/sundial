@@ -31,6 +31,14 @@ mod preparation;
 use preparation::*;
 mod replacement;
 pub use replacement::{ReplacementReview, preview_replacement};
+
+/// The authored item hashes the installation carries, read from its native tables, for the
+/// build set to be checked against before a build runs.
+pub fn installed_item_hashes(packages: &Path) -> Result<BTreeSet<u32>, String> {
+    let packages =
+        validation::canonical_packages_directory(packages).map_err(|error| error.to_string())?;
+    identities::installed_identities(&packages).map(|(hashes, _)| hashes)
+}
 #[cfg(test)]
 pub(crate) use replacement::{test_review, test_review_with_slots};
 mod uninstall;

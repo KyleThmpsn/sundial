@@ -56,7 +56,7 @@ fn load_from_paths(current: Option<&Path>, legacy: Option<&Path>) -> LoadedPrefe
                         super::PlugSelectionMode::SocketAndGearType;
                     preferences.plug_defaults_version = 1;
                     save_preferences_from(current.unwrap_or(path), &preferences, path).err().map(|error| {
-                        format!("The Socket + Gear Type default is active, but its one-time migration could not be saved: {error}")
+                        format!("The Socket + Item Subtype default is active, but its one-time migration could not be saved: {error}")
                     })
                 } else {
                     None

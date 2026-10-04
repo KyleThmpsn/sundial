@@ -1,11 +1,11 @@
 //! Read-only native asset provenance and component details.
-use crate::sandbox_perk::projectile;
+use crate::sandbox_perk::entity;
 use eframe::egui;
 use std::collections::{BTreeMap, BTreeSet};
 pub fn asset_details(
     ui: &mut egui::Ui,
-    entry: &projectile::catalog::Entry,
-    catalog: &projectile::catalog::Catalog,
+    entry: &entity::catalog::Entry,
+    catalog: &entity::catalog::Catalog,
     usage: &str,
 ) {
     details(ui, entry, catalog, usage, true);
@@ -14,16 +14,16 @@ pub fn asset_details(
 /// The resource page presents components in its dedicated structure inspector.
 pub(super) fn resource_details(
     ui: &mut egui::Ui,
-    entry: &projectile::catalog::Entry,
-    catalog: &projectile::catalog::Catalog,
+    entry: &entity::catalog::Entry,
+    catalog: &entity::catalog::Catalog,
 ) {
     details(ui, entry, catalog, "", false);
 }
 
 fn details(
     ui: &mut egui::Ui,
-    entry: &projectile::catalog::Entry,
-    catalog: &projectile::catalog::Catalog,
+    entry: &entity::catalog::Entry,
+    catalog: &entity::catalog::Catalog,
     usage: &str,
     components: bool,
 ) {
@@ -37,7 +37,7 @@ fn details(
         ui.label(usage);
     }
     egui::CollapsingHeader::new("Technical Details").show(ui, |ui| {
-        ui.label(projectile::residency::classify(entry).label());
+        ui.label(entity::residency::classify(entry).label());
         ui.label(entry.kind_label());
         for path in entry
             .native_paths
@@ -70,7 +70,7 @@ fn details(
                                 .insert(component.binding);
                         }
                         for (class, bindings) in types {
-                            use crate::weapon_runtime::{
+                            use crate::runtime::{
                                 component_binding_label, native_member_names, native_type_name,
                             };
                             let role = native_type_name(class);

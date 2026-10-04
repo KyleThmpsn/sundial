@@ -118,7 +118,7 @@ pub(super) fn texture(c: &mut Effect, model: usize) -> Result<String> {
     let plate = crate::d2_mot::plates::source_plate(&c.source.root, &c.source.manifest, plates)?;
     // Fixed shader textures need the resident detail texture's header and
     // package storage metadata. A gear plate donor stays unbound here.
-    let mut header = c.graph.read("dye-4-texture-1")?.0;
+    let (mut header, ht, dt) = c.texture_template(false)?;
     put(
         &mut header,
         0,
@@ -129,6 +129,7 @@ pub(super) fn texture(c: &mut Effect, model: usize) -> Result<String> {
         put(&mut header, at, &u16::try_from(plate.side)?.to_le_bytes())?;
     }
     header[23] = u8::try_from(plate.mips)?;
+    put(&mut header, 36, &u32::MAX.to_le_bytes())?;
     crate::d2_mot::texture::resident(&mut header, plate.data.len())?;
     let name = format!("dyemap-reflection-{model}-texture");
     let data_name = format!("{name}-data");
@@ -139,12 +140,6 @@ pub(super) fn texture(c: &mut Effect, model: usize) -> Result<String> {
         );
         return Ok(name);
     }
-    let ht = c.graph.node("dye-4-texture-1")?["template"]
-        .as_u64()
-        .context("texture template")?;
-    let dt = c.graph.node("dye-4-texture-1-data")?["template"]
-        .as_u64()
-        .context("texture buffer template")?;
     c.graph.add(&name, ht, &header, Some(&data_name), vec![])?;
     c.graph
         .add(&data_name, dt, &plate.data, Some(&name), vec![])?;

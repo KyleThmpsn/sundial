@@ -22,7 +22,8 @@ pub(crate) fn default_resources() -> super::AccountDefaults {
 
 pub(crate) fn create_fixture(path: &Path, inventory_flags: u32) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let db = Connection::open(path).unwrap();
+    let mut connection = Connection::open(path).unwrap();
+    let db = connection.transaction().unwrap();
     db.execute_batch(super::contract::SCHEMA).unwrap();
     db.execute_batch(super::contract::SETTINGS_SCHEMA).unwrap();
     db.execute_batch(include_str!("fixtures/account_settings_defaults.sql"))
@@ -118,6 +119,7 @@ pub(crate) fn create_fixture(path: &Path, inventory_flags: u32) {
         [0x4000_0000_0000_0002_i64],
     )
     .unwrap();
+    db.commit().unwrap();
 }
 
 pub(crate) fn save_fixture_document(document: &mut SqliteAccountDocument, backup: &Path) {
@@ -216,9 +218,20 @@ fn null_socket_lanes_are_preserved() {
     );
     save_fixture_document(&mut doc, &dir.0.join("backup.sqlite3"));
     assert_eq!(
-        db.query_row("SELECT slot FROM characters", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        0
+        db.query_row(
+            "SELECT i.plug_count,s0.plug_hash,s1.plug_hash FROM items i \
+             LEFT JOIN sockets s0 ON s0.instance_soid=i.instance_soid AND s0.lane=0 \
+             LEFT JOIN sockets s1 ON s1.instance_soid=i.instance_soid AND s1.lane=1 \
+             WHERE i.character_slot=0 AND i.location=0 AND i.position=11",
+            [],
+            |r| Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<i64>>(1)?,
+                r.get::<_, Option<i64>>(2)?
+            )),
+        )
+        .unwrap(),
+        (2, Some(77), None)
     );
 }
 #[test]

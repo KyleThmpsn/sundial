@@ -1,0 +1,455 @@
+{
+  "source_perks": {
+    "1882": "0xADD08396",
+    "464": "0x93C2C6B1"
+  },
+  "impact_key": "0xF70082E2",
+  "variant": {
+    "name": "Adaptive Glaive",
+    "description": "Balanced melee/ranged polearm with a frontal shield.",
+    "additional_sandbox_perks": [
+      1882,
+      464
+    ],
+    "sandbox_perks": [
+      {
+        "program": {
+          "name": "Glaive Frame",
+          "trigger": "native",
+          "duration_ms": 0,
+          "cooldown_ms": 0,
+          "chance_permyriad": 10000,
+          "actions": [
+            {
+              "operation": "attach",
+              "asset": {
+                "graph": 2175179236,
+                "hud_status": {
+                  "name": "Glaive Shield",
+                  "icon": "0x392587DC"
+                }
+              }
+            },
+            {
+              "operation": "attach",
+              "asset": {
+                "graph": 2175179239
+              },
+              "mode": 0
+            },
+            {
+              "operation": "attach",
+              "asset": {
+                "graph": 2163191233
+              },
+              "mode": 0
+            },
+            {
+              "operation": "attach",
+              "asset": {
+                "graph": 2163191233
+              },
+              "mode": 0
+            }
+          ],
+          "native_asset_patches": [
+            {
+              "action_index": 0,
+              "source_graph": 2175179236,
+              "patches": [
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 0,
+                  "offset": 4420,
+                  "expected": "0x01000000",
+                  "bytes": "0x00000400"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 0,
+                  "offset": 4336,
+                  "expected": "0x0300000000000000",
+                  "bytes": "0x0200000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 0,
+                  "offset": 4400,
+                  "expected": "0x0300000000000000",
+                  "bytes": "0x0200000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 0,
+                  "offset": 4872,
+                  "expected": "0x0200000000000000",
+                  "bytes": "0x0100000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 0,
+                  "offset": 4928,
+                  "expected": "0x0200000000000000",
+                  "bytes": "0x0100000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 0,
+                  "offset": 6432,
+                  "expected": "0x0000803F0000803F0000803F0000803F",
+                  "bytes": "0x00000000000000000000000000000000"
+                },
+                {
+                  "binding_hash": 3446952467,
+                  "resource_index": 0,
+                  "offset": 1772,
+                  "expected": "0xD999A681",
+                  "bytes": "0xFFFFFFFF",
+                  "imported_particle": "overshield-hidden-geometry-81A699D9"
+                }
+              ]
+            },
+            {
+              "action_index": 2,
+              "source_graph": 2163191233,
+              "patches": [
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 0,
+                  "offset": 2960,
+                  "expected": "0x0100000000000100",
+                  "bytes": "0x0000010000000200"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 0,
+                  "offset": 2904,
+                  "expected": "0x0300000000000000",
+                  "bytes": "0x0200000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 0,
+                  "offset": 2944,
+                  "expected": "0x0300000000000000",
+                  "bytes": "0x0200000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 0,
+                  "offset": 3032,
+                  "expected": "0x0100000000000000",
+                  "bytes": "0x0000000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 0,
+                  "offset": 3072,
+                  "expected": "0x0100000000000000",
+                  "bytes": "0x0000000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 0,
+                  "offset": 3152,
+                  "expected": "0x0100000000000000",
+                  "bytes": "0x0000000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 0,
+                  "offset": 3200,
+                  "expected": "0x0100000000000000",
+                  "bytes": "0x0000000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 2992,
+                  "expected": "0x0100000001000100",
+                  "bytes": "0x0100010001000200"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 2928,
+                  "expected": "0x0300000000000000",
+                  "bytes": "0x0200000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 2976,
+                  "expected": "0x0300000000000000",
+                  "bytes": "0x0200000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 4032,
+                  "expected": "0xC9ADEF80",
+                  "bytes": "0xFFFFFFFF",
+                  "imported_particle": "particle-system-80CED6D4"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 4656,
+                  "expected": "0xD0ADEF80",
+                  "bytes": "0xFFFFFFFF",
+                  "imported_particle": "particle-system-80CED6CE"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 4964,
+                  "expected": "0x3C",
+                  "bytes": "0x22"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 4992,
+                  "expected": "0x02",
+                  "bytes": "0x03"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 4996,
+                  "expected": "0x3C",
+                  "bytes": "0x22"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 5000,
+                  "expected": "0x6D67FE6D",
+                  "bytes": "0xD4CDFE60"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 5040,
+                  "expected": "0x6D67FE6D",
+                  "bytes": "0xD4CDFE60"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 1728,
+                  "expected": "0x3C",
+                  "bytes": "0x22"
+                }
+              ]
+            },
+            {
+              "action_index": 3,
+              "source_graph": 2163191233,
+              "patches": [
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 0,
+                  "offset": 2960,
+                  "expected": "0x0100000000000100",
+                  "bytes": "0x0000010000000200"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 0,
+                  "offset": 2904,
+                  "expected": "0x0300000000000000",
+                  "bytes": "0x0200000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 0,
+                  "offset": 2944,
+                  "expected": "0x0300000000000000",
+                  "bytes": "0x0200000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 0,
+                  "offset": 3032,
+                  "expected": "0x0100000000000000",
+                  "bytes": "0x0000000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 0,
+                  "offset": 3072,
+                  "expected": "0x0100000000000000",
+                  "bytes": "0x0000000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 0,
+                  "offset": 3152,
+                  "expected": "0x0100000000000000",
+                  "bytes": "0x0000000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 0,
+                  "offset": 3200,
+                  "expected": "0x0100000000000000",
+                  "bytes": "0x0000000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 2992,
+                  "expected": "0x0100000001000100",
+                  "bytes": "0x0100010001000200"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 2928,
+                  "expected": "0x0300000000000000",
+                  "bytes": "0x0200000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 2976,
+                  "expected": "0x0300000000000000",
+                  "bytes": "0x0200000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 4032,
+                  "expected": "0xC9ADEF80",
+                  "bytes": "0xFFFFFFFF",
+                  "imported_particle": "particle-system-80CED6C4"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 4376,
+                  "expected": "0x0100000000000000",
+                  "bytes": "0x0000000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 4624,
+                  "expected": "0x0100000000000000",
+                  "bytes": "0x0000000000000000"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 4964,
+                  "expected": "0x3C",
+                  "bytes": "0x22"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 4992,
+                  "expected": "0x02",
+                  "bytes": "0x03"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 4996,
+                  "expected": "0x3C",
+                  "bytes": "0x22"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 5000,
+                  "expected": "0x6D67FE6D",
+                  "bytes": "0xD4CDFE60"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 5040,
+                  "expected": "0x6D67FE6D",
+                  "bytes": "0xD4CDFE60"
+                },
+                {
+                  "binding_hash": 127327091,
+                  "resource_index": 1,
+                  "offset": 1728,
+                  "expected": "0x3C",
+                  "bytes": "0x22"
+                }
+              ]
+            }
+          ],
+          "native_trigger": {
+            "kind": 23,
+            "bytes": "0x0000803FFF17000001000100"
+          },
+          "native_removal": {
+            "kind": 23,
+            "bytes": "0x0000803FFF17000000000100"
+          },
+          "alternative_removals": [
+            {
+              "kind": 17,
+              "bytes": "0x0000803FFF1100000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000000000000000A10CC78000000000FF000000000000000000000000000000636F6E74656E742F636F6D6D6F6E2F6E61746976652F73616E64626F782F6C6162656C5F676C6F62616C732E6C6162656C5F676C6F62616C732E74667400"
+            },
+            {
+              "kind": 15,
+              "bytes": "0x0000803FFF0F00010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000000000000000A10CC78000000000FF000000000000000000000000000000636F6E74656E742F636F6D6D6F6E2F6E61746976652F73616E64626F782F6C6162656C5F676C6F62616C732E6C6162656C5F676C6F62616C732E74667400"
+            }
+          ]
+        },
+        "source_perk_index": 1882,
+        "runtime_values": [],
+        "action_float_values": []
+      },
+      {
+        "program": {
+          "name": "Glaive Melee Reach",
+          "trigger": "drawn",
+          "duration_ms": 0,
+          "cooldown_ms": 0,
+          "chance_permyriad": 10000,
+          "actions": [
+            {
+              "operation": "ability_property",
+              "target": 2,
+              "key": "0x16B9A58E"
+            },
+            {
+              "operation": "ability_property",
+              "target": 2,
+              "key": "0x6A02D03D"
+            },
+            {
+              "operation": "ability_property",
+              "target": 2,
+              "key": "0xF70082E2"
+            },
+            {
+              "operation": "ability_property",
+              "target": 2,
+              "key": "0x509AF1A2"
+            }
+          ],
+          "ability_inputs": [
+            {
+              "key": "0x509AF1A2",
+              "slot": 2,
+              "input": 4,
+              "value": 0.0,
+              "multiply": true
+            }
+          ]
+        },
+        "source_perk_index": 464,
+        "runtime_values": [],
+        "action_float_values": []
+      }
+    ]
+  }
+}

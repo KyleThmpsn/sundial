@@ -1,9 +1,7 @@
 //! Custom-perk authoring owns recipe mutations, window navigation and parameter drafts.
 //! Native recipe types remain unchanged; only this feature's UI/state lives here.
 use super::*;
-use sundial::package_authoring::sandbox_perk::projectile::{
-    self, Selection as ProjectileSelection,
-};
+use sundial::package_authoring::sandbox_perk::entity::{self, Selection as ProjectileSelection};
 
 mod mutations;
 mod picked;

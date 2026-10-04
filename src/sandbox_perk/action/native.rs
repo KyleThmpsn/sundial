@@ -37,17 +37,37 @@ pub struct Graph {
     pub blocks: Vec<Block>,
 }
 
+/// A node kind carries its catalog, so a condition and effect number cannot be paired separately.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NodeKind {
+    Condition(u8),
+    Effect(u8),
+}
+
+impl NodeKind {
+    pub const fn byte(self) -> u8 {
+        match self {
+            Self::Condition(kind) | Self::Effect(kind) => kind,
+        }
+    }
+
+    pub const fn is_condition(self) -> bool {
+        matches!(self, Self::Condition(_))
+    }
+
+    pub fn entry(self) -> Option<&'static crate::sandbox_perk::nodes::NodeKind> {
+        match self {
+            Self::Condition(kind) => crate::sandbox_perk::nodes::condition(kind),
+            Self::Effect(kind) => crate::sandbox_perk::nodes::effect(kind),
+        }
+    }
+}
+
 impl Graph {
     /// Validate a closed node before it enters an authored program.
-    pub fn validate_node(&self, condition: bool, kind: u8) -> Result<(), String> {
-        use crate::sandbox_perk::nodes;
+    pub fn validate_node(&self, kind: NodeKind) -> Result<(), String> {
         self.validate()?;
-        let entry = if condition {
-            nodes::condition(kind)
-        } else {
-            nodes::effect(kind)
-        }
-        .ok_or("Unknown native node kind.")?;
+        let entry = kind.entry().ok_or("Unknown native node kind.")?;
         if self.root_class() != Some(entry.class) {
             return Err("The native root has the wrong class.".into());
         }
@@ -344,17 +364,17 @@ impl Graph {
                     crate::sandbox_perk::nodes::CONDITIONS
                         .iter()
                         .find(|n| n.class == class)
-                        .map(|n| (true, n.kind))
+                        .map(|n| NodeKind::Condition(n.kind))
                         .or_else(|| {
                             crate::sandbox_perk::nodes::EFFECTS
                                 .iter()
                                 .find(|n| n.class == class)
-                                .map(|n| (false, n.kind))
+                                .map(|n| NodeKind::Effect(n.kind))
                         })
                 })
                 .flatten();
-            if let Some((condition, kind)) = node {
-                let bytes = template(condition, kind).ok_or("Missing native node template.")?;
+            if let Some(kind) = node {
+                let bytes = template(kind).ok_or("Missing native node template.")?;
                 changed.append(&Graph::read(&bytes, 0, class)?)?
             } else {
                 let index = changed.blocks.len();
@@ -453,8 +473,8 @@ impl Graph {
 }
 
 /// One observed native configuration, independent of any installed stock action.
-pub fn template(condition: bool, kind: u8) -> Option<Vec<u8>> {
-    schema::template(condition, kind)
+pub fn template(kind: NodeKind) -> Option<Vec<u8>> {
+    schema::template(kind)
 }
 
 /// Capture only the node's declared native data, including all its nested records.

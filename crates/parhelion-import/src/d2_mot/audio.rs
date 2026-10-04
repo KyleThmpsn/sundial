@@ -8,6 +8,7 @@ use std::{collections::BTreeSet, fs, path::Path};
 use tiger_pkg::TagHash;
 
 pub mod bank;
+pub mod cue;
 pub mod legacy;
 pub mod modern;
 pub mod transcode;
@@ -21,7 +22,8 @@ fn unset(value: u32) -> bool {
     matches!(value, 0 | u32::MAX | 0x811C_9DC5)
 }
 
-fn sound_assets(reader: &mut Reader, sound_tag: u32, modern: bool) -> Result<Value> {
+/// Resolve a sound's event, bank and streamed media from checked native records.
+pub fn sound_assets(reader: &mut Reader, sound_tag: u32, modern: bool) -> Result<Value> {
     let sound = reader.tag(
         sound_tag,
         Some(if modern { 0x80809738 } else { 0x80809802 }),
@@ -315,6 +317,8 @@ pub(crate) fn prepare_media(
         .into_iter()
         .flatten()
         .chain(report["firing_events"].as_array().into_iter().flatten())
+        .chain(report["clip_events"].as_array().into_iter().flatten())
+        .chain(report["effect_events"].as_array().into_iter().flatten())
         .collect::<Vec<_>>();
     let mut banks = BTreeSet::new();
     for event in &events {
@@ -331,7 +335,7 @@ pub(crate) fn prepare_media(
             }
         }
     }
-    if tags.is_empty() {
+    if banks.is_empty() {
         return Ok(());
     }
     let mut reader = Reader::discovery(modern, &graph.join("audio-reader"), true)?;
@@ -347,6 +351,8 @@ pub(crate) fn prepare_media(
         .as_array()
         .into_iter()
         .flatten()
+        .chain(report["clip_events"].as_array().into_iter().flatten())
+        .chain(report["effect_events"].as_array().into_iter().flatten())
         .flat_map(|event| event["sounds"].as_array().into_iter().flatten())
         .filter_map(|sound| sound["bank"].as_str())
         .map(str::to_owned)
@@ -397,6 +403,60 @@ pub(crate) fn prepare_media(
         report["conversion_errors"] = json!(failures)
     }
     Ok(())
+}
+
+/// Add explicitly resolved source animation sounds and rebuild the graph's
+/// complete media closure. The caller supplies the verified clip event index
+/// and its native sound template. Emission validates those links again.
+pub fn prepare_clip_events(
+    modern: &Path,
+    native: &Path,
+    graph: &Path,
+    report: &mut Value,
+    events: Vec<Value>,
+) -> Result<()> {
+    ensure!(
+        report["authoring_schema"] == 3,
+        "clip audio needs source bank routing"
+    );
+    report["clip_events"] = json!(events);
+    report
+        .as_object_mut()
+        .context("audio report")?
+        .remove("conversion_errors");
+    prepare_media(modern, native, graph, report)?;
+    ensure!(
+        report.get("conversion_errors").is_none(),
+        "clip audio conversion failed: {}",
+        report["conversion_errors"]
+    );
+    Ok(())
+}
+
+/// Translate a runtime effect's complete set of sound cues without matching a
+/// donor event. Keep event IDs and bank relationships for the sequence compiler.
+/// The caller must link the resulting cues to translated runtime triggers.
+pub fn prepare_sounds(modern: &Path, native: &Path, graph: &Path, sounds: &[u32]) -> Result<Value> {
+    ensure!(!sounds.is_empty(), "effect has no sound cues");
+    let mut reader = Reader::discovery(modern, &graph.join("effect-sound-reader"), true)?;
+    let mut cues = Vec::new();
+    for sound in sounds.iter().copied().collect::<BTreeSet<_>>() {
+        cues.push(json!({"sounds":[sound_assets(&mut reader, sound, true)?]}));
+    }
+    let mut report = json!({"authoring_schema":3,"effect_events":cues});
+    prepare_media(modern, native, graph, &mut report)?;
+    ensure!(
+        report.get("conversion_errors").is_none(),
+        "effect audio conversion failed: {}",
+        report["conversion_errors"]
+    );
+    ensure!(
+        report["bank_fallbacks"]
+            .as_array()
+            .is_none_or(Vec::is_empty),
+        "effect audio cannot fall back to donor banks"
+    );
+    Ok(report)
 }
 
 fn init_settings(reader: &mut Reader, version: u32) -> Result<bank::settings::Settings> {

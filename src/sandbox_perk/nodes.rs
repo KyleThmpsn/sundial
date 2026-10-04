@@ -3,8 +3,10 @@
 //! Build 86657.20.08.23. The counts are occurrences across the 1,632 action resources
 //! recovered from the installed packages, not a count of distinct perks. A name here
 //! records a traced operation. It is not a claim that every field of a node is mapped
-//! or that a given combination works in game. See `docs/perk-runtime-map-2026-09-10.md`
-//! for the recovery method and the remaining semantic gaps.
+//! or that a given combination works in game.
+
+/// Client build used for the recovered catalog, not a gameplay test result.
+pub const CLIENT_BUILD: &str = "86657.20.08.23";
 
 /// How far Parhelion supports one native node kind today.
 #[derive(
@@ -74,6 +76,14 @@ pub struct NodeKind {
 }
 
 impl NodeKind {
+    /// Compiler coverage and understanding of runtime behavior are separate evidence axes.
+    pub const fn semantics(&self) -> &'static str {
+        if self.occurrences == 0 {
+            "Unverified Native Layout"
+        } else {
+            "Traced Operation with Field Limits"
+        }
+    }
     /// Whether the surveyed packages contain this kind at all.
     #[must_use]
     pub const fn observed(&self) -> bool {
@@ -1231,7 +1241,7 @@ pub fn plain_effect_title(kind: u8) -> Option<&'static str> {
         4 => "Apply an Effect to a Chosen Target",
         5 => "Generate Orbs of Light",
         6 => "Change Damage Type",
-        7 => "Change an Ability Stat",
+        7 => "Change an Ability Property",
         8 => "Change Ability Energy",
         10 => "Change a Weapon or Ability Stat",
         11 => "Change Ammo Drop Chance",

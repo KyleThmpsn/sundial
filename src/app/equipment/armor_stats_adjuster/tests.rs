@@ -119,6 +119,180 @@ fn synthetic_candidate(
 }
 
 #[test]
+fn equal_stats_keep_a_non_exotic_route_for_later_armor() {
+    let candidates = vec![
+        vec![
+            synthetic_candidate([0; 6], ArmorOrigin::Equipped, vec![], false),
+            synthetic_candidate(
+                [50, 0, 0, 0, 0, 0],
+                ArmorOrigin::Inventory {
+                    instance_soid: 42,
+                    definition_hash: 7,
+                },
+                vec![],
+                true,
+            ),
+            synthetic_candidate(
+                [50, 0, 0, 0, 0, 0],
+                ArmorOrigin::Inventory {
+                    instance_soid: 43,
+                    definition_hash: 8,
+                },
+                vec![],
+                false,
+            ),
+        ],
+        vec![synthetic_candidate(
+            [50, 0, 0, 0, 0, 0],
+            ArmorOrigin::Equipped,
+            vec![],
+            true,
+        )],
+    ];
+    let input = LoadoutInput {
+        pieces: candidates
+            .iter()
+            .map(|slot| slot[0].piece.clone())
+            .collect(),
+        candidates,
+        current_totals: [50, 0, 0, 0, 0, 0],
+    };
+    let solution = solve(&input, [100, 0, 0, 0, 0, 0]);
+    assert!(solution.exact);
+    assert_eq!(solution.selections.len(), 2);
+    assert_eq!(solution.swaps.len(), 1);
+    assert_eq!(solution.swaps[0].instance_soid, 43);
+    let exotics = solution
+        .selections
+        .iter()
+        .enumerate()
+        .filter(|(slot, selected)| input.candidates[*slot][selected.candidate_index].exotic)
+        .count();
+    assert_eq!(exotics, 1);
+    crate::test_support::artifact(
+        "armor-exotic-route.json",
+        &serde_json::json!({
+            "totals": solution.projected_totals, "exotics": exotics,
+            "equipped_inventory_soid": solution.swaps[0].instance_soid,
+        }),
+    );
+}
+
+#[test]
+fn partial_stats_remain_distinct_before_later_penalties_or_bonuses() {
+    let mut receipts = Vec::new();
+    for (first, alternative, later, target) in [(100, 110, -10, 100), (-20, -10, 110, 100)] {
+        let candidates = vec![
+            vec![
+                synthetic_candidate([first, 0, 0, 0, 0, 0], ArmorOrigin::Equipped, vec![], false),
+                synthetic_candidate(
+                    [alternative, 0, 0, 0, 0, 0],
+                    ArmorOrigin::Inventory {
+                        instance_soid: 42,
+                        definition_hash: 7,
+                    },
+                    vec![],
+                    false,
+                ),
+            ],
+            vec![synthetic_candidate(
+                [later, 0, 0, 0, 0, 0],
+                ArmorOrigin::Equipped,
+                vec![],
+                false,
+            )],
+        ];
+        let input = LoadoutInput {
+            pieces: candidates
+                .iter()
+                .map(|slot| slot[0].piece.clone())
+                .collect(),
+            candidates,
+            current_totals: [0; 6],
+        };
+        let solution = solve(&input, [target, 0, 0, 0, 0, 0]);
+        assert!(solution.exact, "{first}, {alternative}, {later}");
+        assert_eq!(solution.projected_totals[0], target);
+        assert_eq!(solution.selections[0].candidate_index, 1);
+        receipts.push(
+            serde_json::json!({"alternatives": [first, alternative], "later": later,
+            "chosen": alternative, "total": solution.projected_totals[0]}),
+        );
+    }
+    crate::test_support::artifact("armor-partial-stats.json", &serde_json::json!(receipts));
+}
+
+#[test]
+fn mod_removal_is_an_available_plan_and_locked_armor_stays_unchanged() {
+    use crate::catalog::{ItemInvestmentStat, ItemPackageMetadata, SocketDef};
+    let item = ItemDef {
+        hash: 1,
+        name: "Fixture Helmet".into(),
+        type_name: "Helmet".into(),
+        bucket_hash: 3_448_274_439,
+        class_type: 0,
+        default_plugs: vec![Some("0x00000002".into())],
+        sockets: vec![SocketDef {
+            label: "General Armor Mod".into(),
+            allowed: vec![2],
+            ..Default::default()
+        }],
+        abilities: Default::default(),
+    };
+    let mut receipts = Vec::new();
+    for delta in [-10, 10] {
+        let metadata = [(1, 100), (2, delta)]
+            .into_iter()
+            .map(|(hash, value)| {
+                (
+                    hash,
+                    ItemPackageMetadata {
+                        investment_stats: vec![ItemInvestmentStat {
+                            definition_index: 0,
+                            value,
+                        }],
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        let mut catalog = Catalog::for_test(vec![item.clone()], metadata)
+            .with_test_character_stat_rows([0, 1, 2, 3, 4, 5]);
+        catalog.names.insert(2, "Mobility Mod".into());
+        for locked in [false, true] {
+            let mut piece = unavailable_piece("helmet", "Helmet", "fixture");
+            piece.item = Some(Arc::new(catalog.item(1).unwrap().clone()));
+            piece.current_plugs = vec![Some(2)];
+            piece.locked = locked;
+            piece.issue = None;
+            let candidate = candidate_from_piece(
+                &catalog,
+                piece.clone(),
+                ArmorOrigin::Equipped,
+                PlugSelectionMode::Supported,
+            );
+            let input = LoadoutInput {
+                pieces: vec![piece],
+                candidates: vec![vec![candidate]],
+                current_totals: [0; 6],
+            };
+            let solution = solve(&input, [100, 0, 0, 0, 0, 0]);
+            if locked {
+                assert!(solution.assignments.is_empty());
+                assert_eq!(solution.exact, delta > 0);
+            } else {
+                assert!(solution.exact);
+                assert_eq!(solution.assignments.len(), 1);
+                assert_eq!(solution.assignments[0].selected, None);
+            }
+            receipts.push(serde_json::json!({"mod_delta": delta, "locked": locked,
+                "total": solution.projected_totals[0], "removed": !solution.assignments.is_empty()}));
+        }
+    }
+    crate::test_support::artifact("armor-mod-removal.json", &serde_json::json!(receipts));
+}
+
+#[test]
 fn inventory_armor_is_selected_when_equipped_armor_cannot_reach_the_goal() {
     let input = LoadoutInput {
         pieces: vec![unavailable_piece("helmet", "Helmet", "test")],

@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::{fs, path::Path};
 pub(crate) mod item;
 mod model;
-mod shader;
+pub(crate) mod shader;
 
 pub fn validate(p: &Value) -> Result<&str> {
     let object = p.as_object().context("asset profile must be an object")?;

@@ -21,6 +21,7 @@ impl PackageAuthoringApp {
                 log.push(LogEntry::error(format!(
                     "Could not load Parhelion backup preferences. Using defaults: {error}"
                 )));
+                self.preferences_error = Some(error);
                 ParhelionPreferences::default()
             }
         };
@@ -75,33 +76,48 @@ impl PackageAuthoringApp {
         }
         let mut recipes = Vec::with_capacity(self.enabled_recipe_paths.len());
         for path in &self.enabled_recipe_paths {
-            let mut recipe = if self.recipe_path.as_ref() == Some(path) {
-                let saved = WeaponRecipe::load_json(path).map_err(|error| {
-                    format!(
-                        "Could not check included recipe {}: {error}",
-                        path.display()
-                    )
-                })?;
-                if !saved.same_saved_content(&self.recipe_baseline) {
+            recipes.push(self.recipe_for_build(path)?);
+        }
+        if let Some(library) = &self.recipe_library {
+            let included = recipes
+                .iter()
+                .map(|recipe| {
+                    recipe
+                        .identity
+                        .item_hash
+                        .parse_u32()
+                        .map_err(|error| error.to_string())
+                })
+                .collect::<Result<BTreeSet<_>, _>>()?;
+            let mut referenced = recipes
+                .iter()
+                .flat_map(|recipe| &recipe.overrides.socket_columns)
+                .flatten()
+                .flat_map(|column| &column.choices)
+                .map(|hash| hash.parse_u32().map_err(|error| error.to_string()))
+                .collect::<Result<BTreeSet<_>, _>>()?;
+            referenced.retain(|hash| {
+                !included.contains(hash)
+                    && !self
+                        .catalog
+                        .as_ref()
+                        .and_then(|catalog| catalog.item_definition_tag(*hash))
+                        .is_some_and(crate::package_profile::is_stock_item_definition)
+            });
+            // Shader recipes cannot contain sockets, so these dependencies have no further
+            // socket dependencies. Keep one copy even when several items select the shader.
+            for entry in library.shader_entries(&referenced)? {
+                let recipe = self.recipe_for_build(&entry.path)?;
+                if recipe.kind != ItemKind::Shader
+                    || recipe.identity.item_hash.parse_u32().ok() != Some(entry.identity_hash)
+                {
                     return Err(format!(
-                        "{} changed on disk after you opened it. Reopen it before building. Export any unsaved draft first.",
-                        self.recipe.name
+                        "Shader recipe {} changed identity while preparing the build. Select the shader again.",
+                        entry.path.display()
                     ));
                 }
-                self.recipe.clone()
-            } else {
-                WeaponRecipe::load_json(path).map_err(|error| {
-                    format!("Could not load included recipe {}: {error}", path.display())
-                })?
-            };
-            if let Some(catalog) = self.catalog.as_ref() {
-                custom_perks::repair_socket_picks(
-                    self.recipe_library.as_ref(),
-                    catalog,
-                    &mut recipe,
-                )?;
+                recipes.push(recipe);
             }
-            recipes.push(self.rebase_library_donor(recipe)?);
         }
         Ok(BatchBuildRequest {
             package_directory: self.packages.clone(),
@@ -109,6 +125,36 @@ impl PackageAuthoringApp {
             ignore_installed_authored_overlays: self.ignore_installed,
             recipes,
         })
+    }
+
+    /// Explicit items and required shaders use the same draft and concurrent-change checks.
+    fn recipe_for_build(&self, path: &Path) -> Result<WeaponRecipe, String> {
+        let mut recipe = if self.recipe_path.as_deref() == Some(path) {
+            if let Some((_, error)) = &self.invalid_weapon_name {
+                return Err(error.clone());
+            }
+            let saved = WeaponRecipe::load_json(path).map_err(|error| {
+                format!(
+                    "Could not check included recipe {}: {error}",
+                    path.display()
+                )
+            })?;
+            if !saved.same_saved_content(&self.recipe_baseline) {
+                return Err(format!(
+                    "{} changed on disk after you opened it. Reopen it before building. Export any unsaved draft first.",
+                    self.recipe.name
+                ));
+            }
+            self.recipe.clone()
+        } else {
+            WeaponRecipe::load_json(path).map_err(|error| {
+                format!("Could not load included recipe {}: {error}", path.display())
+            })?
+        };
+        if let Some(catalog) = self.catalog.as_ref() {
+            custom_perks::repair_socket_picks(self.recipe_library.as_ref(), catalog, &mut recipe)?;
+        }
+        self.rebase_library_donor(recipe)
     }
 
     /// Rebuilds a recipe whose donor is a weapon from the library on that weapon's own recipe.
@@ -194,35 +240,13 @@ impl PackageAuthoringApp {
         if !self.recipe_requires_initial_save && self.recipe == self.recipe_baseline {
             return Ok(());
         }
-        let library = self
-            .recipe_library
-            .as_ref()
-            .ok_or("The recipe library is unavailable. Current edits could not be saved")?;
-        let path = match self
+        let existing = self
             .recipe_path
-            .as_ref()
-            .filter(|path| path.starts_with(library.root()))
-        {
-            Some(path) => {
-                library.save_existing_if_unchanged(path, &self.recipe_baseline, &self.recipe)?;
-                path.clone()
-            }
-            None => library.save_new(&self.recipe)?,
-        };
-        self.recipe_path = Some(path.clone());
-        self.recipe_requires_initial_save = false;
-        self.recipe_dirty = false;
-        self.recipe_baseline.clone_from(&self.recipe);
-        self.observed_recipe.clone_from(&self.recipe);
-        self.advance_recipe_revision();
-        self.log.push(LogEntry::info(format!(
-            "Saved current edits before building: {}",
-            path.display()
-        )));
-        // Saving the open draft must not change which recipes the user selected for this build.
-        let selected = self.enabled_recipe_paths.clone();
-        self.refresh_recipe_library();
-        self.enabled_recipe_paths = selected;
+            .as_deref()
+            .filter(|_| self.recipe_saves_in_place());
+        let path = self.write_recipe(existing)?;
+        let message = format!("Saved current edits before building: {}", path.display());
+        self.accept_saved_recipe(path, message);
         Ok(())
     }
 
@@ -268,6 +292,7 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn request_recipe_action(&mut self, action: PendingRecipeAction) -> bool {
+        self.pending_recipe_error = None;
         if self.recipe_dirty {
             self.pending_recipe_action = Some(action);
             false
@@ -279,6 +304,15 @@ impl PackageAuthoringApp {
     pub(super) fn execute_recipe_action(&mut self, action: PendingRecipeAction) -> bool {
         match action {
             PendingRecipeAction::Close => {
+                // The hosted app stays alive while its window is closed. An
+                // approved discard must also clear the draft before reopening.
+                if self.recipe_dirty {
+                    if self.recipe_path.is_some() {
+                        self.discard_recipe_changes();
+                    } else {
+                        self.start_new_recipe(self.recipe.kind);
+                    }
+                }
                 self.close_approved = true;
                 false
             }
@@ -364,7 +398,6 @@ impl PackageAuthoringApp {
         self.recipe_path = None;
         self.recipe_requires_initial_save = false;
         self.recipe_dirty = false;
-        self.advanced_gameplay_page = AdvancedGameplayPage::Runtime;
         self.clear_dependent_picker_queries();
         self.scroll_recipe_to_top = true;
         self.invalidate_results();
@@ -372,6 +405,7 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn refresh_recipe_library(&mut self) {
+        self.installed.request();
         self.perk_workbench.saved_weapons_changed();
         let Some(library) = self.recipe_library.as_ref() else {
             return;
@@ -407,64 +441,77 @@ impl PackageAuthoringApp {
 
     /// Saves the open recipe the way the toolbar's save button does.
     pub(super) fn save_open_recipe(&mut self) {
-        if self.recipe_saves_in_place() {
-            self.save_library_recipe();
-        } else {
-            self.save_recipe_copy();
+        if let Err(error) = self.try_save_open_recipe() {
+            self.log.push(LogEntry::error(error));
         }
     }
 
     pub(super) fn save_library_recipe(&mut self) {
-        if let Some((_, error)) = &self.invalid_weapon_name {
+        let result = self
+            .recipe_path
+            .clone()
+            .ok_or_else(|| "Open a saved recipe before saving changes".to_owned())
+            .and_then(|path| self.save_recipe_at(Some(&path)));
+        if let Err(error) = result {
             self.log.push(LogEntry::error(error));
-            return;
-        }
-        let Some(library) = self.recipe_library.as_ref() else {
-            return;
-        };
-        let Some(path) = self.recipe_path.as_ref() else {
-            return;
-        };
-        match library.save_existing_if_unchanged(path, &self.recipe_baseline, &self.recipe) {
-            Ok(()) => {
-                let message = format!("Saved recipe {}", path.display());
-                self.recipe_requires_initial_save = false;
-                self.recipe_dirty = false;
-                self.recipe_baseline = self.recipe.clone();
-                self.advance_recipe_revision();
-                self.log.push(LogEntry::info(message));
-                self.refresh_recipe_library();
-            }
-            Err(error) => self.log.push(LogEntry::error(format!(
-                "Could not save recipe {}: {error}",
-                path.display()
-            ))),
         }
     }
 
     pub(super) fn save_recipe_copy(&mut self) {
-        if let Some((_, error)) = &self.invalid_weapon_name {
+        if let Err(error) = self.save_recipe_at(None) {
             self.log.push(LogEntry::error(error));
-            return;
         }
-        let Some(library) = self.recipe_library.as_ref() else {
-            return;
-        };
-        match library.save_new(&self.recipe) {
-            Ok(path) => {
-                self.recipe_requires_initial_save = false;
-                self.recipe_path = Some(path.clone());
-                self.recipe_dirty = false;
-                self.recipe_baseline = self.recipe.clone();
-                self.advance_recipe_revision();
-                self.log.push(LogEntry::info(format!(
-                    "Saved recipe copy {}",
-                    path.display()
-                )));
-                self.refresh_recipe_library();
+    }
+
+    pub(super) fn try_save_open_recipe(&mut self) -> Result<(), String> {
+        let existing = self
+            .recipe_path
+            .clone()
+            .filter(|_| self.recipe_saves_in_place());
+        self.save_recipe_at(existing.as_deref())
+    }
+
+    fn save_recipe_at(&mut self, existing: Option<&Path>) -> Result<(), String> {
+        let path = self.write_recipe(existing)?;
+        let message = format!("Saved recipe {}", path.display());
+        self.accept_saved_recipe(path, message);
+        Ok(())
+    }
+
+    /// Validate and persist before accepting a new baseline or continuing navigation.
+    fn write_recipe(&self, existing: Option<&Path>) -> Result<PathBuf, String> {
+        if let Some((_, error)) = &self.invalid_weapon_name {
+            return Err(error.clone());
+        }
+        let library = self
+            .recipe_library
+            .as_ref()
+            .ok_or("The recipe library is unavailable. Current edits could not be saved")?;
+        match existing {
+            Some(path) => {
+                library
+                    .save_existing_if_unchanged(path, &self.recipe_baseline, &self.recipe)
+                    .map_err(|error| {
+                        format!("Could not save recipe {}: {error}", path.display())
+                    })?;
+                Ok(path.to_owned())
             }
-            Err(error) => self.log.push(LogEntry::error(error)),
+            None => library.save_new(&self.recipe),
         }
+    }
+
+    fn accept_saved_recipe(&mut self, path: PathBuf, message: String) {
+        self.recipe_path = Some(path);
+        self.recipe_requires_initial_save = false;
+        self.recipe_dirty = false;
+        self.recipe_baseline.clone_from(&self.recipe);
+        self.observed_recipe.clone_from(&self.recipe);
+        self.advance_recipe_revision();
+        self.log.push(LogEntry::info(message));
+        // Saving must not change the recipes selected for the next build.
+        let selected = std::mem::take(&mut self.enabled_recipe_paths);
+        self.refresh_recipe_library();
+        self.enabled_recipe_paths = selected;
     }
 
     pub(super) fn import_recipe(&mut self) -> bool {

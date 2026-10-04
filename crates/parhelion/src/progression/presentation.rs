@@ -124,9 +124,15 @@ pub(crate) fn append_numeric_program(
             "{description} does not reduce to one value"
         )));
     }
-    while data.len() % 16 != 0 {
-        data.push(0);
-    }
+    // Native consumers read the type marker immediately before the header.
+    // Reserve the prefix even when the existing payload is already aligned.
+    let program_header = data
+        .len()
+        .checked_add(19)
+        .map(|end| end & !15)
+        .ok_or_else(|| invalid(format!("{description} alignment overflowed")))?;
+    data.resize(program_header - 4, 0);
+    data.extend_from_slice(&PRESENTATION_CHILD_ARRAY_SENTINEL.to_le_bytes());
     let program_header = data.len();
     data.extend_from_slice(
         &u64::try_from(instructions.len())

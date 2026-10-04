@@ -52,6 +52,13 @@ impl PackageAuthoringApp {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.add_space(6.0);
+                        if let Some(error) = &self.preferences_error {
+                            ui.colored_label(ui.visuals().error_fg_color, error);
+                            ui.label(
+                                "Changes apply to this session until preferences can be saved.",
+                            );
+                            ui.add_space(8.0);
+                        }
                         self.draw_preferences_page(ui);
                     });
                 ui.separator();

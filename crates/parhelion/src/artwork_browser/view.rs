@@ -129,13 +129,14 @@ impl Picker {
         reset: bool,
         current: Option<&Icon>,
     ) -> Option<Selection> {
-        let mut picked = None;
         let columns = ((ui.available_width() + ui.spacing().item_spacing.x)
             / (78.0 + ui.spacing().item_spacing.x))
             .floor()
             .max(1.0) as usize;
         let grid_height = ui.available_height().max(40.0);
-        let mut visible = BTreeSet::new();
+        let mut on_screen = HashSet::new();
+        let mut requested = Vec::new();
+        let mut clicked = None;
         let mut scroll = egui::ScrollArea::vertical()
             .id_salt("icon-grid")
             .auto_shrink([false, false])
@@ -153,50 +154,65 @@ impl Picker {
                     ui.weak(if self.busy() {
                         "Looking for transparent icons…"
                     } else {
-                        "No matching icons. Clear the search or add artwork below."
+                        "No Matching Results"
                     });
                 }
                 for row_index in range {
                     ui.horizontal(|ui| {
                         for &index in choices.iter().skip(row_index * columns).take(columns) {
-                            visible.insert(index);
                             let row = &self.rows[index];
-                            let texture = self.textures.entry(index).or_insert_with(|| {
-                                ui.ctx().load_texture(
-                                    format!("perk-icon-{index}"),
-                                    row.image.clone(),
-                                    egui::TextureOptions::LINEAR,
-                                )
-                            });
-                            let size =
-                                egui::vec2(row.image.size[0] as f32, row.image.size[1] as f32);
+                            on_screen.insert(row.origin.clone());
+                            let thumbnail = self
+                                .thumbnails
+                                .entry(row.origin.clone())
+                                .or_insert_with(|| {
+                                    requested.push(row.origin.clone());
+                                    Thumbnail::Pending
+                                });
+                            // A tile keeps its size while its thumbnail loads.
+                            let tile = match thumbnail.texture(ui.ctx(), index) {
+                                Some(texture) => egui::Button::image(
+                                    egui::Image::new(texture).fit_to_exact_size(row.extent),
+                                ),
+                                None => egui::Button::new(""),
+                            };
                             let response = ui
                                 .add(
-                                    egui::Button::image(
-                                        egui::Image::new(&*texture).fit_to_exact_size(size),
-                                    )
-                                    .min_size(egui::vec2(78.0, 78.0))
-                                    .selected(current == Some(&row.icon)),
+                                    tile.min_size(egui::vec2(78.0, 78.0))
+                                        .selected(row.origin.is(current)),
                                 )
                                 .on_hover_text(&row.label);
                             pickers::name_response(ui, &response, &row.label);
                             if response.clicked() {
-                                picked = Some(if self.purpose != Purpose::Perk {
-                                    row.local
-                                        .as_ref()
-                                        .map(|path| Selection::Local(path.clone()))
-                                        .unwrap_or_else(|| Selection::Icon(row.icon.clone()))
-                                } else {
-                                    Selection::Icon(row.icon.clone())
-                                });
+                                clicked = Some(index);
                             }
                         }
                     });
                 }
             },
         );
-        self.textures.retain(|index, _| visible.contains(index));
-        picked
+        self.thumbnails
+            .retain(|origin, _| on_screen.contains(origin));
+        self.request_thumbnails(ui.ctx(), on_screen, requested);
+        clicked.and_then(|index| self.pick(index))
+    }
+
+    /// What picking row `index` selects. A local file becomes a perk's icon only when it is
+    /// picked, so the library holds no icon per file.
+    fn pick(&mut self, index: usize) -> Option<Selection> {
+        match &self.rows[index].origin {
+            Origin::Texture(tag) => Some(Selection::Icon(Icon::Texture { tag: (*tag).into() })),
+            Origin::File { path, .. } if self.purpose != Purpose::Perk => {
+                Some(Selection::Local(path.clone()))
+            }
+            Origin::File { path, name } => match library::icon(path, name) {
+                Ok(icon) => Some(Selection::Icon(icon)),
+                Err(error) => {
+                    self.error = Some(error);
+                    None
+                }
+            },
+        }
     }
 
     fn footer(
@@ -208,39 +224,67 @@ impl Picker {
         ui.horizontal_wrapped(|ui| {
             ui.add_enabled_ui(catalog.is_some(), |ui| {
                 let mut perk_query = String::new();
-                if let Some(hash) = pickers::popup(
+                if let Some(hash) = pickers::browser_with_toolbar(
                     ui,
                     "existing-perk-icon",
                     "Select Existing Perk",
+                    "Select Existing Perk",
                     &mut perk_query,
-                    |ui, query, reset, height| {
+                    |ui, query, opened, _| {
                         let catalog = catalog?;
+                        let searched = ui
+                            .horizontal(|ui| {
+                                let width =
+                                    (ui.available_width() - pickers::CLEAR_WIDTH).max(160.0);
+                                sundial::ui::catalog::search(
+                                    ui,
+                                    query,
+                                    opened,
+                                    width,
+                                    "Search Perks",
+                                )
+                            })
+                            .inner;
+                        let words = query.trim().to_lowercase();
                         let choices: Vec<_> = catalog
                             .perk_template_choices_from(
                                 crate::package_profile::is_stock_item_definition,
                             )
                             .into_iter()
-                            .filter(|choice| pickers::matches(query, &choice.representative_name))
+                            .filter(|choice| pickers::matches(&words, &choice.representative_name))
                             .collect();
-                        pickers::results(
+                        let keys = choices
+                            .iter()
+                            .map(|choice| u64::from(choice.representative_hash))
+                            .collect::<Vec<_>>();
+                        pickers::BrowserList {
+                            keys: &keys,
+                            // The result count takes a line above the list.
+                            height: (ui.available_height() - 24.0).max(160.0),
+                            reset: opened || searched,
+                            row_height: sundial::investment::authoring_choice_row_height(ui),
+                            select: None,
+                        }
+                        .draw_activating(
                             ui,
-                            "existing-icons",
-                            choices.len(),
-                            height,
-                            reset,
-                            sundial::investment::authoring_choice_row_height(ui),
-                            |ui, index| {
+                            |ui, index, selected| {
                                 let choice = &choices[index];
-                                catalog
-                                    .draw_authoring_choice_row(
-                                        ui,
-                                        Some(choice.representative_hash),
-                                        &choice.representative_name,
-                                        Some(&choice.representative_type_name),
-                                        false,
-                                    )
-                                    .clicked()
-                                    .then_some(choice.representative_hash)
+                                catalog.draw_authoring_choice_row(
+                                    ui,
+                                    Some(choice.representative_hash),
+                                    &choice.representative_name,
+                                    Some(&choice.representative_type_name),
+                                    selected,
+                                )
+                            },
+                            |ui, index, activated| {
+                                let choice = &choices[index];
+                                ui.heading(&choice.representative_name);
+                                // A double-click takes the icon, as Use Icon does.
+                                let use_icon = ui.button("Use Icon").clicked() || activated;
+                                ui.label(&choice.representative_type_name);
+                                catalog.draw_perk_icon(ui, choice.representative_hash, 96.0);
+                                use_icon.then_some(choice.representative_hash)
                             },
                         )
                     },

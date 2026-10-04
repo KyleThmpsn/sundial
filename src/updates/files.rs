@@ -1,6 +1,5 @@
 //! Checked updater files stay next to the executable on the same filesystem.
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
@@ -78,17 +77,7 @@ pub(super) fn plain_file(path: &Path) -> Result<(), String> {
 
 pub(super) fn digest(path: &Path) -> Result<String, String> {
     plain_file(path)?;
-    let mut file = File::open(path).map_err(|error| error.to_string())?;
-    let mut hash = Sha256::new();
-    let mut buffer = [0; 64 * 1024];
-    loop {
-        let count = file.read(&mut buffer).map_err(|error| error.to_string())?;
-        if count == 0 {
-            break;
-        }
-        hash.update(&buffer[..count]);
-    }
-    Ok(format!("{:x}", hash.finalize()))
+    crate::storage::file_sha256(path).map_err(|error| error.to_string())
 }
 
 pub(super) fn verify(path: &Path, expected: &str) -> Result<(), String> {

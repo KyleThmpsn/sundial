@@ -125,20 +125,6 @@ pub(super) fn draw_socket_picker_row(ui: &mut egui::Ui, mut context: SocketRowCo
     } else {
         controls::draw_active(ui, &mut context, &choices)
     };
-    // Once another socket is edited the build keeps each random socket's default, so one that
-    // names none needs a plug before the item builds.
-    if choices.current_len == 0
-        && !choices.is_overridden
-        && context.donor.sockets[context.socket_index]
-            .randomized_plug_set_index
-            .is_some()
-        && !context.recipe.overrides.socket_columns.is_empty()
-    {
-        ui.colored_label(
-            ui.visuals().warn_fg_color,
-            "Rolls at random with no default. Set a plug to build.",
-        );
-    }
     let RowContinuation::TechnicalFields { scroll_to_header } =
         commands::apply(&mut context, &choices, command)
     else {

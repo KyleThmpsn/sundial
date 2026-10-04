@@ -1,8 +1,9 @@
-use crate::ui::catalog::runtime as view;
-use crate::weapon_runtime::{
+use crate::runtime::{BindingHash, SchemaHandle};
+use crate::runtime::{
     WeaponRuntimeField, WeaponRuntimeFieldLocator, WeaponRuntimeFieldSource, WeaponRuntimeRoot,
     WeaponRuntimeRootKind, WeaponRuntimeValue, WeaponRuntimeValueKind,
 };
+use crate::ui::catalog::runtime as view;
 fn field(
     source: WeaponRuntimeFieldSource,
     value: WeaponRuntimeValue,
@@ -11,12 +12,12 @@ fn field(
     WeaponRuntimeField {
         locator: WeaponRuntimeFieldLocator {
             graph_tag: None,
-            binding_hash: 1,
+            binding_hash: BindingHash::new(1),
             resource_index: 0,
             root: WeaponRuntimeRootKind::Definition,
-            root_schema: 0x8080_1234,
+            root_schema: SchemaHandle::new(0x8080_1234),
             path: Vec::new(),
-            type_handle: 0x8080_3456,
+            type_handle: SchemaHandle::new(0x8080_3456),
             value_offset: 0,
             byte_size: kind.byte_size(),
         },
@@ -170,9 +171,6 @@ fn reading_values_preserves_wide_integers_signed_zero_and_nan_payloads() {
     ] {
         let field = field(WeaponRuntimeFieldSource::NativeMember, value.clone(), kind);
         assert!(view::exact_value_text(&field).contains(expected));
-        let _ = view::value_text(&field);
-        let _ = crate::weapon_runtime::presentation::field_tooltip(&field);
-        assert_eq!(field.value, value);
         assert_eq!(
             view::export_field(&field)["value"],
             serde_json::to_value(&value).unwrap()

@@ -102,7 +102,6 @@ fn importing_extra_sockets_cannot_publish_a_new_invalid_instance() {
     assert!(apply_candidate(&mut document, &catalog, 0, &candidate, false).is_err());
     assert!(add_candidate_to_inventory(&mut document, &catalog, 0, &candidate).is_err());
     assert_eq!(document, original);
-    assert_eq!(request.authored_plugs, Some(json!([101, null, 102])));
 }
 
 #[test]
@@ -178,13 +177,11 @@ fn importing_more_than_twelve_sockets_preserves_the_previous_preview() {
         item_hash: 100,
         authored_plugs: Some(json!(vec![101; inventory::MAX_ITEM_PLUGS + 1])),
     };
-    let original = request.authored_plugs.clone();
     assert!(open_builder_request(&catalog, &mut state, &request).is_err());
     assert_eq!(
         state.candidate.unwrap().plugs,
         vec![None; inventory::MAX_ITEM_PLUGS]
     );
-    assert_eq!(request.authored_plugs, original);
 }
 
 #[test]

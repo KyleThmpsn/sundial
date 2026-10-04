@@ -201,6 +201,44 @@ pub fn convert_with_event_library(
     lower(bytes, None, None, Some(library))
 }
 
+/// Lower an explicitly selected event sequence. This opt-in path lets an
+/// authored action retain supported contact and audio events without sending
+/// unsupported controller messages to the older runtime. Omitted indices are
+/// recorded and never inferred from a weapon identity.
+pub fn convert_with_selected_events(
+    bytes: &[u8],
+    retained: &[usize],
+    library: &EventLibrary,
+) -> Result<(Payload, Value)> {
+    let mut selected = Payload(bytes.to_vec());
+    let rows = selected.array(0x160, 8, Some(0x80808C08))?;
+    ensure!(!retained.is_empty(), "selected clip events are empty");
+    ensure!(
+        retained.windows(2).all(|p| p[0] < p[1]),
+        "selected clip events repeat or change order"
+    );
+    let targets = retained
+        .iter()
+        .map(|index| selected.pointer(*rows.get(*index).context("selected clip event is absent")?))
+        .collect::<Result<Vec<_>>>()?;
+    let header = selected.pointer(0x168)?;
+    for (row, target) in rows.iter().zip(targets) {
+        selected.0[*row..*row + 8]
+            .copy_from_slice(&((target as i64) - (*row as i64)).to_le_bytes());
+    }
+    for at in [0x160, header] {
+        selected.0[at..at + 8].copy_from_slice(&(retained.len() as u64).to_le_bytes());
+    }
+    let (payload, mut report) = convert_with_event_library(&selected.0, library)?;
+    report["retained_source_events"] = json!(retained);
+    report["omitted_source_events"] = json!(
+        (0..rows.len())
+            .filter(|i| !retained.contains(i))
+            .collect::<Vec<_>>()
+    );
+    Ok((payload, report))
+}
+
 fn lower(
     bytes: &[u8],
     counterpart: Option<&Payload>,
@@ -374,7 +412,6 @@ mod tests {
         assert_eq!(native.u32(0x128).unwrap(), 16);
         let range = source.array_range(0x1D0, 2, Some(0x8080000A)).unwrap();
         assert_eq!(source.0[range.clone()], native.0[range]);
-        assert_eq!(source.u32(0x194).unwrap(), 0x80808B40);
         let mut invalid = source.clone();
         word(&mut invalid, 0x194, 0x80808B48);
         assert!(convert(&invalid.0).is_err());

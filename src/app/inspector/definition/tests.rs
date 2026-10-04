@@ -14,7 +14,11 @@ fn installed_inspector_pages_render() {
     let catalog =
         Catalog::load_or_scan_with_progress(&install, cache, false, |_| {}).expect("catalog");
     let targets = capture_targets(&catalog);
-    assert!(targets.len() >= 6, "too few capture targets: {targets:?}");
+    assert!(
+        targets.iter().any(|(name, _)| *name == "weapon"),
+        "no weapon capture target"
+    );
+    assert!(!targets.is_empty());
     let ctx = egui::Context::default();
     ctx.set_theme(egui::Theme::Dark);
     crate::app::ui::configure_contrast(&ctx);
@@ -36,9 +40,8 @@ fn installed_inspector_pages_render() {
             "Technical",
             "Related Records",
         ] {
-            let Some(position) = text_center(&output, tab) else {
-                continue;
-            };
+            let position = text_center(&output, tab)
+                .unwrap_or_else(|| panic!("weapon inspector is missing the {tab} tab"));
             let click = |pressed| egui::Event::PointerButton {
                 pos: position,
                 button: egui::PointerButton::Primary,

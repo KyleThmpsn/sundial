@@ -40,6 +40,25 @@ struct Row {
     search: String,
 }
 
+/// The reverse reference index as a resource page sees it: every use of a resource once
+/// the caller has read it, and the reading in between.
+pub struct Uses<'a> {
+    pub state: UsesState<'a>,
+    /// Set when the page asked for the index to be read.
+    pub requested: bool,
+    /// Set when the page asked for a running read to stop.
+    pub stopped: bool,
+}
+
+#[derive(Clone, Copy)]
+pub enum UsesState<'a> {
+    Idle,
+    /// Packages read out of the total.
+    Reading(usize, usize),
+    Failed(&'a str),
+    Ready(&'a crate::package_runtime::references::referrers::Referrers),
+}
+
 /// A request to show something that lives on another catalog tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Jump {
@@ -64,6 +83,8 @@ pub struct Browser {
     filtered: Vec<usize>,
     filter_query: Option<String>,
     resource_names: BTreeMap<u32, Vec<String>>,
+    /// The game-name registration the resource names were merged with.
+    game_names_generation: u64,
     navigation: navigation::Navigation,
     /// An effect number another tab asked to show.
     pending_effect: Option<usize>,
@@ -77,6 +98,19 @@ pub struct Browser {
 type Similar = (usize, usize, usize, bool);
 
 impl Browser {
+    /// The resource names from the scan, with the game's names for ability entities and
+    /// banks ahead of the engine's.
+    fn refresh_resource_names(&mut self, names: &tft::Index) {
+        self.game_names_generation = crate::sandbox_perk::entity::catalog::game_names_generation();
+        self.resource_names = names.names();
+        for (tag, name) in crate::sandbox_perk::entity::catalog::game_names()
+            .into_iter()
+            .chain(crate::ability::bank::bank_names())
+        {
+            self.resource_names.entry(tag).or_default().insert(0, name);
+        }
+    }
+
     /// Show one effect on the Perk Effects tab the next time it draws.
     pub fn open_effect(&mut self, effect: usize) {
         self.pending_effect = Some(effect);
@@ -97,6 +131,7 @@ impl Browser {
         packages: Option<&std::path::Path>,
         sources: &PerkSources,
         catalog: Option<&InvestmentCatalog>,
+        uses: &mut Uses<'_>,
     ) -> Option<Jump> {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         if view == View::Perks {
@@ -115,7 +150,7 @@ impl Browser {
             });
         if self.view != view || !same_source {
             if !same_source {
-                self.resource_names = data.names.names();
+                self.refresh_resource_names(&data.names);
                 self.navigation = navigation::Navigation::new(&data.names);
             } else {
                 self.navigation.clear();
@@ -135,6 +170,12 @@ impl Browser {
             self.filter_query = None;
             self.similar = None;
         }
+        // The game's names for abilities arrive with the catalog, after the scan they name,
+        // and take their place in the names without closing an open page.
+        let generation = crate::sandbox_perk::entity::catalog::game_names_generation();
+        if generation != self.game_names_generation {
+            self.refresh_resource_names(&data.names);
+        }
         if view == View::Perks
             && let Some(effect) = self.pending_effect.take()
             && let Some(position) = data
@@ -152,7 +193,7 @@ impl Browser {
         }
         if self
             .navigation
-            .show(ui, data, &self.resource_names, packages)
+            .show(ui, data, &self.resource_names, packages, uses)
         {
             return None;
         }

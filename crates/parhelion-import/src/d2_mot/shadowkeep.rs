@@ -42,6 +42,60 @@ pub fn carrier_model(r: &mut Reader, model_tag: u32) -> Result<Value> {
     Ok(json!({"model":format!("{model_tag:08X}"),"meshes":meshes,"rendering_template_only":true}))
 }
 
+struct Art {
+    rows: Vec<Value>,
+    placements: BTreeMap<u32, Vec<Value>>,
+}
+
+fn art_placements(
+    item: &crate::d2_mot::payload::Payload,
+    metadata: &crate::d2_mot::payload::Payload,
+    selections: &[usize],
+    rows: &[usize],
+) -> Result<Art> {
+    let mut art_rows = Vec::new();
+    let mut all_placements = BTreeMap::<u32, Vec<Value>>::new();
+    for (ordinal, &selection) in selections.iter().enumerate() {
+        let index = item.u16(selection + 2)? as usize;
+        let row = *rows.get(index).context("invalid art index")?;
+        let singles = [metadata.u32(row + 8)?, metadata.u32(row + 12)?];
+        let class = item.u8(selection)? as i8;
+        for (position, &key) in singles.iter().enumerate() {
+            all_placements
+                .entry(key)
+                .or_default()
+                .push(json!({"art_row":ordinal,
+                "art_index":index,"class":class,"single":position}));
+        }
+        let mut slots = Vec::new();
+        for at in metadata.array(row + 16, 8, None)? {
+            let resource = metadata.pointer(at)?;
+            let selector = metadata.u64(resource)?;
+            let assignments = metadata
+                .array(resource + 8, 4, None)?
+                .into_iter()
+                .map(|at| metadata.u32(at))
+                .collect::<Result<Vec<_>>>()?;
+            for (position, &key) in assignments.iter().enumerate() {
+                all_placements
+                    .entry(key)
+                    .or_default()
+                    .push(json!({"art_row":ordinal,
+                    "art_index":index,"class":class,"selector":selector,"position":position}));
+            }
+            slots.push(json!({"selector":selector,"assignments":assignments}));
+        }
+        art_rows.push(
+            json!({"ordinal":ordinal,"class":class,"flags":item.u8(selection+1)?,
+            "art_index":index,"singles":singles,"slots":slots}),
+        );
+    }
+    Ok(Art {
+        rows: art_rows,
+        placements: all_placements,
+    })
+}
+
 pub fn extract(r: &mut Reader, item_hash: u32) -> Result<Value> {
     let named = r
         .manager
@@ -65,8 +119,8 @@ pub fn extract(r: &mut Reader, item_hash: u32) -> Result<Value> {
     ensure!(matches.len() == 1, "native item missing or ambiguous");
     let item = r.tag(items.u32(matches[0] + 16)?, Some(0x80807BEA))?;
     let translation = item.pointer(0x88)?;
-    let indices = item
-        .array(translation, 4, Some(0x808077B5))?
+    let selections = item.array(translation, 4, Some(0x808077B5))?;
+    let indices = selections
         .iter()
         .map(|&row| item.u16(row + 2))
         .collect::<Result<Vec<_>>>()?;
@@ -76,6 +130,10 @@ pub fn extract(r: &mut Reader, item_hash: u32) -> Result<Value> {
     // Where each assignment key sits in the art row: a direct single or a
     // selector slot position. Selector 0 is the body the imported model replaces.
     let mut placements = BTreeMap::new();
+    let Art {
+        rows: art_rows,
+        placements: all_placements,
+    } = art_placements(&item, &metadata, &selections, &rows)?;
     for &i in &indices {
         let row = *rows.get(i as usize).context("invalid art index")?;
         for (position, offset) in [8usize, 12].into_iter().enumerate() {
@@ -129,7 +187,7 @@ pub fn extract(r: &mut Reader, item_hash: u32) -> Result<Value> {
                     data >= 4 && owner.u32(data - 4)? == crate::d2_mot::markers::NATIVE_COMPONENT;
             }
         }
-        parents.push(json!({"assignment":format!("{key:08X}"),"parent":format!("{tag:08X}"),"parent_class":format!("{:08X}",r.reference(tag)?),"parent_bytes":hex::encode(&parent.0),"placement":placements.get(&key).cloned().unwrap_or(Value::Null),"marker_set":marker_set}));
+        parents.push(json!({"assignment":format!("{key:08X}"),"parent":format!("{tag:08X}"),"entity":format!("{entity_tag:08X}"),"parent_class":format!("{:08X}",r.reference(tag)?),"parent_bytes":hex::encode(&parent.0),"placement":placements.get(&key).cloned().unwrap_or(Value::Null),"placements":all_placements.get(&key),"marker_set":marker_set}));
         let Some(entity) = entity else {
             continue;
         };
@@ -151,6 +209,6 @@ pub fn extract(r: &mut Reader, item_hash: u32) -> Result<Value> {
         r.tag(tag, Some(0x808071E8))?;
     }
     Ok(
-        json!({"item":format!("{item_hash:08X}"),"item_tag":format!("{:08X}",items.u32(matches[0]+16)?),"art_indices":indices,"assignments":keys.iter().map(|k|format!("{k:08X}")).collect::<Vec<_>>(),"parents":parents,"models":models}),
+        json!({"item":format!("{item_hash:08X}"),"item_tag":format!("{:08X}",items.u32(matches[0]+16)?),"art_indices":indices,"art_rows":art_rows,"assignments":keys.iter().map(|k|format!("{k:08X}")).collect::<Vec<_>>(),"parents":parents,"models":models}),
     )
 }

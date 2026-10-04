@@ -1,8 +1,10 @@
-//! Shadowkeep C9E280 reads definition +160 or variant property +E0.
+//! Shadowkeep C9E280 reads definition +160 or variant property +E0. The same weapon content
+//! carries the hip-fire crosshair keys, which `crate::weapon::crosshair` writes through
+//! [`field_patches`].
 use crate::tag_payload::{read_u32 as u32_at, read_u64 as u64_at};
-use crate::{AuthoringResult, error::invalid, weapon::WeaponRuntimeResourcePatch};
+use crate::{AuthoringResult, error::invalid, item::WeaponRuntimeResourcePatch};
 use sundial::package_authoring::PackageManager;
-use sundial::package_authoring::weapon_entity::weapon_component_bindings;
+use sundial::package_authoring::entity::weapon_component_bindings;
 use tiger_pkg::TagHash;
 const BINDING: u32 = 0x5F0DD954;
 struct Content {
@@ -14,26 +16,26 @@ fn content(manager: &PackageManager, entity: &[u8]) -> AuthoringResult<Content> 
     let bindings = weapon_component_bindings(entity, BINDING).map_err(invalid)?;
     let [binding] = bindings.as_slice() else {
         return Err(invalid(
-            "HUD icon authoring requires one weapon-content component",
+            "Weapon content edits require one weapon-content component",
         ));
     };
     if binding.concrete_class != 0x80803ACB {
-        return Err(invalid("Unsupported HUD weapon-content class"));
+        return Err(invalid("Unsupported weapon-content class"));
     }
     let owner = manager
         .read_tag(TagHash(binding.owner_tag))
         .map_err(|e| invalid(e.to_string()))?;
     let instance = usize::try_from(binding.resource_offset)
-        .map_err(|_| invalid("HUD instance offset overflow"))?;
+        .map_err(|_| invalid("Weapon content instance offset overflow"))?;
     if u32_at(&owner, instance)? != binding.owner_tag || u32_at(&owner, instance + 4)? != 0x80803AC9
     {
         return Err(invalid(
-            "HUD content definition must be typed within its owner",
+            "Weapon content definition must be typed within its owner",
         ));
     }
     let definition = usize::try_from(u64_at(&owner, instance + 8)?)
-        .map_err(|_| invalid("HUD definition offset overflow"))?;
-    let properties = crate::weapon_ammo::property_offsets(&owner, definition)?;
+        .map_err(|_| invalid("Weapon content definition offset overflow"))?;
+    let properties = crate::weapon::ammo::property_offsets(&owner, definition)?;
     Ok(Content {
         owner,
         instance,
@@ -96,28 +98,41 @@ pub(crate) fn patches(
     entity: &[u8],
     key: u32,
 ) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+    field_patches(manager, entity, &[(0xE0, key)])
+}
+
+/// Write each (property offset, key) into the weapon content's default property block and every
+/// variant, so whichever variant the item selects carries the key.
+pub(crate) fn field_patches(
+    manager: &PackageManager,
+    entity: &[u8],
+    fields: &[(usize, u32)],
+) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
     let Content {
         instance,
         properties,
         ..
     } = content(manager, entity)?;
-    properties
-        .into_iter()
-        .map(|property| {
+    let mut patches = Vec::with_capacity(properties.len() * fields.len());
+    for property in properties {
+        for &(field, key) in fields {
             let offset = property
-                .checked_add(0xE0)
+                .checked_add(field)
                 .and_then(|v| v.checked_sub(instance))
                 .and_then(|v| u32::try_from(v).ok())
-                .ok_or_else(|| invalid("HUD property offset overflow"))?;
-            Ok(WeaponRuntimeResourcePatch {
+                .ok_or_else(|| invalid("Weapon content property offset overflow"))?;
+            patches.push(WeaponRuntimeResourcePatch {
                 binding_hash: BINDING,
                 resource_index: 0,
                 offset,
                 bytes: key.to_le_bytes().to_vec(),
                 graph_values: Vec::new(),
-            })
-        })
-        .collect()
+                graph_removals: Vec::new(),
+                graph_trajectories: None,
+            });
+        }
+    }
+    Ok(patches)
 }
 
 #[cfg(test)]

@@ -106,11 +106,11 @@ fn preview_for_runtime_with_progress(
     if review.installed.is_empty() {
         return Ok(review);
     }
-    report(progress, "Reading Installed Weapon Identities", 4);
+    report(progress, "Reading Installed Item Identities", 4);
     let installed = identities::Generation::open(&target, &target)?;
     let compared = (|| {
         let old = identities::read_identities(&installed)?;
-        report(progress, "Reading Staged Weapon Identities", 5);
+        report(progress, "Reading Staged Item Identities", 5);
         let incoming = identities::Generation::open(&target, &staged)?;
         let compared = compare_generations(&installed, &incoming, old, &mut review, progress);
         incoming.finish(compared)
@@ -173,12 +173,28 @@ fn socket_changes(
     Ok(incoming
         .into_iter()
         .filter_map(|(definition_hash, default_plugs)| {
-            let previous_socket_count = previous[&definition_hash].len();
-            (previous_socket_count != default_plugs.len()).then_some(AuthoredSocketChange {
-                definition_hash,
-                previous_socket_count,
-                default_plugs,
-            })
+            let installed = &previous[&definition_hash];
+            // A lane both generations have whose default changed, such as a private plug taking
+            // the place of a stock default, carries saved selections of the old default along.
+            let replaced_defaults = installed
+                .iter()
+                .zip(&default_plugs)
+                .enumerate()
+                .filter_map(|(lane, (old, new))| match old {
+                    Some(old) if Some(*old) != *new && *old != 0 && *old != u32::MAX => {
+                        Some((lane, *old))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            (installed.len() != default_plugs.len() || !replaced_defaults.is_empty()).then_some(
+                AuthoredSocketChange {
+                    definition_hash,
+                    previous_socket_count: installed.len(),
+                    default_plugs,
+                    replaced_defaults,
+                },
+            )
         })
         .collect())
 }

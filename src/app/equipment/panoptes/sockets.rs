@@ -49,7 +49,7 @@ fn panoptes_socket_is_visible(
         || is_mod_socket
         || matches!(
             mode,
-            PlugSelectionMode::GearType | PlugSelectionMode::AnyPlug
+            PlugSelectionMode::GearType | PlugSelectionMode::GearKind | PlugSelectionMode::AnyPlug
         )
 }
 

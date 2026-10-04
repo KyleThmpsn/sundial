@@ -27,6 +27,7 @@ fn change(previous: usize, incoming: usize) -> AuthoredSocketChange {
         default_plugs: (0..incoming)
             .map(|index| Some(500 + index as u32))
             .collect(),
+        replaced_defaults: Vec::new(),
     }
 }
 

@@ -41,11 +41,6 @@ impl Basis {
 
     pub fn with_normal(self, normal: [f32; 3]) -> Self {
         let normal = normalize(normal).unwrap_or(self.normal);
-        let normal = if dot(normal, self.normal) < 0.0 {
-            normal.map(|v| -v)
-        } else {
-            normal
-        };
         let amount = dot(self.tangent, normal);
         let tangent = normalize(std::array::from_fn(|i| {
             self.tangent[i] - normal[i] * amount

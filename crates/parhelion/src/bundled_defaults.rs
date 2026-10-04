@@ -116,7 +116,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn versions_round_trip_and_only_write_when_changed() {
+    fn versions_persist_and_accept_repeated_records() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("versions.json");
         let mut versions = AppliedVersions::load(path.clone()).unwrap();

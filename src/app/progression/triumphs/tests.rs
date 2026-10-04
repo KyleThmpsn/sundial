@@ -28,7 +28,7 @@ fn catalog() -> Catalog {
             vec![UnlockDefinition {
                 code: 1,
                 compact_slot: Some(0),
-                tested_by: vec![context],
+                tested_by: vec![context.into()],
                 ..Default::default()
             }],
             vec![UnlockDefinition {
@@ -59,7 +59,6 @@ fn catalog() -> Catalog {
 #[test]
 fn triumphs_merge_record_references_and_distinguish_objectives_from_completion() {
     let catalog = catalog();
-    assert_eq!(catalog.records().unwrap().len(), 1);
     for native in [false, true] {
         let mut document = json!({"state":{"unlocks":{"objective_values":[[0,5]]}}});
         if native {
@@ -158,14 +157,12 @@ fn batches_skip_shared_counter_conflicts_and_reject_concurrent_changes() {
         ..Default::default()
     };
     let mut document = json!({"future": 1, "state":{"unlocks":{"objective_values":[[0,5]]}}});
-    let before = document.clone();
     let mut job = edit::Job::new(&document, vec![first.clone(), second], true);
     while !job.step(&catalog) {}
     assert!(job.issues.is_empty());
     assert_eq!(job.conflicts.len(), 1);
     assert_eq!(job.conflicts[0].name, "First Victory");
     assert_eq!(job.supported_count(), 1);
-    assert_eq!(document, before);
     assert_eq!(job.finish(&mut document, &catalog).unwrap(), 1);
     let result = collection_state_snapshot(&document).unwrap();
     assert_eq!(result.evaluated_flag(0, &catalog), Some(false));

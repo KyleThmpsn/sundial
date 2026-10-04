@@ -25,7 +25,7 @@ fn ingredient_rows_identify_operations_and_keep_undecoded_actions_explicit() {
         }),
     };
     let label = reading::identity(&perk);
-    assert!(label.contains(nodes::effect_title(2)));
+    assert!(label.contains("Dynamic Value"));
     assert!(label.contains("Effect 1967"));
     assert!(!label.contains("Action 0x"));
     perk.behavior = None;

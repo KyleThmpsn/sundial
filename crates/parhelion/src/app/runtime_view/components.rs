@@ -1,69 +1,143 @@
 use super::*;
+use crate::app::runtime_donors::ComponentRow;
 
 impl PackageAuthoringApp {
-    pub(in crate::app) fn draw_runtime_component_donors(&mut self, ui: &mut egui::Ui) {
-        let graph = self.runtime_graph.as_ref().and_then(|(key, graph)| {
+    /// The runtime graph scanned for the recipe on screen, if it is current.
+    fn current_runtime_graph(&self) -> Option<Arc<WeaponRuntimeGraph>> {
+        self.runtime_graph.as_ref().and_then(|(key, graph)| {
             (Some(key) == self.runtime_graph_target.as_ref()).then(|| Arc::clone(graph))
-        });
-        if let Some(donor_width) = runtime_workspace_donor_width(ui.available_width()) {
-            ui.horizontal_top(|ui| {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(donor_width, 0.0),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        ui.set_width(donor_width);
-                        self.draw_runtime_component_donor_column(ui, graph.as_deref());
-                    },
-                );
+        })
+    }
+
+    /// Gameplay's Technical fold: the runtime, perk and inventory controls few weapons need, all
+    /// behind Experimental Features and closed until asked for.
+    pub(in crate::app) fn draw_gameplay_technical(
+        &mut self,
+        ui: &mut egui::Ui,
+        donor: Option<&WeaponDonor>,
+    ) {
+        let graph = self.current_runtime_graph();
+        egui::CollapsingHeader::new("Technical")
+            .id_salt(("gameplay-technical", self.recipe_panel_scope()))
+            .default_open(false)
+            .show(ui, |ui| {
+                if self.recipe.kind.is_weapon() && donor.is_some() {
+                    self.draw_type_marker_part(ui);
+                    ui.add_space(6.0);
+                }
+                let active = self.runtime_component_bindings(graph.as_deref());
+                let additional = active
+                    .keys()
+                    .filter(|hash| {
+                        !PRIMARY_RUNTIME_COMPONENTS
+                            .iter()
+                            .any(|known| known.binding_hash == **hash)
+                    })
+                    .count();
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .button(format!("Advanced Runtime Bindings… ({additional})"))
+                        .clicked()
+                    {
+                        self.runtime_bindings_open = true;
+                    }
+                    if ui.button("Perks & Patterns…").clicked() {
+                        crate::app::runtime_dependencies::request(ui.ctx(), None);
+                    }
+                });
+                ui.add_space(4.0);
+                self.draw_runtime_resource_patches(ui);
+                for draw in [
+                    Self::draw_base_sandbox_perks
+                        as fn(&mut Self, &mut egui::Ui, Option<&WeaponDonor>),
+                    Self::draw_item_traits,
+                    Self::draw_native_inventory_fields,
+                ] {
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(5.0);
+                    draw(self, ui, donor);
+                }
+                ui.add_space(6.0);
                 ui.separator();
-                let value_width = ui.available_width();
-                ui.allocate_ui_with_layout(
-                    egui::vec2(value_width, 0.0),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        ui.set_width(value_width);
-                        self.draw_runtime_value_column(ui, graph.as_ref());
-                    },
-                );
+                ui.add_space(5.0);
+                self.draw_raw_payload_patches(ui);
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(5.0);
+                self.draw_runtime_value_column(ui, graph.as_ref());
             });
+    }
+
+    fn runtime_component_bindings(
+        &self,
+        graph: Option<&WeaponRuntimeGraph>,
+    ) -> BTreeMap<u32, String> {
+        let mut active = BTreeMap::<u32, String>::new();
+        if let Some(graph) = graph {
+            for binding in &graph.bindings {
+                active
+                    .entry(binding.binding_hash)
+                    .or_insert_with(|| binding.binding_label.clone());
+            }
         } else {
-            self.draw_runtime_component_donor_column(ui, graph.as_deref());
-            ui.add_space(6.0);
-            ui.separator();
-            ui.add_space(5.0);
-            self.draw_runtime_value_column(ui, graph.as_ref());
+            // An experimental choice can prevent full field decoding. Keep repair and
+            // compatibility-review controls available instead of trapping that saved choice.
+            for control in PRIMARY_RUNTIME_COMPONENTS {
+                active.insert(control.binding_hash, control.label.to_owned());
+            }
+            for component in &self.recipe.runtime_component_donors {
+                if let Ok(hash) = component.binding_hash.parse_u32() {
+                    active
+                        .entry(hash)
+                        .or_insert_with(|| format!("Binding 0x{hash:08X}"));
+                }
+            }
         }
+        active
     }
 
-    pub(in crate::app) fn draw_runtime_component_donor_column(
+    /// Gameplay's Parts: every part of the weapon another weapon can supply, on one label column.
+    /// Behavior, Type Markers, Firing Behavior, Barrel and Magazine are always offered: each copies
+    /// one part into the weapon's own runtime. Reload swaps a whole runtime component, which can
+    /// crash the game, so it needs Experimental Features.
+    pub(in crate::app) fn draw_gameplay_parts(
         &mut self,
         ui: &mut egui::Ui,
-        graph: Option<&WeaponRuntimeGraph>,
+        donor: Option<&WeaponDonor>,
     ) {
-        self.draw_runtime_component_donor_pickers(ui, graph);
-        if self.show_experimental_options {
-            ui.add_space(8.0);
-            self.draw_runtime_resource_patches(ui);
-        }
-    }
-
-    fn draw_runtime_component_donor_pickers(
-        &mut self,
-        ui: &mut egui::Ui,
-        graph: Option<&WeaponRuntimeGraph>,
-    ) {
+        let graph = self.current_runtime_graph();
+        let graph = graph.as_deref();
         let current_key = self.runtime_graph_key();
         let baseline_hash = self.runtime_component_baseline_hash(current_key.as_ref());
-        draw_donor_section_label(
-            ui,
-            "Runtime Component Donors",
-            Some("Replaces the whole shared owner and its bindings."),
-        );
-        self.draw_runtime_donor_undo(ui);
-        ui.colored_label(
-            ui.visuals().warn_fg_color,
-            "Component mixing can crash the game.",
-        );
+        let experimental = self.show_experimental_options;
+        ui.horizontal(|ui| {
+            draw_donor_section_label_with_warning(
+                ui,
+                "Parts",
+                Some(
+                    "Parts of the weapon taken from other weapons. Each follows the base weapon \
+                     until another is chosen. Test in game.",
+                ),
+                experimental.then_some("Mixing runtime components can crash the game."),
+            );
+            if experimental {
+                self.draw_runtime_donor_undo(ui);
+            }
+        });
+        ui.add_space(2.0);
+        self.draw_behavior_part(ui, donor);
+        if self.recipe.kind.is_weapon() && donor.is_some() {
+            // Type markers are the runtime's internal type names, so they sit in Technical. One
+            // already chosen stays here without Experimental Features, where it can be reset.
+            if !experimental && self.recipe.overrides.type_marker_donor.is_some() {
+                self.draw_type_marker_part(ui);
+            }
+            self.draw_component_splices(ui);
+        }
+        if !experimental {
+            return;
+        }
         if self.runtime_graph_job.is_some() {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -81,66 +155,35 @@ impl PackageAuthoringApp {
                 self.runtime_graph_error = None;
             }
         }
-        if let Some(item_hash) = self.runtime_rig_appearance {
-            let name = self
-                .donor_summaries
-                .iter()
-                .find(|donor| donor.hash == item_hash)
-                .map_or_else(|| format!("0x{item_hash:08X}"), |donor| donor.name.clone());
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                format!("Rig and animations from {name}."),
-            );
-        }
-        let mut active = BTreeMap::<u32, String>::new();
-        if let Some(graph) = graph {
-            for binding in &graph.bindings {
-                active
-                    .entry(binding.binding_hash)
-                    .or_insert_with(|| binding.binding_label.clone());
-            }
-        } else {
-            // An experimental choice can prevent full field decoding. Keep repair and
-            // compatibility-review controls available instead of trapping that saved choice.
+        if graph.is_none() && self.runtime_graph_job.is_none() {
             ui.weak("Runtime data unavailable.");
-            for control in PRIMARY_RUNTIME_COMPONENTS {
-                active.insert(control.binding_hash, control.label.to_owned());
-            }
-            for component in &self.recipe.runtime_component_donors {
-                if let Ok(hash) = component.binding_hash.parse_u32() {
-                    active
-                        .entry(hash)
-                        .or_insert_with(|| format!("Binding 0x{hash:08X}"));
-                }
-            }
         }
+        let active = self.runtime_component_bindings(graph);
         for control in PRIMARY_RUNTIME_COMPONENTS {
-            if active.contains_key(&control.binding_hash) {
-                self.draw_runtime_component_donor_picker(
+            // Firing Behavior, Barrel and Magazine are the part rows above.
+            let spliced = [
+                WEAPON_TRIGGER_COMPONENT_KEY,
+                WEAPON_BARREL_COMPONENT_KEY,
+                WEAPON_MAGAZINE_COMPONENT_KEY,
+            ]
+            .contains(&control.binding_hash);
+            if !spliced && active.contains_key(&control.binding_hash) {
+                self.draw_runtime_component_row(
                     ui,
-                    control.binding_hash,
-                    control.label,
-                    control.tooltip,
-                    baseline_hash,
-                    current_key.as_ref(),
+                    &ComponentRow {
+                        binding_hash: control.binding_hash,
+                        // Reload's row sits among the Parts, named as short as they are.
+                        label: if control.binding_hash == WEAPON_RELOAD_COMPONENT_KEY {
+                            "Reload"
+                        } else {
+                            control.label
+                        },
+                        tooltip: control.tooltip,
+                        baseline_hash,
+                        current_key: current_key.as_ref(),
+                    },
                 );
-                ui.add_space(4.0);
             }
-        }
-
-        let additional_count = active
-            .iter()
-            .filter(|(hash, _)| {
-                !PRIMARY_RUNTIME_COMPONENTS
-                    .iter()
-                    .any(|known| known.binding_hash == **hash)
-            })
-            .count();
-        if ui
-            .button(format!("Advanced Runtime Bindings… ({additional_count})"))
-            .clicked()
-        {
-            self.runtime_bindings_open = true;
         }
 
         let stale = self
@@ -151,18 +194,18 @@ impl PackageAuthoringApp {
             .filter(|binding_hash| !active.contains_key(binding_hash))
             .collect::<Vec<_>>();
         for binding_hash in stale {
-            ui.horizontal(|ui| {
-                ui.colored_label(
-                    ui.visuals().error_fg_color,
-                    format!("Saved component binding 0x{binding_hash:08X} is not present in this pattern"),
-                );
-                if ui.small_button("Remove").clicked() {
-                    self.recipe.set_runtime_component_donor(binding_hash, None);
-                }
-            });
+            if crate::app::style::missing(
+                ui,
+                &format!("Missing Binding 0x{binding_hash:08X}"),
+                "Not in this runtime.",
+            ) {
+                self.recipe.set_runtime_component_donor(binding_hash, None);
+            }
         }
     }
 
+    /// Every binding beyond the four main components, as a list beside the selected one's
+    /// source and actions.
     pub(in crate::app) fn draw_runtime_bindings_window(&mut self, ctx: &egui::Context) {
         if !self.runtime_bindings_open
             || !self.show_experimental_options
@@ -177,16 +220,20 @@ impl PackageAuthoringApp {
         let current_key = self.runtime_graph_key();
         let baseline_hash = self.runtime_component_baseline_hash(current_key.as_ref());
         let mut open = true;
+        let screen = ctx.screen_rect();
+        let width = (screen.width() - 40.0).clamp(280.0, 820.0);
+        let height = (screen.height() - 64.0).clamp(240.0, 640.0);
         egui::Window::new("Advanced Runtime Bindings")
             .id(egui::Id::new("parhelion-runtime-bindings-window"))
             .open(&mut open)
             .collapsible(false)
-            .default_width(660.0)
-            .default_height(600.0)
             .resizable(true)
+            .default_width(width)
+            .default_height(height)
+            .min_width(width.min(480.0))
+            .min_height(height.min(320.0))
             .show(ctx, |ui| {
                 workbench_style(ui);
-                ui.label(format!("{} · Component Sources", self.recipe.name));
                 let additional = if let Some(graph) = graph.as_deref() {
                     graph
                         .bindings
@@ -199,7 +246,14 @@ impl PackageAuthoringApp {
                         .map(|binding| (binding.binding_hash, binding.binding_label.clone()))
                         .collect::<BTreeMap<_, _>>()
                 } else {
-                    ui.weak("Runtime data unavailable.");
+                    if self.runtime_graph_job.is_some() {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.weak("Reading runtime components…");
+                        });
+                    } else {
+                        ui.weak("Runtime data unavailable.");
+                    }
                     self.recipe
                         .runtime_component_donors
                         .iter()
@@ -212,62 +266,94 @@ impl PackageAuthoringApp {
                         .map(|hash| (hash, format!("Binding 0x{hash:08X}")))
                         .collect::<BTreeMap<_, _>>()
                 };
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Filter");
-                    named_control(
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.runtime_binding_filter)
-                                .desired_width(260.0)
-                                .hint_text("Name or 0x hash"),
-                        ),
-                        "Filter Runtime Bindings",
-                    );
-                });
-                let query = self.runtime_binding_filter.trim().to_ascii_lowercase();
-                let filtered = additional
+                // Nothing to list is not a search that failed, so it gets its own title.
+                if additional.is_empty() {
+                    ui.label("No Other Bindings");
+                    return;
+                }
+                let long = crate::app::pickers::wants_filter(additional.len());
+                let mut changed = false;
+                if long {
+                    changed = ui
+                        .horizontal(|ui| {
+                            let width = (ui.available_width() - crate::app::pickers::CLEAR_WIDTH)
+                                .clamp(160.0, 320.0);
+                            sundial::ui::catalog::search(
+                                ui,
+                                &mut self.runtime_binding_filter,
+                                false,
+                                width,
+                                "Search Bindings",
+                            )
+                        })
+                        .inner;
+                }
+                let query = if long {
+                    self.runtime_binding_filter.trim().to_ascii_lowercase()
+                } else {
+                    String::new()
+                };
+                let rows = additional
                     .into_iter()
-                    .filter(|(binding_hash, discovered_label)| {
-                        let known = runtime_component_control(*binding_hash);
-                        let label =
-                            known.map_or(discovered_label.as_str(), |control| control.label);
+                    .map(|(hash, discovered)| {
+                        let label = runtime_component_control(hash)
+                            .map_or(discovered, |control| control.label.to_owned());
+                        (hash, label)
+                    })
+                    .filter(|(hash, label)| {
                         query.is_empty()
                             || label.to_ascii_lowercase().contains(&query)
-                            || format!("0x{binding_hash:08x}").contains(&query)
+                            || format!("0x{hash:08x}").contains(&query)
                     })
                     .collect::<Vec<_>>();
-                ui.weak(format!(
-                    "{} matching binding{}",
-                    filtered.len(),
-                    if filtered.len() == 1 { "" } else { "s" }
-                ));
-                egui::ScrollArea::vertical()
-                    .id_salt((
-                        "additional-runtime-binding-results",
-                        self.recipe_panel_scope(),
-                    ))
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-                    .max_height(ui.available_height())
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        for (binding_hash, discovered_label) in filtered {
-                            let known = runtime_component_control(binding_hash);
-                            let label =
-                                known.map_or(discovered_label.as_str(), |control| control.label);
-                            let tooltip = known.map_or(
-                                "Found on this runtime. The donor needs the same binding shape.",
-                                |control| control.tooltip,
-                            );
-                            self.draw_runtime_component_donor_picker(
-                                ui,
-                                binding_hash,
-                                label,
-                                tooltip,
-                                baseline_hash,
-                                current_key.as_ref(),
-                            );
-                            ui.add_space(4.0);
-                        }
-                    });
+                // Read before the list draws, since the selected binding's actions edit the
+                // recipe the rows read.
+                let sources = rows
+                    .iter()
+                    .map(|(hash, _)| {
+                        self.component_source_text(*hash, baseline_hash, current_key.as_ref())
+                    })
+                    .collect::<Vec<_>>();
+                let keys = rows
+                    .iter()
+                    .map(|(hash, _)| u64::from(*hash))
+                    .collect::<Vec<_>>();
+                let list = crate::app::pickers::BrowserList {
+                    keys: &keys,
+                    // The count line above the list takes a row of its own.
+                    height: (ui.available_height() - if long { 24.0 } else { 4.0 }).max(160.0),
+                    reset: changed,
+                    row_height: sundial::investment::authoring_choice_row_height(ui),
+                    select: None,
+                };
+                let row = |ui: &mut egui::Ui, index: usize, selected: bool| {
+                    sundial::investment::draw_asset_choice_row_plain(
+                        ui,
+                        &rows[index].1,
+                        &sources[index],
+                        selected,
+                    )
+                };
+                let detail = |ui: &mut egui::Ui, index: usize| {
+                    let (hash, label) = &rows[index];
+                    self.draw_runtime_component_detail(
+                        ui,
+                        &ComponentRow {
+                            binding_hash: *hash,
+                            label,
+                            tooltip: runtime_component_control(*hash)
+                                .map_or("", |control| control.tooltip),
+                            baseline_hash,
+                            current_key: current_key.as_ref(),
+                        },
+                    );
+                    None::<()>
+                };
+                if long {
+                    list.draw(ui, row, detail);
+                } else {
+                    list.draw_body(ui, row, detail);
+                }
             });
 
         self.runtime_bindings_open = open;
@@ -314,65 +400,5 @@ impl PackageAuthoringApp {
                     .map(|donor| donor.hash)
             })
             .filter(|hash| *hash != 0)
-    }
-
-    pub(in crate::app) fn draw_runtime_component_donor_picker(
-        &mut self,
-        ui: &mut egui::Ui,
-        binding_hash: u32,
-        label: &str,
-        tooltip: &str,
-        pattern_hash: Option<u32>,
-        current_key: Option<&RuntimeGraphKey>,
-    ) {
-        draw_donor_section_label(
-            ui,
-            label,
-            Some(&format!("{tooltip} Binding 0x{binding_hash:08X}.")),
-        );
-        let current_reference = self.recipe.runtime_component_donor(binding_hash).cloned();
-        let current_hash = current_reference
-            .as_ref()
-            .and_then(|donor| donor.item_hash.parse_u32().ok());
-        let selected_text = current_reference.as_ref().map_or_else(
-            || {
-                pattern_hash
-                    .and_then(|hash| self.donor_summaries.iter().find(|donor| donor.hash == hash))
-                    .map_or_else(
-                        || "Follow runtime baseline".to_owned(),
-                        |donor| format!("Follow {} · 0x{:08X}", donor.name, donor.hash),
-                    )
-            },
-            |reference| {
-                current_hash
-                    .and_then(|hash| self.donor_summaries.iter().find(|donor| donor.hash == hash))
-                    .map_or_else(
-                        || {
-                            format!(
-                                "{} · {}",
-                                reference
-                                    .expected_name
-                                    .as_deref()
-                                    .unwrap_or("Unknown component donor"),
-                                reference.item_hash
-                            )
-                        },
-                        |donor| {
-                            format!(
-                                "{} · {} · 0x{:08X}",
-                                donor.name, donor.type_name, donor.hash
-                            )
-                        },
-                    )
-            },
-        );
-        self.draw_checked_runtime_donor_header(
-            ui,
-            binding_hash,
-            &selected_text,
-            current_hash,
-            pattern_hash,
-            current_key,
-        );
     }
 }

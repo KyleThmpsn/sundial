@@ -53,7 +53,7 @@ use crate::catalog::{
     CatalogProgress, InventoryMetadata, ItemMaterialRequirementSetIndices, ObjectiveDef,
     ObjectiveOwnerDef, ObjectiveOwnerKind, UnlockDefinition,
     collections::item_material_requirement_set_indices_from_data,
-    icons::item_icon_container,
+    icons::{item_icon_container, item_secondary_icon_container},
     progression::{
         ItemProgressionContext, PendingProgressionContext, add_objective_owner,
         attach_item_condition_contexts, item_objective_indices,
@@ -88,6 +88,8 @@ pub(in crate::catalog) struct ItemScanContext<'a> {
     pub perk_descriptions: &'a HashMap<u16, String>,
     pub trait_definition_count: usize,
     pub ability_displays: &'a HashMap<u16, AbilityDisplayData>,
+    /// Each ability row's entity, which the subclass choices name each entry's ability by.
+    pub ability_entities: &'a [Option<u32>],
     pub collectible_item_paths: &'a HashMap<usize, Vec<Vec<String>>>,
     pub collectible_condition_contexts: &'a HashMap<usize, Vec<PendingProgressionContext>>,
     pub localized_tags: &'a [TagHash],
@@ -264,6 +266,26 @@ impl ItemScanDiagnostics {
     }
 }
 
+fn record_item_icons(
+    strings: &[u8],
+    containers: &[Option<u32>],
+    hash: u64,
+    icon_containers: &mut HashMap<u64, u32>,
+    item_package_metadata: &mut HashMap<u64, ItemPackageMetadata>,
+) {
+    if let Some(container) = item_icon_container(strings, containers) {
+        icon_containers.insert(hash, container);
+        if let Some(metadata) = item_package_metadata.get_mut(&hash) {
+            metadata.icon_container_tag = Some(container);
+        }
+    }
+    if let Some(container) = item_secondary_icon_container(strings, containers)
+        && let Some(metadata) = item_package_metadata.get_mut(&hash)
+    {
+        metadata.secondary_icon_container_tag = Some(container);
+    }
+}
+
 pub(in crate::catalog) fn scan_items(
     context: ItemScanContext<'_>,
     report: &mut dyn FnMut(CatalogProgress),
@@ -286,6 +308,7 @@ pub(in crate::catalog) fn scan_items(
         perk_descriptions,
         trait_definition_count,
         ability_displays,
+        ability_entities,
         collectible_item_paths,
         collectible_condition_contexts,
         localized_tags,
@@ -313,6 +336,7 @@ pub(in crate::catalog) fn scan_items(
                             string_definition_tag: None,
                             stat_group_index: None,
                             icon_container_tag: None,
+                            secondary_icon_container_tag: None,
                             plug_category_hash: None,
                             equipment_slot: None,
                             socket_entry_list_index: None,
@@ -358,7 +382,7 @@ pub(in crate::catalog) fn scan_items(
     let mut inventory_metadata = HashMap::new();
     let mut item_material_requirement_set_indices = HashMap::new();
     let mut items = Vec::new();
-    let mut item_socket_lists = Vec::<(usize, u16)>::new();
+    let mut item_socket_lists = Vec::<(usize, u16, Option<u8>)>::new();
     let mut plug_category_by_hash = HashMap::<u64, u32>::new();
     let mut plug_category_items = HashMap::<u32, Vec<u64>>::new();
     let mut unreadable_item_definitions = 0_usize;
@@ -509,12 +533,13 @@ pub(in crate::catalog) fn scan_items(
         {
             descriptions.insert(hash, description);
         }
-        if let Some(container) = item_icon_container(&string_thing, icon_containers_by_index) {
-            icon_containers.insert(hash, container);
-            if let Some(metadata) = item_package_metadata.get_mut(&hash) {
-                metadata.icon_container_tag = Some(container);
-            }
-        }
+        record_item_icons(
+            &string_thing,
+            icon_containers_by_index,
+            hash,
+            &mut icon_containers,
+            &mut item_package_metadata,
+        );
         if name.trim().is_empty() {
             let Some((derived_name, derived_type_name)) = character_stat_rows
                 .and_then(|rows| stat_allocation_labels(&item, rows, stat_names))
@@ -573,7 +598,11 @@ pub(in crate::catalog) fn scan_items(
             .get(&hash)
             .and_then(|metadata| metadata.socket_entry_list_index)
         {
-            item_socket_lists.push((items.len(), list_index));
+            let equipment_class = (bucket_hash == super::SUBCLASS_BUCKET_HASH)
+                .then(|| crate::investment_schema::subclass_equipment_class(&item))
+                .and_then(Result::ok)
+                .map(|class| class.unwrap_or(3));
+            item_socket_lists.push((items.len(), list_index, equipment_class));
         }
         let Some(decoded_sockets) = decode_item_sockets(&item, hashes, plug_set_table)? else {
             continue;
@@ -592,7 +621,12 @@ pub(in crate::catalog) fn scan_items(
             name,
             type_name,
             bucket_hash,
-            class_type: class_items::class_type(hash)
+            class_type: item
+                .get(crate::investment_schema::ITEM_INVENTORY_SLOT_OFFSET)
+                .filter(|slot| (3..=7).contains(*slot))
+                .and_then(|_| crate::investment_schema::armor_equipment_class(&item).ok())
+                .map(|class| class.map_or(3, u64::from))
+                .or_else(|| class_items::class_type(hash))
                 .or_else(|| class_items::class_from_item_strings(&string_thing))
                 .unwrap_or(3),
             default_plugs: decoded_sockets.default_plugs,
@@ -617,7 +651,7 @@ pub(in crate::catalog) fn scan_items(
     build_subclass_choices(
         manager,
         root,
-        ability_displays,
+        (ability_displays, ability_entities),
         item_socket_lists,
         &mut items,
     )?;

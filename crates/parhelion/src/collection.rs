@@ -156,11 +156,65 @@ impl Destination {
     }
 }
 
-/// Parhelion's own Collections page for one kind of gear, named for the runtime like its badge.
-/// Sparrows, Ships, Ghost Shells and shaders join it instead of a stock season page.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub struct GearPage(crate::ItemKind);
+/// Supported Guardian classes, in native Titan, Hunter, Warlock order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Classes(u8);
+impl Classes {
+    pub(crate) const ALL: Self = Self(7);
+    pub(crate) const fn one(class: u8) -> Self {
+        Self(1 << class)
+    }
+    pub(crate) const fn supports(self, class: u8) -> bool {
+        self.0 & (1 << class) != 0
+    }
+    pub(crate) fn iter(self) -> impl Iterator<Item = u8> {
+        (0..3).filter(move |&class| self.supports(class))
+    }
+}
 
+/// The Collections leaves for one collectible, including up to three supported classes.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CollectionPages([u16; 4]);
+impl CollectionPages {
+    pub(crate) const fn one(page: u16) -> Self {
+        Self([page, u16::MAX, u16::MAX, u16::MAX])
+    }
+    pub(crate) fn new(pages: impl IntoIterator<Item = u16>) -> crate::AuthoringResult<Self> {
+        let mut result = Self([u16::MAX; 4]);
+        let mut count = 0;
+        for page in pages {
+            if page == u16::MAX {
+                return Err(crate::error::invalid("Collections page is unavailable"));
+            }
+            if result.0.contains(&page) {
+                continue;
+            }
+            if count == result.0.len() {
+                return Err(crate::error::invalid("Too many Collections destinations"));
+            }
+            result.0[count] = page;
+            count += 1;
+        }
+        if count == 0 {
+            return Err(crate::error::invalid("Item has no Collections destination"));
+        }
+        Ok(result)
+    }
+    pub(crate) fn iter(self) -> impl Iterator<Item = u16> {
+        self.0.into_iter().filter(|&page| page != u16::MAX)
+    }
+    pub(crate) fn contains(self, page: u16) -> bool {
+        self.iter().any(|value| value == page)
+    }
+}
+
+/// A runtime-branded gear page, armor category or numbered armor set.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct GearPage {
+    kind: crate::ItemKind,
+    class: Option<u8>,
+    set: Option<usize>,
+}
 impl GearPage {
     #[must_use]
     pub const fn for_kind(kind: crate::ItemKind) -> Option<Self> {
@@ -168,19 +222,94 @@ impl GearPage {
             crate::ItemKind::Sparrow
             | crate::ItemKind::Ship
             | crate::ItemKind::GhostShell
-            | crate::ItemKind::Shader => Some(Self(kind)),
+            | crate::ItemKind::Emblem
+            | crate::ItemKind::Shader => Some(Self {
+                kind,
+                class: None,
+                set: None,
+            }),
             _ => None,
         }
     }
-
+    pub(crate) const fn armor(class: u8) -> Self {
+        Self {
+            kind: crate::ItemKind::Armor,
+            class: Some(class),
+            set: None,
+        }
+    }
+    pub(crate) const fn armor_set(class: u8, set: usize) -> Self {
+        Self {
+            kind: crate::ItemKind::Armor,
+            class: Some(class),
+            set: Some(set),
+        }
+    }
+    pub(crate) const fn set(self) -> Option<usize> {
+        self.set
+    }
+    pub(crate) fn set_name(self, brand: &str) -> Option<String> {
+        self.set.map(|set| {
+            let mut number = set + 1;
+            let mut roman = String::new();
+            for (value, token) in [
+                (1000, "M"),
+                (900, "CM"),
+                (500, "D"),
+                (400, "CD"),
+                (100, "C"),
+                (90, "XC"),
+                (50, "L"),
+                (40, "XL"),
+                (10, "X"),
+                (9, "IX"),
+                (5, "V"),
+                (4, "IV"),
+                (1, "I"),
+            ] {
+                while number >= value {
+                    roman.push_str(token);
+                    number -= value;
+                }
+            }
+            format!("{brand} Armor Set {roman}")
+        })
+    }
     #[must_use]
     pub const fn kind(self) -> crate::ItemKind {
-        self.0
+        self.kind
     }
-
+    pub(crate) const fn class(self) -> Option<u8> {
+        self.class
+    }
     pub(crate) fn hash(self, field: &str) -> u32 {
-        crate::presentation::text_hash(&format!("collection/gear/{:?}", self.0), field)
+        let key = if let Some(class) = self.class {
+            format!("collection/gear/Armor/{class}")
+        } else {
+            format!("collection/gear/{:?}", self.kind)
+        };
+        let key = if let Some(set) = self.set {
+            format!("{key}/set/{set}")
+        } else {
+            key
+        };
+        crate::presentation::text_hash(&key, field)
     }
+}
+
+/// Each native armor-set row holds at most five collectible tiles.
+pub(crate) const ARMOR_SET_SIZE: usize = 5;
+
+pub(crate) fn armor_pages(counts: [usize; 3]) -> impl Iterator<Item = GearPage> {
+    counts.into_iter().enumerate().flat_map(|(class, count)| {
+        (count != 0)
+            .then_some(GearPage::armor(class as u8))
+            .into_iter()
+            .chain(
+                (0..count.div_ceil(ARMOR_SET_SIZE))
+                    .map(move |set| GearPage::armor_set(class as u8, set)),
+            )
+    })
 }
 
 /// Node identities of the gear pages a build adds.
@@ -272,15 +401,7 @@ mod tests {
         ];
         let hashes = custom_node_hashes(entries);
         assert_eq!(hashes.len(), 5);
-        for index in 0..4 {
-            assert!(
-                hashes.contains(&u64::from(crate::presentation::badge_node_hash(
-                    "Travelers",
-                    index,
-                )))
-            );
-        }
-        assert!(hashes.contains(&u64::from(page.hash("node"))));
+        assert_eq!(hashes, custom_node_hashes([entries[0]]));
         assert_eq!(
             NodeBudget::new(entries).used() - BASE_NODE_COUNT,
             hashes.len()

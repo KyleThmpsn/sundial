@@ -4,9 +4,9 @@ pub(crate) mod compatibility;
 pub(crate) mod swap;
 
 use sundial::package_authoring::{
+    entity::graft_weapon_component_bindings_or_rewire,
     open_shadowkeep_package_manager,
-    weapon_entity::graft_weapon_component_bindings_or_rewire,
-    weapon_runtime::{
+    runtime::{
         WeaponRuntimeEntitySource, WeaponRuntimeGraph,
         load_weapon_runtime_entity_at_pattern_index_with_manager,
         load_weapon_runtime_entity_with_manager, load_weapon_runtime_graph_for_entity,
@@ -75,7 +75,7 @@ pub(crate) fn load_effective_runtime_entity(
     load_effective_runtime_entity_reporting(manager, key).map(|(pattern, _)| pattern)
 }
 
-fn load_effective_runtime_entity_reporting(
+pub(crate) fn load_effective_runtime_entity_reporting(
     manager: &sundial::package_authoring::PackageManager,
     key: &RuntimeGraphKey,
 ) -> Result<(WeaponRuntimeEntitySource, bool), String> {
@@ -139,7 +139,7 @@ fn load_effective_runtime_entity_reporting(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sundial::package_authoring::weapon_entity::{
+    use sundial::package_authoring::entity::{
         WEAPON_STAT_TRANSLATOR_COMPONENT_KEY, graft_weapon_component_bindings,
         weapon_component_bindings,
     };

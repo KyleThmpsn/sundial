@@ -210,10 +210,8 @@ pub(super) fn candidate_from_piece(
         } else {
             Vec::new()
         };
-        let mutable = choices.len() > 1
-            && choices.iter().any(|choice| {
-                choice.hash != current && choice.values.iter().any(|value| *value > 0)
-            });
+        // Removing a mod can recover a penalty or avoid wasted points above the cap.
+        let mutable = choices.len() > 1 && choices.iter().any(|choice| choice.hash != current);
         if mutable {
             sockets.push(MutableSocket {
                 socket_index,

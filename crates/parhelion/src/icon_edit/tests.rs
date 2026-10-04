@@ -165,9 +165,9 @@ fn malformed_rgba_payload_is_rejected_without_mutation() {
 }
 
 #[test]
-fn clearing_a_color_removes_it_and_its_halo_but_not_separate_art() {
+fn clearing_a_color_removes_connected_shades_and_preserves_other_colors() {
     let plate = [0xF2, 0xE3, 0x70];
-    // Row 0: the plate and its darkened edge, which touch. Row 1: a similar colour that does not.
+    // The 2-by-2 fixture connects both darkened shades to the plate and contains one unrelated color.
     let mut pixels = vec![
         plate[0], plate[1], plate[2], 255, //
         0x79, 0x71, 0x38, 255, //
@@ -195,7 +195,7 @@ fn clearing_a_color_removes_it_and_its_halo_but_not_separate_art() {
     assert_eq!(
         &pixels[12..16],
         &[0, 0, 0, 0],
-        "art on the same ramp is cleared only where it touches the region"
+        "the connected shade on the second row is cleared"
     );
 }
 

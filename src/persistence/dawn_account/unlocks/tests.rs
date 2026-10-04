@@ -155,7 +155,7 @@ fn a_slot_beyond_its_bank_is_refused_before_anything_is_written() {
 /// Dawn refuses to boot when the shape of its metadata, allocators or account graph changes, so
 /// an unlock write must leave every one of them exactly as it found them.
 #[test]
-fn setting_an_unlock_leaves_the_boot_critical_tables_untouched() {
+fn setting_an_unlock_preserves_row_counts_and_database_integrity() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("player-state.db");
     create_fixture(&path);

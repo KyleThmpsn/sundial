@@ -9,6 +9,8 @@ use std::{
     path::Path,
 };
 
+pub mod inputs;
+
 #[derive(Debug)]
 pub struct Instruction<'a> {
     pub op: u8,
@@ -32,9 +34,13 @@ pub fn parse(data: &[u8]) -> Result<Vec<Instruction<'_>>> {
             0x28 => (0x21, 0, 1),
             0x29 => (0x22, 1, 1),
             0x2A => (0x23, 0, 1),
+            // Matching source and shipped native dye programs use this log2
+            // instruction. Only its opcode number changes.
+            0x2C => (0x25, 0, 1),
             0x2E..=0x32 => (op - 7, 0, 1),
             0x35 => (0x2E, 0, 5),
             0x42 => (0x34, 1, 0),
+            0x47 => (0x39, 1, 2),
             0x43..=0x49 => (op - 14, 1, 1),
             0x4A..=0x4F => (op - 14, 2, 0),
             0x51..=0x5B => (op - 15, 1, 0),
@@ -226,11 +232,15 @@ pub fn lower(data: &[u8], b: &Bindings) -> Result<Lowered> {
                 e.matrix = i.op == 0x4C;
                 // Frame dither, time and exposure scale retain their addresses.
                 // Native material programs read exposure scale at float index 7
-                // with 3C 01 07, matching the source Frame +0x1C scalar.
+                // with 3C 01 07, matching the source Frame +0x1C scalar. Frame
+                // scalars 4 and 28 keep theirs too: material programs identical in
+                // both games read them at the same instruction (140 and 93 reads in
+                // 33 and 13 shipped programs).
                 if let Some(native) = b.external_textures.get(&[i.op, i.args[0], i.args[1]]) {
                     e.code.extend(native);
                 } else if (i.op == 0x4B && i.args == [1, 26])
-                    || (i.op == 0x4A && matches!(i.args, [1, 0] | [1, 1] | [1, 7] | [1, 8]))
+                    || (i.op == 0x4A
+                        && matches!(i.args, [1, 0] | [1, 1] | [1, 4] | [1, 7] | [1, 8] | [1, 28]))
                 {
                     e.code.push(i.native);
                     e.code.extend_from_slice(i.args);
@@ -306,7 +316,7 @@ pub fn lower(data: &[u8], b: &Bindings) -> Result<Lowered> {
                 result.code.extend([i.native, i.args[0]]);
                 continue;
             }
-            0x56 => {
+            0x56 | 0x57 => {
                 e = pop(&mut stack)?;
                 let slot = *b.texture_slots.get(&i.args[0]).with_context(|| {
                     format!(
@@ -318,6 +328,10 @@ pub fn lower(data: &[u8], b: &Bindings) -> Result<Lowered> {
                     e.missing.is_empty()
                         && b.external_textures.values().any(|v| e.code.as_slice() == v),
                     "unverified external texture expression"
+                );
+                ensure!(
+                    i.op != 0x57 || e.code.first() == Some(&0x3F),
+                    "buffer binding requires an external resource"
                 );
                 result.code.extend(e.code);
                 result.code.extend([i.native, slot]);

@@ -11,10 +11,17 @@ impl PackageAuthoringApp {
             self.enabled_recipe_paths.contains(&entry.path)
                 && self.recipe_path.as_ref() != Some(&entry.path)
         });
-        let mut gear_pages = entries
+        let mut gear_entries = entries
             .clone()
-            .filter_map(|entry| GearPage::for_kind(entry.kind))
-            .collect::<BTreeSet<_>>();
+            .map(|entry| {
+                (
+                    entry.kind,
+                    entry.donor_hash,
+                    entry.rarity,
+                    entry.armor_class,
+                )
+            })
+            .collect::<Vec<_>>();
         let mut members = entries
             .map(|entry| {
                 let donor = self
@@ -58,11 +65,17 @@ impl PackageAuthoringApp {
             .recipe_path
             .as_ref()
             .is_some_and(|path| self.enabled_recipe_paths.contains(path));
-        let current_gear_page = GearPage::for_kind(self.recipe.kind);
+        let current_gear = (
+            self.recipe.kind,
+            self.recipe.donor.item_hash.parse_u32().unwrap_or_default(),
+            self.recipe.overrides.rarity,
+            self.recipe.overrides.armor_class,
+        );
         if included {
             members.push(current);
-            gear_pages.extend(current_gear_page);
+            gear_entries.push(current_gear);
         }
+        let gear_pages = self.gear_collection_pages(&gear_entries);
         let budget = NodeBudget::new(members.iter().copied()).with_gear_pages(gear_pages.len());
         let mut selected_nodes = custom_node_hashes(members.iter().copied());
         selected_nodes.extend(gear_page_node_hashes(gear_pages.iter().copied()));
@@ -114,8 +127,9 @@ impl PackageAuthoringApp {
         ));
         if !included {
             let mut with_draft = custom_node_hashes(members.into_iter().chain([current]));
+            gear_entries.push(current_gear);
             with_draft.extend(gear_page_node_hashes(
-                gear_pages.iter().copied().chain(current_gear_page),
+                self.gear_collection_pages(&gear_entries),
             ));
             let with_draft = combined_custom_nodes(&installed_nodes, &with_draft).len();
             if with_draft > custom_used {
@@ -138,10 +152,53 @@ impl PackageAuthoringApp {
         }
     }
 
+    fn gear_collection_pages(
+        &self,
+        entries: &[(
+            crate::ItemKind,
+            u32,
+            Option<crate::RecipeRarity>,
+            Option<crate::ArmorClass>,
+        )],
+    ) -> BTreeSet<GearPage> {
+        let mut pages = BTreeSet::new();
+        let mut counts = [0usize; 3];
+        for &(kind, donor_hash, rarity, selected) in entries {
+            if kind == crate::ItemKind::Armor {
+                if self.collection_is_exotic(rarity, donor_hash) {
+                    continue;
+                }
+                let inherited = self
+                    .catalog
+                    .as_ref()
+                    .and_then(|catalog| catalog.item_class_type(donor_hash))
+                    .filter(|class| *class < 3);
+                let class = selected.map_or(inherited, crate::ArmorClass::native_class);
+                let classes = class.map_or(
+                    crate::collection::Classes::ALL,
+                    crate::collection::Classes::one,
+                );
+                for class in classes.iter() {
+                    counts[usize::from(class)] += 1;
+                }
+            } else {
+                pages.extend(GearPage::for_kind(kind));
+            }
+        }
+        pages.extend(crate::collection::armor_pages(counts));
+        pages
+    }
+
     pub(super) fn draw_collection_destination(&mut self, ui: &mut egui::Ui) {
         if !self.recipe.kind.is_weapon() {
             ui.strong("Destination");
-            ui.label(if GearPage::for_kind(self.recipe.kind).is_some() {
+            ui.label(if self.recipe.kind == crate::ItemKind::Armor {
+                if self.collection_is_exotic(self.recipe.overrides.rarity, self.recipe.donor.item_hash.parse_u32().unwrap_or_default()) {
+                    "Exotic / Armor / Class.".to_owned()
+                } else {
+                    format!("{} category under Armor for each supported class. Numbered armor sets hold up to five items each.", self.presentation_editor.branding().name())
+                }
+            } else if GearPage::for_kind(self.recipe.kind).is_some() {
                 format!(
                     "{} page under {}.",
                     self.presentation_editor.branding().name(),
@@ -227,6 +284,7 @@ impl PackageAuthoringApp {
             || {
                 self.donor_summaries
                     .iter()
+                    .chain(self.gear_donors.values().flatten())
                     .find(|donor| donor.hash == donor_hash)
                     .is_some_and(|donor| donor.rarity == WeaponRarity::Exotic)
             },

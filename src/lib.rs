@@ -16,6 +16,7 @@
 #[cfg(not(any(windows, target_os = "linux")))]
 compile_error!("Sundial supports Windows and Linux");
 
+mod ability;
 pub mod account;
 mod account_contract;
 pub mod activity_log;
@@ -24,6 +25,9 @@ mod backups;
 mod catalog;
 mod class_items;
 mod dummy_items;
+mod dyes;
+mod entity;
+mod expression;
 mod file_limit;
 mod game_settings;
 mod gear_markers;
@@ -42,6 +46,7 @@ mod package_payload;
 mod package_runtime;
 mod paths;
 mod persistence;
+mod runtime;
 mod sandbox_perk;
 pub mod storage;
 mod strict_json;
@@ -53,9 +58,6 @@ mod ui_help;
 mod unnamed_plugs;
 mod updates;
 pub mod version;
-mod weapon_dyes;
-mod weapon_entity;
-mod weapon_runtime;
 
 /// Runs Sundial with its in-process package-authoring utility.
 pub use app::run;

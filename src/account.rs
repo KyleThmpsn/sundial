@@ -44,12 +44,67 @@ impl AuthoredAccountCleanup {
 }
 
 /// Verified native socket layouts for a retained definition in a replacement generation.
-/// Account proposals preserve existing selections and use new defaults only for added sockets.
+/// Account proposals preserve existing selections and use new defaults only for added sockets,
+/// and for lanes whose default changed when a saved selection still holds the old default.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthoredSocketChange {
     pub definition_hash: u32,
     pub previous_socket_count: usize,
     pub default_plugs: Vec<Option<u32>>,
+    /// Lanes kept by both generations whose default plug changed, each with the installed
+    /// generation's default. A saved selection of that old default follows the definition to
+    /// its new one, as when a private plug takes the place of a stock default.
+    pub replaced_defaults: Vec<(usize, u32)>,
+}
+
+impl AuthoredSocketChange {
+    /// The plug a saved selection in `lane` becomes: the new default when it still holds the
+    /// lane's replaced default, `None` when it stays as it is. The outer `Some` carries the new
+    /// default, which may itself be an empty lane.
+    #[must_use]
+    pub fn replacement(&self, lane: usize, saved: Option<u32>) -> Option<Option<u32>> {
+        let (_, old) = self
+            .replaced_defaults
+            .iter()
+            .find(|(replaced, _)| *replaced == lane)?;
+        (saved == Some(*old)).then(|| self.default_plugs.get(lane).copied().flatten())
+    }
+}
+
+/// Checks a replacement's socket changes before any account backend applies them: each names an
+/// item the replacement keeps, once, with no more lanes than an item holds and no default plug
+/// that is 0 or the disabled sentinel. A replaced default names a lane both generations have,
+/// once, with an old default that is a real plug and differs from the new one.
+pub(crate) fn validate_socket_changes(
+    removed: &std::collections::BTreeSet<u32>,
+    changes: &[AuthoredSocketChange],
+) -> Result<(), String> {
+    let capacity = crate::account_contract::MAX_ITEM_PLUGS;
+    let mut seen = std::collections::BTreeSet::new();
+    for change in changes {
+        let shared = change.previous_socket_count.min(change.default_plugs.len());
+        let mut lanes = std::collections::BTreeSet::new();
+        if removed.contains(&change.definition_hash)
+            || !seen.insert(change.definition_hash)
+            || change.previous_socket_count > capacity
+            || change.default_plugs.len() > capacity
+            || change
+                .default_plugs
+                .iter()
+                .flatten()
+                .any(|hash| *hash == 0 || *hash == u32::MAX)
+            || change.replaced_defaults.iter().any(|&(lane, old)| {
+                lane >= shared
+                    || !lanes.insert(lane)
+                    || old == 0
+                    || old == u32::MAX
+                    || change.default_plugs[lane] == Some(old)
+            })
+        {
+            return Err("The replacement has conflicting or unsupported socket layouts".into());
+        }
+    }
+    Ok(())
 }
 
 /// Checks that package transactions use the active account source.

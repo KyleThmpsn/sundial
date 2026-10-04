@@ -1,6 +1,8 @@
 //! Complete native records in the private-perk editor.
 use super::*;
 use crate::app::custom_perks::workbench::controls::{column, sized};
+#[cfg(test)]
+use sundial::package_authoring::sandbox_perk::action::native::NodeKind as NativeNodeKind;
 use sundial::package_authoring::sandbox_perk::action::native::{
     self, Graph,
     fields::{self, Format},
@@ -8,12 +10,46 @@ use sundial::package_authoring::sandbox_perk::action::native::{
 };
 
 mod behavior;
-#[cfg(test)]
-mod easy;
 mod masks;
-#[cfg(test)]
-mod smoke;
 mod structure;
+pub(in crate::app::custom_perks::workbench) mod tunings;
+
+pub(in crate::app::custom_perks::workbench) fn insert_catalog_node(
+    program: &mut Program,
+    group: usize,
+    placement: super::super::catalog_insert::Placement,
+    node: NativeNode,
+) -> Result<(), String> {
+    use super::super::catalog_insert::Placement;
+    if !program.native_asset_patches.is_empty() {
+        return Err("This effect has private resource patches. Finish its native conversion before inserting a catalog node.".into());
+    }
+    let mut native = sundial::package_authoring::sandbox_perk::program::native_draft(program)?;
+    let decoded = sundial::package_authoring::sandbox_perk::action::decode(&native.graph.emit()?)?;
+    let behavior = decoded
+        .groups
+        .get(group)
+        .ok_or("The destination behavior no longer exists.")?;
+    let (part, edit) = match placement {
+        Placement::Action => (structure::Part::Actions, structure::Edit::AddVerbatim(node)),
+        Placement::Requirement => (structure::Part::Trigger, structure::Edit::Require(node)),
+        Placement::Trigger => (
+            structure::Part::Trigger,
+            if behavior.activation.is_empty() {
+                structure::Edit::Add(node)
+            } else {
+                structure::Edit::Replace(0, node)
+            },
+        ),
+    };
+    structure::List::group(group, part).edit(&mut native.graph, edit)?;
+    native.sync_assets()?;
+    native.validate()?;
+    let changed = program.with_native(native);
+    changed.validate_structure()?;
+    *program = changed;
+    Ok(())
+}
 
 pub(in crate::app::custom_perks::workbench) fn reveal(
     ctx: &egui::Context,
@@ -238,11 +274,12 @@ pub(in crate::app::custom_perks::workbench) fn move_group(
     source.sync_assets()?;
     source.validate()?;
     let mut added = super::named_effect(index);
-    added.program = Some(Program {
-        name: format!("{name} · Behavior {}", group + 1),
-        native: Some(target),
-        ..Program::default()
-    });
+    // The moved behavior keeps the tunings its actions apply and drops the rest.
+    let mut moved_program = program.with_native(target);
+    moved_program.name = format!("{name} · Behavior {}", group + 1);
+    moved_program.prune_ability_tunings();
+    added.program = Some(moved_program);
+    program.prune_ability_tunings();
     recipe.effects.insert(position + 1, added);
     Ok(())
 }
@@ -258,14 +295,11 @@ pub(in crate::app::custom_perks::workbench) fn add_behavior_group(
     program.validate()?;
     let mut native = sundial::package_authoring::sandbox_perk::program::native_draft(program)?;
     structure::add_group(&mut native.graph)?;
-    *program = Program {
-        name: program.name.clone(),
-        native: Some(native),
-        ..Program::default()
-    };
+    *program = program.with_native(native);
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn draw(ui: &mut egui::Ui, id: &str, node: &mut NativeNode, family: NativeFamily) {
     let Some(entry) = family.catalog(node.kind) else {
         return;
@@ -280,7 +314,11 @@ pub(super) fn draw(ui: &mut egui::Ui, id: &str, node: &mut NativeNode, family: N
             Ok::<_, String>(())
         })
         .inner?;
-        graph.validate_node(family == NativeFamily::Condition, node.kind)?;
+        graph.validate_node(if family == NativeFamily::Condition {
+            NativeNodeKind::Condition(node.kind)
+        } else {
+            NativeNodeKind::Effect(node.kind)
+        })?;
         graph.emit()
     });
     match result {
@@ -803,9 +841,67 @@ pub(super) fn orb_entity(class: u32, field: &fields::Field) -> bool {
 }
 
 /// The ability pattern On a Specific Ability and Ends on a Specific Ability store, chosen by
-/// name from the stock grenades and Supers as a named key is.
+/// name from the stock abilities as a named key is.
 pub(super) fn ability_reference(class: u32, field: &fields::Field) -> bool {
     matches!(class, 0x80803DFF | 0x80803DFE) && field.offset == 0x10
+}
+
+/// Every ability entity the stock Subclasses equip, named by the nodes that equip it. Empty
+/// until a catalog loads, when the seven abilities stock perks name are offered alone.
+static ABILITY_KEYS: std::sync::RwLock<&'static [fields::keys::EventKey]> =
+    std::sync::RwLock::new(&[]);
+
+/// Records the stock Subclasses' abilities for the Specific Ability conditions: the seven stock
+/// perks name, with their evidence, then every other entity a node equips.
+pub(in crate::app) fn remember_abilities(subclasses: &[sundial::investment::SubclassSummary]) {
+    let mut named = BTreeMap::<u32, std::collections::BTreeSet<(String, String)>>::new();
+    for subclass in subclasses {
+        for (entry, entity) in &subclass.entry_entities {
+            if let Some(name) = subclass.entry_names.get(entry) {
+                named
+                    .entry(*entity)
+                    .or_default()
+                    .insert((name.clone(), subclass.name.clone()));
+            }
+        }
+    }
+    let mut keys = fields::keys::known(0x8080_3DFF, 0x10).to_vec();
+    for (entity, nodes) in named {
+        if keys.iter().any(|key| key.hash == entity) {
+            continue;
+        }
+        let mut abilities = nodes
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>();
+        abilities.dedup();
+        let equipped = nodes
+            .iter()
+            .map(|(name, subclass)| format!("{name} ({subclass})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        keys.push(fields::keys::EventKey {
+            hash: entity,
+            name: leak_label(&abilities.join(" / ")),
+            evidence: leak_label(&format!(
+                "The ability entity these nodes equip: {equipped}."
+            )),
+        });
+    }
+    keys.sort_by_key(|key| key.name);
+    if let Ok(mut current) = ABILITY_KEYS.write() {
+        *current = Box::leak(keys.into_boxed_slice());
+    }
+}
+
+/// The abilities a Specific Ability condition can name: every stock one once a catalog loads.
+fn ability_keys(class: u32, offset: usize) -> &'static [fields::keys::EventKey] {
+    let current = ABILITY_KEYS.read().map_or(&[][..], |keys| *keys);
+    if current.is_empty() {
+        fields::keys::known(class, offset)
+    } else {
+        current
+    }
 }
 
 /// Generate Orbs' orb as the two stock choices. Striking Light and Light of the Fire leave it
@@ -850,34 +946,48 @@ fn orb(ui: &mut egui::Ui, value: &mut u32) {
     *value = choice;
 }
 
+/// `slot` is the ability slot of an Ability Property key, whose list also carries the
+/// program's tunings on that slot and the row that defines one.
 fn key_control(
     ui: &mut egui::Ui,
     label: &str,
     description: &str,
     known: &[fields::keys::EventKey],
     value: &mut u32,
+    slot: Option<u8>,
 ) {
-    if known.is_empty() {
+    if known.is_empty() && slot.is_none() {
         let raw = hex_key(ui, "native-event-key-hex", value);
         pickers::name_response(ui, &raw, label);
         return;
     }
-    let reading = fields::keys::name(*value).map_or_else(
-        || {
-            // The FNV-1 basis is the hash of an empty name. Keep its exact value on read.
-            if matches!(*value, 0 | 0x811C9DC5) {
-                "None".to_owned()
-            } else {
-                "Unnamed Key".to_owned()
-            }
-        },
-        str::to_owned,
-    );
-    let evidence = known
-        .iter()
-        .find(|key| key.hash == *value)
-        .or_else(|| fields::keys::entry(*value))
-        .map_or(description, |key| key.evidence);
+    let tuned = slot.and_then(|_| tunings::reading(ui, *value));
+    let reading = tuned.clone().unwrap_or_else(|| {
+        known
+            .iter()
+            .find(|key| key.hash == *value)
+            .map(|key| key.name)
+            .or_else(|| fields::keys::name(*value))
+            .map_or_else(
+                || {
+                    // The FNV-1 basis is the hash of an empty name. Keep its exact value on read.
+                    if matches!(*value, 0 | 0x811C9DC5) {
+                        "None".to_owned()
+                    } else {
+                        "Unnamed Key".to_owned()
+                    }
+                },
+                str::to_owned,
+            )
+    });
+    let evidence = tunings::evidence(ui, *value).unwrap_or_else(|| {
+        known
+            .iter()
+            .find(|key| key.hash == *value)
+            .or_else(|| fields::keys::entry(*value))
+            .map_or(description, |key| key.evidence)
+            .to_owned()
+    });
     let hover = format!("{reading} (0x{value:08X})\n{evidence}");
     // A long list, such as the states a State Check reads, is searched rather than scrolled,
     // and leads with the everyday states. The query starts empty each time the list opens.
@@ -890,15 +1000,18 @@ fn key_control(
             .unwrap_or(usize::MAX)
     });
     // The FNV-1 basis is the hash of an empty name, which reads as None as zero does.
-    let listed = known.iter().any(|key| key.hash == *value) || matches!(*value, 0 | 0x811C9DC5);
+    let listed = known.iter().any(|key| key.hash == *value)
+        || tuned.is_some()
+        || matches!(*value, 0 | 0x811C9DC5);
     let typed = Typed::new(ui, "native-event-key", listed);
+    let editor = slot.map(|_| tunings::Editor::new(ui, "native-event-key"));
     sized(ui, EVIDENCE_WIDTH, |ui| {
         let query_id = ui.make_persistent_id("native-event-key-query");
         let mut query = ui
             .data(|data| data.get_temp::<String>(query_id))
             .unwrap_or_default();
         let mut picked = false;
-        let combo = egui::ComboBox::from_id_salt("native-event-key")
+        let mut combo = egui::ComboBox::from_id_salt("native-event-key")
             .width(ui.available_width())
             .truncate()
             .selected_text(reading)
@@ -906,15 +1019,26 @@ fn key_control(
                 egui::PopupCloseBehavior::CloseOnClickOutside
             } else {
                 egui::PopupCloseBehavior::CloseOnClick
-            })
-            .show_ui(ui, |ui| {
-                let focus = query_id.with("focus");
-                picked = key_choices(ui, &ordered, value, searched.then_some((&mut query, focus)));
-                if picked {
-                    typed.listed(ui);
-                }
-                picked |= typed.row(ui);
             });
+        if slot.is_some() {
+            // An ability key list holds the slot's stock keys, the program's tunings and the
+            // rows that define one, so it shows them all rather than folding the last few
+            // behind a scroll.
+            combo = combo.height(TUNED_KEY_LIST_HEIGHT);
+        }
+        let combo = combo.show_ui(ui, |ui| {
+            let focus = query_id.with("focus");
+            // The program's own tunings lead the slot's stock keys, with the rows that
+            // define one, so they never sit behind the list's scroll.
+            if let (Some(slot), Some(editor)) = (slot, &editor) {
+                picked |= tunings::rows(ui, editor, slot.into(), value);
+            }
+            picked |= key_choices(ui, &ordered, value, searched.then_some((&mut query, focus)));
+            if picked {
+                typed.listed(ui);
+            }
+            picked |= typed.row(ui);
+        });
         if searched && combo.response.clicked() {
             query.clear();
             ui.data_mut(|data| data.insert_temp(query_id.with("focus"), true));
@@ -926,11 +1050,25 @@ fn key_control(
         combo.response.on_hover_text(hover);
         pickers::name_combo(ui, "native-event-key", label);
     });
+    // A tuning's edit is offered where its reading is, not only inside the list.
+    if let (Some(editor), Some(_)) = (&editor, &tuned) {
+        sized(ui, EVIDENCE_WIDTH, |ui| {
+            ui.scope(|ui| {
+                crate::app::style::quiet(ui);
+                if ui.small_button("Edit Property…").clicked() {
+                    editor.edit(ui, *value);
+                }
+            });
+        });
+    }
     if typed.shown {
         sized(ui, EVIDENCE_WIDTH, |ui| {
             let raw = hex_key(ui, "native-event-key-hex", value);
             pickers::name_response(ui, &raw, "Key as Hex");
         });
+    }
+    if let Some(editor) = &editor {
+        editor.show(ui, value);
     }
 }
 
@@ -971,7 +1109,7 @@ fn key_choices(
         picked = true;
     }
     if shown.is_empty() {
-        ui.weak("No matching choices.");
+        ui.label("No Matching Results");
     }
     for key in shown {
         picked |= ui
@@ -1021,6 +1159,10 @@ impl Typed {
 
 /// Key lists longer than this are searched rather than scrolled.
 const SEARCHED_KEYS: usize = 12;
+
+/// The popup height of an ability slot's key list: up to twelve stock keys, a few tunings and
+/// the three rows under them.
+const TUNED_KEY_LIST_HEIGHT: f32 = 460.0;
 
 /// The states a requirement most often checks, in the order Suggested lists them. The others
 /// follow in the order the key table gives, which leads with what the stock perks check most.
@@ -1388,17 +1530,22 @@ fn scalar(
     // A key whose stock values are named is chosen by name, with the hex value kept under
     // Advanced for any other key. The ability conditions' pattern reference is one such key.
     if matches!(field.format, Format::Key | Format::Tag) {
+        // An Ability Property's key also offers the program's own tunings on the slot.
+        let mut slot = None;
         let known = if block.class == 0x80803E1D && field.offset == 4 {
             let stride = schema::record(block.class)?.size;
-            let slot = *block
+            let chosen = *block
                 .bytes
                 .get(row * stride + 2)
                 .ok_or("Missing ability slot.")?;
-            fields::keys::ability_properties(slot)
+            slot = Some(chosen);
+            fields::keys::ability_properties(chosen)
+        } else if ability_reference(block.class, field) {
+            ability_keys(block.class, field.offset)
         } else {
             fields::keys::known(block.class, field.offset)
         };
-        if !known.is_empty() {
+        if !known.is_empty() || slot.is_some() {
             let mut value = u32::from_le_bytes(
                 bytes
                     .as_slice()
@@ -1412,6 +1559,7 @@ fn scalar(
                 contract.description,
                 known,
                 &mut value,
+                slot,
             );
             if value != before {
                 field.write(block, row, &value.to_le_bytes())?;
@@ -1586,6 +1734,7 @@ fn timer_seconds(block: &native::Block) -> Option<f32> {
 }
 
 /// The Not of a general predicate, drawn on its condition's line.
+#[cfg(test)]
 pub(super) fn negation(ui: &mut egui::Ui, node: &mut NativeNode) {
     let Some(entry) = nodes::condition(node.kind) else {
         return;

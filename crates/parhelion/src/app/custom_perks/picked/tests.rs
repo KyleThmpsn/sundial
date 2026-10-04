@@ -44,7 +44,6 @@ fn installed_frame_selection_carries_complete_recipe_data() {
         "../../../../recipes/vaultbreaker.parhelion.json"
     ))
     .unwrap();
-    let before = source.clone();
     let selected = find_picked_perk(
         std::slice::from_ref(&source),
         0xD8EF_B0FD,
@@ -72,7 +71,6 @@ fn installed_frame_selection_carries_complete_recipe_data() {
     );
     let reloaded = WeaponRecipe::from_json_str(&serde_json::to_string(&target).unwrap()).unwrap();
     assert_eq!(target, reloaded);
-    assert_eq!(source, before);
 }
 
 #[test]

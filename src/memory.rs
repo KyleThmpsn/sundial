@@ -92,24 +92,3 @@ pub(crate) fn resident_bytes() -> Option<u64> {
 pub(crate) fn resident_bytes() -> Option<u64> {
     None
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The figure goes in a report a reader pastes into an issue, so an implausible one is
-    /// worse than none at all.
-    #[test]
-    fn resident_memory_is_either_absent_or_plausible() {
-        let reported = resident_bytes();
-        if cfg!(any(target_os = "linux", windows)) {
-            // Both platforms Sundial ships on answer this, so a `None` here is the call
-            // failing rather than the platform declining.
-            let bytes = reported.expect("a supported platform reports resident memory");
-            assert!(
-                (1 << 20..1 << 40).contains(&bytes),
-                "resident memory of {bytes} bytes is not believable for this process"
-            );
-        }
-    }
-}

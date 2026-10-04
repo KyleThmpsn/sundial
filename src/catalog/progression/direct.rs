@@ -38,7 +38,8 @@ pub(super) fn attach_direct_reference(
     }
     let mut context = context.clone();
     context.direct_references.push(format!("{field}: #{slot}"));
-    add_progression_context(definitions, usize::from(slot), &context);
+    sort_paths(&mut context);
+    add_progression_context(definitions, usize::from(slot), &Arc::new(context));
     Ok(())
 }
 

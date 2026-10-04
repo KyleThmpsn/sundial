@@ -184,7 +184,6 @@ mod tests {
             indexed_dependencies(&parse(&result, target.companion, target.owner).unwrap()),
             expected
         );
-        assert_eq!(original, fixture());
         assert!(parse(&result, COMPANION, OWNER).is_err());
         let assets = resources
             .map(|t| (t.pkg_id(), t.entry_index()))

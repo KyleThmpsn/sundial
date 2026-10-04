@@ -37,7 +37,7 @@ Close Destiny 2 before saving account changes, restoring backups, or installing 
 
 ## Parhelion
 
-Parhelion is an experimental custom investment global package builder bundled with Sundial (basically, a weapons workbench). Build your own Destiny weapons by mixing weapon types, perks, stats, and appearance, including Exotics and combinations that wouldn't normally exist in the sandbox.
+Parhelion is an experimental custom investment global package builder bundled with Sundial. Build your own Destiny weapons by mixing weapon types, perks, stats, and appearance, including Exotics and combinations that wouldn't normally exist in the sandbox. It can also author custom perks, gear, Shaders, and Subclass abilities.
 
 Parhelion creates its own Tiger-compatible packages in your existing installation without modifying existing packages. Enable it under **Preferences > Editing > Experimental**, then choose **Open Parhelion**. Some combinations may not work and can freeze or crash the game. Before using future Dawn versions with online support, uninstall custom packages or Dawn may report an error. Please [report any issues](https://github.com/kylethmpsn/sundial/issues) with your recipe and a description of what happens in-game.
 
@@ -72,10 +72,13 @@ These control how broadly Sundial searches for plugs, not whether an experimenta
 | Mode | Choices shown |
 | --- | --- |
 | Compatible | Plugs listed as supported by the item. |
-| Socket + gear type (default) | Plugs matching both the socket and the kind of gear. |
-| Socket type | Plugs matching the socket, even if not supported by this item. |
-| Gear type | Plugs found on the same broad kind of gear, regardless of socket. |
+| Socket + Item Subtype (default) | Plugs matching both the socket and the item's subtype, such as Sidearm. |
+| Socket Type | Plugs matching the socket, even if not supported by this item. |
+| Item Subtype | Plugs found anywhere on the item's subtype, such as every Sidearm, regardless of socket. |
+| Item Type | Plugs found anywhere on every Weapon or every piece of Armor, regardless of socket. |
 | All | Every discovered plug, regardless of compatibility. |
+
+The plug picker itself carries the same control, labeled by the socket and item it is picking for, so Chroma Rush's barrel socket offers **Chroma Rush Barrels**, **Auto Rifle Barrels**, **All Barrels**, **Auto Rifles**, **All Weapons** and **All**, as Dawn's Loadout Editor does.
 
 Broader choices can cause loading failures or crashes. Sundial warns before enabling **All**. Backups are still created when saving experimental selections.
 

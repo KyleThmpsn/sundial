@@ -11,6 +11,7 @@ use std::{
 use sundial::package_authoring::{path_is_within, resolve_path_for_comparison};
 
 use crate::artifact::{ArtifactMetadata, digest_file, has_pkg_extension};
+use crate::item::{compile_with_progress, validate_catalog_with_progress};
 use crate::manifest::{
     MANIFEST_FILE_NAME, MANIFEST_SCHEMA, ManifestDocument, ManifestProject,
     recipe_selection_fingerprint,
@@ -24,7 +25,6 @@ use crate::package_profile::{
     authored_package, authored_packages_for_file_names, canonical_package,
 };
 use crate::recipe::WeaponRecipe;
-use crate::weapon::{compile_with_progress, validate_catalog_with_progress};
 use crate::{NewWeaponProjectBundle, SUNDIAL_BUILD_SIGNATURE, WeaponProjectSpec};
 
 mod package_views;
@@ -32,7 +32,7 @@ pub(crate) mod staging_retention;
 
 /// A batch selected from Parhelion's recipe library.
 ///
-/// The complete, explicitly enabled recipe set compiled into one package generation.
+/// The complete recipe set compiled into one package generation, including required shaders.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchBuildRequest {
     pub package_directory: PathBuf,
@@ -96,19 +96,19 @@ pub enum BuildPhase {
 impl BuildPhase {
     pub const fn label(self) -> &'static str {
         match self {
-            Self::InspectingSource => "Inspecting source packages",
-            Self::LoadingCatalog => "Loading donor catalog",
-            Self::CheckingRecipes => "Checking recipe compatibility",
-            Self::PreparingSource => "Preparing source packages",
-            Self::HashingSource => "Recording source checksums",
-            Self::CompilingProject => "Compiling items",
-            Self::BuildingPayloads => "Building package payloads",
-            Self::RecheckingSource => "Rechecking source packages",
-            Self::WritingPackages => "Writing package set",
-            Self::ValidatingPackages => "Validating package artifacts",
-            Self::StagingRecipes => "Staging recipe snapshots",
-            Self::WritingManifest => "Writing build manifest",
-            Self::Complete => "Build validated",
+            Self::InspectingSource => "Checking Build Inputs",
+            Self::LoadingCatalog => "Loading Item Catalog",
+            Self::CheckingRecipes => "Checking Donor Compatibility",
+            Self::PreparingSource => "Preparing Source Packages",
+            Self::HashingSource => "Recording Source Checksums",
+            Self::CompilingProject => "Compiling Items",
+            Self::BuildingPayloads => "Building Packages",
+            Self::RecheckingSource => "Rechecking Source Packages",
+            Self::WritingPackages => "Writing Package Files",
+            Self::ValidatingPackages => "Validating Packages",
+            Self::StagingRecipes => "Saving Recipe Snapshots",
+            Self::WritingManifest => "Writing Build Manifest",
+            Self::Complete => "Build Validated",
         }
     }
 }
@@ -305,6 +305,12 @@ fn plan_snapshot_naming(
         install_directory,
         project.weapons.iter(),
         &mut |loading, label, completed, total| {
+            // Catalog labels describe generated operations. Recipe names take the other path.
+            let label = if loading {
+                label.trim_end_matches('…')
+            } else {
+                label
+            };
             progress(BuildProgress::artifact(
                 if loading {
                     BuildPhase::LoadingCatalog
@@ -341,8 +347,8 @@ fn plan_snapshot_naming(
             &mut |phase, label, completed, total| {
                 progress(BuildProgress::artifact(
                     match phase {
-                        crate::weapon::CompilePhase::Authoring => BuildPhase::CompilingProject,
-                        crate::weapon::CompilePhase::Payloads => BuildPhase::BuildingPayloads,
+                        crate::item::CompilePhase::Authoring => BuildPhase::CompilingProject,
+                        crate::item::CompilePhase::Payloads => BuildPhase::BuildingPayloads,
                     },
                     label,
                     completed,

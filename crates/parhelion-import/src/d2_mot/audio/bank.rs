@@ -4,7 +4,9 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod linked;
 mod params;
+pub use linked::Namespace;
 pub mod settings;
 use params::{node, rtpcs};
 
@@ -136,6 +138,7 @@ impl Write {
 
 struct Convert {
     objects: BTreeSet<u32>,
+    source_plugins: BTreeMap<u32, u32>,
     extra: Vec<(u8, Write)>,
     dependencies: settings::Dependencies,
 }
@@ -233,8 +236,20 @@ fn lower_inner(
         entries.push((kind, id, item));
     }
     r.end()?;
+    let source_plugins = entries
+        .iter()
+        .filter(|(kind, _, _)| matches!(kind, 16 | 17))
+        .map(|(_, id, entry)| {
+            let mut r = Read {
+                bytes: entry.bytes,
+                at: entry.at,
+            };
+            Ok((*id, r.u32()?))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
     let mut convert = Convert {
         objects: ids,
+        source_plugins,
         extra: Vec::new(),
         dependencies: settings::Dependencies::default(),
     };
@@ -383,14 +398,24 @@ fn exceptions(r: &mut Read<'_>, w: &mut Write) -> Result<()> {
 }
 
 /// Convert an action body after its kind and ID.
-fn action(r: &mut Read<'_>, w: &mut Write) -> Result<()> {
+fn action(r: &mut Read<'_>, w: &mut Write, c: &mut Convert) -> Result<()> {
     let action = r.u16()?;
     w.u16(if matches!(action >> 8, 0x1A | 0x1B) {
         action + 0x200
     } else {
         action
     });
-    w.object(r)?;
+    // State values and game parameters use the game's global namespace.
+    // They must not be renamed even if their numeric ID matches a local object.
+    if matches!(action >> 8, 0x12..=0x14 | 0x19) {
+        let target = r.u32()?;
+        w.u32(target);
+        if matches!(action >> 8, 0x13 | 0x14) {
+            c.dependencies.params.insert(target);
+        }
+    } else {
+        w.object(r)?;
+    }
     w.copy(r, 1)?;
     params::props(r, w, false)?;
     params::props(r, w, true)?;
@@ -417,7 +442,17 @@ fn action(r: &mut Read<'_>, w: &mut Write) -> Result<()> {
             w.copy(r, 14)?;
             exceptions(r, w)?;
         }
-        0x13 => {
+        0x12 | 0x19 => {
+            let group = r.u32()?;
+            if action >> 8 == 0x12 {
+                c.dependencies.groups.insert(group);
+            } else {
+                c.dependencies.switches.insert(group);
+            }
+            w.u32(group);
+            w.copy(r, 4)?; // State or switch value, not a HIRC object.
+        }
+        0x13 | 0x14 => {
             w.copy(r, 15)?;
             exceptions(r, w)?;
         }
@@ -474,13 +509,20 @@ fn object(kind: u8, id: u32, r: &mut Read<'_>, w: &mut Write, c: &mut Convert) -
             let plugin = r.u32()?;
             if plugin == 0x00650002 {
                 w.u32(plugin);
+                ensure!(r.u8()? == 0, "silence generator cannot stream media");
+                w.u8(0);
+                let source = r.u32()?;
+                w.reference(source, Kind::Object);
+                ensure!(r.u32()? == 0, "silence generator has media bytes");
+                w.u32(0);
                 w.copy(r, 1)?;
-                w.object(r)?;
-                w.copy(r, 5)?;
                 let size = r.u32()?;
-                ensure!(size == 12, "silence source parameter layout");
+                ensure!(
+                    size == 12 || (size == 0 && c.source_plugins.get(&source) == Some(&plugin)),
+                    "silence source needs inline parameters or a matching shared preset"
+                );
                 w.u32(size);
-                w.copy(r, 12)?;
+                w.copy(r, size as usize)?;
                 node(r, w, c, id)?;
                 return Ok(());
             }
@@ -504,7 +546,7 @@ fn object(kind: u8, id: u32, r: &mut Read<'_>, w: &mut Write, c: &mut Convert) -
             w.u8(bits);
             node(r, w, c, id)?;
         }
-        3 => action(r, w)?,
+        3 => action(r, w, c)?,
         4 => {
             let count = r.vcount()?;
             w.u32(count as u32);
@@ -606,7 +648,12 @@ fn object(kind: u8, id: u32, r: &mut Read<'_>, w: &mut Write, c: &mut Convert) -
                 ensure!(
                     matches!(
                         (plugin, size),
-                        (0x00650002, 12) | (0x00690003, 56) | (0x00760003, 186)
+                        (0x00650002, 12)
+                            | (0x00690003, 56)
+                            | (0x00760003, 186)
+                            // Shared native and source Init Tremolo presets have
+                            // identical 38-byte parameter blocks and plugin ID.
+                            | (0x00830003, 38)
                     ),
                     "unvalidated effect plugin {plugin:08X} parameter size {size}"
                 );

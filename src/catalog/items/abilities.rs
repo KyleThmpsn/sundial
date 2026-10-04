@@ -35,6 +35,20 @@ pub(crate) struct AbilityOptions {
     pub entry_icons: BTreeMap<u64, u32>,
     #[serde(default)]
     pub entry_descriptions: BTreeMap<u64, String>,
+    /// Each entry's ability entity, which its pool's active records name through the entity
+    /// assignment table.
+    #[serde(default)]
+    pub entry_entities: BTreeMap<u64, u32>,
+    /// Each entry's ability row, the row its active pool's own record equips.
+    #[serde(default)]
+    pub entry_rows: BTreeMap<u64, u8>,
+    /// Each key an entry's active pool applies to an ability, with the row it applies it to.
+    #[serde(default)]
+    pub entry_modifiers: BTreeMap<u64, Vec<(u32, u8)>>,
+    /// Whether the list is one a build added rather than one of the stock nine. Equip eligibility
+    /// comes from the item's equipment conditions, separately from the grid's base class.
+    #[serde(default)]
+    pub authored: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,8 +152,8 @@ fn list_entries(list: &[u8]) -> Vec<ListEntry> {
 pub(in crate::catalog) fn build_subclass_choices(
     manager: &PackageManager,
     root: &[u8],
-    ability_displays: &HashMap<u16, AbilityDisplayData>,
-    item_socket_lists: Vec<(usize, u16)>,
+    (ability_displays, ability_entities): (&HashMap<u16, AbilityDisplayData>, &[Option<u32>]),
+    item_socket_lists: Vec<(usize, u16, Option<u8>)>,
     items: &mut [ItemDef],
 ) -> Result<(), String> {
     let list_table = manager
@@ -190,6 +204,21 @@ pub(in crate::catalog) fn build_subclass_choices(
             .map(|entry| (entry as u64, entry_perks(manager, list, entry)))
             .filter(|(_, perks)| !perks.is_empty())
             .collect();
+        abilities.entry_entities = (0..entries.len())
+            .filter_map(|entry| {
+                Some((
+                    entry as u64,
+                    entry_entity(manager, list, entry, ability_entities)?,
+                ))
+            })
+            .collect();
+        abilities.entry_rows = (0..entries.len())
+            .filter_map(|entry| Some((entry as u64, entry_row(manager, list, entry)?)))
+            .collect();
+        abilities.entry_modifiers = (0..entries.len())
+            .map(|entry| (entry as u64, entry_modifiers(manager, list, entry)))
+            .filter(|(_, modifiers)| !modifiers.is_empty())
+            .collect();
         // Without lore rows to read, a path takes the name of the stock one with its pools.
         if display.path_names.is_empty() {
             for (attunement, positions) in abilities.attunements.iter_mut().zip(ATTUNEMENT_ENTRIES)
@@ -215,9 +244,10 @@ pub(in crate::catalog) fn build_subclass_choices(
                     .and_then(|entry| class_by_base.get(&entry.pool).copied())
             })
             .unwrap_or(3);
+        abilities.authored = !STOCK_LIST_CLASSES.iter().any(|(list, _)| *list == index);
         options.insert(index, (abilities, class));
     }
-    for (item_index, list_index) in item_socket_lists {
+    for (item_index, list_index, equipment_class) in item_socket_lists {
         let Some(item) = items.get_mut(item_index) else {
             continue;
         };
@@ -226,7 +256,7 @@ pub(in crate::catalog) fn build_subclass_choices(
         }
         if let Some((abilities, class)) = options.get(&list_index) {
             item.abilities = abilities.clone();
-            item.class_type = *class;
+            item.class_type = equipment_class.map(u64::from).unwrap_or(*class);
         }
     }
     Ok(())
@@ -279,6 +309,165 @@ fn declares_kind(manager: &PackageManager, list: &[u8], entry: usize) -> bool {
         Ok(pool.get(records + 11).is_some_and(|kind| *kind != 255))
     })()
     .unwrap_or(false)
+}
+
+/// Each ability row's entity: the definition table's pattern hash for the row, through the entity
+/// assignment table. A pool record names its ability by row.
+pub(in crate::catalog) fn scan_ability_entities(
+    manager: &PackageManager,
+    globals: &[u8],
+) -> Vec<Option<u32>> {
+    (|| -> Result<Vec<Option<u32>>, String> {
+        let definitions = manager.read_tag(TagHash(u32_at(
+            globals,
+            16 + crate::ability::definition::DEFINITION_TABLE_SLOT * 16,
+        )?))?;
+        let assignments = manager.read_tag(TagHash(
+            crate::entity::SANDBOX_PATTERN_ENTITY_ASSIGNMENT_TAG,
+        ))?;
+        crate::ability::definition::patterns(&definitions)?
+            .into_iter()
+            .map(|pattern| crate::entity::weapon_entity_assignment(&assignments, pattern))
+            .collect()
+    })()
+    .unwrap_or_default()
+}
+
+/// A pool record's hash, the row it applies the hash to, and the row it equips.
+const RECORD_KEY_ROW: usize = 4;
+const RECORD_EQUIPPED_ROW: usize = 11;
+const NO_ROW: u8 = 0xFF;
+/// The hash a record holds when it files no key, FNV-1's offset basis.
+const NO_KEY: u32 = 0x811C_9DC5;
+
+/// An entry's active pool variant's records, sixteen bytes each.
+fn active_records(
+    manager: &PackageManager,
+    list: &[u8],
+    entry: usize,
+) -> Result<Vec<[u8; 16]>, String> {
+    let Some((pool, variant)) = active_variant(manager, list, entry)? else {
+        return Ok(Vec::new());
+    };
+    let count = i32_at(&pool, variant)?;
+    if count <= 0 {
+        return Ok(Vec::new());
+    }
+    let records = relative_offset(variant + 8, 0, i64_at(&pool, variant + 8)?)? + 16;
+    (0..usize::try_from(count).map_err(|error| error.to_string())?)
+        .map(|index| {
+            let at = records + index * 16;
+            pool.get(at..at + 16)
+                .and_then(|record| record.try_into().ok())
+                .ok_or_else(|| "record outside its pool".to_owned())
+        })
+        .collect()
+}
+
+/// An entry's ability entity: the entity of the first row its active pool equips (+0xB) that has
+/// one, as authoring picks it.
+fn entry_entity(
+    manager: &PackageManager,
+    list: &[u8],
+    entry: usize,
+    ability_entities: &[Option<u32>],
+) -> Option<u32> {
+    active_records(manager, list, entry)
+        .ok()?
+        .iter()
+        .find_map(|record| {
+            ability_entities
+                .get(usize::from(record[RECORD_EQUIPPED_ROW]))
+                .copied()
+                .flatten()
+        })
+}
+
+/// An entry's ability row: the first row its active pool equips.
+fn entry_row(manager: &PackageManager, list: &[u8], entry: usize) -> Option<u8> {
+    active_records(manager, list, entry)
+        .ok()?
+        .iter()
+        .map(|record| record[RECORD_EQUIPPED_ROW])
+        .find(|row| *row != NO_ROW)
+}
+
+/// Each key an entry's active pool applies to an ability without equipping one, with the row
+/// it applies it to, as Dawn files it into that ability's bucket.
+fn entry_modifiers(manager: &PackageManager, list: &[u8], entry: usize) -> Vec<(u32, u8)> {
+    let mut modifiers = Vec::new();
+    for record in active_records(manager, list, entry).unwrap_or_default() {
+        let key = u32::from_le_bytes([record[0], record[1], record[2], record[3]]);
+        let row = record[RECORD_KEY_ROW];
+        if record[RECORD_EQUIPPED_ROW] == NO_ROW
+            && row != NO_ROW
+            && !matches!(key, 0 | u32::MAX | NO_KEY)
+            && !modifiers.contains(&(key, row))
+        {
+            modifiers.push((key, row));
+        }
+    }
+    modifiers
+}
+
+/// Each ability row's bank as modifiers see it: whether it takes extra charges, its script
+/// parameters and the keys of its property rows. A row without an entity or a bank has none.
+pub(in crate::catalog) fn scan_ability_rows(
+    manager: &PackageManager,
+    ability_entities: &[Option<u32>],
+) -> Vec<crate::investment::AbilityRowSummary> {
+    use crate::ability::bank::{self, Modifier};
+    use crate::investment::{AbilityKey, AbilityParameter, AbilityRowSummary};
+    let parameter = |parameter: &bank::Parameter| AbilityParameter {
+        name: parameter.name,
+        reset: parameter.reset,
+        applied: parameter.applied,
+        add: parameter.add,
+    };
+    ability_entities
+        .iter()
+        .enumerate()
+        .filter_map(|(row, entity)| {
+            let row = u8::try_from(row).ok()?;
+            let mut summary = AbilityRowSummary {
+                row,
+                entity: *entity,
+                ..AbilityRowSummary::default()
+            };
+            let bank_tag = entity
+                .and_then(|entity| manager.read_tag(TagHash(entity)).ok())
+                .and_then(|payload| {
+                    crate::ability::modifier::entity_bank(&payload)
+                        .ok()
+                        .flatten()
+                });
+            if let Some(bank_tag) = bank_tag
+                && let Ok(payload) = manager.read_tag(TagHash(bank_tag))
+            {
+                summary.bank = Some(bank_tag);
+                summary.slot = crate::ability::modifier::bank_slot(bank_tag);
+                summary.charges = bank::handler_slot(&payload, Modifier::Charges(1))
+                    .ok()
+                    .flatten()
+                    .is_some();
+                summary.parameters = crate::ability::modifier::settable_parameters(&payload)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(parameter)
+                    .collect();
+                summary.keys = bank::property_rows(&payload)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|row| AbilityKey {
+                        key: row.key,
+                        charges: row.charge,
+                        parameters: row.parameters.iter().map(parameter).collect(),
+                    })
+                    .collect();
+            }
+            Some(summary)
+        })
+        .collect()
 }
 
 /// The sandbox perks an entry's active pool variant grants.
@@ -378,8 +567,12 @@ fn parse_abilities(list: &[u8], display: &AbilityDisplayData, middle_super: u64)
         melee,
         attunements,
         entry_perks: BTreeMap::new(),
+        entry_entities: BTreeMap::new(),
+        entry_rows: BTreeMap::new(),
+        entry_modifiers: BTreeMap::new(),
         entry_icons,
         entry_descriptions,
+        authored: false,
     }
 }
 

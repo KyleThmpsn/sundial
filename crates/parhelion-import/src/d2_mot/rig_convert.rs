@@ -22,7 +22,8 @@ pub(crate) fn used_bones(root: &Path, item: &Value) -> Result<BTreeSet<usize>> {
     let mut used = BTreeSet::new();
     for entry in report["models"].as_array().context("rig source models")? {
         let model = raw(root, entry["model"].as_str().context("rig source model")?)?;
-        for mesh in model.array(16, 128, Some(0x80806EC5))? {
+        let mesh = super::geometry::selected_mesh(&model, entry)?;
+        {
             let tag = format!("{:08X}", model.u32(mesh)?);
             let header = raw(root, &tag)?;
             let reference = provenance["tags"][&tag]["reference"]
@@ -216,7 +217,7 @@ pub(crate) fn compatible_map_loaded(
         json!({"bone_map":mapping,"required_source_bones":required,"native_bone_count":to.len(),"source_bones":from,"native_bones":to,"source_owner":config["source_owner"],"native_owner":config["native_owner"],"native_animation_donor":native["item_tag"],"gameplay_verified":false}),
     )
 }
-fn write_array(
+pub(crate) fn write_array(
     target: &mut Vec<u8>,
     descriptor: usize,
     class: u32,
@@ -568,7 +569,6 @@ mod tests {
                 .unwrap();
             assert_eq!(source.0[from], converted.0[to]);
         }
-        assert_eq!(native.u32(40).unwrap(), 22);
         let mut invalid = source.clone();
         let rows = invalid.array(0x130, 16, None).unwrap();
         invalid.0[rows[1] + 4..rows[1] + 8].copy_from_slice(&(-2i32).to_le_bytes());

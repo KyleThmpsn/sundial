@@ -18,9 +18,17 @@ const BUNDLE_FORMAT: &str = "parhelion.recipe-bundle";
 
 impl RecipeLibrary {
     pub fn duplicate(&self, recipe: &WeaponRecipe) -> Result<PathBuf, String> {
+        let _lock = self.lock()?;
+        self.duplicate_locked(recipe).map(|(path, _)| path)
+    }
+
+    pub(super) fn duplicate_locked(
+        &self,
+        recipe: &WeaponRecipe,
+    ) -> Result<(PathBuf, WeaponRecipe), String> {
         let scan = self.scan()?;
         let copy = recipe.unused_copy(scan.entries.iter().map(|entry| entry.namespace.as_str()))?;
-        self.save_new(&copy)
+        self.save_new_locked(&copy).map(|path| (path, copy))
     }
 
     pub fn export(&self, recipe: &WeaponRecipe, path: &Path) -> Result<(), String> {

@@ -40,6 +40,8 @@ struct InventoryItemPickerContext<'a> {
     transfer_destinations: &'a [CharacterTransferDestination],
     bucket_usage: &'a BucketUsage,
     equipment_target: Option<(&'static str, &'static str)>,
+    /// A subclass swaps only for another subclass.
+    subclass_only: bool,
     key: &'a str,
     picker_anchor: &'a egui::Response,
 }
@@ -67,9 +69,11 @@ impl SundialApp {
             .map(|metadata| metadata.native_bucket_id);
         let replacing_unresolved =
             metadata.is_none_or(|metadata| metadata.scope == InventoryScope::Unknown);
+        // Quests, bounties, currencies and consumables have no equippable record, so only an
+        // item that carries one is held to the class check, as the transfer targets do.
         let valid = resolved.as_ref().is_some_and(|definition| {
             definition.metadata.is_character_inventory_candidate()
-                && definition.item.as_ref().is_some_and(|item| {
+                && definition.item.as_ref().is_none_or(|item| {
                     equipment::item_class_is_compatible(
                         item,
                         class_type,
@@ -193,6 +197,12 @@ impl SundialApp {
                             transfer_destinations: &transfer_destinations,
                             bucket_usage: context.bucket_usage,
                             equipment_target,
+                            subclass_only: resolved
+                                .as_ref()
+                                .and_then(|definition| definition.item.as_ref())
+                                .is_some_and(|item| {
+                                    item.bucket_hash == crate::catalog::SUBCLASS_BUCKET_HASH
+                                }),
                             key: &key,
                             picker_anchor: &picker_anchor,
                         },
@@ -340,6 +350,7 @@ impl SundialApp {
             transfer_destinations,
             bucket_usage,
             equipment_target,
+            subclass_only,
             key,
             picker_anchor,
         } = context;
@@ -370,6 +381,13 @@ impl SundialApp {
                                             definition.hash,
                                             self.document.supports_emote_collection(),
                                         )
+                                    })
+                                    .filter(|definition| {
+                                        !subclass_only
+                                            || definition.item.is_some_and(|item| {
+                                                item.bucket_hash
+                                                    == crate::catalog::SUBCLASS_BUCKET_HASH
+                                            })
                                     })
                                     .filter(|definition| {
                                         bucket_has_room(
@@ -496,6 +514,9 @@ impl SundialApp {
                         )
                     })
                     .inner;
+                if let Some(ItemEditorAction::SetPlugSelectionMode { mode }) = action {
+                    self.request_plug_selection_mode(mode);
+                }
                 if let Some(ItemEditorAction::SetPlug { socket_index, hash }) = action {
                     requested.push(InventoryItemAction::set_plug(
                         &current_plugs,

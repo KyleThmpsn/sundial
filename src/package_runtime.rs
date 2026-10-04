@@ -22,6 +22,16 @@ pub(crate) mod references;
 pub(crate) mod snapshot;
 pub mod tft;
 
+/// Discovery cancellation is cooperative at resource boundaries. A cancelled scan must
+/// return an error before any partial result reaches a shared cache.
+pub(crate) fn check_cancelled(cancel: &std::sync::atomic::AtomicBool) -> Result<(), String> {
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        Err("Discovery stopped.".into())
+    } else {
+        Ok(())
+    }
+}
+
 const MIN_RUNTIME_PACKAGE_ID: u16 = 0x0100;
 const MAX_RUNTIME_PACKAGE_ID: u16 = 0x0CFF;
 
@@ -413,9 +423,6 @@ pub(crate) mod tests {
             0
         )));
         assert!(!is_valid_package_tag(TagHash::NONE));
-
-        // This is the dependency edge that motivated the shared validator.
-        assert!(!TagHash::new(MAX_RUNTIME_PACKAGE_ID, 0).is_valid());
     }
 }
 

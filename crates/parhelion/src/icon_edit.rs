@@ -15,12 +15,15 @@ mod preview;
 mod tests;
 mod transforms;
 
-pub(crate) use authoring::{build_weapon_icon_edit_plan, texture_reference_offsets};
+pub(crate) use authoring::{
+    TextureChange, build_layer_repaint_plan, build_layer_texture_plan, build_weapon_icon_edit_plan,
+    read_icon_container, texture_reference_offsets,
+};
 pub use color_selection::IconColorReplacement;
 pub(crate) use editor::{WeaponIconEditor, WeaponIconEditorAction};
 pub use imported::ImportedIcon;
 pub(crate) use preview::{
-    WatermarkPreview, render_texture_preview, render_weapon_icon_preview,
+    IconLayers, WatermarkPreview, decode_texture, render_texture_preview,
     render_weapon_icon_preview_from_manager,
 };
 

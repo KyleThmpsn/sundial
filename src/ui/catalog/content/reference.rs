@@ -10,7 +10,7 @@ pub(super) fn resource_name(names: &BTreeMap<u32, Vec<String>>, tag: u32) -> Opt
 }
 
 pub(super) fn type_name(class: u32) -> &'static str {
-    crate::weapon_runtime::native_type_name(class).unwrap_or("Type Not Identified")
+    crate::runtime::native_type_name(class).unwrap_or("Type Not Identified")
 }
 
 pub(super) fn source(

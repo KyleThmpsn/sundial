@@ -260,6 +260,19 @@ pub(super) fn separate(
     source: &Value,
     prepared: &Path,
 ) -> Result<()> {
+    if let Some(entity) = source["independent_art_entity"].as_str() {
+        ensure!(
+            source["models"]
+                .as_array()
+                .context("independent art models")?
+                .iter()
+                .all(|model| model["entity"] == entity),
+            "Independent art view mixes entities"
+        );
+        // Gear already converts each art entity independently. Its complete class/body
+        // layout is registered after assembly, without weapon attachment heuristics.
+        return Ok(());
+    }
     // Older exports have no placement provenance. They remain assembled until
     // re-exported, rather than guessing placement from asset ordering.
     let Some(source_parts) = source["art_parts"].as_array() else {

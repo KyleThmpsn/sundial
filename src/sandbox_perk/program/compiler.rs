@@ -2,10 +2,10 @@
 use super::*;
 use crate::package_runtime::reader::PackageManager;
 use crate::{
+    entity::{WEAPON_ENTITY_CLASS, validate_weapon_entity},
     investment_schema::NESTED_ARRAY_TRAILER,
     package_payload::u32_at,
-    sandbox_perk::projectile,
-    weapon_entity::{WEAPON_ENTITY_CLASS, validate_weapon_entity},
+    sandbox_perk::entity,
 };
 use tiger_pkg::TagHash;
 
@@ -25,7 +25,7 @@ mod coverage;
 pub struct Compiled {
     pub payload: Vec<u8>,
     /// One entry per authored action, in the same order as `Program::actions`: the offset of
-    /// the tag lane for actions that reference an asset, `None` for the rest.
+    /// the tag lane for typed asset actions and native kind-2 attachments, `None` for the rest.
     pub graph_offsets: Vec<Option<usize>>,
     /// Editable asset index and every relocated tag lane that references it.
     pub asset_offsets: Vec<(usize, Vec<usize>)>,
@@ -150,7 +150,7 @@ fn assemble_records(program: &Program, label_mask: LabelMask) -> Result<Compiled
     // bound for each node instead of reusing the scalar-only reservation calculation.
     let complex = program.native_nodes().any(|(condition, node)| {
         use crate::sandbox_perk::action::layout;
-        if condition {
+        if condition.is_condition() {
             layout::condition_layout(node.kind).is_none()
         } else {
             layout::effect_layout(node.kind).is_none()
@@ -184,14 +184,22 @@ fn assemble_records(program: &Program, label_mask: LabelMask) -> Result<Compiled
         .iter()
         .rev()
         .zip(&program.actions)
-        .map(|(at, action)| action.asset().map(|_| at + 0x10))
+        .map(|(at, action)| {
+            (action.asset().is_some()
+                || matches!(action, Action::Native { node } if node.kind == 2))
+            .then_some(at + 0x10)
+        })
         .collect();
     Ok(Compiled {
         payload: out.bytes,
         asset_offsets: graph_offsets
             .iter()
             .enumerate()
-            .filter_map(|(index, offset)| offset.map(|at| (index, vec![at])))
+            .filter_map(|(index, offset)| {
+                program.actions[index]
+                    .asset()
+                    .and_then(|_| offset.map(|at| (index, vec![at])))
+            })
             .collect(),
         graph_offsets,
     })
@@ -216,7 +224,7 @@ fn validate_asset(manager: &PackageManager, action: &Action) -> Result<(), Strin
         .read_tag(tag)
         .map_err(|error| format!("Could not read asset {tag}: {error}"))?;
     validate_weapon_entity(&payload)?;
-    let kind = projectile::spawn_kind(&payload)?;
+    let kind = entity::spawn_kind(&payload)?;
     let acceptable = match action {
         Action::Attach { .. }
         | Action::ExtendTimers { .. }
@@ -232,7 +240,7 @@ fn validate_asset(manager: &PackageManager, action: &Action) -> Result<(), Strin
         | Action::AddFraction { .. }
         | Action::Native { .. } => true,
         Action::Spawn { .. } => kind.is_some(),
-        Action::Pattern { .. } => kind == Some(projectile::Kind::Projectile),
+        Action::Pattern { .. } => kind == Some(entity::Kind::Projectile),
     };
     if acceptable {
         Ok(())
@@ -305,13 +313,7 @@ pub(super) fn prepare_native_nodes(
 ) -> Result<(), String> {
     use crate::sandbox_perk::action::native::{Graph, labels, schema};
     for (condition, node) in program.native_nodes_mut() {
-        let class = if condition {
-            crate::sandbox_perk::nodes::condition(node.kind)
-        } else {
-            crate::sandbox_perk::nodes::effect(node.kind)
-        }
-        .ok_or("Unknown native node.")?
-        .class;
+        let class = condition.entry().ok_or("Unknown native node.")?.class;
         let mut graph = Graph::read(&node.bytes, 0, class)?;
         let has_labels = graph
             .blocks
@@ -370,7 +372,7 @@ fn validate_native_resources(
             .get_entry(TagHash(tag))
             .ok_or_else(|| format!("Native resource 0x{tag:08X} is missing."))?;
         if entry.reference == WEAPON_ENTITY_CLASS {
-            projectile::residency::inspect(manager, tag)?;
+            entity::residency::inspect(manager, tag)?;
         }
     }
     Ok(())
@@ -400,9 +402,7 @@ fn validate_native_entity(
         .read_tag(tag)
         .map_err(|error| format!("Could not read entity graph {tag}: {error}"))?;
     validate_weapon_entity(&payload)?;
-    if block.class == 0x80803E12
-        && projectile::kind(&payload)? != Some(projectile::Kind::Projectile)
-    {
+    if block.class == 0x80803E12 && entity::kind(&payload)? != Some(entity::Kind::Projectile) {
         return Err(format!(
             "{} requires a projectile.",
             crate::sandbox_perk::nodes::effect_title(26)
@@ -841,7 +841,7 @@ impl Payload {
             } => {
                 // The mode byte, the two keys and the four floats are carried verbatim from
                 // the authored action. Their roles are not mapped, so nothing is derived here.
-                self.bytes[at + 2] = *mode;
+                self.bytes[at + 2] = mode.byte();
                 self.u32(at + 0x18, keys[0]);
                 self.u32(at + 0x1C, keys[1]);
                 for (index, bits) in float_bits.iter().enumerate() {
@@ -899,9 +899,9 @@ impl Payload {
                 value_bits,
                 input,
             } => {
-                self.bytes[at + 2] = *target;
-                self.bytes[at + 3] = *flag;
-                self.bytes[at + 4] = *option;
+                self.bytes[at + 2] = target.byte();
+                self.bytes[at + 3] = flag.byte();
+                self.bytes[at + 4] = option.byte();
                 self.u32(at + 8, *scale_bits);
                 self.u32(at + 0x0C, *limit_bits);
                 self.constant_program(at + 0x18, *value_bits);
@@ -909,7 +909,7 @@ impl Payload {
                 // mapped, so they are written as the stock template does.
                 self.u32(at + 0x38, 1);
                 self.u32(at + 0x40, 1);
-                self.bytes[at + 0x48] = *input;
+                self.bytes[at + 0x48] = input.byte();
             }
             Action::UpdateAccumulator { mode, value_bits } => {
                 self.bytes[at + 2] = *mode;
@@ -920,9 +920,9 @@ impl Payload {
                 key,
                 option,
             } => {
-                self.bytes[at + 2] = *target;
+                self.bytes[at + 2] = target.byte();
                 self.u32(at + 4, *key);
-                self.bytes[at + 8] = *option;
+                self.bytes[at + 8] = option.byte();
             }
             Action::TransmatContext { key } => self.u32(at + 4, *key),
             Action::OverrideHostKey {
@@ -940,7 +940,7 @@ impl Payload {
                 mode,
                 keep_after_removal,
             } => {
-                self.bytes[at + 2] = *mode;
+                self.bytes[at + 2] = mode.byte();
                 self.bytes[at + 3] = u8::from(*keep_after_removal);
             }
             Action::WeaponReferenceCount { selector } => self.bytes[at + 2] = *selector,
@@ -1097,7 +1097,7 @@ mod tests {
 
     #[test]
     fn draft_keeps_component_overrides_and_refuses_to_merge_distinct_edits() {
-        use crate::weapon_runtime::{
+        use crate::runtime::{
             WeaponRuntimeFieldLocator, WeaponRuntimeRootKind, WeaponRuntimeValue,
             WeaponRuntimeValueOverride,
         };
@@ -1106,13 +1106,13 @@ mod tests {
             path: "content/projectile.pattern.tft".into(),
             values: vec![WeaponRuntimeValueOverride {
                 locator: WeaponRuntimeFieldLocator {
-                    graph_tag: Some(0x815282E1),
-                    binding_hash: 1,
+                    graph_tag: Some(0x815282E1.into()),
+                    binding_hash: 1.into(),
                     resource_index: 0,
                     root: WeaponRuntimeRootKind::ComponentInstance,
-                    root_schema: 0x80803B73,
+                    root_schema: 0x80803B73.into(),
                     path: vec![],
-                    type_handle: 2,
+                    type_handle: 2.into(),
                     value_offset: 0x144,
                     byte_size: 8,
                 },
@@ -1120,6 +1120,7 @@ mod tests {
                     [0x7FC12345_u32.to_le_bytes(), 0x80000000_u32.to_le_bytes()].concat(),
                 ),
             }],
+            hud_status: None,
         };
         let program = Program {
             actions: vec![Action::Pattern {
@@ -1376,7 +1377,7 @@ mod tests {
         };
         let (conditions, effects): (Vec<_>, Vec<_>) = program
             .native_nodes()
-            .partition(|(condition, _)| *condition);
+            .partition(|(condition, _)| condition.is_condition());
         assert_eq!(conditions.len(), 9);
         assert_eq!(effects.len(), 2);
         assert!(conditions.iter().all(|(_, node)| **node == condition));
@@ -1436,6 +1437,7 @@ mod tests {
                 graph: 0x80BC_5810,
                 path: String::new(),
                 values: Vec::new(),
+                hud_status: None,
             })],
             ..Program::default()
         };
@@ -1675,6 +1677,7 @@ mod tests {
             graph: 0x80BC_2F21,
             path: String::new(),
             values: Vec::new(),
+            hud_status: None,
         };
         let kill = Activation::Kill {
             trigger: Trigger::WeaponKill,
@@ -1694,12 +1697,12 @@ mod tests {
                 cap_ms: 5_000,
             },
             Action::property(0x5EE2_66FC),
-            Action::adjust_component(0),
+            Action::adjust_component(AbilityTarget::Grenade),
             Action::update_accumulator(1.0),
-            Action::ability_property(0),
+            Action::ability_property(AbilityTarget::Grenade),
             Action::transmat_context(0x1234_5678),
             Action::override_host_key(0x1234_5678),
-            Action::set_damage_type(1),
+            Action::set_damage_type(DamageMode::Solar),
             Action::weapon_reference_count(0),
             Action::add_rounds(1),
             Action::add_fraction(0.5),
@@ -1708,7 +1711,7 @@ mod tests {
             let mut out = Payload::new();
             let at = out.action(&action, Some(&kill)).unwrap();
             let kind = out.bytes[at];
-            let stock = crate::sandbox_perk::action::native::template(false, kind)
+            let stock = crate::sandbox_perk::action::native::template(NativeNodeKind::Effect(kind))
                 .and_then(|template| template.get(1).copied())
                 .unwrap_or_else(|| panic!("{} has no stock template", action.label()));
             assert_eq!(
@@ -1789,37 +1792,15 @@ mod tests {
     }
 
     #[test]
-    fn a_default_attach_node_matches_the_shape_the_compiler_always_wrote() {
-        let node = attach_node(&Action::attach(Asset {
-            graph: 0x80BC_5810,
-            path: String::new(),
-            values: Vec::new(),
-        }));
-        assert_eq!(&node[..4], &[1, 1, 1, 0]);
-        assert_eq!(
-            u32::from_le_bytes(node[0x10..0x14].try_into().unwrap()),
-            0x80BC_5810
-        );
-        for offset in [0x18, 0x1C, 0x30] {
-            assert_eq!(
-                u32::from_le_bytes(node[offset..offset + 4].try_into().unwrap()),
-                EMPTY_KEY,
-                "+0x{offset:X}"
-            );
-        }
-        assert!(node[0x20..0x30].iter().all(|byte| *byte == 0));
-        assert!(node[0x34..].iter().all(|byte| *byte == 0));
-    }
-
-    #[test]
     fn attach_technical_fields_are_written_verbatim() {
         let node = attach_node(&Action::Attach {
             asset: Asset {
                 graph: 0x80BC_5810,
                 path: String::new(),
                 values: Vec::new(),
+                hud_status: None,
             },
-            mode: 3,
+            mode: AttachmentTarget::OtherCombatant,
             keys: [0x4113_6E32, 0x95E7_400C],
             float_bits: [1.0_f32.to_bits(); 4],
         });

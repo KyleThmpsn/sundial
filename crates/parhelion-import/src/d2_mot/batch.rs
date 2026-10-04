@@ -11,10 +11,7 @@ use std::{
     collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
 };
-
-static RIG_CACHE_WRITE: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn identity(namespace: &str) -> Result<Value> {
     let mut values = serde_json::Map::new();
@@ -88,18 +85,20 @@ pub(crate) fn prepare_one(
 
 /// Shared location for searched carriers, keyed by the native package set so
 /// a rebuilt or updated install starts a fresh index.
-fn carrier_cache(native: &Path) -> Result<PathBuf> {
+fn carrier_cache(native: &Path) -> Result<Option<crate::cache::Generation>> {
     let stamp = super::service::package_stamp(native)?;
-    let directory = PathBuf::from(std::env::var_os("LOCALAPPDATA").context("Local app data")?)
-        .join("Sundial/parhelion/importer/cache/native-carriers");
-    fs::create_dir_all(&directory)?;
-    Ok(directory.join(format!("{stamp}.json")))
+    Ok(std::env::var_os("LOCALAPPDATA").and_then(|root| {
+        crate::cache::Generation::file(
+            &PathBuf::from(root).join("Sundial/parhelion/importer/cache/native-carriers"),
+            &stamp,
+        )
+    }))
 }
 
 /// Add rendering templates from elsewhere in the packages for source models
 /// the donor cannot carry. Only draw records and material shells come from
 /// these models, so the gameplay item and animation donor stay as chosen.
-fn extend_carriers(
+pub(crate) fn extend_carriers(
     source_path: &Path,
     native: &Path,
     reader: &mut Reader,
@@ -115,9 +114,17 @@ fn extend_carriers(
     // packages, never on which weapon asked, so the answer is remembered once
     // per package set and shared by every import rather than per weapon.
     let remembered = carrier_cache(native)?;
-    let mut found: Value = fs::read(&remembered)
-        .ok()
+    let lock = remembered
+        .as_ref()
+        .map(crate::cache::Generation::writer)
+        .transpose()?
+        .flatten();
+    let remembered = remembered.filter(|_| lock.is_some());
+    let mut found: Value = remembered
+        .as_ref()
+        .and_then(|generation| fs::read(generation.path()).ok())
         .and_then(|b| serde_json::from_slice(&b).ok())
+        .filter(Value::is_object)
         .unwrap_or_else(|| json!({}));
     let mut added = template["carrier_models"]
         .as_array()
@@ -126,16 +133,22 @@ fn extend_carriers(
     for (tag, mesh) in missing {
         let model = super::mapping::source_model(source_path, tag)?;
         let key = super::mapping::contract_signature(source_path, &model, mesh, (true, stride))?;
-        if found.get(&key).is_none() {
+        // Retry legacy negative observations rather than making transient failures permanent.
+        if found
+            .get(&key)
+            .and_then(Value::as_str)
+            .and_then(|tag| u32::from_str_radix(tag, 16).ok())
+            .is_none()
+        {
             progress("Searching packages for a compatible rendering template…".into());
             let carrier =
-                super::mapping::search_carrier(reader, source_path, &model, mesh, (true, stride));
-            found[&key] = match &carrier {
-                Ok(carrier) => json!(format!("{carrier:08X}")),
-                Err(error) => json!({ "unavailable": format!("{error:#}") }),
-            };
-            write_json(&remembered, &found)?;
-            carrier.with_context(|| format!("source model {tag:08X}"))?;
+                super::mapping::search_carrier(reader, source_path, &model, mesh, (true, stride))
+                    .with_context(|| format!("source model {tag:08X}"))?;
+            crate::cancellation::check()?;
+            found[&key] = json!(format!("{carrier:08X}"));
+            if let Some(generation) = &remembered {
+                let _ = crate::cache::write_json(generation.path(), &found);
+            }
         }
         let carrier = found[&key]
             .as_str()
@@ -159,6 +172,22 @@ fn extend_carriers(
     template["carrier_models"] = json!(added);
     write_json(&native_path.join("template-report.json"), template)?;
     Ok(())
+}
+
+/// The calibration rig export a source-owned rig converts against: the row's own, or for a
+/// glaive the shipped one, which pairs only with the glaive base.
+fn rig_calibration(row: &Value, donor: u32, glaive: bool) -> Result<Option<Value>> {
+    Ok(match &row["rig_calibration"] {
+        Value::String(path) => Some(serde_json::from_slice::<Value>(&fs::read(path)?)?),
+        Value::Null if glaive => {
+            ensure!(
+                donor == super::glaive::BASE,
+                "the glaive calibration pairs with the glaive base, not donor {donor:08X}"
+            );
+            Some(super::glaive::calibration()?)
+        }
+        _ => None,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -203,6 +232,15 @@ pub(crate) fn prepare_one_reusing(
         source["item_hash"].as_u64() == Some(u64::from(hash)) && source["name"] == row["name"],
         "source weapon identity differs"
     );
+    // A glaive keeps its own first-person rig, which the shipped calibration pairs with the
+    // glaive base's.
+    let glaive = super::glaive::exported_glaive(&source_path)?;
+    let source_owned = row["source_owned_rig"] == true || glaive;
+    let calibration = rig_calibration(row, donor, glaive)?;
+    ensure!(
+        !source_owned || calibration.is_some(),
+        "source-owned rig needs a calibration rig export"
+    );
     progress("Extracting donor models and materials…".into());
     let native_path = folder.join("native");
     let mut r = if let Some(reader) = shared_native {
@@ -225,7 +263,7 @@ pub(crate) fn prepare_one_reusing(
         .as_array()
         .context("native skeletons")?
     {
-        let config = json!({"source":source_path,"native":native_path,"source_geometry":source_path,"source_owner":from["owner"],"native_owner":to["owner"],"source_owned":row["source_owned_rig"] == true});
+        let config = json!({"source":source_path,"native":native_path,"source_geometry":source_path,"source_owner":from["owner"],"native_owner":to["owner"],"source_owned":source_owned});
         if let Ok(mapping) =
             rig_convert::compatible_map(&config, &source["item_tag"], &template["item_tag"])
         {
@@ -320,14 +358,7 @@ pub(crate) fn prepare_one_reusing(
     result["graph"] = assembled["graph"].clone();
     progress("Linking source first-person animation clips…".into());
     let graph_dir = PathBuf::from(assembled["graph"].as_str().context("graph path")?);
-    let calibration = if row["source_owned_rig"] == true {
-        let path = row["rig_calibration"]
-            .as_str()
-            .context("source-owned rig needs a calibration rig export")?;
-        Some(serde_json::from_slice::<Value>(&fs::read(path)?)?)
-    } else {
-        None
-    };
+    let calibration = calibration.filter(|_| source_owned);
     let animation = match rig_convert::animation::first_person::prepare_with_rig(
         modern,
         native,
@@ -402,11 +433,39 @@ pub(crate) fn prepare_one_reusing(
         let gameplay: Value =
             serde_json::from_slice(&fs::read(source_path.join("gameplay.json"))?)?;
         super::gameplay::apply(&gameplay, native, &folder.join("gameplay"), &mut recipe)?;
+        if super::glaive::is_glaive(&gameplay) {
+            progress("Adding the glaive shield and intrinsic…".into());
+            let inputs = super::glaive::Inputs {
+                modern,
+                native,
+                prepared: &prepared,
+                graph: &graph_dir,
+                work: &folder.join("glaive"),
+                source_rig: &source_rig,
+                native_rig: &native_rig,
+            };
+            result["glaive"] = super::glaive::apply(&inputs, &gameplay, &mut recipe, progress)?;
+        }
+        progress("Converting the hip-fire crosshair…".into());
+        result["crosshair"] = match super::crosshair::apply(
+            modern,
+            native,
+            &source_path,
+            &folder.join("crosshair"),
+            &graph_dir,
+        ) {
+            Ok(record) => record,
+            Err(error) => {
+                crate::cancellation::check()?;
+                super::crosshair::record_failure(&graph_dir, &error)?;
+                json!({"status":"unconverted","reason":format!("{error:#}")})
+            }
+        };
     }
     let recipe_path = out.join(format!("recipes/{hash:08X}.parhelion.json"));
     write_json(&recipe_path, &recipe)?;
     Ok(
-        json!({"name":row["name"],"hash":hash,"native_donor":row["native_donor"],"native_item":donor,"folder":folder,"prepared":prepared,"recipe":recipe_path,"graph":result["graph"],"rendering_templates":template["carrier_models"],"status":"prepared","gameplay_verified":false}),
+        json!({"name":row["name"],"hash":hash,"native_donor":row["native_donor"],"native_item":donor,"folder":folder,"prepared":prepared,"recipe":recipe_path,"graph":result["graph"],"glaive":result["glaive"],"crosshair":result["crosshair"],"rendering_templates":template["carrier_models"],"status":"prepared","gameplay_verified":false}),
     )
 }
 
@@ -503,13 +562,11 @@ pub fn donors(
     donors_with_progress(source, catalog, kind, native, out, &mut |_| {})
 }
 
-fn native_rig_cache(native: &Path) -> Option<PathBuf> {
+fn native_rig_cache(native: &Path) -> Option<crate::cache::Generation> {
     let stamp = super::service::package_stamp(native).ok()?;
     let root = PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
-        .join("Sundial/parhelion/importer/cache/native-rigs-v1")
-        .join(stamp);
-    fs::create_dir_all(&root).ok()?;
-    Some(root)
+        .join("Sundial/parhelion/importer/cache/native-rigs-v1");
+    crate::cache::Generation::directory(&root, &stamp)
 }
 
 fn cached_rig(path: &Path, item: u32) -> Option<Value> {
@@ -526,15 +583,7 @@ fn native_rig(reader: &mut Reader, item: u32, cache: Option<&Path>) -> Result<Va
     let report = rig::inspect(reader, item, false)?;
     if let Some(path) = path {
         // Concurrent imports may discover the same rig. Publish only complete JSON.
-        let temporary = path.with_extension(format!(
-            "{}-{}.tmp",
-            std::process::id(),
-            RIG_CACHE_WRITE.fetch_add(1, Ordering::Relaxed)
-        ));
-        if write_json(&temporary, &report).is_ok() {
-            let _ = fs::rename(&temporary, &path);
-            let _ = fs::remove_file(&temporary);
-        }
+        let _ = crate::cache::write_json(&path, &report);
     }
     Ok(report)
 }
@@ -635,7 +684,11 @@ pub(crate) fn donors_with_reader(
             }
             let rarity = r.tag(item, Some(0x80807BEA))?.u8(0xBA)?;
             let exotic = rarity == 5;
-            let report = native_rig(r, item, rig_cache.as_deref())?;
+            let report = native_rig(
+                r,
+                item,
+                rig_cache.as_ref().map(crate::cache::Generation::path),
+            )?;
             let folder = out.join(format!("{hash:08X}"));
             fs::create_dir_all(&folder)?;
             write_json(&folder.join("rig.json"), &report)?;
@@ -691,43 +744,6 @@ pub(crate) fn donor_candidate(row: &Value, kind: &str, preferred: Option<u32>) -
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    #[ignore = "Requires configured source export, weapon type and native packages"]
-    fn configured_donor_matching_keeps_shared_reader_available_for_conversion() {
-        let source = PathBuf::from(
-            std::env::var_os("PARHELION_IMPORT_SOURCE_EXPORT")
-                .expect("PARHELION_IMPORT_SOURCE_EXPORT"),
-        );
-        let native = PathBuf::from(
-            std::env::var_os("PARHELION_IMPORT_NATIVE_PACKAGES")
-                .expect("PARHELION_IMPORT_NATIVE_PACKAGES"),
-        );
-        let kind =
-            std::env::var("PARHELION_IMPORT_WEAPON_TYPE").expect("PARHELION_IMPORT_WEAPON_TYPE");
-        let output = tempfile::tempdir().unwrap();
-        let matching = output.path().join("matching");
-        let mut reader = Reader::discovery(&native, &matching, false).unwrap();
-        let result = donors_with_reader(
-            &source,
-            &source.join("donors.json"),
-            &kind,
-            &native,
-            &matching,
-            &mut reader,
-            &mut |_| {},
-        )
-        .unwrap();
-        assert!(
-            result["matches"]
-                .as_array()
-                .is_some_and(|rows| !rows.is_empty())
-        );
-        let export = reader
-            .shared_export(&output.path().join("candidate"))
-            .unwrap();
-        assert!(std::sync::Arc::ptr_eq(&reader.manager, &export.manager));
-    }
 
     #[test]
     fn rig_cache_rejects_wrong_item_and_incomplete_report() {

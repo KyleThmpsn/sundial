@@ -20,10 +20,11 @@ pub(crate) fn resident(header: &mut [u8], bytes: usize) -> Result<()> {
             && matches!(p.u32(36)?, 0 | u32::MAX | 0x811C9DC5),
         "resident texture requires a complete unsplit payload"
     );
-    // BC1 and BC7 donors can be exchanged when composing source dye maps.
+    // Dye templates can be exchanged across these native texture encodings.
     // Keep the upload pitch metadata consistent with the new block format.
     match p.u32(4)? {
-        71 | 72 => header[22] = 4,
+        28 | 29 => header[22] = 32,
+        71 | 72 | 80 => header[22] = 4,
         98 | 99 => header[22] = 8,
         _ => {}
     }

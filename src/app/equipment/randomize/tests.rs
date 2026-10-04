@@ -404,7 +404,22 @@ fn unchecked_loadout_scopes_are_excluded_without_affecting_the_others() {
         .filter(|(slot, _, _)| options.includes(loadout_scope_for_slot(slot)))
         .map(|(slot, _, _)| *slot)
         .collect::<Vec<_>>();
-    assert_eq!(selected.len(), ARMOR_SLOTS.len() + 1);
+    assert_eq!(
+        selected
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>(),
+        [
+            "helmet",
+            "gauntlets",
+            "chest",
+            "legs",
+            "class_item",
+            "subclass"
+        ]
+        .into_iter()
+        .collect()
+    );
     assert!(selected.contains(&"helmet"));
     assert!(selected.contains(&SUBCLASS_SLOT));
     assert!(!selected.contains(&"kinetic"));

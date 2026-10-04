@@ -10,8 +10,7 @@ use sundial::package_authoring::PackageManager;
 use sundial::{
     investment::WeaponDonorSummary,
     package_authoring::{
-        open_shadowkeep_package_manager,
-        weapon_entity::{
+        entity::{
             ComponentWiring, WEAPON_BARREL_COMPONENT_KEY, WEAPON_CONTROLLER_COMPONENT_KEY,
             WEAPON_INPUT_COMPONENT_KEY, WEAPON_MAGAZINE_COMPONENT_KEY, WEAPON_RELOAD_COMPONENT_KEY,
             WEAPON_STAT_TRANSLATOR_COMPONENT_KEY, WEAPON_TRIGGER_CHARGE_COMPONENT_KEY,
@@ -19,7 +18,8 @@ use sundial::{
             coupled_weapon_component_bindings, graft_weapon_component_bindings_or_rewire,
             weapon_component_binding_hashes, weapon_component_bindings,
         },
-        weapon_runtime::{
+        open_shadowkeep_package_manager,
+        runtime::{
             WeaponRuntimeEntitySource, WeaponRuntimeResourceShape,
             load_weapon_runtime_entity_at_pattern_index_with_manager,
             load_weapon_runtime_entity_with_manager, load_weapon_runtime_resource_shape,

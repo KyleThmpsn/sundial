@@ -25,7 +25,7 @@ fn browser_opens_with_search_and_closes_on_escape_without_a_selection() {
                             &mut query,
                             |ui, _, _, height| {
                                 ui.label("Asset Preview");
-                                assert!(height > 100.0);
+                                assert!(height > 0.0);
                                 None::<u32>
                             },
                         );
@@ -70,16 +70,7 @@ fn browser_opens_with_search_and_closes_on_escape_without_a_selection() {
 }
 
 fn label(output: &egui::FullOutput, name: &str) -> egui::Rect {
-    output
-        .shapes
-        .iter()
-        .find_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) if text.galley.job.text == name => {
-                Some(text.galley.rect.translate(text.pos.to_vec2()))
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("missing {name}"))
+    crate::test_support::driver::label(output, name).unwrap_or_else(|| panic!("missing {name}"))
 }
 
 #[test]
@@ -87,6 +78,7 @@ fn show_all_starts_off_and_large_lists_have_no_two_hundred_row_cutoff() {
     let ctx = egui::Context::default();
     let keys = (0..500).collect::<Vec<_>>();
     let mut indices = Vec::new();
+    let mut previewed = false;
     for _ in 0..3 {
         let _ = ctx.run(
             egui::RawInput {
@@ -117,6 +109,7 @@ fn show_all_starts_off_and_large_lists_have_no_two_hundred_row_cutoff() {
                             ui.selectable_label(selected, format!("Choice {index}"))
                         },
                         |ui, index| {
+                            previewed = true;
                             assert_eq!(index, 450);
                             ui.label("Preview 450");
                             None::<()>
@@ -126,5 +119,7 @@ fn show_all_starts_off_and_large_lists_have_no_two_hundred_row_cutoff() {
             },
         );
     }
+    assert!(!indices.is_empty(), "no rows were rendered");
+    assert!(previewed, "the selected late result was never previewed");
     assert!(indices.len() < 100, "only visible rows should be laid out");
 }

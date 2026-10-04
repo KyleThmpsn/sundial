@@ -1,4 +1,4 @@
-//! Discover source-authored weapon names and distinguish existing native items.
+//! Discover equippable source families and distinguish existing native items.
 use crate::d2_mot::{
     localization,
     reader::{Reader, write_json},
@@ -14,6 +14,7 @@ use std::{
 #[derive(Clone, Copy, Debug)]
 pub enum ScanProgress {
     CheckingCache,
+    LoadingCachedItems,
     OpeningModernPackages,
     OpeningNativePackages,
     ReadingItems {
@@ -28,15 +29,8 @@ pub fn weapons(modern: &Path, native: &Path, out: &Path) -> Result<Value> {
     weapons_with_progress(modern, native, out, |_| {})
 }
 
-pub fn weapons_with_progress(
-    modern: &Path,
-    native: &Path,
-    out: &Path,
-    mut progress: impl FnMut(ScanProgress),
-) -> Result<Value> {
-    progress(ScanProgress::OpeningModernPackages);
-    let mut r = Reader::discovery(modern, out, true)?;
-    progress(ScanProgress::OpeningNativePackages);
+/// Installed identities are independent of modern labels, icons and item families.
+pub(crate) fn native_hashes(native: &Path, out: &Path) -> Result<BTreeSet<u32>> {
     let mut old = Reader::discovery(native, &out.join("native"), false)?;
     let globals_tag = old
         .manager
@@ -56,6 +50,31 @@ pub fn weapons_with_progress(
         .map(|at| items.u32(at))
         .collect::<Result<BTreeSet<_>>>()?;
     old.finish()?;
+    Ok(native_hashes)
+}
+
+pub(crate) fn match_native(
+    weapons: &mut [super::service::Weapon],
+    native_hashes: &BTreeSet<u32>,
+) -> Result<()> {
+    for weapon in weapons {
+        weapon.native_item = native_hashes.contains(&weapon.hash);
+        weapon.present_in_native = weapon.native_item
+            || native_hashes.contains(&super::service::destination_hash(weapon.hash)?);
+    }
+    Ok(())
+}
+
+pub fn weapons_with_progress(
+    modern: &Path,
+    native: &Path,
+    out: &Path,
+    mut progress: impl FnMut(ScanProgress),
+) -> Result<Value> {
+    progress(ScanProgress::OpeningModernPackages);
+    let mut r = Reader::discovery(modern, out, true)?;
+    progress(ScanProgress::OpeningNativePackages);
+    let native_hashes = native_hashes(native, out)?;
     let tags = r.classes(0x80805499);
     ensure!(tags.len() == 1, "ambiguous source item strings");
     let table = r.tag(tags[0], None)?;
@@ -90,43 +109,39 @@ pub fn weapons_with_progress(
                 let name = labels.label(&mut r, &strings, 0x8C)?;
                 types.entry(key).or_insert(name)
             };
-            if ![
-                "Auto Rifle",
-                "Combat Bow",
-                "Fusion Rifle",
-                "Glaive",
-                "Grenade Launcher",
-                "Hand Cannon",
-                "Linear Fusion Rifle",
-                "Machine Gun",
-                "Pulse Rifle",
-                "Rocket Launcher",
-                "Scout Rifle",
-                "Shotgun",
-                "Sidearm",
-                "Sniper Rifle",
-                "Submachine Gun",
-                "Sword",
-                "Trace Rifle",
-            ]
-            .contains(&kind.as_str())
-            {
+            let Some(&definition) = definitions.get(&hash) else {
                 return Ok(());
-            }
+            };
+            let item = r.tag(definition, Some(0x8080799D))?;
+            let Some((family, bucket_hash, class_type)) =
+                super::service::Family::source(&item, &strings)?
+            else {
+                return Ok(());
+            };
             let name = labels.label(&mut r, &strings, 0x80)?;
             if !name.is_empty() {
                 // Display-only definitions cannot equip. Do not infer this from duplicate names.
-                let item = r.tag(
-                    *definitions.get(&hash).context("missing item definition")?,
-                    Some(0x8080799D),
-                )?;
-                let dummy = item.u64(0x18)? == 0;
+                let dummy = family != super::service::Family::Shader && item.u64(0x18)? == 0;
                 let icon_index = strings.u32(0x78)?;
                 let icon_index = (icon_index != u32::MAX).then_some(icon_index);
                 let present = native_hashes.contains(&hash)
                     || native_hashes.contains(&super::service::destination_hash(hash)?);
                 let native_item = native_hashes.contains(&hash);
-                weapons.push(json!({"hash":hash,"index":index,"name":name,"weapon_type":kind,"present_in_native":present,"native_item":native_item,"dummy":dummy,"icon_index":icon_index}));
+                // Optional browse fields must not hide an otherwise discoverable item.
+                let metadata = super::gameplay::browse_metadata(
+                    &mut r,
+                    &item,
+                    &strings,
+                    family == super::service::Family::Weapon,
+                );
+                let (rarity, ammo, damage) = match metadata {
+                    Ok(metadata) => (Some(metadata.rarity), metadata.ammo, metadata.damage),
+                    Err(error) => {
+                        unavailable.push(json!({"hash":hash,"index":index,"scope":"browse_metadata","reason":format!("{error:#}")}));
+                        (None, None, None)
+                    }
+                };
+                weapons.push(json!({"hash":hash,"index":index,"name":name,"weapon_type":kind,"bucket_hash":bucket_hash,"class_type":class_type,"rarity":rarity,"ammo":ammo,"damage":damage,"present_in_native":present,"native_item":native_item,"dummy":dummy,"icon_index":icon_index}));
             }
             Ok(())
         })();

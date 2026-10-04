@@ -1,8 +1,9 @@
 use super::*;
 use sundial::investment::{InvestmentCatalog, WeaponAmmoType, WeaponDamageProfile, WeaponRarity};
-use sundial::package_authoring::weapon_entity::{
+use sundial::package_authoring::entity::{
     WEAPON_RELOAD_COMPONENT_KEY, WEAPON_TRIGGER_COMPONENT_KEY,
 };
+use sundial::package_authoring::runtime::SchemaHandle;
 
 fn donor(hash: u32) -> WeaponDonorSummary {
     WeaponDonorSummary {
@@ -83,7 +84,7 @@ fn stock() -> (std::path::PathBuf, Vec<WeaponDonorSummary>) {
 
 #[test]
 #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
-fn native_group_swap_repairs_conflicts_and_previews_settings_without_mutating_the_recipe() {
+fn native_group_swap_repairs_conflicts_and_previews_transferred_settings() {
     let (packages, donors) = stock();
     let baseline = donors
         .iter()
@@ -128,7 +129,7 @@ fn native_group_swap_repairs_conflicts_and_previews_settings_without_mutating_th
             report
                 .affected_bindings
                 .iter()
-                .any(|(binding, _)| *binding == field.locator.binding_hash)
+                .any(|(binding, _)| *binding == field.locator.binding_hash.get())
                 && field.kind == WeaponRuntimeValueKind::Float32
                 && field.locator.is_buildable()
         })
@@ -141,9 +142,8 @@ fn native_group_swap_repairs_conflicts_and_previews_settings_without_mutating_th
             value: field.value.clone(),
         });
     let mut stale = recipe.overrides.runtime_values[0].clone();
-    stale.locator.root_schema = 0x8080_FFFF;
+    stale.locator.root_schema = SchemaHandle::new(0x8080_FFFF);
     recipe.overrides.runtime_values.push(stale);
-    let before = recipe.clone();
     let plan = preview(
         &packages,
         &recipe,
@@ -153,7 +153,6 @@ fn native_group_swap_repairs_conflicts_and_previews_settings_without_mutating_th
         &donors,
     )
     .unwrap();
-    assert_eq!(recipe, before);
     assert!(plan.error.is_none(), "{:?}", plan.error);
     assert!(
         plan.kept + plan.transferred.len() > 0,
@@ -217,10 +216,10 @@ fn preview_uses_compiler_overlap_checks_for_automatic_ammo_edits() {
     let key = RuntimeGraphKey::new(baseline.weapon_pattern_index, baseline.hash, []);
     let manager = open_shadowkeep_package_manager(&packages).unwrap();
     let entity = load_effective_runtime_entity(&manager, &key).unwrap();
-    let patches = crate::weapon_ammo::patches(
+    let patches = crate::weapon::ammo::patches(
         &manager,
         &entity.payload,
-        crate::weapon::WeaponAmmoType::Special,
+        crate::item::WeaponAmmoType::Special,
     )
     .unwrap();
     let patch = &patches[0];

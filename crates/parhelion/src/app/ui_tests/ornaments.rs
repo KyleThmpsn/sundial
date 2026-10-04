@@ -9,7 +9,7 @@ const SUNSHOT: u32 = 0xAD47_46D5;
 fn real_appearance_section_offers_and_applies_the_donor_ornaments() {
     let packages = PathBuf::from(std::env::var_os("PARHELION_DEFAULT_WEAPONS_PACKAGES").unwrap());
     let mut app = PackageAuthoringApp::default();
-    let catalog = InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {}).unwrap();
+    let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     app.donor_summaries = catalog.weapon_donors();
     app.catalog = Some(catalog);
     app.packages = packages;
@@ -22,20 +22,10 @@ fn real_appearance_section_offers_and_applies_the_donor_ornaments() {
         .iter()
         .find(|ornament| ornament.name == "Red Dwarf")
         .expect("Sunshot should offer its stock ornaments");
-    assert!(ornament.changes_model(&app.current_donor().unwrap().art_arrangements));
-
-    let saved_recipe = serde_json::to_value(&app.recipe).unwrap();
-    let mut candidate = app.recipe.clone();
-    donor_view::ornaments::apply(&mut candidate, ornament);
-    let catalog = app.catalog.as_ref().unwrap();
-    let candidate_appearance =
-        catalog.preview_appearance(&donor_view::preview::loadout(catalog, &candidate).unwrap());
-    assert_eq!(serde_json::to_value(&app.recipe).unwrap(), saved_recipe);
+    // The ornament brings a model of its own, not the weapon's.
     assert!(
-        ornament
-            .art_arrangements
-            .iter()
-            .any(|row| row.arrangement == candidate_appearance.arrangement)
+        !ornament.art_arrangements.is_empty()
+            && ornament.art_arrangements != app.current_donor().unwrap().art_arrangements
     );
 
     let (output, overflow) = render(900.0, |ui| app.draw_appearance_workspace(ui));
@@ -46,9 +36,13 @@ fn real_appearance_section_offers_and_applies_the_donor_ornaments() {
 
     donor_view::ornaments::apply(&mut app.recipe, ornament);
     let catalog = app.catalog.as_ref().unwrap();
-    assert_eq!(
-        catalog.preview_appearance(&donor_view::preview::loadout(catalog, &app.recipe).unwrap()),
-        candidate_appearance
+    let appearance =
+        catalog.preview_appearance(&donor_view::preview::loadout(catalog, &app.recipe).unwrap());
+    assert!(
+        ornament
+            .art_arrangements
+            .iter()
+            .any(|row| row.arrangement == appearance.arrangement)
     );
     let (output, overflow) = render(900.0, |ui| app.draw_appearance_workspace(ui));
     let rendered = text(&output);
@@ -67,25 +61,20 @@ fn real_appearance_section_offers_and_applies_the_donor_ornaments() {
         .expect("an ornament recipe stays valid");
 
     // A different appearance restores its own model and icon, so the ornament cannot follow it.
-    let saved_recipe = serde_json::to_value(&app.recipe).unwrap();
-    let mut candidate = app.recipe.clone();
-    candidate.set_presentation_donor(Some(WeaponDonorReference {
-        item_hash: 0x514E_69D9_u32.into(),
-        expected_name: Some("The Last Word".to_owned()),
-    }));
-    let catalog = app.catalog.as_ref().unwrap();
-    let donor_preview =
-        catalog.preview_appearance(&donor_view::preview::loadout(catalog, &candidate).unwrap());
-    assert_eq!(serde_json::to_value(&app.recipe).unwrap(), saved_recipe);
     app.recipe
         .set_presentation_donor(Some(WeaponDonorReference {
             item_hash: 0x514E_69D9_u32.into(),
             expected_name: Some("The Last Word".to_owned()),
         }));
     let catalog = app.catalog.as_ref().unwrap();
-    assert_eq!(
-        catalog.preview_appearance(&donor_view::preview::loadout(catalog, &app.recipe).unwrap()),
-        donor_preview
+    let appearance =
+        catalog.preview_appearance(&donor_view::preview::loadout(catalog, &app.recipe).unwrap());
+    let donor = catalog.weapon_donor(0x514E_69D9).unwrap();
+    assert!(
+        donor
+            .art_arrangements
+            .iter()
+            .any(|row| row.arrangement == appearance.arrangement)
     );
     assert_eq!(app.recipe.overrides.art_arrangements, None);
     assert_eq!(app.recipe.icon_donor, None);

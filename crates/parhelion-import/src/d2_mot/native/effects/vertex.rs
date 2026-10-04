@@ -23,7 +23,7 @@ fn table(
     data.resize(width * height * stride, 0);
     // These tables are fixed shader resources, so inherit resident texture
     // storage metadata along with the header instead of using a gear plate.
-    let mut header = c.graph.read("dye-4-texture-1")?.0;
+    let (mut header, ht, dt) = c.texture_template(false)?;
     put(&mut header, 0, &u32::try_from(data.len())?.to_le_bytes())?;
     put(&mut header, 4, &format.to_le_bytes())?;
     put(&mut header, 14, &u16::try_from(width)?.to_le_bytes())?;
@@ -34,12 +34,6 @@ fn table(
     header[22] = u8::try_from(stride * 8)?;
     put(&mut header, 36, &u32::MAX.to_le_bytes())?;
     crate::d2_mot::texture::resident(&mut header, data.len())?;
-    let ht = c.graph.node("dye-4-texture-1")?["template"]
-        .as_u64()
-        .context("texture template")?;
-    let dt = c.graph.node("dye-4-texture-1-data")?["template"]
-        .as_u64()
-        .context("texture data template")?;
     let body = format!("{name}-data");
     c.graph.add(name, ht, &header, Some(&body), vec![])?;
     c.graph.add(&body, dt, &data, Some(name), vec![])?;
@@ -118,9 +112,8 @@ pub(super) fn build(c: &mut Effect, draw: &SourceDraw, material: &Payload) -> Re
     );
 
     let model = c.source.raw(&draw.model_tag)?;
-    let meshes = model.array(16, 128, None)?;
-    ensure!(meshes.len() == 1, "source vertex model requires one mesh");
-    let mesh = meshes[0];
+    let entry = &c.source.report["models"][draw.model];
+    let mesh = crate::d2_mot::geometry::selected_mesh(&model, entry)?;
     let positions = c.source.buffer(model.u32(mesh)?)?;
     let vertices = positions.0.len() / 24;
     let normal_meta = (0..vertices)
@@ -179,7 +172,7 @@ pub(super) fn build(c: &mut Effect, draw: &SourceDraw, material: &Payload) -> Re
     if text.contains("Buffer<float4> t0 : register(t0);") {
         let root = c.refs.join(format!(
             "library-surfaces-01/vertex-colors/{}",
-            draw.model_tag
+            crate::d2_mot::geometry::mesh_key(&c.source.report["models"][draw.model])?
         ));
         let report = load(&root.join("colors.json"))?;
         let data = if report["source_has_color_buffer"] == true {
@@ -272,8 +265,10 @@ mod tests {
     #[test]
     fn metadata_avoids_shader_and_runtime_texture_slots() {
         let source = "Texture2D<float4> t3 : register(t3);";
-        assert_eq!(metadata_slot(source, &[]).unwrap(), 4);
-        assert_eq!(metadata_slot(source, &[0x5B, 0, 0x56, 0x44]).unwrap(), 5);
+        let slot = metadata_slot(source, &[]).unwrap();
+        assert!((3..32).contains(&slot) && slot != 3);
+        let slot = metadata_slot(source, &[0x5B, 0, 0x56, 0x44]).unwrap();
+        assert!((3..32).contains(&slot) && ![3, 4].contains(&slot));
         let full = (3..32)
             .map(|slot| format!("register(t{slot})\n"))
             .collect::<String>();

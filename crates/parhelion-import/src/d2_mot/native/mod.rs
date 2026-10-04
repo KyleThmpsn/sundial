@@ -1,11 +1,26 @@
 //! Native material and geometry conversion for every prepared source model.
 pub(crate) mod automatic;
 pub use automatic::refresh_optics;
+pub mod categories;
 pub mod collection;
 mod contracts;
 pub mod effects;
 mod mesh;
 pub(crate) mod shader;
+pub use shader::buffer::{
+    Assets as MaterialBufferAssets, Buffer as MaterialBuffer, Receipt as MaterialBufferReceipt,
+    Template as MaterialBufferTemplate,
+};
+pub use shader::identity::{Catalog as ShaderCatalog, Reuse as ShaderReuse, Stage as ShaderStage};
+pub use shader::inputs::{
+    Bindings as ShaderBindings, Inputs as ShaderInputs, Inspection as ShaderInspection,
+};
+pub use shader::program::{
+    Assets as ShaderAssets, Program as ShaderProgram, Receipt as ShaderProgramReceipt,
+    Template as ShaderTemplate,
+};
+pub use shader::rigid::material::{Plan as RigidMaterialPlan, Template as RigidMaterialTemplate};
+pub use shader::rigid::{Rigid as RigidShader, Scopes as RigidScopes, Stream as RigidStream};
 
 use crate::d2_mot::{
     convert,
@@ -22,6 +37,7 @@ use std::{
 };
 
 fn load(path: &Path) -> Result<Value> {
+    crate::cancellation::check()?;
     Ok(serde_json::from_slice(
         &fs::read(path).with_context(|| format!("read {}", path.display()))?,
     )?)
@@ -227,6 +243,7 @@ impl Graph {
         Ok(self.root.join(name))
     }
     fn read(&self, symbol: &str) -> Result<Payload> {
+        crate::cancellation::check()?;
         Ok(Payload(fs::read(self.path(symbol)?)?))
     }
     fn write(&self, symbol: &str, data: &[u8]) -> Result<()> {

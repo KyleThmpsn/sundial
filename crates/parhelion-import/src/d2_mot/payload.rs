@@ -55,6 +55,7 @@ impl Payload {
         stride: usize,
         class: Option<u32>,
     ) -> Result<std::ops::Range<usize>> {
+        crate::cancellation::check()?;
         let count = self.u64(o)?;
         if count == 0 {
             return Ok(0..0);
@@ -68,7 +69,11 @@ impl Payload {
             self.0.len()
         );
         if let Some(c) = class {
-            ensure!(self.u32(header + 8)? == c, "array class mismatch")
+            ensure!(
+                self.u32(header + 8)? == c,
+                "array class mismatch at {o:X}: expected {c:08X}, found {:08X}",
+                self.u32(header + 8)?
+            )
         }
         let start = header + 16;
         let end = start

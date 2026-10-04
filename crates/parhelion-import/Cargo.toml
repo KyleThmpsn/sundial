@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 base64 = "0.22"
+bcdec_rs = "0.2.0"
 hex = "0.4"
 half = "=2.7.1"
 png = "0.18"
@@ -17,11 +18,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"
 fs2 = "0.4.3"
+tempfile = "3"
 ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
-
-[dev-dependencies]
-tempfile = "3"
 
 [lints]
 workspace = true

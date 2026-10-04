@@ -1,10 +1,54 @@
 //! Durable file publication. Callers own document formats, locking, and transaction policy.
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+/// Hashes file contents with fixed memory. Callers retain ownership and path checks.
+pub(crate) fn file_sha256(path: &Path) -> io::Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = File::open(path)?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let count = match file.read(&mut buffer) {
+            Ok(count) => count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+/// An advisory write lease for cooperating processes. Keep the lock file in place,
+/// since unlinking it would let another writer acquire a different file.
+pub fn try_lock_file(path: &Path) -> io::Result<File> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
+            return Err(io::Error::other("The write lock must be a regular file"));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other("The write lock must be a regular file"));
+    }
+    fs2::FileExt::try_lock_exclusive(&file)?;
+    Ok(file)
+}
 
 /// Publishes a complete new file without replacing an existing destination.
 /// The temporary file lives on the destination filesystem and is flushed before publication.
@@ -51,7 +95,7 @@ pub(crate) fn replace_file_if_unchanged(
         || {
             if fs::read(path)? != expected {
                 return Err(io::Error::other(
-                    "The file changed outside Sundial before replacement; reload before saving",
+                    "The file changed outside Sundial before replacement. Reload before saving",
                 ));
             }
             Ok(())

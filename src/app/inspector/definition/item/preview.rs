@@ -2,6 +2,7 @@
 use super::super::item_details::item_name;
 use super::ItemInspection;
 use crate::app::inspector::look;
+use crate::app::item_editor::appearance::is_ornament;
 use crate::{
     catalog::{ItemArtArrangement, ItemPackageMetadata, ItemRenderOverride},
     hash::parse_hash_hex,
@@ -9,7 +10,6 @@ use crate::{
 };
 use eframe::egui;
 use serde_json::Value;
-use std::collections::BTreeMap;
 
 pub(super) fn draw(ui: &mut egui::Ui, content: &ItemInspection<'_>, details: bool, button: bool) {
     let Some(base) = content.matches.item_package_metadata else {
@@ -40,7 +40,7 @@ pub(super) fn draw(ui: &mut egui::Ui, content: &ItemInspection<'_>, details: boo
     let ornament = selected_ornament(
         plugs
             .iter()
-            .map(|(hash, metadata)| (*hash, *metadata, content.catalog.is_weapon_ornament(*hash))),
+            .map(|(hash, metadata)| (*hash, *metadata, is_ornament(content.catalog, *hash))),
     );
     let geometry = ornament.map_or(base, |(_, metadata)| metadata);
     let rows: Vec<_> = valid_art(geometry).collect();
@@ -68,7 +68,7 @@ pub(super) fn draw(ui: &mut egui::Ui, content: &ItemInspection<'_>, details: boo
                 p.link("Ornament", catalog, hash, item_name(catalog, hash));
             }
             for (hash, metadata) in &plugs {
-                if !catalog.is_weapon_ornament(*hash)
+                if !is_ornament(catalog, *hash)
                     && metadata
                         .translation_dye_rows
                         .iter()
@@ -178,23 +178,18 @@ fn effective_dyes<'a>(
     base: &[Vec<ItemRenderOverride>; 3],
     plugs: impl Iterator<Item = &'a ItemPackageMetadata>,
 ) -> Vec<(i8, u16)> {
-    let mut result = BTreeMap::new();
-    let mut insert = |rows: &[ItemRenderOverride]| {
-        for row in rows {
-            if row.key >= 0 && row.value != u16::MAX {
-                result.insert(row.key, row.value);
-            }
-        }
+    let rows = |stages: &[Vec<ItemRenderOverride>; 3]| {
+        std::array::from_fn(|stage| {
+            stages[stage]
+                .iter()
+                .map(|row| (row.key, row.value))
+                .collect()
+        })
     };
-    insert(&base[1]);
-    insert(&base[0]);
-    for plug in plugs {
-        for stage in [1, 0, 2] {
-            insert(&plug.translation_dye_rows[stage]);
-        }
-    }
-    insert(&base[2]);
-    result.into_iter().collect()
+    crate::app::item_editor::appearance::compose_dyes(
+        &rows(base),
+        plugs.map(|plug| rows(&plug.translation_dye_rows)),
+    )
 }
 
 #[cfg(test)]

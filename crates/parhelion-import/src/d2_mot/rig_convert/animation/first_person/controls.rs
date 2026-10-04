@@ -173,6 +173,41 @@ pub fn validate(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Convert a source rig control resource onto a native template whose slots map one to one, as a
+/// standalone rig with its own skeleton does. Every array is the source's, and the template keeps
+/// the fields no array covers.
+pub fn convert_unmapped(source: &[u8], template: &[u8]) -> Result<Payload> {
+    let modern = Payload(source.to_vec());
+    let original = Payload(template.to_vec());
+    validate(&original.0)?;
+    let rows = read(&modern, true)?;
+    let count = u16::try_from(rows[1].len())?;
+    let shape = clips::slots::Shape {
+        native_slots: count,
+        map: (0..count).map(Some).collect(),
+    };
+    let converted = lower(&rows, &shape)?;
+    let mut result = original.clone();
+    let base = result.pointer(24)?;
+    for (rows, &(_, field, _, _, class)) in converted.iter().zip(&FIELDS) {
+        write_array(
+            &mut result.0,
+            base + field,
+            class,
+            rows.len(),
+            &rows.concat(),
+        )?;
+    }
+    let size = result.0.len() as u64;
+    result.0[..8].copy_from_slice(&size.to_le_bytes());
+    validate(&result.0)?;
+    ensure!(
+        read(&result, false)? == converted,
+        "source rig controls changed during serialization"
+    );
+    Ok(result)
+}
+
 fn owner(
     reader: &mut Reader,
     rig: &Value,

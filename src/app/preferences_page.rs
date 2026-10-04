@@ -352,6 +352,11 @@ impl SundialApp {
             );
             ui.radio_value(
                 &mut requested_mode,
+                PlugSelectionMode::GearKind,
+                PlugSelectionMode::GearKind.label(),
+            );
+            ui.radio_value(
+                &mut requested_mode,
                 PlugSelectionMode::AnyPlug,
                 PlugSelectionMode::AnyPlug.label(),
             );

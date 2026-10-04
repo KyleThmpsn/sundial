@@ -468,17 +468,19 @@ impl PackageLayout {
     }
 
     fn set_authored_generation(&self, bytes: &mut [u8]) -> AuthoringResult<()> {
-        // The final supported HUD bank is still on its earlier UI content generation.
-        // Admit that audited package/patch only; other chains retain the existing constraint.
-        let hud_predecessor = (
-            self.package_id,
-            self.patch_id,
-            self.content_build,
-            self.content_revision,
-        ) == (0x037E, 5, 0x0001_4B68, 0);
-        let investment_predecessor = self.content_build == SHADOWKEEP_CONTENT_BUILD
+        // A canonical chain's overlay extends the generation its last stock patch carries,
+        // which the profile declares (some chains, the HUD bank and half the sandbox packages
+        // that hold ability banks, stopped a patch before the final build). Any other package
+        // must be on the final Shadowkeep generation.
+        let canonical_predecessor = crate::package_profile::canonical_package(self.package_id)
+            .is_some_and(|profile| {
+                profile.stock_patch_id == self.patch_id
+                    && profile.stock_generation.content_build == self.content_build
+                    && profile.stock_generation.content_revision == self.content_revision
+            });
+        let final_generation = self.content_build == SHADOWKEEP_CONTENT_BUILD
             && self.content_revision == SHADOWKEEP_CONTENT_REVISION;
-        if !investment_predecessor && !hud_predecessor {
+        if !final_generation && !canonical_predecessor {
             return Err(invalid(format!(
                 "Source package generation is not the expected final Shadowkeep predecessor: \
                  content_build=0x{:08X}, content_revision={}",

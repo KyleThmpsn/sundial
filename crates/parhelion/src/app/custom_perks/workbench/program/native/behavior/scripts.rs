@@ -240,14 +240,19 @@ fn set_reference(graph: &mut Graph, index: usize, path: &str, tag: u32) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sundial::package_authoring::sandbox_perk::action::native::NodeKind as NativeNodeKind;
 
     #[test]
     fn installed_script_outside_stock_examples_roundtrips_without_changing_other_fields() {
-        let mut graph = Graph::read(&native::template(false, 48).unwrap(), 0, CLASS).unwrap();
+        let mut graph = Graph::read(
+            &native::template(NativeNodeKind::Effect(48)).unwrap(),
+            0,
+            CLASS,
+        )
+        .unwrap();
         let original = graph.blocks[0].bytes.clone();
         let path = r"content\new\another_script.object_behaviors.tft";
         let tag = 0x8123_4567;
-        assert!(scripts::by_tag(tag).is_none());
         set_reference(&mut graph, 0, path, tag).unwrap();
         let reread = Graph::read(&graph.emit().unwrap(), 0, CLASS).unwrap();
         assert_eq!(current_tag(&reread, 0).unwrap(), tag);
@@ -259,18 +264,23 @@ mod tests {
 
     #[test]
     fn choosing_a_script_writes_its_path_and_tag_and_survives_a_reload() {
-        let bytes = native::template(false, 48).unwrap();
+        let bytes = native::template(NativeNodeKind::Effect(48)).unwrap();
         let mut graph = Graph::read(&bytes, 0, CLASS).unwrap();
         for script in scripts::SCRIPTS {
             set(&mut graph, 0, script).unwrap();
             let reread = Graph::read(&graph.emit().unwrap(), 0, CLASS).unwrap();
-            reread.validate_node(false, 48).unwrap();
+            reread.validate_node(NativeNodeKind::Effect(48)).unwrap();
             assert_eq!(current_tag(&reread, 0).unwrap(), script.tag);
             let target = reread.blocks[0].links[&PATH];
             let stored = String::from_utf8(reread.blocks[target].bytes.clone()).unwrap();
             assert_eq!(stored.trim_end_matches('\0'), script.path);
         }
-        let mut other = Graph::read(&native::template(false, 42).unwrap(), 0, 0x80803E2F).unwrap();
+        let mut other = Graph::read(
+            &native::template(NativeNodeKind::Effect(42)).unwrap(),
+            0,
+            0x80803E2F,
+        )
+        .unwrap();
         assert!(set(&mut other, 0, &scripts::SCRIPTS[0]).is_err());
     }
 }

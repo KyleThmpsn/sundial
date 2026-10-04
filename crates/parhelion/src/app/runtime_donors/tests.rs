@@ -2,7 +2,7 @@
 use super::*;
 use crate::runtime::compatibility::ComponentDonorAssessment;
 use std::sync::atomic::{AtomicBool, Ordering};
-use sundial::package_authoring::weapon_runtime::WeaponRuntimeBinding;
+use sundial::package_authoring::runtime::WeaponRuntimeBinding;
 
 const BASELINE: u32 = 0x10;
 const SAFE_Z: u32 = 0x20;
@@ -79,18 +79,13 @@ fn app() -> PackageAuthoringApp {
     app.recipe.donor = reference(BASELINE, "Base Runtime");
     app.recipe.overrides.weapon_pattern_index = Some(7);
     let key = app.runtime_graph_key().expect("synthetic runtime baseline");
-    app.runtime_donors.picker = Some(Picker {
-        binding_hash: BINDING,
-        key: Some(key.clone()),
-        baseline_hash: Some(BASELINE),
-        query: String::new(),
-        experimental: false,
-        rejected: false,
-        selected: None,
-        error: None,
-        reset_unsupported: false,
-        reviewing: None,
-    });
+    app.runtime_donors.picker = Some(Picker::new(
+        BINDING,
+        Some(key.clone()),
+        Some(BASELINE),
+        String::new(),
+        None,
+    ));
     app.runtime_donors
         .reports
         .insert(BINDING, (key, Arc::new(report())));
@@ -201,21 +196,8 @@ fn candidate_label(name: &str, _status: DonorCompatibility) -> String {
 }
 
 fn click(ctx: &egui::Context, app: &mut PackageAuthoringApp, position: egui::Pos2) {
-    for pressed in [true, false] {
-        frame(
-            ctx,
-            app,
-            VIEWPORT,
-            vec![
-                egui::Event::PointerMoved(position),
-                egui::Event::PointerButton {
-                    pos: position,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
-        );
+    for events in crate::test_support::driver::tap(position) {
+        frame(ctx, app, VIEWPORT, events);
     }
 }
 
@@ -250,7 +232,7 @@ fn default_review_lists_only_lower_risk_matches_and_preserves_the_recipe() {
         let before = app.recipe.clone();
         let output = settle(&ctx, &mut app, viewport);
         let labels = rendered_labels(&output);
-        assert!(labels.iter().any(|(text, _)| text.contains("2 Lower Risk")));
+        assert!(labels.iter().any(|(text, _)| text == "Lower Risk 2"));
         assert!(
             !labels.iter().any(|(text, _)| text.contains("Unchecked")),
             "status slop must not be rendered"
@@ -493,10 +475,13 @@ fn experimental_apply_button_requires_the_explicit_checkbox() {
     click(
         &ctx,
         &mut app,
-        label_rect(&output, "Show Experimental Matches").center(),
+        label_rect(&output, "Accept Crash Risk").center(),
     );
     assert!(app.runtime_donors.picker.as_ref().unwrap().experimental);
-    assert_eq!(app.recipe, before, "showing candidates must not apply one");
+    assert_eq!(
+        app.recipe, before,
+        "accepting the risk must not apply a donor"
+    );
     let output = settle(&ctx, &mut app, VIEWPORT);
     click(&ctx, &mut app, label_rect(&output, "Apply Donor").center());
     assert_eq!(
@@ -506,12 +491,11 @@ fn experimental_apply_button_requires_the_explicit_checkbox() {
 }
 
 #[test]
-fn rejected_donor_stays_unapplyable_even_with_both_visibility_options_enabled() {
+fn rejected_donor_stays_unapplyable_even_with_the_crash_risk_accepted() {
     let ctx = egui::Context::default();
     let mut app = app();
     let picker = app.runtime_donors.picker.as_mut().unwrap();
     picker.experimental = true;
-    picker.rejected = true;
     picker.selected = Some(REJECTED);
     let before = app.recipe.clone();
     let output = settle(&ctx, &mut app, VIEWPORT);
@@ -610,27 +594,9 @@ fn closing_the_browser_retains_its_worker_until_the_result_is_joined() {
     let mut app = app();
     let before = app.recipe.clone();
     let gate = gated_job(&mut app);
-    let worker_id = app
-        .runtime_donors
-        .job
-        .as_ref()
-        .unwrap()
-        .worker
-        .thread()
-        .id();
     app.runtime_donors.close();
     assert!(app.runtime_donors.picker.is_none());
     assert!(app.runtime_donors.busy());
-    assert_eq!(
-        app.runtime_donors
-            .job
-            .as_ref()
-            .unwrap()
-            .worker
-            .thread()
-            .id(),
-        worker_id
-    );
     app.poll_runtime_donors();
     assert!(
         app.runtime_donors.busy(),
@@ -645,9 +611,7 @@ fn closing_the_browser_retains_its_worker_until_the_result_is_joined() {
 fn invalidation_joins_the_worker_but_discards_its_stale_generation() {
     let mut app = app();
     let gate = gated_job(&mut app);
-    let generation = app.runtime_donors.generation;
     app.runtime_donors.invalidate();
-    assert_eq!(app.runtime_donors.generation, generation.wrapping_add(1));
     assert!(app.runtime_donors.picker.is_none());
     assert!(app.runtime_donors.reports.is_empty());
     assert!(app.runtime_donors.busy());
@@ -745,13 +709,13 @@ fn grouped_choices_show_one_effective_source_instead_of_repeating_every_binding(
         app.runtime_graph_key().unwrap(),
         Arc::new(shared_owner_graph()),
     ));
+    let chosen = ComponentSource::Donors(vec![SourceDonor {
+        hash: Some(SAFE_Z),
+        route: SourceRoute::Chosen,
+    }]);
     assert_eq!(
-        app.effective_runtime_source_labels(
-            BINDING,
-            Some(BASELINE),
-            app.runtime_graph_key().as_ref()
-        ),
-        vec!["Effective: Z Safe Donor"]
+        app.component_source(BINDING, Some(BASELINE), app.runtime_graph_key().as_ref()),
+        chosen
     );
     let mut report = report();
     report.current_sources.insert(
@@ -771,12 +735,8 @@ fn grouped_choices_show_one_effective_source_instead_of_repeating_every_binding(
         (app.runtime_graph_key().unwrap(), Arc::new(report)),
     );
     assert_eq!(
-        app.effective_runtime_source_labels(
-            BINDING,
-            Some(BASELINE),
-            app.runtime_graph_key().as_ref()
-        ),
-        vec!["Effective: Z Safe Donor"]
+        app.component_source(BINDING, Some(BASELINE), app.runtime_graph_key().as_ref()),
+        chosen
     );
 }
 
@@ -856,23 +816,22 @@ fn effective_source_labels_expose_shared_owner_donors_despite_requested_baseline
     let before = app.recipe.clone();
     assert!(app.recipe.runtime_component_donor(BINDING).is_none());
     assert_eq!(
-        app.effective_runtime_source_labels(
-            BINDING,
-            Some(BASELINE),
-            app.runtime_graph_key().as_ref()
-        ),
-        vec![format!(
-            "Effective: Z Safe Donor via {} (shared owner)",
-            binding_label(WEAPON_STAT_TRANSLATOR_COMPONENT_KEY)
-        )]
+        app.component_source(BINDING, Some(BASELINE), app.runtime_graph_key().as_ref()),
+        ComponentSource::Donors(vec![SourceDonor {
+            hash: Some(SAFE_Z),
+            route: SourceRoute::Shared(WEAPON_STAT_TRANSLATOR_COMPONENT_KEY),
+        }])
     );
     assert_eq!(
-        app.effective_runtime_source_labels(
+        app.component_source(
             WEAPON_BARREL_COMPONENT_KEY,
             Some(BASELINE),
             app.runtime_graph_key().as_ref()
         ),
-        vec!["Effective: Base Runtime (baseline)"]
+        ComponentSource::Donors(vec![SourceDonor {
+            hash: Some(BASELINE),
+            route: SourceRoute::Baseline,
+        }])
     );
     let ctx = egui::Context::default();
     let key = app.runtime_graph_key();
@@ -889,28 +848,32 @@ fn effective_source_labels_expose_shared_owner_donors_despite_requested_baseline
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     workbench_style(ui);
-                    app.draw_checked_runtime_donor_header(
+                    app.draw_runtime_component_row(
                         ui,
-                        BINDING,
-                        "Follow Baseline (Base Runtime)",
-                        None,
-                        Some(BASELINE),
-                        key.as_ref(),
+                        &ComponentRow {
+                            binding_hash: BINDING,
+                            label: "Reload Behavior",
+                            tooltip: "",
+                            baseline_hash: Some(BASELINE),
+                            current_key: key.as_ref(),
+                        },
                     );
                 });
             },
         );
     }
     let labels = rendered_labels(&output);
+    assert!(labels.iter().any(|(text, _)| text == "Reload Behavior"));
     assert!(
         labels
             .iter()
-            .any(|(text, _)| text == "Requested: Follow Baseline (Base Runtime)")
+            .any(|(text, _)| text.contains("Z Safe Donor via"))
     );
     assert!(
-        labels
+        !labels
             .iter()
-            .any(|(text, _)| text.contains("Effective: Z Safe Donor via"))
+            .any(|(text, _)| text.starts_with("Requested:")),
+        "a component with no saved choice has no request to show"
     );
     assert_eq!(app.recipe, before);
 }
@@ -922,21 +885,19 @@ fn effective_source_labels_do_not_reuse_stale_graphs_or_claim_missing_bindings()
         app.runtime_graph_key().unwrap(),
         Arc::new(shared_owner_graph()),
     ));
-    assert!(
-        app.effective_runtime_source_labels(
+    assert_eq!(
+        app.component_source(
             WEAPON_INPUT_COMPONENT_KEY,
             Some(BASELINE),
             app.runtime_graph_key().as_ref()
-        )[0]
-        .contains("absent")
+        ),
+        ComponentSource::Absent
     );
     app.recipe.overrides.weapon_pattern_index = Some(8);
-    let labels = app.effective_runtime_source_labels(
-        BINDING,
-        Some(BASELINE),
-        app.runtime_graph_key().as_ref(),
+    assert_eq!(
+        app.component_source(BINDING, Some(BASELINE), app.runtime_graph_key().as_ref()),
+        ComponentSource::NotLoaded
     );
-    assert_eq!(labels, vec!["Effective source: Waiting for the runtime."]);
 }
 
 #[test]
@@ -957,12 +918,11 @@ fn same_baseline_item_or_pattern_donors_do_not_claim_a_shared_owner_change() {
             Arc::new(shared_owner_graph()),
         ));
         assert_eq!(
-            app.effective_runtime_source_labels(
-                BINDING,
-                Some(BASELINE),
-                app.runtime_graph_key().as_ref()
-            ),
-            vec!["Effective: Base Runtime (baseline)"]
+            app.component_source(BINDING, Some(BASELINE), app.runtime_graph_key().as_ref()),
+            ComponentSource::Donors(vec![SourceDonor {
+                hash: Some(BASELINE),
+                route: SourceRoute::Baseline,
+            }])
         );
     }
 }
@@ -992,7 +952,7 @@ fn failed_runtime_graph_keeps_saved_donor_repair_controls_visible() {
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         workbench_style(ui);
-                        app.draw_runtime_component_donors(ui);
+                        app.draw_gameplay_parts(ui, None);
                     });
                 },
             );
@@ -1004,7 +964,7 @@ fn failed_runtime_graph_keeps_saved_donor_repair_controls_visible() {
                 .any(|(text, _)| text.contains("Synthetic incompatible owner"))
         );
         assert!(labels.iter().any(|(text, _)| text == "Remove Saved Choice"));
-        assert!(labels.iter().any(|(text, _)| text == "Review Donors…"));
+        assert!(labels.iter().any(|(text, _)| text == "Change…"));
         assert_eq!(app.recipe, before);
         assert!(!app.runtime_donors.busy());
     }

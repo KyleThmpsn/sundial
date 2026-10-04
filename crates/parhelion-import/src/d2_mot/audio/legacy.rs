@@ -337,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn every_container_plays_every_new_variation() {
+    fn every_container_references_every_new_variation() {
         let id = |container: u32, index: usize| container * 16 + index as u32;
         let fitted = fit_variations(&native(), &[0xB1, 0xB2, 0xB3], id).unwrap();
         let sources = media_of(&fitted);

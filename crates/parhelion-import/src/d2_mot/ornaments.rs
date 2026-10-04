@@ -28,6 +28,11 @@ pub fn native(r: &mut Reader, hash: u32) -> Result<Value> {
         .find(|&&o| items.u32(o).ok() == Some(hash))
         .context("native item")?;
     let item = r.tag(items.u32(row + 16)?, Some(0x80807BEA))?;
+    if item.u64(0x68)? == 0 {
+        let report = json!({"weapon":hash,"sockets":[]});
+        write_json(&r.output.join("native-sockets.json"), &report)?;
+        return Ok(report);
+    }
     let mut sockets = vec![];
     for (index, row) in item
         .array(item.pointer(0x68)?, 0x50, Some(0x808077C4))?
@@ -103,13 +108,16 @@ pub fn discover(r: &mut Reader, hash: u32) -> Result<Value> {
     discover_inner(r, hash, true)
 }
 
-pub(crate) fn gameplay_sockets(r: &mut Reader, hash: u32) -> Result<Value> {
+pub fn gameplay_sockets(r: &mut Reader, hash: u32) -> Result<Value> {
     discover_inner(r, hash, false)
 }
 
 fn discover_inner(r: &mut Reader, hash: u32, labels: bool) -> Result<Value> {
     let (_, tag) = item::find(r, hash)?;
     let definition = r.tag(tag, Some(0x8080799D))?;
+    if definition.u64(0x60)? == 0 {
+        return Ok(json!({"weapon":hash,"sockets":[]}));
+    }
     let sockets = definition.pointer(0x60)?;
     ensure!(
         sockets >= 4 && definition.u32(sockets - 4)? == 0x808077C0,

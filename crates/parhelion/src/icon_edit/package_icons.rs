@@ -17,7 +17,6 @@ pub(crate) struct Entry {
     pub name: String,
     pub white: bool,
     pub size: [usize; 2],
-    pub thumbnail: egui::ColorImage,
 }
 
 fn dimensions(header: &[u8], purpose: Purpose) -> Result<[usize; 2], String> {
@@ -84,6 +83,19 @@ pub(crate) fn load_for(
     Ok(image)
 }
 
+/// A thumbnail of `image`, 64 pixels on its long side.
+pub(crate) fn thumbnail(image: &egui::ColorImage) -> egui::ColorImage {
+    let [w, h] = image.size;
+    let size = [64 * w / w.max(h), 64 * h / w.max(h)];
+    let mut thumbnail = egui::ColorImage::new(size, egui::Color32::TRANSPARENT);
+    for y in 0..size[1] {
+        for x in 0..size[0] {
+            thumbnail[(x, y)] = image[(x * w / size[0], y * h / size[1])];
+        }
+    }
+    thumbnail
+}
+
 /// Returning false cancels the scan and releases the package manager promptly.
 #[cfg(test)]
 pub(crate) fn scan(
@@ -126,14 +138,6 @@ pub(crate) fn scan_for(
                 Some((image, white == Some(true)))
             })
             .map(|(image, white)| {
-                let [w, h] = image.size;
-                let size = [64 * w / w.max(h), 64 * h / w.max(h)];
-                let mut thumbnail = egui::ColorImage::new(size, egui::Color32::TRANSPARENT);
-                for y in 0..size[1] {
-                    for x in 0..size[0] {
-                        thumbnail[(x, y)] = image[(x * w / size[0], y * h / size[1])];
-                    }
-                }
                 let mut aliases = names.get(&tag.0).cloned().unwrap_or_default();
                 aliases.extend(names.get(&header.reference).into_iter().flatten().copied());
                 aliases.sort_unstable();
@@ -148,7 +152,6 @@ pub(crate) fn scan_for(
                     name: aliases.join("\n"),
                     white,
                     size: image.size,
-                    thumbnail,
                 }
             });
         if !emit(index + 1, total, entry) {
@@ -215,7 +218,7 @@ pub(crate) fn author(
         &edit,
     )?
     .ok_or_else(|| invalid("Perk icon produced no artwork"))?;
-    let private_layer = plan.primary_layer_tag;
+    let private_layer = plan.layer_tag;
     // Fingerprint the emitted pixels as well as the references. Padding or resampling
     // fixes must invalidate a cached icon even when the recipe and tag positions match.
     let revision = plan

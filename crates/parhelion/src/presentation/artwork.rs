@@ -72,6 +72,15 @@ impl Artwork {
     pub(crate) fn composition(&self) -> Option<&Composition> {
         self.composition.as_ref()
     }
+    /// Names this artwork by what it saves as, so a list can tell artwork apart without holding
+    /// its pixels.
+    pub(crate) fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.source.encoded.hash(&mut hasher);
+        self.composition.hash(&mut hasher);
+        hasher.finish()
+    }
     pub(crate) fn with_composition(&self, composition: Composition) -> Result<Self, String> {
         composition.validate()?;
         Ok(Self {

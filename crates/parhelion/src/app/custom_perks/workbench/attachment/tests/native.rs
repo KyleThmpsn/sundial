@@ -52,6 +52,8 @@ fn native_reopening_a_different_perk_does_not_reuse_the_previous_parameter_edito
                 );
             },
         );
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.job.text == "Custom Perk Workbench")));
         assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
             egui::Shape::Text(text) if text.galley.job.text == "Apply and Back")));
     }

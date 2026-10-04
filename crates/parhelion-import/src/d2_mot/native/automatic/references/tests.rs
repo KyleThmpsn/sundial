@@ -37,6 +37,7 @@ fn source_conversion_uses_discovered_contracts() {
     println!("{result}");
     let manifest = load(&out.join("graph/asset-graph.json")).unwrap();
     let nodes = manifest["nodes"].as_array().unwrap();
+    assert!(!nodes.is_empty(), "conversion emitted no asset graph");
     let symbols: BTreeSet<_> = nodes
         .iter()
         .map(|n| n["symbol"].as_str().unwrap())

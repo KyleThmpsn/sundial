@@ -1,7 +1,7 @@
 //! Recipe changes happen after controls have selected one command.
 use super::super::{
-    LogEntry, materialize_socket_column, recipe_socket_choices, reconcile_socket_plug_variants,
-    remove_base_socket, remove_last_added_socket, set_recipe_socket_column, set_socket_role,
+    LogEntry, materialize_socket_column, recipe_socket_choices, remove_base_socket,
+    remove_last_added_socket, restore_socket_column, set_recipe_socket_column, set_socket_role,
     shift_socket_choice_queries_after_removal,
 };
 use super::{RowChoices, RowCommand, RowContinuation, SocketRowContext};
@@ -37,7 +37,7 @@ pub(super) fn apply(
             if removed {
                 if context
                     .perk_request
-                    .is_some_and(|request| request.socket() == context.socket_index)
+                    .is_some_and(|request| request.socket() == Some(context.socket_index))
                 {
                     *context.perk_request = None;
                 }
@@ -113,23 +113,13 @@ fn reset(context: &mut SocketRowContext<'_>, choices: &RowChoices) -> RowContinu
     if context.is_added {
         return RowContinuation::Finished;
     }
-    let recipe = &mut *context.recipe;
-    let donor = context.donor;
-    let socket = &donor.sockets[context.socket_index];
-    let queries = &mut *context.queries;
-    let inherited = &choices.inherited;
-    if recipe.overrides.socket_columns.len() < donor.sockets.len() {
-        recipe
-            .overrides
-            .socket_columns
-            .resize_with(donor.sockets.len(), || None);
-    }
-    recipe.overrides.socket_columns[socket.index] = None;
-    if recipe.overrides.socket_columns.iter().all(Option::is_none) {
-        recipe.overrides.socket_columns.clear();
-    }
-    reconcile_socket_plug_variants(recipe, socket.index, inherited, None);
-    queries.clear();
+    restore_socket_column(
+        context.recipe,
+        context.donor.sockets.len(),
+        context.socket_index,
+        &choices.inherited,
+    );
+    context.queries.clear();
     RowContinuation::Finished
 }
 

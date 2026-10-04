@@ -2907,6 +2907,7 @@ version = "0.5.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "bcdec_rs",
  "fs2",
  "half",
  "hex",

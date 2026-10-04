@@ -85,18 +85,18 @@ impl Editor {
         }
     }
 
-    /// `class_armor` marks a recipe the Sunrise badge cannot hold: its three class leaves share
-    /// one member list.
+    /// `badges` are the library's, each with the recipe it is read from when picked.
+    /// Armor's badge membership follows the classes its equipment supports.
     pub(crate) fn draw_badge(
         &mut self,
         ui: &mut egui::Ui,
         draft: &mut crate::WeaponRecipeOverrides,
-        badges: &[Badge],
+        badges: &[(crate::recipe_library::LibraryBadge, std::path::PathBuf)],
         class_armor: bool,
     ) {
         ui.horizontal(|ui| {
             ui.strong("Collections Badge");
-            sundial::investment::draw_authoring_info_icon(ui, "Group weapons in a custom badge. Use the same badge settings for each member. Normal Collections placement is unchanged.");
+            sundial::investment::draw_authoring_info_icon(ui, "Group items in a custom badge. Use the same badge settings for each member. Normal Collections placement is unchanged.");
         });
         let mut enabled = draft.badge.is_some();
         if ui.checkbox(&mut enabled, "Custom Badge").changed() {
@@ -106,36 +106,47 @@ impl Editor {
                 ..Default::default()
             };
         }
-        let mut include = !draft.exclude_from_sunrise_badge && !class_armor;
+        let mut include = !draft.exclude_from_sunrise_badge;
         if ui
-            .add_enabled(
-                !class_armor,
-                egui::Checkbox::new(
-                    &mut include,
-                    format!("Include in {} Badge", self.branding.name()),
-                ),
+            .checkbox(
+                &mut include,
+                format!("Include in {} Badge", self.branding.name()),
             )
-            .on_disabled_hover_text("Armor belongs to one class.")
             .changed()
         {
             draft.exclude_from_sunrise_badge = !include;
+        }
+        if class_armor {
+            ui.weak("Armor joins the badge for its supported classes.");
         }
         if let Some(badge) = &mut draft.badge {
             if !badges.is_empty() {
                 egui::ComboBox::from_id_salt("existing-badge")
                     .selected_text("Choose from Library")
                     .show_ui(ui, |ui| {
-                        for existing in badges {
-                            if ui
-                                .selectable_label(badge == existing, &existing.name)
-                                .clicked()
-                            {
-                                *badge = existing.clone();
-                                self.badge = ImageEditor {
-                                    branding: self.branding,
-                                    ..Default::default()
-                                };
+                        let icon = badge.icon.as_ref().map(Artwork::fingerprint);
+                        for (existing, path) in badges {
+                            let selected = badge.name == existing.name
+                                && badge.description == existing.description
+                                && icon == existing.icon;
+                            if !ui.selectable_label(selected, &existing.name).clicked() {
+                                continue;
                             }
+                            // The library holds no artwork, so the badge is read whole from
+                            // the recipe that carries it.
+                            let error = match crate::recipe_library::load_badge(path) {
+                                Ok(Some(picked)) => {
+                                    *badge = picked;
+                                    None
+                                }
+                                Ok(None) => Some("That recipe no longer has a badge.".to_owned()),
+                                Err(error) => Some(error),
+                            };
+                            self.badge = ImageEditor {
+                                branding: self.branding,
+                                error,
+                                ..Default::default()
+                            };
                         }
                     });
             }
@@ -198,7 +209,6 @@ impl Editor {
                 self.branding,
             ));
         }
-        ui.weak("Release watermarks use the image silhouette. A transparent PNG works best.");
     }
 
     /// The lore tab: the base item's, none, or a story of its own for an item of `kind`.
@@ -296,6 +306,42 @@ impl ImageEditor {
                     }
                     Err(error) => self.error = Some(error),
                 }
+            }
+            if kind == Kind::Watermark {
+                ui.horizontal(|ui| {
+                    ui.strong(label);
+                    sundial::investment::draw_authoring_info_icon(
+                        ui,
+                        "Marks the inventory icon's corner. Uses the image's silhouette, so a \
+                         transparent PNG works best.",
+                    );
+                });
+                let custom = draft.is_some();
+                let name = if custom {
+                    "Custom Artwork"
+                } else {
+                    reset.trim_start_matches("Use ")
+                };
+                let mut actions = vec![("Edit Artwork…", true)];
+                if custom {
+                    actions.push(("Use Default", true));
+                }
+                let clicked = sundial::investment::draw_authoring_tile(
+                    ui,
+                    self.preview.as_ref().map(|(_, texture)| texture),
+                    name,
+                    "Icon Corner",
+                    &actions,
+                );
+                if clicked == Some(1) {
+                    *draft = None;
+                    self.preview = None;
+                    self.error = None;
+                }
+                if let Some(error) = &self.error {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+                return clicked == Some(0);
             }
             ui.horizontal_top(|ui| {
                 if let Some((_, texture)) = &self.preview {

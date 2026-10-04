@@ -12,15 +12,11 @@ jobs:
   validate-version:
     runs-on: ubuntu-22.04
     timeout-minutes: 60
-    permissions:
-      contents: read
-      actions: read
-      checks: read
     outputs:
       version: ${{ steps.version.outputs.version }}
 
     steps:
-      - name: Check out release source
+      - name: Check Out Release Source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust 1.88
@@ -28,7 +24,7 @@ jobs:
           rustup toolchain install 1.88.0 --profile minimal --no-self-update
           rustup default 1.88.0
 
-      - name: Validate release version
+      - name: Validate Release Version
         id: version
         shell: bash
         run: |
@@ -48,7 +44,21 @@ jobs:
           fi
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
-      - name: Require Quality For This Commit
+  # Packaging can build while Quality finishes. Publishing still requires this gate.
+  quality:
+    needs: validate-version
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+
+    steps:
+      - name: Check Out Release Source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Require Quality for This Commit
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -70,7 +80,7 @@ jobs:
     runs-on: windows-2022
 
     steps:
-      - name: Check out release source
+      - name: Check Out Release Source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust 1.88
@@ -79,20 +89,38 @@ jobs:
           rustup toolchain install 1.88.0 --profile minimal --no-self-update
           rustup default 1.88.0
 
+      - name: Cache Rust Dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: release-${{ runner.os }}
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/upstream' }}
+
       # The D2 model importer is experimental and stays out of releases. Quality checks it
       # on the upstream branch, and it builds locally with --features d2-model-importer.
       - name: Build Sundial
-        run: cargo build --release --locked -p sundial-suite
+        run: |
+          Remove-Item -LiteralPath target/cargo-timings/cargo-timing.html -ErrorAction SilentlyContinue
+          cargo build --release --locked -p sundial-suite --timings
 
-      - name: Generate dependency notices
+      - name: Upload Build Timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cargo-timings-release-${{ runner.os }}
+          path: target/cargo-timings/cargo-timing.html
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Generate Dependency Notices
         shell: pwsh
         run: ./packaging/generate-third-party-notices.ps1 -Target x86_64-pc-windows-msvc
 
-      - name: Package release
+      - name: Package Release
         shell: pwsh
         run: ./packaging/package-windows.ps1 -Version "${{ needs.validate-version.outputs.version }}"
 
-      - name: Upload Windows artifacts
+      - name: Upload Windows Artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Sundial-windows-x86_64
@@ -104,7 +132,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Check out release source
+      - name: Check Out Release Source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust 1.88
@@ -112,7 +140,7 @@ jobs:
           rustup toolchain install 1.88.0 --profile minimal --no-self-update
           rustup default 1.88.0
 
-      - name: Install build tools
+      - name: Install Build Tools
         run: |
           sudo apt-get update
           sudo apt-get install --yes \
@@ -126,19 +154,37 @@ jobs:
             libxkbcommon-dev \
             libxrandr-dev
 
+      - name: Cache Rust Dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: release-${{ runner.os }}
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/upstream' }}
+
       # The D2 model importer is experimental and stays out of releases. Quality checks it
       # on the upstream branch, and it builds locally with --features d2-model-importer.
       - name: Build Sundial
-        run: cargo build --release --locked -p sundial-suite
+        run: |
+          rm -f target/cargo-timings/cargo-timing.html
+          cargo build --release --locked -p sundial-suite --timings
 
-      - name: Generate dependency notices
+      - name: Upload Build Timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cargo-timings-release-${{ runner.os }}
+          path: target/cargo-timings/cargo-timing.html
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Generate Dependency Notices
         shell: pwsh
         run: ./packaging/generate-third-party-notices.ps1 -Target x86_64-unknown-linux-gnu
 
-      - name: Package release
+      - name: Package Release
         run: bash ./packaging/package-linux.sh "${{ needs.validate-version.outputs.version }}"
 
-      - name: Verify compatibility baseline
+      - name: Verify Compatibility Baseline
         run: |
           file target/release/sundial
           dependencies=$(ldd target/release/sundial)
@@ -155,7 +201,7 @@ jobs:
           test -n "$max_glibc"
           dpkg --compare-versions "${max_glibc#GLIBC_}" le 2.35
 
-      - name: Upload Linux artifacts
+      - name: Upload Linux Artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Sundial-linux-x86_64
@@ -164,23 +210,23 @@ jobs:
 
   publish:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [validate-version, windows, linux]
+    needs: [validate-version, quality, windows, linux]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
 
     steps:
-      - name: Check out release notes
+      - name: Check Out Release Notes
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Download verified artifacts
+      - name: Download Verified Artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: Sundial-*
           path: dist
           merge-multiple: true
 
-      - name: Verify complete release set
+      - name: Verify Complete Release Set
         shell: bash
         run: |
           version="${{ needs.validate-version.outputs.version }}"
@@ -197,7 +243,7 @@ jobs:
           tr -d '\r' < "Sundial-v$version-windows-x86_64.zip.sha256" | sha256sum --check --strict
           tr -d '\r' < "Sundial-v$version-linux-x86_64.tar.gz.sha256" | sha256sum --check --strict
 
-      - name: Prepare standalone Windows executable
+      - name: Prepare Standalone Windows Executable
         shell: bash
         run: |
           version="${{ needs.validate-version.outputs.version }}"

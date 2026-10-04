@@ -2,9 +2,16 @@
 //!
 //! The compiler owns routing masks, condition ordinals and retained-state counts.
 //! Native entities remain reusable building blocks, with edits kept on private clones.
+use crate::sandbox_perk::action::native::NodeKind as NativeNodeKind;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
-use crate::weapon_runtime::WeaponRuntimeValueOverride;
+pub use crate::ability::AbilityTarget;
+use crate::runtime::WeaponRuntimeValueOverride;
+mod selectors;
+pub use selectors::{
+    AbilityState, AbilityVersion, AttachmentTarget, DamageMode, PropertyOperation, ValueSource,
+};
 
 pub(crate) mod compiler;
 pub use compiler::draft as native_draft;
@@ -17,11 +24,11 @@ pub use properties::{KeyCatalog, KeyEvidence};
 pub const EMPTY_KEY: u32 = 0x811C_9DC5;
 
 /// The input selector value most stock Component Value Adjustment nodes store.
-const fn no_input() -> u8 {
-    0xFF
+const fn no_input() -> ValueSource {
+    ValueSource::None
 }
 
-fn is_no_input(input: &u8) -> bool {
+fn is_no_input(input: &ValueSource) -> bool {
     *input == no_input()
 }
 
@@ -129,21 +136,24 @@ impl NativeNode {
     /// An editable configuration of an observed native effect kind.
     #[must_use]
     pub fn effect(kind: u8) -> Option<Self> {
-        Self::fresh(false, kind)
+        Self::fresh(NativeNodeKind::Effect(kind))
     }
 
     /// An editable configuration of an observed native condition kind.
     #[must_use]
     pub fn condition(kind: u8) -> Option<Self> {
-        Self::fresh(true, kind)
+        Self::fresh(NativeNodeKind::Condition(kind))
     }
 
-    fn fresh(condition: bool, kind: u8) -> Option<Self> {
+    fn fresh(selection: NativeNodeKind) -> Option<Self> {
         use crate::sandbox_perk::action::{layout, native};
+        let condition = selection.is_condition();
+        let kind = selection.byte();
         let mut bytes = if condition {
-            layout::blank_condition(kind).or_else(|| native::template(true, kind))?
+            layout::blank_condition(kind)
+                .or_else(|| native::template(NativeNodeKind::Condition(kind)))?
         } else {
-            layout::blank_effect(kind).or_else(|| native::template(false, kind))?
+            layout::blank_effect(kind).or_else(|| native::template(NativeNodeKind::Effect(kind)))?
         };
         // A kind with a plain title starts as the configuration that title describes.
         for (offset, value) in layout::stock_defaults(condition, kind) {
@@ -171,7 +181,11 @@ impl NativeNode {
             })?;
             let graph =
                 crate::sandbox_perk::action::native::Graph::read(&self.bytes, 0, entry.class)?;
-            return graph.validate_node(condition, self.kind);
+            return graph.validate_node(if condition {
+                NativeNodeKind::Condition(self.kind)
+            } else {
+                NativeNodeKind::Effect(self.kind)
+            });
         }
         if Some(self.bytes.len()) != size {
             return Err(format!(
@@ -278,6 +292,76 @@ pub struct Asset {
     pub path: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub values: Vec<WeaponRuntimeValueOverride>,
+    /// What the graph's Status Icon shows on the HUD, in place of its stock status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hud_status: Option<HudStatus>,
+}
+
+/// A HUD status of the project's own. The HUD finds a status's name and icon by its name hash,
+/// so the build gives this one a hash of its own, a string under it and a row in the HUD status
+/// table naming an icon.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HudStatus {
+    pub name: String,
+    /// The stock HUD status whose icon this one shows, by its name hash. `None` keeps the icon
+    /// of the status the graph shows.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "hex_key_option"
+    )]
+    pub icon: Option<u32>,
+    /// An icon of the author's own, a base64 PNG, shown in place of any stock status's icon. The
+    /// build fits it to each texture the stock icon has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+}
+
+/// One checked byte replacement in a resource of a privately cloned native effect graph.
+/// The expected bytes prevent a different package version from receiving the patch.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAssetResourcePatch {
+    pub binding_hash: u32,
+    pub resource_index: u16,
+    pub offset: u32,
+    #[serde(with = "hex_bytes")]
+    pub expected: Vec<u8>,
+    #[serde(with = "hex_bytes")]
+    pub bytes: Vec<u8>,
+    /// An imported particle node of the weapon whose plug carries the program. The build writes
+    /// that node's tag in place of `bytes`, which then only hold its four-byte width.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported_particle: Option<String>,
+}
+
+/// Private edits to the existing graph referenced by one native effect action.
+/// The action is compiled against the live source graph, then its new private copy is rebound.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAssetPatch {
+    pub action_index: usize,
+    pub source_graph: u32,
+    pub patches: Vec<NativeAssetResourcePatch>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub appends: Vec<NativeAssetResourceAppend>,
+    /// Component owners the private copy leaves out, with the events they send. An owner that
+    /// another owner still sends events into is refused.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remove_owners: Vec<u32>,
+}
+
+/// Serialized definition data appended to a private owner. Runtime allocation
+/// is unchanged. Checked patches separately retarget its existing descriptors.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAssetResourceAppend {
+    pub binding_hash: u32,
+    pub resource_index: u16,
+    pub expected_owner_size: u32,
+    #[serde(with = "hex_bytes")]
+    pub bytes: Vec<u8>,
 }
 
 /// Which ammunition pool an ammunition action fills. The names come from how the stock
@@ -393,7 +477,7 @@ pub enum Action {
             default = "default_attach_mode",
             skip_serializing_if = "is_default_attach_mode"
         )]
-        mode: u8,
+        mode: AttachmentTarget,
         /// Cleanup policy key at +0x18 and removal parameter at +0x1C. A nonempty first
         /// key suppresses automatic retirement. The second names the value written on removal.
         #[serde(
@@ -462,13 +546,13 @@ pub enum Action {
     /// The compiler preserves their native bytes, including unknown values.
     AdjustComponent {
         /// The ability selector byte at `+0x02`. Stock nodes store 0, 1, 2 and 7.
-        target: u8,
+        target: AbilityTarget,
         /// Ability state at `+0x03`: 0 any, 1 inactive, 2 active. Other values skip the action.
         #[serde(default, skip_serializing_if = "is_zero_byte")]
-        flag: u8,
+        flag: AbilityState,
         /// Ability version at `+0x04`: zero current, nonzero base/original ability.
         #[serde(default, skip_serializing_if = "is_zero_byte")]
-        option: u8,
+        option: AbilityVersion,
         /// The scale at `+0x08`, kept as a bit pattern so recipe equality stays exact.
         #[serde(with = "float_bit")]
         scale_bits: u32,
@@ -480,7 +564,7 @@ pub enum Action {
         value_bits: u32,
         /// The input selector byte at `+0x48`. Stock nodes store 0xFF in 106 of 179 cases.
         #[serde(default = "no_input", skip_serializing_if = "is_no_input")]
-        input: u8,
+        input: ValueSource,
     },
     /// Changes a named property inside one ability's bank, the way stock exotics grant an
     /// extra grenade charge or improve a jump.
@@ -490,13 +574,13 @@ pub enum Action {
     /// The engine reverses the operation when the effect ends.
     AbilityProperty {
         /// The ability selector byte at `+0x02`. Stock nodes store 0, 1, 2, 3, 4 and 7.
-        target: u8,
+        target: AbilityTarget,
         /// The property key at `+0x04`, a 32-bit hash.
         #[serde(with = "hex_key")]
         key: u32,
         /// Operation at `+0x08`: zero applies a property reference, nonzero removes one.
         #[serde(default, skip_serializing_if = "is_zero_byte")]
-        option: u8,
+        option: PropertyOperation,
     },
     /// Sets the transmat effect a weapon plays. The key names the effect and its consumer is
     /// not resolved, so the key is carried verbatim.
@@ -525,7 +609,7 @@ pub enum Action {
     /// do. The mode is the element: 0 Kinetic, 1 Solar, 2 Arc, 3 Void.
     SetDamageType {
         /// The damage type byte at `+0x02`.
-        mode: u8,
+        mode: DamageMode,
         /// Whether the change survives the effect ending, at `+0x03`.
         #[serde(default, skip_serializing_if = "is_false")]
         keep_after_removal: bool,
@@ -612,8 +696,8 @@ fn is_one(value: &u8) -> bool {
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
-fn is_zero_byte(value: &u8) -> bool {
-    *value == 0
+fn is_zero_byte<T: Copy + Into<u8>>(value: &T) -> bool {
+    (*value).into() == 0
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -622,6 +706,249 @@ fn is_zero(value: &u32) -> bool {
 }
 
 /// A single key written as a `0x` hexadecimal string.
+/// A single float carried as its bits, so a program stays `Eq`, written as the number.
+mod f32_bits {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(bits: &u32, serializer: S) -> Result<S::Ok, S::Error> {
+        f32::from_bits(*bits).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+        f32::deserialize(deserializer).map(f32::to_bits)
+    }
+}
+
+/// A property a program defines for itself. The build gives every bank of `slot` that lists
+/// `parameter` a row under `key` that sets the parameter to `value`, added to the running
+/// value or written over it, so an Ability Property action applying `key` on that slot works
+/// on every Subclass. The key is a hash of the tuning (`ability::bank::tuning_key`), so equal
+/// tunings on any perk share one row and different ones never collide.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AbilityTuning {
+    #[serde(with = "hex_key")]
+    pub key: u32,
+    pub slot: AbilityTarget,
+    #[serde(with = "hex_key")]
+    pub parameter: u32,
+    #[serde(rename = "value", with = "f32_bits")]
+    pub value_bits: u32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub add: bool,
+}
+
+/// A private adjustment to a native base ability input. The property lifetime controls
+/// its weight, so removing or holstering the item restores the unmodified ability.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AbilityInput {
+    #[serde(with = "hex_key")]
+    pub key: u32,
+    pub slot: AbilityTarget,
+    pub input: u8,
+    #[serde(rename = "value", with = "f32_bits")]
+    pub value_bits: u32,
+    pub multiply: bool,
+}
+
+impl AbilityInput {
+    #[must_use]
+    pub fn new(slot: AbilityTarget, input: u8, value: f32, multiply: bool) -> Self {
+        let value_bits = value.to_bits();
+        let key = crate::hash::fnv1_name_hash(&format!(
+            "parhelion.ability.input.{slot}.{input}.{value_bits:08x}.{}",
+            u8::from(multiply)
+        ));
+        Self {
+            key,
+            slot,
+            input,
+            value_bits,
+            multiply,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        let value = f32::from_bits(self.value_bits);
+        if self.input >= 7
+            || !value.is_finite()
+            || (self.multiply && value < 0.0)
+            || crate::ability::bank::slot_banks(self.slot).is_empty()
+            || self.key != Self::new(self.slot, self.input, value, self.multiply).key
+        {
+            return Err("Invalid private base ability input adjustment".into());
+        }
+        Ok(())
+    }
+}
+
+impl AbilityTuning {
+    /// A tuning with the key its definition hashes to.
+    #[must_use]
+    pub fn new(slot: AbilityTarget, parameter: u32, value: f32, add: bool) -> Self {
+        Self {
+            key: crate::ability::bank::tuning_key(slot, parameter, value.to_bits(), add),
+            slot,
+            parameter,
+            value_bits: value.to_bits(),
+            add,
+        }
+    }
+
+    /// The value the row writes or adds.
+    #[must_use]
+    pub fn value(&self) -> f32 {
+        f32::from_bits(self.value_bits)
+    }
+
+    /// Whether the key is the one this tuning's definition hashes to.
+    #[must_use]
+    pub fn keyed_by_definition(&self) -> bool {
+        self.key
+            == crate::ability::bank::tuning_key(
+                self.slot,
+                self.parameter,
+                self.value_bits,
+                self.add,
+            )
+    }
+}
+
+/// Effect kind 7, Ability Property, whose record holds the slot at +2 and the key at +4.
+pub const ABILITY_PROPERTY_KIND: u8 = 7;
+const ABILITY_PROPERTY_CLASS: u32 = 0x8080_3E1D;
+
+/// The slot and key of every Ability Property action in a compiled action payload. An empty
+/// payload, a declaration with no action of its own, applies nothing.
+pub fn ability_properties_in(payload: &[u8]) -> Result<BTreeSet<(AbilityTarget, u32)>, String> {
+    if payload.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let decoded = crate::sandbox_perk::action::decode(payload)?;
+    Ok(decoded
+        .effects()
+        .filter(|effect| effect.kind == ABILITY_PROPERTY_KIND)
+        .filter_map(|effect| ability_property_of(&effect.native))
+        .collect())
+}
+
+fn ability_property_of(record: &[u8]) -> Option<(AbilityTarget, u32)> {
+    let slot = *record.get(2)?;
+    let key = u32::from_le_bytes(record.get(4..8)?.try_into().ok()?);
+    Some((AbilityTarget::from_byte(slot), key))
+}
+
+/// The tunings a program defines for its Ability Property actions.
+impl Program {
+    /// This program's name and tunings around a native draft of it, for the editors that
+    /// adopt the draft as the program.
+    #[must_use]
+    pub fn with_native(&self, native: NativeProgram) -> Self {
+        Self {
+            name: self.name.clone(),
+            native: Some(native),
+            ability_tunings: self.ability_tunings.clone(),
+            ability_inputs: self.ability_inputs.clone(),
+            ..Self::default()
+        }
+    }
+
+    /// The slot and key of every Ability Property action, read from the native graph when
+    /// the program has one and from the typed actions otherwise.
+    pub fn ability_properties(&self) -> Result<BTreeSet<(AbilityTarget, u32)>, String> {
+        if let Some(native) = &self.native {
+            return ability_properties_in(&native.graph.emit()?);
+        }
+        Ok(self
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                Action::AbilityProperty { target, key, .. } => Some((*target, *key)),
+                Action::Native { node } if node.kind == ABILITY_PROPERTY_KIND => {
+                    ability_property_of(&node.bytes)
+                }
+                _ => None,
+            })
+            .collect())
+    }
+
+    /// Defines a tuning. With `replaced`, the tuning under that key gives way to it, and
+    /// every Ability Property action applying the old key applies the new one.
+    pub fn define_ability_tuning(
+        &mut self,
+        replaced: Option<u32>,
+        tuning: AbilityTuning,
+    ) -> Result<(), String> {
+        if !tuning.keyed_by_definition() {
+            return Err(format!(
+                "Ability tuning key {:08X} does not match its definition.",
+                tuning.key
+            ));
+        }
+        if let Some(old) = replaced
+            && old != tuning.key
+        {
+            self.ability_tunings.retain(|existing| existing.key != old);
+            self.rekey_ability_properties(old, tuning.key)?;
+        }
+        match self
+            .ability_tunings
+            .iter_mut()
+            .find(|existing| existing.key == tuning.key)
+        {
+            Some(existing) => *existing = tuning,
+            None => self.ability_tunings.push(tuning),
+        }
+        Ok(())
+    }
+
+    fn rekey_ability_properties(&mut self, from: u32, to: u32) -> Result<(), String> {
+        let from_bytes = from.to_le_bytes();
+        for action in &mut self.actions {
+            match action {
+                Action::AbilityProperty { key, .. } if *key == from => *key = to,
+                Action::Native { node }
+                    if node.kind == ABILITY_PROPERTY_KIND
+                        && node.bytes.get(4..8) == Some(&from_bytes[..]) =>
+                {
+                    node.bytes[4..8].copy_from_slice(&to.to_le_bytes());
+                }
+                _ => {}
+            }
+        }
+        if let Some(native) = &mut self.native {
+            let stride =
+                crate::sandbox_perk::action::native::schema::record(ABILITY_PROPERTY_CLASS)?.size;
+            for block in native
+                .graph
+                .blocks
+                .iter_mut()
+                .filter(|block| block.class == ABILITY_PROPERTY_CLASS)
+            {
+                for row in block.bytes.chunks_exact_mut(stride) {
+                    if row.get(4..8) == Some(&from_bytes[..]) {
+                        row[4..8].copy_from_slice(&to.to_le_bytes());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Drops the tunings no Ability Property action applies any more. A program that cannot
+    /// be read keeps them all.
+    pub fn prune_ability_tunings(&mut self) {
+        if self.ability_tunings.is_empty() {
+            return;
+        }
+        if let Ok(applied) = self.ability_properties() {
+            self.ability_tunings
+                .retain(|tuning| applied.iter().any(|(_, key)| *key == tuning.key));
+        }
+    }
+}
+
 mod hex_key {
     use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 
@@ -653,12 +980,12 @@ mod float_bit {
     }
 }
 
-const fn default_attach_mode() -> u8 {
-    1
+const fn default_attach_mode() -> AttachmentTarget {
+    AttachmentTarget::Player
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
-fn is_default_attach_mode(mode: &u8) -> bool {
+fn is_default_attach_mode(mode: &AttachmentTarget) -> bool {
     *mode == default_attach_mode()
 }
 
@@ -771,11 +1098,11 @@ impl Action {
     /// An adjustment of the given ability's energy, with the scale and value stock energy
     /// perks use most and no limit on movement toward a target value.
     #[must_use]
-    pub const fn adjust_component(target: u8) -> Self {
+    pub const fn adjust_component(target: AbilityTarget) -> Self {
         Self::AdjustComponent {
             target,
-            flag: 0,
-            option: 0,
+            flag: AbilityState::Any,
+            option: AbilityVersion::Current,
             scale_bits: 0x3F80_0000,
             limit_bits: 0xBF80_0000,
             value_bits: 0x3F80_0000,
@@ -799,7 +1126,7 @@ impl Action {
     }
 
     #[must_use]
-    pub const fn set_damage_type(mode: u8) -> Self {
+    pub const fn set_damage_type(mode: DamageMode) -> Self {
         Self::SetDamageType {
             mode,
             keep_after_removal: false,
@@ -813,11 +1140,11 @@ impl Action {
 
     /// A property change on the given ability, starting from the grenade bank.
     #[must_use]
-    pub const fn ability_property(target: u8) -> Self {
+    pub const fn ability_property(target: AbilityTarget) -> Self {
         Self::AbilityProperty {
             target,
             key: EMPTY_KEY,
-            option: 0,
+            option: PropertyOperation::Apply,
         }
     }
 
@@ -972,6 +1299,9 @@ pub struct Program {
     /// Probability in hundredths of a percent. Integers keep recipe equality stable.
     pub chance_permyriad: u16,
     pub actions: Vec<Action>,
+    /// Checked resource edits for a graph referenced by a verbatim native effect.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_asset_patches: Vec<NativeAssetPatch>,
     /// For an always-active program, the Event Key Match key that ends it. `None` keeps the
     /// actions until the perk is removed. Stock always-active perks that end early all use
     /// this one condition kind, with a key whose event is not named.
@@ -1008,6 +1338,13 @@ pub struct Program {
     /// A verbatim rearm condition, replacing the cooldown timer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_rearm: Option<NativeNode>,
+    /// Properties this program defines for its own Ability Property actions, which the build
+    /// writes into the banks of each tuning's slot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ability_tunings: Vec<AbilityTuning>,
+    /// Private adjustments to native ability inputs, activated by Ability Property actions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ability_inputs: Vec<AbilityInput>,
     /// Further rearm conditions beside the primary one, carried verbatim.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alternative_rearms: Vec<NativeNode>,
@@ -1040,21 +1377,29 @@ impl NativeGroup {
             .chain(&self.rearm)
     }
 
-    /// Every node of the group, conditions flagged `true` and effects `false`.
-    pub fn nodes(&self) -> impl Iterator<Item = (bool, &NativeNode)> {
+    /// Every node of the group, each carrying its condition or effect kind.
+    pub fn nodes(&self) -> impl Iterator<Item = (NativeNodeKind, &NativeNode)> {
         self.conditions()
-            .map(|node| (true, node))
-            .chain(self.effects.iter().map(|node| (false, node)))
+            .map(|node| (NativeNodeKind::Condition(node.kind), node))
+            .chain(
+                self.effects
+                    .iter()
+                    .map(|node| (NativeNodeKind::Effect(node.kind), node)),
+            )
     }
 
-    /// Every node of the group for editing, conditions flagged `true` and effects `false`.
-    pub fn nodes_mut(&mut self) -> impl Iterator<Item = (bool, &mut NativeNode)> {
+    /// Every node of the group for editing, each carrying its condition or effect kind.
+    pub fn nodes_mut(&mut self) -> impl Iterator<Item = (NativeNodeKind, &mut NativeNode)> {
         self.activation
             .iter_mut()
             .chain(&mut self.removal)
             .chain(&mut self.rearm)
-            .map(|node| (true, node))
-            .chain(self.effects.iter_mut().map(|node| (false, node)))
+            .map(|node| (NativeNodeKind::Condition(node.kind), node))
+            .chain(
+                self.effects
+                    .iter_mut()
+                    .map(|node| (NativeNodeKind::Effect(node.kind), node)),
+            )
     }
 }
 
@@ -1150,6 +1495,7 @@ impl Default for Program {
             cooldown_ms: 0,
             chance_permyriad: 10_000,
             actions: Vec::new(),
+            native_asset_patches: Vec::new(),
             removal_key: None,
             native_trigger: None,
             native_removal: None,
@@ -1161,6 +1507,8 @@ impl Default for Program {
             native_rearm: None,
             alternative_rearms: Vec::new(),
             additional_groups: Vec::new(),
+            ability_tunings: Vec::new(),
+            ability_inputs: Vec::new(),
         }
     }
 }
@@ -1172,7 +1520,7 @@ impl Program {
     /// must reach every native node, such as compiling label masks against the current
     /// registry or proving referenced resources are live, walks this list so a new position
     /// cannot be left out.
-    pub fn native_nodes(&self) -> impl Iterator<Item = (bool, &NativeNode)> {
+    pub fn native_nodes(&self) -> impl Iterator<Item = (NativeNodeKind, &NativeNode)> {
         self.native_trigger
             .iter()
             .chain(&self.alternative_triggers)
@@ -1180,16 +1528,16 @@ impl Program {
             .chain(&self.alternative_removals)
             .chain(&self.native_rearm)
             .chain(&self.alternative_rearms)
-            .map(|node| (true, node))
+            .map(|node| (NativeNodeKind::Condition(node.kind), node))
             .chain(self.actions.iter().filter_map(|action| match action {
-                Action::Native { node } => Some((false, node)),
+                Action::Native { node } => Some((NativeNodeKind::Effect(node.kind), node)),
                 _ => None,
             }))
             .chain(self.additional_groups.iter().flat_map(NativeGroup::nodes))
     }
 
     /// The same nodes as [`Self::native_nodes`], for passes that rewrite them.
-    pub fn native_nodes_mut(&mut self) -> impl Iterator<Item = (bool, &mut NativeNode)> {
+    pub fn native_nodes_mut(&mut self) -> impl Iterator<Item = (NativeNodeKind, &mut NativeNode)> {
         self.native_trigger
             .iter_mut()
             .chain(&mut self.alternative_triggers)
@@ -1197,9 +1545,9 @@ impl Program {
             .chain(&mut self.alternative_removals)
             .chain(&mut self.native_rearm)
             .chain(&mut self.alternative_rearms)
-            .map(|node| (true, node))
+            .map(|node| (NativeNodeKind::Condition(node.kind), node))
             .chain(self.actions.iter_mut().filter_map(|action| match action {
-                Action::Native { node } => Some((false, node)),
+                Action::Native { node } => Some((NativeNodeKind::Effect(node.kind), node)),
                 _ => None,
             }))
             .chain(
@@ -1239,6 +1587,71 @@ impl Program {
                 })
     }
 
+    fn validate_asset_patches(&self) -> Result<(), String> {
+        let mut patched_actions = BTreeSet::new();
+        for edit in &self.native_asset_patches {
+            if !patched_actions.insert(edit.action_index) {
+                return Err("A native asset action has more than one patch set.".into());
+            }
+            let action = self
+                .actions
+                .get(edit.action_index)
+                .ok_or_else(|| "An asset patch must select an effect action.".to_owned())?;
+            let matches_graph = if let Some(asset) = action.asset() {
+                asset.graph == edit.source_graph && asset.values.is_empty()
+            } else {
+                matches!(action, Action::Native { node } if node.kind == 2
+                    && node.bytes.get(16..20) == Some(&edit.source_graph.to_le_bytes()[..]))
+            };
+            if !matches_graph || matches!(edit.source_graph, 0 | u32::MAX) {
+                return Err("A native asset patch must name its effect's live graph.".into());
+            }
+            if edit.patches.is_empty() || edit.patches.len() > 32 {
+                return Err("A native asset patch needs one to 32 resource edits.".into());
+            }
+            for patch in &edit.patches {
+                if patch.binding_hash == 0
+                    || patch.expected.is_empty()
+                    || patch.expected.len() != patch.bytes.len()
+                    || patch.bytes.len() > 65_536
+                    || patch.offset.checked_add(patch.bytes.len() as u32).is_none()
+                {
+                    return Err("A native asset resource edit has invalid bounds or bytes.".into());
+                }
+            }
+            let mut appended = BTreeSet::new();
+            for append in &edit.appends {
+                if append.binding_hash == 0
+                    || append.expected_owner_size < 32
+                    || append.bytes.is_empty()
+                    || append.bytes.len() > 262_144
+                    || append
+                        .expected_owner_size
+                        .checked_add(append.bytes.len() as u32)
+                        .is_none()
+                    || !appended.insert((append.binding_hash, append.resource_index))
+                {
+                    return Err("An asset append has invalid bounds or duplicate resources.".into());
+                }
+            }
+            if edit.appends.len() > 32 {
+                return Err("An asset patch can append up to 32 resources.".into());
+            }
+            for (index, left) in edit.patches.iter().enumerate() {
+                for right in &edit.patches[index + 1..] {
+                    if left.binding_hash == right.binding_hash
+                        && left.resource_index == right.resource_index
+                        && left.offset < right.offset + right.bytes.len() as u32
+                        && right.offset < left.offset + left.bytes.len() as u32
+                    {
+                        return Err("Native asset resource edits overlap.".into());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Drafts can be empty. Build readiness is checked separately.
     pub fn validate_structure(&self) -> Result<(), String> {
         if self.name.trim().is_empty() || self.name.contains('\0') {
@@ -1247,6 +1660,7 @@ impl Program {
         if let Some(native) = &self.native {
             let defaults = Self::default();
             if !self.actions.is_empty()
+                || !self.native_asset_patches.is_empty()
                 || self.native_trigger.is_some()
                 || self.native_removal.is_some()
                 || self.removal_key.is_some()
@@ -1272,6 +1686,7 @@ impl Program {
         if self.actions.len() > 16 {
             return Err("A custom effect can contain up to 16 actions.".into());
         }
+        self.validate_asset_patches()?;
         for record in self.auxiliary.iter().chain(
             self.policy
                 .iter()
@@ -1466,6 +1881,59 @@ impl Program {
 
     pub fn validate(&self) -> Result<(), String> {
         self.validate_structure()?;
+        if !self.ability_inputs.is_empty() {
+            let applied = self.ability_properties()?;
+            let mut keys = BTreeSet::new();
+            for input in &self.ability_inputs {
+                input.validate()?;
+                if !keys.insert(input.key)
+                    || !applied.contains(&(input.slot, input.key))
+                    || self
+                        .ability_tunings
+                        .iter()
+                        .any(|tuning| tuning.key == input.key)
+                {
+                    return Err(
+                        "Private ability input is duplicated or lacks its activating action".into(),
+                    );
+                }
+            }
+        }
+        if !self.ability_tunings.is_empty() {
+            let applied = self.ability_properties()?;
+            let slot_name = |slot: AbilityTarget| {
+                crate::ability::bank::slot_name(slot)
+                    .map_or_else(|| format!("slot {slot}"), str::to_owned)
+            };
+            for tuning in &self.ability_tunings {
+                if crate::ability::bank::slot_banks(tuning.slot).is_empty() {
+                    return Err(format!("Ability tuning slot {} has no banks.", tuning.slot));
+                }
+                if !tuning.keyed_by_definition() {
+                    return Err(format!(
+                        "Ability tuning key {:08X} does not match its definition.",
+                        tuning.key
+                    ));
+                }
+                if applied.contains(&(tuning.slot, tuning.key)) {
+                    continue;
+                }
+                let elsewhere = applied.iter().find(|(_, key)| *key == tuning.key);
+                return Err(match elsewhere {
+                    Some((slot, _)) => format!(
+                        "Ability tuning {:08X} is defined for {} but applied on {}.",
+                        tuning.key,
+                        slot_name(tuning.slot),
+                        slot_name(*slot)
+                    ),
+                    None => format!(
+                        "Ability tuning {:08X} is not applied by an Ability Property action on {}.",
+                        tuning.key,
+                        slot_name(tuning.slot)
+                    ),
+                });
+            }
+        }
         if let Some(native) = &self.native {
             if let Some(issue) = native.authoring_issue()? {
                 return Err(format!(

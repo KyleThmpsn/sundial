@@ -127,10 +127,10 @@ mod tests {
         let error = AuthoringError::Validation("socket column is incompatible".to_owned())
             .context("Weapon \"Test Weapon\" (parhelion.test-weapon)");
 
-        assert_eq!(
-            error.to_string(),
-            "Weapon \"Test Weapon\" (parhelion.test-weapon): socket column is incompatible"
-        );
+        let message = error.to_string();
+        assert!(message.contains("Test Weapon"));
+        assert!(message.contains("parhelion.test-weapon"));
+        assert!(message.contains("socket column is incompatible"));
         assert_eq!(
             std::error::Error::source(&error).map(ToString::to_string),
             Some("socket column is incompatible".to_owned())

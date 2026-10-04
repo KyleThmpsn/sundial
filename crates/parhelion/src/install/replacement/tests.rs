@@ -143,6 +143,7 @@ fn socket_layout_changes_use_each_generations_count_and_require_exact_review() {
             definition_hash: 100,
             previous_socket_count: 8,
             default_plugs: vec![Some(400); 9],
+            replaced_defaults: (0..8).map(|lane| (lane, 300)).collect(),
         }]
     );
     let root = tempfile::tempdir().unwrap();
@@ -183,6 +184,10 @@ fn staged_identity_reader_matches_installed_generation() {
         .expect("every retained weapon and private plug must expose valid native socket metadata");
     let manifest: ManifestDocument =
         serde_json::from_slice(&fs::read(staged.join(MANIFEST_FILE_NAME)).unwrap()).unwrap();
+    assert!(
+        !manifest.project.weapons.is_empty(),
+        "configured generation has no weapons"
+    );
     for weapon in &manifest.project.weapons {
         assert!(hashes.contains(&weapon.item.hash.get()));
         assert!(!socket_defaults[&weapon.item.hash.get()].is_empty());
@@ -191,5 +196,4 @@ fn staged_identity_reader_matches_installed_generation() {
         unlocks,
         validate_manifest_unlocks(&manifest.project).unwrap()
     );
-    assert!(hashes.len() >= manifest.project.weapons.len());
 }

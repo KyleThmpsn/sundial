@@ -9,14 +9,15 @@ pub fn blend_rgba_pixel(destination: &mut [u8], source: [u8; 4]) {
     }
     let destination_alpha = u32::from(destination[3]);
     let inverse_source_alpha = 255 - source_alpha;
-    let output_alpha = source_alpha + (destination_alpha * inverse_source_alpha + 127) / 255;
+    // Keep alpha at full precision until color has been unpremultiplied. Rounding
+    // it first can turn a bright translucent channel into 256, which wraps to black.
+    let output_alpha = source_alpha * 255 + destination_alpha * inverse_source_alpha;
     for channel in 0..3 {
-        let premultiplied = u32::from(source[channel]) * source_alpha
-            + (u32::from(destination[channel]) * destination_alpha * inverse_source_alpha + 127)
-                / 255;
+        let premultiplied = u32::from(source[channel]) * source_alpha * 255
+            + u32::from(destination[channel]) * destination_alpha * inverse_source_alpha;
         destination[channel] = ((premultiplied + output_alpha / 2) / output_alpha) as u8;
     }
-    destination[3] = output_alpha as u8;
+    destination[3] = ((output_alpha + 127) / 255) as u8;
 }
 
 /// Exact match required to seed a cleared region, allowing only for a filtered edge.
@@ -54,7 +55,13 @@ pub const CLEARED_EDGE_DEPTH: usize = 2;
 ///
 /// `pixels` is unpremultiplied RGBA8.
 pub fn clear_color_region(pixels: &mut [u8], width: usize, height: usize, cleared: [u8; 3]) {
-    if width == 0 || height == 0 || pixels.len() != width * height * 4 {
+    if width == 0
+        || height == 0
+        || width
+            .checked_mul(height)
+            .and_then(|pixels| pixels.checked_mul(4))
+            != Some(pixels.len())
+    {
         return;
     }
     let brightest = i32::from(cleared.iter().copied().max().unwrap_or(0));
@@ -268,6 +275,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn layering_the_same_color_preserves_it_at_every_visible_alpha() {
+        for color in [[255, 255, 255], [241, 198, 127], [16, 32, 64], [0, 0, 0]] {
+            for background_alpha in 0..=255_u8 {
+                for foreground_alpha in 1..=255_u8 {
+                    let mut pixel = [color[0], color[1], color[2], background_alpha];
+                    blend_rgba_pixel(&mut pixel, [color[0], color[1], color[2], foreground_alpha]);
+                    assert_eq!(
+                        &pixel[..3],
+                        &color,
+                        "alpha {foreground_alpha} over {background_alpha}"
+                    );
+                    assert!(pixel[3] >= background_alpha.max(foreground_alpha));
+                }
+            }
+        }
+        let mut pixel = [17, 34, 51, 102];
+        blend_rgba_pixel(&mut pixel, [255, 0, 0, 0]);
+        assert_eq!(pixel, [17, 34, 51, 102]);
+        blend_rgba_pixel(&mut pixel, [255, 0, 0, 255]);
+        assert_eq!(pixel, [255, 0, 0, 255]);
+    }
+
+    #[test]
     fn bc1_decodes_opaque_and_translucent_modes() {
         let opaque = decode_bc1(&[0x00, 0xF8, 0xE0, 0x07, 0, 0, 0, 0], 4, 4).unwrap();
         assert_eq!(&opaque[..4], &[255, 0, 0, 255]);
@@ -368,6 +398,8 @@ mod tests {
         assert_eq!(short, vec![1, 2, 3]);
         let mut empty: Vec<u8> = Vec::new();
         clear_color_region(&mut empty, 0, 0, PLATE);
+        assert!(empty.is_empty());
+        clear_color_region(&mut empty, usize::MAX / 4 + 1, 1, PLATE);
         assert!(empty.is_empty());
     }
 }

@@ -1,5 +1,113 @@
 use super::*;
 
+fn real_workbench() -> PackageAuthoringApp {
+    let packages = PathBuf::from(std::env::var_os("PARHELION_DEFAULT_WEAPONS_PACKAGES").unwrap());
+    let mut app = PackageAuthoringApp::default();
+    let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
+    app.donor_summaries = catalog.weapon_donors();
+    app.library_state.refresh_donors(&app.donor_summaries);
+    app.sandbox_perk_choices = catalog.weapon_sandbox_perk_choices_from(|_| true);
+    app.catalog = Some(catalog);
+    app.packages = packages;
+    app.show_experimental_options = false;
+    app
+}
+
+#[test]
+#[ignore = "requires PARHELION_DEFAULT_WEAPONS_PACKAGES; package-backed headless layout check"]
+fn real_appearance_layout_is_read_only_and_fits() {
+    let mut app = real_workbench();
+    for (_, json) in crate::recipe_library::BUNDLED_RECIPES.iter().skip(2) {
+        app.recipe = WeaponRecipe::from_json_str(json).unwrap();
+        let page_before = app.recipe.clone();
+        for width in [480.0, 900.0, 1320.0] {
+            for technical in [false, true] {
+                app.show_experimental_options = technical;
+                let capture_name = (!technical).then(|| format!("appearance-{width}"));
+                let (output, overflow) =
+                    render_with_capture(width, capture_name.as_deref(), |ui| {
+                        app.draw_appearance_workspace(ui);
+                    });
+                assert!(
+                    overflow < 1.0,
+                    "{} appearance width={width}: {overflow}",
+                    app.recipe.name
+                );
+                let labels = text(&output);
+                assert!(labels.contains("Inventory Icon"));
+                assert!(labels.contains("Colors & Materials"));
+                let edit_icon = text_origin(&output, "Edit Icon…");
+                let change_icon = text_origin(&output, "Change Icon");
+                assert!(
+                    (edit_icon.y - change_icon.y).abs() < 1.0,
+                    "icon actions must share a row"
+                );
+                assert!(edit_icon.x < change_icon.x, "icon actions must not overlap");
+                assert_eq!(labels.contains("Technical Appearance Data"), technical);
+                assert_eq!(app.recipe, page_before);
+            }
+        }
+        app.show_experimental_options = false;
+    }
+}
+
+#[test]
+#[ignore = "requires PARHELION_DEFAULT_WEAPONS_PACKAGES; package-backed headless layout check"]
+fn real_empty_socket_warnings_stay_with_their_controls() {
+    let mut app = real_workbench();
+    let donor = app
+        .donor_summaries
+        .iter()
+        .filter_map(|summary| app.catalog.as_ref().unwrap().weapon_donor(summary.hash))
+        .find(|donor| {
+            donor.sockets.iter().any(|socket| {
+                socket.randomized_plug_set_index.is_some()
+                    && socket.native_default.is_none()
+                    && socket.ordered_embedded_choices.is_empty()
+                    && authored_socket_choice_limit(socket.socket_type) > 0
+            })
+        })
+        .expect("A stock weapon with a random socket and no default");
+    app.recipe = WeaponRecipe::new_named_weapon_for_donor(
+        "Socket Warning Layout",
+        donor.summary.hash,
+        &donor.summary.name,
+    )
+    .unwrap();
+    app.recipe
+        .overrides
+        .socket_columns
+        .resize(donor.sockets.len(), None);
+    let before = app.recipe.clone();
+    for width in [480.0, 900.0, 1320.0] {
+        let name = format!("socket-warning-{width}");
+        let (output, overflow) = render_with_capture(width, Some(&name), |ui| {
+            app.draw_socket_columns_panel(ui, Some(&donor));
+        });
+        let labels = crate::test_support::driver::texts(&output);
+        let warnings = labels
+            .iter()
+            .filter(|(text, _)| text.starts_with("Rolls at random with no default."))
+            .collect::<Vec<_>>();
+        assert!(!warnings.is_empty(), "No random socket warning at {width}");
+        for (_, warning) in warnings {
+            assert!(
+                labels.iter().any(|(text, button)| {
+                    text == "+ Set Plug"
+                        && (button.center().y - warning.center().y).abs() < 1.0
+                        && warning.right() < button.left()
+                }),
+                "The warning must sit beside its socket's action at {width}"
+            );
+        }
+        assert!(
+            overflow < 1.0,
+            "Socket warning overflow at {width}: {overflow}"
+        );
+        assert_eq!(app.recipe, before, "Rendering changed the socket choices");
+    }
+}
+
 #[test]
 #[ignore = "requires PARHELION_DEFAULT_WEAPONS_PACKAGES; package-backed headless layout check"]
 #[expect(
@@ -7,15 +115,7 @@ use super::*;
     reason = "Integration matrix keeps per-recipe rendering and mutation assertions together"
 )]
 fn real_workbench_socket_layout_is_read_only_and_fits() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_DEFAULT_WEAPONS_PACKAGES").unwrap());
-    let mut app = PackageAuthoringApp::default();
-    let catalog = InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {}).unwrap();
-    app.donor_summaries = catalog.weapon_donors();
-    app.library_state.refresh_donors(&app.donor_summaries);
-    app.sandbox_perk_choices = catalog.weapon_sandbox_perk_choices();
-    app.catalog = Some(catalog);
-    app.packages = packages;
-    app.show_experimental_options = false;
+    let mut app = real_workbench();
     app.recipe = WeaponRecipe::every_end();
     let donor = app.current_donor().unwrap();
     let catalog = app.catalog.as_ref().unwrap();
@@ -226,7 +326,7 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
         }
         for label in ["+ Add Choice", crate::app::style::MORE] {
             let positions = text_origins(&output, label);
-            assert!(positions.len() >= 5);
+            assert!(positions.len() >= 2, "alignment needs two visible controls");
             assert!(
                 positions
                     .iter()
@@ -240,30 +340,6 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
             "full-page rendering changed {}",
             app.recipe.name
         );
-        for width in [480.0, 900.0, 1320.0] {
-            for technical in [false, true] {
-                app.show_experimental_options = technical;
-                let (output, overflow) = render(width, |ui| app.draw_appearance_workspace(ui));
-                assert!(
-                    overflow < 1.0,
-                    "{} appearance width={width}: {overflow}",
-                    app.recipe.name
-                );
-                let labels = text(&output);
-                assert!(labels.contains("Inventory Icon"));
-                assert!(labels.contains("Colors & Materials"));
-                let edit_icon = text_origin(&output, "Edit Icon…");
-                let change_icon = text_origin(&output, "Change Icon");
-                assert!(
-                    (edit_icon.y - change_icon.y).abs() < 1.0,
-                    "icon actions must share a row"
-                );
-                assert!(edit_icon.x < change_icon.x, "icon actions must not overlap");
-                assert_eq!(labels.contains("Technical Appearance Data"), technical);
-                assert_eq!(app.recipe, page_before);
-            }
-        }
-        app.show_experimental_options = false;
     }
     assert_private_window_survives_tab_changes(&mut app);
     app.recipe = WeaponRecipe::new_unbound("Layout test").unwrap();
@@ -333,7 +409,7 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
 }
 
 #[test]
-fn ui_ammo_and_combat_profile_choices_round_trip_into_native_compiler_overrides() {
+fn recipe_combat_profile_actions_round_trip_into_compiler_overrides() {
     use crate::ModernDamageType;
     use crate::capabilities::CombatProfile;
     use sundial::investment::WeaponDamageType;
@@ -353,10 +429,16 @@ fn ui_ammo_and_combat_profile_choices_round_trip_into_native_compiler_overrides(
         weapon_translation_group: Some(1),
         stat_group_index: None,
     };
-    for ammo in [
-        RecipeAmmoType::Primary,
-        RecipeAmmoType::Special,
-        RecipeAmmoType::Heavy,
+    for (ammo, native_ammo) in [
+        (
+            RecipeAmmoType::Primary,
+            crate::item::WeaponAmmoType::Primary,
+        ),
+        (
+            RecipeAmmoType::Special,
+            crate::item::WeaponAmmoType::Special,
+        ),
+        (RecipeAmmoType::Heavy, crate::item::WeaponAmmoType::Heavy),
     ] {
         for (element, native_element) in [
             (WeaponDamageType::Arc, ModernDamageType::Arc),
@@ -376,14 +458,11 @@ fn ui_ammo_and_combat_profile_choices_round_trip_into_native_compiler_overrides(
             let decoded: WeaponRecipe =
                 serde_json::from_str(&serde_json::to_string(&recipe).unwrap()).unwrap();
             let spec = decoded.to_spec().unwrap();
-            assert_eq!(
-                spec.overrides.ammo_type,
-                Some(crate::weapon::WeaponAmmoType::from(ammo))
-            );
+            assert_eq!(spec.overrides.ammo_type, Some(native_ammo));
             assert_eq!(spec.overrides.modern_damage_type, Some(native_element));
             assert_eq!(
                 spec.overrides.inventory_slot,
-                Some(crate::weapon::WeaponInventorySlot::Energy)
+                Some(crate::item::WeaponInventorySlot::Energy)
             );
             apply_combat_profile_action(
                 &mut recipe.overrides,
@@ -401,17 +480,18 @@ fn ui_ammo_and_combat_profile_choices_round_trip_into_native_compiler_overrides(
     }
 }
 
-/// The donor section holds three source pickers, so it has to fold from three columns to one
-/// without any of them running past the panel.
+/// Behavior is a dropdown in the Weapon tab's profile grid beside Rarity and Power Cap, setting
+/// the same choice as Gameplay's Behavior row, which keeps what the choice brings. The grid and
+/// the donor section fold without running past the panel.
 #[test]
 #[ignore = "requires PARHELION_DEFAULT_WEAPONS_PACKAGES; package-backed headless layout check"]
-fn real_unique_behavior_control_sits_with_the_weapon_wide_choices() {
-    use crate::weapon_behavior::CATALOG;
+fn real_behavior_dropdown_sits_in_the_weapon_profile() {
+    use crate::weapon::behavior::CATALOG;
     /// Bygones, a pulse rifle in the owner that also holds Hard Light's records.
     const BYGONES: u32 = 0xA1A9_9205;
     let packages = PathBuf::from(std::env::var_os("PARHELION_DEFAULT_WEAPONS_PACKAGES").unwrap());
     let mut app = PackageAuthoringApp::default();
-    let catalog = InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {}).unwrap();
+    let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     let donor = catalog.weapon_donor(BYGONES).unwrap();
     app.donor_summaries = catalog.weapon_donors();
     app.catalog = Some(catalog);
@@ -421,26 +501,31 @@ fn real_unique_behavior_control_sits_with_the_weapon_wide_choices() {
             .unwrap();
 
     for width in [560.0, 900.0, 1320.0] {
-        // The behavior control belongs with the damage type, not with the donor pickers.
-        let (output, overflow) = render(width, |ui| app.draw_donor_section(ui));
-        let rendered = text(&output);
-        assert!(!rendered.contains("Unique Weapon Behavior"), "{rendered}");
+        let (_, overflow) = render(width, |ui| app.draw_donor_section(ui));
         assert!(
             overflow < 1.0,
             "donor section width={width}, overflow={overflow}"
         );
-
         let (output, overflow) = render(width, |ui| app.draw_definition_panel(ui, Some(&donor)));
+        let rendered = text(&output);
+        for label in ["Damage Type", "Rarity", "Behavior", "Bygones (base weapon)"] {
+            assert!(rendered.contains(label), "missing {label}:\n{rendered}");
+        }
+        assert!(
+            overflow < 1.0,
+            "definition panel width={width}, overflow={overflow}"
+        );
         if width == 900.0 {
             let ctx = egui::Context::default();
-            let mut captured = egui::FullOutput::default();
-            for _ in 0..2 {
-                captured = ctx.run(
+            ctx.enable_accesskit();
+            let mut frame = |events| {
+                let output = ctx.run(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
                             egui::vec2(width, 1200.0),
                         )),
+                        events,
                         ..Default::default()
                     },
                     |ctx| {
@@ -450,25 +535,31 @@ fn real_unique_behavior_control_sits_with_the_weapon_wide_choices() {
                         });
                     },
                 );
-            }
+                custom_perks::workbench::tests::capture::record(&output);
+                output
+            };
+            frame(Vec::new());
+            let mut captured = frame(Vec::new());
             crate::app::custom_perks::workbench::tests::capture::write(
                 &ctx,
                 &captured,
                 "behavior-dropdown",
             );
+            let trigger =
+                crate::test_support::driver::accessible(&captured, "Bygones (base weapon)")
+                    .unwrap();
+            for events in crate::test_support::driver::tap(trigger.center())
+                .into_iter()
+                .chain([Vec::new(), Vec::new()])
+            {
+                captured = frame(events);
+            }
+            custom_perks::workbench::tests::capture::write(&ctx, &captured, "behavior-choices");
+            assert!(text(&captured).contains("Follow Base Weapon"));
         }
-        let rendered = text(&output);
-        assert!(rendered.contains("Unique Weapon Behavior"), "{rendered}");
-        assert!(rendered.contains("Damage Type"), "{rendered}");
-        // One line like its neighbours: a label and a list, not a donor card.
-        assert!(rendered.contains("Rarity"), "{rendered}");
-        assert!(
-            overflow < 1.0,
-            "definition panel width={width}, overflow={overflow}"
-        );
     }
 
-    // Choosing a behavior records it and shows what it brings with it.
+    // A chosen behavior reads in the grid, and Gameplay's row shows what it brings.
     let source = CATALOG
         .iter()
         .find(|entry| entry.id == "graviton-lance")
@@ -476,11 +567,15 @@ fn real_unique_behavior_control_sits_with_the_weapon_wide_choices() {
     app.recipe.overrides.additional_behaviors = vec![crate::recipe::AdditionalBehaviorRecipe {
         behavior: source.id.to_owned(),
     }];
-    let (output, overflow) = render(900.0, |ui| app.draw_definition_panel(ui, Some(&donor)));
+    let (output, _) = render(900.0, |ui| app.draw_definition_panel(ui, Some(&donor)));
+    // The value names the perks the choice puts in the sockets, not just the weapon.
+    assert!(
+        text(&output).contains("Graviton Lance ("),
+        "{}",
+        text(&output)
+    );
+    let (output, overflow) = render(900.0, |ui| app.draw_gameplay_parts(ui, Some(&donor)));
     let rendered = text(&output);
-    assert!(rendered.contains("Graviton Lance"), "{rendered}");
-    // The row names the perks the choice puts in the sockets, not just the weapon it came from.
-    assert!(rendered.contains("Graviton Lance ("), "{rendered}");
     assert!(rendered.contains("Include Its Perks"), "{rendered}");
     assert!(overflow < 1.0);
 }

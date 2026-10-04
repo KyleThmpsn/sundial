@@ -127,8 +127,9 @@ impl BrowserList<'_> {
                 })
                 .last()
         });
-        let keyboard_owner =
-            !ui.memory(eframe::egui::Memory::any_popup_open) && top == Some(ui.layer_id());
+        let keyboard_owner = ui.is_enabled()
+            && !ui.memory(eframe::egui::Memory::any_popup_open)
+            && top == Some(ui.layer_id());
         let keyboard_step = if keyboard_owner {
             ui.input_mut(|input| {
                 if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
@@ -171,8 +172,10 @@ impl BrowserList<'_> {
             reveal = Some(next);
         }
         let narrow = actions || ui.available_width() < 700.0;
+        // Actions are one row of buttons under the list, with the separator above them.
+        let action_row = ui.spacing().interact_size.y.max(24.0);
         let list_height = if actions {
-            (self.height - 76.0).max(80.0)
+            (self.height - action_row - 6.0 - 2.0 * ui.spacing().item_spacing.y).max(80.0)
         } else if narrow {
             self.height * 0.52
         } else {
@@ -243,9 +246,18 @@ impl BrowserList<'_> {
                     },
                 );
                 ui.separator();
-                let detail_height = if actions {
-                    64.0
-                } else if narrow {
+                if actions {
+                    let index = self
+                        .keys
+                        .iter()
+                        .position(|key| *key == selected)
+                        .expect("selected visible choice");
+                    picked = ui
+                        .horizontal_wrapped(|ui| detail(ui, index, activated))
+                        .inner;
+                    return;
+                }
+                let detail_height = if narrow {
                     (self.height - list_height - 12.0).max(100.0)
                 } else {
                     self.height
@@ -264,12 +276,7 @@ impl BrowserList<'_> {
                                     .iter()
                                     .position(|key| *key == selected)
                                     .expect("selected visible choice");
-                                picked = if actions {
-                                    ui.horizontal_wrapped(|ui| detail(ui, index, activated))
-                                        .inner
-                                } else {
-                                    detail(ui, index, activated)
-                                };
+                                picked = detail(ui, index, activated);
                             });
                     },
                 );

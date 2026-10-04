@@ -1,4 +1,4 @@
-pub(in crate::app) mod capture;
+pub(crate) mod capture;
 mod equipment;
 mod persistence;
 pub(in crate::app) mod regressions;

@@ -4,7 +4,7 @@ use super::*;
 impl WeaponSocketPlugVariantRecipe {
     pub(crate) fn validate(&self) -> Result<(), RecipeError> {
         let variant = self.to_compiler(0)?;
-        crate::weapon::validate_socket_plug_variant_shapes(&[variant])?;
+        crate::item::validate_socket_plug_variant_shapes(&[variant])?;
         Ok(())
     }
 
@@ -82,5 +82,14 @@ impl WeaponSandboxPerkActionFloatRecipe {
             expected_bits: self.expected_bits,
             value_bits: self.value_bits,
         })
+    }
+}
+
+impl crate::perk::PerkRecipe {
+    /// Its effects as the compiler takes them, for a perk that sits on no socket.
+    pub(crate) fn compiler_effects(
+        &self,
+    ) -> Result<Vec<WeaponSandboxPerkRuntimeOverride>, RecipeError> {
+        Ok(self.at_socket(0, 0).to_compiler(0)?.sandbox_perks)
     }
 }

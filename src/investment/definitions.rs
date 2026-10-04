@@ -1,6 +1,8 @@
 //! Data-only donor, stat and socket contracts exposed to authoring consumers.
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::catalog::{
     InvestmentStatDisplayPoint, ItemDamageProfile, ItemDamageType, ItemRarity, ItemWeaponAmmoType,
     ItemWeaponInventorySlot, format_in_game_investment_stat, interpolate_investment_stat_display,
@@ -246,6 +248,47 @@ pub struct SubclassSummary {
     /// Each entry's icon container and description, as its node display record gives them.
     pub entry_icons: BTreeMap<u8, u32>,
     pub entry_descriptions: BTreeMap<u8, String>,
+    /// Each entry's ability entity, whose values an authored ability can change.
+    pub entry_entities: BTreeMap<u8, u32>,
+    /// Each entry's ability row: the row its pool's own record equips.
+    pub entry_rows: BTreeMap<u8, u8>,
+    /// What each entry's stock pool applies to abilities while it is selected: each key and
+    /// the ability row it applies the key to.
+    pub entry_modifiers: BTreeMap<u8, Vec<(u32, u8)>>,
+}
+
+/// One row of the ability tables as an ability modifier sees it: the ability's entity, the bank
+/// its script reads, whether that bank takes extra charges, the script parameters a row can set
+/// in it and the keys its property rows answer to.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AbilityRowSummary {
+    pub row: u8,
+    pub entity: Option<u32>,
+    pub bank: Option<u32>,
+    /// The Ability Property slot stock keys place the bank in.
+    pub slot: Option<crate::ability::AbilityTarget>,
+    /// Whether the bank's own rows show which handler takes a charge row.
+    pub charges: bool,
+    pub parameters: Vec<AbilityParameter>,
+    pub keys: Vec<AbilityKey>,
+}
+
+/// A script parameter as a bank lists it: the value the script resets it to, and the value a
+/// property row applies, added to the running one or written over it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AbilityParameter {
+    pub name: u32,
+    pub reset: f32,
+    pub applied: f32,
+    pub add: bool,
+}
+
+/// A bank's property row as a key applies it: charges it adds, or parameters it sets.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AbilityKey {
+    pub key: u32,
+    pub charges: Option<i64>,
+    pub parameters: Vec<AbilityParameter>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -419,12 +462,6 @@ const EXOTIC_ORNAMENT_PLATE: [u8; 3] = [0xF2, 0xE3, 0x70];
 const LEGENDARY_ORNAMENT_PLATE: [u8; 3] = [0x8C, 0x45, 0xA7];
 
 impl WeaponOrnament {
-    /// Returns whether this ornament replaces the model of a weapon with the given art rows.
-    #[must_use]
-    pub fn changes_model(&self, weapon_art_arrangements: &[WeaponArtArrangement]) -> bool {
-        !self.art_arrangements.is_empty() && self.art_arrangements != weapon_art_arrangements
-    }
-
     /// Returns the flat color of the decorative plate baked into this ornament's icon artwork.
     ///
     /// Ornament icons draw their weapon over one of two flat colors, one per rarity, at a range

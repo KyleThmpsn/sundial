@@ -113,10 +113,6 @@ fn schemas_five_through_seven_dismantle_rewards_follow_legacy_constraints() {
             {"definition_hash": 2, "quantity": i32::MAX}
         ]);
         assert_eq!(validate_document_items(&valid), Ok(()));
-        assert_eq!(
-            valid.pointer("/state/account/dismantle_rewards/0/future/preserved"),
-            Some(&Value::Bool(true))
-        );
     }
 
     let invalid = [

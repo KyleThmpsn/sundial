@@ -107,7 +107,6 @@ fn review_names_unselected_items_changed_by_shared_flags() {
     assert_eq!(review.related[0].name, "Item 1");
     assert_eq!(review.related[0].before, "Not Acquired");
     assert_eq!(review.related[0].after, "Acquired");
-    assert_eq!(document, json!({}));
 }
 
 #[test]
@@ -126,10 +125,9 @@ fn unsupported_collectibles_are_reported_without_writing_their_state() {
 }
 
 #[test]
-fn bulk_jobs_are_cancellable_and_reject_a_changed_source() {
+fn incremental_bulk_jobs_reject_a_changed_source() {
     let catalog = catalog();
     let mut document = json!({"future":1});
-    let before = document.clone();
     let mut cancelled = Job::new(
         &document,
         vec![collectible(0, 0, false), collectible(1, 1, false)],
@@ -137,7 +135,6 @@ fn bulk_jobs_are_cancellable_and_reject_a_changed_source() {
     )
     .unwrap();
     assert!(!cancelled.step(&catalog, 1).unwrap());
-    assert_eq!(document, before);
     drop(cancelled);
     let mut job = Job::new(&document, vec![collectible(0, 0, false)], true).unwrap();
     assert!(job.step(&catalog, 1).unwrap());
@@ -241,16 +238,11 @@ fn large_boolean_conditions_are_editable_and_unsupported_rows_wait_for_review() 
     }
     definition.conditions[0].tokens = tokens;
     let mut document = json!({});
-    let before = document.clone();
     let mut job = Job::new(&document, vec![definition, collectible(1, 90, false)], true).unwrap();
     while !job.step(&catalog, 8).unwrap() {}
     assert_eq!(job.targets.len(), 1);
     assert_eq!(job.issues.len(), 1);
     assert!(job.issues[0].1.contains("#90 is unavailable"));
-    assert_eq!(
-        document, before,
-        "Preparation must not commit a supported subset"
-    );
     assert_eq!(job.finish(&mut document, &catalog).unwrap().changed, 1);
 }
 

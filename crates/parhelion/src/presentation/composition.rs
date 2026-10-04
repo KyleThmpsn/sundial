@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) const UNITS: u16 = 10_000;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, Hash)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Fit {
     #[default]
@@ -12,7 +12,7 @@ pub(crate) enum Fit {
     Cover,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, Hash)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Background {
     #[default]
@@ -29,7 +29,7 @@ pub(crate) enum Background {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Hash)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Composition {
     /// Source rectangle in ten-thousandths, before orientation and placement.
@@ -134,7 +134,8 @@ impl Composition {
             let px = (x as f32 + 0.5 - left) / scale;
             let py = (y as f32 + 0.5 - top) / scale;
             if px >= 0.0 && py >= 0.0 && px < source.width() as f32 && py < source.height() as f32 {
-                let foreground = sample(sampling, px * sample_x - 0.5, py * sample_y - 0.5);
+                let foreground =
+                    crate::image_import::sample(sampling, px * sample_x - 0.5, py * sample_y - 0.5);
                 image::Pixel::blend(&mut background, &foreground);
             }
             background
@@ -164,45 +165,6 @@ impl Background {
             }
         }
     }
-}
-
-// Sample the visible canvas directly so a very wide image in Fill mode never
-// allocates an enormous intermediate. Interpolate premultiplied color to keep
-// hidden RGB in transparent PNGs from bleeding into the result.
-fn sample(image: &RgbaImage, x: f32, y: f32) -> Rgba<u8> {
-    let x = x.clamp(0.0, (image.width() - 1) as f32);
-    let y = y.clamp(0.0, (image.height() - 1) as f32);
-    let left = x.floor() as u32;
-    let top = y.floor() as u32;
-    let fx = x.fract();
-    let fy = y.fract();
-    let mut sum = [0.0; 4];
-    for (px, py, weight) in [
-        (left, top, (1.0 - fx) * (1.0 - fy)),
-        ((left + 1).min(image.width() - 1), top, fx * (1.0 - fy)),
-        (left, (top + 1).min(image.height() - 1), (1.0 - fx) * fy),
-        (
-            (left + 1).min(image.width() - 1),
-            (top + 1).min(image.height() - 1),
-            fx * fy,
-        ),
-    ] {
-        let pixel = image.get_pixel(px, py);
-        let alpha = f32::from(pixel[3]) * weight;
-        for i in 0..3 {
-            sum[i] += f32::from(pixel[i]) * alpha;
-        }
-        sum[3] += alpha;
-    }
-    if sum[3] == 0.0 {
-        return Rgba([0; 4]);
-    }
-    Rgba([
-        (sum[0] / sum[3]).round() as u8,
-        (sum[1] / sum[3]).round() as u8,
-        (sum[2] / sum[3]).round() as u8,
-        sum[3].round() as u8,
-    ])
 }
 
 #[cfg(test)]

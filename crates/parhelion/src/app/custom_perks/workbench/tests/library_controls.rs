@@ -236,7 +236,10 @@ fn write_library_report(steps: &[String]) {
 
 #[test]
 fn truncated_program_summary_opens_only_one_tooltip() {
-    use super::super::canvas::{self, Backend, Canvas};
+    use super::super::{
+        canvas::{self, Backend, Canvas},
+        cards::Card,
+    };
     use sundial::package_authoring::sandbox_perk::program::{Action, Program};
     let mut program = Program {
         actions: (1..=8).map(Action::add_rounds).collect(),
@@ -259,7 +262,7 @@ fn truncated_program_summary_opens_only_one_tooltip() {
             },
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    canvas::draw(
+                    canvas::draw_effect(
                         ui,
                         Canvas {
                             name: "",
@@ -271,10 +274,10 @@ fn truncated_program_summary_opens_only_one_tooltip() {
                                 editing: None,
                             },
                             header: None,
-                            place: None,
                             footer: None,
                             trigger_command: None,
                         },
+                        Card::new("locked", 1, 0, 1),
                     );
                 });
             },

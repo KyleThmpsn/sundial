@@ -8,7 +8,7 @@ pub struct SourceLimit;
 
 impl std::fmt::Display for SourceLimit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("this source weapon needs importer support")
+        f.write_str("this source item needs importer support")
     }
 }
 
@@ -26,14 +26,16 @@ pub(crate) fn is_source_limit(error: &anyhow::Error) -> bool {
 pub mod arrays;
 mod audio;
 pub use audio::bank::{
-    Bank as ConvertedAudioBank, lower as lower_audio_bank,
+    Bank as ConvertedAudioBank, Namespace as AudioNamespace, lower as lower_audio_bank,
     lower_with_settings as lower_audio_bank_with_settings, settings::Settings as AudioSettings,
 };
+pub use audio::cue;
 pub use audio::legacy::fit_variations;
 pub use audio::modern::default_layers;
-pub use audio::prepare as prepare_audio;
 pub use audio::transcode::{mix_pcm, normalize_pcm_wem, pcm_bank_template};
+pub use audio::{prepare as prepare_audio, prepare_clip_events, prepare_sounds, sound_assets};
 pub mod artwork;
+pub mod crosshair;
 mod graph;
 pub mod markers;
 pub use graph::GraphReference;
@@ -53,6 +55,7 @@ pub mod kept_parts;
 pub mod localization;
 pub mod mapping;
 pub mod ornaments;
+pub mod particles;
 pub mod payload;
 pub mod plated;
 pub mod profile;
@@ -82,4 +85,5 @@ pub mod support;
 pub mod tfx;
 
 pub mod gameplay;
+pub(crate) mod glaive;
 pub mod lore;

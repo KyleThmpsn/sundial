@@ -380,18 +380,6 @@ impl DecodedAction {
             support
         }
     }
-
-    /// Distinct entity graphs and patterns the action references.
-    #[must_use]
-    pub fn referenced_tags(&self) -> Vec<u32> {
-        let mut tags = self
-            .effects()
-            .filter_map(|effect| effect.referenced_tag)
-            .collect::<Vec<_>>();
-        tags.sort_unstable();
-        tags.dedup();
-        tags
-    }
 }
 
 fn collect_conditions<'a>(list: &'a [DecodedCondition], out: &mut Vec<&'a DecodedCondition>) {

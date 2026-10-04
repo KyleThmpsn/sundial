@@ -253,7 +253,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn repeated_operations_keep_record_values_and_condition_alternatives() {
+    fn repeated_operations_collapse_and_condition_alternatives_remain_separate() {
         use sundial::package_authoring::sandbox_perk::dependencies::DetailLine;
         let mut section = DetailSection {
             group: "Main Program".into(),
@@ -268,18 +268,11 @@ mod tests {
                 })
                 .to_vec(),
         };
-        let original = section.clone();
-        assert_eq!(
-            overview_lines(&section, &BTreeMap::new()),
-            vec![(
-                0,
-                "3 actions use this operation: Scale a component value.".into()
-            )]
-        );
-        assert_eq!(
-            section, original,
-            "Technical Details must retain every record and value"
-        );
+        let grouped = overview_lines(&section, &BTreeMap::new());
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0].0, 0);
+        assert!(grouped[0].1.contains('3'));
+        assert!(grouped[0].1.contains("Scale a component value"));
         section.heading = "Starts When".into();
         let alternatives = overview_lines(&section, &BTreeMap::new());
         assert_eq!(alternatives.len(), 3);

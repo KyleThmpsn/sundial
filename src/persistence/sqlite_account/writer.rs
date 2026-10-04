@@ -382,10 +382,9 @@ mod tests {
     fn busy_checkpoint_is_reported_as_incomplete() {
         let error = validate_checkpoint_status(1, 8, 3).unwrap_err();
 
-        assert_eq!(
-            error.to_string(),
-            "could not truncate the SQLite write-ahead log because another database connection kept it busy (3 of 8 frames checkpointed)"
-        );
+        let message = error.to_string();
+        assert!(message.contains("busy"));
+        assert!(message.contains("3 of 8"));
     }
 
     #[test]

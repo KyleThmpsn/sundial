@@ -1,17 +1,15 @@
 use super::*;
+use crate::test_support::driver::accessible;
 
 fn picker() -> Picker {
     let mut picker = Picker::default();
     picker.rows.extend((0..1200).map(|i| Row {
-        icon: Icon::Texture {
-            tag: (0x80B40000 + i).into(),
-        },
-        local: None,
+        origin: Origin::Texture(0x80B40000 + i),
         white: true,
         label: format!("Icon {i}"),
         search: format!("icon {i}"),
         source: 1,
-        image: egui::ColorImage::new([64, 64], egui::Color32::WHITE),
+        extent: egui::Vec2::splat(64.0),
     }));
     picker.attempted = true;
     picker
@@ -53,25 +51,6 @@ fn frame(
     (output, selection)
 }
 
-fn label(output: &egui::FullOutput, label: &str) -> Option<egui::Rect> {
-    output
-        .platform_output
-        .accesskit_update
-        .as_ref()?
-        .nodes
-        .iter()
-        .find_map(|(_, node)| {
-            if node.label() != Some(label) {
-                return None;
-            }
-            let bounds = node.bounds()?;
-            Some(egui::Rect::from_min_max(
-                egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
-                egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
-            ))
-        })
-}
-
 #[test]
 fn grid_keeps_actions_in_bottom_chin_and_only_uploads_visible_icons() {
     for width in [640.0, 1050.0] {
@@ -88,19 +67,19 @@ fn grid_keeps_actions_in_bottom_chin_and_only_uploads_visible_icons() {
             "Download destiny-icons",
             "Add Icon…",
         ] {
-            let bounds = label(&output, name).unwrap_or_else(|| panic!("Missing {name}"));
+            let bounds = accessible(&output, name).unwrap_or_else(|| panic!("Missing {name}"));
             assert!(
                 bounds.top() > 530.0 && bounds.bottom() <= 600.0,
                 "{name}: {bounds:?}"
             );
             assert!(bounds.right() <= width, "{name}: {bounds:?}");
         }
-        assert!(picker.textures.len() < 100);
-        assert!(!picker.textures.is_empty());
+        assert!(picker.thumbnails.len() < 100);
+        assert!(!picker.thumbnails.is_empty());
         picker.downloaded = true;
         output = frame(&ctx, &mut picker, &mut query, width, vec![]).0;
-        assert!(label(&output, "Download destiny-icons").is_none());
-        assert!(label(&output, "Add Icon…").is_some());
+        assert!(accessible(&output, "Download destiny-icons").is_none());
+        assert!(accessible(&output, "Add Icon…").is_some());
         query = "previous search".into();
         picker.events().send(Event::RevealLocal(2)).unwrap();
         frame(&ctx, &mut picker, &mut query, width, vec![]);
@@ -119,7 +98,7 @@ fn search_can_select_an_icon_beyond_the_initial_grid() {
     for _ in 0..3 {
         output = frame(&ctx, &mut picker, &mut query, 800.0, vec![]).0;
     }
-    let pos = label(&output, "Icon 1199").unwrap().center();
+    let pos = accessible(&output, "Icon 1199").unwrap().center();
     let mut selected = None;
     for pressed in [true, false] {
         selected = frame(
@@ -143,11 +122,16 @@ fn search_can_select_an_icon_beyond_the_initial_grid() {
     let Some(Selection::Icon(icon)) = selected else {
         panic!("Icon was not selected");
     };
-    assert_eq!(icon, picker.rows[1199].icon);
+    assert_eq!(
+        icon,
+        Icon::Texture {
+            tag: (0x80B40000 + 1199).into()
+        }
+    );
 }
 
 #[test]
-fn artwork_selection_embeds_full_source_before_the_library_can_disappear() {
+fn artwork_selection_embeds_full_source_for_multiple_destinations() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("source.png");
     let mut pixels = image::RgbaImage::new(768, 256);
@@ -189,7 +173,6 @@ fn native_names_packages_and_hashes_are_searchable_together() {
             name: "ui/perks/Outlaw_reload.dds\nui/perks/precision_kill.dds".into(),
             white: true,
             size: [96, 96],
-            thumbnail: egui::ColorImage::new([64, 64], egui::Color32::WHITE),
         }))
         .unwrap();
     for search in [
@@ -202,14 +185,14 @@ fn native_names_packages_and_hashes_are_searchable_together() {
         let mut query = search.to_owned();
         frame(&ctx, &mut picker, &mut query, 800.0, vec![]);
         assert_eq!(
-            picker.textures.len(),
+            picker.thumbnails.len(),
             1,
             "Missing named texture for {search}"
         );
     }
     let mut query = "unrelated".to_owned();
     frame(&ctx, &mut picker, &mut query, 800.0, vec![]);
-    assert!(picker.textures.is_empty());
+    assert!(picker.thumbnails.is_empty());
 }
 
 #[test]
@@ -226,8 +209,8 @@ fn all_colors_is_opt_in_and_keeps_the_existing_search() {
         output = frame(&ctx, &mut picker, &mut query, 800.0, vec![]).0;
     }
     assert!(!picker.all_colors);
-    assert_eq!(picker.textures.len(), 1);
-    let pos = label(&output, "Show All Colors").unwrap().center();
+    assert_eq!(picker.thumbnails.len(), 1);
+    let pos = accessible(&output, "Show All Colors").unwrap().center();
     for pressed in [true, false] {
         frame(
             &ctx,
@@ -247,7 +230,7 @@ fn all_colors_is_opt_in_and_keeps_the_existing_search() {
     }
     frame(&ctx, &mut picker, &mut query, 800.0, vec![]);
     assert!(picker.all_colors);
-    assert_eq!(picker.textures.len(), 2);
+    assert_eq!(picker.thumbnails.len(), 2);
     assert_eq!(query, "icon");
     assert_eq!(
         picker.rows.len(),

@@ -77,7 +77,7 @@ fn standalone_perks_reject_invalid_compiler_inputs_before_library_save() {
     let mut perk = PerkRecipe::new();
     let mut effect = PerkRecipe::effect(405);
     effect.projectiles.push(
-        sundial::package_authoring::sandbox_perk::projectile::Selection {
+        sundial::package_authoring::sandbox_perk::entity::Selection {
             source_graph: 0,
             donor_graph: 0x80BB_DAD4,
         },

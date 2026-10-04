@@ -455,20 +455,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn startup_construction_does_not_probe_the_saved_installation() {
-        let selection = InstallSelection {
-            install_path: std::env::temp_dir().join("sundial-unavailable-install"),
-            preferred_layout: None,
-        };
-
-        let app = StartupApp::new(Some(selection), Preferences::default(), None, None);
-
-        assert!(app.receiver.is_some());
-        assert!(app.error.is_none());
-        assert_eq!(app.progress.message, "Checking the saved installation…");
-    }
-
-    #[test]
     fn disconnected_startup_worker_becomes_a_recoverable_error() {
         let mut app = StartupApp::new(None, Preferences::default(), None, None);
         let (sender, receiver) = mpsc::channel();

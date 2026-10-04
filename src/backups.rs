@@ -113,8 +113,7 @@ pub(crate) fn prune_automatic_backups(
         } else {
             continue;
         };
-        let bytes = fs::read(&path).map_err(|error| error.to_string())?;
-        if format!("{:x}", Sha256::digest(&bytes)) != record.sha256 {
+        if crate::storage::file_sha256(&path).map_err(|error| error.to_string())? != record.sha256 {
             continue;
         }
         destination.push(AutomaticBackup {
@@ -210,8 +209,9 @@ fn prune_automatic_backup_family(
     for backup in backups.into_iter().skip(keep) {
         if let Some(expected) = &backup.sha256 {
             index::checked_child(&store.root, &backup.file_name)?;
-            let bytes = fs::read(&backup.path).map_err(|error| error.to_string())?;
-            if format!("{:x}", Sha256::digest(&bytes)) != *expected {
+            if crate::storage::file_sha256(&backup.path).map_err(|error| error.to_string())?
+                != *expected
+            {
                 return Err("A backup changed during cleanup. It was left untouched".into());
             }
         }

@@ -84,8 +84,14 @@ mod tests {
         let pixels = RgbaImage::from_fn(WIDTH, HEIGHT, |x, y| {
             image::Rgba([x as u8, y as u8, 210, (x + y) as u8])
         });
-        let image = HudImage::normalized(pixels).unwrap();
+        let image = HudImage::normalized(pixels.clone()).unwrap();
         let bytes = STANDARD.decode(&image.0.encoded).unwrap();
+        assert_eq!(
+            image::load_from_memory_with_format(&bytes, ImageFormat::Png)
+                .unwrap()
+                .to_rgba8(),
+            pixels
+        );
         assert_eq!(HudImage::from_png(&bytes).unwrap(), image);
         let value = serde_json::to_string(&image).unwrap();
         assert_eq!(serde_json::from_str::<HudImage>(&value).unwrap(), image);

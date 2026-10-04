@@ -190,12 +190,12 @@ pub(crate) fn create(
         };
     }
     checked_child(&store.root, &name)?;
-    let bytes = fs::read(&path).map_err(|error| error.to_string())?;
+    let sha256 = crate::storage::file_sha256(&path).map_err(|error| error.to_string())?;
     store.index.files.insert(
         name,
         Record {
             source,
-            sha256: format!("{:x}", Sha256::digest(&bytes)),
+            sha256,
             automatic,
             extra: BTreeMap::new(),
         },

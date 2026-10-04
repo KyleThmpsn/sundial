@@ -164,6 +164,8 @@ mod tests {
         catalog
             .add(&decoded, &[421], &mut conditions, &mut effects)
             .unwrap();
+        assert!(!catalog.conditions.is_empty());
+        assert!(!catalog.effects.is_empty());
         let counts = (catalog.conditions.len(), catalog.effects.len());
         catalog
             .add(&decoded, &[422], &mut conditions, &mut effects)

@@ -1,5 +1,5 @@
 //! Native asset labels and search summaries shared by reading surfaces.
-use crate::sandbox_perk::projectile;
+use crate::sandbox_perk::entity;
 /// One catalog entry prepared for the picker: its label, detail line and search text.
 pub struct AssetChoice {
     pub index: usize,
@@ -7,7 +7,7 @@ pub struct AssetChoice {
     pub search: String,
 }
 
-pub(super) fn asset_choices(catalog: &projectile::catalog::Catalog) -> Vec<AssetChoice> {
+pub(super) fn asset_choices(catalog: &entity::catalog::Catalog) -> Vec<AssetChoice> {
     let mut rows = catalog
         .entries
         .iter()
@@ -55,7 +55,7 @@ pub(super) fn asset_choices(catalog: &projectile::catalog::Catalog) -> Vec<Asset
 }
 
 /// Preserve the native spelling and distinguish a source context from an asset's own name.
-pub fn technical_name(entry: &projectile::catalog::Entry) -> String {
+pub fn technical_name(entry: &entity::catalog::Entry) -> String {
     let useful =
         |name: &&String| !name.is_empty() && !name.to_ascii_lowercase().contains("label_globals");
     let direct = entry

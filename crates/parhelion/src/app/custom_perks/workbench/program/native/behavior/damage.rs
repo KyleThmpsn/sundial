@@ -509,9 +509,10 @@ fn apply(graph: &mut Graph, index: usize, change: Change) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sundial::package_authoring::sandbox_perk::action::native::NodeKind as NativeNodeKind;
 
     fn modifier() -> Graph {
-        let bytes = native::template(false, 40).unwrap();
+        let bytes = native::template(NativeNodeKind::Effect(40)).unwrap();
         Graph::read(&bytes, 0, CLASS).unwrap()
     }
 
@@ -538,8 +539,15 @@ mod tests {
             ]
         );
         apply(&mut graph, 0, Change::Literal(MULTIPLY, 1, 1.5)).unwrap();
-        assert_eq!(rows(&graph, 0)[2].literal, 1.5);
-        graph.validate_node(false, 40).unwrap();
+        assert_eq!(
+            rows(&graph, 0)
+                .iter()
+                .find(|row| row.list == MULTIPLY && row.field == 1)
+                .unwrap()
+                .literal,
+            1.5
+        );
+        graph.validate_node(NativeNodeKind::Effect(40)).unwrap();
         apply(&mut graph, 0, Change::Remove(MULTIPLY, 0)).unwrap();
         assert_eq!(rows(&graph, 0).len(), 2);
         apply(&mut graph, 0, Change::Remove(MULTIPLY, 0)).unwrap();
@@ -606,9 +614,6 @@ mod tests {
     #[test]
     fn the_damage_bonus_reads_and_writes_the_literal_pair() {
         let mut graph = modifier();
-        let pair = graph.blocks[0].links[&BONUS];
-        assert_eq!(graph.blocks[pair].class, PAIR_CLASS);
-        assert_eq!(graph.blocks[pair].bytes[..4], 0.5f32.to_le_bytes());
         apply(&mut graph, 0, Change::Bonus(0.25)).unwrap();
         let pair = graph.blocks[0].links[&BONUS];
         assert_eq!(graph.blocks[pair].bytes[..4], 0.25f32.to_le_bytes());

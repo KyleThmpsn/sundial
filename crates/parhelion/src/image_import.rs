@@ -1,10 +1,15 @@
-//! Bounded image decoding and alpha-correct resizing shared by artwork importers.
+//! Bounded image decoding and alpha-correct resizing shared by artwork importers, and pictures
+//! embedded in recipes.
 
-use image::{ImageFormat, ImageReader, RgbaImage, imageops::FilterType};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use image::{ImageFormat, ImageReader, Rgba, RgbaImage, imageops::FilterType};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{
+    fmt,
     fs::File,
     io::{Cursor, Read},
     path::Path,
+    sync::Arc,
 };
 
 pub(crate) const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
@@ -82,6 +87,172 @@ pub(crate) fn fit(source: &RgbaImage, width: u32, height: u32) -> RgbaImage {
         i64::from((height - fitted_height) / 2),
     );
     canvas
+}
+
+/// `source` scaled to cover `width` x `height`, with what overflows cropped evenly from both edges.
+pub(crate) fn cover(source: &RgbaImage, width: u32, height: u32) -> RgbaImage {
+    if source.dimensions() == (width, height) {
+        return source.clone();
+    }
+    if width == 0 || height == 0 || source.width() == 0 || source.height() == 0 {
+        return RgbaImage::new(width, height);
+    }
+    let scale = (width as f32 / source.width() as f32).max(height as f32 / source.height() as f32);
+    // Only shrink the source. Enlarging the entire image before cropping can
+    // allocate gigabytes for a one-pixel-wide import and a modest output canvas.
+    let filtered = (scale < 1.0).then(|| {
+        resize(
+            source,
+            (source.width() as f32 * scale).ceil().max(1.0) as u32,
+            (source.height() as f32 * scale).ceil().max(1.0) as u32,
+        )
+    });
+    let sampling = filtered.as_ref().unwrap_or(source);
+    let sample_x = sampling.width() as f32 / source.width() as f32;
+    let sample_y = sampling.height() as f32 / source.height() as f32;
+    RgbaImage::from_fn(width, height, |x, y| {
+        let px = (x as f32 + 0.5 - width as f32 * 0.5) / scale + source.width() as f32 * 0.5;
+        let py = (y as f32 + 0.5 - height as f32 * 0.5) / scale + source.height() as f32 * 0.5;
+        sample(sampling, px * sample_x - 0.5, py * sample_y - 0.5)
+    })
+}
+
+/// Bilinear sampling of unpremultiplied RGBA, interpolated in premultiplied space
+/// so hidden color in transparent source pixels cannot bleed into visible edges.
+pub(crate) fn sample(image: &RgbaImage, x: f32, y: f32) -> Rgba<u8> {
+    let x = x.clamp(0.0, (image.width() - 1) as f32);
+    let y = y.clamp(0.0, (image.height() - 1) as f32);
+    let left = x.floor() as u32;
+    let top = y.floor() as u32;
+    let fx = x.fract();
+    let fy = y.fract();
+    let mut sum = [0.0; 4];
+    for (px, py, weight) in [
+        (left, top, (1.0 - fx) * (1.0 - fy)),
+        ((left + 1).min(image.width() - 1), top, fx * (1.0 - fy)),
+        (left, (top + 1).min(image.height() - 1), (1.0 - fx) * fy),
+        (
+            (left + 1).min(image.width() - 1),
+            (top + 1).min(image.height() - 1),
+            fx * fy,
+        ),
+    ] {
+        let pixel = image.get_pixel(px, py);
+        let alpha = f32::from(pixel[3]) * weight;
+        for i in 0..3 {
+            sum[i] += f32::from(pixel[i]) * alpha;
+        }
+        sum[3] += alpha;
+    }
+    if sum[3] == 0.0 {
+        return Rgba([0; 4]);
+    }
+    Rgba([
+        (sum[0] / sum[3]).round() as u8,
+        (sum[1] / sum[3]).round() as u8,
+        (sum[2] / sum[3]).round() as u8,
+        sum[3].round() as u8,
+    ])
+}
+
+/// The most an embedded picture keeps on its long side. A larger import is scaled down to it.
+pub(crate) const MAX_EMBEDDED_EDGE: u32 = 2400;
+// A 2400×2400 RGBA PNG needs roughly 30 MiB in base64 even when the imported
+// JPEG fits the source limit. Keep the reader compatible with everything we save.
+const MAX_EMBEDDED_BASE64_BYTES: usize = 32 * 1024 * 1024;
+
+/// A picture saved in a recipe as PNG at its imported size, up to [`MAX_EMBEDDED_EDGE`] on its long
+/// side, so the recipe needs no source file. Each use sizes it, with [`cover`] or [`fit`]. Clones
+/// share the pixels.
+#[derive(Clone, Eq, PartialEq)]
+pub struct EmbeddedImage(Arc<EmbeddedImageData>);
+
+#[derive(Eq, PartialEq)]
+struct EmbeddedImageData {
+    rgba: RgbaImage,
+    png_base64: String,
+}
+
+impl fmt::Debug for EmbeddedImage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("EmbeddedImage")
+            .field("size", &self.0.rgba.dimensions())
+            .finish_non_exhaustive()
+    }
+}
+
+impl EmbeddedImage {
+    pub(crate) fn from_path(path: &Path) -> Result<Self, String> {
+        Self::from_rgba(decode_source(&read_path(path)?)?)
+    }
+
+    pub(crate) fn from_rgba(rgba: RgbaImage) -> Result<Self, String> {
+        let edge = rgba.width().max(rgba.height());
+        let rgba = if edge > MAX_EMBEDDED_EDGE {
+            resize(
+                &rgba,
+                (rgba.width() * MAX_EMBEDDED_EDGE / edge).max(1),
+                (rgba.height() * MAX_EMBEDDED_EDGE / edge).max(1),
+            )
+        } else {
+            rgba
+        };
+        let mut png = Cursor::new(Vec::new());
+        rgba.write_to(&mut png, ImageFormat::Png)
+            .map_err(|error| format!("Could not encode image: {error}"))?;
+        Ok(Self(Arc::new(EmbeddedImageData {
+            rgba,
+            png_base64: STANDARD.encode(png.into_inner()),
+        })))
+    }
+
+    pub(crate) fn pixels(&self) -> &RgbaImage {
+        &self.0.rgba
+    }
+
+    /// Names the picture by what it saves as, for caches that should not hold its pixels.
+    pub(crate) fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.0.png_base64.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmbeddedPng {
+    png_base64: String,
+}
+
+impl Serialize for EmbeddedImage {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        EmbeddedPng {
+            png_base64: self.0.png_base64.clone(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for EmbeddedImage {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let embedded = EmbeddedPng::deserialize(deserializer)?;
+        if embedded.png_base64.len() > MAX_EMBEDDED_BASE64_BYTES {
+            return Err(serde::de::Error::custom(
+                "Embedded image exceeds the size limit",
+            ));
+        }
+        let bytes = STANDARD
+            .decode(&embedded.png_base64)
+            .map_err(serde::de::Error::custom)?;
+        let rgba = decode(&bytes, ImageFormat::Png, MAX_EMBEDDED_EDGE)
+            .map_err(serde::de::Error::custom)?;
+        Ok(Self(Arc::new(EmbeddedImageData {
+            rgba,
+            png_base64: embedded.png_base64,
+        })))
+    }
 }
 
 // Filter premultiplied pixels to prevent hidden RGB in transparent PNGs from bleeding at edges.

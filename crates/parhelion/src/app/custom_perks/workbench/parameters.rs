@@ -5,7 +5,9 @@ use crate::app::custom_perks::*;
 mod actions;
 mod behavior;
 pub(super) mod conversion;
+pub(super) mod effect_length;
 mod fields;
+mod flags;
 mod guided;
 pub(super) mod history;
 pub(super) mod movement;
@@ -23,11 +25,6 @@ pub(super) use native::{draw_card_values, unlisted_changes};
 pub(super) struct PrivatePerkRuntimeGraph {
     pub(super) action_tag: u32,
     pub(super) action_payload: Vec<u8>,
-    /// Readable account of the native action, when its payload decodes.
-    pub(super) summary: Option<sundial::package_authoring::sandbox_perk::action::ActionSummary>,
-    /// The editable program recovered from the action, or why none can be recovered.
-    pub(super) program:
-        Option<Result<sundial::package_authoring::sandbox_perk::program::Program, String>>,
     pub(super) graphs: Vec<(u32, WeaponRuntimeGraph)>,
     pub(super) warnings: Vec<String>,
     /// Failures that prevent validating runtime edits, separate from reference-index notices.
@@ -36,13 +33,14 @@ pub(super) struct PrivatePerkRuntimeGraph {
     /// build never has to be the one that says no.
     pub(super) loading_issues: Vec<String>,
     pub(super) projectile_slots: Vec<(u32, u32)>,
-    pub(super) projectile_catalog: Arc<projectile::catalog::Catalog>,
+    pub(super) projectile_catalog: Arc<entity::catalog::Catalog>,
     pub(super) native_assets: Vec<sundial::package_authoring::tft::Reference>,
 }
 
 pub(super) enum PrivatePerkGraphEvent {
     Finished(Result<PrivatePerkRuntimeGraph, String>),
-    Preview(conversion::Input, Result<conversion::Preview, String>),
+    /// Boxed, since a preview is far larger than the loaded effect.
+    Preview(Box<(conversion::Input, Result<conversion::Preview, String>)>),
 }
 
 pub(in crate::app) struct PerkEditor {
@@ -60,8 +58,8 @@ pub(in crate::app) struct PerkEditor {
     pub(super) original_projectile_draft: Vec<ProjectileSelection>,
     pub(super) projectile_labels: BTreeMap<u16, String>,
     /// Weapon names by item hash, for assets named after the pattern that fires them.
-    pub(super) item_names: BTreeMap<u32, projectile::catalog::ItemName>,
-    pub(super) pending_movement: Option<(u32, Vec<(projectile::parameters::Kind, u32)>)>,
+    pub(super) item_names: BTreeMap<u32, entity::catalog::ItemName>,
+    pub(super) pending_movement: Option<(u32, Vec<(entity::projectile::parameters::Kind, u32)>)>,
     pub(super) original_draft: Vec<WeaponRuntimeValueOverride>,
     pub(super) original_action_draft: Vec<crate::WeaponSandboxPerkActionFloatRecipe>,
     pub(super) parameter_error: Option<String>,
@@ -132,8 +130,6 @@ pub(super) fn load_entity_parameters(
     Ok(PrivatePerkRuntimeGraph {
         action_tag: 0,
         action_payload: Vec::new(),
-        summary: None,
-        program: None,
         graphs: vec![(entity, graph)],
         graph_errors: Vec::new(),
         warnings: index_warnings(names.as_deref()),
@@ -156,7 +152,7 @@ fn loading_issues(
     assets
         .into_iter()
         .filter_map(
-            |(role, graph, _cloned)| match projectile::residency::inspect(manager, graph) {
+            |(role, graph, _cloned)| match entity::residency::inspect(manager, graph) {
                 Ok(_) => None,
                 Err(error) => Some(format!(
                     "{role} 0x{graph:08X} could not be checked against the loading index: {error}"
@@ -178,17 +174,17 @@ pub(in crate::app) fn load_private_perk_runtime_graph(
         .map_err(|error| error.to_string())?;
     let action =
         load_sandbox_perk_runtime_action(&manager, &globals, usize::from(key.source_perk_index))?;
-    let graphs = projectile::resolve(&manager, &action, projectiles)?;
+    let graphs = entity::resolve(&manager, &action, projectiles)?;
     let mut projectile_slots = Vec::new();
     for (source, effective) in action.graphs.iter().zip(&graphs) {
-        if projectile::kind(&source.payload)?.is_some() {
+        if entity::kind(&source.payload)?.is_some() {
             projectile_slots.push((source.tag.0, effective.tag.0));
         }
     }
     let projectile_catalog = if projectile_slots.is_empty() {
         Arc::default()
     } else {
-        projectile::catalog::cached(packages, &manager)?
+        entity::catalog::cached(packages, &manager)?
     };
     let names = sundial::package_authoring::tft::cached_only(packages)?;
     let graph_tags = graphs.iter().map(|graph| graph.tag.0).collect::<Vec<_>>();
@@ -196,23 +192,9 @@ pub(in crate::app) fn load_private_perk_runtime_graph(
         .as_deref()
         .map(|names| asset_references(names, action.action_tag.0, &graph_tags, None))
         .unwrap_or_default();
-    // Decoding is read only. A perk whose action cannot be decoded still edits normally.
-    let decoded =
-        sundial::package_authoring::sandbox_perk::action::decode(&action.action_payload).ok();
-    let summary = decoded
-        .as_ref()
-        .map(sundial::package_authoring::sandbox_perk::action::ActionSummary::new);
-    let program = Some(
-        sundial::package_authoring::sandbox_perk::program::Program::from_native(
-            &action.action_payload,
-            "Custom Effect",
-        ),
-    );
     let mut loaded = PrivatePerkRuntimeGraph {
         action_tag: action.action_tag.0,
         action_payload: action.action_payload,
-        summary,
-        program,
         graphs: Vec::new(),
         graph_errors: Vec::new(),
         warnings: index_warnings(names.as_deref()),
@@ -431,7 +413,7 @@ impl PerkEditor {
             let _ = worker.join();
         }
         match event {
-            PrivatePerkGraphEvent::Preview(input, result) => self.preview = Some((input, result)),
+            PrivatePerkGraphEvent::Preview(preview) => self.preview = Some(*preview),
             PrivatePerkGraphEvent::Finished(Ok(graph)) => {
                 self.carry_movement(&graph);
                 self.graph = Some(Arc::new(graph));
@@ -475,11 +457,12 @@ impl PerkEditor {
             self.draw_unresolved_edits(ui, &loaded);
             if self.entity_source.is_some() {
                 self.draw_movement(ui, &loaded);
+                let lengths = self.draw_effect_lengths(ui, &loaded);
                 let named = self.draw_component_properties(ui, &loaded)
-                    || loaded
-                        .graphs
-                        .iter()
-                        .any(|(_, graph)| !projectile::parameters::discover(graph).is_empty());
+                    || lengths
+                    || loaded.graphs.iter().any(|(_, graph)| {
+                        !entity::projectile::parameters::discover(graph).is_empty()
+                    });
                 if !named {
                     ui.label("No Named Properties");
                 }
@@ -491,16 +474,19 @@ impl PerkEditor {
                     });
                 return;
             }
-            // Edit Behavior prepares an isolated program and checks its fidelity. Convert to
-            // Editable Program hands it to the editable canvas.
+            // Edit Behavior prepares an isolated program and checks its fidelity. An exact one
+            // is the card's to edit, and Convert Anyway hands an inexact one to the canvas.
             self.draw_conversion(ui, ctx, &loaded);
             if self.conversion.is_some() {
                 return;
             }
-            if self.draw_stock_canvas(ui, &loaded) {
+            // The card reads the behavior itself. This window holds its native records: the
+            // assets it fires, their properties and the references that name them.
+            if self.draw_projectiles(ui, &loaded) {
                 self.start_load(ctx);
                 return;
             }
+            self.draw_movement(ui, &loaded);
             self.draw_component_properties(ui, &loaded);
             ui.add_space(8.0);
             references::draw(ui, &loaded.native_assets);
@@ -511,90 +497,6 @@ impl PerkEditor {
                     self.draw_action_values(ui, &loaded, experimental);
                     self.draw_runtime_fields(ui, &loaded, experimental);
                 });
-        }
-    }
-
-    /// Draws the stock action on the program canvas with the projectile pickers and mapped
-    /// properties placed on the effect blocks that reference them. Slots the summary does not
-    /// reference follow in a plain list. Returns whether a projectile swap needs a reload.
-    fn draw_stock_canvas(
-        &mut self,
-        ui: &mut egui::Ui,
-        loaded: &Arc<PrivatePerkRuntimeGraph>,
-    ) -> bool {
-        use super::canvas;
-        let Some(summary) = &loaded.summary else {
-            // An action that did not decode still edits through the plain lists.
-            if self.draw_projectiles(ui, loaded) {
-                return true;
-            }
-            self.draw_movement(ui, loaded);
-            return false;
-        };
-        if !loaded.projectile_slots.is_empty() {
-            self.draw_projectile_notes(ui, loaded);
-        }
-        let editable = matches!(loaded.program, Some(Ok(_)));
-        let name = self.plug_label.clone();
-        let mut change = None;
-        let mut placed = Vec::new();
-        let mut place = |ui: &mut egui::Ui, asset: u32| {
-            let Some(&(source, effective)) = loaded
-                .projectile_slots
-                .iter()
-                .find(|(source, _)| *source == asset)
-            else {
-                return;
-            };
-            placed.push(source);
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Asset")
-                    .on_hover_text("Choose a different projectile or emitter for this effect.");
-                if let Some(selected) = self.draw_projectile_slot(ui, loaded, source) {
-                    change = Some((source, selected));
-                }
-            });
-            self.draw_movement_for(ui, loaded, &[effective]);
-        };
-        canvas::draw(
-            ui,
-            canvas::Canvas {
-                name: &name,
-                backend: canvas::Backend::Stock {
-                    summary,
-                    action_tag: loaded.action_tag,
-                    editable,
-                },
-                header: None,
-                place: Some(&mut place),
-                footer: None,
-                trigger_command: None,
-            },
-        );
-        let unplaced = loaded
-            .projectile_slots
-            .iter()
-            .filter(|(source, _)| !placed.contains(source))
-            .copied()
-            .collect::<Vec<_>>();
-        if !unplaced.is_empty() {
-            ui.add_space(8.0);
-            ui.strong("Other Projectiles and Emitters");
-            for (source, effective) in &unplaced {
-                ui.push_id(source, |ui| {
-                    if let Some(selected) = self.draw_projectile_slot(ui, loaded, *source) {
-                        change = Some((*source, selected));
-                    }
-                    self.draw_movement_for(ui, loaded, &[*effective]);
-                });
-            }
-        }
-        match change {
-            Some((source, selected)) => {
-                self.select_projectile(loaded, source, selected);
-                true
-            }
-            None => false,
         }
     }
 

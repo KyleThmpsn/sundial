@@ -3,14 +3,17 @@ mod canvas;
 pub(crate) mod capture;
 mod cards;
 mod entry;
+mod gaps;
 mod guidance;
 mod identity;
 mod library_controls;
 mod library_issues;
 mod navigation;
+mod tunings;
 use super::attachment::{Change, Target};
 use super::*;
 use crate::app::custom_perks::workbench::parameters::tests::{editor, fixture};
+use crate::test_support::driver::label;
 
 impl Workbench {
     pub(in crate::app) fn set_test_editor(&mut self, editor: PerkEditor) {
@@ -46,15 +49,6 @@ fn frame(
             );
         },
     )
-}
-
-fn label(output: &egui::FullOutput, name: &str) -> Option<egui::Rect> {
-    output.shapes.iter().find_map(|shape| match &shape.shape {
-        egui::Shape::Text(text) if text.galley.job.text == name => {
-            Some(text.galley.rect.translate(text.pos.to_vec2()))
-        }
-        _ => None,
-    })
 }
 
 #[test]
@@ -251,7 +245,7 @@ fn a_deleted_bundled_perk_is_not_added_back() {
 #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES for native stock and extra socket choices"]
 fn native_workbench_roundtrip_preserves_all_effects_extra_choices_and_socket_metadata() {
     let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-    let catalog = InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {}).unwrap();
+    let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     let donor = catalog.weapon_donor(0x23DB_942F).unwrap();
     let mut weapon = WeaponRecipe::new_weapon_for_donor(
         "parhelion.workbench-parity",

@@ -1,4 +1,5 @@
-//! Resize only the authored plug suffix when a retained native definition changes size.
+//! Resize only the authored plug suffix when a retained native definition changes size, and move
+//! a saved selection of a replaced default to the new default.
 use super::*;
 use crate::hash::{format_hash_hex, parse_unsigned_value};
 
@@ -10,21 +11,11 @@ pub(super) fn resize(
     if changes.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let mut by_hash = BTreeMap::new();
-    for change in changes {
-        if removed_hashes.contains(&change.definition_hash)
-            || change.previous_socket_count > inventory::MAX_ITEM_PLUGS
-            || change.default_plugs.len() > inventory::MAX_ITEM_PLUGS
-            || change
-                .default_plugs
-                .iter()
-                .flatten()
-                .any(|hash| *hash == u32::MAX)
-            || by_hash.insert(change.definition_hash, change).is_some()
-        {
-            return Err("The replacement has conflicting or unsupported socket layouts".into());
-        }
-    }
+    crate::account::validate_socket_changes(removed_hashes, changes)?;
+    let by_hash = changes
+        .iter()
+        .map(|change| (change.definition_hash, change))
+        .collect::<BTreeMap<_, _>>();
     let mode = inventory::schema_mode(document);
     if mode.is_read_only() || mode.is_future() {
         return Err("Automatic socket updates require a supported settings schema".into());
@@ -105,25 +96,41 @@ fn resize_item(
         }
     }
     let incoming_count = change.default_plugs.len();
-    if plugs.len() == incoming_count {
-        return Ok(());
-    }
-    if plugs.len() != change.previous_socket_count {
-        return Err(format!(
-            "Item 0x{hash:08X} at {location} has {} saved plugs, expected {} installed sockets or {incoming_count} incoming sockets. Repair its socket selections in Sundial before installing.",
-            plugs.len(),
-            change.previous_socket_count,
-        ));
-    }
-    // Keep existing JSON values exactly, including explicit empty selections and hash spelling.
-    // A reviewed shrink removes only the suffix no longer present in the incoming definition.
-    plugs.truncate(incoming_count);
-    plugs.extend(change.default_plugs[plugs.len()..].iter().map(|hash| {
+    let plug_value = |hash: Option<u32>| {
         hash.map_or(Value::Null, |hash| {
             Value::String(format_hash_hex(u64::from(hash)))
         })
-    }));
-    *resized.entry(hash).or_default() += 1;
+    };
+    let mut changed = false;
+    if plugs.len() != incoming_count {
+        if plugs.len() != change.previous_socket_count {
+            return Err(format!(
+                "Item 0x{hash:08X} at {location} has {} saved plugs, expected {} installed sockets or {incoming_count} incoming sockets. Repair its socket selections in Sundial before installing.",
+                plugs.len(),
+                change.previous_socket_count,
+            ));
+        }
+        // Keep existing JSON values exactly, including explicit empty selections and hash
+        // spelling. A reviewed shrink removes only the suffix the incoming definition lacks.
+        plugs.truncate(incoming_count);
+        plugs.extend(
+            change.default_plugs[plugs.len()..]
+                .iter()
+                .map(|hash| plug_value(*hash)),
+        );
+        changed = true;
+    }
+    // A saved selection of a lane's replaced default follows the definition to its new one.
+    for (lane, plug) in plugs.iter_mut().enumerate() {
+        let saved = parse_unsigned_value(plug).and_then(|hash| u32::try_from(hash).ok());
+        if let Some(incoming) = change.replacement(lane, saved) {
+            *plug = plug_value(incoming);
+            changed = true;
+        }
+    }
+    if changed {
+        *resized.entry(hash).or_default() += 1;
+    }
     Ok(())
 }
 

@@ -1,11 +1,12 @@
-//! Resolve modern weapon runtime and skeleton data without installing it.
+//! Resolve equipment runtime and skeleton data without installing it.
+mod character;
 use crate::d2_mot::{
     payload::Payload,
     reader::{Reader, write_json},
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) fn attachment_rows(
     p: &Payload,
@@ -40,14 +41,7 @@ pub(crate) fn attachment_rows(
         Ok(selected)
     }
 }
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "Preserve the audited converter while integrating the legacy rendering pipeline."
-)]
-pub fn inspect(r: &mut Reader, item_tag: u32, modern: bool) -> Result<Value> {
-    let item = r.tag(item_tag, None)?;
-    let translation = item.pointer(if modern { 0x70 } else { 0x88 })?;
-    let index = item.u16(translation + 0x58)? as usize;
+fn patterns(r: &mut Reader, modern: bool) -> Result<Vec<(u32, u32)>> {
     let tables = if modern {
         r.classes(0x808052AA)
     } else {
@@ -66,26 +60,37 @@ pub fn inspect(r: &mut Reader, item_tag: u32, modern: bool) -> Result<Value> {
     ensure!(tables.len() == 1, "ambiguous pattern tables");
     let table = r.tag(tables[0], None)?;
     let rows = table.array(8, 48, Some(if modern { 0x808052AE } else { 0x80805B7C }))?;
-    let row = *rows.get(index).context("pattern index")?;
-    let key = table.u32(row + 4)?;
-    let content = table.u32(row + 16)?;
-    let mut entities = BTreeSet::new();
+    rows.into_iter()
+        .map(|row| Ok((table.u32(row + 4)?, table.u32(row + 16)?)))
+        .collect()
+}
+
+fn entities(
+    r: &mut Reader,
+    modern: bool,
+    keys: &BTreeSet<u32>,
+) -> Result<BTreeMap<u32, BTreeSet<u32>>> {
+    let mut entities = BTreeMap::<u32, BTreeSet<u32>>::new();
     for map_tag in r.classes(if modern { 0x8080978C } else { 0x80809780 }) {
         let Ok(map) = r.tag(map_tag, None) else {
             continue;
         };
         for row in map.array(8, if modern { 24 } else { 8 }, None)? {
-            if map.u32(row)? == key {
-                entities.insert(if modern {
-                    r.ref64(&map, row + 8)?
-                } else {
-                    map.u32(row + 4)?
-                });
+            let key = map.u32(row)?;
+            if !keys.contains(&key) {
+                continue;
             }
+            entities.entry(key).or_default().insert(if modern {
+                r.ref64(&map, row + 8)?
+            } else {
+                map.u32(row + 4)?
+            });
         }
     }
-    ensure!(entities.len() == 1, "runtime entity missing or ambiguous");
-    let entity = *entities.first().unwrap();
+    Ok(entities)
+}
+
+fn runtime(r: &mut Reader, entity: u32, content: u32, modern: bool) -> Result<Value> {
     let mut pending = vec![entity];
     let mut visited = BTreeSet::new();
     let mut components = vec![];
@@ -103,7 +108,9 @@ pub fn inspect(r: &mut Reader, item_tag: u32, modern: bool) -> Result<Value> {
             let class = p.u32(resource - 4)?;
             components.push(json!({"entity":format!("{entity:08X}"),"owner":format!("{tag:08X}"),"class":format!("{class:08X}"),"resource":resource}));
             if [0x808081D6, 0x808081DE, 0x8080853E, 0x80808546].contains(&class) {
-                skeletons.push(decode(&p, resource, class, tag, modern)?);
+                let mut skeleton = decode(&p, resource, class, tag, modern)?;
+                skeleton["entity"] = json!(format!("{entity:08X}"));
+                skeletons.push(skeleton);
             }
             if class == if modern { 0x8080356E } else { 0x80804221 } {
                 for reference in attachments(&p, resource, content, modern)? {
@@ -119,7 +126,24 @@ pub fn inspect(r: &mut Reader, item_tag: u32, modern: bool) -> Result<Value> {
             }
         }
     }
-    let report = json!({"item_tag":format!("{item_tag:08X}"),"pattern_index":index,"pattern_key":format!("{key:08X}"),"content_key":format!("{content:08X}"),"runtime_entity":format!("{entity:08X}"),"components":components,"skeletons":skeletons,"installed":false});
+    Ok(
+        json!({"runtime_entity":format!("{entity:08X}"),"components":components,"skeletons":skeletons,"installed":false}),
+    )
+}
+
+pub fn inspect(r: &mut Reader, item_tag: u32, modern: bool) -> Result<Value> {
+    let item = r.tag(item_tag, None)?;
+    let translation = item.pointer(if modern { 0x70 } else { 0x88 })?;
+    let index = item.u16(translation + 0x58)? as usize;
+    let (key, content) = *patterns(r, modern)?.get(index).context("pattern index")?;
+    let entities = entities(r, modern, &BTreeSet::from([key]))?;
+    let selected = entities.get(&key).context("runtime entity missing")?;
+    ensure!(selected.len() == 1, "runtime entity is ambiguous");
+    let mut report = runtime(r, *selected.first().unwrap(), content, modern)?;
+    report["item_tag"] = json!(format!("{item_tag:08X}"));
+    report["pattern_index"] = json!(index);
+    report["pattern_key"] = json!(format!("{key:08X}"));
+    report["content_key"] = json!(format!("{content:08X}"));
     write_json(&r.output.join("rig.json"), &report)?;
     r.finish()?;
     Ok(report)
@@ -141,6 +165,86 @@ pub fn inspect_with_audio(r: &mut Reader, item_tag: u32, modern: bool) -> Result
     write_json(&r.output.join("rig.json"), &report)?;
     r.finish()?;
     Ok(report)
+}
+
+fn append_runtime(target: &mut Vec<Value>, rows: &Value) -> Result<()> {
+    for row in rows.as_array().context("runtime rig entries")? {
+        if target.iter().any(|entry| entry["owner"] == row["owner"]) {
+            continue;
+        }
+        let mut row = row.clone();
+        row["shared_runtime"] = json!(true);
+        target.push(row);
+    }
+    Ok(())
+}
+
+/// Gear can bind to an art-local skeleton, an equipment runtime or the character palette.
+/// Keep entity membership so independent variants cannot borrow each other's local rig.
+pub(crate) fn art(r: &mut Reader, report: &Value, modern: bool) -> Result<Value> {
+    let item_tag = u32::from_str_radix(report["item_tag"].as_str().context("art item tag")?, 16)?;
+    let item = r.tag(item_tag, None)?;
+    let translation = item.pointer(if modern { 0x70 } else { 0x88 })?;
+    // Ghosts and vehicles bind their art to a separate equipment runtime. Its FK hierarchy
+    // supplies the mesh palette even when the art entity has no skeleton component of its own.
+    let bucket = item.u8(if modern { 0x98 } else { 0xB8 })?;
+    let runtime = if (3..=7).contains(&bucket) {
+        Some(character::inspect(r, modern)?)
+    } else if item.u16(translation + 0x58)? != u16::MAX {
+        Some(inspect(r, item_tag, modern)?)
+    } else {
+        None
+    };
+    let entities = report["models"]
+        .as_array()
+        .context("art models")?
+        .iter()
+        .map(|model| {
+            Ok(u32::from_str_radix(
+                model["entity"].as_str().context("art entity")?,
+                16,
+            )?)
+        })
+        .collect::<Result<BTreeSet<_>>>()?;
+    let mut components = Vec::new();
+    let mut skeletons = Vec::new();
+    for entity in entities {
+        let payload = r.tag(entity, Some(if modern { 0x80809AD8 } else { 0x80809C0F }))?;
+        for row in payload.array(if modern { 8 } else { 16 }, 12, None)? {
+            let tag = payload.u32(row)?;
+            let owner = r.tag(tag, Some(if modern { 0x80809B06 } else { 0x80809C36 }))?;
+            let resource = owner.pointer(24)?;
+            let class = owner.u32(resource.checked_sub(4).context("art resource")?)?;
+            components.push(
+                json!({"entity":format!("{entity:08X}"),"owner":format!("{tag:08X}"),
+                "class":format!("{class:08X}"),"resource":resource}),
+            );
+            if matches!(class, 0x808081D6 | 0x808081DE | 0x8080853E | 0x80808546) {
+                let mut skeleton = decode(&owner, resource, class, tag, modern)?;
+                skeleton["entity"] = json!(format!("{entity:08X}"));
+                skeletons.push(skeleton);
+            }
+        }
+    }
+    if let Some(runtime) = &runtime {
+        append_runtime(&mut components, &runtime["components"])?;
+        append_runtime(&mut skeletons, &runtime["skeletons"])?;
+    }
+    let mut result = runtime.unwrap_or_else(|| json!({}));
+    result["item_tag"] = report["item_tag"].clone();
+    result["components"] = json!(components);
+    result["skeletons"] = json!(skeletons);
+    result["installed"] = json!(false);
+    result["runtime_kind"] = json!(if (3..=7).contains(&bucket) {
+        "character"
+    } else {
+        "equipment"
+    });
+    if result["runtime_kind"] == "equipment" && result["content_key"].is_string() {
+        super::audio::add_to_rig(r, &mut result, modern)?;
+    }
+    write_json(&r.output.join("rig.json"), &result)?;
+    Ok(result)
 }
 
 pub(crate) fn decode(

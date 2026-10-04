@@ -23,139 +23,27 @@ struct LibraryRowState {
     highlighted: bool,
     reveal: bool,
     can_restore: bool,
+    /// The installation carries the item this recipe builds.
+    installed: bool,
 }
 
-type LibraryIconResult = (
-    PathBuf,
-    AuthoredIconPreviewKey,
-    Result<egui::ColorImage, String>,
-);
-
-#[derive(Default)]
-pub(super) struct LibraryIcons {
-    previews: BTreeMap<PathBuf, AuthoredIconPreview>,
-    receiver: Option<Receiver<LibraryIconResult>>,
-    worker: Option<thread::JoinHandle<()>>,
-    pending: BTreeMap<PathBuf, AuthoredIconPreviewKey>,
+/// What a library row's icon is drawn from. The watermark goes by its fingerprint, and the
+/// worker reads its artwork from the recipe, so the list holds none.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct IconKey {
+    corner_icon: Option<u64>,
+    item_hash: u32,
+    container_tag: u32,
+    rarity: crate::AuthoredWeaponRarity,
+    edit: crate::WeaponIconEdit,
+    /// A subclass icon, shown without a rarity plate or watermark.
+    plain: bool,
 }
 
-impl Drop for LibraryIcons {
-    fn drop(&mut self) {
-        // Release every package reader before installation or a catalog replacement.
-        self.receiver = None;
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
-    }
-}
+type LibraryIconResult = (PathBuf, IconKey, Result<egui::ColorImage, String>);
 
-impl LibraryIcons {
-    fn update(
-        &mut self,
-        ctx: &egui::Context,
-        packages: &Path,
-        catalog: &InvestmentCatalog,
-        donors: &[WeaponDonorSummary],
-        entries: &[RecipeLibraryEntry],
-    ) {
-        let finished = self
-            .worker
-            .as_ref()
-            .is_some_and(std::thread::JoinHandle::is_finished);
-        if finished {
-            let _ = self.worker.take().unwrap().join();
-        }
-        if let Some(receiver) = &self.receiver {
-            while let Ok((path, key, result)) = receiver.try_recv() {
-                self.pending.remove(&path);
-                let preview = match result {
-                    Ok(image) => AuthoredIconPreview::Ready {
-                        texture: ctx.load_texture(
-                            format!("library-icon-{}", path.display()),
-                            image,
-                            egui::TextureOptions::LINEAR,
-                        ),
-                        key,
-                    },
-                    Err(error) => AuthoredIconPreview::Failed { key, error },
-                };
-                self.previews.insert(path, preview);
-            }
-        }
-        if finished {
-            self.receiver = None;
-            for (path, key) in std::mem::take(&mut self.pending) {
-                self.previews.insert(
-                    path,
-                    AuthoredIconPreview::Failed {
-                        key,
-                        error: "Library icon loading stopped unexpectedly".into(),
-                    },
-                );
-            }
-        }
-        if self.worker.is_some() {
-            ctx.request_repaint_after(Duration::from_millis(100));
-            return;
-        }
-        let paths: BTreeSet<_> = entries.iter().map(|entry| &entry.path).collect();
-        self.previews.retain(|path, _| paths.contains(path));
-        let missing: Vec<_> = entries
-            .iter()
-            .filter_map(|entry| {
-                let key = AuthoredIconPreviewKey {
-                    corner_icon: entry.corner_icon.clone(),
-                    item_hash: entry.icon_hash,
-                    container_tag: catalog.weapon_icon_container(entry.icon_hash)?,
-                    rarity: effective_icon_rarity(
-                        entry.rarity,
-                        donors
-                            .iter()
-                            .find(|donor| donor.hash == entry.donor_hash)
-                            .map(|donor| donor.rarity),
-                    )?,
-                    edit: entry.icon_edit.clone(),
-                    plain: entry.kind == crate::ItemKind::Subclass,
-                };
-                let cached = self.previews.get(&entry.path).map(|preview| match preview {
-                    AuthoredIconPreview::Ready { key, .. }
-                    | AuthoredIconPreview::Failed { key, .. } => key,
-                });
-                (cached != Some(&key)).then(|| (entry.path.clone(), key))
-            })
-            .collect();
-        if missing.is_empty() {
-            return;
-        }
-        let packages = packages.to_path_buf();
-        let ctx = ctx.clone();
-        let (sender, receiver) = mpsc::channel();
-        self.receiver = Some(receiver);
-        self.pending = missing.iter().cloned().collect();
-        self.worker = Some(thread::spawn(move || {
-            let manager = open_shadowkeep_package_manager(&packages);
-            let branding = crate::branding::Branding::for_packages(&packages);
-            for (path, key) in missing {
-                let result = manager.as_ref().map_err(Clone::clone).and_then(|manager| {
-                    crate::icon_edit::render_weapon_icon_preview_from_manager(
-                        manager,
-                        TagHash(key.container_tag),
-                        key.rarity,
-                        &key.edit,
-                        key.corner_icon.as_ref(),
-                        branding,
-                        key.plain,
-                    )
-                });
-                if sender.send((path, key, result)).is_err() {
-                    break;
-                }
-                ctx.request_repaint();
-            }
-            ctx.request_repaint();
-        }));
-    }
-}
+mod icons;
+pub(super) use icons::Icons as LibraryIcons;
 
 fn library_entry_type<'a>(
     entry: &'a RecipeLibraryEntry,
@@ -329,7 +217,7 @@ fn draw_recipe_search(
 /// Both library navigation and build selection use the authored weapon preview.
 fn draw_library_row(
     ui: &mut egui::Ui,
-    icons: &LibraryIcons,
+    icons: &mut LibraryIcons,
     entry: &RecipeLibraryEntry,
     details: &str,
     state: LibraryRowState,
@@ -348,6 +236,9 @@ fn draw_library_row(
             egui::vec2(ui.available_width(), row_height),
             egui::Sense::hover(),
         );
+        if ui.is_rect_visible(rect) {
+            icons.want(ui.ctx(), &entry.path);
+        }
         let response = ui.interact(
             rect,
             ui.make_persistent_id("weapon-row"),
@@ -464,6 +355,13 @@ fn draw_library_row(
                             egui::Label::new(egui::RichText::new("Default").weak())
                                 .selectable(false),
                         );
+                    }
+                    if state.installed {
+                        ui.add(
+                            egui::Label::new(egui::RichText::new("Installed").weak())
+                                .selectable(false),
+                        )
+                        .on_hover_text("Installed. A build without this recipe removes it.");
                     }
                 });
             });
@@ -738,6 +636,7 @@ impl PackageAuthoringApp {
             .show(ctx, |ui| {
                 workbench_style(ui);
                 draw_bundled_recipe_selection(ui, &self.recipe_entries, &mut draft);
+                ui.weak("Shaders used in selected items' sockets are included automatically.");
                 draw_recipe_search(
                     ui,
                     "build-selection-sort",
@@ -766,11 +665,12 @@ impl PackageAuthoringApp {
                             let included = draft.contains(&entry.path);
                             if draw_library_row(
                                 ui,
-                                &self.library_icons,
+                                &mut self.library_icons,
                                 entry,
                                 details,
                                 LibraryRowState {
                                     inclusion: Some(included),
+                                    installed: self.installed.contains(entry.identity_hash),
                                     ..Default::default()
                                 },
                             )
@@ -784,7 +684,7 @@ impl PackageAuthoringApp {
                             }
                         }
                         if shown.is_empty() {
-                            ui.label("No matching recipes.");
+                            ui.label("No Matching Results");
                         }
                     });
                 ui.separator();

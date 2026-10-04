@@ -141,9 +141,9 @@ fn draw_choices(
             }
             if !visible {
                 ui.label(if picker.choices.is_empty() {
-                    "No custom perks yet."
+                    "No Custom Perks"
                 } else {
-                    "No matching custom perks."
+                    "No Matching Results"
                 });
             }
         });

@@ -7,7 +7,13 @@
 //! selector, base perks or its declaration-only intrinsic perk 479. The hold follows the gear-art
 //! row the presentation donor supplies, and the element change is the plug's three
 //! predicate-gated Set Host Mode effects.
-use super::*;
+use crate::error::invalid;
+#[cfg(test)]
+use crate::item::WeaponVariableDamage;
+use crate::{
+    AuthoringResult, ModernDamageType, WeaponCloneOverrides, WeaponCloneSpec,
+    WeaponSandboxPerkRuntimeOverride, WeaponSocketColumnOverride, WeaponSocketPlugVariantOverride,
+};
 
 /// Hard Light, the weapon whose record drives the reload hold.
 #[cfg(test)]
@@ -82,7 +88,7 @@ pub(crate) fn validate_elements(elements: &[ModernDamageType]) -> AuthoringResul
     Ok(())
 }
 
-pub(super) fn validate_spec(spec: &WeaponCloneSpec) -> AuthoringResult<()> {
+pub(crate) fn validate_spec(spec: &WeaponCloneSpec) -> AuthoringResult<()> {
     let Some(variable) = &spec.overrides.variable_damage else {
         return Ok(());
     };
@@ -99,7 +105,7 @@ pub(super) fn validate_spec(spec: &WeaponCloneSpec) -> AuthoringResult<()> {
 }
 
 /// The expanded spec when the weapon switches elements, or `None` when nothing changes.
-pub(super) fn expand_spec(
+pub(crate) fn expand_spec(
     spec: &WeaponCloneSpec,
     definition: &[u8],
 ) -> AuthoringResult<Option<WeaponCloneSpec>> {
@@ -107,7 +113,10 @@ pub(super) fn expand_spec(
         return Ok(None);
     }
     let mut expanded = spec.clone();
-    expanded.overrides = expand_overrides(&spec.overrides, &weapon_socket_types(definition)?)?;
+    expanded.overrides = expand_overrides(
+        &spec.overrides,
+        &crate::item::weapon_socket_types(definition)?,
+    )?;
     Ok(Some(expanded))
 }
 
@@ -124,8 +133,8 @@ pub(crate) fn expand_overrides(
     // An author can turn one of the donor's columns into a trait socket, or append one, and can
     // put The Fundamentals there themselves. Read the lanes the way the socket list draws them
     // and use the socket they chose, so the build does not lead a second lane with the same perk.
-    let lanes = crate::weapon_behavior::effective_socket_types(
-        &crate::weapon_behavior::authored_socket_roles(overrides),
+    let lanes = crate::weapon::behavior::effective_socket_types(
+        &crate::weapon::behavior::authored_socket_roles(overrides),
         socket_types,
     );
     let trait_lanes = || {
@@ -135,7 +144,7 @@ pub(crate) fn expand_overrides(
             .filter(|(_, socket_type)| **socket_type == TRAIT_SOCKET_TYPE)
             .map(|(lane, _)| lane)
     };
-    let placed = crate::weapon_behavior::authored_socket_choices(overrides);
+    let placed = crate::weapon::behavior::authored_socket_choices(overrides);
     let lane = trait_lanes()
         .find(|lane| {
             placed
@@ -155,11 +164,11 @@ pub(crate) fn expand_overrides(
     if !expanded
         .additional_behaviors
         .iter()
-        .any(|id| id == crate::weapon_behavior::ELEMENT_SWITCH)
+        .any(|id| id == crate::weapon::behavior::ELEMENT_SWITCH)
     {
         expanded
             .additional_behaviors
-            .push(crate::weapon_behavior::ELEMENT_SWITCH.to_owned());
+            .push(crate::weapon::behavior::ELEMENT_SWITCH.to_owned());
     }
     if expanded.socket_columns.is_empty() {
         expanded.socket_columns = vec![None; socket_types.len()];

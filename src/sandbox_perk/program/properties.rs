@@ -8,6 +8,7 @@ use crate::sandbox_perk::action::{
 };
 
 mod cache;
+pub use cache::cached_cancellable;
 pub use cache::{KeyIndex, cached, cached_only};
 
 /// Numeric observations from one action resource.

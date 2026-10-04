@@ -8,6 +8,7 @@
 //! traced position, not by a gameplay meaning the client does not give it.
 
 use super::{Fact, FactValue, nodes};
+use crate::sandbox_perk::action::native::NodeKind as NativeNodeKind;
 
 /// How a field is stored.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -450,7 +451,7 @@ pub fn blank_effect(kind: u8) -> Option<Vec<u8>> {
     // arrives with, so a blank node and a stock one of the kind cannot disagree. A template
     // can be longer than the node when the kind carries nested records, so only this byte
     // is taken from it.
-    bytes[1] = super::native::template(false, kind)
+    bytes[1] = super::native::template(NativeNodeKind::Effect(kind))
         .and_then(|template| template.get(1).copied())
         .unwrap_or_default();
     Some(bytes)

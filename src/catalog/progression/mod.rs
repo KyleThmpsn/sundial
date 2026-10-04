@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     mem::size_of,
+    sync::Arc,
 };
 
 use crate::package_runtime::reader::PackageManager;

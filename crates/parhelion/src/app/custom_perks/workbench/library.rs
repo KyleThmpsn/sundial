@@ -302,13 +302,17 @@ impl Workbench {
             self.draw_library_actions(ui, catalog);
         });
         self.draw_library_search(ui);
-        if let (Some(catalog), Some((weapon, donor))) = (catalog, weapon) {
-            egui::CollapsingHeader::new(format!("Current {} Perks", weapon.kind.label())).show(
-                ui,
-                |ui| {
+        if let Some((weapon, donor)) = weapon {
+            let header = format!("Current {} Perks", weapon.kind.label());
+            if weapon.kind == crate::ItemKind::Subclass {
+                egui::CollapsingHeader::new(header).show(ui, |ui| {
+                    self.draw_ability_perks(ui, weapon);
+                });
+            } else if let Some(catalog) = catalog {
+                egui::CollapsingHeader::new(header).show(ui, |ui| {
                     self.draw_weapon_perks(ui, weapon, donor, catalog);
-                },
-            );
+                });
+            }
         }
         if !self.drafts_writable {
             ui.colored_label(ui.visuals().warn_fg_color, "Draft autosave is paused.");
@@ -394,10 +398,10 @@ impl Workbench {
                     }
                 });
                 if visible == 0 {
-                    ui.weak(if query.is_empty() {
-                        "No custom perks yet."
+                    ui.label(if query.is_empty() {
+                        "No Custom Perks"
                     } else {
-                        "No perks match this search."
+                        "No Matching Results"
                     });
                 }
             });
@@ -420,6 +424,54 @@ impl Workbench {
         }
         self.draw_delete_confirmation(ui.ctx());
         self.draw_restore_defaults_confirmation(ui.ctx());
+    }
+
+    /// A subclass has no sockets. Its custom perks sit on its abilities and path nodes, listed
+    /// under each one that has any.
+    fn draw_ability_perks(&mut self, ui: &mut egui::Ui, recipe: &WeaponRecipe) {
+        let Ok(base) = recipe.donor.item_hash.parse_u32() else {
+            return;
+        };
+        let abilities = recipe
+            .overrides
+            .subclass_abilities
+            .clone()
+            .unwrap_or_default();
+        let selected = self
+            .documents
+            .get(self.selected)
+            .map(|document| document.recipe.id.clone());
+        let mut picked = None;
+        let mut any = false;
+        egui::ScrollArea::vertical()
+            .id_salt("ability-perk-choices")
+            .max_height(160.0)
+            .show(ui, |ui| {
+                ui.add_enabled_ui(self.editor.is_none(), |ui| {
+                    for (place, label) in &self.ability_places {
+                        let perks = abilities.edits(base, *place).custom_perks;
+                        if perks.is_empty() {
+                            continue;
+                        }
+                        any = true;
+                        crate::app::style::hint(ui, label);
+                        for (index, perk) in perks.iter().enumerate() {
+                            let current = selected.as_deref() == Some(perk.id.as_str());
+                            if crate::app::style::list_row(ui, current, display_name(&perk.name))
+                                .clicked()
+                            {
+                                picked = Some((*place, index));
+                            }
+                        }
+                    }
+                });
+            });
+        if !any {
+            ui.weak("No ability perks yet.");
+        }
+        if let Some((place, index)) = picked {
+            self.open_ability(recipe, (place, AbilityPerk::Custom(index)), None);
+        }
     }
 
     /// Each row's problem or warning, the one the status bar names when the perk is open. Open

@@ -80,16 +80,19 @@ fn override_coverage_filters_distinguish_mapping_and_decode_confidence() {
     };
     let partial = UnlockDefinition {
         runtime_writers: Vec::new(),
-        tested_by: vec![ProgressionContextDef {
-            direct_references: Vec::new(),
-            hash: 2,
-            kind: ProgressionContextKind::Activity,
-            name: String::new(),
-            type_name: String::new(),
-            description: String::new(),
-            paths: Vec::new(),
-            condition_programs: vec![vec![[99, 1]]],
-        }],
+        tested_by: vec![
+            ProgressionContextDef {
+                direct_references: Vec::new(),
+                hash: 2,
+                kind: ProgressionContextKind::Activity,
+                name: String::new(),
+                type_name: String::new(),
+                description: String::new(),
+                paths: Vec::new(),
+                condition_programs: vec![vec![[99, 1]]],
+            }
+            .into(),
+        ],
         ..unresolved.clone()
     };
 
@@ -117,16 +120,19 @@ fn rendered_definition_identifiers_are_filterable() {
         name: Some("Sweet Business Acquired".into()),
         description: None,
         runtime_writers: Vec::new(),
-        tested_by: vec![ProgressionContextDef {
-            direct_references: Vec::new(),
-            hash: 7,
-            kind: ProgressionContextKind::Activity,
-            name: "The Shattered Throne".into(),
-            type_name: String::new(),
-            description: String::new(),
-            paths: Vec::new(),
-            condition_programs: Vec::new(),
-        }],
+        tested_by: vec![
+            ProgressionContextDef {
+                direct_references: Vec::new(),
+                hash: 7,
+                kind: ProgressionContextKind::Activity,
+                name: "The Shattered Throne".into(),
+                type_name: String::new(),
+                description: String::new(),
+                paths: Vec::new(),
+                condition_programs: Vec::new(),
+            }
+            .into(),
+        ],
     };
 
     assert!(definition_matches("#12913", 12_913, &definition));

@@ -25,10 +25,33 @@ type Textures = BTreeMap<u32, Result<IconTexture, String>>;
 
 /// The dyes and textures one background read loads.
 type Request = (Vec<u16>, Vec<u32>);
+#[cfg(feature = "d2-model-importer")]
+type Sources = BTreeMap<i8, crate::shader::DyeSource>;
+#[cfg(feature = "d2-model-importer")]
+type SourceRead = Result<(Sources, Materials, Textures, SourceIdentity), String>;
+
+#[cfg(feature = "d2-model-importer")]
+pub(super) struct SourceIdentity {
+    pub(super) name: Option<String>,
+    pub(super) hash: Option<u32>,
+    icon: Option<ImportedIcon>,
+}
 
 /// Dye materials by dye row and detail textures by tag, read in the background.
 #[derive(Default)]
 pub(in crate::app) struct DyeMaterials {
+    #[cfg(feature = "d2-model-importer")]
+    source_key: Option<String>,
+    #[cfg(feature = "d2-model-importer")]
+    source_job: Option<thread::JoinHandle<SourceRead>>,
+    #[cfg(feature = "d2-model-importer")]
+    pub(super) sources: BTreeMap<i8, crate::shader::DyeSource>,
+    #[cfg(feature = "d2-model-importer")]
+    pub(super) source_error: Option<String>,
+    #[cfg(feature = "d2-model-importer")]
+    pub(super) source: Option<SourceIdentity>,
+    #[cfg(feature = "d2-model-importer")]
+    source_icon: Option<egui::TextureHandle>,
     materials: Materials,
     textures: Textures,
     thumbnails: BTreeMap<u32, egui::TextureHandle>,
@@ -41,6 +64,10 @@ pub(in crate::app) struct DyeMaterials {
 
 impl Drop for DyeMaterials {
     fn drop(&mut self) {
+        #[cfg(feature = "d2-model-importer")]
+        if let Some(job) = self.source_job.take() {
+            let _ = job.join();
+        }
         // No package handles may outlive the catalog, as with the dye colors.
         if let Some((_, job)) = self.job.take() {
             let _ = job.join();
@@ -49,6 +76,67 @@ impl Drop for DyeMaterials {
 }
 
 impl DyeMaterials {
+    #[cfg(feature = "d2-model-importer")]
+    pub(super) fn update_source(&mut self, ctx: &egui::Context, recipe: &WeaponRecipe) {
+        let key = recipe
+            .overrides
+            .imported_graph
+            .as_ref()
+            .and_then(|g| serde_json::to_string(g).ok());
+        if self.source_key != key {
+            if let Some(job) = self.source_job.take() {
+                let _ = job.join();
+            }
+            self.source_key = key.clone();
+            self.sources.clear();
+            self.source_error = None;
+            self.source = None;
+            self.source_icon = None;
+            self.materials.clear();
+            self.textures.clear();
+            self.thumbnails.clear();
+            self.swatches = Default::default();
+            self.drawn = None;
+            if key.is_some() {
+                let recipe = recipe.clone();
+                let ctx = ctx.clone();
+                self.source_job = Some(thread::spawn(move || {
+                    let result = read_source(&recipe);
+                    ctx.request_repaint();
+                    result
+                }));
+            }
+        }
+        if let Some(job) = self.source_job.take_if(|job| job.is_finished()) {
+            match job
+                .join()
+                .unwrap_or_else(|_| Err("Source material loading stopped".into()))
+            {
+                Ok((sources, materials, textures, identity)) => {
+                    self.source = Some(identity);
+                    self.sources = sources;
+                    self.materials.extend(materials);
+                    self.textures.extend(textures);
+                }
+                Err(error) => self.source_error = Some(error),
+            }
+        }
+    }
+
+    #[cfg(feature = "d2-model-importer")]
+    pub(super) fn source_icon(&mut self, ctx: &egui::Context) -> Option<egui::TextureHandle> {
+        if self.source_icon.is_none() {
+            let icon = self.source.as_ref()?.icon.as_ref()?;
+            let pixels = icon.fit_to(96, 96);
+            self.source_icon = Some(ctx.load_texture(
+                "parhelion-source-shader-icon",
+                egui::ColorImage::from_rgba_unmultiplied([96, 96], pixels.as_raw()),
+                egui::TextureOptions::LINEAR,
+            ));
+        }
+        self.source_icon.clone()
+    }
+
     /// Keeps the materials of `dyes` and the textures of `tags` loaded, reading any missing ones in
     /// the background. A kept dye's own textures stay too.
     pub(super) fn update(
@@ -77,7 +165,13 @@ impl DyeMaterials {
             self.materials.extend(materials);
             self.textures.extend(textures);
         }
-        self.materials.retain(|dye, _| dyes.contains(dye));
+        self.materials.retain(|dye, _| {
+            #[cfg(feature = "d2-model-importer")]
+            if self.source_key.is_some() && crate::shader::source_channel(*dye).is_some() {
+                return true;
+            }
+            dyes.contains(dye)
+        });
         let bound = self
             .materials
             .values()
@@ -93,6 +187,13 @@ impl DyeMaterials {
             .iter()
             .copied()
             .filter(|dye| !self.materials.contains_key(dye))
+            .filter(|_dye| {
+                #[cfg(feature = "d2-model-importer")]
+                if self.source_key.is_some() && crate::shader::source_channel(*_dye).is_some() {
+                    return false;
+                }
+                true
+            })
             .collect::<Vec<_>>();
         let missing_tags = tags
             .iter()
@@ -252,6 +353,54 @@ impl DyeMaterials {
         self.swatches[slot] = Some((key, handle.clone()));
         Some(handle)
     }
+}
+
+#[cfg(feature = "d2-model-importer")]
+fn read_source(recipe: &WeaponRecipe) -> SourceRead {
+    let sources = crate::shader::source_materials(recipe)?;
+    let mut materials = Materials::new();
+    let mut textures = Textures::new();
+    for (&channel, source) in &sources {
+        let material = sundial::package_authoring::decode_source_material(source).map(|m| {
+            for (tag, texture) in [(m.detail_tag, m.detail), (m.normal_tag, m.normal)] {
+                if let (Some(tag), Some(t)) = (tag, texture) {
+                    textures.insert(
+                        tag,
+                        Ok(IconTexture {
+                            width: t.width,
+                            height: t.height,
+                            rgba: t.rgba,
+                        }),
+                    );
+                }
+            }
+            Material {
+                vectors: m.vectors,
+                detail: m.detail_tag,
+                normal: m.normal_tag,
+                detail_tiling: m.detail_transform,
+                normal_tiling: m.normal_transform,
+            }
+        });
+        materials.insert(crate::shader::SOURCE_DYE + channel as u16, material);
+    }
+    let graph = recipe
+        .overrides
+        .imported_graph
+        .as_ref()
+        .and_then(|g| std::fs::read(g.directory.join("asset-graph.json")).ok())
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
+    let identity = SourceIdentity {
+        name: graph
+            .as_ref()
+            .and_then(|g| g["source_name"].as_str().map(str::to_owned)),
+        hash: graph
+            .as_ref()
+            .and_then(|g| g["source_item"].as_u64())
+            .and_then(|hash| u32::try_from(hash).ok()),
+        icon: crate::shader::source_icon(recipe).ok(),
+    };
+    Ok((sources, materials, textures, identity))
 }
 
 /// What one surface draws from: its material read after the page's edit, its iridescence ramp,

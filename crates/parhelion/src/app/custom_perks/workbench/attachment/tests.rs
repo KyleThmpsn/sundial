@@ -142,7 +142,7 @@ fn destinations_include_choices_after_twelve_and_the_next_available_choice() {
 fn full_columns_do_not_offer_an_out_of_range_destination() {
     let donor = donor();
     let mut weapon = weapon(&donor, 1);
-    let limit = authored_socket_choice_limit(92);
+    let limit = u16::MAX as usize;
     weapon.overrides.socket_columns[0].as_mut().unwrap().choices =
         (1..=limit).map(|hash| HexHash::new(hash as u32)).collect();
     weapon.overrides.socket_plug_variants.clear();

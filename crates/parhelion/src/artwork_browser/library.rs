@@ -28,8 +28,6 @@ pub(crate) struct Entry {
     pub white: bool,
     pub path: PathBuf,
     pub size: [u32; 2],
-    pub icon: Icon,
-    pub thumbnail: egui::ColorImage,
 }
 
 fn png(bytes: &[u8], purpose: Purpose) -> Result<image::RgbaImage, String> {
@@ -119,27 +117,39 @@ pub(crate) fn load(path: &Path, purpose: Purpose) -> Result<image::RgbaImage, St
 
 fn entry(root: &Path, path: PathBuf, purpose: Purpose) -> Result<Entry, String> {
     let pixels = load(&path, purpose)?;
-    let mut encoded = Cursor::new(Vec::new());
-    crate::image_import::fit(&pixels, 96, 96)
-        .write_to(&mut encoded, image::ImageFormat::Png)
-        .map_err(|e| e.to_string())?;
     let name = path
         .strip_prefix(root)
         .unwrap_or(&path)
         .to_string_lossy()
         .into_owned();
-    let thumbnail = crate::image_import::fit(&pixels, 64, 64);
     Ok(Entry {
-        icon: Icon::Image {
-            name: name.clone(),
-            image: ImportedIcon::from_bytes(encoded.get_ref())?,
-        },
         name,
         white: super::perk_quality::inspect(pixels.pixels().map(|p| p.0)) == Some(true),
         path,
         size: [pixels.width(), pixels.height()],
-        thumbnail: egui::ColorImage::from_rgba_unmultiplied([64, 64], thumbnail.as_raw()),
     })
+}
+
+/// The icon a perk keeps for the file at `path`, made when the file is picked.
+pub(crate) fn icon(path: &Path, name: &str) -> Result<Icon, String> {
+    let pixels = load(path, Purpose::Perk)?;
+    let mut encoded = Cursor::new(Vec::new());
+    crate::image_import::fit(&pixels, 96, 96)
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    Ok(Icon::Image {
+        name: name.to_owned(),
+        image: ImportedIcon::from_bytes(encoded.get_ref())?,
+    })
+}
+
+/// A thumbnail of the file at `path`, 64 pixels square.
+pub(crate) fn thumbnail(path: &Path, purpose: Purpose) -> Result<egui::ColorImage, String> {
+    let pixels = crate::image_import::fit(&load(path, purpose)?, 64, 64);
+    Ok(egui::ColorImage::from_rgba_unmultiplied(
+        [64, 64],
+        pixels.as_raw(),
+    ))
 }
 
 pub(crate) fn scan(root: &Path, purpose: Purpose) -> Result<(Vec<Entry>, usize), String> {
@@ -332,8 +342,16 @@ mod tests {
         let second = add(&root, &input, Purpose::Perk).unwrap();
         assert_ne!(first.path, second.path);
         fs::remove_file(&input).unwrap();
-        let json = serde_json::to_vec(&first.icon).unwrap();
-        assert_eq!(serde_json::from_slice::<Icon>(&json).unwrap(), first.icon);
+        let icon = icon(&first.path, &first.name).unwrap();
+        let json = serde_json::to_vec(&icon).unwrap();
+        let restored = serde_json::from_slice::<Icon>(&json).unwrap();
+        let Icon::Image {
+            image: embedded, ..
+        } = restored
+        else {
+            panic!("selected local artwork must be embedded");
+        };
+        assert_eq!(embedded.fit_to(96, 96), image);
         assert_eq!(scan(&root, Purpose::Perk).unwrap().0.len(), 2);
     }
     #[test]
@@ -401,25 +419,5 @@ mod tests {
         let bytes = archive(&[("repo/broken.svg", b"invalid")]);
         assert!(install_archive(bad.path(), &bytes).is_err());
         assert!(!downloaded(bad.path()));
-    }
-
-    #[test]
-    #[ignore = "downloads the pinned public destiny-icons archive to a temporary directory"]
-    fn real_destiny_icons_download_and_rasterize() {
-        let dir = tempfile::tempdir().unwrap();
-        download(dir.path()).unwrap();
-        assert!(downloaded(dir.path()));
-        let (entries, skipped) = scan(dir.path(), Purpose::Perk).unwrap();
-        assert!(entries.len() > 100);
-        for entry in &entries {
-            let pixels = load(&entry.path, Purpose::Perk).unwrap();
-            assert!(super::super::perk_quality::accepts(
-                pixels.pixels().map(|p| p.0)
-            ));
-        }
-        eprintln!(
-            "Validated {} downloaded perk icons, filtered {skipped}",
-            entries.len()
-        );
     }
 }

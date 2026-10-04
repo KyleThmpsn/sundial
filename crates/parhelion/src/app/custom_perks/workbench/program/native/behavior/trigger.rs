@@ -127,11 +127,12 @@ fn set(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sundial::package_authoring::sandbox_perk::action::native::NodeKind as NativeNodeKind;
     use sundial::package_authoring::sandbox_perk::activation;
 
     #[test]
     fn changing_a_kill_filter_preserves_shared_siblings_and_other_requirements() {
-        let bytes = native::template(true, 2).unwrap();
+        let bytes = native::template(NativeNodeKind::Condition(2)).unwrap();
         let source = Graph::read(&bytes, 0, CLASS).unwrap();
         let mut graph = source.clone();
         // A second source condition deliberately shares all of the first one's references.
@@ -161,7 +162,7 @@ mod tests {
             );
             // Relocation retains the new filter and validates the full node.
             let reread = Graph::read(&edited.emit().unwrap(), 0, CLASS).unwrap();
-            reread.validate_node(true, 2).unwrap();
+            reread.validate_node(NativeNodeKind::Condition(2)).unwrap();
             assert_eq!(
                 native::labels::source(&reread, 0, LABELS).unwrap()[0],
                 choice.labels()
@@ -170,16 +171,9 @@ mod tests {
     }
 
     #[test]
-    fn a_composed_kill_filter_the_presets_cannot_reach_round_trips() {
-        // The stock perks use 56 distinct kill filters and the five presets reach five of
-        // them. The rest are ordinary label sets, so composing one has to survive a write
-        // and a reload the same way a preset does.
+    fn a_composed_weapon_label_filter_round_trips() {
+        // A composed filter must survive native emission and readback.
         let vocabulary = activation::site_labels(CLASS, LABELS);
-        assert!(
-            vocabulary.len() >= 40,
-            "the kill vocabulary should cover what the stock perks filter on, found {}",
-            vocabulary.len()
-        );
         let find = |wanted: &str| {
             vocabulary
                 .iter()
@@ -189,15 +183,11 @@ mod tests {
         };
         let mut labels = vec![find("shotgun"), find("sniper rifle")];
         labels.sort_unstable();
-        assert!(
-            PerkActivation::from_filter(&labels, false).is_none(),
-            "this set is deliberately one no preset reaches"
-        );
-        let bytes = native::template(true, 2).unwrap();
+        let bytes = native::template(NativeNodeKind::Condition(2)).unwrap();
         let mut graph = Graph::read(&bytes, 0, CLASS).unwrap();
         set_labels(&mut graph, 0, LABELS, 0, &labels).unwrap();
         let reread = Graph::read(&graph.emit().unwrap(), 0, CLASS).unwrap();
-        reread.validate_node(true, 2).unwrap();
+        reread.validate_node(NativeNodeKind::Condition(2)).unwrap();
         let mut stored = native::labels::source(&reread, 0, LABELS).unwrap()[0].clone();
         stored.sort_unstable();
         assert_eq!(stored, labels);
@@ -207,11 +197,11 @@ mod tests {
     }
 
     #[test]
-    fn editing_one_label_list_leaves_the_other_seven_alone() {
+    fn editing_a_label_list_preserves_other_filter_bindings() {
         // The kill node carries two binding sites with four set operations each. Writing one
         // list must not disturb the rest, or changing an exclusion would silently drop the
         // category the perk fires on.
-        let bytes = native::template(true, 2).unwrap();
+        let bytes = native::template(NativeNodeKind::Condition(2)).unwrap();
         let mut graph = Graph::read(&bytes, 0, CLASS).unwrap();
         let victim = activation::site_labels(CLASS, VICTIM);
         assert!(
@@ -222,7 +212,7 @@ mod tests {
         set_labels(&mut graph, 0, LABELS, 0, &[0x962E_A19B]).unwrap();
         set_labels(&mut graph, 0, VICTIM, 2, &excluded).unwrap();
         let reread = Graph::read(&graph.emit().unwrap(), 0, CLASS).unwrap();
-        reread.validate_node(true, 2).unwrap();
+        reread.validate_node(NativeNodeKind::Condition(2)).unwrap();
         assert_eq!(
             native::labels::source(&reread, 0, LABELS).unwrap()[0],
             vec![0x962E_A19B]

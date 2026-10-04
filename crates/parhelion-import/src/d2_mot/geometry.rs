@@ -1,5 +1,5 @@
-use crate::d2_mot::reader::Reader;
-use anyhow::{Result, ensure};
+use crate::d2_mot::{payload::Payload, reader::Reader};
+use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -45,7 +45,10 @@ pub fn triangles(indices: &[u32], vertices: usize, restart: u32) -> Result<Vec<[
     let mut window = Vec::new();
     let mut parity = false;
     let mut faces = vec![];
-    for &i in indices {
+    for (at, &i) in indices.iter().enumerate() {
+        if at.is_multiple_of(4096) {
+            crate::cancellation::check()?;
+        }
         if i == restart {
             window.clear();
             parity = false;
@@ -71,10 +74,60 @@ pub fn triangles(indices: &[u32], vertices: usize, restart: u32) -> Result<Vec<[
 pub fn export(r: &mut Reader, tag: u32, detail: Detail) -> Result<Value> {
     export_mesh(r, tag, 0, true, detail)
 }
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "Preserve the audited converter while integrating the legacy rendering pipeline."
-)]
+
+/// Resolve an exported mesh without silently selecting the first mesh of a model.
+/// Older exports omitted the index and are valid only for single-mesh models.
+pub(crate) fn selected_mesh(
+    model: &crate::d2_mot::payload::Payload,
+    entry: &Value,
+) -> Result<usize> {
+    let meshes = model.array(16, 128, Some(0x80806EC5))?;
+    let index = match entry.get("mesh_index") {
+        Some(value) => usize::try_from(value.as_u64().context("source mesh index")?)?,
+        None => {
+            ensure!(
+                meshes.len() == 1,
+                "source export lacks a mesh index for a multi-mesh model"
+            );
+            0
+        }
+    };
+    meshes
+        .get(index)
+        .copied()
+        .context("source mesh index outside model")
+}
+
+pub(crate) fn mesh_key(entry: &Value) -> Result<String> {
+    let tag = u32::from_str_radix(entry["model"].as_str().context("source model tag")?, 16)?;
+    Ok(match entry.get("mesh_index") {
+        Some(index) => format!(
+            "{tag:08X}-mesh-{}",
+            index.as_u64().context("source mesh index")?
+        ),
+        None => format!("{tag:08X}"),
+    })
+}
+
+pub(crate) fn indices(header: &Payload, data: &Payload) -> Result<(Vec<u32>, u32)> {
+    let wide = header.u8(1)? != 0;
+    let width = if wide { 4 } else { 2 };
+    ensure!(
+        data.0.len() == header.u32(8)? as usize && data.0.len().is_multiple_of(width),
+        "Index payload size differs from its header"
+    );
+    let values = (0..data.0.len())
+        .step_by(width)
+        .map(|at| {
+            if wide {
+                data.u32(at)
+            } else {
+                Ok(u32::from(data.u16(at)?))
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok((values, if wide { u32::MAX } else { u32::from(u16::MAX) }))
+}
 pub fn export_mesh(
     r: &mut Reader,
     tag: u32,
@@ -115,21 +168,7 @@ pub fn export_mesh(
     let vertices = pos.0.len() / 24;
     let ih = r.tag(it, None)?;
     let ib = r.tag(r.reference(it)?, None)?;
-    let width = if ih.u8(1)? != 0 { 4 } else { 2 };
-    ensure!(
-        ib.0.len() == ih.u32(8)? as usize && ib.0.len() % width == 0,
-        "index size mismatch"
-    );
-    let indices = (0..ib.0.len())
-        .step_by(width)
-        .map(|o| {
-            if width == 4 {
-                ib.u32(o)
-            } else {
-                Ok(ib.u16(o)? as u32)
-            }
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let (indices, restart) = indices(&ih, &ib)?;
     let mut seen = BTreeSet::new();
     let mut parts = vec![];
     for part in model.array(mesh + 32, 36, Some(0x80806ECB))? {
@@ -142,10 +181,7 @@ pub fn export_mesh(
         let slice = indices
             .get(start..start + count)
             .ok_or_else(|| anyhow::anyhow!("part index range exceeds buffer"))?;
-        parts.push((
-            model.u32(part)?,
-            triangles(slice, vertices, if width == 4 { u32::MAX } else { 65535 })?,
-        ));
+        parts.push((model.u32(part)?, triangles(slice, vertices, restart)?));
     }
     let used = parts
         .iter()
@@ -219,7 +255,7 @@ pub fn export_mesh(
         *bones.entry(pos.i16(o + 6)?.to_string()).or_insert(0usize) += 1;
     }
     Ok(
-        json!({"model":format!("{tag:08X}"),"obj":filename,"vertices_all_lods":vertices,"full_detail_vertices":used.len(),"full_detail_triangles":parts.iter().map(|(_,f)|f.len()).sum::<usize>(),"rigid_bone_zero":bones.len()==1&&bones.contains_key("0"),"bone_selectors":bones,"materials":model.array(mesh+32,36,Some(0x80806ECB))?.iter().map(|&p|Ok(format!("{:08X}",model.u32(p)?))).collect::<Result<BTreeSet<_>>>()?}),
+        json!({"model":format!("{tag:08X}"),"mesh_index":index,"obj":filename,"vertices_all_lods":vertices,"full_detail_vertices":used.len(),"full_detail_triangles":parts.iter().map(|(_,f)|f.len()).sum::<usize>(),"rigid_bone_zero":bones.len()==1&&bones.contains_key("0"),"bone_selectors":bones,"materials":model.array(mesh+32,36,Some(0x80806ECB))?.iter().map(|&p|Ok(format!("{:08X}",model.u32(p)?))).collect::<Result<BTreeSet<_>>>()?}),
     )
 }
 #[cfg(test)]

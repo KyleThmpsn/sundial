@@ -12,6 +12,7 @@ fn proposal(settings: &Path) -> AuthoredAccountCleanup {
             definition_hash: 200,
             previous_socket_count: 2,
             default_plugs: vec![Some(99), Some(98), Some(88)],
+            replaced_defaults: Vec::new(),
         }],
         None,
     )

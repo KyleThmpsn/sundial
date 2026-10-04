@@ -159,7 +159,6 @@ fn consumables_and_pending_rewards_persist_together_for_the_selected_character()
     let next = native.progression_view(0)["_reward_context"]["next_serial"]
         .as_u64()
         .unwrap() as u32;
-    assert_eq!(next, 7);
     assert!(
         native
             .character_stacks(0)

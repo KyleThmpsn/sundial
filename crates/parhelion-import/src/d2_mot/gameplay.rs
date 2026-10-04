@@ -1,6 +1,6 @@
 //! Translate investment identities through hashes, never through cross-build row indices.
-#[cfg(test)]
-mod tests;
+
+pub mod perks;
 
 use super::{localization, ornaments, payload::Payload, reader::Reader};
 use anyhow::{Context, Result, ensure};
@@ -43,6 +43,46 @@ fn stat_values(item: &Payload, block: usize, stats: &Payload) -> Result<Vec<Valu
     Ok(values)
 }
 
+/// The stat display group the source item names: each stat it shows, by hash, with its display
+/// flags and its curve from investment value to shown value. The item string's stats resource
+/// holds the group's row in its second byte, 255 for none. A survey of 3,000 modern weapons found
+/// the stats of the group so named among the item's own, apart from stats its plugs supply.
+fn source_stat_group(r: &mut Reader, strings: &Payload, stats: &Payload) -> Result<Value> {
+    if strings.u64(0x68)? == 0 {
+        return Ok(Value::Null);
+    }
+    let index = strings.u8(resource(strings, 0x68, 0x808054CA)? + 1)?;
+    if index == u8::MAX {
+        return Ok(Value::Null);
+    }
+    let definitions = stats.array(8, 0x24, Some(0x8080586F))?;
+    let groups = table(r, 0x808054BE)?;
+    let row = *groups
+        .array(8, 0x38, Some(0x808054C4))?
+        .get(usize::from(index))
+        .context("source stat group outside its table")?;
+    let mut shown = Vec::new();
+    for scaled in groups.array(row + 0x10, 0x18, Some(0x808054C8))? {
+        let definition = *definitions
+            .get(usize::from(groups.u8(scaled)?))
+            .context("source stat group names a stat outside the catalog")?;
+        let display = groups
+            .array(scaled + 8, 8, Some(0x80807A25))?
+            .into_iter()
+            .map(|at| {
+                Ok([
+                    i32::from_le_bytes(groups.bytes(at)?),
+                    i32::from_le_bytes(groups.bytes(at + 4)?),
+                ])
+            })
+            .collect::<Result<Vec<_>>>()?;
+        shown.push(json!({"hash":stats.u32(definition)?,"numeric":groups.u8(scaled + 1)? != 0,"linear":groups.u8(scaled + 3)? != 0,"display":display}));
+    }
+    Ok(
+        json!({"hash":groups.u32(row)?,"maximum":i32::from_le_bytes(groups.bytes(row + 0x30)?),"stats":shown}),
+    )
+}
+
 fn perk_hashes(item: &Payload, block: usize, perks: &Payload) -> Result<Vec<u32>> {
     let perk_rows = perks.array(8, 12, Some(0x808076AE))?;
     let mut perk_hashes = Vec::new();
@@ -55,41 +95,118 @@ fn perk_hashes(item: &Payload, block: usize, perks: &Payload) -> Result<Vec<u32>
     Ok(perk_hashes)
 }
 
+fn source_ammo(strings: &Payload) -> Result<u16> {
+    if strings.u64(0x20)? == 0 {
+        Ok(0)
+    } else {
+        strings.u16(resource(strings, 0x20, 0x808054E5)?)
+    }
+}
+
+pub(crate) struct BrowseMetadata {
+    pub rarity: u8,
+    pub ammo: Option<u16>,
+    pub damage: Option<&'static str>,
+}
+
+/// Lightweight discovery uses the same validated source fields as gameplay extraction.
+/// This metadata describes the modern item, not the translated native behavior.
+pub(crate) fn browse_metadata(
+    r: &mut Reader,
+    item: &Payload,
+    strings: &Payload,
+    weapon: bool,
+) -> Result<BrowseMetadata> {
+    let mut metadata = BrowseMetadata {
+        rarity: item.u8(0xA0)?,
+        ammo: None,
+        damage: None,
+    };
+    if weapon {
+        metadata.ammo = Some(source_ammo(strings)?);
+        let perks = if item.u64(0x68)? == 0 {
+            Vec::new()
+        } else {
+            let block = resource(item, 0x68, 0x80807381)?;
+            perk_hashes(item, block, table(r, 0x808076AA)?.as_ref())?
+        };
+        metadata.damage = source_element(&perks);
+    }
+    Ok(metadata)
+}
+
 /// Saved alongside the model export so source-only reads are not repeated per donor.
 pub fn source(r: &mut Reader, hash: u32, index: usize, item: &Payload) -> Result<Value> {
     let tag = localization::item_strings(r, hash, index)?;
     let strings = r.tag(tag, Some(0x8080549F))?;
-    let block = resource(item, 0x68, 0x80807381)?;
-    let values = stat_values(item, block, table(r, 0x8080586B)?.as_ref())?;
-    let perk_hashes = perk_hashes(item, block, table(r, 0x808076AA)?.as_ref())?;
-    let ammo = strings.u16(resource(&strings, 0x20, 0x808054E5)?)?;
+    let stats = table(r, 0x8080586B)?;
+    let (values, perk_hashes) = if item.u64(0x68)? == 0 {
+        (Vec::new(), Vec::new())
+    } else {
+        let block = resource(item, 0x68, 0x80807381)?;
+        (
+            stat_values(item, block, &stats)?,
+            perk_hashes(item, block, table(r, 0x808076AA)?.as_ref())?,
+        )
+    };
+    let group = source_stat_group(r, &strings, &stats)?;
+    // The item type's English name, as the catalog lists it.
+    let item_type = localization::Resolver::default().label(r, &strings, 0x8C)?;
+    let ammo = source_ammo(&strings)?;
     let sockets = ornaments::gameplay_sockets(r, hash)?;
+    let family = super::service::Family::source(item, &strings)?;
+    let bucket = family
+        .map(|(_, bucket, _)| bucket)
+        .unwrap_or(strings.u32(0xC0)?);
     Ok(
-        json!({"stats":values,"perks":perk_hashes,"ammo":ammo,"bucket":strings.u32(0xC0)?,"rarity":item.u8(0xA0)?,"sockets":sockets["sockets"]}),
+        json!({"item_type":item_type,"stats":values,"stat_group":group,"perks":perk_hashes,"ammo":ammo,"bucket":bucket,"rarity":item.u8(0xA0)?,"sockets":sockets["sockets"]}),
     )
 }
 
-fn damage(perks: &[u32]) -> Option<&'static str> {
+/// The source item's element from its base perks: kinetic, arc, solar, void, stasis or strand.
+pub(crate) fn source_element(perks: &[u32]) -> Option<&'static str> {
     // An empty base-perk list has no elemental damage provider. Keep that
     // absence explicitly instead of inheriting an elemental donor's damage.
     if perks.is_empty() {
         return Some("kinetic");
     }
     // Stable elemental sandbox-perk identities, not weapon-specific compatibility exceptions.
+    // The Stasis and Strand perks end on a damage-type effect with operand 5 and 6.
     let kinds = perks
         .iter()
         .filter_map(|hash| match hash {
             0x8C011E66 => Some("kinetic"),
-            // The legacy runtime cannot represent Stasis or Strand damage. Keep
-            // the gameplay donor's element instead of authoring a Kinetic marker.
-            0x66653D11 | 0x781E5D20 => Some("unsupported"),
+            0x66653D11 => Some("stasis"),
+            0x781E5D20 => Some("strand"),
             0xCCC507A5 | 0xB0C2E8FA => Some("arc"),
             0xCFCF0160 | 0x30D3A473 => Some("solar"),
             0x10A9B235 | 0x4F978D3C => Some("void"),
             _ => None,
         })
         .collect::<BTreeSet<_>>();
-    (kinds.len() == 1 && !kinds.contains("unsupported")).then(|| *kinds.first().unwrap())
+    (kinds.len() == 1).then(|| *kinds.first().unwrap())
+}
+
+/// The base perks the source JSON lists.
+fn exported_perks(source: &Value) -> Option<Vec<u32>> {
+    Some(
+        source["perks"]
+            .as_array()?
+            .iter()
+            .filter_map(|v| v.as_u64().and_then(|v| u32::try_from(v).ok()))
+            .collect(),
+    )
+}
+
+/// The source item's element as its exported base perks give it.
+pub(crate) fn exported_element(source: &Value) -> Option<&'static str> {
+    source_element(&exported_perks(source)?)
+}
+
+fn damage(perks: &[u32]) -> Option<&'static str> {
+    // The legacy runtime cannot represent Stasis or Strand damage. Keep the
+    // gameplay donor's element instead of authoring a Kinetic marker.
+    source_element(perks).filter(|element| !matches!(*element, "stasis" | "strand"))
 }
 
 fn properties(source: &Value) -> Value {
@@ -129,14 +246,8 @@ fn properties(source: &Value) -> Value {
             result[field] = json!(value);
         }
     }
-    if let Some(rows) = source["perks"].as_array() {
-        let perks = rows
-            .iter()
-            .filter_map(|v| v.as_u64().and_then(|v| u32::try_from(v).ok()))
-            .collect::<Vec<_>>();
-        if let Some(value) = damage(&perks) {
-            result["modern_damage_type"] = json!(value);
-        }
+    if let Some(value) = exported_perks(source).and_then(|perks| damage(&perks)) {
+        result["modern_damage_type"] = json!(value);
     }
     result
 }
@@ -152,6 +263,7 @@ fn reset_planned_damage(recipe: &mut Value) -> Result<()> {
 }
 
 mod limits;
+mod stat_group;
 
 /// Older plug-driven elemental sockets cannot be made Kinetic by changing a
 /// parent damage marker. Select another gameplay donor before conversion.
@@ -178,20 +290,38 @@ fn stat_overrides(
     fallbacks: &mut Vec<Value>,
 ) -> Result<Vec<Value>> {
     let mut result = BTreeMap::new();
+    let mut stand_ins = Vec::new();
     for stat in source["stats"].as_array().context("source stats")? {
         let hash = u32::try_from(stat["hash"].as_u64().context("stat hash")?)?;
-        if let Some(&index) = native.get(&hash).filter(|_| stat["literal"] == true) {
-            ensure!(
-                result
-                    .insert(
-                        index,
-                        json!({"definition_index":index,"value":stat["value"]})
-                    )
-                    .is_none(),
-                "duplicate source stat identity"
-            );
+        let Some((target, stand_in)) = stat_group::target(hash) else {
+            fallbacks.push(json!({"stat":hash,"reason":"Shadowkeep gives this stat's identity to another stat"}));
+            continue;
+        };
+        if let Some(&index) = native
+            .get(&target)
+            .filter(|index| stat["literal"] == true && u8::try_from(**index).is_ok())
+        {
+            let row = json!({"definition_index":index,"value":stat["value"]});
+            if stand_in {
+                stand_ins.push((index, hash, row));
+            } else {
+                ensure!(
+                    result.insert(index, row).is_none(),
+                    "duplicate source stat identity"
+                );
+            }
         } else {
-            fallbacks.push(json!({"stat":hash,"reason":"missing target definition or conditional source value"}));
+            fallbacks.push(json!({"stat":hash,"reason":"missing or unrepresentable target definition, or conditional source value"}));
+        }
+    }
+    // The source's own value of a stat comes before a stand-in for it.
+    for (index, hash, row) in stand_ins {
+        match result.entry(index) {
+            std::collections::btree_map::Entry::Occupied(_) => fallbacks
+                .push(json!({"stat":hash,"reason":"the source sets the stat it stands in for"})),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(row);
+            }
         }
     }
     Ok(result.into_values().collect())
@@ -346,11 +476,14 @@ pub fn apply(source: &Value, native: &Path, output: &Path, recipe: &mut Value) -
         .iter()
         .find(|at| items.u32(**at).ok() == Some(donor))
         .context("native gameplay donor")?;
-    check_donor(
-        source,
-        r.tag(items.u32(donor_row + 16)?, Some(0x80807BEA))?
-            .as_ref(),
-    )?;
+    let weapon = recipe["kind"].as_str().is_none_or(|kind| kind == "weapon");
+    if weapon {
+        check_donor(
+            source,
+            r.tag(items.u32(donor_row + 16)?, Some(0x80807BEA))?
+                .as_ref(),
+        )?;
+    }
     let needed = source["sockets"]
         .as_array()
         .context("source sockets")?
@@ -383,29 +516,49 @@ pub fn apply(source: &Value, native: &Path, output: &Path, recipe: &mut Value) -
     }
     let mut fallbacks = Vec::new();
     let mut mapped = properties(source);
+    if !weapon {
+        for field in ["ammo_type", "inventory_slot", "modern_damage_type"] {
+            mapped
+                .as_object_mut()
+                .context("mapped properties")?
+                .remove(field);
+        }
+        for perk in source["perks"].as_array().into_iter().flatten() {
+            fallbacks.push(json!({"perk":perk,"reason":"The native base supplies gear runtime perks. Source perk behavior has not been converted."}));
+        }
+    }
     reset_planned_damage(recipe)?;
     let stats = retain_authored_stats(
         &recipe["overrides"]["investment_stats"],
         stat_overrides(source, &definitions, &mut fallbacks)?,
     )?;
-    mapped["investment_stats"] =
-        json!(limits::read(&mut r, &globals, donor, recipe)?.retain(stats, &mut fallbacks)?);
+    let custom = if weapon {
+        stat_group::plan(source, &definitions, &mut fallbacks)?
+    } else {
+        None
+    };
+    let limits = if let Some((maximum, rows)) = &custom {
+        // The recipe's own group replaces any stock one.
+        recipe["overrides"]
+            .as_object_mut()
+            .context("recipe overrides")?
+            .remove("stat_group_index");
+        mapped["custom_stat_group"] = stat_group::recipe(*maximum, rows);
+        limits::Limits::of(Some(*maximum), rows)
+    } else {
+        let group = limits::read(&mut r, &globals, donor, recipe)?;
+        recipe["overrides"]
+            .as_object_mut()
+            .context("recipe overrides")?
+            .remove("custom_stat_group");
+        limits::Limits::of(group.maximum, &group.shown)
+    };
+    mapped["investment_stats"] = json!(limits.retain(stats, &mut fallbacks)?);
     let sockets = columns(source, &native_sockets, &available, &mut fallbacks)?;
     if sockets.iter().any(|s| !s.is_null()) {
         mapped["socket_columns"] = json!(sockets);
     }
-    for (key, value) in mapped.as_object().context("mapped properties")? {
-        // Retained compatibility profiles may contain intentional donor-specific socket authoring.
-        // Update ordinary imports, but do not erase those private runtime fixes.
-        if key == "socket_columns"
-            && recipe["overrides"]
-                .get(key)
-                .is_some_and(|v| v.as_array().is_some_and(|v| !v.is_empty()))
-        {
-            continue;
-        }
-        recipe["overrides"][key] = value.clone();
-    }
+    apply_mapped_properties(recipe, &mapped)?;
     if native_sockets["sockets"]
         .as_array()
         .context("native sockets")?
@@ -422,3 +575,22 @@ pub fn apply(source: &Value, native: &Path, output: &Path, recipe: &mut Value) -
     super::reader::write_json(&output.join("gameplay-mapping.json"), &report)?;
     Ok(report)
 }
+
+fn apply_mapped_properties(recipe: &mut Value, mapped: &Value) -> Result<()> {
+    for (key, value) in mapped.as_object().context("mapped properties")? {
+        // Retained compatibility profiles may contain intentional donor-specific socket authoring.
+        // Update ordinary imports, but do not erase those private runtime fixes.
+        if key == "socket_columns"
+            && recipe["overrides"]
+                .get(key)
+                .is_some_and(|v| v.as_array().is_some_and(|v| !v.is_empty()))
+        {
+            continue;
+        }
+        recipe["overrides"][key] = value.clone();
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

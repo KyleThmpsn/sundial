@@ -11,7 +11,7 @@ use super::{
     ProgressionDefinition, RecordDefinition, UnlockDefinition,
 };
 
-pub(super) const CACHE_SCHEMA: u32 = 122;
+pub(super) const CACHE_SCHEMA: u32 = 132;
 pub(super) const SUNDIAL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Serialize, Deserialize)]
@@ -52,6 +52,9 @@ pub(super) struct CatalogContents {
     pub(super) reusable_plug_set_count: usize,
     #[serde(default)]
     pub(super) socket_entry_list_count: usize,
+    /// Every row of the ability tables, with its entity and bank.
+    #[serde(default)]
+    pub(super) ability_rows: Vec<crate::investment::AbilityRowSummary>,
     #[serde(default)]
     pub(super) package_names: HashMap<u16, String>,
     #[serde(default)]
@@ -60,7 +63,9 @@ pub(super) struct CatalogContents {
     pub(super) presentation_nodes: Vec<PresentationNode>,
     #[serde(default)]
     pub(super) records: Option<Vec<RecordDefinition>>,
+    #[serde(with = "unlock_definitions")]
     pub(super) unlock_flag_definitions: Vec<UnlockDefinition>,
+    #[serde(with = "unlock_definitions")]
     pub(super) unlock_value_definitions: Vec<UnlockDefinition>,
     pub(super) collectibles: Vec<CollectibleDef>,
     pub(super) shared_expression_pool: Vec<Vec<CollectionConditionTokenDef>>,
@@ -74,15 +79,122 @@ pub(super) struct CatalogContents {
     pub(super) plug_pools: Vec<Vec<u64>>,
 }
 
+/// Unlock definitions as the cache stores them: every context once, and each definition's list
+/// as positions in that table. Written out in full, a condition that names hundreds of
+/// definitions was repeated in each of them, which made up nearly nine tenths of the file.
+mod unlock_definitions {
+    use std::{collections::HashMap, sync::Arc};
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
+
+    use crate::catalog::{ProgressionContextDef, UnlockDefinition};
+
+    #[derive(Serialize)]
+    struct Written<'a> {
+        contexts: Vec<&'a ProgressionContextDef>,
+        tested_by: Vec<Vec<u32>>,
+        definitions: Vec<UnlockDefinition>,
+    }
+
+    #[derive(Deserialize)]
+    struct Read {
+        contexts: Vec<ProgressionContextDef>,
+        tested_by: Vec<Vec<u32>>,
+        definitions: Vec<UnlockDefinition>,
+    }
+
+    pub(super) fn serialize<S: Serializer>(
+        definitions: &[UnlockDefinition],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let mut positions = HashMap::<*const ProgressionContextDef, u32>::new();
+        let mut contexts = Vec::new();
+        let mut tested_by = Vec::with_capacity(definitions.len());
+        for definition in definitions {
+            let mut list = Vec::with_capacity(definition.tested_by.len());
+            for context in &definition.tested_by {
+                let position = match positions.get(&Arc::as_ptr(context)) {
+                    Some(position) => *position,
+                    None => {
+                        let position = u32::try_from(contexts.len()).map_err(|_| {
+                            <S::Error as serde::ser::Error>::custom("too many unlock contexts")
+                        })?;
+                        positions.insert(Arc::as_ptr(context), position);
+                        contexts.push(&**context);
+                        position
+                    }
+                };
+                list.push(position);
+            }
+            tested_by.push(list);
+        }
+        // The lists travel beside the definitions, so each definition is written without its own.
+        let definitions = definitions
+            .iter()
+            .map(|definition| UnlockDefinition {
+                tested_by: Vec::new(),
+                ..definition.clone()
+            })
+            .collect();
+        Written {
+            contexts,
+            tested_by,
+            definitions,
+        }
+        .serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<UnlockDefinition>, D::Error> {
+        let Read {
+            contexts,
+            tested_by,
+            mut definitions,
+        } = Read::deserialize(deserializer)?;
+        if tested_by.len() != definitions.len() {
+            return Err(D::Error::custom(
+                "unlock context lists do not match their definitions",
+            ));
+        }
+        let contexts = contexts.into_iter().map(Arc::new).collect::<Vec<_>>();
+        for (definition, positions) in definitions.iter_mut().zip(tested_by) {
+            definition.tested_by = positions
+                .into_iter()
+                .map(|position| {
+                    usize::try_from(position)
+                        .ok()
+                        .and_then(|position| contexts.get(position))
+                        .cloned()
+                        .ok_or_else(|| D::Error::custom("unlock context position out of range"))
+                })
+                .collect::<Result<_, _>>()?;
+        }
+        Ok(definitions)
+    }
+}
+
+/// Whether the cache at `path` was written by this build's schema and version. The file is
+/// compressed, so only its start is inflated to read the header. A plain file from an older
+/// build is read as it is.
 pub(crate) fn cache_is_current(path: &Path) -> bool {
     let Ok(mut file) = fs::File::open(path) else {
         return false;
     };
-    let mut prefix = [0u8; 128];
-    let Ok(read) = file.read(&mut prefix) else {
+    let mut magic = [0u8; 2];
+    let compressed = file.read_exact(&mut magic).is_ok() && magic == [0x1F, 0x8B];
+    let Ok(file) = fs::File::open(path) else {
         return false;
     };
-    cache_header_is_current(&String::from_utf8_lossy(&prefix[..read]))
+    let mut prefix = Vec::with_capacity(128);
+    let read = if compressed {
+        flate2::read::GzDecoder::new(file)
+            .take(128)
+            .read_to_end(&mut prefix)
+    } else {
+        file.take(128).read_to_end(&mut prefix)
+    };
+    read.is_ok() && cache_header_is_current(&String::from_utf8_lossy(&prefix))
 }
 
 fn cache_header_is_current(prefix: &str) -> bool {

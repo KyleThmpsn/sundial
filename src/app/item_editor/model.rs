@@ -20,6 +20,10 @@ pub(crate) enum ItemEditorAction {
     SetDefinition {
         hash: u64,
     },
+    /// The picker's scope control asked for a broader or narrower set of plugs.
+    SetPlugSelectionMode {
+        mode: PlugSelectionMode,
+    },
     EquipInventoryItem {
         item_index: usize,
     },
@@ -146,6 +150,9 @@ pub(crate) struct PlugPickerSnapshot {
     pub native_default_label: Option<String>,
     pub choices: Vec<PlugChoice>,
     pub show_types: bool,
+    /// The scope the choices were gathered with, and every scope in the item's own words.
+    pub mode: PlugSelectionMode,
+    pub scope_labels: Vec<(PlugSelectionMode, String)>,
 }
 
 impl PlugPickerSnapshot {

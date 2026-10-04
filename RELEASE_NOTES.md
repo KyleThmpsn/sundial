@@ -1,89 +1,102 @@
-Sundial v0.5.2 adds Subclass and Shader authoring to Parhelion, along with armor and cosmetics, expands the Custom Perk Workbench and shared asset previews, and makes more installed game data searchable.
+Sundial v0.5.3 lets Parhelion fully author Subclass abilities and Emblems, borrow more parts from other weapons, and give custom perks more control over abilities. Sundial itself is lighter and has a more capable model preview.
 
 Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundled examples, and build and install instructions. Find previous release notes on the [releases page](https://github.com/KyleThmpsn/sundial/releases).
 
 ## Parhelion
 
-- Parhelion can now author Subclasses that mix and match abilities from every class.
-  - Take any ability or attunement from any stock Subclass, such as Nova Bomb on a Hunter or a Titan's grenade on a Warlock.
-  - Build attunement paths node by node. Each node can come from any Subclass and take its own name, description, and perks, and each path takes its own name.
-  - Installing adds each authored Subclass to every character of its base Subclass's class and equips the first one.
-- Parhelion can now author Shaders in your own colors and materials.
-  - Pick any color for each **Armor**, **Cloth**, and **Suit** surface with a color picker, and choose its iridescence, metalness, smoothness, glow, detail strengths, and worn finish.
-  - Give any dye another Shader's detail textures and change how often they repeat.
-  - Edit every gear type at once or one at a time, such as weapons apart from armor.
-  - Or copy a surface, a dye's textures, or a whole dye channel from any stock Shader.
-  - The Shader's icon is built automatically from your color and material choices, in the style of the stock Shader icons, and updates as you edit. Turn off **Icon From Dyes** to pick an icon instead.
-  - Authored Shaders appear on a **Project Sunrise** or **Dawn** page in Collections, and installing adds a stack of 777 of each to your inventory when there is room.
-- Parhelion can now author armor, Sparrows, Ships, and Ghost Shells. Customize their text, icons, supported stats, sockets, and perks.
-  - Armor and cosmetic authoring may not have much use today, since new items are mostly copies of what is already in the game. It is groundwork for importing modern Destiny 2 items, which will be built on it once the importer is ready (hint, hint).
-  - Subclass, Shader, armor, and cosmetic authoring will gain more options as I figure out more of how they work.
-- Appearances from another weapon type can now bring their own rig and animations. The picker shows when the model must use the base weapon's rig instead.
-- **Unique Weapon Behavior** combinations across weapon types now work much better.
-  - **Include Its Perks** now brings the source weapon's intrinsic frame to any weapon type, fitted to that type.
-  - A source whose perks change how many rounds a burst fires now gives any weapon type the source's burst. Set **Firing Pattern** to **Base Weapon** to keep the weapon's own burst and rate of fire.
-  - For example, Graviton Lance on an Auto Rifle brings Black Hole and fires (very rapid) two-round bursts, and Bastion fires its three-round bursts without its slower fire rate and smaller magazine.
-- Ornaments from other compatible weapons can now be used as appearances.
-- The **Custom Perk Workbench** now edits everything in each effect card, with **Or…**, **And…**, and **Not** in place and a **Timing** row for duration and cooldown. Linked objects and visual effects open from the card for editing.
-- Every stock effect can now be added and edited in place without changing the original perk, even ones the workbench could not open before, such as Sparrow traits.
-- **Add Action…** now has one-step presets for common stock perks: make a weapon full auto, charge its shots like Charge Shot, track targets like Tracking Module, or add Rampage's stacking damage or Outlaw's faster reload.
-- The workbench's pickers are easier to use.
-  - **Suggested** is the default order and puts everyday choices first, such as **On Weapon Kill**, **Change a Weapon or Ability Stat**, **Nova Bomb**, and **Rampage**.
-  - Search also finds behaviors by what they do, such as "headshot", "reload", or "orb", by the stock perks that use them, and objects and effects by their in-game names, such as "hammer of sol".
-  - Double-click a choice to use it. **Add from Perk…** adds all of a perk's effects at once.
-- More perk behavior, values, and keys have plain names, including **Improve Radar Detail**, **Change How the Trigger Fires**, **Change Incoming Damage**, and **Change Outgoing Damage**. Damage cards show base damage, precision, and overall bonuses, and ammo drop cards show Primary, Special, and Heavy values together.
-- Kill effects whose actions happen once now end at once, as Firefly does, so each kill starts them again. Kill triggers such as **On Melee Kill** offer **In Hand**, which counts the kill only while this weapon is in hand, as Grave Robber does.
-- Builds after the first are much faster, because Parhelion now keeps what it learns about stock game data between builds.
-- **Tools** adds **Resync Account**, which sets the installed weapons' Collections unlocks and adds the installed Subclasses and Shaders to the current account again, for example after switching between Sunrise and Dawn, without a rebuild or a reinstall.
-- **Everything at Once** joins the bundled perks. It does it all, the opposite of what a balanced sandbox would allow, and is a good example of the different effects you can use in your own custom perks.
-  - Final blows and finishers refill every ability, drop Orbs of Light, reload, set off Firefly, Arc, and Void blasts, and grant invisibility and Devour. It also carries an extra grenade charge.
-- **On Releasing the Trigger**, **On Weapon Swap**, and **Ends on a Specific Ability** now appear in the condition picker without turning on **Show All**.
-- **On a Specific Ability** and **Ends on a Specific Ability** now let you pick a supported grenade or Super by name.
-- **Spawn an Object or Effect** now offers hop-on entities, the kind the stock Ionic Trace, Shadowshot and Guiding Flame place. These have not been thoroughly tested, so they may or may not work. Stay tuned.
-- Recipes can now be deleted from the library.
-- When one recipe stops a build, **Build Blocked** offers **Remove from Build** and **Open Recipe** for it.
-- Restoring base sockets now asks before removing custom perks.
-- The **Engine Catalog** adds searchable **Markers** and **Native Resources** tabs, and links behavior kinds to their stock uses.
+- Subclass abilities can now be authored, not only swapped.
+  - Give any grenade, melee, class ability, movement ability, Super, or attunement node its own name, description, icon, and perks, including custom perks from the **Custom Perk Workbench**.
+  - Right-click one of its stock perks and choose **Edit as Custom Perk…** to change that perk for this ability alone.
+  - Add up to four extra **Charges**, change what an ability or node affects under **Modifiers**, and adjust an ability's own values, projectiles, and effects under **Tuning**, which lists values with plain names, such as a projectile's **Initial Speed**, first.
+  - **Effect Colors** recolors an ability's effects. Take each color palette's colors from another ability with **Colors From**, then turn its hue, saturation, or brightness. Only that ability changes, so other abilities with the same colors keep theirs.
+  - A Subclass's HUD colors can't currently be changed. The game sets them from the damage type of the Subclass's Super.
+  - Some changes may not work properly yet, and ability authoring will improve in future releases.
+- Authored Subclasses can now be used without any in-game class restriction. Turn on **Every Class** to give a Subclass to every character and let any of them equip it. Its default label becomes **Guardian Subclass**, and **Custom Item-Type Label** can give it your own label.
+- Subclasses have an **Appearance** tab with **Screen Art**, the full-screen character picture the subclass screen shows for each attunement. Take any picture from another subclass or import your own, and export any of them as a PNG. Untested in game.
+- Armor and other gear can do more.
+  - Armor, Sparrows, Ships, and Ghost Shells can add sockets, remove the base's sockets, or give a socket another role, as weapons can. Armor's energy sockets stay with **Energy Type** and **Energy Capacity**.
+  - Gear pages show a preview of the item's model beside its details. Hover it and click the corner icon to open it in the full model viewer.
+  - Armor has a **Class** picker beside **Rarity**. It follows the base by default, or can use **Titan**, **Hunter**, **Warlock**, or **Any Class**. The choice changes equip eligibility, Collections placement and class badge membership.
+  - Authored armor appears in a **Project Sunrise** or **Dawn** category under **Collections > Armor** for each supported class. Its numbered **Armor Set I**, **Armor Set II** rows hold up to five pieces each, fixing categories that appeared but did not show their armor when selected.
+  - Exotic armor appears exclusively under **Exotic > Armor > Class**. Ordinary and Exotic armor join each supported class's project badge, whose completion counts only that class's items.
+- Parhelion can now author Emblems, with your own banner, overlay, and background images and nameplate colors.
+  - **Stat Trackers** lets an emblem follow its base, allow all native trackers, or allow selected categories.
+- Custom perks can do more with abilities.
+  - **On a Specific Ability** and **Ends on a Specific Ability** can name any Subclass ability.
+  - **Change an Ability Property** can set or add to an ability's own values, such as a grenade's blast radius, with **Add Property…**.
+  - Extra melee and class ability charges now work on more abilities.
+  - Devour, invisibility, and other attached effects can be given their own **Attachment Length**.
+  - An attached effect that shows a status on the HUD, such as Arc Shield, can show your own **HUD Name** and **HUD Image**, or another status's **HUD Icon**.
+- Weapons can borrow more parts from other weapons, and an appearance from another weapon no longer changes how the weapon fires. On **Gameplay**, **Behavior** and **Type Markers** each take theirs from another weapon, and on **Appearance**, **Animations** does the same. Type Markers and Animations list the types and animation profiles available rather than every weapon. Each row shows where the part comes from and goes back to the base with one click.
+- **Rounds Per Minute** in **Weapon Stats** shows a warning when a runtime swapped in from another weapon type makes the weapon fire at that type's rates.
+- **Placement** on **Appearance** moves the weapon model forward, sideways or up in the hand, which shows most in first person, and its **Markers** show the named points on the weapon model, such as its sights and muzzle. Double-click a marker to select it, then drag it, nudge it with the arrow keys, or type a distance.
+- **Advanced Gameplay** is now **Gameplay**. Its **Parts** gather every part taken from another weapon, and the technical runtime, perk and inventory controls sit in a **Technical** section that stays closed until opened. The Weapon tab notes which parts come from other weapons and links to them.
+- **Firing Behavior**, **Barrel**, and **Magazine** on **Gameplay** can each come from a different weapon, and no longer need Experimental Features. **Reload** still swaps in the other weapon's whole runtime.
+- **Actions** under **Animations** on **Appearance** play single actions, such as **Hip Fire**, **Aim Fire** or **Holster**, from another frame's animations while the rest follow **Animations**. Only actions the frames play differently are listed.
+  - **Reload Animation** can now borrow another profile's reload animations on compatible rigs, including Submachine Guns, Grenade Launchers and Bows.
+- **Technical Build** lists each borrowed part, which rig the weapon uses, and every moved marker.
+- The **Gameplay** runtime donor picker sorts donors into **Lower Risk**, **Experimental**, and **Rejected**. Applying an Experimental donor asks you to **Accept Crash Risk** first.
+- Leaving a recipe with unsaved changes now offers to save them, not only to discard them.
+- More perk properties have names instead of numbers, such as **Damage**, **Blast Radius**, and **Magazine Size**.
+- The workbench adds **Perk Diagnostics…**, which lists every problem it finds in a perk, and **Gameplay Verification…**, which keeps your in-game test results with the exact perk you tested.
+- **Build & Stage** now warns before a build would remove installed items and offers **Add to Build**.
+- Rebuilds are faster. A build reuses the compiled data of each weapon whose recipe hasn't changed, so after editing one weapon it skips most of the work for the others.
+- Parhelion uses less memory when browsing artwork and the recipe library. Icons load as their rows come into view.
+- Model previews, including the full model viewer window, render far more accurately, though they aren't perfect yet. See the Sundial section for details.
+- **Choose Ornament** has weapon type, damage, ammo, and rarity filters, and opens on the base weapon's type when it has no ornaments of its own.
+- **Find All Uses** in the **Engine Catalog** lists every resource that uses the one shown.
 
 ### Fixes
 
-- Fixed requirements added in the **Custom Perk Workbench** never passing, so an effect that needed all of them never ran. This includes kill effects combined with another requirement using **And…**.
-- Fixed counters created in the **Custom Perk Workbench** never counting. Only counters copied from a stock perk worked before.
-- Fixed a crash when an ornament replaces only some model parts, such as Third Rail on Riskrunner.
-- Fixed an appearance donor changing how the weapon fires, which cost the base weapon its own Exotic behavior, such as Trinity Ghoul's.
-- Fixed a borrowed intrinsic frame removing a custom perk placed in the same socket.
-- Fixed new **On Picking Up Ammo** and **On Sliding** conditions never passing, and a new **Hold a Weapon Count** removing a count instead of adding one. Some less common conditions and actions also start with the settings stock perks use.
-- Fixed effects that could never work building without a warning, such as ones missing a key, target, or object, or a counter with nothing to count. The **Custom Perk Workbench** now points them out.
-- Fixed **On a Specific Ability**, shown with **Show All**, asking for a resource it gave no way to choose, which left the effect unable to build.
-- Fixed **Unique Weapon Behavior** refusing to build with some sources, including Arbalest, Traveler's Chosen, and Warden's Law.
-- Fixed builds failing for weapons the game lists in one slot but equips in another, such as "dummy" copies of Trust and Polaris Lance.
-- Fixed appearances with moving parts or an empty model part, such as The Spiteful Fang and Whispering Slab, failing to build on another weapon type.
-- Fixed an installed stock weapon being mistaken for an authored weapon with the same identity.
-- Fixed unclear build errors for a socket with no default perk, such as Bad Reputation's. They now name the recipe and socket and say what to choose.
-- Fixed base weapons with no ammo type of their own, such as a "dummy" copy of Rose, failing to build. They now join the Primary Collections node unless the recipe chooses an **Ammo Type**.
-- Fixed some objects and effects showing the name of something unrelated, such as Outlaw's buff appearing as a Leviathan raid decoy. It now reads **Outlaw Attachment**.
-- Fixed names in the **Custom Perks** list appearing in bold, which made them harder to read ([#11](https://github.com/KyleThmpsn/sundial/issues/11)).
+- Fixed build and installation progress marking stages complete too early, and build progress sometimes exceeding its total.
+- Fixed **Runtime Values** showing **Reset to Donor** beside values that were never changed.
+- Fixed the game sometimes freezing when inspecting an authored Subclass that takes abilities from other Subclasses.
+- Fixed a weapon with an appearance from another weapon type always firing like the appearance's weapon, such as a Scout Rifle with a Pulse Rifle's look firing three-round bursts. Set **Animations** to the base weapon to keep its own firing.
+- Fixed a weapon with an appearance from another weapon type firing at that type's rates, such as a Hand Cannon with a Sidearm's look firing about twice as fast. Its stats now convert as the base weapon's type.
+- Fixed a weapon dealing Kinetic damage while showing its damage type when the socket that holds that damage type, such as Nature of the Beast's **Weapon Mod** socket, was given another role or removed. The weapon now keeps its damage type, or the one chosen under **Damage Type**, without that socket.
+- Fixed **Restore Donor Row** keeping custom perks the restored socket no longer offers.
+- Fixed weapons you already own keeping a socket's old default perk after a rebuild replaced that default with a custom perk, such as a renamed intrinsic. Installing now moves them to the new default.
+- Fixed a renamed custom perk, such as a renamed intrinsic, sometimes showing its base perk's name and description in item tooltips while the inspect screen showed your own.
+- Fixed authored weapons with an Exotic base, an Exotic appearance, or an ornament refusing shaders when no shader was chosen before building.
+- Minor UI fixes.
 
 ## Sundial
 
-- The preview window adds camera and lighting controls, a choice of animation and playback speed, and image and 3D model export in the current pose.
-  - It also previews static maps and props, particle systems with their sequence timing, and light volumes, with approximate rendering for some particles.
-  - It can now play supported packaged audio on Windows, save clips as WEM, and decode supported clips to WAV.
-  - Metal now reflects a studio, so polished gold, chrome, and iridescent finishes read as metal and show their patterns.
-  - Previews are not perfect yet, and some models may look inaccurate. They will keep improving in future releases.
-- Reworked **Definition Inspector** search and navigation, with more links and detail across items, Collections, progression, and related definitions. Open it from the sidebar or with Ctrl+I.
-- Reduced memory retained after large catalog scans on Linux. **Copy Report** now includes resident memory when available.
-- Sundial now remembers the size and position of its windows, and the zoom level, between sessions.
+- The catalog cache is about 50 times smaller, so Sundial starts faster and uses far less memory. The first start after updating rescans the installation once.
+- More inspection caches now use compressed storage, reducing disk use while keeping existing cached discoveries readable.
+- The perk picker now has six scopes (up from five), from narrowest to widest. For example, on an Auto Rifle's barrel socket they read:
+  - [Item name] Barrels: the perks this item lists for the socket.
+  - Auto Rifle Barrels: barrels used on any Auto Rifle.
+  - All Barrels: barrels from any item.
+  - Auto Rifles: perks from any socket on any Auto Rifle.
+  - All Weapons (or All Armor): perks from any socket on any weapon or armor piece.
+  - All: every perk.
+- Model previews in Sundial and Parhelion are much more accurate and can show many more models, though they aren't perfect yet.
+  - The preview reads the game's own vertex formats, so far more weapons, armor, props, and map pieces load with their textures and lighting, and terrain can now be previewed.
+  - Shaders and materials look closer to the game. Colors and textures are filtered and lit more accurately, glowing panels use proper exposure, and animated materials run much more of their in-game math.
+  - Armor, Ghost Shells, Ships, and Sparrows take the right shader colors, and models with many visual effects keep their shader detail textures.
+  - Transparent and glowing effects, such as ornament sights and energy, blend over the model instead of drawing as solid surfaces.
+  - More armor, weapon, Ghost Shell, Ship, and Sparrow effects can be previewed, including textured glow, chest glow on armor and ornaments, reflections, and animated effect geometry.
+  - Cloth now shows, including capes, Titan marks, and Warlock robes, in its stored pose.
+  - Animations play every stored clip format, move the right joints, stay correctly lit as the model moves, and keep the model in frame.
+  - Ordinary model previews keep their detail during playback. Software rendering follows display density within a fixed frame budget.
+  - Approximate particle previews are available through **View > Particle Study**. Models no longer show guessed sparks automatically.
+  - Imported weapon glow supports more material color outputs and keeps usable sampler bindings when unused resources follow them.
+  - Imported previews keep moving solid parts aligned with their glow and show more body colors and texture patterns.
+  - Previews load and render in the background, so the rest of the app stays responsive.
+  - The preview window opens larger, and **Details** now opens its own window with the **Assets and Effects** list, which is much easier to browse.
+  - Right-click an item and choose **Model Preview** to see it with its saved ornament and shader.
+  - Hairline cracks along model edges are gone from exported images and previews drawn without the GPU, and exported models no longer fail validation at 65,536 vertices or lose normal direction at extreme scales.
+  - The background color picker no longer closes on the first click.
 
 ### Fixes
 
-- Fixed Linux scans failing with "Too many open files" ([#11](https://github.com/KyleThmpsn/sundial/issues/11)). Sundial now raises its open-file limit when it can.
-- Fixed each update leaving its workspace folder beside Sundial. Startup now removes the finished ones.
-- Fixed items added to a Dawn character not advancing that character's inventory counter, which could stop Dawn from loading the character.
-- Fixed game symbols in text, such as the Solar glyph in an objective's description, drawing as unrelated icons. The game's symbol fonts now lead the text fonts everywhere.
-- Fixed the model preview possibly drawing a newly loaded object with the previous object's mesh order, which could crash on an animated object.
-- Fixed the Definition Inspector, JSON Editor and model preview windows showing a scaled-down copy of the large Sundial icon. They carry the window icon at title-bar size, and their titles leave out symbols the desktop cannot draw.
+- Fixed the perk picker showing other weapon types' perks when scoped to the item's own type.
+- Fixed the perk picker's wider scopes listing shaders, ornaments, and trackers on sockets that aren't cosmetic.
+- Fixed quests, bounties, currencies, and consumables in a character's inventory reading as not valid for the character.
+- Fixed swapping a Subclass offering every item instead of other Subclasses.
+- Fixed Dawn settings refusing to save when a character held more than 135 unequipped items.
 
-Sundial v0.4.1 and newer can update to v0.5.2 in the app. Older releases should install v0.5.2 manually.
+Sundial v0.4.1 and newer can update to v0.5.3 in the app. Older releases should install v0.5.3 manually.
 
-Parhelion remains experimental. New gear, Subclasses, appearances from other weapon types, and borrowed perk behavior still need in-game testing, and some combinations may crash. Report issues on [GitHub](https://github.com/KyleThmpsn/sundial/issues), on Discord, or on Twitter/X [@KyleThmpsn](https://x.com/KyleThmpsn). For Parhelion issues, include the recipe and describe what happens in game.
+Parhelion remains experimental. Authored abilities, custom perks on abilities, Emblems, new gear, Subclasses, appearances from other weapon types, and borrowed perk behavior still need in-game testing, and some combinations may crash. Report issues on [GitHub](https://github.com/KyleThmpsn/sundial/issues), on Discord, or on Twitter/X [@KyleThmpsn](https://x.com/KyleThmpsn). For Parhelion issues, include the recipe and describe what happens in game.

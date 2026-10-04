@@ -1,5 +1,6 @@
 //! Read-only drill-down through recovered links and native resource types.
 use super::*;
+use crate::ui::catalog::content::{Uses, UsesState};
 use std::collections::BTreeSet;
 mod graph;
 mod structure;
@@ -97,6 +98,7 @@ impl Navigation {
         data: &Catalog,
         names: &BTreeMap<u32, Vec<String>>,
         packages: Option<&std::path::Path>,
+        uses: &mut Uses<'_>,
     ) -> bool {
         self.structure.sync(packages);
         if self.history.is_empty() {
@@ -118,13 +120,21 @@ impl Navigation {
             let first = self.history.len().saturating_sub(3);
             if first > 0 {
                 ui.menu_button("Earlier", |ui| {
-                    for (index, item) in self.history.iter().take(first).enumerate() {
-                        let title = destination_title(*item, names);
-                        if ui.button(title).clicked() {
-                            return_to = Some(index + 1);
-                            ui.close_menu();
-                        }
-                    }
+                    // Every drill-down adds a step and a menu does not scroll, so a long history
+                    // scrolls here, opening on the steps nearest the current page.
+                    egui::ScrollArea::vertical()
+                        .id_salt("earlier-destinations")
+                        .max_height(320.0)
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            for (index, item) in self.history.iter().take(first).enumerate() {
+                                let title = destination_title(*item, names);
+                                if ui.button(title).clicked() {
+                                    return_to = Some(index + 1);
+                                    ui.close_menu();
+                                }
+                            }
+                        });
                 });
             }
             for (index, item) in self.history.iter().enumerate().skip(first) {
@@ -163,7 +173,7 @@ impl Navigation {
                     .id_salt("resource-page")
                     .auto_shrink([false, false])
                     .show(ui, |ui| match destination {
-                        Destination::Resource(tag) => self.resource(ui, data, names, tag),
+                        Destination::Resource(tag) => self.resource(ui, data, names, tag, uses),
                         Destination::Class(class) => self.class(ui, names, class),
                     })
                     .inner
@@ -181,6 +191,7 @@ impl Navigation {
         data: &Catalog,
         names: &BTreeMap<u32, Vec<String>>,
         tag: u32,
+        uses: &mut Uses<'_>,
     ) -> Option<Destination> {
         let mut destination = None;
         ui.heading(
@@ -197,6 +208,8 @@ impl Navigation {
             for &class in classes {
                 destination = reference::type_link(ui, "Resource Type", class).or(destination);
             }
+        } else if let Some(kind) = registered_kind(tag) {
+            ui.label(format!("Resource Type: {kind}"));
         } else {
             ui.label("Resource Type: Not Identified");
         }
@@ -226,8 +239,12 @@ impl Navigation {
         if view.graph {
             destination = view.show(ui, &data.names, names, tag).or(destination);
         } else {
-            destination = self.links(ui, data, names, tag, false).or(destination);
-            destination = self.links(ui, data, names, tag, true).or(destination);
+            destination = self
+                .links(ui, data, names, tag, false, None)
+                .or(destination);
+            destination = self
+                .links(ui, data, names, tag, true, Some(uses))
+                .or(destination);
         }
         destination
     }
@@ -239,6 +256,9 @@ impl Navigation {
         names: &BTreeMap<u32, Vec<String>>,
         tag: u32,
         incoming: bool,
+        // The reverse reference index, which the incoming list draws from as well: the
+        // path links are the uses the name scan recovered, and the index has every use.
+        uses: Option<&mut Uses<'_>>,
     ) -> Option<Destination> {
         // One row per linked resource. The same target is often linked from several offsets
         // of one resource; the count says so instead of repeating the row.
@@ -253,9 +273,72 @@ impl Navigation {
         } else {
             "Referenced Assets"
         };
-        let total = linked.iter().map(|(_, _, count)| count).sum::<usize>();
-        ui.strong(format!("{label} ({total})"));
-        if linked.is_empty() {
+        let role_of = |tag: u32| {
+            self.types.get(&tag).and_then(|types| {
+                types
+                    .iter()
+                    .find_map(|class| crate::runtime::native_type_name(*class))
+            })
+        };
+        let detail_of = |tag: u32, count: usize| {
+            let mut detail = role_of(tag).map_or_else(
+                || format!("0x{tag:08X}"),
+                |role| format!("{role} · 0x{tag:08X}"),
+            );
+            if count > 1 {
+                detail.push_str(&format!(" · {count} links"));
+            }
+            detail
+        };
+        let mut rows = linked
+            .iter()
+            .map(|&(tag, reference, count)| {
+                let name = if incoming {
+                    reference::resource_name(names, tag)
+                        .unwrap_or("Unnamed Resource")
+                        .to_owned()
+                } else {
+                    data.names.references[reference].path.clone()
+                };
+                (tag, name, detail_of(tag, count))
+            })
+            .collect::<Vec<_>>();
+        if let Some(uses) = &uses
+            && let UsesState::Ready(index) = uses.state
+        {
+            for &source in index.of(tag) {
+                if rows.iter().all(|(listed, _, _)| *listed != source) {
+                    let name = reference::resource_name(names, source)
+                        .unwrap_or("Unnamed Resource")
+                        .to_owned();
+                    rows.push((source, name, detail_of(source, 1)));
+                }
+            }
+        }
+        let total = if incoming
+            && uses
+                .as_ref()
+                .is_some_and(|uses| matches!(uses.state, UsesState::Ready(_)))
+        {
+            rows.len()
+        } else {
+            linked.iter().map(|(_, _, count)| count).sum::<usize>()
+        };
+        let mut uses = uses;
+        ui.horizontal(|ui| {
+            ui.strong(format!("{label} ({total})"));
+            if let Some(uses) = uses.as_deref_mut() {
+                uses_controls(ui, uses);
+            }
+        });
+        if let Some(Uses {
+            state: UsesState::Failed(error),
+            ..
+        }) = uses.as_deref()
+        {
+            ui.colored_label(ui.visuals().error_fg_color, *error);
+        }
+        if rows.is_empty() {
             ui.label(if incoming {
                 "No Incoming Links"
             } else {
@@ -265,35 +348,15 @@ impl Navigation {
         }
         let mut destination = None;
         let height = crate::investment::authoring_choice_row_height(ui);
-        let rows = linked.len().min(8) as f32;
+        let visible = rows.len().min(8) as f32;
         egui::ScrollArea::vertical()
             .id_salt(("resource-links", incoming))
-            .max_height(rows * (height + ui.spacing().item_spacing.y) + 4.0)
+            .max_height(visible * (height + ui.spacing().item_spacing.y) + 4.0)
             .auto_shrink([false, true])
-            .show_rows(ui, height, linked.len(), |ui, range| {
-                for &(tag, reference, count) in &linked[range] {
-                    let reference = &data.names.references[reference];
-                    let name = if incoming {
-                        reference::resource_name(names, tag)
-                            .unwrap_or("Unnamed Resource")
-                            .to_owned()
-                    } else {
-                        reference.path.clone()
-                    };
-                    let role = self.types.get(&tag).and_then(|types| {
-                        types
-                            .iter()
-                            .find_map(|class| crate::weapon_runtime::native_type_name(*class))
-                    });
-                    let mut detail = role.map_or_else(
-                        || format!("0x{tag:08X}"),
-                        |role| format!("{role} · 0x{tag:08X}"),
-                    );
-                    if count > 1 {
-                        detail.push_str(&format!(" · {count} links"));
-                    }
-                    if reference::resource_row(ui, &name, &detail) {
-                        destination = Some(Destination::Resource(tag));
+            .show_rows(ui, height, rows.len(), |ui, range| {
+                for (tag, name, detail) in &rows[range] {
+                    if reference::resource_row(ui, name, detail) {
+                        destination = Some(Destination::Resource(*tag));
                     }
                 }
             });
@@ -342,12 +405,56 @@ impl Navigation {
     }
 }
 
+/// What a resource outside the discovery set is, when the game's tables named it: an ability
+/// bank or the entity an ability equips.
+fn registered_kind(tag: u32) -> Option<&'static str> {
+    if crate::ability::bank::bank_name(tag).is_some() {
+        Some("Ability Bank")
+    } else if crate::sandbox_perk::entity::catalog::game_name(tag).is_some() {
+        Some("Ability Entity")
+    } else {
+        None
+    }
+}
+
+/// Beside Used By: the whole-installation read to ask for, or its progress and a way to stop
+/// it. A failed read is drawn under the heading, where it has the width, and asked for again
+/// from here.
+fn uses_controls(ui: &mut egui::Ui, uses: &mut Uses<'_>) {
+    match uses.state {
+        UsesState::Idle | UsesState::Failed(_) => {
+            if ui
+                .small_button("Find All Uses")
+                .on_hover_text(
+                    "Reads every package once for the resources that reference this one. Later reads come from the disk.",
+                )
+                .clicked()
+            {
+                uses.requested = true;
+            }
+        }
+        UsesState::Reading(done, total) => {
+            ui.weak(format!("Reading {done} of {total} packages"));
+            if ui
+                .small_button("Stop")
+                .on_hover_text(
+                    "The packages read so far stay on the disk, so asking again resumes after them.",
+                )
+                .clicked()
+            {
+                uses.stopped = true;
+            }
+        }
+        UsesState::Ready(_) => {}
+    }
+}
+
 fn destination_title(item: Destination, names: &BTreeMap<u32, Vec<String>>) -> String {
     match item {
         Destination::Resource(tag) => reference::resource_name(names, tag)
             .map(tft::asset_label)
             .unwrap_or_else(|| format!("Resource 0x{tag:08X}")),
-        Destination::Class(class) => crate::weapon_runtime::native_type_name(class)
+        Destination::Class(class) => crate::runtime::native_type_name(class)
             .map(str::to_owned)
             .unwrap_or_else(|| format!("Type 0x{class:08X}")),
     }

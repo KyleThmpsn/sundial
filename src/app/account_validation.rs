@@ -283,7 +283,12 @@ fn validate_character_item<C: AccountCatalog>(
     }
 
     validate_quantity(context, quantity, metadata.max_stack_size, issues);
+    // An authored subclass reads as its base's class, but the game holds no subclass to a
+    // class and a build may give one to every character, so it is not an issue anywhere.
+    let authored_subclass =
+        item.bucket_hash == crate::catalog::SUBCLASS_BUCKET_HASH && item.abilities.authored;
     if let Some(class_type) = class_type
+        && !authored_subclass
         && !equipment::item_class_is_compatible(
             item,
             u64::from(class_type),

@@ -170,24 +170,49 @@ pub(super) fn load_bundled_preview_watermark() -> Result<DecodedIconImage, Strin
     })
 }
 
-pub(crate) fn render_weapon_icon_preview(
-    package_directory: &Path,
-    container_tag: TagHash,
-    rarity: crate::AuthoredWeaponRarity,
-    edit: &WeaponIconEdit,
-    corner: Option<&crate::presentation::Artwork>,
-    plain: bool,
-) -> Result<egui::ColorImage, String> {
-    let manager = open_shadowkeep_package_manager(package_directory)?;
-    render_weapon_icon_preview_from_manager(
-        &manager,
-        container_tag,
-        rarity,
-        edit,
-        corner,
-        crate::branding::Branding::for_packages(package_directory),
-        plain,
-    )
+/// An icon's layers as read from the packages, with its watermark and corner in place. Reading
+/// them opens the packages, which takes seconds, so an edit only composes them again.
+pub(crate) struct IconLayers(LoadedIconPreview);
+
+impl IconLayers {
+    pub(crate) fn load(
+        package_directory: &Path,
+        container_tag: TagHash,
+        rarity: crate::AuthoredWeaponRarity,
+        corner: Option<&crate::presentation::Artwork>,
+        plain: bool,
+    ) -> Result<Self, String> {
+        let manager = open_shadowkeep_package_manager(package_directory)?;
+        Self::from_manager(
+            &manager,
+            container_tag,
+            rarity,
+            corner,
+            crate::branding::Branding::for_packages(package_directory),
+            plain,
+        )
+    }
+
+    fn from_manager(
+        manager: &PackageManager,
+        container_tag: TagHash,
+        rarity: crate::AuthoredWeaponRarity,
+        corner: Option<&crate::presentation::Artwork>,
+        branding: crate::branding::Branding,
+        plain: bool,
+    ) -> Result<Self, String> {
+        let mut preview = load_icon_preview(manager, container_tag, rarity, plain)?;
+        preview.set_branding(branding)?;
+        if let Some(corner) = corner.filter(|_| !plain) {
+            preview.authored_watermark.rgba = crate::watermark::render_custom_corner(corner, 0)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(Self(preview))
+    }
+
+    pub(crate) fn render(&self, edit: &WeaponIconEdit) -> Result<egui::ColorImage, String> {
+        self.0.render(edit)
+    }
 }
 
 pub(crate) fn render_weapon_icon_preview_from_manager(
@@ -199,13 +224,7 @@ pub(crate) fn render_weapon_icon_preview_from_manager(
     branding: crate::branding::Branding,
     plain: bool,
 ) -> Result<egui::ColorImage, String> {
-    let mut preview = load_icon_preview(manager, container_tag, rarity, plain)?;
-    preview.set_branding(branding)?;
-    if let Some(corner) = corner.filter(|_| !plain) {
-        preview.authored_watermark.rgba =
-            crate::watermark::render_custom_corner(corner, 0).map_err(|error| error.to_string())?;
-    }
-    preview.render(edit)
+    IconLayers::from_manager(manager, container_tag, rarity, corner, branding, plain)?.render(edit)
 }
 
 /// Decodes a texture without inventory backgrounds or watermarks.
@@ -218,6 +237,19 @@ pub(crate) fn render_texture_preview(
         image.size,
         &image.rgba,
     ))
+}
+
+/// Decodes a texture to RGBA at its own size, with its alpha as stored, as an export writes it.
+pub(crate) fn decode_texture(
+    manager: &PackageManager,
+    header: TagHash,
+) -> Result<image::RgbaImage, String> {
+    let image = load_preview_texture_pair(manager, header)?;
+    let [width, height] = image
+        .size
+        .map(|side| u32::try_from(side).unwrap_or(u32::MAX));
+    image::RgbaImage::from_raw(width, height, image.rgba)
+        .ok_or_else(|| format!("Texture {header} holds fewer pixels than its size"))
 }
 
 pub(super) fn load_primary_preview_layer(
@@ -297,7 +329,8 @@ fn decode_icon_texture(
     let format = read_u32(header, 4).map_err(|error| error.to_string())?;
     let width = usize::from(read_u16(header, 0x0E).map_err(|error| error.to_string())?);
     let height = usize::from(read_u16(header, 0x10).map_err(|error| error.to_string())?);
-    if width == 0 || height == 0 || width > 2048 || height > 2048 {
+    // Emblem nameplate backgrounds run to 2300 wide.
+    if width == 0 || height == 0 || width > 4096 || height > 4096 {
         return Err("Item icon texture dimensions are invalid".to_owned());
     }
     let pixel_count = width

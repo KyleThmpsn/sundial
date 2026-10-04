@@ -1,4 +1,9 @@
+pub mod buffer;
 mod cache;
+pub mod identity;
+pub mod inputs;
+pub mod program;
+pub mod rigid;
 #[cfg(windows)]
 use anyhow::Context;
 use anyhow::{Result, ensure};
@@ -8,6 +13,13 @@ use std::ffi::c_void;
 #[cfg(windows)]
 #[link(name = "d3dcompiler")]
 unsafe extern "system" {
+    fn D3DDisassemble(
+        data: *const u8,
+        size: usize,
+        flags: u32,
+        comments: *const u8,
+        output: *mut *mut c_void,
+    ) -> i32;
     fn D3DCompile(
         data: *const u8,
         size: usize,
@@ -28,7 +40,7 @@ unsafe fn take_blob(blob: *mut c_void) -> Vec<u8> {
     if blob.is_null() {
         return vec![];
     }
-    // SAFETY: The caller passes an owned ID3DBlob returned by D3DCompile.
+    // SAFETY: The caller passes an owned ID3DBlob returned by the D3D compiler API.
     // Its vtable and buffer remain valid until Release below.
     unsafe {
         let table = *(blob as *const *const usize);
@@ -39,6 +51,26 @@ unsafe fn take_blob(blob: *mut c_void) -> Vec<u8> {
         release(blob);
         output
     }
+}
+
+#[cfg(windows)]
+fn disassemble(code: &[u8]) -> Result<String> {
+    let mut blob = std::ptr::null_mut();
+    // SAFETY: The complete bytecode remains live during this call. The owned
+    // returned blob is consumed and released before checking the HRESULT.
+    let (status, output) = unsafe {
+        let status = D3DDisassemble(code.as_ptr(), code.len(), 0, std::ptr::null(), &mut blob);
+        (status, take_blob(blob))
+    };
+    ensure!(status >= 0, "shader disassembly failed: {status:#010X}");
+    let output = String::from_utf8(output).context("shader assembly encoding")?;
+    ensure!(output.is_ascii(), "shader assembly is not ASCII");
+    Ok(output.trim_end_matches('\0').to_owned())
+}
+
+#[cfg(not(windows))]
+fn disassemble(_code: &[u8]) -> Result<String> {
+    anyhow::bail!("Shader input inspection requires the Windows D3D compiler")
 }
 
 #[cfg(windows)]

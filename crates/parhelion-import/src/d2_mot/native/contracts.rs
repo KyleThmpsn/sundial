@@ -394,47 +394,44 @@ pub(super) fn export(
     progress: &mut dyn FnMut(String),
 ) -> Result<()> {
     let stamp = crate::d2_mot::service::package_stamp(packages)?;
-    let cache = PathBuf::from(std::env::var_os("LOCALAPPDATA").context("Local app data folder")?)
-        .join("Sundial/parhelion/importer/cache/native-contracts");
-    fs::create_dir_all(&cache)?;
-    let path = cache.join(format!("{}-{stamp}.json", Catalog::SCHEMA));
-    let lock = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path.with_extension("lock"))?;
-    if fs2::FileExt::try_lock_exclusive(&lock).is_err() {
-        progress("Waiting for native rendering compatibility discovery…".into());
-        fs2::FileExt::lock_exclusive(&lock)?;
-    }
-    let cached = fs::read(&path)
-        .ok()
+    let generation = std::env::var_os("LOCALAPPDATA").and_then(|root| {
+        crate::cache::Generation::file(
+            &PathBuf::from(root).join("Sundial/parhelion/importer/cache/native-contracts"),
+            &format!("{}-{stamp}", Catalog::SCHEMA),
+        )
+    });
+    let lock = generation
+        .as_ref()
+        .map(crate::cache::Generation::writer)
+        .transpose()?
+        .flatten();
+    let generation = generation.filter(|_| lock.is_some());
+    let path = generation.as_ref().map(crate::cache::Generation::path);
+    let cached = path
+        .and_then(|path| fs::read(path).ok())
         .and_then(|b| serde_json::from_slice::<Catalog>(&b).ok())
         .filter(|c| c.schema == Catalog::SCHEMA && c.stamp == stamp && c.validate(reader).is_ok());
+    let changed = cached.is_none();
     let catalog = if let Some(catalog) = cached {
         progress("Using cached native rendering compatibility…".into());
         catalog
-    } else if let Some(mut catalog) = reusable_carriers(&cache, &path, reader) {
+    } else if let Some(mut catalog) =
+        path.and_then(|path| reusable_carriers(path.parent()?, path, reader))
+    {
         progress("Reusing validated native rendering passes and refreshing resources…".into());
         (catalog.cube, catalog.samplers) = resources(reader)?;
         catalog.stamp = stamp.clone();
-        ensure!(
-            crate::d2_mot::service::package_stamp(packages)? == stamp,
-            "Native packages changed during discovery"
-        );
-        fs::write(&path, serde_json::to_vec(&catalog)?)?;
         catalog
     } else {
-        let catalog = scan(reader, stamp.clone(), progress)?;
-        ensure!(
-            crate::d2_mot::service::package_stamp(packages)? == stamp,
-            "Native packages changed during discovery"
-        );
-        // An interrupted write is treated as a cache miss on the next read.
-        fs::write(&path, serde_json::to_vec(&catalog)?)?;
-        catalog
+        scan(reader, stamp.clone(), progress)?
     };
+    ensure!(
+        crate::d2_mot::service::package_stamp(packages)? == stamp,
+        "Native packages changed during discovery"
+    );
+    if changed && let Some(path) = path {
+        let _ = crate::cache::write_json(path, &catalog);
+    }
     reader.begin_export(&root.join("materials"))?;
     for carrier in catalog.carriers.values() {
         reader.tag(carrier.material, Some(0x808071E8))?;

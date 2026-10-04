@@ -1,19 +1,6 @@
 use super::*;
 
 #[test]
-#[ignore = "read-only; requires PARHELION_UNINSTALL_REVIEW_PACKAGES with installed custom packages"]
-fn native_uninstall_review_identifies_the_complete_installed_set_without_mutation() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_UNINSTALL_REVIEW_PACKAGES").unwrap());
-    let first = preview_uninstall(&packages).unwrap();
-    assert!(!first.artifacts().is_empty());
-    assert_eq!(preview_uninstall(&packages).unwrap(), first);
-    eprintln!(
-        "Reviewed {} recognized custom packages without changing any files",
-        first.artifacts().len()
-    );
-}
-
-#[test]
 fn uninstall_fails_closed_when_runtime_identity_is_unrecognized() {
     let fixture = installed_fixture();
     let plan = preview_uninstall(&fixture.target).unwrap();

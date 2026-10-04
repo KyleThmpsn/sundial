@@ -31,6 +31,7 @@ impl RecipeLibrary {
         &self,
         preview: &RestoreRecipe,
     ) -> Result<Option<PathBuf>, String> {
+        let _lock = self.lock()?;
         if &self.prepare_restore_recipe(&preview.path)? != preview {
             return Err("This recipe changed after the preview. Review the restore again.".into());
         }
@@ -49,7 +50,11 @@ impl RecipeLibrary {
             },
         )?;
         self.prepare_restore_target(&preview.path, &Some(preview.original.clone()))?;
-        atomic_write_replace(&preview.path, preview.template.as_bytes())?;
+        mutation::publish(
+            &preview.path,
+            preview.template.as_bytes(),
+            Some(&preview.original),
+        )?;
         Ok(Some(backup))
     }
 }

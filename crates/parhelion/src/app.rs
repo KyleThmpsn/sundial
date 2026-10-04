@@ -17,8 +17,8 @@ use std::{
 };
 
 use ui_state::{
-    AdvancedGameplayPage, BuildDialogStep, RecipeSaveStatus, RuntimeEditorLayout, WorkbenchPage,
-    runtime_workspace_donor_width, safe_content_width, workbench_left_column_width,
+    BuildDialogStep, RecipeSaveStatus, RuntimeEditorLayout, WorkbenchPage, preview_column_width,
+    preview_height, safe_content_width, workbench_left_column_width,
 };
 
 use sundial::activity_log::Entry as LogEntry;
@@ -32,26 +32,26 @@ use sundial::investment::{
     draw_catalog_loading_view, draw_plug_safety_selector, draw_plug_safety_warning,
 };
 use sundial::package_authoring::{
-    PackageAuthoringPreferences, PackageAuthoringUpdate, PackageAuthoringUtility, open_directory,
-    open_shadowkeep_package_manager, resolve_live_named_tag,
-    sandbox_perk::load_sandbox_perk_runtime_action,
-    weapon_entity::{
+    PackageAuthoringPreferences, PackageAuthoringUpdate, PackageAuthoringUtility,
+    entity::{
         WEAPON_BARREL_COMPONENT_KEY, WEAPON_CONTROLLER_COMPONENT_KEY, WEAPON_INPUT_COMPONENT_KEY,
         WEAPON_MAGAZINE_COMPONENT_KEY, WEAPON_RELOAD_COMPONENT_KEY,
         WEAPON_STAT_TRANSLATOR_COMPONENT_KEY, WEAPON_TRIGGER_CHARGE_COMPONENT_KEY,
         WEAPON_TRIGGER_COMPONENT_KEY,
     },
-    weapon_runtime::{
+    open_directory, open_shadowkeep_package_manager, resolve_live_named_tag,
+    runtime::{
         WeaponRuntimeField, WeaponRuntimeFieldLocator, WeaponRuntimeFieldSource,
         WeaponRuntimeGraph, WeaponRuntimeValue, WeaponRuntimeValueKind, WeaponRuntimeValueOverride,
         encode_weapon_runtime_value, load_weapon_runtime_graph_for_entity,
     },
+    sandbox_perk::load_sandbox_perk_runtime_action,
 };
 use tiger_pkg::TagHash;
 
 use crate::capabilities::{AuthoringDiagnosticCode, AuthoringField};
 use crate::capabilities::{variable_damage_resting_type, variable_damage_supported};
-use crate::icon_edit::{WeaponIconEditor, WeaponIconEditorAction, render_weapon_icon_preview};
+use crate::icon_edit::{IconLayers, WeaponIconEditor, WeaponIconEditorAction};
 use crate::install::{
     AccountResyncReport, InstallReport, InstallRequest, MAX_PACKAGE_BACKUP_RETENTION,
     install_staged_packages_with_progress,
@@ -77,6 +77,28 @@ use crate::{
 };
 
 const WINDOW_TITLE: &str = "Parhelion";
+
+/// The window's size when it opens: most of the monitor the host window is on, within bounds,
+/// so the workbench's columns and the model preview have their room from the first frame.
+const WINDOW_MIN_SIZE: [f32; 2] = [900.0, 640.0];
+const WINDOW_MAX_SIZE: [f32; 2] = [1_760.0, 1_080.0];
+const WINDOW_MONITOR_SHARE: f32 = 0.85;
+
+fn window_size(context: &egui::Context) -> [f32; 2] {
+    let monitor = context.input(|input| input.viewport().monitor_size);
+    let wanted = monitor.map_or([1_480.0, 940.0], |monitor| {
+        [
+            monitor.x * WINDOW_MONITOR_SHARE,
+            monitor.y * WINDOW_MONITOR_SHARE,
+        ]
+    });
+    std::array::from_fn(|axis| {
+        wanted[axis]
+            .clamp(WINDOW_MIN_SIZE[axis], WINDOW_MAX_SIZE[axis])
+            .floor()
+    })
+}
+
 fn load_parhelion_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
     let image = image::load_from_memory(include_bytes!("../../../assets/sundial-alt.png"))
         .expect("bundled Parhelion logo must be a valid PNG")
@@ -224,6 +246,16 @@ struct AuthoredIconPreviewKey {
     plain: bool,
 }
 
+impl AuthoredIconPreviewKey {
+    /// Whether both previews read the same layers from the packages, whatever their edits.
+    fn same_layers(&self, other: &Self) -> bool {
+        self.container_tag == other.container_tag
+            && self.rarity == other.rarity
+            && self.corner_icon == other.corner_icon
+            && self.plain == other.plain
+    }
+}
+
 fn effective_icon_rarity(
     authored: Option<RecipeRarity>,
     inherited: Option<WeaponRarity>,
@@ -239,13 +271,14 @@ fn effective_icon_rarity(
     })
 }
 
-enum AuthoredIconPreview {
+/// A rendered icon, or why it could not render, with what it was rendered from.
+enum AuthoredIconPreview<Key = AuthoredIconPreviewKey> {
     Ready {
-        key: AuthoredIconPreviewKey,
+        key: Key,
         texture: egui::TextureHandle,
     },
     Failed {
-        key: AuthoredIconPreviewKey,
+        key: Key,
         error: String,
     },
 }
@@ -257,6 +290,9 @@ pub struct Parhelion {
     close_pending: bool,
     focus_requested: bool,
     icon: Arc<egui::IconData>,
+    /// The size the window opened at, held while it is open: the viewport builder is compared
+    /// frame to frame, so a changing size would resize the window.
+    window_size: Option<[f32; 2]>,
 }
 
 impl Default for Parhelion {
@@ -278,6 +314,7 @@ impl Default for Parhelion {
             close_pending: false,
             focus_requested: false,
             icon: Arc::new(icon),
+            window_size: None,
         }
     }
 }
@@ -296,6 +333,7 @@ impl PackageAuthoringUtility for Parhelion {
             self.app.presentation_editor.set_branding(branding);
             self.app.invalidate_results();
             self.app.authored_icon_preview = None;
+            self.app.authored_icon_layers = None;
             self.app.library_icons = library_view::LibraryIcons::default();
         }
         if !packages.is_dir() {
@@ -328,13 +366,14 @@ impl PackageAuthoringUtility for Parhelion {
         }
 
         let focus_requested = std::mem::take(&mut self.focus_requested);
+        let size = *self.window_size.get_or_insert_with(|| window_size(context));
         let close_now = context.show_viewport_immediate(
             egui::ViewportId::from_hash_of("parhelion"),
             egui::ViewportBuilder::default()
                 .with_title(WINDOW_TITLE)
                 .with_app_id("io.github.kylethmpsn.Sundial.Parhelion")
-                .with_inner_size([1_320.0, 900.0])
-                .with_min_inner_size([900.0, 640.0])
+                .with_inner_size(size)
+                .with_min_inner_size(WINDOW_MIN_SIZE)
                 .with_icon(self.icon.clone()),
             |viewport_context, _class| {
                 if focus_requested {
@@ -374,6 +413,7 @@ impl PackageAuthoringUtility for Parhelion {
         if close_now {
             self.open = false;
             self.close_pending = false;
+            self.window_size = None;
             self.app.release_package_access();
         }
         PackageAuthoringUpdate {
@@ -381,6 +421,7 @@ impl PackageAuthoringUtility for Parhelion {
             busy: self.app.has_background_work(),
             dirty: self.app.recipe_dirty,
             packages_changed: self.app.take_packages_changed(),
+            account_changed: std::mem::take(&mut self.app.account_changed),
             preferences_changed: self.app.take_preferences_changed(),
             open_sundial_preferences: std::mem::take(&mut self.app.open_sundial_preferences),
         }
@@ -393,8 +434,6 @@ impl PackageAuthoringUtility for Parhelion {
 }
 
 struct PackageAuthoringApp {
-    #[cfg(feature = "community-recipes")]
-    community: community::Window,
     recipe: WeaponRecipe,
     /// The (lane, plug) pairs `sync_behavior_socket_pins` wrote itself, so deselecting a behavior
     /// takes back exactly those and never a perk the author placed by hand.
@@ -416,8 +455,11 @@ struct PackageAuthoringApp {
     recipe_search_focus_pending: bool,
     build_selection_error: Option<String>,
     build_selection_draft: Option<BTreeSet<PathBuf>>,
+    /// The installed items a build would leave out, asked about before it runs.
+    build_check: build_check::Check,
+    /// The items the installation carries, for the recipe lists' Installed marks.
+    installed: installed::Installed,
     build_selection_query: String,
-    advanced_gameplay_page: AdvancedGameplayPage,
     recipe_library: Option<RecipeLibrary>,
     recipe_entries: Vec<RecipeLibraryEntry>,
     enabled_recipe_paths: BTreeSet<PathBuf>,
@@ -442,6 +484,7 @@ struct PackageAuthoringApp {
     package_backup_retention: usize,
     backup_recipe_snapshots: bool,
     preferences_open: bool,
+    preferences_error: Option<String>,
     perk_workbench: custom_perks::workbench::Workbench,
     preferences_page: preferences_view::PreferencesPage,
     activity_log_open: bool,
@@ -477,13 +520,14 @@ struct PackageAuthoringApp {
     gear_plug_query: String,
     /// Every ornament that changes a model, each paired with a weapon that lends it a rig.
     ornament_appearances: Vec<WeaponOrnamentAppearance>,
-    /// Search text for the Unique Weapon Behavior browser.
+    /// Search text for the Behavior browser.
     behavior_query: String,
     sandbox_perk_choices: Vec<WeaponSandboxPerkChoice>,
     trait_choices: Vec<WeaponTraitChoice>,
     donor_query: String,
     presentation_donor_query: String,
     icon_donor_query: String,
+    emblem_page: emblem_view::EmblemPage,
     render_gear_donor_query: String,
     runtime_component_queries: BTreeMap<u32, String>,
     runtime_binding_filter: String,
@@ -528,8 +572,16 @@ struct PackageAuthoringApp {
     hud_icon_editor: crate::hud_icon::ui::Editor,
     presentation_editor: crate::presentation::ui::Editor,
     authored_icon_preview: Option<AuthoredIconPreview>,
+    /// The layers the authored icon preview composes, and the preview they were read for.
+    authored_icon_layers: Option<(AuthoredIconPreviewKey, Result<IconLayers, String>)>,
     library_icons: library_view::LibraryIcons,
     dye_colors: donor_view::DyeColors,
+    /// What each stock weapon can lend through a part row, read once in the background.
+    lenders: donor_view::parts::Lenders,
+    /// The Markers section's view and selection.
+    marker_editor: donor_view::markers::MarkerEditor,
+    animation_query: String,
+    type_marker_query: String,
     /// The game's iridescence lookup rows, for the shader page's pickers.
     iridescence: shader_view::Iridescence,
     /// The dye materials the shader page draws its surfaces and icon from.
@@ -542,22 +594,20 @@ struct PackageAuthoringApp {
     shader_surface: (crate::dye::DyeChannel, crate::dye::DyeSurface),
     /// The stock shader under the pointer in the shader page's texture menu.
     shader_texture_browse: Option<u32>,
-    /// The ability, attunement or node the subclass page's detail panel shows, and the search of
-    /// its choices.
-    subclass_selection: subclass_view::SubclassSelection,
-    subclass_search: String,
-    /// The attunement the subclass page's list shows.
-    subclass_path_tab: crate::subclass::AttunementPath,
+    /// The subclass page's selection, searches and artwork browser.
+    subclass_page: subclass_view::PageState,
     /// The item the shader page shows its shader on, and the search of its picker.
     shader_preview_item: Option<u32>,
     shader_preview_query: String,
     appearance_ornaments: donor_view::ornaments::Ornaments,
     pending_recipe_action: Option<PendingRecipeAction>,
+    pending_recipe_error: Option<String>,
     scroll_recipe_to_top: bool,
     workbench_page: WorkbenchPage,
     close_approved: bool,
     log: ActivityLog,
     packages_changed: bool,
+    account_changed: bool,
     logo: Option<egui::TextureHandle>,
 }
 
@@ -590,8 +640,9 @@ impl Default for PackageAuthoringApp {
             recipe_search_focus_pending: false,
             build_selection_error: None,
             build_selection_draft: None,
+            build_check: build_check::Check::default(),
+            installed: installed::Installed::default(),
             build_selection_query: String::new(),
-            advanced_gameplay_page: AdvancedGameplayPage::default(),
             recipe_library,
             recipe_entries,
             enabled_recipe_paths,
@@ -614,6 +665,7 @@ impl Default for PackageAuthoringApp {
             package_backup_retention: backup_preferences.package_backup_retention,
             backup_recipe_snapshots: backup_preferences.backup_recipe_snapshots,
             preferences_open: false,
+            preferences_error: None,
             perk_workbench: custom_perks::workbench::Workbench::default(),
             preferences_page: preferences_view::PreferencesPage::default(),
             activity_log_open: false,
@@ -645,6 +697,7 @@ impl Default for PackageAuthoringApp {
             donor_query: String::new(),
             presentation_donor_query: String::new(),
             icon_donor_query: String::new(),
+            emblem_page: emblem_view::EmblemPage::default(),
             render_gear_donor_query: String::new(),
             runtime_component_queries: BTreeMap::new(),
             runtime_binding_filter: String::new(),
@@ -683,8 +736,13 @@ impl Default for PackageAuthoringApp {
             hud_icon_editor: crate::hud_icon::ui::Editor::default(),
             presentation_editor: crate::presentation::ui::Editor::default(),
             authored_icon_preview: None,
+            authored_icon_layers: None,
             library_icons: library_view::LibraryIcons::default(),
             dye_colors: donor_view::DyeColors::default(),
+            lenders: donor_view::parts::Lenders::default(),
+            marker_editor: donor_view::markers::MarkerEditor::default(),
+            animation_query: String::new(),
+            type_marker_query: String::new(),
             iridescence: shader_view::Iridescence::default(),
             dye_materials: shader_view::DyeMaterials::default(),
             pending_dye_copy: None,
@@ -694,21 +752,19 @@ impl Default for PackageAuthoringApp {
                 crate::dye::DyeSurface::Primary,
             ),
             shader_texture_browse: None,
-            subclass_selection: subclass_view::SubclassSelection::default(),
-            subclass_search: String::new(),
-            subclass_path_tab: crate::subclass::AttunementPath::Top,
+            subclass_page: subclass_view::PageState::default(),
             shader_preview_item: None,
             shader_preview_query: String::new(),
             appearance_ornaments: donor_view::ornaments::Ornaments::default(),
             pending_recipe_action: None,
+            pending_recipe_error: None,
             scroll_recipe_to_top: true,
             workbench_page: WorkbenchPage::default(),
             close_approved: false,
             log,
             packages_changed: false,
+            account_changed: false,
             logo: None,
-            #[cfg(feature = "community-recipes")]
-            community: community::Window::default(),
         }
     }
 }
@@ -716,12 +772,16 @@ impl Default for PackageAuthoringApp {
 impl PackageAuthoringApp {
     fn update_ui(&mut self, ctx: &egui::Context) {
         self.poll_build();
+        self.poll_build_check();
         self.poll_install();
         self.poll_account_resync();
         self.poll_replacement_review();
         self.poll_uninstall();
+        self.refresh_installed(ctx);
         self.poll_runtime_donors();
         self.poll_technical_markers();
+        self.lenders.poll();
+        self.marker_editor.poll();
         self.runtime_dependencies.poll();
         if self.uninstall.open {
             egui::CentralPanel::default().show(ctx, |_| {});
@@ -799,22 +859,12 @@ impl PackageAuthoringApp {
         self.draw_preferences_window(ctx);
         self.draw_activity_log_window(ctx);
         self.draw_technical_build_window(ctx);
+        self.draw_build_check(ctx);
         self.draw_discard_confirmation(ctx);
         self.draw_library_windows(ctx);
-        #[cfg(feature = "community-recipes")]
-        self.draw_community_window(ctx);
         self.synchronize_recipe_dirty();
         self.follow_appearance_preview(ctx);
-        if self.build_receiver.is_some()
-            || self.install_receiver.is_some()
-            || self.replacement_receiver.is_some()
-            || self.catalog_receiver.is_some()
-            || self.runtime_graph_job.is_some()
-            || self.runtime_donors.busy()
-            || self.runtime_dependencies.busy()
-            || self.perk_workbench.busy()
-            || self.technical_markers_busy()
-        {
+        if self.has_background_work() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
     }
@@ -855,16 +905,21 @@ impl PackageAuthoringApp {
             return true;
         }
         self.uninstall.busy()
+            || self.installed.busy()
             || self.library_state.busy()
             || self.build_receiver.is_some()
             || self.install_receiver.is_some()
+            || self.account_resync_receiver.is_some()
             || self.replacement_receiver.is_some()
+            || self.build_check.busy()
             || self.catalog_is_loading()
             || self.runtime_graph_job.is_some()
             || self.runtime_donors.busy()
             || self.runtime_dependencies.busy()
             || self.perk_workbench.busy()
             || self.technical_markers_busy()
+            || self.lenders.busy()
+            || self.marker_editor.busy()
     }
 
     fn importer_busy(&self) -> bool {
@@ -896,6 +951,7 @@ impl PackageAuthoringApp {
         self.presentation_editor.reset();
         self.library_icons = library_view::LibraryIcons::default();
         self.dye_colors = donor_view::DyeColors::default();
+        self.lenders = donor_view::parts::Lenders::default();
         self.iridescence = shader_view::Iridescence::default();
         self.dye_materials = shader_view::DyeMaterials::default();
         self.pending_dye_copy = None;
@@ -915,6 +971,7 @@ impl PackageAuthoringApp {
         self.socket_choice_pages.clear();
         self.icon_editor = None;
         self.authored_icon_preview = None;
+        self.authored_icon_layers = None;
         self.runtime_graph = None;
         self.runtime_rig_appearance = None;
         self.runtime_graph_error = None;
@@ -938,14 +995,17 @@ impl PackageAuthoringApp {
         self.runtime_value_text.clear();
         self.weapon_pattern_query.clear();
         self.stat_group_query.clear();
+        self.type_marker_query.clear();
         self.plug_queries.clear();
         self.socket_choice_pages.clear();
     }
 
     fn clear_presentation_picker_queries(&mut self) {
+        self.animation_query.clear();
         self.hud_icon_editor = crate::hud_icon::ui::Editor::default();
         self.presentation_editor.reset();
         self.icon_donor_query.clear();
+        self.emblem_page = emblem_view::EmblemPage::default();
         self.render_gear_donor_query.clear();
         self.icon_editor = None;
         self.authored_icon_preview = None;
@@ -1032,26 +1092,37 @@ impl PackageAuthoringApp {
             None => false,
         };
         if !cached_matches {
-            self.authored_icon_preview = Some(
-                match render_weapon_icon_preview(
-                    &self.packages,
-                    container_tag,
-                    rarity,
-                    edit,
-                    self.recipe.overrides.corner_icon.as_ref(),
-                    key.plain,
-                ) {
-                    Ok(image) => AuthoredIconPreview::Ready {
-                        key,
-                        texture: context.load_texture(
-                            format!("parhelion-authored-icon-{item_hash:08X}"),
-                            image,
-                            egui::TextureOptions::LINEAR,
-                        ),
-                    },
-                    Err(error) => AuthoredIconPreview::Failed { key, error },
+            // An edit alone composes the layers already read, so a shader drawing its icon from
+            // its dyes never opens the packages again as its values change.
+            let layers = match self.authored_icon_layers.take() {
+                Some((read, layers)) if read.same_layers(&key) => (read, layers),
+                _ => {
+                    let layers = IconLayers::load(
+                        &self.packages,
+                        container_tag,
+                        rarity,
+                        key.corner_icon.as_ref(),
+                        key.plain,
+                    );
+                    (key.clone(), layers)
+                }
+            };
+            let image = match &layers.1 {
+                Ok(layers) => layers.render(&key.edit),
+                Err(error) => Err(error.clone()),
+            };
+            self.authored_icon_layers = Some(layers);
+            self.authored_icon_preview = Some(match image {
+                Ok(image) => AuthoredIconPreview::Ready {
+                    key,
+                    texture: context.load_texture(
+                        format!("parhelion-authored-icon-{item_hash:08X}"),
+                        image,
+                        egui::TextureOptions::LINEAR,
+                    ),
                 },
-            );
+                Err(error) => AuthoredIconPreview::Failed { key, error },
+            });
         }
         match self.authored_icon_preview.as_ref() {
             Some(AuthoredIconPreview::Ready { texture, .. }) => Ok(Some(texture.clone())),
@@ -1089,8 +1160,12 @@ impl PackageAuthoringApp {
             backup_recipe_snapshots: self.backup_recipe_snapshots,
             ..ParhelionPreferences::default()
         };
-        if let Err(error) = preferences.save_default() {
-            self.log.push(LogEntry::error(error));
+        match preferences.save_default() {
+            Ok(_) => self.preferences_error = None,
+            Err(error) => {
+                self.log.push(LogEntry::error(error.clone()));
+                self.preferences_error = Some(error);
+            }
         }
     }
 }
@@ -1152,6 +1227,9 @@ impl PackageAuthoringApp {
         match self.workbench_page {
             WorkbenchPage::Weapon if !self.recipe.kind.is_weapon() => self.draw_gear_editor(ui),
             WorkbenchPage::Weapon => self.draw_core_recipe_editor(ui),
+            WorkbenchPage::Appearance if self.recipe.kind == ItemKind::Subclass => {
+                self.draw_subclass_appearance(ui);
+            }
             WorkbenchPage::Appearance => self.draw_appearance_workspace(ui),
             WorkbenchPage::Collections => self.draw_collections_workspace(ui),
             WorkbenchPage::Advanced => {
@@ -1267,7 +1345,9 @@ impl PackageAuthoringApp {
             }
             if ui
                 .add_enabled(
-                    self.account_resync_receiver.is_none() && self.install_receiver.is_none(),
+                    self.account_resync_receiver.is_none()
+                        && self.install_receiver.is_none()
+                        && !self.uninstall.open,
                     egui::Button::new("Resync Account"),
                 )
                 .on_hover_text(
@@ -1298,10 +1378,6 @@ impl PackageAuthoringApp {
             self.recipe_search_focus_pending = true;
         }
         self.draw_new_item_button(ui, replaced);
-        #[cfg(feature = "community-recipes")]
-        if ui.button("Community…").clicked() {
-            self.community.open = true;
-        }
         ui.separator();
         ui.allocate_ui_with_layout(
             egui::vec2(
@@ -1386,29 +1462,51 @@ impl PackageAuthoringApp {
         let Some(action) = self.pending_recipe_action.clone() else {
             return;
         };
+        let mut save = false;
         let mut discard = false;
         let mut cancel = false;
         let response = egui::Modal::new("parhelion_discard_recipe".into()).show(ctx, |ui| {
             workbench_style(ui);
-            ui.set_width(420.0);
-            ui.heading("Discard Unsaved Recipe Changes?");
+            ui.set_width(420.0_f32.min((ctx.screen_rect().width() - 48.0).max(180.0)));
+            ui.heading("Unsaved Recipe Changes");
             ui.add_space(6.0);
             ui.label(match &action {
                 PendingRecipeAction::Close => {
-                    "Closing Parhelion will discard this recipe's unsaved changes."
+                    "Save this recipe before closing Parhelion, or discard its unsaved changes."
                 }
                 PendingRecipeAction::New(_) => {
-                    "Creating a new recipe will discard this recipe's unsaved changes."
+                    "Save this recipe before creating a new one, or discard its unsaved changes."
                 }
                 PendingRecipeAction::Open(_) => {
-                    "Opening the saved recipe will discard this recipe's unsaved changes."
+                    "Save this recipe before opening another, or discard its unsaved changes."
                 }
                 PendingRecipeAction::Import => {
-                    "Importing a recipe will discard this recipe's unsaved changes."
+                    "Save this recipe before importing another, or discard its unsaved changes."
                 }
             });
+            if let Some(error) = self.pending_recipe_error.as_deref().or_else(|| {
+                self.invalid_weapon_name
+                    .as_ref()
+                    .map(|(_, error)| error.as_str())
+            }) {
+                ui.add_space(6.0);
+                ui.add(
+                    egui::Label::new(egui::RichText::new(error).color(ui.visuals().error_fg_color))
+                        .wrap(),
+                );
+            }
             ui.add_space(10.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
+                save = ui
+                    .add_enabled(
+                        self.invalid_weapon_name.is_none(),
+                        egui::Button::new(match action {
+                            PendingRecipeAction::Close => "Save and Close",
+                            _ => "Save and Continue",
+                        })
+                        .fill(ui.visuals().selection.bg_fill),
+                    )
+                    .clicked();
                 if ui
                     .button(match action {
                         PendingRecipeAction::Close => "Discard and Close",
@@ -1424,11 +1522,25 @@ impl PackageAuthoringApp {
             });
         });
         cancel |= response.should_close();
-        if discard {
+        if save {
+            match self.try_save_open_recipe() {
+                Ok(()) => {
+                    self.pending_recipe_action = None;
+                    self.pending_recipe_error = None;
+                    self.execute_recipe_action(action);
+                }
+                Err(error) => {
+                    self.log.push(LogEntry::error(&error));
+                    self.pending_recipe_error = Some(error);
+                }
+            }
+        } else if discard {
             self.pending_recipe_action = None;
+            self.pending_recipe_error = None;
             self.execute_recipe_action(action);
         } else if cancel {
             self.pending_recipe_action = None;
+            self.pending_recipe_error = None;
         }
     }
 
@@ -1464,16 +1576,24 @@ impl PackageAuthoringApp {
             {
                 self.open_build_selection();
             }
+            let checking = self.build_check.busy();
             if ui
                 .add_enabled(
-                    !running && project_ready && self.build_selection_draft.is_none(),
-                    egui::Button::new(egui::RichText::new("Build & Stage").strong())
-                        .fill(primary_fill)
-                        .min_size([160.0, ui.spacing().interact_size.y].into()),
+                    !running && !checking && project_ready && self.build_selection_draft.is_none(),
+                    egui::Button::new(
+                        egui::RichText::new(if checking {
+                            "Checking Installed Items…"
+                        } else {
+                            "Build & Stage"
+                        })
+                        .strong(),
+                    )
+                    .fill(primary_fill)
+                    .min_size([160.0, ui.spacing().interact_size.y].into()),
                 )
                 .clicked()
             {
-                self.start_build();
+                self.start_build_checked(ui.ctx());
             }
             if (building || installing || self.latest_build.is_some())
                 && ui.button("Build & Install Status…").clicked()
@@ -1590,9 +1710,16 @@ impl PackageAuthoringApp {
 
     fn current_donor(&self) -> Option<WeaponDonor> {
         let hash = self.recipe.donor.item_hash.parse_u32().ok()?;
-        self.catalog
+        let mut donor = self
+            .catalog
             .as_ref()?
-            .weapon_donor_with_stat_group_index(hash, self.recipe.overrides.stat_group_index)
+            .weapon_donor_with_stat_group_index(hash, self.recipe.overrides.stat_group_index)?;
+        // A stat group of the recipe's own shows its stats as the build will.
+        if let Some(group) = &self.recipe.overrides.custom_stat_group {
+            group.apply(&mut donor.investment_stats);
+            group.apply(&mut donor.addable_investment_stats);
+        }
+        Some(donor)
     }
 
     /// The open recipe's base item, weapon or gear.
@@ -1759,7 +1886,7 @@ fn technical_recipe_features(recipe: &WeaponRecipe) -> Vec<String> {
         ),
         (
             overrides.subclass_abilities.is_some(),
-            "Abilities: from other subclasses",
+            "Abilities: authored or from other subclasses",
         ),
     ] {
         if active {
@@ -1895,7 +2022,7 @@ impl IdentityField {
     fn assigned_during_build(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
-            value: "Assigned During Build".into(),
+            value: "Assigned during build".into(),
             copyable: false,
             help: None,
         }
@@ -1919,16 +2046,18 @@ fn draw_identity_group<'a>(
                         draw_authoring_info_icon(ui, help);
                     }
                 });
-                ui.add(
-                    egui::Label::new(egui::RichText::new(&field.value).monospace())
-                        .selectable(true),
-                );
-                if ui
-                    .add_enabled(field.copyable, egui::Button::new("Copy"))
-                    .on_disabled_hover_text("Not assigned yet")
-                    .clicked()
-                {
-                    ui.ctx().copy_text(field.value.clone());
+                // A value still to come reads as a quiet note, with nothing to copy yet.
+                if field.copyable {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(&field.value).monospace())
+                            .selectable(true),
+                    );
+                    if ui.button("Copy").clicked() {
+                        ui.ctx().copy_text(field.value.clone());
+                    }
+                } else {
+                    ui.weak(&field.value);
+                    ui.label("");
                 }
                 ui.end_row();
             }
@@ -2050,21 +2179,23 @@ impl ActivityLog {
     }
 }
 
-#[cfg(feature = "community-recipes")]
-mod community;
 mod library_view;
 mod style;
 #[cfg(test)]
 mod tests;
 use style::named_control;
 pub(crate) use style::{transparency_backdrop, workbench_style};
+mod ability_names;
+mod build_check;
 mod build_status;
 mod collections_view;
 mod custom_perks;
 mod document;
 mod donor_view;
 mod editor_view;
+mod emblem_view;
 mod gear_view;
+mod installed;
 mod jobs;
 mod preferences_view;
 mod runtime_dependencies;

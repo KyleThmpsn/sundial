@@ -1,10 +1,13 @@
 use super::*;
+use std::sync::atomic::{AtomicBool, Ordering};
+use sundial::investment::discovery::Phase;
 use sundial::package_authoring::sandbox_perk::dependencies;
 use sundial::package_authoring::sandbox_perk::program::properties;
 
 pub(super) use sundial::investment::discovery::Catalog as Data;
 
 enum Event {
+    Phase(Phase),
     Progress(usize, usize),
     Keys(Result<Arc<properties::KeyIndex>, String>),
     Labels(Result<Arc<sundial::investment::discovery::labels::Registry>, String>),
@@ -22,6 +25,9 @@ pub(super) struct Discovery {
     discard_result: bool,
     receiver: Option<Receiver<Event>>,
     worker: Option<thread::JoinHandle<()>>,
+    cancellation: Cancellation,
+    pub(super) phase: Option<Phase>,
+    pub(super) stopped: bool,
     pub(super) error: Option<String>,
     pub(super) progress: Option<(usize, usize)>,
     attempted: bool,
@@ -35,6 +41,10 @@ impl Discovery {
         self.receiver.is_some() || self.worker.is_some()
     }
     pub fn invalidate(&mut self) {
+        self.cancellation.store(true, Ordering::Relaxed);
+        self.stopped = false;
+        self.phase = None;
+        self.progress = None;
         self.data = None;
         self.keys = None;
         self.key_error = None;
@@ -43,6 +53,16 @@ impl Discovery {
         self.discard_result = true;
         self.attempted = false;
         self.error = None;
+    }
+
+    pub fn stop(&mut self) {
+        if !self.busy() {
+            return;
+        }
+        self.cancellation.store(true, Ordering::Relaxed);
+        self.discard_result = true;
+        self.attempted = true;
+        self.stopped = true;
     }
 
     pub fn start(&mut self, packages: &Path, ctx: &egui::Context) {
@@ -54,22 +74,31 @@ impl Discovery {
             return;
         }
         self.attempted = true;
+        self.stopped = false;
+        self.error = None;
+        self.cancellation = Cancellation::default();
+        let cancellation = self.cancellation.clone();
         self.discard_result = false;
         let packages = packages.to_owned();
         let repaint = ctx.clone();
         let (sender, receiver) = mpsc::channel();
         self.receiver = Some(receiver);
         self.worker = Some(thread::spawn(move || {
-            let result = sundial::investment::discovery::discover(&packages, |event| {
-                use sundial::investment::discovery::DiscoveryEvent;
-                let event = match event {
-                    DiscoveryEvent::Progress(current, total) => Event::Progress(current, total),
-                    DiscoveryEvent::Keys(result) => Event::Keys(result),
-                    DiscoveryEvent::Labels(result) => Event::Labels(result),
-                };
-                let _ = sender.send(event);
-                repaint.request_repaint();
-            });
+            let result = sundial::investment::discovery::discover_cancellable(
+                &packages,
+                &cancellation,
+                |event| {
+                    use sundial::investment::discovery::DiscoveryEvent;
+                    let event = match event {
+                        DiscoveryEvent::Phase(phase) => Event::Phase(phase),
+                        DiscoveryEvent::Progress(current, total) => Event::Progress(current, total),
+                        DiscoveryEvent::Keys(result) => Event::Keys(result),
+                        DiscoveryEvent::Labels(result) => Event::Labels(result),
+                    };
+                    let _ = sender.send(event);
+                    repaint.request_repaint();
+                },
+            );
             let _ = sender.send(Event::Ready(result.map(Box::new)));
             repaint.request_repaint();
         }));
@@ -88,6 +117,12 @@ impl Discovery {
                     ))),
                 });
             match event {
+                Some(Event::Phase(phase)) => {
+                    if !self.discard_result {
+                        self.phase = Some(phase);
+                        self.progress = None;
+                    }
+                }
                 Some(Event::Labels(result)) => {
                     if !self.discard_result {
                         match result {
@@ -121,6 +156,7 @@ impl Discovery {
                         let _ = worker.join();
                     }
                     self.progress = None;
+                    self.phase = None;
                     if self.discard_result {
                         break;
                     }
@@ -183,9 +219,68 @@ impl Discovery {
     }
 }
 
+#[derive(Default)]
+struct Cancellation(Arc<AtomicBool>);
+impl std::ops::Deref for Cancellation {
+    type Target = Arc<AtomicBool>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl Drop for Cancellation {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stopping_discovery_keeps_ownership_until_the_worker_finishes_and_requires_restart() {
+        let (sender, receiver) = mpsc::channel();
+        let (release, wait) = mpsc::channel();
+        let mut discovery = Discovery {
+            receiver: Some(receiver),
+            attempted: true,
+            ..Discovery::default()
+        };
+        let cancellation = discovery.cancellation.clone();
+        discovery.worker = Some(thread::spawn(move || {
+            wait.recv().unwrap();
+            assert!(cancellation.load(std::sync::atomic::Ordering::Relaxed));
+            sender
+                .send(Event::Keys(Ok(Arc::new(properties::KeyIndex::default()))))
+                .unwrap();
+            sender.send(Event::Ready(Err("Cancelled".into()))).unwrap();
+        }));
+        discovery.stop();
+        assert!(discovery.busy(), "the package reader still owns its worker");
+        release.send(()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while discovery.busy() && std::time::Instant::now() < deadline {
+            discovery.poll();
+            thread::yield_now();
+        }
+        assert!(!discovery.busy());
+        assert!(
+            discovery.keys.is_none(),
+            "cancelled results cannot reach the editor"
+        );
+        assert!(
+            discovery.attempted,
+            "opening a frame does not restart a stopped scan"
+        );
+        discovery.invalidate();
+        assert!(!discovery.attempted);
+        crate::test_support::artifact(
+            "perk-discovery-cancellation.json",
+            &serde_json::json!({
+                "worker_released_before_idle": true, "late_results_discarded": true, "explicit_restart": true
+            }),
+        );
+    }
 
     #[test]
     fn key_lookup_is_available_before_the_asset_scan_finishes() {

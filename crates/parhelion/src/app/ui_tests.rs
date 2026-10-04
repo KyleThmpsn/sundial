@@ -1,45 +1,58 @@
 //! Headless UI contract/layout checks. These do not open a window or mutate installed content.
 use super::*;
+use sundial::package_authoring::runtime::{BindingHash, SchemaHandle};
 
 mod accessibility;
 mod added_sockets;
 mod authoring_safety;
 mod branding;
+mod build_check;
 mod build_selection;
 #[cfg(feature = "d2-model-importer")]
 mod importer;
 mod library;
 mod operation_lock;
 mod ornaments;
+mod part_rows;
 mod preferences;
 mod recipe_editing;
 mod runtime_editing;
+mod tour;
 mod weapon_layout;
 
 fn field(kind: WeaponRuntimeValueKind, value: WeaponRuntimeValue) -> WeaponRuntimeField {
     WeaponRuntimeField {
         locator: WeaponRuntimeFieldLocator {
             graph_tag: None,
-            binding_hash: 0xB176_70ED,
+            binding_hash: BindingHash::new(0xB176_70ED),
             resource_index: 0,
-            root: sundial::package_authoring::weapon_runtime::WeaponRuntimeRootKind::ComponentDefinition,
-            root_schema: 0x8080_388F,
+            root: sundial::package_authoring::runtime::WeaponRuntimeRootKind::ComponentDefinition,
+            root_schema: SchemaHandle::new(0x8080_388F),
             path: Vec::new(),
-            type_handle: 0x8080_2F16,
+            type_handle: SchemaHandle::new(0x8080_2F16),
             value_offset: 0x48,
             byte_size: kind.byte_size(),
         },
         owner_offset: 0x100,
         name: "Runtime test field".into(),
         path_label: "Component / Runtime test field".into(),
-        kind, value,
+        kind,
+        value,
         source: WeaponRuntimeFieldSource::GeneratedSchema,
         generated_kind: None,
         name_inferred: false,
     }
 }
 
-fn render(width: f32, mut draw: impl FnMut(&mut egui::Ui)) -> (egui::FullOutput, f32) {
+fn render(width: f32, draw: impl FnMut(&mut egui::Ui)) -> (egui::FullOutput, f32) {
+    render_with_capture(width, None, draw)
+}
+
+fn render_with_capture(
+    width: f32,
+    capture_name: Option<&str>,
+    mut draw: impl FnMut(&mut egui::Ui),
+) -> (egui::FullOutput, f32) {
     let ctx = egui::Context::default();
     let mut overflow = 0.0_f32;
     let mut output = egui::FullOutput::default();
@@ -61,6 +74,12 @@ fn render(width: f32, mut draw: impl FnMut(&mut egui::Ui)) -> (egui::FullOutput,
                 });
             },
         );
+        if capture_name.is_some() {
+            custom_perks::workbench::tests::capture::record(&output);
+        }
+    }
+    if let Some(name) = capture_name {
+        custom_perks::workbench::tests::capture::write(&ctx, &output, name);
     }
     (output, overflow)
 }

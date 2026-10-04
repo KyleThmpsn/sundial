@@ -11,6 +11,8 @@ const MAX_BYTES: usize = 32 * 1024 * 1024;
 #[derive(Default)]
 struct Cache {
     entries: BTreeMap<[u8; 32], Compiled>,
+    access: BTreeMap<[u8; 32], u64>,
+    clock: u64,
     bytes: usize,
 }
 impl Cache {
@@ -19,12 +21,31 @@ impl Cache {
         if size > MAX_BYTES || self.entries.contains_key(&key) {
             return;
         }
-        if self.bytes + size > MAX_BYTES {
-            self.entries.clear();
-            self.bytes = 0;
+        while self.bytes + size > MAX_BYTES {
+            let Some(oldest) = self
+                .access
+                .iter()
+                .min_by_key(|(_, used)| *used)
+                .map(|(key, _)| *key)
+            else {
+                break;
+            };
+            self.access.remove(&oldest);
+            if let Some(value) = self.entries.remove(&oldest) {
+                self.bytes -= value.0.len() + value.1.len();
+            }
         }
         self.bytes += size;
+        self.clock += 1;
+        self.access.insert(key, self.clock);
         self.entries.insert(key, value);
+    }
+
+    fn get(&mut self, key: &[u8; 32]) -> Option<&Compiled> {
+        let value = self.entries.get(key)?;
+        self.clock += 1;
+        self.access.insert(*key, self.clock);
+        Some(value)
     }
 }
 fn key(text: &str, vertex: bool) -> [u8; 32] {
@@ -34,16 +55,18 @@ fn key(text: &str, vertex: bool) -> [u8; 32] {
     hash.finalize().into()
 }
 pub(super) fn compile(text: &str, vertex: bool) -> Result<Compiled> {
+    crate::cancellation::check()?;
     static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
     let cache = CACHE.get_or_init(Mutex::default);
     let key = key(text, vertex);
-    if let Ok(cache) = cache.lock() {
-        if let Some(value) = cache.entries.get(&key) {
+    if let Ok(mut cache) = cache.lock() {
+        if let Some(value) = cache.get(&key) {
             return Ok(value.clone());
         }
     }
     // Do not hold a global lock during compilation. Errors are never cached.
-    let value = super::compile_uncached(text, vertex)?;
+    let text = text.to_owned();
+    let value = crate::cancellation::compute(move || super::compile_uncached(&text, vertex))?;
     if let Ok(mut cache) = cache.lock() {
         cache.insert(key, value.clone());
     }
@@ -58,14 +81,26 @@ mod tests {
         let mut cache = Cache::default();
         let first = key("source", true);
         cache.insert(first, (vec![1; MAX_BYTES - 1], String::new()));
-        cache.insert(first, (vec![2], String::new()));
-        assert_eq!(cache.bytes, MAX_BYTES - 1);
-        assert_ne!(first, key("source", false));
-        assert_ne!(first, key("other source", true));
+        assert!(cache.bytes <= MAX_BYTES);
+        assert!(cache.get(&key("source", false)).is_none());
+        assert!(cache.get(&key("other source", true)).is_none());
         let second = key("other source", true);
         cache.insert(second, (vec![3; 2], String::new()));
-        assert_eq!(cache.bytes, 2);
-        assert!(!cache.entries.contains_key(&first));
-        assert_eq!(cache.entries[&second].0, [3; 2]);
+        assert!(cache.bytes <= MAX_BYTES);
+        assert!(cache.get(&first).is_none());
+        assert_eq!(cache.get(&second).unwrap().0, [3; 2]);
+    }
+
+    #[test]
+    fn eviction_preserves_reused_programs_when_cold_programs_can_make_room() {
+        let mut cache = Cache::default();
+        let cold = key("cold", false);
+        let hot = key("reused", true);
+        cache.insert(cold, (vec![1; MAX_BYTES / 2], String::new()));
+        cache.insert(hot, (vec![2; MAX_BYTES / 2], String::new()));
+        assert_eq!(cache.get(&hot).unwrap().0[0], 2);
+        cache.insert(key("new", false), (vec![3; 16], String::new()));
+        assert_eq!(cache.get(&hot).unwrap().0[0], 2);
+        assert!(cache.get(&cold).is_none());
     }
 }

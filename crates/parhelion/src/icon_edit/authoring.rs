@@ -24,20 +24,18 @@ use tiger_pkg::TagHash;
 
 const TEXTURE_HEADER_SIZE: usize = 40;
 
-/// Appended tags that privately reproduce and edit one donor primary-image layer.
+type Paint<'a> = dyn Fn(&mut [u8], usize, usize) -> AuthoringResult<()> + 'a;
+
+/// Appended tags that privately reproduce one icon layer with its textures repainted.
 #[derive(Clone, Debug)]
-pub(crate) struct WeaponIconEditPlan {
-    pub primary_layer_tag: TagHash,
+pub(crate) struct LayerRepaintPlan {
+    pub layer_tag: TagHash,
     pub new_tags: Vec<NewTagSpec>,
     pub reference_overrides: Vec<NewTagReferenceOverride>,
     pub dependencies: SharedTagDependencies,
 }
 
 /// Authors a private primary-image graph for a non-identity edit.
-///
-/// `appended_ordinal_base` is an absolute ordinal in the caller's complete appended-tag slice.
-/// Every unique donor texture header/data pair is cloned once, even when several layer lanes refer
-/// to it. The cloned layer is appended after all reciprocal data/header pairs.
 pub(crate) fn build_weapon_icon_edit_plan(
     manager: &PackageManager,
     destination_package_id: u16,
@@ -45,52 +43,126 @@ pub(crate) fn build_weapon_icon_edit_plan(
     appended_ordinal_base: usize,
     donor_container_tag: TagHash,
     edit: &WeaponIconEdit,
-) -> AuthoringResult<Option<WeaponIconEditPlan>> {
+) -> AuthoringResult<Option<LayerRepaintPlan>> {
     edit.validate()?;
     if edit.is_identity() {
         return Ok(None);
     }
+    let layer = read_primary_layer_tag(manager, donor_container_tag)?;
+    build_layer_repaint_plan(
+        manager,
+        destination_package_id,
+        current_entry_count,
+        appended_ordinal_base,
+        (layer, donor_container_tag),
+        &|pixels, width, height| edit.apply_to_rgba8_sized(pixels, width, height),
+    )
+    .map(Some)
+}
 
-    let donor_layer_tag = read_primary_layer_tag(manager, donor_container_tag)?;
+/// Authors a private copy of one icon layer with every texture repainted by `paint`, which gets
+/// each texture's tightly packed RGBA8 pixels and size.
+///
+/// `appended_ordinal_base` is an absolute ordinal in the caller's complete appended-tag slice.
+/// Every unique donor texture header/data pair is cloned once, even when several layer lanes refer
+/// to it. The cloned layer is appended after all reciprocal data/header pairs.
+pub(crate) fn build_layer_repaint_plan(
+    manager: &PackageManager,
+    destination_package_id: u16,
+    current_entry_count: usize,
+    appended_ordinal_base: usize,
+    layer: (TagHash, TagHash),
+    paint: &Paint<'_>,
+) -> AuthoringResult<LayerRepaintPlan> {
+    build_layer_texture_plan(
+        manager,
+        destination_package_id,
+        current_entry_count,
+        appended_ordinal_base,
+        layer,
+        &|_| TextureChange::Paint { group: 0, paint },
+    )
+    .map(|(plan, _)| plan)
+}
+
+/// What a private layer copy does with one of its textures, by the texture's place among the
+/// layer's texture references.
+pub(crate) enum TextureChange<'a> {
+    /// The layer's own texture.
+    Keep,
+    /// Another stock texture header in its place.
+    Use(TagHash),
+    /// A copy of the layer's own texture, repainted. References to one header in one group share
+    /// a single copy.
+    Paint { group: usize, paint: &'a Paint<'a> },
+}
+
+/// Authors a private copy of one icon layer with each texture changed as `change` says. Returns
+/// the plan and the stock texture headers and data the copy still names, which whatever loads the
+/// layer must keep resident.
+pub(crate) fn build_layer_texture_plan<'a>(
+    manager: &PackageManager,
+    destination_package_id: u16,
+    current_entry_count: usize,
+    appended_ordinal_base: usize,
+    (donor_layer_tag, donor_container_tag): (TagHash, TagHash),
+    change: &dyn Fn(usize) -> TextureChange<'a>,
+) -> AuthoringResult<(LayerRepaintPlan, BTreeSet<u32>)> {
     let mut donor_layer = read_icon_layer(manager, donor_layer_tag, donor_container_tag)?;
     let references = texture_reference_offsets(&donor_layer, donor_layer_tag)?;
 
     let mut new_tags = Vec::new();
     let mut reference_overrides = Vec::new();
-    let mut authored_headers = BTreeMap::<u32, TagHash>::new();
+    let mut authored_headers = BTreeMap::<(u32, usize), TagHash>::new();
     let mut dependencies = BTreeSet::new();
+    let mut stock = BTreeSet::new();
+    let mut targets = Vec::with_capacity(references.len());
 
-    for (_, donor_header_tag) in &references {
-        if authored_headers.contains_key(&u32::from(*donor_header_tag)) {
+    for (index, (_, donor_header_tag)) in references.iter().enumerate() {
+        let (group, paint) = match change(index) {
+            TextureChange::Keep => {
+                stock.extend(stock_texture(manager, *donor_header_tag)?);
+                targets.push(*donor_header_tag);
+                continue;
+            }
+            TextureChange::Use(header) => {
+                stock.extend(stock_texture(manager, header)?);
+                targets.push(header);
+                continue;
+            }
+            TextureChange::Paint { group, paint } => (group, paint),
+        };
+        if let Some(header) = authored_headers.get(&(u32::from(*donor_header_tag), group)) {
+            targets.push(*header);
             continue;
         }
         let (donor_data_tag, mut data, header) =
             read_rgba8_texture_pair(manager, donor_layer_tag, *donor_header_tag)?;
         let width = usize::from(read_u16(&header, 0x0E)?);
         let height = usize::from(read_u16(&header, 0x10)?);
-        edit.apply_to_rgba8_sized(&mut data, width, height)?;
+        paint(data.as_mut_slice(), width, height)?;
 
         let data_ordinal = AppendedTagAllocator::checked_ordinal(
             appended_ordinal_base,
             new_tags.len(),
-            "weapon icon texture data",
+            "icon texture data",
         )?;
         let header_ordinal = AppendedTagAllocator::checked_ordinal(
             appended_ordinal_base,
             new_tags.len() + 1,
-            "weapon icon texture header",
+            "icon texture header",
         )?;
         let data_tag = assigned_tag(
             destination_package_id,
             current_entry_count,
             data_ordinal,
-            "weapon icon texture data",
+            "icon texture data",
         )?;
         let header_tag = assigned_tag(
             destination_package_id,
             current_entry_count,
             header_ordinal,
-            "weapon icon texture header",
+            "icon texture header",
         )?;
         new_tags.push(NewTagSpec {
             template_tag: donor_data_tag,
@@ -112,34 +184,29 @@ pub(crate) fn build_weapon_icon_edit_plan(
         });
         dependencies.insert(u32::from(data_tag));
         dependencies.insert(u32::from(header_tag));
-        authored_headers.insert(u32::from(*donor_header_tag), header_tag);
+        authored_headers.insert((u32::from(*donor_header_tag), group), header_tag);
+        targets.push(header_tag);
     }
 
     let patched_offsets = references
         .iter()
-        .map(|(offset, donor_header_tag)| {
-            let authored_header_tag = authored_headers
-                .get(&u32::from(*donor_header_tag))
-                .copied()
-                .ok_or_else(|| validation("An icon texture was not assigned an authored header"))?;
-            write_tag(&mut donor_layer, *offset, authored_header_tag)?;
+        .zip(&targets)
+        .map(|((offset, _), target)| {
+            write_tag(&mut donor_layer, *offset, *target)?;
             Ok(*offset)
         })
         .collect::<AuthoringResult<Vec<_>>>()?;
     validate_layer_patch(manager, donor_layer_tag, &donor_layer, &patched_offsets)?;
 
-    let layer_ordinal = AppendedTagAllocator::checked_ordinal(
-        appended_ordinal_base,
-        new_tags.len(),
-        "weapon icon primary layer",
-    )?;
-    let primary_layer_tag = assigned_tag(
+    let layer_ordinal =
+        AppendedTagAllocator::checked_ordinal(appended_ordinal_base, new_tags.len(), "icon layer")?;
+    let layer_tag = assigned_tag(
         destination_package_id,
         current_entry_count,
         layer_ordinal,
-        "weapon icon primary layer",
+        "icon layer",
     )?;
-    dependencies.insert(u32::from(primary_layer_tag));
+    dependencies.insert(u32::from(layer_tag));
     new_tags.push(NewTagSpec {
         template_tag: donor_layer_tag,
         payload: donor_layer,
@@ -150,24 +217,39 @@ pub(crate) fn build_weapon_icon_edit_plan(
         &new_tags,
         &reference_overrides,
         appended_ordinal_base,
-        primary_layer_tag,
+        layer_tag,
         &dependencies,
     )?;
-    Ok(Some(WeaponIconEditPlan {
-        primary_layer_tag,
-        new_tags,
-        reference_overrides,
-        dependencies,
-    }))
+    Ok((
+        LayerRepaintPlan {
+            layer_tag,
+            new_tags,
+            reference_overrides,
+            dependencies,
+        },
+        stock,
+    ))
 }
 
-pub(crate) fn read_primary_layer_tag(
+/// A stock texture header and the data it names, checked as a texture pair.
+fn stock_texture(manager: &PackageManager, header: TagHash) -> AuthoringResult<[u32; 2]> {
+    let entry = manager
+        .get_entry(header)
+        .ok_or_else(|| invalid(format!("Texture header {header} has no package entry")))?;
+    if entry.file_type != 0x20 || !is_valid_package_tag(TagHash(entry.reference)) {
+        return Err(invalid(format!("{header} is not a texture header")));
+    }
+    Ok([u32::from(header), entry.reference])
+}
+
+/// A complete Shadowkeep icon definition, checked against its package entry.
+pub(crate) fn read_icon_container(
     manager: &PackageManager,
     container_tag: TagHash,
-) -> AuthoringResult<TagHash> {
+) -> AuthoringResult<Vec<u8>> {
     let entry = manager.get_entry(container_tag).ok_or_else(|| {
         invalid(format!(
-            "Weapon icon donor definition {container_tag} has no package entry"
+            "Icon definition {container_tag} has no package entry"
         ))
     })?;
     if entry.file_size as usize != ICON_DEFINITION_SIZE
@@ -176,22 +258,30 @@ pub(crate) fn read_primary_layer_tag(
         || entry.reference != ICON_DEFINITION_CLASS
     {
         return Err(invalid(format!(
-            "Weapon icon donor definition {container_tag} has size/type/reference {}/{:02X}/{:02X}/0x{:08X}; expected {ICON_DEFINITION_SIZE}/10/00/0x{ICON_DEFINITION_CLASS:08X}",
+            "Icon definition {container_tag} has size/type/reference {}/{:02X}/{:02X}/0x{:08X}; expected {ICON_DEFINITION_SIZE}/10/00/0x{ICON_DEFINITION_CLASS:08X}",
             entry.file_size, entry.file_type, entry.file_subtype, entry.reference
         )));
     }
     let payload = manager.read_tag(container_tag).map_err(|error| {
         invalid(format!(
-            "Could not read weapon icon donor definition {container_tag}: {error}"
+            "Could not read icon definition {container_tag}: {error}"
         ))
     })?;
     if payload.len() != ICON_DEFINITION_SIZE
         || read_u32(&payload, 0)? as usize != ICON_DEFINITION_SIZE
     {
         return Err(invalid(format!(
-            "Weapon icon donor definition {container_tag} is not a complete Shadowkeep icon definition"
+            "Icon definition {container_tag} is not a complete Shadowkeep icon definition"
         )));
     }
+    Ok(payload)
+}
+
+pub(crate) fn read_primary_layer_tag(
+    manager: &PackageManager,
+    container_tag: TagHash,
+) -> AuthoringResult<TagHash> {
+    let payload = read_icon_container(manager, container_tag)?;
     let primary_layer_tag = read_tag(&payload, ICON_PRIMARY_LAYER_OFFSET)?;
     if !is_valid_package_tag(primary_layer_tag) {
         return Err(invalid(format!(
@@ -435,10 +525,10 @@ fn validate_plan(
     new_tags: &[NewTagSpec],
     overrides: &[NewTagReferenceOverride],
     ordinal_base: usize,
-    primary_layer_tag: TagHash,
+    layer_tag: TagHash,
     dependencies: &SharedTagDependencies,
 ) -> AuthoringResult<()> {
-    if new_tags.len() < 3 || new_tags.len() % 2 != 1 || overrides.len() + 1 != new_tags.len() {
+    if new_tags.len() % 2 != 1 || overrides.len() + 1 != new_tags.len() {
         return Err(validation(
             "Weapon icon edit append plan has an invalid data/header/layer shape",
         ));
@@ -474,7 +564,7 @@ fn validate_plan(
         layer.storage != NewTagStorageMode::InheritTemplate
             || read_u32(&layer.payload, 0).ok().map(|size| size as usize)
                 != Some(layer.payload.len())
-    }) || !dependencies.contains(&u32::from(primary_layer_tag))
+    }) || !dependencies.contains(&u32::from(layer_tag))
         || dependencies.len() != new_tags.len()
     {
         return Err(validation(

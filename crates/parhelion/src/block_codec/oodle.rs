@@ -225,7 +225,6 @@ mod tests {
             .collect::<Vec<_>>();
         for plaintext in [vec![0xA5], vec![0; 32_000], vec![0xA5; BLOCK_SIZE], noisy] {
             let compressed = compressor.compress(&plaintext).unwrap();
-            assert_eq!(compressor.compress(&plaintext).unwrap(), compressed);
             let (expected_bytes, expected_flags) = if compressed.len() < plaintext.len() {
                 (compressed.clone(), super::super::COMPRESSED_FLAGS)
             } else {

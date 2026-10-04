@@ -164,20 +164,8 @@ fn resize(
     changes: &[AuthoredSocketChange],
     report: &mut BTreeMap<u32, usize>,
 ) -> Result<(), String> {
-    let mut seen = BTreeSet::new();
+    crate::account::validate_socket_changes(removed, changes)?;
     for change in changes {
-        if removed.contains(&change.definition_hash)
-            || !seen.insert(change.definition_hash)
-            || change.previous_socket_count > 12
-            || change.default_plugs.len() > 12
-            || change
-                .default_plugs
-                .iter()
-                .flatten()
-                .any(|h| *h == 0 || *h == u32::MAX)
-        {
-            return Err("Conflicting or unsupported replacement socket layouts".into());
-        }
         let mut stmt=db.prepare("SELECT instance_soid,plug_count FROM items WHERE definition_hash=? AND socket_policy=1").map_err(err)?;
         let rows = stmt
             .query_map([i64::from(change.definition_hash)], |r| {
@@ -188,34 +176,53 @@ fn resize(
             .map_err(err)?;
         for (soid, count) in rows {
             let new = change.default_plugs.len();
-            if count == new {
-                continue;
-            }
-            if count != change.previous_socket_count {
-                return Err(
-                    "An authored item's socket count differs from the reviewed package".into(),
-                );
-            }
-            db.execute(
-                "DELETE FROM sockets WHERE instance_soid=? AND lane>=?",
-                params![soid, new],
-            )
-            .map_err(err)?;
-            for (lane, hash) in change.default_plugs.iter().enumerate().skip(count) {
-                if let Some(hash) = hash {
-                    db.execute(
-                        "INSERT INTO sockets(instance_soid,lane,plug_hash) VALUES(?,?,?)",
-                        params![soid, lane, hash],
-                    )
-                    .map_err(err)?;
+            let mut changed = false;
+            if count != new {
+                if count != change.previous_socket_count {
+                    return Err(
+                        "An authored item's socket count differs from the reviewed package".into(),
+                    );
                 }
+                db.execute(
+                    "DELETE FROM sockets WHERE instance_soid=? AND lane>=?",
+                    params![soid, new],
+                )
+                .map_err(err)?;
+                for (lane, hash) in change.default_plugs.iter().enumerate().skip(count) {
+                    if let Some(hash) = hash {
+                        db.execute(
+                            "INSERT INTO sockets(instance_soid,lane,plug_hash) VALUES(?,?,?)",
+                            params![soid, lane, hash],
+                        )
+                        .map_err(err)?;
+                    }
+                }
+                db.execute(
+                    "UPDATE items SET plug_count=? WHERE instance_soid=?",
+                    params![new, soid],
+                )
+                .map_err(err)?;
+                changed = true;
             }
-            db.execute(
-                "UPDATE items SET plug_count=? WHERE instance_soid=?",
-                params![new, soid],
-            )
-            .map_err(err)?;
-            *report.entry(change.definition_hash).or_default() += 1;
+            // A saved selection of a lane's replaced default follows the definition to its new
+            // one. An empty new default removes the lane's row, as an empty selection has none.
+            for &(lane, old) in &change.replaced_defaults {
+                let updated = match change.default_plugs[lane] {
+                    Some(hash) => db.execute(
+                        "UPDATE sockets SET plug_hash=? WHERE instance_soid=? AND lane=? AND plug_hash=?",
+                        params![hash, soid, lane, old],
+                    ),
+                    None => db.execute(
+                        "DELETE FROM sockets WHERE instance_soid=? AND lane=? AND plug_hash=?",
+                        params![soid, lane, old],
+                    ),
+                }
+                .map_err(err)?;
+                changed |= updated > 0;
+            }
+            if changed {
+                *report.entry(change.definition_hash).or_default() += 1;
+            }
         }
     }
     Ok(())

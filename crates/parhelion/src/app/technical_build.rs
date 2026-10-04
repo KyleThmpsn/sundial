@@ -15,12 +15,12 @@ use std::fmt::Write as _;
 
 use sundial::investment::WeaponDonor;
 use sundial::package_authoring::gear_markers::{self, MarkerSet, marker_name};
-use sundial::package_authoring::weapon_runtime::{
+use sundial::package_authoring::runtime::{
     WeaponRuntimeField, WeaponRuntimeFieldSource, WeaponRuntimeGraph, WeaponRuntimeRoot,
     WeaponRuntimeValue, WeaponRuntimeValueKind,
 };
 
-use crate::recipe::WeaponRecipe;
+use crate::recipe::{MarkerOffsetRecipe, WeaponRecipe};
 use crate::workflow::BuildReport;
 
 /// The effective runtime entity behind the report, once the background scan has produced it.
@@ -79,6 +79,7 @@ struct ReportKey {
     markers: u64,
     registry: RegistrySource,
     fields: bool,
+    parts: String,
 }
 
 /// The rendered report, rebuilt only when one of its inputs changes.
@@ -96,7 +97,7 @@ pub(super) fn technical_build_report(
     build: Option<&BuildReport>,
     recipe: &WeaponRecipe,
     donor: Option<&WeaponDonor>,
-    markers: &str,
+    art: &str,
     registry: &str,
 ) -> String {
     let mut out = String::new();
@@ -123,7 +124,7 @@ pub(super) fn technical_build_report(
     append_perks(&mut out, recipe, donor);
     append_text(&mut out, recipe);
     append_appearance(&mut out, recipe, donor);
-    out.push_str(markers);
+    out.push_str(art);
     append_recipe(&mut out, recipe);
     append_sockets(&mut out, recipe, donor);
     append_runtime(&mut out, recipe);
@@ -136,7 +137,7 @@ fn hex(value: u32) -> String {
     format!("0x{value:08X}")
 }
 
-fn field(out: &mut String, name: &str, value: impl std::fmt::Display) {
+pub(super) fn field(out: &mut String, name: &str, value: impl std::fmt::Display) {
     let _ = writeln!(out, "  {name:<26}{value}");
 }
 
@@ -411,6 +412,41 @@ fn append_donors(out: &mut String, recipe: &WeaponRecipe, donor: Option<&WeaponD
             Some(reference) => donor_reference(out, name, reference),
             None => field(out, name, "none  (gameplay donor)"),
         }
+    }
+    for (name, reference, follows) in [
+        (
+            "animation donor",
+            recipe.overrides.animation_donor.as_ref(),
+            "none  (appearance)",
+        ),
+        (
+            "type marker donor",
+            recipe.overrides.type_marker_donor.as_ref(),
+            "none  (base weapon)",
+        ),
+    ] {
+        match reference {
+            Some(reference) => donor_reference(out, name, reference),
+            None => field(out, name, follows),
+        }
+    }
+    let _ = writeln!(
+        out,
+        "  component splices ({})",
+        recipe.overrides.component_splices.len()
+    );
+    for splice in &recipe.overrides.component_splices {
+        let _ = writeln!(
+            out,
+            "    binding {}  donor {}  {}",
+            splice.binding_hash,
+            splice.donor.item_hash,
+            splice
+                .donor
+                .expected_name
+                .as_deref()
+                .unwrap_or("<no expected name>")
+        );
     }
     let _ = writeln!(
         out,
@@ -849,6 +885,30 @@ fn append_appearance(out: &mut String, recipe: &WeaponRecipe, donor: Option<&Wea
             }),
         );
     }
+    let [forward, side, up] = overrides.held_offset_um.map(|um| f64::from(um) / 1000.0);
+    field(
+        out,
+        "held offset",
+        if overrides.held_offset_um == [0; 3] {
+            "none".to_owned()
+        } else {
+            format!("forward {forward:+.3} mm  side {side:+.3} mm  up {up:+.3} mm")
+        },
+    );
+    let _ = writeln!(out, "  moved markers ({})", overrides.marker_offsets.len());
+    for offset in &overrides.marker_offsets {
+        let label = offset
+            .marker
+            .parse_u32()
+            .ok()
+            .and_then(marker_name)
+            .map_or_else(|| offset.marker.to_string(), ToOwned::to_owned);
+        let [forward, side, up] = offset.offset_um.map(|um| f64::from(um) / 1000.0);
+        let _ = writeln!(
+            out,
+            "    {label:<24}  forward {forward:+.3} mm  side {side:+.3} mm  up {up:+.3} mm"
+        );
+    }
 }
 
 /// The named points the appearance's gear art carries: where the weapon is held, where it
@@ -858,7 +918,9 @@ fn append_appearance(out: &mut String, recipe: &WeaponRecipe, donor: Option<&Wea
 ///
 /// Read from the packages rather than the recipe, so it is rendered separately and only while
 /// the window is open.
-pub(super) fn marker_section(markers: Markers<'_>) -> String {
+///
+/// A marker the recipe moves is listed where the build puts it, with how far it moved.
+pub(super) fn marker_section(markers: Markers<'_>, moved: &[MarkerOffsetRecipe]) -> String {
     let mut text = String::new();
     let out = &mut text;
     let sets = match markers {
@@ -877,9 +939,16 @@ pub(super) fn marker_section(markers: Markers<'_>) -> String {
     let named = all()
         .filter(|marker| marker_name(marker.name).is_some())
         .count();
+    let offset = |name: u32| {
+        moved
+            .iter()
+            .find(|offset| offset.marker.parse_u32().ok() == Some(name))
+            .map(|offset| offset.offset_um.map(|um| um as f32 / 1_000_000.0))
+    };
+    let shifted = all().filter(|marker| offset(marker.name).is_some()).count();
     let _ = writeln!(
         out,
-        "\nMARKERS  {total} on {} objects, {named} named",
+        "\nMARKERS  {total} on {} objects, {named} named, {shifted} moved",
         sets.len()
     );
     if sets.is_empty() {
@@ -895,7 +964,13 @@ pub(super) fn marker_section(markers: Markers<'_>) -> String {
             set.markers.len()
         );
         for marker in &set.markers {
-            let [x, y, z] = marker.position;
+            let moved = offset(marker.name);
+            let [x, y, z] = moved.map_or(marker.position, |delta| {
+                std::array::from_fn(|axis| marker.position[axis] + delta[axis])
+            });
+            let moved = moved.map_or_else(String::new, |[dx, dy, dz]| {
+                format!("  moved {dx:+.5} {dy:+.5} {dz:+.5}")
+            });
             let label = column(&marker.label(), 24);
             // A weapon really does carry two markers of one name at one point, differing only
             // in which way they face, so the rotation has to be shown or they read as a bug.
@@ -911,7 +986,7 @@ pub(super) fn marker_section(markers: Markers<'_>) -> String {
                 .map_or_else(String::new, |near| format!("  {near}"));
             let _ = writeln!(
                 out,
-                "    {label:<24}  {x:>10.5} {y:>10.5} {z:>10.5}{facing}{near}"
+                "    {label:<24}  {x:>10.5} {y:>10.5} {z:>10.5}{moved}{facing}{near}"
             );
         }
     }
@@ -929,7 +1004,7 @@ fn append_recipe(out: &mut String, recipe: &WeaponRecipe) {
         let _ = writeln!(out, "  none");
     }
     for request in &overrides.additional_behaviors {
-        let Some(entry) = crate::weapon_behavior::behavior(&request.behavior) else {
+        let Some(entry) = crate::weapon::behavior::behavior(&request.behavior) else {
             let _ = writeln!(out, "  {}  <not in the catalog>", request.behavior);
             continue;
         };
@@ -941,7 +1016,7 @@ fn append_recipe(out: &mut String, recipe: &WeaponRecipe) {
         if let Some(owner) = entry.owner_tag() {
             field(out, "  record owner", hex(owner));
         }
-        if let Some(record) = crate::weapon_behavior::paired_record_source(entry) {
+        if let Some(record) = crate::weapon::behavior::paired_record_source(entry) {
             field(out, "  carries record of", record);
         }
         for (name, plug) in [
@@ -1218,7 +1293,7 @@ pub(super) fn runtime_registry_field_count(graph: &WeaponRuntimeGraph) -> usize 
 fn root_summary(root: &WeaponRuntimeRoot) -> String {
     // A root's own schema is often not the class its binding selects, so naming it here adds
     // what the binding line cannot: an instance and its definition are different components.
-    let schema = match sundial::package_authoring::weapon_runtime::native_type_name(root.schema) {
+    let schema = match sundial::package_authoring::runtime::native_type_name(root.schema) {
         Some(name) => format!("{} {name}", hex(root.schema)),
         None => hex(root.schema),
     };
@@ -1398,9 +1473,12 @@ impl super::PackageAuthoringApp {
     }
 
     /// The arrangements the report describes: the recipe's override when it has one, else the
-    /// donor's. `None` while neither is known. Markers belong to the art, so this is the only
+    /// geometry donor's. `None` while neither is known. Markers belong to the art, so this is the only
     /// thing the read depends on.
-    fn technical_marker_arrangements(&self, donor: Option<&WeaponDonor>) -> Option<Vec<u16>> {
+    pub(super) fn technical_marker_arrangements(
+        &self,
+        donor: Option<&WeaponDonor>,
+    ) -> Option<Vec<u16>> {
         let mut rows: Vec<u16> = match self.recipe.overrides.art_arrangements.as_ref() {
             Some(rows) => rows.iter().map(|row| row.arrangement).collect(),
             None => donor?
@@ -1418,7 +1496,7 @@ impl super::PackageAuthoringApp {
     /// window is open, so a closed window costs nothing. One read runs at a time: a replaced
     /// job would leave its thread holding package handles. The poll keeps a stale result and
     /// the next frame starts the read for the new arrangement.
-    fn ensure_technical_markers(&mut self, ctx: &egui::Context, arrangements: &[u16]) {
+    pub(super) fn ensure_technical_markers(&mut self, ctx: &egui::Context, arrangements: &[u16]) {
         if self.technical_marker_job.is_some()
             || self
                 .technical_markers
@@ -1522,7 +1600,9 @@ impl super::PackageAuthoringApp {
             Some(report) => report.arrangements.clone(),
             None => {
                 let current = self.current_donor();
-                let arrangements = self.technical_marker_arrangements(current.as_ref());
+                // Markers belong to the art the weapon wears, the appearance's when it has one.
+                let arrangements =
+                    self.technical_marker_arrangements(self.current_geometry_donor().as_ref());
                 donor = Some(current);
                 arrangements
             }
@@ -1535,6 +1615,8 @@ impl super::PackageAuthoringApp {
         {
             self.ensure_technical_markers(ctx, arrangements);
         }
+        // The rig, hold and type the part rows choose. It can start the type read.
+        let parts = self.technical_parts(ctx);
         let build = self
             .latest_build
             .as_ref()
@@ -1579,6 +1661,7 @@ impl super::PackageAuthoringApp {
             markers: self.technical_marker_revision,
             registry: source,
             fields: self.technical_registry_fields,
+            parts,
         };
         if self
             .technical_report
@@ -1590,15 +1673,18 @@ impl super::PackageAuthoringApp {
                 .technical_registry
                 .as_ref()
                 .map_or("", |cache| cache.text.as_str());
-            let markers = marker_section(arrangements.as_ref().and_then(|arrangements| {
-                let (read, result) = self.technical_markers.as_ref()?;
-                (read == arrangements).then_some(match result {
-                    Ok(sets) => Ok(sets.as_slice()),
-                    Err(error) => Err(error.as_str()),
-                })
-            }));
-            let text =
-                technical_build_report(build, &self.recipe, donor.as_ref(), &markers, section);
+            let markers = marker_section(
+                arrangements.as_ref().and_then(|arrangements| {
+                    let (read, result) = self.technical_markers.as_ref()?;
+                    (read == arrangements).then_some(match result {
+                        Ok(sets) => Ok(sets.as_slice()),
+                        Err(error) => Err(error.as_str()),
+                    })
+                }),
+                &self.recipe.overrides.marker_offsets,
+            );
+            let art = format!("{}{markers}", key.parts);
+            let text = technical_build_report(build, &self.recipe, donor.as_ref(), &art, section);
             let lines = text.lines().count();
             self.technical_report = Some(ReportCache {
                 key,

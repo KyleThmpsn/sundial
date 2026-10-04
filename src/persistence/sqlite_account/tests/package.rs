@@ -106,6 +106,7 @@ fn socket_replacement_preserves_selected_lanes_and_handles_growth_and_shrink() {
                 definition_hash: 200,
                 previous_socket_count: previous,
                 default_plugs: defaults,
+                replaced_defaults: Vec::new(),
             }],
         )
         .unwrap();

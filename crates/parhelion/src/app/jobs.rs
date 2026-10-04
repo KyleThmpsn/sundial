@@ -173,12 +173,21 @@ impl PackageAuthoringApp {
                 .find(|donor| donor.hash == item_hash)
                 .and_then(|donor| donor.weapon_translation_group)
         };
+        // Animations from the base weapon's family keep its rig, as the build does.
+        let keeps_base_rig = self
+            .recipe
+            .overrides
+            .animation_donor
+            .as_ref()
+            .and_then(|donor| donor.item_hash.parse_u32().ok())
+            .is_some_and(|hash| group(hash).is_some() && group(hash) == group(fallback_item_hash));
         let appearance_rig = self
             .recipe
             .presentation_donor
             .as_ref()
             .and_then(|donor| donor.item_hash.parse_u32().ok())
             .filter(|hash| *hash != 0 && group(*hash) != group(fallback_item_hash))
+            .filter(|_| !keeps_base_rig)
             .map(|hash| {
                 (
                     self.donor_summaries
@@ -315,6 +324,9 @@ impl PackageAuthoringApp {
         self.donor_summaries = catalog.weapon_donors();
         // Only stock subclasses can be a base or an ability source, not ones a build installed.
         self.subclasses = catalog.subclasses(crate::package_profile::is_stock_item_definition);
+        // On a Specific Ability names every stock ability by the nodes that equip it.
+        super::custom_perks::workbench::remember_abilities(&self.subclasses);
+        super::ability_names::remember(&self.subclasses, catalog.ability_rows());
         self.gear_donors = ItemKind::ALL
             .into_iter()
             .filter(|kind| !kind.is_weapon())
@@ -476,31 +488,21 @@ impl PackageAuthoringApp {
             };
             match event {
                 BuildWorkerEvent::Progress(progress) => {
-                    let message = build_status::progress_message(
+                    if let Some(message) = self.build_activity.progress(
+                        progress.elapsed,
                         progress.phase.label(),
                         progress.current_artifact.as_deref(),
-                        progress.completed,
-                        progress.total,
-                    );
-                    let changed = self.build_progress.as_ref().is_none_or(|previous| {
-                        previous.phase != progress.phase
-                            || previous.current_artifact != progress.current_artifact
-                            || previous.completed != progress.completed
-                            || previous.total != progress.total
-                    });
-                    if changed {
-                        let same_operation = self.build_progress.as_ref().is_some_and(|previous| {
-                            previous.phase == progress.phase
-                                && previous.current_artifact == progress.current_artifact
-                                && previous.total == progress.total
-                                && previous.completed <= progress.completed
-                        });
-                        if same_operation {
-                            self.build_activity.update_last(progress.elapsed, message);
-                        } else {
-                            self.build_activity.push(progress.elapsed, message.clone());
-                            self.log.push(LogEntry::info(message));
-                        }
+                        (progress.completed, progress.total),
+                        matches!(
+                            progress.phase,
+                            BuildPhase::InspectingSource
+                                | BuildPhase::LoadingCatalog
+                                | BuildPhase::CompilingProject
+                                | BuildPhase::BuildingPayloads
+                        ),
+                        true,
+                    ) {
+                        self.log.push(LogEntry::info(message));
                     }
                     self.build_progress = Some(progress);
                 }
@@ -592,7 +594,9 @@ impl PackageAuthoringApp {
             return;
         }
         self.perk_workbench.stop_optional_reads();
-        if self.runtime_graph_job.is_some()
+        if self.installed.busy()
+            || self.build_check.busy()
+            || self.runtime_graph_job.is_some()
             || self.runtime_donors.busy()
             || self.runtime_dependencies.busy()
             || self.perk_workbench.busy()
@@ -730,7 +734,10 @@ impl PackageAuthoringApp {
 
     /// Runs the install's account step again for the installed generation, in a worker.
     pub(super) fn start_account_resync(&mut self) {
-        if self.account_resync_receiver.is_some() || self.install_receiver.is_some() {
+        if self.account_resync_receiver.is_some()
+            || self.install_receiver.is_some()
+            || self.uninstall.open
+        {
             return;
         }
         let target = self.packages.clone();
@@ -759,6 +766,9 @@ impl PackageAuthoringApp {
             }
         };
         self.account_resync_receiver = None;
+        // A disconnected worker can also have written part of the account. The
+        // host refreshes only when it is safe to replace its current document.
+        self.account_changed = true;
         match result {
             Ok(report) => {
                 self.log.push(LogEntry::info(format!(
@@ -784,6 +794,7 @@ impl PackageAuthoringApp {
         let mut installed = false;
         match receiver.try_recv() {
             Ok(Ok(report)) => {
+                self.installed.request();
                 if let Some(path) = &report.cleaned_account {
                     self.log.push(LogEntry::info(format!(
                         "Applied the reviewed account changes to {}. Original account and packages are backed up in {} (excluded from automatic pruning)",

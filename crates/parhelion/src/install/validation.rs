@@ -244,6 +244,7 @@ fn manifest_grants(project: &ManifestProject) -> Vec<identities::GrantedItem> {
                 item_hash: weapon.item.hash.get(),
                 definition_tag: tiger_pkg::TagHash(weapon.item.definition_tag.get()),
                 class_type,
+                every_class: weapon.every_class,
             })
         })
         .collect()

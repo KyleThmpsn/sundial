@@ -26,10 +26,7 @@ fn runtime_branding_survives_recipe_and_catalog_resets() {
             } else {
                 "Sunrise"
             };
-            assert!(
-                labels.contains(&format!("Use {runtime} Watermark")),
-                "{labels}"
-            );
+            assert!(labels.contains(&format!("{runtime} Watermark")), "{labels}");
             assert!(
                 labels.contains(&format!("Include in {} Badge", branding.name())),
                 "{labels}"

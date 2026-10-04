@@ -4,10 +4,10 @@ use super::{
     cache::CatalogContents,
     icons::scan_item_icon_containers,
     items::{
-        ItemScan, ItemScanContext, item_power_cap, scan_ability_displays, scan_character_stat_rows,
-        scan_inventory_bucket_descriptors, scan_items, scan_perk_descriptions,
-        scan_power_cap_definitions, scan_sandbox_perk_catalog, scan_stat_definitions,
-        scan_stat_groups,
+        ItemScan, ItemScanContext, item_power_cap, scan_ability_displays, scan_ability_entities,
+        scan_ability_rows, scan_character_stat_rows, scan_inventory_bucket_descriptors, scan_items,
+        scan_perk_descriptions, scan_power_cap_definitions, scan_sandbox_perk_catalog,
+        scan_stat_definitions, scan_stat_groups,
     },
     progression::{
         attach_progression_references, expand_shared_condition_contexts,
@@ -74,6 +74,8 @@ pub(super) fn scan_packages(
         &mut localized_cache,
         &icon_containers_by_index,
     )?;
+    let ability_entities = scan_ability_entities(manager, globals_data);
+    let ability_rows = scan_ability_rows(manager, &ability_entities);
     let item_stat_definitions = scan_stat_definitions(
         manager,
         root,
@@ -142,6 +144,7 @@ pub(super) fn scan_packages(
             perk_descriptions: &perk_descriptions,
             trait_definition_count: progression.trait_definitions.len(),
             ability_displays: &ability_displays,
+            ability_entities: &ability_entities,
             collectible_item_paths: &progression.collectible_item_paths,
             collectible_condition_contexts: &progression.collectible_condition_contexts,
             localized_tags,
@@ -222,6 +225,7 @@ pub(super) fn scan_packages(
         trait_definitions: progression.trait_definitions,
         reusable_plug_set_count: tables.reusable_plug_set_count,
         socket_entry_list_count: tables.socket_entry_list_count,
+        ability_rows,
         package_names,
         inventory_metadata: item_scan.inventory_metadata,
         objectives: progression.objectives,
@@ -266,7 +270,7 @@ fn enrich_item_metadata(
             metadata.weapon_translation_group = metadata
                 .weapon_pattern_index
                 .and_then(|index| {
-                    crate::weapon_entity::sandbox_pattern_identity_at(&patterns, usize::from(index))
+                    crate::entity::sandbox_pattern_identity_at(&patterns, usize::from(index))
                         .ok()
                         .flatten()
                 })

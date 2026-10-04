@@ -271,7 +271,8 @@ fn relocate(
     Ok(moves)
 }
 
-/// Grows or shrinks the stored socket lanes of retained items whose definition changed shape.
+/// Grows or shrinks the stored socket lanes of retained items whose definition changed shape,
+/// and moves a lane that still holds a replaced default to the new default.
 ///
 /// Only items that carry their own lanes are touched: an item on native defaults has no lanes
 /// to resize, and Dawn refuses one that stores lanes anyway. Every lane up to the new count is
@@ -282,20 +283,8 @@ fn resize(
     changes: &[AuthoredSocketChange],
     report: &mut BTreeMap<u32, usize>,
 ) -> Result<(), String> {
-    let mut seen = BTreeSet::new();
+    crate::account::validate_socket_changes(removed, changes)?;
     for change in changes {
-        if removed.contains(&change.definition_hash)
-            || !seen.insert(change.definition_hash)
-            || change.previous_socket_count > super::contract::PLUG_CAPACITY
-            || change.default_plugs.len() > super::contract::PLUG_CAPACITY
-            || change
-                .default_plugs
-                .iter()
-                .flatten()
-                .any(|hash| *hash == 0 || *hash == u32::MAX)
-        {
-            return Err("Conflicting or unsupported replacement socket layouts".into());
-        }
         let items: Vec<(String, usize)> = staged
             .prepare(
                 "SELECT i.instance_soid,(SELECT count(*) FROM item_sockets s \
@@ -311,29 +300,48 @@ fn resize(
             .map_err(err)?;
         for (soid, count) in items {
             let new = change.default_plugs.len();
-            if count == new {
-                continue;
-            }
-            if count != change.previous_socket_count {
-                return Err(
-                    "An authored item's socket count differs from the reviewed package".into(),
-                );
-            }
-            staged
-                .execute(
-                    "DELETE FROM item_sockets WHERE instance_soid=?1 AND lane>=?2",
-                    params![soid, i64::try_from(new).map_err(err)?],
-                )
-                .map_err(err)?;
-            for (lane, hash) in change.default_plugs.iter().enumerate().skip(count) {
+            let mut changed = false;
+            if count != new {
+                if count != change.previous_socket_count {
+                    return Err(
+                        "An authored item's socket count differs from the reviewed package".into(),
+                    );
+                }
                 staged
                     .execute(
-                        "INSERT INTO item_sockets(instance_soid,lane,plug_hash) VALUES(?1,?2,?3)",
-                        params![soid, i64::try_from(lane).map_err(err)?, hash.map(i64::from)],
+                        "DELETE FROM item_sockets WHERE instance_soid=?1 AND lane>=?2",
+                        params![soid, i64::try_from(new).map_err(err)?],
                     )
                     .map_err(err)?;
+                for (lane, hash) in change.default_plugs.iter().enumerate().skip(count) {
+                    staged
+                        .execute(
+                            "INSERT INTO item_sockets(instance_soid,lane,plug_hash) VALUES(?1,?2,?3)",
+                            params![soid, i64::try_from(lane).map_err(err)?, hash.map(i64::from)],
+                        )
+                        .map_err(err)?;
+                }
+                changed = true;
             }
-            *report.entry(change.definition_hash).or_default() += 1;
+            // A saved selection of a lane's replaced default follows the definition to its new
+            // one. Dawn keeps every lane's row, so an empty new default stores an empty lane.
+            for &(lane, old) in &change.replaced_defaults {
+                let updated = staged
+                    .execute(
+                        "UPDATE item_sockets SET plug_hash=?1 WHERE instance_soid=?2 AND lane=?3 AND plug_hash=?4",
+                        params![
+                            change.default_plugs[lane].map(i64::from),
+                            soid,
+                            i64::try_from(lane).map_err(err)?,
+                            i64::from(old)
+                        ],
+                    )
+                    .map_err(err)?;
+                changed |= updated > 0;
+            }
+            if changed {
+                *report.entry(change.definition_hash).or_default() += 1;
+            }
         }
     }
     Ok(())

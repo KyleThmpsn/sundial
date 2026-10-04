@@ -4,7 +4,27 @@ use sundial::investment::PerkSources;
 
 use sundial::ui::catalog::{content, kinds};
 mod components;
+mod export;
 mod scripts;
+
+struct NativeMap {
+    tft: Arc<sundial::package_authoring::tft::Index>,
+    effects: Arc<entity::catalog::Catalog>,
+    perks: Arc<sundial::package_authoring::sandbox_perk::dependencies::Index>,
+    perk_assets: Vec<sundial::package_authoring::sandbox_perk::dependencies::content::PerkAssets>,
+}
+
+impl Serialize for NativeMap {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut value = serializer.serialize_struct("NativeMap", 4)?;
+        value.serialize_field("tft", &*self.tft)?;
+        value.serialize_field("effects", &*self.effects)?;
+        value.serialize_field("perks", &*self.perks)?;
+        value.serialize_field("perk_assets", &self.perk_assets)?;
+        value.end()
+    }
+}
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
 enum View {
@@ -27,13 +47,16 @@ pub(super) struct EngineCatalog {
     asset_query: String,
     content: content::Browser,
     /// The last native-map export: where it was written, or why it was not.
-    export_status: Option<Result<std::path::PathBuf, String>>,
+    pub(super) export: export::Export,
+    pub(super) stop_requested: bool,
     pub(super) scan_details: bool,
     pub(super) kinds: kinds::Kinds,
     pub(super) copy_requested: Option<u16>,
     pub(super) markers: super::markers::Markers,
+    pub(super) referrers: super::referrers::Referrers,
     scripts: scripts::Browser,
     components: components::Browser,
+    pub(super) insertion: super::catalog_insert::Picker,
 }
 
 impl EngineCatalog {
@@ -41,6 +64,13 @@ impl EngineCatalog {
     /// only started once the view asking for it is on screen.
     pub(super) fn wants_markers(&self) -> bool {
         self.open && self.view == View::Markers
+    }
+
+    /// Opens the catalog on the Links view with `tag`'s page, as a jump from a card does.
+    pub(super) fn show_resource(&mut self, tag: u32) {
+        self.open = true;
+        self.view = View::References;
+        self.content.open_resource(tag);
     }
 
     pub(super) fn show(
@@ -101,12 +131,12 @@ impl EngineCatalog {
                             }
                             if ui
                                 .add_enabled(
-                                    browser.discovery.data.is_some(),
+                                    browser.discovery.data.is_some() && !self.export.busy(),
                                     egui::Button::new("Export Native Map…"),
                                 )
                                 .clicked()
                             {
-                                self.export_map(browser.discovery);
+                                self.export_map(browser.discovery, ctx);
                                 ui.close_menu();
                             }
                         });
@@ -127,13 +157,22 @@ impl EngineCatalog {
                         }
                     });
                 }
-                if browser.discovery.error.is_some()
+                if (browser.discovery.error.is_some() || browser.discovery.stopped)
                     && !browser.discovery.busy()
                     && ui.button("Retry Scan").clicked()
                 {
                     self.retry_requested = true;
                 }
-                match &self.export_status {
+                if self.export.busy() {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Exporting the native map…");
+                        if ui.button("Stop Export").clicked() {
+                            self.export.stop();
+                        }
+                    });
+                }
+                match &self.export.result {
                     Some(Ok(path)) => {
                         ui.weak(format!("Exported to {}", path.display()))
                             .on_hover_text(path.display().to_string());
@@ -149,11 +188,29 @@ impl EngineCatalog {
                     ui.colored_label(ui.visuals().error_fg_color, error);
                 }
                 if browser.discovery.busy() {
+                    ui.horizontal(|ui| {
+                        ui.weak(if browser.discovery.stopped {
+                            "Stopping after the current resource…"
+                        } else {
+                            browser
+                                .discovery
+                                .phase
+                                .map_or("Reading…", |phase| phase.label())
+                        });
+                        if ui
+                            .add_enabled(!browser.discovery.stopped, egui::Button::new("Stop Scan"))
+                            .clicked()
+                        {
+                            self.stop_requested = true;
+                        }
+                    });
                     if let Some((current, total)) = browser.discovery.progress {
                         ui.weak(format!("Reading {current} of {total}"));
                     } else {
                         ui.weak("Reading…");
                     }
+                } else if browser.discovery.stopped {
+                    ui.weak("Scan Stopped. Use Retry Scan to resume.");
                 }
                 ui.separator();
                 ui.push_id(self.view, |ui| match self.view {
@@ -187,8 +244,7 @@ impl EngineCatalog {
                     View::Scripts => {
                         if let Some(data) = &browser.discovery.data {
                             if let Some(tag) = self.scripts.draw(ui, data) {
-                                self.content.open_resource(tag);
-                                self.view = View::References;
+                                self.show_resource(tag);
                             }
                         } else {
                             Self::loading(ui, browser.discovery);
@@ -197,8 +253,7 @@ impl EngineCatalog {
                     View::Components => {
                         if let Some(data) = &browser.discovery.data {
                             if let Some(tag) = self.components.draw(ui, data) {
-                                self.content.open_resource(tag);
-                                self.view = View::References;
+                                self.show_resource(tag);
                             }
                         } else {
                             Self::loading(ui, browser.discovery);
@@ -244,7 +299,7 @@ impl EngineCatalog {
         }
     }
 
-    fn export_map(&mut self, discovery: &discovery::Discovery) {
+    fn export_map(&mut self, discovery: &discovery::Discovery, ctx: &egui::Context) {
         let Some(data) = &discovery.data else {
             return;
         };
@@ -254,22 +309,15 @@ impl EngineCatalog {
         else {
             return;
         };
-        let value = serde_json::json!({
-            "tft": &*data.names,
-            "effects": &*data.effects,
-            "perks": &*data.perks,
-            "perk_assets": &data.perk_assets,
-        });
-        // Writing a file with no word either way reads as nothing having happened, and the
-        // reader chose the location, so naming it back is what confirms the export ran.
-        self.export_status = Some(
-            serde_json::to_vec_pretty(&value)
-                .map_err(|error| error.to_string())
-                .and_then(|bytes| {
-                    sundial::package_authoring::replace_authoring_file(&path, &bytes)
-                        .map_err(|error| error.to_string())
-                })
-                .map(|()| path),
+        self.export.start(
+            path,
+            NativeMap {
+                tft: data.names.clone(),
+                effects: data.effects.clone(),
+                perks: data.perks.clone(),
+                perk_assets: data.perk_assets.clone(),
+            },
+            ctx,
         );
     }
 
@@ -301,6 +349,12 @@ impl EngineCatalog {
             kinds::Source::Unavailable
         };
         self.kinds.reference_links = experimental;
+        self.insertion.draw(
+            ui,
+            self.kinds.selected,
+            self.kinds.selected_stock_use(),
+            discovery,
+        );
         let mut copy = None;
         let mut inspect = None;
         let mut actions =
@@ -360,7 +414,13 @@ impl EngineCatalog {
                 View::References => content::View::References,
                 _ => return None,
             };
-            return self.content.draw(
+            let index = self.referrers.index();
+            let mut uses = content::Uses {
+                state: self.referrers.state(index.as_deref()),
+                requested: false,
+                stopped: false,
+            };
+            let jump = self.content.draw(
                 ui,
                 view,
                 choices,
@@ -368,7 +428,17 @@ impl EngineCatalog {
                 discovery.packages(),
                 sources,
                 catalog,
+                &mut uses,
             );
+            // The page's state borrows the job, so its answers are taken before acting on them.
+            let (requested, stopped) = (uses.requested, uses.stopped);
+            if requested {
+                self.referrers.request();
+            }
+            if stopped {
+                self.referrers.stop();
+            }
+            return jump;
         } else {
             Self::loading(ui, discovery);
         }

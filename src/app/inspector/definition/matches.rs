@@ -399,7 +399,10 @@ impl<'a> CatalogHashMatches<'a> {
                     "Value" => catalog.unlock_value_definition(*definition_index),
                     _ => None,
                 }?;
-                let context = definition.tested_by.get(*context_index)?;
+                let context = definition
+                    .tested_by
+                    .get(*context_index)
+                    .map(|context| &**context)?;
                 Some((*kind, *definition_index, context))
             })
             .collect();

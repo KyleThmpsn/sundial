@@ -4,6 +4,7 @@ use super::*;
 use serde::Serialize;
 use std::collections::BTreeMap;
 pub mod clips;
+pub mod equipment;
 pub mod first_person;
 
 /// Export clip dependencies through validated lookup-component and bank fields.

@@ -66,6 +66,9 @@ pub fn context(r: &mut Reader, modern: bool) -> Result<Value> {
         let header = r.tag(tag, None)?;
         let buffer = r.reference(tag)?;
         r.tag(buffer, None)?;
+        if modern && ![0, u32::MAX, 0x811C9DC5].contains(&header.u32(60)?) {
+            r.tag(header.u32(60)?, None)?;
+        }
         textures.push(json!({"name":name,"tag":format!("{tag:08X}"),"buffer":format!("{buffer:08X}"),"header":hex::encode(&header.0)}));
     }
     let defaults = r.tag(globals.u32(0x34)?, None)?;

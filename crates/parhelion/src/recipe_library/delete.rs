@@ -34,6 +34,15 @@ impl RecipeLibrary {
 
     /// Backs the recipe up, then removes it and its place in the build. Returns the backup.
     pub(crate) fn delete_recipe(&self, preview: &DeleteRecipe) -> Result<PathBuf, String> {
+        self.delete_recipe_with(preview, |path| mutation::remove(path, &preview.original))
+    }
+
+    pub(super) fn delete_recipe_with(
+        &self,
+        preview: &DeleteRecipe,
+        remove: impl FnOnce(&Path) -> Result<(), String>,
+    ) -> Result<PathBuf, String> {
+        let _lock = self.lock()?;
         if &self.prepare_delete_recipe(&preview.path)? != preview {
             return Err("This recipe changed after the preview. Review the deletion again.".into());
         }
@@ -43,6 +52,7 @@ impl RecipeLibrary {
             .and_then(|name| name.to_str())
             .ok_or("Recipe filename is missing")?
             .to_owned();
+        let changes = self.deletion_metadata(&file_name, preview.bundled)?;
         let backup = self.create_restore_backup()?;
         atomic_write_create_new(&backup.join(&file_name), &preview.original).map_err(|error| {
             match error {
@@ -50,31 +60,64 @@ impl RecipeLibrary {
                 WriteNewError::Other(error) => error,
             }
         })?;
-        // Recorded before the file goes, so a bundled recipe cannot come back half deleted.
-        if preview.bundled {
-            let mut removed = self.removed_bundled()?;
-            if removed.insert(file_name.clone()) {
-                self.write_removed_bundled(&removed)?;
+        for change in &changes {
+            if let Some(before) = &change.before {
+                let name = change
+                    .path
+                    .file_name()
+                    .ok_or("Metadata filename is missing")?;
+                atomic_write_create_new(&backup.join(name), before).map_err(
+                    |error| match error {
+                        WriteNewError::AlreadyExists => "Metadata backup already exists".to_owned(),
+                        WriteNewError::Other(error) => error,
+                    },
+                )?;
             }
         }
-        self.prepare_restore_target(&preview.path, &Some(preview.original.clone()))?;
-        fs::remove_file(&preview.path)
-            .map_err(|error| format!("Could not delete {}: {error}", preview.path.display()))?;
-        // The recipe was removed on purpose, so it leaves the build too. A bundled one also
-        // forgets it was seen, so Restore Default Recipes brings it back enabled, as it was
-        // on a fresh library.
-        let mut state = self.load_state()?;
-        let before = state.clone();
-        state.enabled_recipes.remove(&file_name);
-        state.known_bundled_recipes.remove(&file_name);
-        if state != before {
-            self.write_state(&state)?;
-        }
+        mutation::commit(&changes, || {
+            self.prepare_restore_target(&preview.path, &Some(preview.original.clone()))?;
+            remove(&preview.path)
+        })
+        .map_err(|error| {
+            format!(
+                "Recipe deletion failed: {error}. Original files are backed up at {}",
+                backup.display()
+            )
+        })?;
         Ok(backup)
     }
 
-    /// Kept beside the library state rather than inside it. That state rejects unknown
-    /// fields, so a new field would stop an older Parhelion from opening the library.
+    fn deletion_metadata(
+        &self,
+        file_name: &str,
+        bundled: bool,
+    ) -> Result<Vec<mutation::Change>, String> {
+        let (mut state, original) = self.read_state()?;
+        let before = state.clone();
+        state.enabled_recipes.remove(file_name);
+        state.known_bundled_recipes.remove(file_name);
+        let mut changes = Vec::new();
+        if state != before {
+            changes.push(mutation::Change {
+                path: self.state_path()?,
+                before: original,
+                after: encode_state(&state)?,
+            });
+        }
+        if bundled {
+            let (mut removed, original) = self.read_removed_bundled()?;
+            if removed.insert(file_name.to_owned()) {
+                changes.push(mutation::Change {
+                    path: self.removed_bundled_path()?,
+                    before: original,
+                    after: encode_removed(&removed),
+                });
+            }
+        }
+        Ok(changes)
+    }
+
+    /// Kept beside the library state for compatibility with older Parhelion versions.
     fn removed_bundled_path(&self) -> Result<PathBuf, String> {
         self.state_path()
             .map(|state| state.with_file_name(REMOVED_BUNDLED_FILE_NAME))
@@ -82,17 +125,21 @@ impl RecipeLibrary {
 
     /// The bundled recipes that were deleted, one file name per line.
     pub(super) fn removed_bundled(&self) -> Result<BTreeSet<String>, String> {
+        self.read_removed_bundled().map(|(removed, _)| removed)
+    }
+
+    fn read_removed_bundled(&self) -> Result<(BTreeSet<String>, Option<Vec<u8>>), String> {
         let path = self.removed_bundled_path()?;
-        match fs::read_to_string(&path) {
-            Ok(listing) => Ok(listing
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .map(str::to_owned)
-                .collect()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeSet::new()),
-            Err(error) => Err(format!("Could not read {}: {error}", path.display())),
-        }
+        let original = mutation::read_optional(&path)?;
+        let listing = std::str::from_utf8(original.as_deref().unwrap_or_default())
+            .map_err(|error| format!("Could not decode {}: {error}", path.display()))?;
+        let removed = listing
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect();
+        Ok((removed, original))
     }
 
     /// An empty set removes the record, so a library with nothing deleted carries no file.
@@ -105,10 +152,15 @@ impl RecipeLibrary {
                 Err(error) => Err(format!("Could not update {}: {error}", path.display())),
             };
         }
-        let mut listing = removed.iter().cloned().collect::<Vec<_>>().join("\n");
-        listing.push('\n');
-        atomic_write_replace(&path, listing.as_bytes())
+        let original = mutation::read_optional(&path)?;
+        mutation::publish(&path, &encode_removed(removed), original.as_deref())
     }
+}
+
+fn encode_removed(removed: &BTreeSet<String>) -> Vec<u8> {
+    let mut listing = removed.iter().cloned().collect::<Vec<_>>().join("\n");
+    listing.push('\n');
+    listing.into_bytes()
 }
 
 #[cfg(test)]

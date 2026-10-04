@@ -71,7 +71,18 @@ pub fn inspect(r: &mut Reader, item_tag: u32, modern: bool) -> Result<Value> {
                     let header_tag = scope.u32(if modern { 0xB4 } else { 0xBC })?;
                     let header = r.tag(header_tag, None)?;
                     let data = r.tag(r.reference(header_tag)?, None)?;
-                    let constants = floats(&data);
+                    // Animated scopes initialize from inline vectors. Their external buffer
+                    // can be all zeros until the expression program runs in the renderer.
+                    let inline =
+                        scope.array(if modern { 0x90 } else { 0x88 }, 16, Some(0x80800090))?;
+                    let constants = if inline.is_empty() {
+                        floats(&data)
+                    } else {
+                        inline
+                            .iter()
+                            .map(|&at| floats(&Payload(scope.0[at..at + 16].to_vec())).remove(0))
+                            .collect()
+                    };
                     found.push(json!({"relation":format!("{relation_tag:08X}"),"dye":format!("{dye_tag:08X}"),"scope":format!("{scope_tag:08X}"),"buffer_header":format!("{header_tag:08X}"),"buffer_header_bytes":hex::encode(&header.0),"constants":constants,"textures":textures}));
                 }
             }

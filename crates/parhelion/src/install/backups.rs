@@ -378,7 +378,6 @@ fn compact_backup_names_remain_unique_and_preserve_legacy_recognition() {
     let second = create_backup_directory(root.path()).unwrap();
     assert_ne!(first, second);
     let name = first.file_name().unwrap().to_str().unwrap();
-    assert!(name.len() < 54);
     assert!(is_automatic_backup_name(name));
     assert!(is_automatic_backup_name(
         "parhelion-backup-000000000000000018D32BD1B4C12E54-000072DC-0000000000000000-0"

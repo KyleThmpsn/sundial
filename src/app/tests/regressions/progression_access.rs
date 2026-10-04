@@ -117,16 +117,19 @@ fn progression_catalog() -> Catalog {
             hash: 100 + index as u64,
             code: 1,
             compact_slot: Some(index as u16),
-            tested_by: vec![ProgressionContextDef {
-                hash: 200 + index as u64,
-                kind: ProgressionContextKind::Record,
-                name: (*name).into(),
-                type_name: String::new(),
-                description: String::new(),
-                paths: vec![vec!["Destinations".into(), "Triumphs".into()]],
-                condition_programs: Vec::new(),
-                direct_references: vec!["Record completion flag".into()],
-            }],
+            tested_by: vec![
+                ProgressionContextDef {
+                    hash: 200 + index as u64,
+                    kind: ProgressionContextKind::Record,
+                    name: (*name).into(),
+                    type_name: String::new(),
+                    description: String::new(),
+                    paths: vec![vec!["Destinations".into(), "Triumphs".into()]],
+                    condition_programs: Vec::new(),
+                    direct_references: vec!["Record completion flag".into()],
+                }
+                .into(),
+            ],
             ..Default::default()
         })
         .collect();

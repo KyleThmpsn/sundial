@@ -565,7 +565,6 @@ impl Workbench {
                             editing: Some(canvas::Editing { workbench: self }),
                         },
                         header: Some(&mut header),
-                        place: None,
                         footer: None,
                         trigger_command: None,
                     },
@@ -735,7 +734,6 @@ impl Workbench {
                                 editing: live.then_some(canvas::Editing { workbench: self }),
                             },
                             header: Some(&mut header),
-                            place: None,
                             footer: Some(&mut footer),
                             trigger_command: None,
                         },
@@ -768,7 +766,6 @@ impl Workbench {
                             activation: activation.as_deref(),
                         },
                         header: Some(&mut header),
-                        place: None,
                         footer: Some(&mut footer),
                         trigger_command: None,
                     },
@@ -781,7 +778,7 @@ impl Workbench {
                     let expanded = canvas::draw_header(
                         ui,
                         Some(&mut header),
-                        Some(card),
+                        card,
                         |ui| {
                             ui.add(egui::Label::new(egui::RichText::new(name).strong()).wrap());
                         },
@@ -1463,8 +1460,8 @@ impl Workbench {
             });
         // Exactly one transition leaves the editor per frame. Back or Apply wins over a
         // conversion requested in the same frame: Back drops it with the drafts, and Apply
-        // keeps the stock overrides the user confirmed. Otherwise Convert to Editable Program
-        // replaces the effect. Letting both run left a program beside stock overrides, which
+        // keeps the stock overrides the user confirmed. Otherwise Convert Anyway replaces the
+        // effect. Letting both run left a program beside stock overrides, which
         // the build rejects, or rewrote an effect the user had just discarded.
         if !restored_history {
             editor.record_history(before, ctx);

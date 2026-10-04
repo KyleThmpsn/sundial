@@ -8,7 +8,31 @@ pub(crate) const PARHELION_ASSET_PATCH_ID: u16 = 0;
 pub(crate) const PARHELION_ASSET_FILE_NAME: &str = "w64_parhelion_assets_0aa0_0.pkg";
 pub(crate) const PRIVATE_PERK_RUNTIME_PACKAGE_ID: u16 = 0x01BB;
 pub(crate) const PRIVATE_PERK_RUNTIME_EXPECTED_ENTRY_COUNT: usize = 6_468;
+/// A stock chain's content generation: the content build and revision its last stock patch
+/// carries, which an overlay must extend.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Generation {
+    pub content_build: u32,
+    pub content_revision: u32,
+}
+
+/// The final Shadowkeep content generation, which most chains reached.
+pub(crate) const FINAL_GENERATION: Generation = Generation {
+    content_build: 0x0001_5281,
+    content_revision: 2,
+};
+/// The generation before it, where some chains' last stock patch stayed: the HUD bank and
+/// half the sandbox packages that hold ability banks.
+pub(crate) const EARLIER_GENERATION: Generation = Generation {
+    content_build: 0x0001_4B68,
+    content_revision: 0,
+};
 pub(crate) const COLLECTION_PACKAGE_ID: u16 = 0x058C;
+/// The HUD status table's package, and the packages of the header and the locale data of the
+/// bank the stock statuses' names share.
+pub(crate) const HUD_STATUS_TABLE_PACKAGE_ID: u16 = 0x02AF;
+pub(crate) const HUD_STATUS_NAME_PACKAGE_ID: u16 = 0x06DC;
+pub(crate) const HUD_STATUS_NAME_DATA_PACKAGE_ID: u16 = 0x03AB;
 pub(crate) const HOST_PACKAGE_ID: u16 = 0x0914;
 pub(crate) const HOST_EXPECTED_ENTRY_COUNT: usize = 5_452;
 
@@ -65,6 +89,8 @@ pub(crate) struct CanonicalPackage {
     pub stock_patch_id: u16,
     pub authored_patch_id: u16,
     pub authored_file_name: &'static str,
+    /// The generation the last stock patch carries, which the authored patch extends.
+    pub stock_generation: Generation,
     pub required_output: bool,
 }
 
@@ -106,13 +132,110 @@ pub(crate) const PARHELION_ASSET_PACKAGE: AuthoredPackage = AuthoredPackage {
     required_output: true,
 };
 
-pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 9] = [
+pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 22] = [
+    // The private perk runtime package.
     CanonicalPackage {
         package_id: PRIVATE_PERK_RUNTIME_PACKAGE_ID,
         stock_file_stem: "w64_sandbox_01bb",
         stock_patch_id: 6,
         authored_patch_id: 7,
         authored_file_name: "w64_sandbox_01bb_7.pkg",
+        stock_generation: FINAL_GENERATION,
+        required_output: false,
+    },
+    // Sandbox packages holding ability banks, replaced in place when a private perk needs a
+    // property row a stock bank lacks.
+    CanonicalPackage {
+        package_id: 0x01C0,
+        stock_file_stem: "w64_sandbox_01c0",
+        stock_patch_id: 5,
+        authored_patch_id: 6,
+        authored_file_name: "w64_sandbox_01c0_6.pkg",
+        stock_generation: EARLIER_GENERATION,
+        required_output: false,
+    },
+    CanonicalPackage {
+        package_id: 0x01D5,
+        stock_file_stem: "w64_sandbox_01d5",
+        stock_patch_id: 6,
+        authored_patch_id: 7,
+        authored_file_name: "w64_sandbox_01d5_7.pkg",
+        stock_generation: FINAL_GENERATION,
+        required_output: false,
+    },
+    CanonicalPackage {
+        package_id: 0x01DE,
+        stock_file_stem: "w64_sandbox_01de",
+        stock_patch_id: 6,
+        authored_patch_id: 7,
+        authored_file_name: "w64_sandbox_01de_7.pkg",
+        stock_generation: FINAL_GENERATION,
+        required_output: false,
+    },
+    CanonicalPackage {
+        package_id: 0x01E0,
+        stock_file_stem: "w64_sandbox_01e0",
+        stock_patch_id: 5,
+        authored_patch_id: 6,
+        authored_file_name: "w64_sandbox_01e0_6.pkg",
+        stock_generation: EARLIER_GENERATION,
+        required_output: false,
+    },
+    CanonicalPackage {
+        package_id: 0x01E1,
+        stock_file_stem: "w64_sandbox_01e1",
+        stock_patch_id: 6,
+        authored_patch_id: 7,
+        authored_file_name: "w64_sandbox_01e1_7.pkg",
+        stock_generation: FINAL_GENERATION,
+        required_output: false,
+    },
+    CanonicalPackage {
+        package_id: 0x01E2,
+        stock_file_stem: "w64_sandbox_01e2",
+        stock_patch_id: 5,
+        authored_patch_id: 6,
+        authored_file_name: "w64_sandbox_01e2_6.pkg",
+        stock_generation: EARLIER_GENERATION,
+        required_output: false,
+    },
+    CanonicalPackage {
+        package_id: 0x01E4,
+        stock_file_stem: "w64_sandbox_01e4",
+        stock_patch_id: 5,
+        authored_patch_id: 6,
+        authored_file_name: "w64_sandbox_01e4_6.pkg",
+        stock_generation: EARLIER_GENERATION,
+        required_output: false,
+    },
+    CanonicalPackage {
+        package_id: 0x01FD,
+        stock_file_stem: "w64_sandbox_01fd",
+        stock_patch_id: 5,
+        authored_patch_id: 6,
+        authored_file_name: "w64_sandbox_01fd_6.pkg",
+        stock_generation: EARLIER_GENERATION,
+        required_output: false,
+    },
+    // The weapon crosshair table, extended when an imported weapon brings a crosshair type key
+    // Shadowkeep has no row for.
+    CanonicalPackage {
+        package_id: 0x01A3,
+        stock_file_stem: "w64_ui_01a3",
+        stock_patch_id: 6,
+        authored_patch_id: 7,
+        authored_file_name: "w64_ui_01a3_7.pkg",
+        stock_generation: FINAL_GENERATION,
+        required_output: false,
+    },
+    // The HUD status table, extended when a private perk shows a HUD status of its own.
+    CanonicalPackage {
+        package_id: HUD_STATUS_TABLE_PACKAGE_ID,
+        stock_file_stem: "w64_ui_02af",
+        stock_patch_id: 5,
+        authored_patch_id: 6,
+        authored_file_name: "w64_ui_02af_6.pkg",
+        stock_generation: EARLIER_GENERATION,
         required_output: false,
     },
     CanonicalPackage {
@@ -121,6 +244,7 @@ pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 9] = [
         stock_patch_id: 6,
         authored_patch_id: 7,
         authored_file_name: "w64_investment_0361_7.pkg",
+        stock_generation: FINAL_GENERATION,
         required_output: true,
     },
     CanonicalPackage {
@@ -129,6 +253,7 @@ pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 9] = [
         stock_patch_id: 6,
         authored_patch_id: 7,
         authored_file_name: "w64_shared_manifest_0374_7.pkg",
+        stock_generation: FINAL_GENERATION,
         required_output: false,
     },
     CanonicalPackage {
@@ -137,6 +262,36 @@ pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 9] = [
         stock_patch_id: 5,
         authored_patch_id: 6,
         authored_file_name: "w64_ui_037e_6.pkg",
+        stock_generation: EARLIER_GENERATION,
+        required_output: false,
+    },
+    // The HUD status names' locale data.
+    CanonicalPackage {
+        package_id: HUD_STATUS_NAME_DATA_PACKAGE_ID,
+        stock_file_stem: "w64_globals_03ab",
+        stock_patch_id: 6,
+        authored_patch_id: 7,
+        authored_file_name: "w64_globals_03ab_7.pkg",
+        stock_generation: FINAL_GENERATION,
+        required_output: false,
+    },
+    CanonicalPackage {
+        package_id: 0x0397,
+        stock_file_stem: "w64_sandbox_0397",
+        stock_patch_id: 5,
+        authored_patch_id: 6,
+        authored_file_name: "w64_sandbox_0397_6.pkg",
+        stock_generation: EARLIER_GENERATION,
+        required_output: false,
+    },
+    // The HUD status names, extended with each HUD status of the project's own.
+    CanonicalPackage {
+        package_id: HUD_STATUS_NAME_PACKAGE_ID,
+        stock_file_stem: "w64_globals_06dc",
+        stock_patch_id: 6,
+        authored_patch_id: 7,
+        authored_file_name: "w64_globals_06dc_7.pkg",
+        stock_generation: FINAL_GENERATION,
         required_output: false,
     },
     CanonicalPackage {
@@ -145,6 +300,7 @@ pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 9] = [
         stock_patch_id: STOCK_PATCH_ID,
         authored_patch_id: AUTHORED_PATCH_ID,
         authored_file_name: "w64_investment_globals_client_058c_4.pkg",
+        stock_generation: FINAL_GENERATION,
         required_output: true,
     },
     CanonicalPackage {
@@ -153,6 +309,7 @@ pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 9] = [
         stock_patch_id: STOCK_PATCH_ID,
         authored_patch_id: AUTHORED_PATCH_ID,
         authored_file_name: "w64_investment_globals_client_0593_4.pkg",
+        stock_generation: FINAL_GENERATION,
         required_output: true,
     },
     CanonicalPackage {
@@ -161,6 +318,7 @@ pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 9] = [
         stock_patch_id: STOCK_PATCH_ID,
         authored_patch_id: AUTHORED_PATCH_ID,
         authored_file_name: "w64_investment_globals_client_0709_4.pkg",
+        stock_generation: FINAL_GENERATION,
         required_output: true,
     },
     CanonicalPackage {
@@ -169,6 +327,7 @@ pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 9] = [
         stock_patch_id: STOCK_PATCH_ID,
         authored_patch_id: AUTHORED_PATCH_ID,
         authored_file_name: "w64_investment_globals_client_0913_4.pkg",
+        stock_generation: FINAL_GENERATION,
         required_output: true,
     },
     CanonicalPackage {
@@ -177,6 +336,7 @@ pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 9] = [
         stock_patch_id: STOCK_PATCH_ID,
         authored_patch_id: AUTHORED_PATCH_ID,
         authored_file_name: "w64_investment_globals_client_0914_4.pkg",
+        stock_generation: FINAL_GENERATION,
         required_output: true,
     },
 ];
@@ -377,22 +537,42 @@ mod tests {
 
     #[test]
     fn authored_artifact_selection_requires_core_and_accepts_optional_runtime_hosts() {
-        let required = AUTHORED_PACKAGES
-            .iter()
-            .filter(|profile| profile.required_output)
-            .map(|profile| profile.file_name)
-            .collect::<Vec<_>>();
-        let selected = authored_packages_for_file_names(required.iter().copied()).unwrap();
+        let required = [
+            "w64_parhelion_assets_0aa0_0.pkg",
+            "w64_investment_0361_7.pkg",
+            "w64_investment_globals_client_058c_4.pkg",
+            "w64_investment_globals_client_0593_4.pkg",
+            "w64_investment_globals_client_0709_4.pkg",
+            "w64_investment_globals_client_0913_4.pkg",
+            "w64_investment_globals_client_0914_4.pkg",
+        ];
+        let selected = authored_packages_for_file_names(required).unwrap();
         assert_eq!(
             selected
                 .iter()
                 .map(|profile| profile.file_name)
-                .collect::<Vec<_>>(),
-            required
+                .collect::<BTreeSet<_>>(),
+            required.into_iter().collect()
         );
+        for missing in required {
+            assert!(
+                authored_packages_for_file_names(
+                    required.into_iter().filter(|name| *name != missing)
+                )
+                .is_err()
+            );
+        }
 
         let all = authored_packages_for_file_names(CANONICAL_ARTIFACT_FILE_NAMES).unwrap();
-        assert_eq!(all, AUTHORED_PACKAGES);
+        assert_eq!(
+            all.iter()
+                .map(|profile| profile.file_name)
+                .collect::<BTreeSet<_>>(),
+            AUTHORED_PACKAGES
+                .iter()
+                .map(|profile| profile.file_name)
+                .collect()
+        );
         assert!(
             all.iter()
                 .any(|profile| profile.package_id == PRIVATE_PERK_RUNTIME_PACKAGE_ID)
@@ -408,9 +588,24 @@ mod tests {
         let mut names = CANONICAL_ARTIFACT_FILE_NAMES.to_vec();
         names.push(spill.file_name);
         let selected = authored_packages_for_file_names(names).unwrap();
-        assert_eq!(selected[0], PARHELION_ASSET_PACKAGE);
-        assert_eq!(selected[1], spill);
-        assert!(selected[2..].iter().all(|profile| profile.stock_overlay));
+        let first_root = selected
+            .iter()
+            .position(|profile| profile.stock_overlay)
+            .unwrap();
+        for resource in [PARHELION_ASSET_PACKAGE, spill] {
+            assert!(
+                selected
+                    .iter()
+                    .position(|profile| *profile == resource)
+                    .unwrap()
+                    < first_root
+            );
+        }
+        assert!(
+            selected[first_root..]
+                .iter()
+                .all(|profile| profile.stock_overlay)
+        );
         for name in [
             "w64_parhelion_assets_0AA1_0.pkg",
             "w64_parhelion_assets_0aa1_1.pkg",

@@ -52,11 +52,17 @@ pub(super) fn entity_reference(class: u32, bytes: &[u8]) -> Result<Option<u32>, 
 
 impl NativeProgram {
     pub fn authoring_issue(&self) -> Result<Option<NativeIssue>, String> {
+        Ok(self.authoring_issues()?.into_iter().next())
+    }
+
+    /// Every readiness failure in execution order, so an earlier failure cannot hide others.
+    pub fn authoring_issues(&self) -> Result<Vec<NativeIssue>, String> {
         let decoded = action::decode(&self.graph.emit()?)?;
+        let mut issues = Vec::new();
         for (group, behavior) in decoded.groups.iter().enumerate() {
             for (action, effect) in behavior.effects.iter().rev().enumerate() {
                 if let Err(message) = entity_reference(effect.class, &effect.native) {
-                    return Ok(Some(NativeIssue {
+                    issues.push(NativeIssue {
                         group,
                         action,
                         field: if effect.class == 0x80803E12 {
@@ -65,11 +71,11 @@ impl NativeProgram {
                             "Object"
                         },
                         message,
-                    }));
+                    });
                 }
             }
         }
-        Ok(None)
+        Ok(issues)
     }
 
     pub fn empty() -> Self {

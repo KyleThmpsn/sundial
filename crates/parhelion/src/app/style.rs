@@ -222,6 +222,33 @@ pub(crate) fn reset(ui: &mut egui::Ui, modified: bool) -> bool {
             .clicked()
 }
 
+/// A saved choice the current data no longer has: a warning and its label in the error colour,
+/// the detail on hover, and Remove. Returns whether Remove was clicked.
+pub(crate) fn missing(ui: &mut egui::Ui, label: &str, detail: &str) -> bool {
+    ui.horizontal_wrapped(|ui| {
+        let color = ui.visuals().error_fg_color;
+        // Painted rather than added as a label, so a screen reader announces the label and not
+        // the glyph's private-use character.
+        // Coloured before layout. The dark theme's override text colour would otherwise be baked
+        // into the galley and win over the colour painted with it.
+        let glyph = egui::WidgetText::from(icon(ui, egui_phosphor::regular::WARNING).color(color))
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Extend),
+                f32::INFINITY,
+                egui::TextStyle::Body,
+            );
+        let (rect, _) = ui.allocate_exact_size(glyph.size(), egui::Sense::hover());
+        ui.painter().galley(rect.min, glyph, color);
+        let response = ui.colored_label(color, label);
+        if !detail.is_empty() {
+            response.on_hover_text(detail);
+        }
+        named_control(ui.small_button("Remove"), format!("Remove {label}")).clicked()
+    })
+    .inner
+}
+
 /// The width `connector` takes for `word`, so a list can keep a gutter of that width.
 pub(crate) fn connector_width(ui: &egui::Ui, word: &str) -> f32 {
     let galley = ui.painter().layout_no_wrap(

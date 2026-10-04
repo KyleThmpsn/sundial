@@ -273,6 +273,7 @@ fn scan_packages(
     manager: &PackageManager,
     jobs: &[(u16, &[tiger_pkg::package::UEntryHeader])],
     known_lane: KnownLane<'_>,
+    cancel: &std::sync::atomic::AtomicBool,
     already: usize,
     total: usize,
     progress: &mut impl FnMut(usize, usize),
@@ -290,13 +291,17 @@ fn scan_packages(
             let next = &next;
             scope.spawn(move || {
                 loop {
+                    if cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
                     let job = next.fetch_add(1, Ordering::Relaxed);
                     let Some(&(package, entries)) = jobs.get(job) else {
                         break;
                     };
-                    let shard = scan_package(manager, package, entries, known_lane, |count| {
-                        let _ = sender.send(Message::Progress(job, count));
-                    });
+                    let shard =
+                        scan_package(manager, package, entries, known_lane, cancel, |count| {
+                            let _ = sender.send(Message::Progress(job, count));
+                        });
                     let _ = sender.send(Message::Done(job, shard));
                 }
             });
@@ -430,10 +435,14 @@ fn scan_package(
     package: u16,
     entries: &[tiger_pkg::package::UEntryHeader],
     known_lane: KnownLane<'_>,
+    cancel: &std::sync::atomic::AtomicBool,
     mut progress: impl FnMut(usize),
 ) -> Shard {
     let mut shard = Shard::default();
     for (ordinal, entry) in entries.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
         if entry.file_type != 8 {
             continue;
         }
@@ -474,8 +483,11 @@ fn persist_shard(path: &Path, saved: &Saved) -> Result<(), String> {
 pub(super) fn inspect(
     packages: &Path,
     manager: &PackageManager,
+    cancel: &std::sync::atomic::AtomicBool,
     mut progress: impl FnMut(usize, usize),
 ) -> Result<Index, String> {
+    use crate::package_runtime::check_cancelled;
+    check_cancelled(cancel)?;
     let snapshot = Snapshot::read(packages)?;
     let directory = crate::paths::cache_dir().map(|root| root.join("discovery/source-packages"));
     let targets = EntityTargets::new(manager);
@@ -504,11 +516,13 @@ pub(super) fn inspect(
     // the references it resolves to. A reused shard needs nothing else from it.
     let loaded =
         crate::package_runtime::parallel::map_jobs(&plans, |(package, _, path, source)| {
+            check_cancelled(cancel).ok()?;
             let mut shard = load_shard(path.as_deref(), *package, source)?;
             let references = entity_references(&shard, &targets);
             shard.evidence = Vec::new();
             Some((shard, references))
         });
+    check_cancelled(cancel)?;
     for ((package, entries, path, source), loaded) in plans.into_iter().zip(loaded) {
         match loaded {
             Some((shard, references)) => {
@@ -535,6 +549,7 @@ pub(super) fn inspect(
             .map(|(package, entries, _, _)| (*package, *entries))
             .collect::<Vec<_>>(),
         &known_lane,
+        cancel,
         reused,
         total,
         &mut progress,
@@ -542,6 +557,7 @@ pub(super) fn inspect(
     // A freshly scanned shard keeps its evidence until it has been written, which is only
     // the packages an install touched.
     for ((package, _, path, source), shard) in jobs.into_iter().zip(scanned) {
+        check_cancelled(cancel)?;
         let references = entity_references(&shard, &targets);
         shards.insert(
             package,
@@ -549,6 +565,7 @@ pub(super) fn inspect(
         );
     }
     for (package, (shard, references, fresh)) in shards {
+        check_cancelled(cancel)?;
         index.references.extend(resolve(&shard, |lane| {
             let target = if let Ok(raw) = u32::try_from(lane) {
                 TagHash(raw)
@@ -574,12 +591,14 @@ pub(super) fn inspect(
         }
     }
     progress(index.scanned_resources, total);
+    check_cancelled(cancel)?;
     if Snapshot::read(packages)? != snapshot {
         return Err(
             "Packages changed while reading asset names. Retry after installation finishes.".into(),
         );
     }
     for (path, saved) in pending {
+        check_cancelled(cancel)?;
         let _ = persist_shard(&path, &saved);
     }
     if let Some(directory) = &directory {

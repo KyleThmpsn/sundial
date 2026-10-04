@@ -5,12 +5,12 @@ fn runtime_override(seed: u32) -> WeaponRuntimeValueOverride {
     WeaponRuntimeValueOverride {
         locator: WeaponRuntimeFieldLocator {
             graph_tag: None,
-            binding_hash: 0x1000_0000 | seed,
+            binding_hash: (0x1000_0000 | seed).into(),
             resource_index: 0,
-            root: sundial::package_authoring::weapon_runtime::WeaponRuntimeRootKind::Instance,
-            root_schema: 0x2000_0000 | seed,
+            root: sundial::package_authoring::runtime::WeaponRuntimeRootKind::Instance,
+            root_schema: (0x2000_0000 | seed).into(),
             path: Vec::new(),
-            type_handle: 0x3000_0000 | seed,
+            type_handle: (0x3000_0000 | seed).into(),
             value_offset: seed,
             byte_size: 4,
         },

@@ -1,22 +1,15 @@
 //! One program canvas for a stock effect and an authored program.
 //!
 //! Both read the same way: a header with the name, then trigger, action, end condition
-//! and reactivation rows. An editable block draws the program controls
-//! from `program.rs`. A locked block draws the summary line of the native node, its support
-//! badge and its mapped facts, and never hides a node Parhelion cannot read.
+//! and reactivation rows. An editable block draws the program controls from `program.rs`. A
+//! locked block reads the same native records, and never hides a node Parhelion cannot read.
 use super::*;
 use sundial::package_authoring::sandbox_perk::{
-    action::{ActionSummary, ConditionRole, GroupSummary, SummaryLine},
-    dependencies::Behavior,
-    nodes::Support,
-    program::{Program, Trigger},
+    dependencies::Behavior, nodes::Support, program::Program,
 };
 
 /// Width of the row label column.
 const LABEL_WIDTH: f32 = 112.0;
-
-/// Draws parameter controls for the asset a stock effect block references.
-pub(in crate::app::custom_perks) type Placer<'a> = dyn FnMut(&mut egui::Ui, u32) + 'a;
 
 /// The editing backend for a program. Without it the program is drawn locked.
 pub(in crate::app::custom_perks) struct Editing<'a> {
@@ -38,13 +31,6 @@ pub(in crate::app::custom_perks) enum Backend<'a> {
         labels: &'a BTreeMap<u32, String>,
         editing: Option<Editing<'a>>,
     },
-    /// A decoded stock action, read through its summary.
-    Stock {
-        summary: &'a ActionSummary,
-        action_tag: u32,
-        /// Whether the action fits the program model.
-        editable: bool,
-    },
     /// The cached digest of a stock action whose payload has not been loaded yet.
     Digest {
         behavior: &'a Behavior,
@@ -65,8 +51,6 @@ pub(in crate::app::custom_perks) struct Canvas<'a, 'b> {
     pub backend: Backend<'a>,
     /// Controls drawn at the right of the header, such as the effect menu.
     pub header: Option<&'b mut dyn FnMut(&mut egui::Ui)>,
-    /// Parameter controls drawn on the stock effect block that references the given asset.
-    pub place: Option<&'b mut Placer<'b>>,
     /// Controls drawn under the rows, inside the same card.
     pub footer: Option<&'b mut dyn FnMut(&mut egui::Ui)>,
     /// A command drawn inside the trigger row of a stock reading, so a stock effect places
@@ -81,20 +65,11 @@ pub(in crate::app::custom_perks) struct Output {
     pub edit_action: Option<usize>,
 }
 
-pub(in crate::app::custom_perks) fn draw(ui: &mut egui::Ui, canvas: Canvas<'_, '_>) -> Output {
-    draw_card(ui, canvas, None)
-}
-
 pub(super) fn draw_effect(ui: &mut egui::Ui, canvas: Canvas<'_, '_>, card: cards::Card) -> Output {
-    draw_card(ui, canvas, Some(card))
-}
-
-fn draw_card(ui: &mut egui::Ui, canvas: Canvas<'_, '_>, card: Option<cards::Card>) -> Output {
     let Canvas {
         name,
         backend,
         header,
-        place,
         footer,
         trigger_command,
     } = canvas;
@@ -109,7 +84,7 @@ fn draw_card(ui: &mut egui::Ui, canvas: Canvas<'_, '_>, card: Option<cards::Card
                 editing,
             } => {
                 let editable = editing.is_some();
-                let folded = card.is_some_and(|card| !card.expanded(ui.ctx()));
+                let folded = !card.expanded(ui.ctx());
                 let brief = folded
                     .then(|| program::brief(program))
                     .flatten()
@@ -125,11 +100,9 @@ fn draw_card(ui: &mut egui::Ui, canvas: Canvas<'_, '_>, card: Option<cards::Card
                         // read every keystroke as an edit and converted the effect. The name
                         // becomes editable once the effect owns its program, and a folded card
                         // reads as its name.
-                        let number = card.map(|card| format!("{}.", card.number()));
+                        let number = format!("{}.", card.number());
                         if editable && stock.is_none() && !folded {
-                            if let Some(number) = &number {
-                                ui.strong(number);
-                            }
+                            ui.strong(&number);
                             let width = (ui.available_width() - 120.0).max(120.0);
                             let response = ui.add(
                                 egui::TextEdit::singleline(&mut program.name)
@@ -141,10 +114,8 @@ fn draw_card(ui: &mut egui::Ui, canvas: Canvas<'_, '_>, card: Option<cards::Card
                         } else {
                             // The number stays its own label here too, so the name reads as
                             // itself wherever the card is found by it.
-                            if stock.is_none()
-                                && let Some(number) = &number
-                            {
-                                ui.strong(number);
+                            if stock.is_none() {
+                                ui.strong(&number);
                             }
                             let title = stock.map_or_else(|| program.name.clone(), str::to_owned);
                             ui.add(egui::Label::new(egui::RichText::new(title).strong()).wrap());
@@ -172,40 +143,8 @@ fn draw_card(ui: &mut egui::Ui, canvas: Canvas<'_, '_>, card: Option<cards::Card
                     ui.add(egui::Label::new(description).wrap());
                 }
                 ui.add_space(4.0);
-                let structure = card.is_some_and(|card| card.structure(ui.ctx()));
+                let structure = card.structure(ui.ctx());
                 output.edit_action = draw_program_rows(ui, program, labels, editing, structure);
-            }
-            Backend::Stock {
-                summary,
-                action_tag,
-                editable,
-            } => {
-                let expanded = draw_header(
-                    ui,
-                    header,
-                    card,
-                    |ui| {
-                        ui.add(egui::Label::new(egui::RichText::new(name).strong()).wrap());
-                        stock_badge(ui, summary.support, editable);
-                    },
-                    || Some(summary.headline.clone()),
-                );
-                if !expanded {
-                    return;
-                }
-                ui.add(egui::Label::new(&summary.headline).wrap());
-                draw_stock_rows(ui, summary, place);
-                for note in &summary.notes {
-                    ui.small(note);
-                }
-                ui.horizontal(|ui| {
-                    if ui.small_button("Copy Summary").clicked() {
-                        ui.ctx().copy_text(summary.render());
-                    }
-                    if action_tag != 0 {
-                        ui.weak(format!("Action 0x{action_tag:08X}"));
-                    }
-                });
             }
             Backend::Digest {
                 behavior,
@@ -253,11 +192,11 @@ fn draw_card(ui: &mut egui::Ui, canvas: Canvas<'_, '_>, card: Option<cards::Card
 pub(super) fn draw_header(
     ui: &mut egui::Ui,
     controls: Option<&mut (dyn FnMut(&mut egui::Ui) + '_)>,
-    card: Option<cards::Card>,
+    card: cards::Card,
     title: impl FnOnce(&mut egui::Ui),
     summary: impl FnOnce() -> Option<String>,
 ) -> bool {
-    let folded = card.is_some_and(|card| !card.expanded(ui.ctx()));
+    let folded = !card.expanded(ui.ctx());
     // A folded reading that the title line cannot hold whole moves under the title, where it
     // has the card's width. Cut short on the title line it kept the trigger, which every
     // card shares, and lost the actions that tell the cards apart.
@@ -269,9 +208,7 @@ pub(super) fn draw_header(
                 controls(ui);
             }
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                if let Some(card) = card {
-                    card.controls(ui);
-                }
+                card.controls(ui);
                 title_left = Some(ui.cursor().left());
                 title(ui);
                 if folded && let Some(summary) = summary() {
@@ -305,7 +242,7 @@ pub(super) fn draw_header(
             ui.add(egui::Label::new(egui::RichText::new(summary).color(color)).wrap());
         });
     }
-    card.is_none_or(|card| card.expanded(ui.ctx()))
+    card.expanded(ui.ctx())
 }
 
 /// A folded card's reading: its trigger, then its actions in order, then how many more behavior
@@ -352,7 +289,7 @@ fn stock_badge(ui: &mut egui::Ui, support: Support, editable: bool) {
     }
 }
 
-pub(in crate::app::custom_perks) use sundial::ui::catalog::support_badge;
+use sundial::ui::catalog::support_badge;
 
 /// One canvas row: a fixed label column and the blocks beside it. The label sits on the
 /// first line of its content so a row with one control reads as one line.
@@ -526,11 +463,7 @@ fn draw_program_rows(
             Ok(mut native) => {
                 native.graph.compact();
                 let before = native.clone();
-                let mut displayed = Program {
-                    name: program.name.clone(),
-                    native: Some(native),
-                    ..Program::default()
-                };
+                let mut displayed = program.with_native(native);
                 let output = draw_program_rows(ui, &mut displayed, labels, editing, structure);
                 if displayed.native.as_ref() != Some(&before) {
                     *program = displayed;
@@ -556,123 +489,141 @@ fn draw_program_rows(
             }
         }
     }
-    if let Some(native) = &mut program.native {
-        return match editing {
-            Some(Editing { workbench, .. }) => {
-                let labels = workbench.program_asset_labels(native, &program.name);
-                program::draw_complete(ui, native, true, structure, &labels, &mut |ui, request| {
-                    match request {
-                        program::NativeRequest::Action(context) => {
-                            workbench.behaviors.draw_action_selection(
-                                ui,
-                                &workbench.discovery,
-                                &workbench.perk_names,
-                                &workbench.asset_labels,
-                                context,
-                                &workbench.keys.catalog,
-                            )
-                        }
-                        program::NativeRequest::Condition(label) => workbench
-                            .behaviors
-                            .draw_condition_named(
-                                ui,
-                                &workbench.discovery,
-                                &workbench.perk_names,
-                                &workbench.asset_labels,
-                                label,
-                            )
-                            .map(super::behaviors::Selection::Condition),
-                        program::NativeRequest::Trigger(label, retained) => {
-                            workbench.behaviors.draw_trigger(
-                                ui,
-                                &workbench.discovery,
-                                &workbench.perk_names,
-                                &workbench.asset_labels,
-                                label,
-                                retained,
-                            )
-                        }
-                        program::NativeRequest::Asset(asset, scope) => {
-                            let label = match scope {
-                                super::assets::AssetScope::Projectiles => "Projectile",
-                                super::assets::AssetScope::Spawnable => "Object or Effect",
-                                super::assets::AssetScope::DropEffect => "Drop Effect",
-                                super::assets::AssetScope::Any => "Attachment",
-                            };
-                            // An asset's own components are what an author makes theirs, so
-                            // their editor opens from beside the asset rather than from under
-                            // Show Properties. A projectile edits its movement in place instead.
-                            let editable = scope != super::assets::AssetScope::Projectiles
-                                && !matches!(asset.graph, 0 | u32::MAX);
-                            let edit_text = format!("Edit {label}…");
-                            let mut edit = false;
-                            // A tile, as every value under it is. The asset's name runs long, so
-                            // the tile takes two widths, and Edit sits on the asset's line.
-                            crate::app::style::tiles(ui, |ui, width| {
-                                let gap = ui.spacing().item_spacing.x;
-                                crate::app::style::tile(
-                                    ui,
-                                    (width * 2.0 + gap).min(ui.available_width()),
-                                    "action-asset",
-                                    label,
-                                    "",
-                                    false,
-                                    |ui| {
-                                        ui.horizontal(|ui| {
-                                            // The asset's button shortens its name to what the
-                                            // line leaves, so Edit keeps its room at the end.
-                                            let reserved = if editable {
-                                                egui::WidgetText::from(edit_text.as_str())
-                                                    .into_galley(
-                                                        ui,
-                                                        Some(egui::TextWrapMode::Extend),
-                                                        f32::INFINITY,
-                                                        egui::TextStyle::Button,
-                                                    )
-                                                    .size()
-                                                    .x
-                                                    + ui.spacing().button_padding.x * 2.0
-                                                    + ui.spacing().item_spacing.x
-                                            } else {
-                                                0.0
-                                            };
-                                            ui.allocate_ui(
-                                                egui::vec2(
-                                                    (ui.available_width() - reserved).max(0.0),
-                                                    ui.spacing().interact_size.y,
-                                                ),
-                                                |ui| {
-                                                    workbench
-                                                        .draw_asset_picker(ui, None, asset, scope);
-                                                },
-                                            );
-                                            if editable {
-                                                edit = ui
-                                                    .scope(|ui| {
-                                                        crate::app::style::quiet(ui);
-                                                        ui.button(&edit_text).clicked()
-                                                    })
-                                                    .inner;
-                                            }
-                                        });
-                                    },
-                                );
-                            });
-                            if scope == super::assets::AssetScope::Projectiles {
-                                workbench.properties.movement(ui, asset);
-                                return None;
-                            }
-                            workbench.properties.values(ui, asset);
-                            edit.then_some(super::behaviors::Selection::Components)
-                        }
+    let Some(native) = &mut program.native else {
+        draw_program_reading(ui, program);
+        return None;
+    };
+    program::native::tunings::publish(ui.ctx(), &program.ability_tunings);
+    let output = match editing {
+        Some(Editing { workbench, .. }) => {
+            let labels = workbench.program_asset_labels(native, &program.name);
+            program::draw_complete(ui, native, true, structure, &labels, &mut |ui, request| {
+                match request {
+                    program::NativeRequest::Action(context) => {
+                        workbench.behaviors.draw_action_selection(
+                            ui,
+                            &workbench.discovery,
+                            &workbench.perk_names,
+                            &workbench.asset_labels,
+                            context,
+                            &workbench.keys.catalog,
+                        )
                     }
-                })
-            }
-            None => program::draw_complete(ui, native, false, structure, labels, &mut |_, _| None),
-        };
+                    program::NativeRequest::Condition(label) => workbench
+                        .behaviors
+                        .draw_condition_named(
+                            ui,
+                            &workbench.discovery,
+                            &workbench.perk_names,
+                            &workbench.asset_labels,
+                            label,
+                        )
+                        .map(super::behaviors::Selection::Condition),
+                    program::NativeRequest::Trigger(label, retained) => {
+                        workbench.behaviors.draw_trigger(
+                            ui,
+                            &workbench.discovery,
+                            &workbench.perk_names,
+                            &workbench.asset_labels,
+                            label,
+                            retained,
+                        )
+                    }
+                    program::NativeRequest::AssetLength(asset, width) => {
+                        workbench.properties.length_tile(ui, width, asset);
+                        None
+                    }
+                    program::NativeRequest::Asset(asset, scope) => {
+                        let label = match scope {
+                            super::assets::AssetScope::Projectiles => "Projectile",
+                            super::assets::AssetScope::Spawnable => "Object or Effect",
+                            super::assets::AssetScope::DropEffect => "Drop Effect",
+                            super::assets::AssetScope::Any => "Attachment",
+                        };
+                        // An asset's own components are what an author makes theirs, so
+                        // their editor opens from beside the asset rather than from under
+                        // Show Properties. A projectile edits its movement in place instead.
+                        let editable = scope != super::assets::AssetScope::Projectiles
+                            && !matches!(asset.graph, 0 | u32::MAX);
+                        let edit_text = format!("Edit {label}…");
+                        let mut edit = false;
+                        // A tile, as every value under it is. The asset's name runs long, so
+                        // the tile takes two widths, and Edit sits on the asset's line.
+                        crate::app::style::tiles(ui, |ui, width| {
+                            let gap = ui.spacing().item_spacing.x;
+                            crate::app::style::tile(
+                                ui,
+                                (width * 2.0 + gap).min(ui.available_width()),
+                                "action-asset",
+                                label,
+                                "",
+                                false,
+                                |ui| {
+                                    ui.horizontal(|ui| {
+                                        // The asset's button shortens its name to what the
+                                        // line leaves, so Edit keeps its room at the end.
+                                        let reserved = if editable {
+                                            egui::WidgetText::from(edit_text.as_str())
+                                                .into_galley(
+                                                    ui,
+                                                    Some(egui::TextWrapMode::Extend),
+                                                    f32::INFINITY,
+                                                    egui::TextStyle::Button,
+                                                )
+                                                .size()
+                                                .x
+                                                + ui.spacing().button_padding.x * 2.0
+                                                + ui.spacing().item_spacing.x
+                                        } else {
+                                            0.0
+                                        };
+                                        ui.allocate_ui(
+                                            egui::vec2(
+                                                (ui.available_width() - reserved).max(0.0),
+                                                ui.spacing().interact_size.y,
+                                            ),
+                                            |ui| {
+                                                workbench.draw_asset_picker(ui, None, asset, scope);
+                                            },
+                                        );
+                                        if editable {
+                                            edit = ui
+                                                .scope(|ui| {
+                                                    crate::app::style::quiet(ui);
+                                                    ui.button(&edit_text).clicked()
+                                                })
+                                                .inner;
+                                        }
+                                    });
+                                },
+                            );
+                        });
+                        if scope == super::assets::AssetScope::Projectiles {
+                            workbench.properties.movement(ui, asset);
+                            return None;
+                        }
+                        workbench.properties.values(ui, asset);
+                        workbench.properties.hud_status(ui, asset);
+                        edit.then_some(super::behaviors::Selection::Components)
+                    }
+                }
+            })
+        }
+        None => program::draw_complete(ui, native, false, structure, labels, &mut |_, _| None),
+    };
+    settle_tunings(ui, program);
+    output
+}
+
+/// Takes the tunings the key pickers defined this frame into the program, and drops the
+/// tunings no action applies any more.
+fn settle_tunings(ui: &mut egui::Ui, program: &mut Program) {
+    for change in program::native::tunings::withdraw(ui.ctx()) {
+        if let Err(error) = program.define_ability_tuning(change.replaced, change.tuning) {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
     }
-    draw_program_reading(ui, program);
-    None
+    program.prune_ability_tunings();
 }
 
 /// The locked reading of a stored guided program.
@@ -713,104 +664,4 @@ fn draw_program_reading(ui: &mut egui::Ui, program: &Program) {
             });
         });
     }
-}
-
-fn draw_stock_rows(ui: &mut egui::Ui, summary: &ActionSummary, mut place: Option<&mut Placer<'_>>) {
-    for (index, group) in summary.groups.iter().enumerate() {
-        ui.push_id(index, |ui| {
-            if summary.groups.len() > 1 {
-                ui.add_space(4.0);
-                ui.strong(&group.label);
-            }
-            draw_stock_group(ui, group, place.as_deref_mut());
-        });
-    }
-}
-
-fn draw_stock_group(ui: &mut egui::Ui, group: &GroupSummary, mut place: Option<&mut Placer<'_>>) {
-    let activation = group.conditions(ConditionRole::Activation);
-    row(ui, "Trigger", ACTIVATION_HINT, |ui| {
-        plain(ui, "trigger", |ui| {
-            if activation.is_empty() {
-                ui.label(Trigger::Always.label());
-            }
-            for (index, line) in activation.iter().enumerate() {
-                ui.push_id(index, |ui| step(ui, line));
-            }
-        });
-    });
-    row(ui, "Actions", EFFECTS_HINT, |ui| {
-        if group.effects.is_empty() {
-            ui.weak("No Actions");
-        }
-        for (index, line) in group.effects.iter().enumerate() {
-            block(ui, index, |ui| {
-                ui.horizontal_top(|ui| {
-                    ui.strong(format!("{}.", index + 1));
-                    ui.vertical(|ui| {
-                        ui.set_min_width(ui.available_width());
-                        step(ui, line);
-                        if let (Some(place), Some(asset)) = (place.as_deref_mut(), line.asset) {
-                            place(ui, asset);
-                        }
-                    });
-                });
-            });
-        }
-    });
-    for (role, heading, hint) in [
-        (ConditionRole::Removal, "End Condition", REMOVAL_HINT),
-        (ConditionRole::Rearm, "Reactivation", REARM_HINT),
-    ] {
-        let lines = group.conditions(role);
-        if lines.is_empty() {
-            continue;
-        }
-        row(ui, heading, hint, |ui| {
-            plain(ui, heading, |ui| {
-                for (index, line) in lines.iter().enumerate() {
-                    ui.push_id(index, |ui| step(ui, line));
-                }
-            });
-        });
-    }
-}
-
-/// One locked summary line: the text, its name on hover, a support badge for nodes
-/// Parhelion cannot fully read, and the mapped facts behind a `Fields` disclosure. The name is
-/// the one the picker offers the node under, so a stock reading names what an author would pick.
-pub(in crate::app::custom_perks) fn step(ui: &mut egui::Ui, line: &SummaryLine) {
-    let name = match &line.native {
-        Some((true, node)) => program::condition_title(node),
-        Some((false, node)) => program::native_action_label(node.kind, &node.bytes),
-        None => line.kind_name.clone(),
-    };
-    ui.horizontal_top(|ui| {
-        ui.add_space(14.0 * line.depth as f32);
-        ui.vertical(|ui| {
-            ui.set_min_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                ui.add(egui::Label::new(&line.text).wrap())
-                    .on_hover_text(&name);
-                if line.support >= Support::Structural {
-                    support_badge(ui, line.support);
-                }
-            });
-            if let Some((condition, node)) = &line.native {
-                egui::CollapsingHeader::new("Complete Native Record")
-                    .id_salt("complete-native-record")
-                    .show(ui, |ui| super::program::read_native(ui, *condition, node));
-            }
-            if !line.detail.is_empty() {
-                egui::CollapsingHeader::new(egui::RichText::new("Fields").small())
-                    .id_salt("behavior-line-fields")
-                    .show(ui, |ui| {
-                        for detail in &line.detail {
-                            ui.small(detail);
-                        }
-                    });
-            }
-        });
-    });
 }

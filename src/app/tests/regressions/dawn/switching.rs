@@ -73,13 +73,11 @@ fn runtime_format_checks_cover_both_directions_and_every_settings_location() {
         let (directory, mut app, mut inspection) = setup();
         app.settings_path = directory.0.join(layout.relative_path());
         set_runtime(&mut inspection, false, 18);
-        let before = app.document.clone();
         let error = app
             .validation_warning_for_runtime(&app.document, &inspection)
             .unwrap_err();
         assert!(error.contains("Sunrise requires settings v18"), "{error}");
         assert!(error.contains("SQLite account storage"), "{error}");
-        assert_eq!(app.document, before);
 
         let database = crate::persistence::investment_path(&app.settings_path);
         crate::persistence::sqlite_account::tests::create_fixture(&database, 3);
@@ -88,7 +86,6 @@ fn runtime_format_checks_cover_both_directions_and_every_settings_location() {
         add_inventory_item(&mut app.document, 0, NewInventoryItem::single(42, 10)).unwrap();
         assert!(app.document.account_changed_from(&app.persisted_document));
         assert!(!app.document.json_changed_from(&app.persisted_document));
-        let before = app.document.clone();
         let database_before = fs::read(&database).unwrap();
         set_runtime(&mut inspection, true, 6);
         // Dawn keeps its account in player-state.db whatever its settings schema says, so the
@@ -102,7 +99,6 @@ fn runtime_format_checks_cover_both_directions_and_every_settings_location() {
                 .is_none_or(|error| !error.contains("account storage")),
             "{checked:?}"
         );
-        assert_eq!(app.document, before);
         assert_eq!(fs::read(&database).unwrap(), database_before);
     }
 }

@@ -280,7 +280,7 @@ fn dropping_a_borrowed_ornament_releases_the_weapon_that_lent_it() {
 }
 
 #[test]
-fn an_appearance_chosen_by_hand_survives_dropping_an_ornament_of_its_own() {
+fn restoring_an_ornament_of_the_current_base_clears_its_art_rows() {
     let offered = [wearable(0xCC92_C7C1, "Still Hungry", 3119, OTHER)];
     let mut recipe = recipe();
     apply_appearance(&mut recipe, &offered[0], OTHER);

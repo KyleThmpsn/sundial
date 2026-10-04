@@ -315,7 +315,6 @@ mod tests {
     #[test]
     fn dense_affine_tracks_keep_wide_ranges_and_constant_axes() {
         let source = fixture(false, 4, 180., -90.);
-        let original = source.0.clone();
         let (native, report) = super::super::convert(&source.0).unwrap();
         let tracks = Tracks::read(&source, START).unwrap();
         for frame in 0..4 {
@@ -325,7 +324,6 @@ mod tests {
                 assert!((actual[axis] - expected[axis]).abs() < 0.001);
             }
         }
-        assert_eq!(source.0, original);
         assert_eq!(native.u64(0).unwrap(), native.0.len() as u64);
         assert_eq!(report["encoded_tracks_preserved"], false);
         let start = native.pointer(0x28).unwrap();

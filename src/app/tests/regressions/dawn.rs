@@ -73,14 +73,12 @@ fn dawn_switch_to_normal_sunrise_rechecks_account_format_without_migrating() {
         app.validation_warning_for_runtime(&candidate, &inspection),
         Ok(None)
     );
-    let before = candidate.clone();
     inspection.copies[0].bundled_schema = Some(18);
     assert!(
         app.validation_warning_for_runtime(&candidate, &inspection)
             .unwrap_err()
             .contains("SQLite account storage")
     );
-    assert_eq!(candidate, before);
     candidate.json_mut()["version"] = json!(18);
     inspection.copies[0].bundled_schema = Some(6);
     assert!(

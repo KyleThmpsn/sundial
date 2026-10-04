@@ -78,12 +78,13 @@ impl StagedRun {
     }
 
     pub(super) fn finish<T>(mut self, result: Result<T, String>) -> Result<T, String> {
-        let cleanup = if result.is_ok() {
-            self.complete()
-        } else {
-            self.discard()
-        };
-        super::package_views::finish_with_cleanup(result, cleanup, drop)
+        match result.and_then(|value| self.complete().map(|()| value)) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                let cleanup = self.discard();
+                super::package_views::finish_with_cleanup(Err(error), cleanup, drop)
+            }
+        }
     }
 
     fn complete(&mut self) -> Result<(), String> {
@@ -107,14 +108,14 @@ impl StagedRun {
             .map_err(|error| format!("Could not save staged-run completion: {error}"))?;
         drop(file);
         self.completed = true;
-        let cleanup = prune_locked(root, Some(&self.directory)).map_err(|error| {
-            format!(
+        if let Err(error) = prune_locked(root, Some(&self.directory)) {
+            eprintln!(
                 "Build completed at {}, but older staging cleanup failed: {error}",
                 self.directory.display()
-            )
-        });
+            );
+        }
         drop(self.lease.take());
-        cleanup
+        Ok(())
     }
 
     fn discard(&mut self) -> Result<(), String> {

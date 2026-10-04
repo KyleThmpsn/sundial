@@ -1,48 +1,36 @@
-//! A subclass recipe's abilities: which stock subclass supplies each ability slot and attunement.
+//! Subclasses: a recipe's abilities and attunements, and how the build authors them.
 //!
 //! Every stock subclass's socket-entry list shares one layout. An entry's display hash, plug
 //! source, group and prerequisites belong to its position, and only its pool, which grants the
-//! ability, belongs to the subclass. So an ability is named by its slot and the stock subclass
-//! whose pool fills it, and an attunement by its path and the stock subclass it comes from.
+//! ability, belongs to the subclass. So an ability is named by its slot and the stock ability it
+//! is based on, and an attunement by its path and the stock subclass it comes from.
 //!
-//! An attunement path can also be authored node by node. Each node starts from a stock node, and
-//! may take a name, a description and sandbox perks of its own. The path may take its own name.
-
-use std::collections::BTreeSet;
+//! An ability, and each node of an attunement path, can also be authored: a name, a
+//! description, an icon and perks of its own ([`EntryEdits`]), and changes to the abilities of
+//! its subclass while it is selected ([`AbilityModifier`]). A path may take its own name.
 
 use serde::{Deserialize, Serialize};
 
-/// Positions in a stock subclass's socket-entry list.
-pub mod layout {
-    /// Entries every stock list holds.
-    pub const ENTRY_COUNT: usize = 24;
-    /// The base melee target that each attunement's melee links to. It differs by class.
-    pub const CLASS_BASE: u8 = 0;
-    pub const CLASS_ABILITIES: [u8; 2] = [2, 3];
-    pub const MOVEMENT: [u8; 3] = [4, 5, 6];
-    pub const GRENADES: [u8; 3] = [7, 8, 9];
-    /// The super every attunement uses unless the middle one brings its own.
-    pub const SUPER: u8 = 10;
-    /// Attunement entries: top, bottom and middle. Top and bottom lead with their melee, and the
-    /// middle attunement leads with its own super.
-    pub const ATTUNEMENTS: [[u8; 4]; 3] = [[11, 12, 13, 14], [15, 16, 17, 18], [20, 21, 22, 23]];
-    /// Entries the character's selection names first: class ability, movement, grenade, super
-    /// and melee. Sunrise and Sundial start every subclass here.
-    pub const DEFAULT_SELECTION: [u8; 5] = [2, 4, 7, 10, 11];
-    /// Nodes in an attunement path.
-    pub const PATH_NODES: u8 = 4;
-    /// The node that leads a path: its melee in the top and bottom paths, its super in the
-    /// middle one. It takes only another path's lead node.
-    pub const LEAD_NODE: u8 = 0;
-}
+pub mod art;
+pub(crate) mod authoring;
+pub(crate) mod compile;
+mod edits;
+pub(crate) mod grouping;
+pub mod layout;
+mod modifiers;
+pub(crate) mod native;
+pub mod palette;
+pub(crate) mod tables;
 
-/// Longest authored path or node name, and node description.
-const NAME_LIMIT: usize = 64;
-const DESCRIPTION_LIMIT: usize = 1_024;
+pub use art::{ArtImage, ArtPart, ScreenArt};
+pub use edits::{EntryEdits, EntryIcon};
+pub use modifiers::{
+    AbilityModifier, MOST_CHARGES, ModifierEffect, ParameterValue, StockModifier, entry_place,
+    holds_ability, place_entry,
+};
+pub use palette::PaletteEdit;
 
-fn text_is_valid(text: &str, limit: usize) -> bool {
-    !text.trim().is_empty() && text.chars().count() <= limit && !text.contains('\0')
-}
+pub(crate) const EVERY_CLASS_TYPE_NAME: &str = "Guardian Subclass";
 
 /// An ability slot a subclass recipe can fill from another subclass.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -86,6 +74,16 @@ impl AbilitySlot {
         Self::ALL
             .into_iter()
             .find(|slot| slot.entries().contains(&entry))
+    }
+
+    /// The slot's name for one of its entries: "Grenade 2", or "Super" for a slot of one.
+    #[must_use]
+    pub fn entry_label(self, entry: u8) -> String {
+        let entries = self.entries();
+        match entries.iter().position(|each| *each == entry) {
+            Some(position) if entries.len() > 1 => format!("{} {}", self.label(), position + 1),
+            _ => self.label().to_owned(),
+        }
     }
 }
 
@@ -142,8 +140,49 @@ impl AttunementPath {
     }
 }
 
-/// Abilities a subclass recipe takes from other stock subclasses. Slots it leaves out keep the
-/// base subclass's own.
+/// Where an authored entry sits: an ability slot's entry, or a node of an attunement path.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum Place {
+    Ability(u8),
+    Node(AttunementPath, u8),
+}
+
+impl Place {
+    /// Every ability, then every node, in the order the game lists them.
+    pub fn all() -> impl Iterator<Item = Self> {
+        AbilitySlot::ALL
+            .into_iter()
+            .flat_map(|slot| slot.entries().iter().map(|&entry| Self::Ability(entry)))
+            .chain(AttunementPath::ALL.into_iter().flat_map(|path| {
+                (0..layout::PATH_NODES).map(move |position| Self::Node(path, position))
+            }))
+    }
+
+    /// What names the entry's authored text and icon row: `ability-7`, or
+    /// `attunement-top-node-2`.
+    #[must_use]
+    pub fn key(self) -> String {
+        match self {
+            Self::Ability(entry) => format!("ability-{entry}"),
+            Self::Node(path, position) => {
+                format!("attunement-{}-node-{}", path.key(), position + 1)
+            }
+        }
+    }
+
+    /// "Grenade 2", or "Top Path · Node 3".
+    #[must_use]
+    pub fn label(self) -> String {
+        match self {
+            Self::Ability(entry) => AbilitySlot::of_entry(entry)
+                .map_or_else(|| format!("Entry {entry}"), |slot| slot.entry_label(entry)),
+            Self::Node(path, position) => format!("{} Path · Node {}", path.label(), position + 1),
+        }
+    }
+}
+
+/// Abilities a subclass recipe bases on other stock abilities or authors, and its attunements.
+/// Slots it leaves out keep the base subclass's own.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SubclassAbilities {
@@ -164,6 +203,29 @@ impl SubclassAbilities {
         self.choices.iter().find(|choice| choice.entry == entry)
     }
 
+    /// The ability in `entry`: the recipe's own, or the base's.
+    #[must_use]
+    pub fn ability(&self, base: u32, entry: u8) -> SubclassChoice {
+        self.choice(entry)
+            .cloned()
+            .unwrap_or_else(|| SubclassChoice::stock(entry, base, entry))
+    }
+
+    /// Puts `choice` in its entry, or restores the base's own ability when `choice` is just that.
+    pub fn set_ability(&mut self, base: u32, choice: SubclassChoice) {
+        let entry = choice.entry;
+        self.choices.retain(|existing| existing.entry != entry);
+        if choice != SubclassChoice::stock(entry, base, entry) {
+            self.choices.push(choice);
+            self.choices.sort_by_key(|choice| choice.entry);
+        }
+    }
+
+    /// Restores the base's own ability in `entry`.
+    pub fn reset_ability(&mut self, entry: u8) {
+        self.choices.retain(|choice| choice.entry != entry);
+    }
+
     #[must_use]
     pub fn attunement(&self, path: AttunementPath) -> Option<&SubclassAttunement> {
         self.attunements
@@ -171,30 +233,57 @@ impl SubclassAbilities {
             .find(|attunement| attunement.path == path)
     }
 
-    /// Fills `entry` from `source`, or restores the base's own ability when `source` is `None`.
-    pub fn set_choice(&mut self, entry: u8, source: Option<(u32, u8)>) {
-        self.choices.retain(|choice| choice.entry != entry);
-        if let Some((source, source_entry)) = source {
-            self.choices.push(SubclassChoice {
-                entry,
-                source,
-                source_entry,
-            });
-            self.choices.sort_by_key(|choice| choice.entry);
+    /// The stock subclass and path that fill `path`.
+    #[must_use]
+    pub fn attunement_source(&self, base: u32, path: AttunementPath) -> (u32, AttunementPath) {
+        self.attunement(path).map_or((base, path), |attunement| {
+            (attunement.source, attunement.source_path)
+        })
+    }
+
+    /// The node at `position` of `path`: the recipe's own, or its source path's.
+    #[must_use]
+    pub fn node(&self, base: u32, path: AttunementPath, position: u8) -> SubclassPathNode {
+        let (source, source_path) = self.attunement_source(base, path);
+        self.attunement(path)
+            .and_then(|attunement| attunement.node(position))
+            .cloned()
+            .unwrap_or_else(|| SubclassPathNode::stock(position, source, source_path, position))
+    }
+
+    /// What the ability or node at `place` authors.
+    #[must_use]
+    pub fn edits(&self, base: u32, place: Place) -> EntryEdits {
+        match place {
+            Place::Ability(entry) => self.ability(base, entry).edits,
+            Place::Node(path, position) => self.node(base, path, position).edits,
         }
     }
 
-    /// Fills `path` from `source`, keeping any name and nodes of its own, or restores the base's
-    /// own attunement, nodes and name when `source` is `None`.
-    pub fn set_attunement(&mut self, path: AttunementPath, source: Option<(u32, AttunementPath)>) {
-        let Some((source, source_path)) = source else {
-            self.attunements
-                .retain(|attunement| attunement.path != path);
-            return;
-        };
-        let attunement = self.attunement_entry(path, source);
-        attunement.source = source;
-        attunement.source_path = source_path;
+    /// Gives the ability or node at `place` these edits, keeping what it is based on.
+    pub fn set_edits(&mut self, base: u32, place: Place, edits: EntryEdits) {
+        match place {
+            Place::Ability(entry) => {
+                let choice = SubclassChoice {
+                    edits,
+                    ..self.ability(base, entry)
+                };
+                self.set_ability(base, choice);
+            }
+            Place::Node(path, position) => {
+                let node = SubclassPathNode {
+                    edits,
+                    ..self.node(base, path, position)
+                };
+                self.set_path_node(path, base, node);
+            }
+        }
+    }
+
+    /// Restores the base's own attunement, nodes and name in `path`.
+    pub fn reset_attunement(&mut self, path: AttunementPath) {
+        self.attunements
+            .retain(|attunement| attunement.path != path);
     }
 
     /// Fills `path` from `source`'s path, keeping any name and nodes of its own. `base` is the
@@ -218,18 +307,15 @@ impl SubclassAbilities {
         self.prune(base);
     }
 
-    /// Puts `node` at its position in `path`, or restores that position's node from the path's
-    /// source when `node` is `None`.
-    pub fn set_path_node(
-        &mut self,
-        path: AttunementPath,
-        base: u32,
-        position: u8,
-        node: Option<SubclassPathNode>,
-    ) {
+    /// Puts `node` at its position in `path`, or restores the path's own node there when `node`
+    /// is just that.
+    pub fn set_path_node(&mut self, path: AttunementPath, base: u32, node: SubclassPathNode) {
+        let (source, source_path) = self.attunement_source(base, path);
+        let position = node.position;
+        let own = node == SubclassPathNode::stock(position, source, source_path, position);
         let attunement = self.attunement_entry(path, base);
         attunement.nodes.retain(|node| node.position != position);
-        if let Some(node) = node {
+        if !own {
             attunement.nodes.push(node);
             attunement.nodes.sort_by_key(|node| node.position);
         }
@@ -278,10 +364,10 @@ impl SubclassAbilities {
         for (index, choice) in self.choices.iter().enumerate() {
             let slot = AbilitySlot::of_entry(choice.entry)
                 .ok_or_else(|| format!("Subclass entry {} is not an ability slot", choice.entry))?;
+            let context = slot.entry_label(choice.entry);
             if !slot.entries().contains(&choice.source_entry) {
                 return Err(format!(
-                    "Subclass entry {} takes a {}, but source entry {} is not one",
-                    choice.entry,
+                    "{context} takes a {}, but source entry {} is not one",
                     slot.label().to_lowercase(),
                     choice.source_entry
                 ));
@@ -290,8 +376,11 @@ impl SubclassAbilities {
                 .iter()
                 .any(|other| other.entry == choice.entry)
             {
-                return Err(format!("Subclass entry {} is set twice", choice.entry));
+                return Err(format!("{context} is set twice"));
             }
+            choice
+                .edits
+                .validate(&context, Place::Ability(choice.entry))?;
         }
         for (index, attunement) in self.attunements.iter().enumerate() {
             if !attunement.source_path.fits(attunement.path) {
@@ -316,17 +405,31 @@ impl SubclassAbilities {
     }
 }
 
-/// One ability slot filled from another stock subclass.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// One ability slot: the stock ability it is based on, and anything it authors over it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SubclassChoice {
     /// The slot's entry in the authored subclass.
     pub entry: u8,
-    /// The stock subclass that supplies the ability.
+    /// The stock subclass whose ability it is based on.
     #[serde(with = "hex_hash")]
     pub source: u32,
     /// The ability's entry in that subclass, in the same slot.
     pub source_entry: u8,
+    #[serde(flatten)]
+    pub edits: EntryEdits,
+}
+
+impl SubclassChoice {
+    /// The ability in `source`'s `source_entry`, taken whole into `entry`.
+    #[must_use]
+    pub fn stock(entry: u8, source: u32, source_entry: u8) -> Self {
+        Self {
+            entry,
+            source,
+            source_entry,
+            edits: EntryEdits::default(),
+        }
+    }
 }
 
 /// One attunement: a stock subclass's path in this place, with any name and nodes of its own.
@@ -356,29 +459,26 @@ impl SubclassAttunement {
         if self
             .name
             .as_deref()
-            .is_some_and(|name| !text_is_valid(name, NAME_LIMIT))
+            .is_some_and(|name| !edits::text_is_valid(name, edits::NAME_LIMIT))
         {
             return Err(format!(
-                "The {path} attunement needs a name of 1 to {NAME_LIMIT} characters"
+                "The {path} attunement needs a name of 1 to {} characters",
+                edits::NAME_LIMIT
             ));
         }
-        let mut positions = BTreeSet::new();
+        let mut positions = std::collections::BTreeSet::new();
         for node in &self.nodes {
-            let number = node.position + 1;
+            let context = format!("Node {} of the {path} attunement", node.position + 1);
             if node.position >= layout::PATH_NODES || node.source_position >= layout::PATH_NODES {
-                return Err(format!(
-                    "Node {number} of the {path} attunement is outside its path"
-                ));
+                return Err(format!("{context} is outside its path"));
             }
             if !positions.insert(node.position) {
-                return Err(format!(
-                    "Node {number} of the {path} attunement is set twice"
-                ));
+                return Err(format!("{context} is set twice"));
             }
             let lead = node.position == layout::LEAD_NODE;
             if lead != (node.source_position == layout::LEAD_NODE) {
                 return Err(format!(
-                    "Node {number} of the {path} attunement must come from {}",
+                    "{context} must come from {}",
                     if lead {
                         "the first node of a path"
                     } else {
@@ -388,34 +488,12 @@ impl SubclassAttunement {
             }
             if lead && !node.source_path.fits(self.path) {
                 return Err(format!(
-                    "Node 1 of the {path} attunement cannot come from a {} path",
+                    "{context} cannot come from a {} path",
                     node.source_path.label().to_lowercase()
                 ));
             }
-            if node
-                .name
-                .as_deref()
-                .is_some_and(|name| !text_is_valid(name, NAME_LIMIT))
-                || node
-                    .description
-                    .as_deref()
-                    .is_some_and(|text| !text_is_valid(text, DESCRIPTION_LIMIT))
-            {
-                return Err(format!(
-                    "Node {number} of the {path} attunement has an empty or overlong name or description"
-                ));
-            }
-            let added = node.added_perks.iter().collect::<BTreeSet<_>>();
-            let removed = node.removed_perks.iter().collect::<BTreeSet<_>>();
-            if added.len() != node.added_perks.len()
-                || removed.len() != node.removed_perks.len()
-                || !added.is_disjoint(&removed)
-                || added.contains(&u16::MAX)
-            {
-                return Err(format!(
-                    "Node {number} of the {path} attunement repeats a perk"
-                ));
-            }
+            node.edits
+                .validate(&context, Place::Node(self.path, node.position))?;
         }
         Ok(())
     }
@@ -423,7 +501,6 @@ impl SubclassAttunement {
 
 /// One node of an attunement path, started from a stock node.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SubclassPathNode {
     /// Its position in the path, from 0. Position 0 leads the path.
     pub position: u8,
@@ -432,22 +509,14 @@ pub struct SubclassPathNode {
     pub source: u32,
     pub source_path: AttunementPath,
     pub source_position: u8,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    /// Sandbox perks it grants beyond its source's.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub added_perks: Vec<u16>,
-    /// Its source's sandbox perks it leaves out.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub removed_perks: Vec<u16>,
+    #[serde(flatten)]
+    pub edits: EntryEdits,
 }
 
 impl SubclassPathNode {
     /// A node taken whole from `source`'s node at `source_position` of `source_path`.
     #[must_use]
-    pub const fn stock(
+    pub fn stock(
         position: u8,
         source: u32,
         source_path: AttunementPath,
@@ -458,20 +527,32 @@ impl SubclassPathNode {
             source,
             source_path,
             source_position,
-            name: None,
-            description: None,
-            added_perks: Vec::new(),
-            removed_perks: Vec::new(),
+            edits: EntryEdits::default(),
         }
     }
 
-    /// Whether the node changes its source's text or perks, and so needs records of its own.
+    /// The stock entry it starts from, in its source subclass's list.
     #[must_use]
-    pub fn is_authored(&self) -> bool {
-        self.name.is_some()
-            || self.description.is_some()
-            || !self.added_perks.is_empty()
-            || !self.removed_perks.is_empty()
+    pub fn source_entry(&self) -> u8 {
+        self.source_path.entries()[usize::from(self.source_position)]
+    }
+}
+
+/// A float as its bits, so a type holding it compares exactly, written as the number.
+mod f32_bits {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(bits: &u32, serializer: S) -> Result<S::Ok, S::Error> {
+        f32::from_bits(*bits).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+        let value = f32::deserialize(deserializer)?;
+        if value.is_finite() {
+            Ok(value.to_bits())
+        } else {
+            Err(D::Error::custom("a value must be a finite number"))
+        }
     }
 }
 
@@ -490,5 +571,29 @@ mod hex_hash {
             .filter(|digits| digits.len() == 8)
             .ok_or_else(|| D::Error::custom(format!("{text:?} is not a 0x-prefixed hash")))?;
         u32::from_str_radix(digits, 16).map_err(D::Error::custom)
+    }
+
+    /// As the module, for a hash that may be absent.
+    pub mod optional {
+        use serde::{Deserialize, Deserializer, Serializer};
+
+        #[allow(clippy::ref_option)]
+        pub fn serialize<S: Serializer>(
+            value: &Option<u32>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            match value {
+                Some(value) => super::serialize(value, serializer),
+                None => serializer.serialize_none(),
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Option<u32>, D::Error> {
+            #[derive(Deserialize)]
+            struct Hash(#[serde(with = "super")] u32);
+            Ok(Option::<Hash>::deserialize(deserializer)?.map(|Hash(value)| value))
+        }
     }
 }

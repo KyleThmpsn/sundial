@@ -25,7 +25,7 @@ impl PerkEditor {
     pub(super) fn projectile_labels_for(
         &self,
         ctx: &egui::Context,
-        catalog: &Arc<projectile::catalog::Catalog>,
+        catalog: &Arc<entity::catalog::Catalog>,
     ) -> Arc<BTreeMap<u32, String>> {
         let id = egui::Id::new((
             "projectile-display-names",
@@ -103,8 +103,7 @@ impl PerkEditor {
         self.parameter_error = None;
     }
 
-    /// Draws every projectile slot in one list. Used when the action has no readable summary
-    /// to place the slots on. Returns whether a selection changed.
+    /// Draws every projectile slot in one list. Returns whether a selection changed.
     pub(super) fn draw_projectiles(
         &mut self,
         ui: &mut egui::Ui,
@@ -133,11 +132,7 @@ impl PerkEditor {
     }
 
     /// The catalog notices shown once above the projectile pickers.
-    pub(super) fn draw_projectile_notes(
-        &self,
-        ui: &mut egui::Ui,
-        loaded: &PrivatePerkRuntimeGraph,
-    ) {
+    fn draw_projectile_notes(&self, ui: &mut egui::Ui, loaded: &PrivatePerkRuntimeGraph) {
         if !loaded.projectile_catalog.errors.is_empty() {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
@@ -156,7 +151,7 @@ impl PerkEditor {
 
     /// One projectile or emitter picker. Returns a new selection when the user picked one,
     /// with `None` inside meaning the original asset.
-    pub(super) fn draw_projectile_slot(
+    fn draw_projectile_slot(
         &mut self,
         ui: &mut egui::Ui,
         loaded: &PrivatePerkRuntimeGraph,
@@ -164,7 +159,7 @@ impl PerkEditor {
     ) -> Option<Option<u32>> {
         {
             let labels = self.projectile_labels_for(ui.ctx(), &loaded.projectile_catalog);
-            let label_for = |entry: &projectile::catalog::Entry| {
+            let label_for = |entry: &entity::catalog::Entry| {
                 labels
                     .get(&entry.graph)
                     .cloned()
@@ -342,9 +337,9 @@ impl PerkEditor {
     /// The picker's rows for one filter and query, sorted the way the list shows them.
     fn projectile_choices(
         &self,
-        catalog: &projectile::catalog::Catalog,
+        catalog: &entity::catalog::Catalog,
         key: &ChoiceKey,
-        label_for: impl Fn(&projectile::catalog::Entry) -> String,
+        label_for: impl Fn(&entity::catalog::Entry) -> String,
     ) -> Vec<(usize, String)> {
         let mut choices = catalog
             .entries
@@ -353,7 +348,7 @@ impl PerkEditor {
             .filter(|(_, choice)| {
                 matches!(
                     choice.kind,
-                    projectile::Kind::Projectile | projectile::Kind::Emitter
+                    entity::Kind::Projectile | entity::Kind::Emitter
                 )
             })
             .filter(|(_, choice)| {
@@ -365,8 +360,8 @@ impl PerkEditor {
             })
             .filter(|(_, choice)| {
                 key.filter == 0
-                    || (key.filter == 1 && choice.kind == projectile::Kind::Projectile)
-                    || (key.filter == 2 && choice.kind == projectile::Kind::Emitter)
+                    || (key.filter == 1 && choice.kind == entity::Kind::Projectile)
+                    || (key.filter == 2 && choice.kind == entity::Kind::Emitter)
             })
             .filter_map(|(index, choice)| {
                 let label = label_for(choice);

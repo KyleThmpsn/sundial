@@ -52,6 +52,20 @@ pub fn cached_only(packages: &Path) -> Result<Option<Arc<KeyIndex>>, String> {
 /// Read only finished-perk assignments and their action resources. Unchanged packages need
 /// no action reads. Unchanged actions inside edited packages need no decoding.
 pub fn cached(packages: &Path, manager: &PackageManager) -> Result<Arc<KeyIndex>, String> {
+    cached_cancellable(
+        packages,
+        manager,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+}
+
+pub fn cached_cancellable(
+    packages: &Path,
+    manager: &PackageManager,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<Arc<KeyIndex>, String> {
+    use crate::package_runtime::check_cancelled;
+    check_cancelled(cancel)?;
     index_cache::cached(
         packages,
         crate::sandbox_perk::CACHE_DIRECTORY,
@@ -71,9 +85,10 @@ pub fn cached(packages: &Path, manager: &PackageManager) -> Result<Arc<KeyIndex>
             let previous = path
                 .as_ref()
                 .and_then(|path| std::fs::read(path).ok())
-                .and_then(|bytes| serde_json::from_slice::<Saved>(&bytes).ok());
+                .and_then(|bytes| crate::package_runtime::cache_file::read::<Saved>(&bytes).ok());
             let perks = assignments(manager)?;
             let (index, saved) = refresh(&snapshot, previous.as_ref(), perks, |tag| {
+                check_cancelled(cancel)?;
                 let entry = manager
                     .get_entry(TagHash(tag))
                     .ok_or_else(|| format!("Action 0x{tag:08X} is missing"))?;
@@ -86,6 +101,7 @@ pub fn cached(packages: &Path, manager: &PackageManager) -> Result<Arc<KeyIndex>
                 }
                 Ok(bytes)
             });
+            check_cancelled(cancel)?;
             if Snapshot::read(packages)? != snapshot {
                 return Err(
                     "Packages changed while reading perk keys. Retry after installation finishes."
@@ -202,10 +218,7 @@ fn save(path: &Path, saved: &Saved) -> Result<(), String> {
     std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     let mut temporary =
         tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
-    let mut writer = std::io::BufWriter::new(temporary.as_file_mut());
-    serde_json::to_writer(&mut writer, saved).map_err(|error| error.to_string())?;
-    std::io::Write::flush(&mut writer).map_err(|error| error.to_string())?;
-    drop(writer);
+    crate::package_runtime::cache_file::write(temporary.as_file_mut(), saved)?;
     temporary.persist(path).map_err(|error| error.to_string())?;
     Ok(())
 }

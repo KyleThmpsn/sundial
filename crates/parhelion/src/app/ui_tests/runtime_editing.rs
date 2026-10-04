@@ -30,15 +30,12 @@ fn experimental_gameplay_controls_are_hidden_without_dropping_saved_overrides() 
     let before = app.recipe.clone();
     for width in [480.0, 900.0, 1320.0] {
         app.show_experimental_options = false;
-        app.advanced_gameplay_page = AdvancedGameplayPage::PerksTraits;
         let (output, overflow) = render(width, |ui| app.draw_gameplay_workspace(ui, None));
         let labels = text(&output);
         assert!(labels.contains("Firing & Runtime Baseline"));
-        assert!(labels.contains("Enable Experimental Features"));
-        assert!(!labels.contains("Runtime Component Donors"));
-        assert!(!labels.contains("Perks & Traits"));
+        assert!(labels.contains("Parts"));
+        assert!(!labels.contains("Technical"));
         assert!(overflow < 1.0, "width {width}: {overflow}");
-        assert_eq!(app.advanced_gameplay_page, AdvancedGameplayPage::Runtime);
         assert_eq!(app.recipe, before);
     }
     let hidden = technical_recipe_features(&app.recipe);
@@ -57,8 +54,8 @@ fn experimental_gameplay_controls_are_hidden_without_dropping_saved_overrides() 
     assert!(!app.runtime_bindings_open);
     app.set_show_experimental_options(true);
     let (output, _) = render(900.0, |ui| app.draw_gameplay_workspace(ui, None));
-    assert!(text(&output).contains("Runtime Component Donors"));
-    assert!(text(&output).contains("Perks & Traits"));
+    assert!(text(&output).contains("Parts"));
+    assert!(text(&output).contains("Technical"));
     assert_eq!(app.recipe, before);
 }
 

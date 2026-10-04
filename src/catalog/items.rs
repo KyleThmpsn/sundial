@@ -15,8 +15,10 @@ mod sockets;
 
 #[cfg(test)]
 pub(crate) use abilities::AttunementChoice;
-pub(in crate::catalog) use abilities::scan_ability_displays;
 pub(crate) use abilities::{AbilityChoice, AbilityOptions};
+pub(in crate::catalog) use abilities::{
+    scan_ability_displays, scan_ability_entities, scan_ability_rows,
+};
 pub(crate) use ammo::ItemWeaponAmmoType;
 pub(in crate::catalog) use ammo::item_weapon_ammo_type;
 pub(crate) use damage::is_weapon_bucket;
@@ -45,6 +47,7 @@ pub(in crate::catalog) use sockets::{
 };
 #[cfg(test)]
 pub(in crate::catalog) use sockets::{SocketOptionSource, SocketOptionSourceKind};
+pub(crate) use sockets::{item_subtype_label, item_type_label};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ItemDef {
@@ -132,6 +135,9 @@ pub(crate) struct ItemPackageMetadata {
     pub stat_group_index: Option<u16>,
     #[serde(default)]
     pub icon_container_tag: Option<u32>,
+    /// The container the strings' second icon row names: an emblem's nameplate.
+    #[serde(default)]
+    pub secondary_icon_container_tag: Option<u32>,
     #[serde(default)]
     pub plug_category_hash: Option<u64>,
     #[serde(default)]

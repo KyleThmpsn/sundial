@@ -20,6 +20,11 @@ use std::{
 
 static AVAILABLE: AtomicBool = AtomicBool::new(false);
 
+mod draw;
+mod upload;
+#[cfg(all(test, windows))]
+mod verification;
+
 /// Set once at start-up from `CreationContext::gl`.
 pub fn set_available(available: bool) {
     AVAILABLE.store(available, Ordering::Relaxed);
@@ -36,8 +41,8 @@ pub(crate) struct Frame {
     pub scene: Scene,
     pub style: Style,
     pub seconds: f32,
-    /// Skinned positions for this instant; `None` draws the bind pose with smooth normals.
-    pub positions: Option<Arc<Vec<[f32; 3]>>>,
+    /// Skinned positions and normals for this instant. `None` draws the bind pose.
+    pub pose: Option<Arc<super::animation::Deformed>>,
 }
 
 /// GL objects shared by every frame of one preview. Touched only on the paint thread.
@@ -47,10 +52,14 @@ pub(crate) struct Shared(Arc<Mutex<State>>);
 impl Shared {
     pub fn paint(&self, ui: &egui::Ui, rect: egui::Rect, frame: Frame) {
         let state = self.0.clone();
+        let (repaint, viewport) = (ui.ctx().clone(), ui.ctx().viewport_id());
         let callback = eframe::egui_glow::CallbackFn::new(move |info, painter| {
             if let Ok(mut state) = state.lock() {
                 // SAFETY: the painter hands us its own current context on the paint thread.
-                unsafe { state.draw(painter.gl(), &info, &frame) };
+                if !unsafe { state.draw(painter.gl(), &info, &frame) } {
+                    repaint
+                        .request_repaint_after_for(std::time::Duration::from_millis(16), viewport);
+                }
             }
         });
         ui.painter().add(egui::Shape::Callback(egui::PaintCallback {
@@ -63,8 +72,10 @@ impl Shared {
 #[derive(Default)]
 struct State {
     program: Option<(glow::Program, Uniforms)>,
+    program_model: Option<Arc<Model>>,
     model: Option<Uploaded>,
     target: Option<Target>,
+    preparation: upload::Preparation,
 }
 
 struct Uniforms {
@@ -82,6 +93,10 @@ struct Uniforms {
     exposure: Option<glow::UniformLocation>,
     samplers: [Option<glow::UniformLocation>; 6],
     has: [Option<glow::UniformLocation>; 9],
+    dye_map: Option<glow::UniformLocation>,
+    has_dye_map: Option<glow::UniformLocation>,
+    map_transform: Option<glow::UniformLocation>,
+    map_slot: Option<glow::UniformLocation>,
     constant: Option<glow::UniformLocation>,
     iridescence_id: Option<glow::UniformLocation>,
     dye_albedo: Option<glow::UniformLocation>,
@@ -94,6 +109,17 @@ struct Uniforms {
     wear: Option<glow::UniformLocation>,
     detail_transform: Option<glow::UniformLocation>,
     normal_transform: Option<glow::UniformLocation>,
+    effect: Option<glow::UniformLocation>,
+    effect_constants: Option<glow::UniformLocation>,
+    effect_textures: [Option<glow::UniformLocation>; 3],
+    scene_depth: Option<glow::UniformLocation>,
+    native_index: Option<glow::UniformLocation>,
+    native_quaternion: Option<glow::UniformLocation>,
+    native_vertex_constants: Option<glow::UniformLocation>,
+    native_dye: Option<glow::UniformLocation>,
+    native_direction: Option<glow::UniformLocation>,
+    native_distance: Option<glow::UniformLocation>,
+    native_present: Option<glow::UniformLocation>,
 }
 
 struct Uploaded {
@@ -103,17 +129,23 @@ struct Uploaded {
     vao: glow::VertexArray,
     positions: glow::Buffer,
     attributes: glow::Buffer,
-    textures: Vec<glow::Texture>,
+    posed: bool,
+    /// One image may serve both data and color roles. Keep a separate upload for each role.
+    textures: Vec<[Option<glow::Texture>; 2]>,
     lookup: Option<glow::Texture>,
     groups: Vec<Group>,
     /// Triangle indices in draw order, for expanding skinned positions.
     order: Vec<u32>,
     center: [f32; 3],
     radius: f32,
+    samplers: Vec<Vec<glow::Sampler>>,
+    pending: Option<upload::Pending>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Key {
+    /// Native transparents follow every opaque surface, including emissive panels.
+    effect: Option<usize>,
     /// First so emissive panels sort after the surfaces they sit on.
     constant: Option<[u32; 3]>,
     albedo: Option<usize>,
@@ -121,6 +153,7 @@ struct Key {
     normal: Option<usize>,
     slot: u8,
     clip: bool,
+    dye_map: Option<super::texture::DyeMap>,
 }
 
 struct Group {
@@ -134,28 +167,31 @@ struct Target {
     color: glow::Renderbuffer,
     depth: glow::Renderbuffer,
     size: [i32; 2],
+    scene_depth: glow::Texture,
+    scene_fbo: glow::Framebuffer,
 }
 
 impl State {
-    #[expect(
-        clippy::cognitive_complexity,
-        reason = "One GL pass: upload, animate, bind, draw groups, blit"
-    )]
-    unsafe fn draw(&mut self, gl: &glow::Context, info: &egui::PaintCallbackInfo, frame: &Frame) {
-        // SAFETY: egui hands us its live GL context inside the paint callback; every object
-        // used here was created on this context and is deleted through `Uploaded::delete`.
+    unsafe fn prepare(&mut self, gl: &glow::Context, frame: &Frame) -> bool {
+        // SAFETY: called only from draw with its live context. Uploads and deletes use
+        // that same context and preparation itself runs without GL on a worker.
         unsafe {
-            let viewport = info.viewport_in_pixels();
-            let size = [viewport.width_px.max(1), viewport.height_px.max(1)];
-            // Read before any of our own bindings; the target is created below.
-            let previous = gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING);
-            let previous = NonZeroU32::new(previous as u32).map(glow::NativeFramebuffer);
-            if self.program.is_none() {
-                self.program = compile(gl);
+            if self
+                .program_model
+                .as_ref()
+                .is_some_and(|model| !Arc::ptr_eq(model, &frame.model))
+            {
+                if let Some((program, _)) = self.program.take() {
+                    gl.delete_program(program);
+                }
             }
-            let Some((program, uniforms)) = self.program.as_ref() else {
-                return;
-            };
+            if self.program.is_none() {
+                self.program = compile(gl, &frame.model);
+                self.program_model = Some(frame.model.clone());
+            }
+            if self.program.is_none() {
+                return false;
+            }
             if self
                 .model
                 .as_ref()
@@ -166,21 +202,71 @@ impl State {
                 }
             }
             if self.model.is_none() {
-                self.model = Some(upload(gl, &frame.model));
+                let Some(prepared) = self.preparation.poll(&frame.model) else {
+                    return false;
+                };
+                self.model = Some(upload::begin(gl, prepared));
             }
-            let Some(uploaded) = self.model.as_ref() else {
-                return;
+            let Some(uploaded) = self.model.as_mut() else {
+                return false;
             };
-            if let Some(positions) = &frame.positions {
+            uploaded.advance(gl)
+        }
+    }
+
+    unsafe fn draw(
+        &mut self,
+        gl: &glow::Context,
+        info: &egui::PaintCallbackInfo,
+        frame: &Frame,
+    ) -> bool {
+        // SAFETY: egui hands us its live GL context inside the paint callback; every object
+        // used here was created on this context and is deleted through `Uploaded::delete`.
+        unsafe {
+            let viewport = info.viewport_in_pixels();
+            let size = [viewport.width_px.max(1), viewport.height_px.max(1)];
+            // Read before any of our own bindings; the target is created below.
+            let previous = gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING);
+            let previous = NonZeroU32::new(previous as u32).map(glow::NativeFramebuffer);
+            if !self.prepare(gl, frame) {
+                return false;
+            }
+            let (program, uniforms) = self.program.as_ref().expect("prepared program");
+            let uploaded = self.model.as_mut().expect("prepared model");
+            if frame.pose.is_some() || uploaded.posed {
+                let positions = frame
+                    .pose
+                    .as_ref()
+                    .map_or(frame.model.vertices.as_slice(), |pose| {
+                        pose.positions.as_slice()
+                    });
+                let normals = frame
+                    .pose
+                    .as_ref()
+                    .map_or(frame.model.normals.as_slice(), |pose| {
+                        pose.normals.as_slice()
+                    });
                 let expanded = expand_positions(&uploaded.order, &frame.model, positions);
                 gl.bind_buffer(glow::ARRAY_BUFFER, Some(uploaded.positions));
-                gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, 0, bytes_of(&expanded));
-            } else if !uploaded.order.is_empty() && frame.model.animation.is_some() {
-                let expanded =
-                    expand_positions(&uploaded.order, &frame.model, &frame.model.vertices);
-                gl.bind_buffer(glow::ARRAY_BUFFER, Some(uploaded.positions));
-                gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, 0, bytes_of(&expanded));
+                gl.buffer_sub_data_u8_slice(
+                    glow::ARRAY_BUFFER,
+                    0,
+                    bytes_of(expanded.as_flattened()),
+                );
+                let attributes = expand_attributes(
+                    &uploaded.order,
+                    &frame.model,
+                    positions,
+                    normals,
+                    frame
+                        .pose
+                        .as_ref()
+                        .map_or(frame.model.tangents.as_slice(), |p| p.tangents.as_slice()),
+                );
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(uploaded.attributes));
+                gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, 0, bytes_of(&attributes));
             }
+            uploaded.posed = frame.pose.is_some();
             if self.target.as_ref().is_none_or(|t| t.size != size) {
                 if let Some(old) = self.target.take() {
                     old.delete(gl);
@@ -188,13 +274,14 @@ impl State {
                 self.target = Target::new(gl, size);
             }
             let Some(target) = self.target.as_ref() else {
-                return;
+                return false;
             };
 
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target.fbo));
             gl.viewport(0, 0, size[0], size[1]);
             gl.disable(glow::SCISSOR_TEST);
             gl.disable(glow::BLEND);
+            gl.disable(glow::FRAMEBUFFER_SRGB);
             gl.disable(glow::CULL_FACE);
             gl.enable(glow::DEPTH_TEST);
             // Equal passes so emissive panels coincident with a surface win by draw order.
@@ -208,6 +295,11 @@ impl State {
             gl.bind_vertex_array(Some(uploaded.vao));
             let (sy, cy) = frame.camera.yaw.sin_cos();
             let (sp, cp) = frame.camera.pitch.sin_cos();
+            gl.uniform_3_f32(uniforms.native_direction.as_ref(), -cp * sy, -cp * cy, sp);
+            gl.uniform_1_f32(
+                uniforms.native_distance.as_ref(),
+                (uploaded.radius * 4.0).max(1.0),
+            );
             // Same rotation as the CPU rasterizer, with y up instead of down.
             let rotate = [
                 cy,
@@ -220,20 +312,32 @@ impl State {
                 cp,
                 -sp, // column 2
             ];
-            let scale = size[0].min(size[1]) as f32 * 0.43 * frame.camera.zoom / uploaded.radius;
-            gl.uniform_3_f32(
-                uniforms.center.as_ref(),
-                uploaded.center[0],
-                uploaded.center[1],
-                uploaded.center[2],
-            );
+            let scale =
+                size[0].min(size[1]) as f32 * super::render::RADIUS_SCALE * frame.camera.zoom
+                    / uploaded.radius;
+            let center = frame
+                .pose
+                .as_ref()
+                .map_or(uploaded.center, |pose| pose.framing_center(uploaded.center));
+            gl.uniform_3_f32(uniforms.center.as_ref(), center[0], center[1], center[2]);
             gl.uniform_matrix_3_f32_slice(uniforms.rotate.as_ref(), false, &rotate);
             gl.uniform_2_f32(
                 uniforms.scale.as_ref(),
                 2.0 * scale / size[0] as f32,
                 2.0 * scale / size[1] as f32,
             );
-            gl.uniform_1_f32(uniforms.depth_scale.as_ref(), 1.0 / uploaded.radius);
+            // Keep the stable bind-pose screen scale, but include every posed vertex in
+            // the depth range. Bone motion can extend far beyond the stored bounding sphere.
+            let depth_radius = frame.pose.as_ref().map_or(uploaded.radius, |pose| {
+                pose.positions
+                    .iter()
+                    .fold(uploaded.radius, |radius, point| {
+                        let [x, y, z] =
+                            std::array::from_fn::<_, 3, _>(|axis| point[axis] - center[axis]);
+                        radius.max((cp * (sy * x + cy * y) - sp * z).abs())
+                    })
+            });
+            gl.uniform_1_f32(uniforms.depth_scale.as_ref(), (1.0 - 1e-4) / depth_radius);
             // Pan is a fraction of the viewport; clip space spans two units and points up.
             gl.uniform_2_f32(
                 uniforms.pan.as_ref(),
@@ -260,7 +364,12 @@ impl State {
                     Style::Wireframe => 2,
                 },
             );
-            let flat = frame.positions.is_some() || frame.model.normals.is_empty();
+            let flat = frame
+                .pose
+                .as_ref()
+                .map_or(frame.model.normals.is_empty(), |pose| {
+                    pose.normals.is_empty()
+                });
             gl.uniform_1_i32(uniforms.flat.as_ref(), i32::from(flat));
             for (unit, location) in uniforms.samplers.iter().enumerate() {
                 gl.uniform_1_i32(location.as_ref(), unit as i32);
@@ -268,84 +377,14 @@ impl State {
             if frame.style == Style::Wireframe {
                 gl.polygon_mode(glow::FRONT_AND_BACK, glow::LINE);
             }
-            let dyes = shader::dyes(&frame.model, frame.seconds);
-            for group in &uploaded.groups {
-                let dye = dyes
-                    .get(usize::from(group.key.slot))
-                    .and_then(Option::as_ref);
-                let textures = [
-                    group.key.albedo,
-                    group.key.gearstack,
-                    group.key.normal,
-                    dye.and_then(|d| d.detail),
-                    dye.and_then(|d| d.normal),
-                ];
-                for (unit, texture) in textures.iter().enumerate() {
-                    gl.active_texture(glow::TEXTURE0 + unit as u32);
-                    gl.bind_texture(
-                        glow::TEXTURE_2D,
-                        texture.and_then(|i| uploaded.textures.get(i).copied()),
-                    );
-                }
-                let has = [
-                    textures[0].is_some(),
-                    textures[1].is_some(),
-                    textures[2].is_some(),
-                    textures[3].is_some(),
-                    textures[4].is_some(),
-                    dye.is_some(),
-                    group.key.clip,
-                    uploaded.lookup.is_some(),
-                    group.key.constant.is_some(),
-                ];
-                if let Some(constant) = group.key.constant.map(|c| c.map(f32::from_bits)) {
-                    gl.uniform_3_f32(
-                        uniforms.constant.as_ref(),
-                        constant[0],
-                        constant[1],
-                        constant[2],
-                    );
-                }
-                gl.active_texture(glow::TEXTURE5);
-                gl.bind_texture(glow::TEXTURE_2D, uploaded.lookup);
-                for (location, value) in uniforms.has.iter().zip(has) {
-                    gl.uniform_1_i32(location.as_ref(), i32::from(value));
-                }
-                if let Some(dye) = dye {
-                    let s = &dye.surface;
-                    gl.uniform_3_f32(
-                        uniforms.dye_albedo.as_ref(),
-                        s.albedo[0],
-                        s.albedo[1],
-                        s.albedo[2],
-                    );
-                    gl.uniform_3_f32(
-                        uniforms.dye_worn.as_ref(),
-                        s.worn_albedo[0],
-                        s.worn_albedo[1],
-                        s.worn_albedo[2],
-                    );
-                    gl.uniform_3_f32(
-                        uniforms.emissive.as_ref(),
-                        s.emissive[0],
-                        s.emissive[1],
-                        s.emissive[2],
-                    );
-                    gl.uniform_4_f32_slice(uniforms.params.as_ref(), &s.params);
-                    gl.uniform_4_f32_slice(uniforms.worn_params.as_ref(), &s.worn_params);
-                    gl.uniform_4_f32_slice(uniforms.rough.as_ref(), &s.roughness);
-                    gl.uniform_4_f32_slice(uniforms.worn_rough.as_ref(), &s.worn_roughness);
-                    gl.uniform_4_f32_slice(uniforms.wear.as_ref(), &s.wear);
-                    gl.uniform_4_f32_slice(uniforms.detail_transform.as_ref(), &dye.transform);
-                    gl.uniform_4_f32_slice(
-                        uniforms.normal_transform.as_ref(),
-                        &dye.normal_transform,
-                    );
-                    gl.uniform_1_f32(uniforms.iridescence_id.as_ref(), s.iridescence);
-                }
-                gl.draw_arrays(glow::TRIANGLES, group.first, group.count);
-            }
+            draw::groups(gl, uniforms, uploaded, frame, target);
             gl.polygon_mode(glow::FRONT_AND_BACK, glow::FILL);
+            gl.disable(glow::FRAMEBUFFER_SRGB);
+            gl.disable(glow::BLEND);
+            gl.depth_mask(true);
+            for unit in 0..10 {
+                gl.bind_sampler(unit, None);
+            }
             gl.bind_vertex_array(None);
             gl.use_program(None);
             gl.disable(glow::DEPTH_TEST);
@@ -368,13 +407,63 @@ impl State {
                 glow::NEAREST,
             );
             gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
+            true
         }
     }
 }
 
-fn bytes_of(values: &[[f32; 3]]) -> &[u8] {
-    // SAFETY: `[f32; 3]` is plain data with no padding.
-    unsafe { std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), values.len() * 12) }
+fn bytes_of(values: &[f32]) -> &[u8] {
+    // SAFETY: Every initialized f32 has exactly four bytes and no padding.
+    unsafe {
+        std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), std::mem::size_of_val(values))
+    }
+}
+
+fn expand_attributes(
+    order: &[u32],
+    model: &Model,
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    tangents: &[[f32; 4]],
+) -> Vec<f32> {
+    let mut attributes = Vec::with_capacity(order.len() * 45);
+    for &triangle in order {
+        let corners = model.triangles[triangle as usize];
+        let [a, b, c] = corners.map(|v| positions.get(v as usize).copied().unwrap_or_default());
+        let ab: [f32; 3] = std::array::from_fn(|i| b[i] - a[i]);
+        let ac: [f32; 3] = std::array::from_fn(|i| c[i] - a[i]);
+        let flat = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        ];
+        let native = super::effects::index(model, triangle as usize)
+            .and_then(|index| model.effects[index].native.as_ref())
+            .is_some();
+        for vertex in corners {
+            let mut normal = normals.get(vertex as usize).copied().unwrap_or(flat);
+            if native {
+                normal = shader::normal::normalize(normal)
+                    .or_else(|| shader::normal::normalize(flat))
+                    .unwrap_or([0.0, 0.0, 1.0]);
+            }
+            let uv = model.uvs.get(vertex as usize).copied().unwrap_or_default();
+            let detail = model.detail_uvs.get(vertex as usize).copied().unwrap_or(uv);
+            attributes.extend_from_slice(&[
+                normal[0], normal[1], normal[2], uv[0], uv[1], detail[0], detail[1],
+            ]);
+            let tangent = super::effects::native::tangent(tangents, vertex as usize, normal);
+            attributes.extend_from_slice(&tangent);
+            attributes.extend_from_slice(
+                &model
+                    .colors
+                    .get(vertex as usize)
+                    .copied()
+                    .unwrap_or([1.0; 4]),
+            );
+        }
+    }
+    attributes
 }
 
 fn expand_positions(order: &[u32], model: &Model, positions: &[[f32; 3]]) -> Vec<[f32; 3]> {
@@ -413,213 +502,6 @@ fn bounds(model: &Model, hide_light: bool) -> ([f32; 3], f32) {
     (center, radius)
 }
 
-unsafe fn upload(gl: &glow::Context, model: &Arc<Model>) -> Uploaded {
-    let held = Arc::clone(model);
-    let model: &Model = model;
-    // SAFETY: called from the paint callback with the live context; buffers are sized from
-    // the slices uploaded and stay owned by the returned `Uploaded`.
-    unsafe {
-        let hide_light = model.has_surface_mesh();
-        let (center, radius) = bounds(model, hide_light);
-
-        let mut order: Vec<u32> = (0..model.triangles.len() as u32)
-            .filter(|&index| {
-                !hide_light
-                    || !model
-                        .triangle_light
-                        .get(index as usize)
-                        .copied()
-                        .unwrap_or(false)
-            })
-            .collect();
-        let key_of = |triangle: usize| Key {
-            albedo: model.triangle_textures.get(triangle).copied().flatten(),
-            gearstack: model.triangle_gearstacks.get(triangle).copied().flatten(),
-            normal: model.triangle_normals.get(triangle).copied().flatten(),
-            slot: model.triangle_dyes.get(triangle).copied().unwrap_or(0),
-            clip: model.triangle_clip.get(triangle).copied().unwrap_or(false),
-            constant: model
-                .triangle_constant
-                .get(triangle)
-                .copied()
-                .flatten()
-                .map(|c| c.map(f32::to_bits)),
-        };
-        order.sort_by_key(|&t| key_of(t as usize));
-        let mut groups: Vec<Group> = Vec::new();
-        for (position, &triangle) in order.iter().enumerate() {
-            let key = key_of(triangle as usize);
-            match groups.last_mut() {
-                Some(group) if group.key == key => group.count += 3,
-                _ => groups.push(Group {
-                    key,
-                    first: position as i32 * 3,
-                    count: 3,
-                }),
-            }
-        }
-
-        let positions = expand_positions(&order, model, &model.vertices);
-        let mut attributes: Vec<f32> = Vec::with_capacity(order.len() * 15);
-        for &triangle in &order {
-            let corners = model.triangles[triangle as usize];
-            let flat = {
-                let [a, b, c] = corners.map(|v| model.vertices[v as usize]);
-                let ab: [f32; 3] = std::array::from_fn(|i| b[i] - a[i]);
-                let ac: [f32; 3] = std::array::from_fn(|i| c[i] - a[i]);
-                [
-                    ab[1] * ac[2] - ab[2] * ac[1],
-                    ab[2] * ac[0] - ab[0] * ac[2],
-                    ab[0] * ac[1] - ab[1] * ac[0],
-                ]
-            };
-            for vertex in corners {
-                let normal = model.normals.get(vertex as usize).copied().unwrap_or(flat);
-                let uv = model.uvs.get(vertex as usize).copied().unwrap_or_default();
-                attributes.extend_from_slice(&[normal[0], normal[1], normal[2], uv[0], uv[1]]);
-            }
-        }
-
-        let vao = gl.create_vertex_array().expect("vertex array");
-        gl.bind_vertex_array(Some(vao));
-        let position_buffer = gl.create_buffer().expect("buffer");
-        gl.bind_buffer(glow::ARRAY_BUFFER, Some(position_buffer));
-        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes_of(&positions), glow::DYNAMIC_DRAW);
-        gl.enable_vertex_attrib_array(0);
-        gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, 12, 0);
-        let attribute_buffer = gl.create_buffer().expect("buffer");
-        gl.bind_buffer(glow::ARRAY_BUFFER, Some(attribute_buffer));
-        // `f32` slices are plain data.
-        let attribute_bytes =
-            std::slice::from_raw_parts(attributes.as_ptr().cast::<u8>(), attributes.len() * 4);
-        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, attribute_bytes, glow::STATIC_DRAW);
-        gl.enable_vertex_attrib_array(1);
-        gl.vertex_attrib_pointer_f32(1, 3, glow::FLOAT, false, 20, 0);
-        gl.enable_vertex_attrib_array(2);
-        gl.vertex_attrib_pointer_f32(2, 2, glow::FLOAT, false, 20, 12);
-        gl.bind_vertex_array(None);
-
-        // Colour plates and dye detail colour are sRGB; masks and normals are linear.
-        let mut srgb = vec![false; model.textures.len()];
-        for index in model.triangle_textures.iter().flatten() {
-            srgb[*index] = true;
-        }
-        for dye in model.dyes.iter().flatten() {
-            if let Some(index) = dye.detail {
-                srgb[index] = true;
-            }
-        }
-        for index in model
-            .triangle_gearstacks
-            .iter()
-            .chain(model.triangle_normals.iter())
-            .flatten()
-        {
-            srgb[*index] = false;
-        }
-        for dye in model.dyes.iter().flatten() {
-            if let Some(index) = dye.normal {
-                srgb[index] = false;
-            }
-        }
-        let anisotropic = gl
-            .supported_extensions()
-            .contains("GL_EXT_texture_filter_anisotropic");
-        let textures = model
-            .textures
-            .iter()
-            .zip(srgb)
-            .map(|(texture, srgb)| {
-                let handle = gl.create_texture().expect("texture");
-                gl.bind_texture(glow::TEXTURE_2D, Some(handle));
-                gl.tex_image_2d(
-                    glow::TEXTURE_2D,
-                    0,
-                    if srgb {
-                        glow::SRGB8_ALPHA8
-                    } else {
-                        glow::RGBA8
-                    } as i32,
-                    texture.size[0] as i32,
-                    texture.size[1] as i32,
-                    0,
-                    glow::RGBA,
-                    glow::UNSIGNED_BYTE,
-                    glow::PixelUnpackData::Slice(Some(&texture.rgba)),
-                );
-                gl.generate_mipmap(glow::TEXTURE_2D);
-                gl.tex_parameter_i32(
-                    glow::TEXTURE_2D,
-                    glow::TEXTURE_MIN_FILTER,
-                    glow::LINEAR_MIPMAP_LINEAR as i32,
-                );
-                gl.tex_parameter_i32(
-                    glow::TEXTURE_2D,
-                    glow::TEXTURE_MAG_FILTER,
-                    glow::LINEAR as i32,
-                );
-                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::REPEAT as i32);
-                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::REPEAT as i32);
-                if anisotropic {
-                    const MAX_ANISOTROPY: u32 = 0x84FE;
-                    gl.tex_parameter_f32(glow::TEXTURE_2D, MAX_ANISOTROPY, 8.0);
-                }
-                handle
-            })
-            .collect();
-        let lookup = model.iridescence.as_ref().map(|texture| {
-            let handle = gl.create_texture().expect("texture");
-            gl.bind_texture(glow::TEXTURE_2D, Some(handle));
-            gl.tex_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                glow::RGBA8 as i32,
-                texture.size[0] as i32,
-                texture.size[1] as i32,
-                0,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(&texture.rgba)),
-            );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MIN_FILTER,
-                glow::LINEAR as i32,
-            );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MAG_FILTER,
-                glow::LINEAR as i32,
-            );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_WRAP_S,
-                glow::CLAMP_TO_EDGE as i32,
-            );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_WRAP_T,
-                glow::CLAMP_TO_EDGE as i32,
-            );
-            handle
-        });
-        gl.bind_texture(glow::TEXTURE_2D, None);
-
-        Uploaded {
-            model: held,
-            vao,
-            positions: position_buffer,
-            attributes: attribute_buffer,
-            textures,
-            lookup,
-            groups,
-            order,
-            center,
-            radius,
-        }
-    }
-}
-
 impl Uploaded {
     unsafe fn delete(self, gl: &glow::Context) {
         // SAFETY: the objects were created on this context by `upload` and are dropped here.
@@ -627,7 +509,10 @@ impl Uploaded {
             gl.delete_vertex_array(self.vao);
             gl.delete_buffer(self.positions);
             gl.delete_buffer(self.attributes);
-            for texture in self.textures {
+            for sampler in self.samplers.into_iter().flatten() {
+                gl.delete_sampler(sampler);
+            }
+            for texture in self.textures.into_iter().flatten().flatten() {
                 gl.delete_texture(texture);
             }
             if let Some(lookup) = self.lookup {
@@ -649,7 +534,7 @@ impl Target {
                 gl.renderbuffer_storage_multisample(
                     glow::RENDERBUFFER,
                     samples,
-                    glow::RGBA8,
+                    glow::SRGB8_ALPHA8,
                     size[0],
                     size[1],
                 );
@@ -678,11 +563,48 @@ impl Target {
                 let complete =
                     gl.check_framebuffer_status(glow::FRAMEBUFFER) == glow::FRAMEBUFFER_COMPLETE;
                 if complete {
+                    let scene_depth = gl.create_texture().ok()?;
+                    gl.bind_texture(glow::TEXTURE_2D, Some(scene_depth));
+                    gl.tex_image_2d(
+                        glow::TEXTURE_2D,
+                        0,
+                        glow::DEPTH_COMPONENT24 as i32,
+                        size[0],
+                        size[1],
+                        0,
+                        glow::DEPTH_COMPONENT,
+                        glow::UNSIGNED_INT,
+                        glow::PixelUnpackData::Slice(None),
+                    );
+                    gl.tex_parameter_i32(
+                        glow::TEXTURE_2D,
+                        glow::TEXTURE_MIN_FILTER,
+                        glow::NEAREST as i32,
+                    );
+                    gl.tex_parameter_i32(
+                        glow::TEXTURE_2D,
+                        glow::TEXTURE_MAG_FILTER,
+                        glow::NEAREST as i32,
+                    );
+                    gl.bind_texture(glow::TEXTURE_2D, None);
+                    let scene_fbo = gl.create_framebuffer().ok()?;
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(scene_fbo));
+                    gl.framebuffer_texture_2d(
+                        glow::FRAMEBUFFER,
+                        glow::DEPTH_ATTACHMENT,
+                        glow::TEXTURE_2D,
+                        Some(scene_depth),
+                        0,
+                    );
+                    gl.draw_buffer(glow::NONE);
+                    gl.read_buffer(glow::NONE);
                     return Some(Self {
                         fbo,
                         color,
                         depth,
                         size,
+                        scene_depth,
+                        scene_fbo,
                     });
                 }
                 gl.delete_framebuffer(fbo);
@@ -699,17 +621,31 @@ impl Target {
             gl.delete_framebuffer(self.fbo);
             gl.delete_renderbuffer(self.color);
             gl.delete_renderbuffer(self.depth);
+            gl.delete_framebuffer(self.scene_fbo);
+            gl.delete_texture(self.scene_depth);
         }
     }
 }
 
-unsafe fn compile(gl: &glow::Context) -> Option<(glow::Program, Uniforms)> {
+unsafe fn compile(gl: &glow::Context, model: &Model) -> Option<(glow::Program, Uniforms)> {
     // SAFETY: live context; shaders are deleted after linking and the program on failure.
     unsafe {
         let program = gl.create_program().ok()?;
+        let fragment = FRAGMENT.replace(
+            "// EFFECT FUNCTIONS",
+            &format!(
+                "{}\n{}",
+                include_str!("effects/shader.glsl"),
+                super::effects::native::source(model, false)
+            ),
+        );
+        let vertex = VERTEX.replace(
+            "// NATIVE VERTEX FUNCTIONS",
+            &super::effects::native::source(model, true),
+        );
         for (kind, source) in [
-            (glow::VERTEX_SHADER, VERTEX),
-            (glow::FRAGMENT_SHADER, FRAGMENT),
+            (glow::VERTEX_SHADER, vertex.as_str()),
+            (glow::FRAGMENT_SHADER, fragment.as_str()),
         ] {
             let shader = gl.create_shader(kind).ok()?;
             gl.shader_source(shader, source);
@@ -769,6 +705,10 @@ unsafe fn compile(gl: &glow::Context) -> Option<(glow::Program, Uniforms)> {
                 location("uHasConstant"),
             ],
             constant: location("uConstant"),
+            dye_map: location("uDyeMap"),
+            has_dye_map: location("uHasDyeMap"),
+            map_transform: location("uMapTransform"),
+            map_slot: location("uMapSlot"),
             iridescence_id: location("uIridescenceId"),
             dye_albedo: location("uDyeAlbedo"),
             dye_worn: location("uDyeWorn"),
@@ -780,6 +720,21 @@ unsafe fn compile(gl: &glow::Context) -> Option<(glow::Program, Uniforms)> {
             wear: location("uWear"),
             detail_transform: location("uDetailTransform"),
             normal_transform: location("uNormalTransform"),
+            effect: location("uEffect"),
+            effect_constants: location("uEffectConstants[0]"),
+            effect_textures: [
+                location("uEffectTexture0"),
+                location("uEffectTexture1"),
+                location("uEffectTexture2"),
+            ],
+            scene_depth: location("uSceneDepth"),
+            native_index: location("uNativeIndex"),
+            native_quaternion: location("uNativeQuaternion"),
+            native_vertex_constants: location("uNativeVertexConstants[0]"),
+            native_dye: location("uNativeDye[0]"),
+            native_direction: location("uNativeDirection"),
+            native_distance: location("uNativeDistance"),
+            native_present: location("uNativePresent[0]"),
         };
         Some((program, uniforms))
     }
@@ -789,6 +744,9 @@ const VERTEX: &str = r#"#version 330 core
 layout(location = 0) in vec3 aPosition;
 layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec2 aUv;
+layout(location = 3) in vec2 aDetailUv;
+layout(location = 4) in vec4 aTangent;
+layout(location = 5) in vec4 aColor;
 uniform vec3 uCenter;
 uniform mat3 uRotate;
 uniform vec2 uScale;
@@ -797,11 +755,17 @@ uniform float uDepthScale;
 out vec3 vView;
 out vec3 vNormal;
 out vec2 vUv;
+out vec2 vDetailUv;
+out vec4 vNative[9];
+// NATIVE VERTEX FUNCTIONS
 void main() {
-    vec3 p = uRotate * (aPosition - uCenter);
+    vec3 position=aPosition,normal=aNormal;
+    nativeVertex(position,normal);
+    vec3 p = uRotate * (position - uCenter);
     vView = p;
-    vNormal = uRotate * aNormal;
+    vNormal = uRotate * normal;
     vUv = aUv;
+    vDetailUv = aDetailUv;
     gl_Position = vec4(p.x * uScale.x + uPan.x, p.y * uScale.y + uPan.y, p.z * uDepthScale, 1.0);
 }
 "#;
@@ -810,12 +774,16 @@ const FRAGMENT: &str = r#"#version 330 core
 in vec3 vView;
 in vec3 vNormal;
 in vec2 vUv;
+in vec4 vNative[9];
 uniform sampler2D uAlbedo;
 uniform sampler2D uGear;
 uniform sampler2D uNormal;
 uniform sampler2D uDetail;
 uniform sampler2D uDetailNormal;
 uniform sampler2D uIridescence;
+uniform sampler2D uDyeMap;
+uniform int uHasDyeMap, uMapSlot;
+uniform vec4 uMapTransform;
 uniform int uHasAlbedo, uHasGear, uHasNormal, uHasDetail, uHasDetailNormal, uHasDye, uClip, uHasIridescence, uHasConstant;
 uniform vec3 uConstant;
 uniform float uIridescenceId;
@@ -890,18 +858,32 @@ vec3 light(vec3 albedo, float rough, float metal, float ao, vec3 emission, vec3 
     return (diff + refl + emission) * uExposure;
 }
 
+// EFFECT FUNCTIONS
 void main() {
+    if(uStyle==0 && uNativeIndex>=0){fragColor=nativePixel();return;}
     vec2 uv = vUv;
+    if (uHasDyeMap == 1 && uStyle == 0) {
+        vec3 map = texture(uDyeMap, uv * uMapTransform.xy + uMapTransform.zw).rgb;
+        float third = map.g - map.b < (1.2 / 255.0) ? map.g : map.b;
+        int bank = third >= 0.5 ? 2 : (map.g >= 0.5 ? 1 : 0);
+        int slot = bank * 2 + (map.r >= 0.5 ? 1 : 0);
+        if (slot != uMapSlot) discard;
+    }
     if (uClip == 1 && uHasGear == 1 && texture(uGear, uv).b * 7.96875 < 0.5) discard;
     vec3 dp1 = dFdx(vView);
     vec3 dp2 = dFdy(vView);
     vec3 face = normalize(cross(dp1, dp2));
-    vec3 n = uFlat == 1 ? face : normalize(vNormal);
+    bool flatNormal = uFlat == 1 || dot(vNormal, vNormal) < 1e-12;
+    vec3 n = flatNormal ? face : normalize(vNormal);
+    if (flatNormal && n.z > 0.0) n = -n;
+    if (uStyle == 0 && uEffect >= 0) {
+        fragColor = effectColor(uv, n);
+        return;
+    }
     if (uStyle == 2) {
         fragColor = vec4(180.0 / 255.0, 215.0 / 255.0, 245.0 / 255.0, 1.0);
         return;
     }
-    if (n.z > 0.0) n = -n;
     float lighting = uFill + uKey * min(abs(dot(n, uKeyDir)), 1.0);
     if (uStyle == 0 && uHasConstant == 1) {
         // Panel art lives in the colour plate: alpha cuts the segments, colour tints them.
@@ -962,7 +944,6 @@ void main() {
             vec3 t = normalize((dp1 * duv2.y - dp2 * duv1.y) / det);
             vec3 b = normalize((dp2 * duv1.x - dp1 * duv2.x) / det);
             vec3 nn = n;
-            if (dot(nn, face) < 0.0) nn = -nn;
             t = normalize(t - nn * dot(t, nn));
             vec3 bb = cross(nn, t);
             if (dot(bb, b) < 0.0) bb = -bb;
@@ -986,7 +967,8 @@ void main() {
     if (painted && uHasIridescence == 1 && uIridescenceId >= 0.0) {
         float nDotV = sat(abs(n.z));
         // Row per id, top down. Unused rows hold a magenta placeholder.
-        vec4 iri = texture(uIridescence, vec2(nDotV, (uIridescenceId + 0.5) / 128.0));
+        float rows = float(textureSize(uIridescence, 0).y);
+        vec4 iri = texture(uIridescence, vec2(nDotV, (uIridescenceId + 0.5) / rows));
         bool placeholder = iri.r > 0.98 && iri.g < 0.02 && iri.b > 0.98;
         float strength = placeholder ? 0.0 : 1.0 - dot(dyeColor, vec3(0.2126, 0.7152, 0.0722));
         if (placeholder) {

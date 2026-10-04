@@ -274,34 +274,6 @@ pub fn draw_authoring_warning_icon(
     crate::ui_help::warning(ui, tooltip)
 }
 
-/// Opens a menu from a compact trigger showing an installed item's artwork beside its label.
-///
-/// The trigger deliberately leaves out the stock watermark and foreground overlay: it stands for
-/// the appearance an authored item takes, not for the stock item that lends it.
-pub(crate) fn draw_catalog_menu_button<R>(
-    ui: &mut egui::Ui,
-    catalog: &Catalog,
-    icon_hash: Option<u32>,
-    cleared_color: Option<[u8; 3]>,
-    label: &str,
-    contents: impl FnOnce(&mut egui::Ui) -> R,
-) -> egui::InnerResponse<Option<R>> {
-    let icon_size = ui.spacing().interact_size.y - 2.0 * ui.spacing().button_padding.y;
-    let button = icon_hash
-        .and_then(|hash| catalog.icon_texture_artwork(ui.ctx(), u64::from(hash), cleared_color))
-        .map_or_else(
-            || egui::Button::new(label),
-            |texture| {
-                egui::Button::image_and_text(
-                    egui::Image::new((texture.id(), egui::vec2(icon_size, icon_size)))
-                        .bg_fill(super::ui::package_icon_backdrop(ui)),
-                    label,
-                )
-            },
-        );
-    egui::menu::menu_custom_button(ui, button.truncate(), contents)
-}
-
 pub(crate) enum InvestmentWeaponPickerAction {
     Select(u64),
     Clear,
@@ -310,6 +282,114 @@ pub(crate) enum InvestmentWeaponPickerAction {
 
 const DONOR_HEADER_ICON_SIZE: f32 = 52.0;
 type AppearancePreview<'a> = dyn FnMut(&mut egui::Ui, Option<u32>) + 'a;
+
+/// An item identified by its source rather than the installed catalog.
+pub struct AuthoringItemHeader<'a> {
+    pub name: &'a str,
+    pub type_name: &'a str,
+    pub hash: Option<u32>,
+    pub icon: Option<&'a egui::TextureHandle>,
+}
+
+/// Draw the usual authoring item card from supplied identity and artwork.
+/// Returns the card's action button, so the caller owns what the action does.
+pub fn draw_authoring_item_header(
+    ui: &mut egui::Ui,
+    item: AuthoringItemHeader<'_>,
+    action_label: &str,
+) -> egui::Response {
+    let hash_text = item
+        .hash
+        .map(|hash| format_hash_hex(u64::from(hash)))
+        .unwrap_or_default();
+    let header = ItemHeader {
+        label: None,
+        soid: None,
+        definition: super::item_editor::DefinitionSummary::Known {
+            name: item.name,
+            hash_display_text: &hash_text,
+            type_name: item.type_name,
+        },
+        icon: item.icon.cloned(),
+        fill: muted_item_header_fill(ui),
+        valid: true,
+        invalid_message: "",
+    };
+    let width = authoring_button_width(ui, action_label);
+    let mut action = None;
+    let _ = draw_item_header_with_trailing_at_icon_size(
+        ui,
+        header,
+        DONOR_HEADER_ICON_SIZE,
+        width,
+        |ui| {
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Max), |ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    action = Some(ui.button(action_label));
+                });
+            });
+        },
+    );
+    action.expect("an authoring item header always draws its action button")
+}
+
+/// A tile drawn like the donor cards, for something that is not a catalog item: an image, a
+/// name and a second line, and `actions` on the right, the first rightmost. Each action is a
+/// label and whether it is enabled. Returns the index of the action clicked.
+pub fn draw_authoring_tile(
+    ui: &mut egui::Ui,
+    icon: Option<&egui::TextureHandle>,
+    name: &str,
+    detail: &str,
+    actions: &[(&str, bool)],
+) -> Option<usize> {
+    let header = ItemHeader {
+        label: None,
+        soid: None,
+        definition: super::item_editor::DefinitionSummary::Known {
+            name,
+            hash_display_text: "",
+            type_name: detail,
+        },
+        icon: icon.cloned(),
+        fill: muted_item_header_fill(ui),
+        valid: true,
+        invalid_message: "",
+    };
+    let spacing = ui.spacing().item_spacing.x;
+    let width = actions
+        .iter()
+        .map(|(label, _)| authoring_button_width(ui, label) + spacing)
+        .sum::<f32>()
+        - spacing;
+    let mut clicked = None;
+    let _ = draw_item_header_with_trailing_at_icon_size(
+        ui,
+        header,
+        DONOR_HEADER_ICON_SIZE,
+        width.max(0.0),
+        |ui| {
+            // A donor card's hash line sits above its actions, a row at least a control tall in
+            // a slightly larger monospace font. The same height here puts the actions where a
+            // donor card's are.
+            let hash_line = ui.text_style_height(&egui::TextStyle::Monospace) + 2.0;
+            ui.add_space(ui.spacing().interact_size.y.max(hash_line) + 2.0);
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Max), |ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    for (index, (label, enabled)) in actions.iter().enumerate() {
+                        if ui
+                            .add_enabled(*enabled, egui::Button::new(*label))
+                            .clicked()
+                        {
+                            clicked = Some(index);
+                        }
+                    }
+                });
+            });
+        },
+    );
+    clicked
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_weapon_donor_header_picker(
@@ -345,7 +425,7 @@ pub(crate) fn draw_weapon_donor_header_picker(
             (Some(item), Some(hash_text)) => super::item_editor::DefinitionSummary::Known {
                 name: &item.name,
                 hash_display_text: hash_text,
-                type_name: &item.type_name,
+                type_name: options.selected_detail.unwrap_or(&item.type_name),
             },
             (None, Some(hash_text)) => {
                 super::item_editor::DefinitionSummary::from_name_and_type(hash_text, plug)
@@ -448,14 +528,36 @@ pub(crate) fn draw_weapon_donor_dropdown_picker(
     candidates: &[&WeaponDonorSummary],
     options: WeaponDonorPickerOptions<'_>,
 ) -> Option<InvestmentWeaponPickerAction> {
-    let scope = ui.make_persistent_id(scope);
     let trigger = dropdown_button(ui, options.selected_label);
+    draw_weapon_donor_picker_from(ui, catalog, scope, query, candidates, options, trigger)
+}
+
+/// The same donor browser opened from a trigger the caller drew, such as a row naming the weapon
+/// that supplies one part of another.
+pub(crate) fn draw_weapon_donor_picker_from(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    scope: impl Hash,
+    query: &mut String,
+    candidates: &[&WeaponDonorSummary],
+    options: WeaponDonorPickerOptions<'_>,
+    trigger: egui::Response,
+) -> Option<InvestmentWeaponPickerAction> {
+    let scope = ui.make_persistent_id(scope);
     let trigger = match options.selected_hash {
         Some(hash) => catalog_item_tooltip(trigger, catalog, u64::from(hash)),
         None => trigger,
     };
-    // Weapon type and damage filters without the dummy-weapon toggle: the caller already
-    // chose which weapons are offered.
+    // Weapon type and damage filters without the dummy-weapon toggle, since the caller already
+    // chose which weapons are offered. Emblems and other gear have only rarity to filter by.
+    let filter_scope = if candidates
+        .iter()
+        .any(|donor| crate::catalog::is_weapon_bucket(donor.bucket_hash))
+    {
+        ItemFilterScope::Weapon
+    } else {
+        ItemFilterScope::Armor
+    };
     draw_weapon_donor_picker_popup(
         ui,
         catalog,
@@ -464,7 +566,7 @@ pub(crate) fn draw_weapon_donor_dropdown_picker(
         candidates,
         options,
         &trigger,
-        ItemFilterScope::Weapon,
+        filter_scope,
     )
 }
 
@@ -563,6 +665,48 @@ fn draw_weapon_donor_picker_popup(
         Some(ItemEditorAction::ClearDefinition) => Some(InvestmentWeaponPickerAction::Clear),
         Some(_) | None => None,
     }
+}
+
+/// The donor pickers' weapon filters, for a list whose choices each belong to a weapon.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WeaponChoiceFilter(ItemFilter);
+
+impl WeaponChoiceFilter {
+    /// Only weapons of `weapon_type`, as the appearance picker opens.
+    #[must_use]
+    pub fn of_weapon_type(weapon_type: &str) -> Self {
+        Self(ItemFilter {
+            weapon_type: Some(weapon_type.to_owned()),
+            ..ItemFilter::default()
+        })
+    }
+}
+
+/// The donor pickers' filter bar over the weapon types `weapons` offer. Returns whether a
+/// control was used.
+pub(crate) fn draw_weapon_choice_filters(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    id_salt: impl Hash + Clone,
+    weapons: &[u32],
+    filter: &mut WeaponChoiceFilter,
+) -> bool {
+    let items = weapons
+        .iter()
+        .filter_map(|hash| catalog.item(u64::from(*hash)))
+        .collect::<Vec<_>>();
+    draw_item_filter_bar(ui, id_salt, ItemFilterScope::Weapon, &items, &mut filter.0)
+}
+
+/// Whether `weapon` passes `filter`.
+pub(crate) fn weapon_choice_passes(
+    catalog: &Catalog,
+    weapon: u32,
+    filter: &WeaponChoiceFilter,
+) -> bool {
+    catalog
+        .item(u64::from(weapon))
+        .is_some_and(|item| filter.0.matches(catalog, item))
 }
 
 fn filtered_weapon_donors<'a>(
@@ -877,9 +1021,11 @@ pub(crate) fn draw_supported_plug_choice_picker(
         .min_size(egui::vec2(button_width.max(0.0), row_height));
     let left_aligned =
         egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Min);
+    // The button already fills the width, so it goes in as it is: `add_sized` would centre the
+    // label of a plug with no icon, while every plug with an icon starts at the left.
     let anchor = if button_width > 0.0 {
         ui.allocate_ui_with_layout(egui::vec2(button_width, row_height), left_aligned, |ui| {
-            ui.add_sized([button_width, row_height], button)
+            ui.add(button)
         })
         .inner
     } else {
@@ -985,6 +1131,11 @@ fn plug_picker_snapshot_for_mode(
         }),
         choices,
         show_types,
+        mode,
+        scope_labels: super::item_editor::scope_labels(
+            item,
+            &catalog.socket_type_label_for_item(item, socket_type),
+        ),
     }
 }
 

@@ -32,6 +32,13 @@ impl GraphReference {
         let mut graph: Value =
             serde_json::from_slice(&fs::read(self.directory.join("asset-graph.json"))?)?;
         ensure!(
+            !matches!(
+                graph["kind"].as_str(),
+                Some("shader" | "armor" | "ghost_shell" | "ship" | "sparrow")
+            ) && graph.get("gear_art").is_none(),
+            "Choose imported weapon assets for a weapon model"
+        );
+        ensure!(
             graph.get("ornament").is_none(),
             "Choose a weapon model rather than an ornament attachment"
         );
@@ -68,10 +75,15 @@ impl GraphReference {
                     .into_iter()
                     .flatten(),
             )
+            .chain(graph["particles"]["nodes"].as_array().into_iter().flatten())
         {
-            let file = media["file"].as_str().context("audio media file")?;
+            let file = media["file"].as_str().context("audio or particle file")?;
             let destination = output.join(file);
-            fs::create_dir_all(destination.parent().context("audio file parent")?)?;
+            fs::create_dir_all(
+                destination
+                    .parent()
+                    .context("audio or particle file parent")?,
+            )?;
             fs::copy(self.directory.join(file), destination)?;
         }
         let key = |role: &str| {
@@ -111,7 +123,7 @@ impl GraphReference {
         let directory = directory
             .canonicalize()
             .context("Open imported asset folder")?;
-        let sha256 = fingerprint(&directory, item)?;
+        let sha256 = fingerprint(&directory, Some(item))?;
         Ok(Self {
             directory,
             sha256,
@@ -125,7 +137,7 @@ impl GraphReference {
             "Imported asset folder must be absolute"
         );
         ensure!(
-            fingerprint(&self.directory, item)? == self.sha256,
+            fingerprint(&self.directory, Some(item))? == self.sha256,
             "Imported assets changed after selection. Select the prepared graph again"
         );
         for attachment in &self.attachments {
@@ -137,16 +149,116 @@ impl GraphReference {
         }
         Ok(())
     }
+
+    /// Shader payloads are reusable source materials. Each authored recipe allocates its own
+    /// item and dye registrations when linking, without rewriting these pinned source files.
+    pub fn validate_shader(&self) -> Result<()> {
+        self.validate_reusable("shader")
+    }
+
+    /// Model gear and shaders allocate private registrations for each authored recipe.
+    /// Their immutable source graph can therefore survive a rename or a duplicate.
+    pub fn validate_reusable(&self, kind: &str) -> Result<()> {
+        ensure!(
+            matches!(
+                kind,
+                "shader" | "armor" | "ghost_shell" | "ship" | "sparrow"
+            ),
+            "This item kind does not use reusable imported assets"
+        );
+        ensure!(
+            self.directory.is_absolute(),
+            "Imported asset folder must be absolute"
+        );
+        ensure!(
+            self.attachments.is_empty(),
+            "Reusable item assets cannot contain attachments"
+        );
+        ensure!(
+            fingerprint(&self.directory, None)? == self.sha256,
+            "Imported assets changed after selection. Select the prepared graph again"
+        );
+        let graph: Value =
+            serde_json::from_slice(&fs::read(self.directory.join("asset-graph.json"))?)?;
+        ensure!(
+            graph["kind"] == kind,
+            "Imported asset kind differs from its recipe"
+        );
+        Ok(())
+    }
 }
 
-fn fingerprint(directory: &Path, item: u32) -> Result<String> {
+fn hash_animation(graph: &Value, root: &Path, digest: &mut Sha256) -> Result<()> {
+    for first_person in graph["animation"]["first_person"]
+        .as_object()
+        .into_iter()
+        .chain(
+            graph
+                .get("equipment_animation")
+                .filter(|a| a["status"] == "linked")
+                .and_then(Value::as_object),
+        )
+    {
+        let mut files = Vec::new();
+        for (_, file) in first_person["files"]
+            .as_object()
+            .context("animation files")?
+        {
+            files.push(file.as_str().context("animation file")?);
+        }
+        for clip in first_person["clips"]
+            .as_array()
+            .context("animation clips")?
+        {
+            files.push(clip["file"].as_str().context("animation clip file")?);
+        }
+        for name in files {
+            let path = Path::new(name);
+            ensure!(
+                !path.as_os_str().is_empty()
+                    && path
+                        .components()
+                        .all(|part| matches!(part, Component::Normal(_))),
+                "Animation payload path must stay inside its graph folder"
+            );
+            let resolved = root.join(path).canonicalize()?;
+            ensure!(
+                resolved.starts_with(root),
+                "Animation payload escapes its graph folder"
+            );
+            let payload = fs::read(resolved)?;
+            digest.update((payload.len() as u64).to_le_bytes());
+            digest.update(payload);
+        }
+    }
+    Ok(())
+}
+
+fn fingerprint(directory: &Path, item: Option<u32>) -> Result<String> {
     let bytes = fs::read(directory.join("asset-graph.json"))?;
     let graph: Value = serde_json::from_slice(&bytes)?;
-    ensure!(
-        graph["item_hash"].as_u64() == Some(u64::from(item))
-            || graph["ornament"]["target_weapon"].as_u64() == Some(u64::from(item)),
-        "Imported graph belongs to a different weapon identity"
-    );
+    if let Some(item) = item {
+        ensure!(
+            graph["item_hash"].as_u64() == Some(u64::from(item))
+                || graph["ornament"]["target_weapon"].as_u64() == Some(u64::from(item)),
+            "Imported graph belongs to a different item identity"
+        );
+    } else {
+        ensure!(
+            matches!(
+                graph["kind"].as_str(),
+                Some("shader" | "armor" | "ghost_shell" | "ship" | "sparrow")
+            ),
+            "Imported graph is not reusable item assets"
+        );
+        ensure!(
+            graph["item_hash"]
+                .as_u64()
+                .and_then(|hash| u32::try_from(hash).ok())
+                .is_some_and(|hash| ![0, u32::MAX, 0x811C9DC5].contains(&hash)),
+            "Imported graph has an invalid source identity"
+        );
+    }
     let nodes = graph["nodes"].as_array().context("Missing asset nodes")?;
     ensure!(!nodes.is_empty(), "Imported graph has no assets");
     let mut digest = Sha256::new();
@@ -184,43 +296,50 @@ fn fingerprint(directory: &Path, item: u32) -> Result<String> {
         digest.update((payload.len() as u64).to_le_bytes());
         digest.update(payload);
     }
-    ensure!(
-        symbols.contains("parent"),
-        "Imported graph has no parent asset"
-    );
-    if let Some(first_person) = graph["animation"]["first_person"].as_object() {
-        let mut files = Vec::new();
-        for (_, file) in first_person["files"]
-            .as_object()
-            .context("animation files")?
-        {
-            files.push(file.as_str().context("animation file")?);
-        }
-        for clip in first_person["clips"]
+    if graph["kind"] == "shader" {
+        let dyes = graph["dyes"]
             .as_array()
-            .context("animation clips")?
-        {
-            files.push(clip["file"].as_str().context("animation clip file")?);
-        }
-        for name in files {
-            let path = Path::new(name);
+            .context("Imported shader has no dyes")?;
+        ensure!(
+            !dyes.is_empty() && dyes.len() <= 15,
+            "Invalid imported shader dye count"
+        );
+        let mut channels = BTreeSet::new();
+        let mut manifests = BTreeSet::new();
+        for dye in dyes {
+            let channel = dye["channel"].as_u64().context("Missing shader channel")?;
+            let key = dye["manifest"]
+                .as_u64()
+                .context("Missing shader dye identity")?;
             ensure!(
-                !path.as_os_str().is_empty()
-                    && path
-                        .components()
-                        .all(|part| matches!(part, Component::Normal(_))),
-                "Animation payload path must stay inside its graph folder"
+                matches!(channel, 0..=2 | 4..=15) && channels.insert(channel),
+                "Invalid or duplicate shader channel"
             );
-            let resolved = root.join(path).canonicalize()?;
             ensure!(
-                resolved.starts_with(&root),
-                "Animation payload escapes its graph folder"
+                key <= u64::from(u32::MAX)
+                    && ![0, u64::from(u32::MAX), 0x811C9DC5].contains(&key)
+                    && manifests.insert(key),
+                "Invalid or duplicate shader dye identity"
             );
-            let payload = fs::read(resolved)?;
-            digest.update((payload.len() as u64).to_le_bytes());
-            digest.update(payload);
+            ensure!(
+                symbols.contains(dye["parent"].as_str().context("Missing shader parent")?),
+                "Imported shader has no dye parent asset"
+            );
         }
+    } else if graph.get("gear_art").is_some()
+        || matches!(
+            graph["kind"].as_str(),
+            Some("armor" | "ghost_shell" | "ship" | "sparrow")
+        )
+    {
+        validate_gear(&graph, &symbols)?;
+    } else {
+        ensure!(
+            symbols.contains("parent"),
+            "Imported graph has no parent asset"
+        );
     }
+    hash_animation(&graph, &root, &mut digest)?;
     for media in graph["audio"]["transcoded_media"]
         .as_array()
         .into_iter()
@@ -250,17 +369,161 @@ fn fingerprint(directory: &Path, item: u32) -> Result<String> {
         digest.update((payload.len() as u64).to_le_bytes());
         digest.update(payload);
     }
-    if let Some(icon) = graph["ornament_icon_png"].as_str() {
+    for node in graph["particles"]["nodes"].as_array().into_iter().flatten() {
+        let name = node["file"].as_str().context("particle payload file")?;
+        let path = Path::new(name);
+        ensure!(
+            !path.as_os_str().is_empty()
+                && path
+                    .components()
+                    .all(|part| matches!(part, Component::Normal(_))),
+            "Particle payload path must stay inside its graph folder"
+        );
+        let resolved = root.join(path).canonicalize()?;
+        ensure!(
+            resolved.starts_with(&root),
+            "Particle payload escapes its graph folder"
+        );
+        let payload = fs::read(resolved)?;
+        digest.update((payload.len() as u64).to_le_bytes());
+        digest.update(payload);
+    }
+    for icon in [
+        graph["ornament_icon_png"].as_str(),
+        graph["source_icon_png"].as_str(),
+    ]
+    .into_iter()
+    .flatten()
+    {
         let path = root.join(icon).canonicalize()?;
         ensure!(
             path.starts_with(&root),
-            "Ornament icon escapes its graph folder"
+            "Imported icon escapes its graph folder"
         );
         let payload = fs::read(path)?;
         digest.update((payload.len() as u64).to_le_bytes());
         digest.update(payload);
     }
     Ok(format!("{:x}", digest.finalize()))
+}
+
+fn validate_gear(graph: &Value, symbols: &BTreeSet<&str>) -> Result<()> {
+    ensure!(
+        matches!(
+            graph["kind"].as_str(),
+            Some("armor" | "ghost_shell" | "ship" | "sparrow")
+        ),
+        "Gear art requires a model gear recipe"
+    );
+    ensure!(
+        symbols.contains(graph["parent"].as_str().context("Gear primary parent")?),
+        "Gear parent asset missing"
+    );
+    let dyes = graph["dyes"].as_array().context("Gear dyes")?;
+    let layers = graph["dye_rows"].as_array().context("Gear dye layers")?;
+    ensure!(
+        layers.len() == 3 && dyes.len() <= 45,
+        "Invalid gear dye layers"
+    );
+    let mut manifests = BTreeSet::new();
+    for dye in dyes {
+        let channel = dye["channel"].as_u64().context("Gear dye channel")?;
+        let key = super::profile::hash(dye, "manifest")?;
+        ensure!(
+            matches!(channel, 0..=2 | 4..=15) && manifests.insert(key),
+            "Invalid gear dye identity"
+        );
+        ensure!(
+            symbols.contains(dye["parent"].as_str().context("Gear dye parent")?),
+            "Gear dye parent asset missing"
+        );
+    }
+    let mut used = BTreeSet::new();
+    for layer in layers {
+        let mut channels = BTreeSet::new();
+        for row in layer.as_array().context("Gear dye layer")? {
+            let index = usize::try_from(row["dye"].as_u64().context("Gear dye index")?)?;
+            let dye = dyes
+                .get(index)
+                .context("Gear dye index outside converted dyes")?;
+            let channel = row["channel"].as_u64().context("Gear dye channel")?;
+            ensure!(
+                channels.insert(channel) && dye["channel"].as_u64() == Some(channel),
+                "Gear dye channel differs from its layer"
+            );
+            used.insert(index);
+        }
+    }
+    ensure!(used.len() == dyes.len(), "Unregistered gear dye material");
+    let rows = graph["gear_art"]["rows"]
+        .as_array()
+        .context("Gear art rows")?;
+    let parts = graph["gear_art"]["parts"]
+        .as_array()
+        .context("Gear art parts")?;
+    ensure!(
+        !rows.is_empty() && rows.len() <= 64 && !parts.is_empty() && parts.len() <= 256,
+        "Gear art count outside native limits"
+    );
+    let mut assignments = BTreeSet::new();
+    let mut keys = BTreeSet::new();
+    for part in parts {
+        let source = super::profile::hash(part, "source_assignment")?;
+        let key = super::profile::hash(part, "key")?;
+        ensure!(
+            assignments.insert(u64::from(source)) && keys.insert(key),
+            "Duplicate gear art assignment"
+        );
+        ensure!(
+            symbols.contains(part["parent"].as_str().context("Gear art parent")?),
+            "Gear art parent asset missing"
+        );
+    }
+    for row in rows {
+        ensure!(
+            row["class"].as_i64().is_some_and(|v| (-1..=2).contains(&v)),
+            "Unsupported gear class selector"
+        );
+        ensure!(
+            row["flags"].as_u64().is_some_and(|v| v <= 255),
+            "Invalid gear art flags"
+        );
+        ensure!(
+            row["template_index"]
+                .as_u64()
+                .is_some_and(|v| v < u64::from(u16::MAX)),
+            "Invalid native art template index"
+        );
+        let singles = row["singles"]
+            .as_array()
+            .context("Gear direct assignments")?;
+        let slots = row["slots"].as_array().context("Gear art selectors")?;
+        ensure!(
+            singles.len() == 2 && slots.len() <= 32,
+            "Invalid gear art layout"
+        );
+        let mut selectors = BTreeSet::new();
+        let mut selected = singles.iter().collect::<Vec<_>>();
+        for slot in slots {
+            ensure!(
+                selectors.insert(slot["selector"].as_u64().context("Gear selector")?),
+                "Duplicate gear selector"
+            );
+            let values = slot["assignments"]
+                .as_array()
+                .context("Gear alternatives")?;
+            ensure!(values.len() <= 256, "Too many gear alternatives");
+            selected.extend(values);
+        }
+        for value in selected {
+            let key = value.as_u64().context("Gear assignment")?;
+            ensure!(
+                [0, u64::from(u32::MAX), 0x811C9DC5].contains(&key) || assignments.contains(&key),
+                "Gear art refers to an unconverted source assignment"
+            );
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

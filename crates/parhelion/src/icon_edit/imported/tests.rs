@@ -46,7 +46,8 @@ fn invalid_and_oversized_sources_are_rejected() {
     assert!(ImportedIcon::from_bytes(b"GIF89a").is_err());
     let wide = RgbaImage::new(MAX_SOURCE_EDGE + 1, 1);
     assert!(ImportedIcon::from_bytes(&png(&wide)).is_err());
-    assert!(ImportedIcon::from_path(Path::new("nonexistent-icon-test.png")).is_err());
+    let directory = tempfile::tempdir().unwrap();
+    assert!(ImportedIcon::from_path(&directory.path().join("missing.png")).is_err());
 }
 
 #[test]

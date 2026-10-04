@@ -1,4 +1,4 @@
-//! Small depth-buffered geometry preview with fixed bind-pose framing.
+//! Small depth-buffered geometry preview with a stable scale that follows stored root motion.
 use super::Model;
 use eframe::egui::{Color32, ColorImage};
 
@@ -41,8 +41,8 @@ impl Default for Camera {
 /// How far the orbit may tip before the pole degenerates.
 pub(crate) const MAX_PITCH: f32 = std::f32::consts::FRAC_PI_2;
 
-/// Viewer-adjustable scene settings. The defaults reproduce the approved rig exactly, so an
-/// untouched preview renders bit-for-bit as it did before these controls existed.
+/// Viewer-adjustable scene settings. Lighting defaults retain the studio rig,
+/// while particle studies require an explicit choice.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) struct Scene {
     pub background: [u8; 3],
@@ -51,6 +51,8 @@ pub(crate) struct Scene {
     pub key: f32,
     pub fill: f32,
     pub exposure: f32,
+    /// Explicit diagnostic study. Native particle spawning and motion are unavailable.
+    pub particle_study: bool,
 }
 impl Default for Scene {
     fn default() -> Self {
@@ -60,6 +62,7 @@ impl Default for Scene {
             key: 0.70,
             fill: 0.30,
             exposure: 1.0,
+            particle_study: false,
         }
     }
 }
@@ -77,9 +80,11 @@ pub(crate) fn image(model: &Model, camera: Camera, size: [usize; 2]) -> ColorIma
         camera,
         Scene::default(),
         size,
-        &model.vertices,
+        None,
         Style::Textured,
         0.0,
+        None,
+        16,
     )
 }
 
@@ -90,18 +95,17 @@ pub(crate) fn animated_image(
     size: [usize; 2],
     seconds: f32,
 ) -> ColorImage {
-    let vertices = model
-        .animation
-        .as_ref()
-        .map(|a| a.vertices(model, seconds.rem_euclid(a.duration())));
+    let pose = model.pose(seconds);
     frame(
         model,
         camera,
         scene,
         size,
-        vertices.as_deref().unwrap_or(&model.vertices),
+        pose.as_ref(),
         Style::Textured,
         seconds,
+        None,
+        16,
     )
 }
 
@@ -116,18 +120,45 @@ pub(crate) fn styled_image(
     if style == Style::Textured {
         return animated_image(model, camera, scene, size, seconds);
     }
-    let vertices = model
-        .animation
-        .as_ref()
-        .map(|a| a.vertices(model, seconds.rem_euclid(a.duration())));
+    let pose = model.pose(seconds);
     frame(
         model,
         camera,
         scene,
         size,
-        vertices.as_deref().unwrap_or(&model.vertices),
+        pose.as_ref(),
         style,
         seconds,
+        None,
+        16,
+    )
+}
+
+/// Background interactive rendering retains one request's edits and leaves CPU capacity
+/// available for authoring, package operations and other previews.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn preview_image(
+    model: &Model,
+    camera: Camera,
+    scene: Scene,
+    size: [usize; 2],
+    seconds: f32,
+    style: Style,
+    overrides: &[super::SurfaceOverride],
+) -> ColorImage {
+    let pose = model.pose(seconds);
+    let workers =
+        std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(2).clamp(1, 4));
+    frame(
+        model,
+        camera,
+        scene,
+        size,
+        pose.as_ref(),
+        style,
+        seconds,
+        Some(overrides),
+        workers,
     )
 }
 
@@ -138,31 +169,21 @@ struct Prepared {
     emitter: bool,
     points: [[f32; 3]; 3],
     uvs: [[f32; 2]; 3],
+    detail_uvs: [[f32; 2]; 3],
     normals: [[f32; 3]; 3],
+    native: Option<Box<super::effects::native::Triangle>>,
     min_y: usize,
     max_y: usize,
 }
 
-fn frame(
-    model: &Model,
-    camera: Camera,
-    scene: Scene,
-    size: [usize; 2],
-    vertices: &[[f32; 3]],
-    style: Style,
-    seconds: f32,
-) -> ColorImage {
-    // The interactive path already picks a small size; the ceiling only bounds an export.
-    let [width, height] = size.map(|v| v.clamp(1, 4096));
-    let background = Color32::from_rgb(
-        scene.background[0],
-        scene.background[1],
-        scene.background[2],
-    );
-    let mut image = ColorImage::new([width, height], background);
-    if model.triangles.is_empty() && model.particle_sources.is_empty() {
-        return image;
-    }
+/// The default framing draws the bounding sphere's radius at this share of the frame's shorter
+/// side, at zoom 1.
+pub(crate) const RADIUS_SCALE: f32 = 0.43;
+
+/// The box around what a frame draws, in the model's rest pose: its triangles, leaving out light
+/// volumes when it has a surface mesh, or its particle sources when it has no triangles. Empty
+/// when there is neither.
+pub(crate) fn drawn_bounds(model: &Model) -> ([f32; 3], [f32; 3]) {
     let hide_light = model.has_surface_mesh();
     let mut low = [f32::INFINITY; 3];
     let mut high = [f32::NEG_INFINITY; 3];
@@ -186,8 +207,12 @@ fn frame(
             }
         }
     }
-    let center: [f32; 3] = std::array::from_fn(|axis| (low[axis] + high[axis]) * 0.5);
-    let radius = (0..3)
+    (low, high)
+}
+
+/// Half the diagonal of `bounds`, the sphere the default framing fits.
+fn framing_radius(model: &Model, (low, high): ([f32; 3], [f32; 3])) -> f32 {
+    (0..3)
         .map(|axis| (high[axis] - low[axis]).powi(2))
         .sum::<f32>()
         .sqrt()
@@ -196,41 +221,162 @@ fn frame(
         } else {
             0.0001
         })
-        * 0.5;
-    let scale = width.min(height) as f32 * 0.43 * camera.zoom / radius;
+        * 0.5
+}
+
+/// Points of a `size` frame per model unit, the scale `frame` draws with at `camera`'s zoom.
+pub(crate) fn screen_scale(
+    model: &Model,
+    bounds: ([f32; 3], [f32; 3]),
+    camera: Camera,
+    size: [f32; 2],
+) -> f32 {
+    size[0].min(size[1]) * RADIUS_SCALE * camera.zoom / framing_radius(model, bounds)
+}
+
+/// Where a model-space point lands in a `size` frame that `frame` draws with `camera` and no
+/// pose: across from the left, down from the top, and toward the viewer.
+pub(crate) fn project(
+    model: &Model,
+    bounds: ([f32; 3], [f32; 3]),
+    camera: Camera,
+    size: [f32; 2],
+    point: [f32; 3],
+) -> [f32; 3] {
+    let (low, high) = bounds;
+    let scale = screen_scale(model, bounds, camera, size);
+    let [x, y, z]: [f32; 3] =
+        std::array::from_fn(|axis| point[axis] - (low[axis] + high[axis]) * 0.5);
     let (sy, cy) = camera.yaw.sin_cos();
     let (sp, cp) = camera.pitch.sin_cos();
+    let forward = sy * x + cy * y;
+    [
+        size[0] * (0.5 + camera.pan[0]) + (cy * x - sy * y) * scale,
+        size[1] * (0.5 + camera.pan[1]) - (sp * forward + cp * z) * scale,
+        (cp * forward - sp * z) * scale,
+    ]
+}
+
+/// The model-space directions that point right and up on screen at `camera`'s angle.
+pub(crate) fn screen_axes(camera: Camera) -> ([f32; 3], [f32; 3]) {
+    let (sy, cy) = camera.yaw.sin_cos();
+    let (sp, cp) = camera.pitch.sin_cos();
+    // A snapped view's trigonometry leaves residues like 6e-17 where an axis is exactly zero.
+    let clean = |v: [f32; 3]| v.map(|c| if c.abs() < 1e-6 { 0.0 } else { c });
+    (clean([cy, -sy, 0.0]), clean([sp * sy, sp * cy, cp]))
+}
+
+/// How much closer than the default framing a `size` frame can come while the outline of
+/// `bounds`, seen from `camera`'s angle, fills `fill` of the frame on its tighter axis. The
+/// default fits the box's circumscribed sphere into the frame's shorter side, which leaves a long
+/// or flat model small, most of all in a wide frame. Never less than 1.
+pub(crate) fn fitted_zoom(
+    model: &Model,
+    bounds: ([f32; 3], [f32; 3]),
+    camera: Camera,
+    size: [f32; 2],
+    fill: f32,
+) -> f32 {
+    let (low, high) = bounds;
+    if (0..3).any(|axis| low[axis] > high[axis]) {
+        return 1.0;
+    }
+    let half: [f32; 3] = std::array::from_fn(|axis| (high[axis] - low[axis]) * 0.5);
+    let (sy, cy) = camera.yaw.sin_cos();
+    let (sp, cp) = camera.pitch.sin_cos();
+    // The box is centered in the frame, so the farthest corner on each axis gives half its
+    // outline there.
+    let (mut across, mut up) = (0.0_f32, 0.0_f32);
+    for corner in 0..8_usize {
+        let [x, y, z]: [f32; 3] = std::array::from_fn(|axis| {
+            if (corner >> axis) & 1 == 0 {
+                -half[axis]
+            } else {
+                half[axis]
+            }
+        });
+        let forward = sy * x + cy * y;
+        across = across.max((cy * x - sy * y).abs());
+        up = up.max((sp * forward + cp * z).abs());
+    }
+    let unit = size[0].min(size[1]) * RADIUS_SCALE / framing_radius(model, bounds);
+    let zoom = (fill * size[0] / (2.0 * across * unit).max(f32::EPSILON))
+        .min(fill * size[1] / (2.0 * up * unit).max(f32::EPSILON));
+    zoom.max(1.0)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn frame(
+    model: &Model,
+    camera: Camera,
+    scene: Scene,
+    size: [usize; 2],
+    pose: Option<&super::animation::Deformed>,
+    style: Style,
+    seconds: f32,
+    overrides: Option<&[super::SurfaceOverride]>,
+    workers: usize,
+) -> ColorImage {
+    let vertices = pose.map_or(model.vertices.as_slice(), |p| p.positions.as_slice());
+    let source_normals = pose.map_or(model.normals.as_slice(), |p| p.normals.as_slice());
+    let source_tangents = pose.map_or(model.tangents.as_slice(), |p| p.tangents.as_slice());
+    // The interactive path already picks a small size; the ceiling only bounds an export.
+    let [width, height] = size.map(|v| v.clamp(1, 4096));
+    let background = Color32::from_rgb(
+        scene.background[0],
+        scene.background[1],
+        scene.background[2],
+    );
+    let mut image = ColorImage::new([width, height], background);
+    if model.triangles.is_empty() && model.particle_sources.is_empty() {
+        return image;
+    }
+    let hide_light = model.has_surface_mesh();
+    let bounds = drawn_bounds(model);
+    let (low, high) = bounds;
+    let bind_center = std::array::from_fn(|axis| (low[axis] + high[axis]) * 0.5);
+    let center = pose.map_or(bind_center, |p| p.framing_center(bind_center));
+    let radius = framing_radius(model, bounds);
+    let scale = width.min(height) as f32 * RADIUS_SCALE * camera.zoom / radius;
+    let (sy, cy) = camera.yaw.sin_cos();
+    let (sp, cp) = camera.pitch.sin_cos();
+    let project_point = |point: [f32; 3]| {
+        let [x, y, z] = std::array::from_fn::<_, 3, _>(|axis| point[axis] - center[axis]);
+        let horizontal = cy * x - sy * y;
+        let forward = sy * x + cy * y;
+        [
+            width as f32 * (0.5 + camera.pan[0]) + horizontal * scale,
+            height as f32 * (0.5 + camera.pan[1]) - (sp * forward + cp * z) * scale,
+            (cp * forward - sp * z) * scale,
+        ]
+    };
     let projected = vertices
         .iter()
-        .map(|point| {
-            let [x, y, z] = std::array::from_fn::<_, 3, _>(|axis| point[axis] - center[axis]);
-            let horizontal = cy * x - sy * y;
+        .copied()
+        .map(project_point)
+        .collect::<Vec<_>>();
+    let dyes = overrides.map_or_else(
+        || super::shader::dyes(model, seconds),
+        |overrides| super::shader::dyes_with_overrides(model, seconds, overrides),
+    );
+    let normals: Vec<[f32; 3]> = source_normals
+        .iter()
+        .map(|&[x, y, z]| {
             let forward = sy * x + cy * y;
             [
-                width as f32 * (0.5 + camera.pan[0]) + horizontal * scale,
-                height as f32 * (0.5 + camera.pan[1]) - (sp * forward + cp * z) * scale,
-                (cp * forward - sp * z) * scale,
+                cy * x - sy * y,
+                -(sp * forward + cp * z),
+                cp * forward - sp * z,
             ]
         })
-        .collect::<Vec<_>>();
-    let dyes = super::shader::dyes(model, seconds);
-    let normals: Vec<[f32; 3]> = if model.animation.is_none() {
-        model
-            .normals
-            .iter()
-            .map(|&[x, y, z]| {
-                let forward = sy * x + cy * y;
-                [
-                    cy * x - sy * y,
-                    -(sp * forward + cp * z),
-                    cp * forward - sp * z,
-                ]
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let prepared: Vec<Prepared> = model
+        .collect();
+    let effect_frames = super::effects::frames(model, seconds);
+    let vertex_frames: Vec<_> = model
+        .effects
+        .iter()
+        .map(|e| e.native.as_ref().and_then(|n| n.vertex_frame(seconds)))
+        .collect();
+    let mut prepared: Vec<Prepared> = model
         .triangles
         .iter()
         .enumerate()
@@ -239,12 +385,57 @@ fn frame(
                 return None;
             }
             if style == Style::Textured
+                && scene.particle_study
                 && !model.particle_sources.is_empty()
                 && model.triangle_emitter.get(index).copied().unwrap_or(false)
             {
                 return None;
             }
-            let points = triangle.map(|v| projected[v as usize]);
+            let mut points = triangle.map(|v| projected[v as usize]);
+            let mut native_triangle = None;
+            if style == Style::Textured {
+                if let Some(effect) = super::effects::index(model, index) {
+                    if let Some(native) = &model.effects[effect].native {
+                        let constants = vertex_frames[effect].as_ref()?;
+                        let corners = triangle.map(|v| vertices[v as usize]);
+                        let ab: [f32; 3] = std::array::from_fn(|i| corners[1][i] - corners[0][i]);
+                        let ac: [f32; 3] = std::array::from_fn(|i| corners[2][i] - corners[0][i]);
+                        let flat = super::shader::normal::normalize([
+                            ab[1] * ac[2] - ab[2] * ac[1],
+                            ab[2] * ac[0] - ab[0] * ac[2],
+                            ab[0] * ac[1] - ab[1] * ac[0],
+                        ])
+                        .unwrap_or([0.0, 0.0, 1.0]);
+                        let mut values = [[[0.0; 4]; 9]; 3];
+                        for (corner, &vertex) in triangle.iter().enumerate() {
+                            let vertex = vertex as usize;
+                            let normal = source_normals
+                                .get(vertex)
+                                .copied()
+                                .and_then(super::shader::normal::normalize)
+                                .unwrap_or(flat);
+                            let uv = model.uvs.get(vertex).copied().unwrap_or_default();
+                            let input = super::effects::native::Input {
+                                position: vertices[vertex],
+                                normal,
+                                tangent: super::effects::native::tangent(
+                                    source_tangents,
+                                    vertex,
+                                    normal,
+                                ),
+                                color: model.colors.get(vertex).copied().unwrap_or([1.0; 4]),
+                                uv,
+                                detail_uv: model.detail_uvs.get(vertex).copied().unwrap_or(uv),
+                            };
+                            values[corner] = native.vertex(&input, constants)?;
+                        }
+                        points = values.map(|v| project_point([v[4][0], v[4][1], v[4][2]]));
+                        native_triangle = Some(Box::new(super::effects::native::Triangle::new(
+                            values, points,
+                        )));
+                    }
+                }
+            }
             let (min_y, max_y) = points
                 .iter()
                 .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| {
@@ -258,75 +449,146 @@ fn frame(
                 emitter: model.triangle_emitter.get(index).copied().unwrap_or(false),
                 points,
                 uvs: triangle.map(|v| model.uvs.get(v as usize).copied().unwrap_or_default()),
+                detail_uvs: triangle.map(|v| {
+                    model
+                        .detail_uvs
+                        .get(v as usize)
+                        .copied()
+                        .unwrap_or_else(|| model.uvs.get(v as usize).copied().unwrap_or_default())
+                }),
                 normals: triangle.map(|v| normals.get(v as usize).copied().unwrap_or([0.0; 3])),
+                native: native_triangle,
                 min_y: min_y.floor().clamp(0.0, height as f32) as usize,
                 max_y: max_y.ceil().clamp(0.0, height as f32) as usize,
             })
         })
         .collect();
+    if style == Style::Textured {
+        prepared.sort_by(|a, b| {
+            let a_effect = super::effects::index(model, a.index).is_some();
+            let b_effect = super::effects::index(model, b.index).is_some();
+            a_effect.cmp(&b_effect).then_with(|| {
+                if a_effect {
+                    b.points
+                        .iter()
+                        .map(|p| p[2])
+                        .sum::<f32>()
+                        .total_cmp(&a.points.iter().map(|p| p[2]).sum::<f32>())
+                } else {
+                    model
+                        .triangle_constant
+                        .get(a.index)
+                        .copied()
+                        .flatten()
+                        .is_some()
+                        .cmp(
+                            &model
+                                .triangle_constant
+                                .get(b.index)
+                                .copied()
+                                .flatten()
+                                .is_some(),
+                        )
+                }
+            })
+        });
+    }
     // Shading is per pixel and CPU-bound, so the rows the model covers are split into bands
     // drawn on every core. Each band owns its pixels and depth and only visits triangles
     // that reach it.
     let first = prepared.iter().map(|t| t.min_y).min().unwrap_or(0);
     let last = prepared.iter().map(|t| t.max_y).max().unwrap_or(0);
     if last <= first {
-        if style == Style::Textured {
+        if style == Style::Textured && scene.particle_study {
             draw_particles(&mut image, model, camera, scene, seconds, center, scale);
         }
         return image;
     }
-    let bands = std::thread::available_parallelism().map_or(1, |n| n.get().min(16));
+    let bands = std::thread::available_parallelism().map_or(1, |n| n.get().min(workers));
     let rows = (last - first).div_ceil(bands).max(1);
     let mut depth = vec![f32::INFINITY; width * (last - first)];
-    let particle_material = (style == Style::Textured)
+    let particle_material = (style == Style::Textured && scene.particle_study)
         .then(|| super::particle_material::prepare(model, seconds))
         .flatten();
-    std::thread::scope(|scope| {
-        for (band, (pixels, depth)) in image.pixels[first * width..last * width]
-            .chunks_mut(rows * width)
-            .zip(depth.chunks_mut(rows * width))
-            .enumerate()
-        {
-            let (prepared, dyes, particle_material) =
-                (&prepared, &dyes, particle_material.as_ref());
-            let top = first + band * rows;
-            let bottom = (top + rows).min(last);
-            scope.spawn(move || {
-                for triangle in prepared {
-                    if triangle.max_y <= top || triangle.min_y >= bottom {
-                        continue;
-                    }
-                    let bindings = super::shader::Bindings::new(model, triangle.index, dyes);
-                    raster(
-                        Band {
-                            pixels,
-                            depth,
-                            width,
-                            top,
-                            bottom,
-                            scene,
-                        },
-                        triangle,
-                        style,
-                        if style == Style::Textured {
-                            bindings
-                        } else {
-                            bindings.clip_only()
-                        },
-                        particle_material.filter(|_| triangle.emitter),
-                    );
-                }
-            });
+    let has_effects =
+        style == Style::Textured && model.triangle_effects.iter().any(Option::is_some);
+    let mut opaque_depth = Vec::new();
+    for transparent in [false, true] {
+        if transparent && !has_effects {
+            break;
         }
-    });
-    if style == Style::Textured {
+        let native_depth = transparent.then_some(super::effects::native::Depth {
+            values: &opaque_depth,
+            size: [width, height],
+            top: first,
+            scale,
+        });
+        std::thread::scope(|scope| {
+            for (band, (pixels, depth)) in image.pixels[first * width..last * width]
+                .chunks_mut(rows * width)
+                .zip(depth.chunks_mut(rows * width))
+                .enumerate()
+            {
+                let (prepared, dyes, particle_material, effect_frames) =
+                    (&prepared, &dyes, particle_material.as_ref(), &effect_frames);
+                let top = first + band * rows;
+                let bottom = (top + rows).min(last);
+                scope.spawn(move || {
+                    for triangle in prepared {
+                        let is_effect = style == Style::Textured
+                            && super::effects::index(model, triangle.index).is_some();
+                        if is_effect != transparent
+                            || triangle.max_y <= top
+                            || triangle.min_y >= bottom
+                        {
+                            continue;
+                        }
+                        let bindings = super::shader::Bindings::new(model, triangle.index, dyes);
+                        raster(
+                            Band {
+                                pixels,
+                                depth,
+                                width,
+                                top,
+                                bottom,
+                                scene,
+                                scale,
+                                native_depth,
+                                view_direction: [-cp * sy, -cp * cy, sp],
+                                view_distance: (radius * 4.0).max(1.0),
+                            },
+                            triangle,
+                            style,
+                            if style == Style::Textured {
+                                bindings
+                            } else {
+                                bindings.clip_only()
+                            },
+                            particle_material.filter(|_| triangle.emitter),
+                            if style == Style::Textured {
+                                super::effects::index(model, triangle.index).map(|index| {
+                                    (model, &model.effects[index], effect_frames[index].as_ref())
+                                })
+                            } else {
+                                None
+                            },
+                        );
+                    }
+                });
+            }
+        });
+        if !transparent && has_effects {
+            opaque_depth.clone_from(&depth);
+        }
+    }
+    if style == Style::Textured && scene.particle_study {
         draw_particles(&mut image, model, camera, scene, seconds, center, scale);
     }
     image
 }
 
-/// Screen-facing sprites make an effect's packaged image visible while the native parameter
-/// program remains unevaluated. The emitter mesh supplies origins and a rough outward drift.
+/// Explicit sprite study using synthetic placement and drift. This does not evaluate
+/// native emitter activation, spawning, attachment or motion.
 fn draw_particles(
     image: &mut ColorImage,
     model: &Model,
@@ -407,10 +669,77 @@ struct Band<'a> {
     top: usize,
     bottom: usize,
     scene: Scene,
+    scale: f32,
+    native_depth: Option<super::effects::native::Depth<'a>>,
+    view_direction: [f32; 3],
+    view_distance: f32,
 }
 
-fn edge(a: [f32; 3], b: [f32; 3], x: f32, y: f32) -> f32 {
-    (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0])
+fn edge(a: [f32; 3], b: [f32; 3], x: f32, y: f32) -> f64 {
+    // Shared edges must make the same coverage decision in both triangles.
+    (f64::from(b[0]) - f64::from(a[0])) * (f64::from(y) - f64::from(a[1]))
+        - (f64::from(b[1]) - f64::from(a[1])) * (f64::from(x) - f64::from(a[0]))
+}
+
+struct EffectSample<'a> {
+    barycentric: [f32; 2],
+    flat: [f32; 3],
+    gap: f32,
+    exposure: f32,
+    native: Option<super::effects::native::Pixel<'a>>,
+}
+
+fn effect_color(
+    triangle: &Prepared,
+    material: &super::shader::Bindings<'_>,
+    (model, effect, frame): (
+        &Model,
+        &super::effects::Material,
+        Option<&super::effects::Frame>,
+    ),
+    sample: EffectSample<'_>,
+) -> [f32; 4] {
+    let EffectSample {
+        barycentric: [b, c],
+        flat,
+        gap,
+        exposure,
+        native,
+    } = sample;
+    let Some(frame) = frame else {
+        return [0.0; 4];
+    };
+    if let Some(pixel) = native {
+        return super::effects::native::sample(model, effect, frame, material, pixel);
+    }
+    let normals = triangle.normals;
+    let uv = std::array::from_fn(|i| {
+        triangle.uvs[0][i]
+            + b * (triangle.uvs[1][i] - triangle.uvs[0][i])
+            + c * (triangle.uvs[2][i] - triangle.uvs[0][i])
+    });
+    let normal = super::shader::normal::normalize(std::array::from_fn(|i| {
+        normals[0][i] + b * (normals[1][i] - normals[0][i]) + c * (normals[2][i] - normals[0][i])
+    }))
+    .unwrap_or(flat);
+    let detail_uv = std::array::from_fn(|i| {
+        triangle.detail_uvs[0][i]
+            + b * (triangle.detail_uvs[1][i] - triangle.detail_uvs[0][i])
+            + c * (triangle.detail_uvs[2][i] - triangle.detail_uvs[0][i])
+    });
+    super::effects::sample(
+        model,
+        effect,
+        frame,
+        material,
+        super::effects::Pixel {
+            uv,
+            detail_uv,
+            facing: normal[2],
+            gap,
+            exposure,
+        },
+    )
 }
 
 fn raster(
@@ -419,13 +748,18 @@ fn raster(
     style: Style,
     material: super::shader::Bindings<'_>,
     particle_material: Option<&super::particle_material::State<'_>>,
+    effect: Option<(
+        &super::Model,
+        &super::effects::Material,
+        Option<&super::effects::Frame>,
+    )>,
 ) {
     let p = triangle.points;
     let uvs = triangle.uvs;
     let normals = triangle.normals;
     let width = band.width;
-    let tint = material.tint();
-    let area = edge(p[0], p[1], p[2][0], p[2][1]);
+    let signed_area = edge(p[0], p[1], p[2][0], p[2][1]);
+    let area = signed_area as f32;
     if !area.is_finite() || area.abs() < 0.0001 {
         return;
     }
@@ -453,37 +787,37 @@ fn raster(
     let length = n.iter().map(|v| v * v).sum::<f32>().sqrt().max(0.0001);
     let basis = super::shader::normal::Basis::triangle(p, uvs);
     let key = band.scene.raster_light();
-    let lighting = band.scene.fill
-        + band.scene.key
-            * ((n[0] * key[0] + n[1] * key[1] + n[2] * key[2]) / length)
-                .abs()
-                .min(1.0);
     let exposure = band.scene.exposure;
-    let color = Color32::from_rgb(
-        (205.0 * lighting * exposure).min(255.0) as u8,
-        (216.0 * lighting * exposure).min(255.0) as u8,
-        (230.0 * lighting * exposure).min(255.0) as u8,
-    );
     let edge_lengths = [(1, 2), (2, 0), (0, 1)].map(|(a, b)| {
         ((p[a][0] - p[b][0]).powi(2) + (p[a][1] - p[b][1]).powi(2))
             .sqrt()
             .max(0.0001)
     });
+    let inclusive = [(1, 2), (2, 0), (0, 1)].map(|(a, b)| {
+        let (a, b) = if area > 0.0 { (a, b) } else { (b, a) };
+        p[b][1] < p[a][1] || (p[b][1] == p[a][1] && p[b][0] > p[a][0])
+    });
     for y in min_y..max_y {
         for x in min_x..max_x {
             let px = x as f32 + 0.5;
             let py = y as f32 + 0.5;
-            let a = edge(p[1], p[2], px, py) / area;
-            let b = edge(p[2], p[0], px, py) / area;
-            let c = 1.0 - a - b;
-            if a < 0.0 || b < 0.0 || c < 0.0 {
+            let edges = [
+                edge(p[1], p[2], px, py),
+                edge(p[2], p[0], px, py),
+                edge(p[0], p[1], px, py),
+            ];
+            // The top-left rule also prevents additive materials from drawing seams twice.
+            if edges.into_iter().zip(inclusive).any(|(edge, inclusive)| {
+                edge * signed_area.signum() < 0.0 || (edge == 0.0 && !inclusive)
+            }) {
                 continue;
             }
-            let z = a * p[0][2] + b * p[1][2] + c * p[2][2];
+            let [a, b, c] = edges.map(|edge| (edge / signed_area) as f32);
+            let z = p[0][2] + b * (p[1][2] - p[0][2]) + c * (p[2][2] - p[0][2]);
             let index = (y - band.top) * width + x;
             // Emissive panels share their surface's depth and are drawn later, so they pass on
             // equality.
-            let covered = if material.constant.is_some() {
+            let covered = if material.constant.is_some() || effect.is_some() {
                 z > band.depth[index]
             } else {
                 z >= band.depth[index]
@@ -491,8 +825,45 @@ fn raster(
             if covered {
                 continue;
             }
-            let uv: [f32; 2] =
-                std::array::from_fn(|axis| a * uvs[0][axis] + b * uvs[1][axis] + c * uvs[2][axis]);
+            let uv: [f32; 2] = std::array::from_fn(|axis| {
+                uvs[0][axis] + b * (uvs[1][axis] - uvs[0][axis]) + c * (uvs[2][axis] - uvs[0][axis])
+            });
+            if let Some(effect) = effect {
+                let gap = ((band.depth[index] - z) / band.scale).clamp(0.0, 1e6);
+                let color = effect_color(
+                    triangle,
+                    &material,
+                    effect,
+                    EffectSample {
+                        barycentric: [b, c],
+                        flat: n.map(|v| v / length),
+                        gap,
+                        exposure,
+                        native: triangle.native.as_ref().zip(band.native_depth).map(
+                            |(native, depth)| super::effects::native::Pixel {
+                                varyings: native.at(b, c),
+                                dx: native.dx,
+                                dy: native.dy,
+                                screen: [px, py, z],
+                                direction: band.view_direction,
+                                distance: band.view_distance,
+                                front: area < 0.0,
+                                depth,
+                                exposure,
+                            },
+                        ),
+                    },
+                );
+                let base = band.pixels[index].to_array();
+                let mixed = std::array::from_fn::<_, 3, _>(|i| {
+                    super::shader::encode(
+                        super::shader::linear(f32::from(base[i]) / 255.0) * (1.0 - color[3])
+                            + color[i],
+                    )
+                });
+                band.pixels[index] = Color32::from_rgb(mixed[0], mixed[1], mixed[2]);
+                continue;
+            }
             if let Some(particle) = particle_material {
                 let color = particle.sample(uv, exposure);
                 let base = band.pixels[index];
@@ -506,6 +877,25 @@ fn raster(
             if !material.covers(uv) {
                 continue;
             }
+            let panel = material.constant.map(|_| {
+                material
+                    .albedo
+                    .map_or([1.0; 4], |texture| texture.sample_color(uv))
+            });
+            if panel.is_some_and(|base| base[3] < 0.5) {
+                continue;
+            }
+            let smooth = std::array::from_fn(|i| {
+                normals[0][i]
+                    + b * (normals[1][i] - normals[0][i])
+                    + c * (normals[2][i] - normals[0][i])
+            });
+            let geometric = super::shader::normal::normalize(smooth)
+                .unwrap_or_else(|| n.map(|v| if n[2] > 0.0 { -v / length } else { v / length }));
+            let basis = basis.map(|basis| basis.with_normal(geometric));
+            let normal = basis.map_or(geometric, |basis| basis.normal);
+            let lighting = band.scene.fill
+                + band.scene.key * super::shader::normal::dot(geometric, key).abs().min(1.0);
             {
                 band.depth[index] = z;
                 band.pixels[index] = if style == Style::Wireframe {
@@ -522,37 +912,51 @@ fn raster(
                             band.scene.background[2],
                         )
                     }
-                } else if let Some(constant) = material.constant {
-                    // Panel art lives in the colour plate: alpha cuts the segments, colour
-                    // tints them, and the constant supplies the glow.
-                    let base = material
-                        .albedo
-                        .map_or([255.0; 4], |texture| texture.sample_rgba(uv));
-                    if base[3] < 128.0 {
-                        continue;
-                    }
-                    let rgb: [u8; 3] = std::array::from_fn(|i| {
-                        super::shader::encode(constant[i] * super::shader::linear(base[i] / 255.0))
-                    });
-                    Color32::from_rgb(rgb[0], rgb[1], rgb[2])
-                } else if let Some(texture) = material.albedo {
-                    let smooth = std::array::from_fn(|i| {
-                        a * normals[0][i] + b * normals[1][i] + c * normals[2][i]
-                    });
-                    let basis = basis.map(|basis| basis.with_normal(smooth));
-                    let normal = basis.map_or_else(|| n.map(|v| v / length), |b| b.normal);
-                    let rgb = material
-                        .shade(uv, normal, basis, band.scene)
-                        .unwrap_or_else(|| shade(texture.sample(uv), tint, lighting, exposure));
-                    Color32::from_rgb(rgb[0], rgb[1], rgb[2])
-                } else if tint.is_some() {
-                    let rgb = shade([255.0; 3], tint, lighting, exposure);
-                    Color32::from_rgb(rgb[0], rgb[1], rgb[2])
                 } else {
-                    color
+                    surface_color(&material, uv, normal, basis, band.scene, panel, lighting)
                 };
             }
         }
+    }
+}
+
+fn surface_color(
+    material: &super::shader::Bindings<'_>,
+    uv: [f32; 2],
+    normal: [f32; 3],
+    basis: Option<super::shader::normal::Basis>,
+    scene: Scene,
+    panel: Option<[f32; 4]>,
+    lighting: f32,
+) -> Color32 {
+    let exposure = scene.exposure;
+    let tint = material.tint();
+    if let Some(constant) = material.constant {
+        // Panel art lives in the colour plate: alpha cuts the segments, colour
+        // tints them, and the constant supplies the glow.
+        let base = panel.unwrap_or([1.0; 4]);
+        let rgb: [u8; 3] =
+            std::array::from_fn(|i| super::shader::encode(constant[i] * base[i] * exposure));
+        Color32::from_rgb(rgb[0], rgb[1], rgb[2])
+    } else if let Some(texture) = material.albedo {
+        let rgb = material.shade(uv, normal, basis, scene).unwrap_or_else(|| {
+            let base = texture.sample_color(uv);
+            std::array::from_fn(|i| {
+                (super::shader::encoded(base[i]) * 255.0 * lighting * exposure)
+                    .clamp(0.0, 255.0)
+                    .round() as u8
+            })
+        });
+        Color32::from_rgb(rgb[0], rgb[1], rgb[2])
+    } else if tint.is_some() {
+        let rgb = shade([255.0; 3], tint, lighting, exposure);
+        Color32::from_rgb(rgb[0], rgb[1], rgb[2])
+    } else {
+        Color32::from_rgb(
+            (205.0 * lighting * exposure).clamp(0.0, 255.0) as u8,
+            (216.0 * lighting * exposure).clamp(0.0, 255.0) as u8,
+            (230.0 * lighting * exposure).clamp(0.0, 255.0) as u8,
+        )
     }
 }
 

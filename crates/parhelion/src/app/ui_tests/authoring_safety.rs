@@ -72,20 +72,8 @@ fn frame(
 }
 
 fn click(ctx: &egui::Context, pos: egui::Pos2, mut draw: impl FnMut(&mut egui::Ui)) {
-    for pressed in [true, false] {
-        frame(
-            ctx,
-            vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
-            &mut draw,
-        );
+    for events in crate::test_support::driver::tap(pos) {
+        frame(ctx, events, &mut draw);
     }
 }
 
@@ -193,13 +181,14 @@ fn stat_maximum_without_minimum_clamps_edits_but_not_existing_values() {
     let before = values.clone();
     let mut removed = vec![];
     render(640.0, |ui| {
-        draw_investment_stats(ui, &mut values, &mut removed, &donor, false)
+        draw_investment_stats(ui, &mut values, &mut removed, &donor, false, &[])
     });
     assert_eq!(values, before);
     values[0].value = 99;
     let ctx = egui::Context::default();
-    let mut draw =
-        |ui: &mut egui::Ui| draw_investment_stats(ui, &mut values, &mut removed, &donor, false);
+    let mut draw = |ui: &mut egui::Ui| {
+        draw_investment_stats(ui, &mut values, &mut removed, &donor, false, &[])
+    };
     frame(&ctx, vec![], &mut draw);
     let output = frame(&ctx, vec![], &mut draw);
     let pos = text_origin(&output, "99") + egui::vec2(8.0, 6.0);

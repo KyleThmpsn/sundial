@@ -6,12 +6,14 @@ use std::{hash::Hash, path::Path};
 
 pub use crate::ui_help::tooltip_title;
 pub use authoring_bridge::{
-    AUTHORING_SOCKET_RESET_WIDTH, authoring_button_width, authoring_socket_label_width,
-    authoring_socket_reset_width, configure_fonts as configure_authoring_fonts,
-    default_plug_selection_mode, draw_asset_choice_row, draw_asset_choice_row_plain,
-    draw_authoring_info_icon, draw_authoring_plug_safety_warning as draw_plug_safety_warning,
-    draw_authoring_socket_label, draw_authoring_socket_reset, draw_authoring_toolbar,
-    draw_authoring_warning_icon, draw_plug_safety_selector, show_plug_safety_warnings,
+    AUTHORING_SOCKET_RESET_WIDTH, AuthoringItemHeader, WeaponChoiceFilter, authoring_button_width,
+    authoring_socket_label_width, authoring_socket_reset_width,
+    configure_fonts as configure_authoring_fonts, default_plug_selection_mode,
+    draw_asset_choice_row, draw_asset_choice_row_plain, draw_authoring_info_icon,
+    draw_authoring_item_header, draw_authoring_plug_safety_warning as draw_plug_safety_warning,
+    draw_authoring_socket_label, draw_authoring_socket_reset, draw_authoring_tile,
+    draw_authoring_toolbar, draw_authoring_warning_icon, draw_plug_safety_selector,
+    show_plug_safety_warnings,
 };
 
 /// Consistent loading and build progress appearance across both applications.
@@ -104,6 +106,9 @@ pub struct WeaponDonorPickerOptions<'a> {
     /// Optional second line for a candidate row, keyed on its item hash. Used where the weapon
     /// name alone does not say what picking it brings, such as the perks a behavior carries.
     pub row_detail: Option<&'a dyn Fn(u32) -> Option<String>>,
+    /// Optional line under the selected card's name in place of its item type, such as an armor
+    /// piece's slot, class and generation.
+    pub selected_detail: Option<&'a str>,
 }
 
 /// A selection made through Sundial's native icon-backed weapon browser.
@@ -222,6 +227,25 @@ impl InvestmentCatalog {
         container: u32,
     ) -> Option<egui::TextureHandle> {
         self.catalog.subclass_icon_texture(ctx, container)
+    }
+
+    /// The icon container of an emblem's nameplate art.
+    #[must_use]
+    pub fn nameplate_container(&self, emblem_hash: u32) -> Option<u32> {
+        self.catalog
+            .secondary_icon_container(u64::from(emblem_hash))
+    }
+
+    /// One image of an emblem's nameplate at its own size, by its icon container layer: the banner
+    /// (+0x14), the overlay (+0x20) or the wide background (+0x24).
+    pub fn nameplate_texture(
+        &self,
+        ctx: &egui::Context,
+        emblem_hash: u32,
+        layer_offset: usize,
+    ) -> Option<egui::TextureHandle> {
+        self.catalog
+            .secondary_icon_texture(ctx, u64::from(emblem_hash), layer_offset)
     }
 
     pub fn draw_perk_row_with_icon(
@@ -344,29 +368,6 @@ impl InvestmentCatalog {
         }
     }
 
-    /// Opens a menu from a compact trigger carrying an installed item's artwork and label.
-    ///
-    /// The artwork is drawn without the stock plate, watermark or foreground overlay, and
-    /// `cleared_color` removes one flat color from the artwork itself, so the trigger shows the
-    /// appearance rather than the stock item's presentation.
-    pub fn draw_item_menu_button<R>(
-        &self,
-        ui: &mut egui::Ui,
-        icon_hash: Option<u32>,
-        cleared_color: Option<[u8; 3]>,
-        label: &str,
-        contents: impl FnOnce(&mut egui::Ui) -> R,
-    ) -> egui::InnerResponse<Option<R>> {
-        authoring_bridge::draw_catalog_menu_button(
-            ui,
-            &self.catalog,
-            icon_hash,
-            cleared_color,
-            label,
-            contents,
-        )
-    }
-
     /// Renders Sundial's native item header as the trigger for the searchable donor browser.
     /// Each browser owns its filters so one selection cannot silently hide another's candidates.
     pub fn draw_weapon_donor_header_picker<'a>(
@@ -430,6 +431,58 @@ impl InvestmentCatalog {
                 Some(WeaponDonorPickerAction::Secondary)
             }
         })
+    }
+
+    /// The donor browser opened from `trigger`, a control the caller drew, such as a row naming
+    /// the weapon that supplies one part of another.
+    pub fn draw_weapon_donor_picker_from<'a>(
+        &self,
+        ui: &mut egui::Ui,
+        trigger: egui::Response,
+        scope: impl Hash,
+        query: &mut String,
+        candidates: impl IntoIterator<Item = &'a WeaponDonorSummary>,
+        options: WeaponDonorPickerOptions<'_>,
+    ) -> Option<WeaponDonorPickerAction> {
+        let candidates = candidates.into_iter().collect::<Vec<_>>();
+        authoring_bridge::draw_weapon_donor_picker_from(
+            ui,
+            &self.catalog,
+            scope,
+            query,
+            &candidates,
+            options,
+            trigger,
+        )
+        .and_then(|action| match action {
+            authoring_bridge::InvestmentWeaponPickerAction::Select(hash) => u32::try_from(hash)
+                .ok()
+                .map(WeaponDonorPickerAction::Select),
+            authoring_bridge::InvestmentWeaponPickerAction::Clear => {
+                Some(WeaponDonorPickerAction::Clear)
+            }
+            authoring_bridge::InvestmentWeaponPickerAction::Secondary => {
+                Some(WeaponDonorPickerAction::Secondary)
+            }
+        })
+    }
+
+    /// The donor pickers' weapon filter bar, over the weapon types `weapons` offer, for a list
+    /// whose choices each belong to a weapon. Returns whether a control was used.
+    pub fn draw_weapon_choice_filters(
+        &self,
+        ui: &mut egui::Ui,
+        id_salt: impl Hash + Clone,
+        weapons: &[u32],
+        filter: &mut WeaponChoiceFilter,
+    ) -> bool {
+        authoring_bridge::draw_weapon_choice_filters(ui, &self.catalog, id_salt, weapons, filter)
+    }
+
+    /// Whether `weapon` passes `filter`.
+    #[must_use]
+    pub fn weapon_choice_passes(&self, weapon: u32, filter: &WeaponChoiceFilter) -> bool {
+        authoring_bridge::weapon_choice_passes(&self.catalog, weapon, filter)
     }
 
     /// The appearance donor browser keeps inspection separate from applying a candidate.

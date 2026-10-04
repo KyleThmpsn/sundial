@@ -263,7 +263,7 @@ fn build_worker_events_update_progress_then_finish_with_an_error() {
 }
 
 #[test]
-fn successful_build_event_enters_completed_install_ready_state() {
+fn successful_build_event_reports_completion() {
     let mut app = PackageAuthoringApp::default();
     let (sender, receiver) = mpsc::channel();
     app.build_receiver = Some(receiver);
@@ -287,7 +287,7 @@ fn successful_build_event_enters_completed_install_ready_state() {
     assert!(matches!(app.latest_build, Some(Ok(_))));
     let progress = app.build_progress.as_ref().unwrap();
     assert_eq!(progress.phase, BuildPhase::Complete);
-    assert_eq!((progress.completed, progress.total), (1, 1));
+    assert_eq!(progress.fraction(), 1.0);
     assert_eq!(progress.elapsed, Duration::from_secs(3));
 }
 

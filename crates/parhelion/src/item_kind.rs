@@ -19,16 +19,19 @@ pub enum ItemKind {
     GhostShell,
     Shader,
     Subclass,
+    Emblem,
 }
 
 impl ItemKind {
-    /// Menu order: weapons, armor, then the rest of the loadout, shaders and subclasses.
-    pub const ALL: [Self; 7] = [
+    /// Menu order: weapons, armor, then the rest of the loadout, emblems, shaders and subclasses.
+    /// Declaration order stays the order kinds were added, which gear pages are allocated in.
+    pub const ALL: [Self; 8] = [
         Self::Weapon,
         Self::Armor,
         Self::Sparrow,
         Self::Ship,
         Self::GhostShell,
+        Self::Emblem,
         Self::Shader,
         Self::Subclass,
     ];
@@ -49,6 +52,7 @@ impl ItemKind {
             Self::GhostShell => "Ghost Shell",
             Self::Shader => "Shader",
             Self::Subclass => "Subclass",
+            Self::Emblem => "Emblem",
         }
     }
 
@@ -62,6 +66,7 @@ impl ItemKind {
             Self::GhostShell => "Ghost Shells",
             Self::Shader => "Shaders",
             Self::Subclass => "Subclasses",
+            Self::Emblem => "Emblems",
         }
     }
 
@@ -76,7 +81,15 @@ impl ItemKind {
             Self::GhostShell => "Ghost Shell",
             Self::Shader => "shader",
             Self::Subclass => "subclass",
+            Self::Emblem => "emblem",
         }
+    }
+
+    /// Whether the item can show a lore tab. A shader is a plug with no lore block, and none of the
+    /// 484 stock emblems carries one either.
+    #[must_use]
+    pub const fn has_lore_tab(self) -> bool {
+        !matches!(self, Self::Shader | Self::Emblem)
     }
 
     /// Flavor text a new recipe starts with.
@@ -90,6 +103,7 @@ impl ItemKind {
             Self::GhostShell => "A Ghost Shell authored with Parhelion.",
             Self::Shader => "A shader authored with Parhelion.",
             Self::Subclass => "A subclass authored with Parhelion.",
+            Self::Emblem => "An emblem authored with Parhelion.",
         }
     }
 
@@ -110,6 +124,7 @@ impl ItemKind {
             Self::GhostShell => &[4_023_194_814],
             Self::Shader => &[2_973_005_342],
             Self::Subclass => &[3_284_755_031],
+            Self::Emblem => &[4_274_335_291],
         }
     }
 
@@ -127,6 +142,7 @@ impl ItemKind {
             Self::Shader => &[(14, 0)],
             // Equipment slot 0 with the second byte set, as all nine stock subclasses carry it.
             Self::Subclass => &[(16, 0x0100)],
+            Self::Emblem => &[(27, 13)],
         }
     }
 

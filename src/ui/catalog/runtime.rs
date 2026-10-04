@@ -2,7 +2,7 @@
 
 use eframe::egui;
 
-use crate::weapon_runtime::{
+use crate::runtime::{
     WeaponRuntimeField, WeaponRuntimeFieldSource, WeaponRuntimeGraph, WeaponRuntimeOwner,
     WeaponRuntimeResource, WeaponRuntimeRoot,
 };
@@ -355,8 +355,8 @@ pub(crate) fn export_field(field: &WeaponRuntimeField) -> serde_json::Value {
     })
 }
 
-use crate::weapon_runtime::presentation::field_tooltip;
-pub(crate) use crate::weapon_runtime::presentation::{exact_value_text, value_text};
+use crate::runtime::presentation::field_tooltip;
+pub(crate) use crate::runtime::presentation::{exact_value_text, value_text};
 
 #[cfg(test)]
 mod tests;

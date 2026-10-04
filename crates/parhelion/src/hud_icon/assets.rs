@@ -13,20 +13,26 @@ use tiger_pkg::TagHash;
 pub(crate) const TABLE: TagHash = TagHash(0x80EFC07B);
 const LAYER: TagHash = TagHash(0x80B47176);
 const TEXTURE: TagHash = TagHash(0x80B464EB);
+/// The ammunition row every authored ammunition HUD row copies.
+const AMMUNITION_TEMPLATE: u32 = 0x08491234;
 const ROW_SIZE: usize = 112;
-fn add_rows(mut table: Vec<u8>, added: &[(u32, TagHash)]) -> AuthoringResult<Vec<u8>> {
+
+/// The rows of a native HUD icon table (class `0x80804A55`), by key. The ammunition HUD bank and
+/// the HUD status table share the layout: a terminal array of 112-byte rows, each a key and the
+/// icon layer it shows, sorted by key.
+pub(crate) fn table_rows(table: &[u8]) -> AuthoringResult<BTreeMap<u32, Vec<u8>>> {
     let count =
-        usize::try_from(read_u64(&table, 8)?).map_err(|_| invalid("HUD row count overflow"))?;
-    let header = relative_target(&table, 16)?;
+        usize::try_from(read_u64(table, 8)?).map_err(|_| invalid("HUD row count overflow"))?;
+    let header = relative_target(table, 16)?;
     if count == 0
         || count > 4096
         || header != 32
-        || read_u64(&table, header)? != count as u64
-        || read_u32(&table, header - 4)? != 0x80809FBD
-        || read_u32(&table, header + 8)? != 0x80804A59
+        || read_u64(table, header)? != count as u64
+        || read_u32(table, header - 4)? != 0x80809FBD
+        || read_u32(table, header + 8)? != 0x80804A59
         || table.len() != 48 + count * ROW_SIZE
     {
-        return Err(invalid("Unsupported ammunition HUD icon table layout"));
+        return Err(invalid("Unsupported HUD icon table layout"));
     }
     let mut rows = BTreeMap::new();
     for row in table[48..].chunks_exact(ROW_SIZE) {
@@ -34,20 +40,49 @@ fn add_rows(mut table: Vec<u8>, added: &[(u32, TagHash)]) -> AuthoringResult<Vec
             return Err(invalid("Duplicate native HUD icon key"));
         }
     }
+    Ok(rows)
+}
+
+/// `table` with each of `added` copying `template`'s row under a new key and naming its layer.
+pub(crate) fn add_rows(
+    table: Vec<u8>,
+    added: &[(u32, TagHash)],
+    template: u32,
+) -> AuthoringResult<Vec<u8>> {
+    let rows = table_rows(&table)?;
     let template = rows
-        .get(&0x08491234)
+        .get(&template)
         .ok_or_else(|| invalid("Missing audited HUD row template"))?
         .clone();
-    for &(key, layer) in added {
-        if [0, u32::MAX, 0x811C9DC5].contains(&key) || rows.contains_key(&key) {
+    let added = added
+        .iter()
+        .map(|&(key, layer)| {
+            let mut row = template.clone();
+            write_u32(&mut row, 0, key)?;
+            write_u32(&mut row, 4, layer.0)?;
+            Ok((key, row))
+        })
+        .collect::<AuthoringResult<Vec<_>>>()?;
+    insert_rows(table, rows, added)
+}
+
+/// `table` with `added` rows inserted in key order. A key may not repeat a row's.
+pub(crate) fn insert_rows(
+    mut table: Vec<u8>,
+    mut rows: BTreeMap<u32, Vec<u8>>,
+    added: Vec<(u32, Vec<u8>)>,
+) -> AuthoringResult<Vec<u8>> {
+    for (key, row) in added {
+        if [0, u32::MAX, 0x811C9DC5].contains(&key) || row.len() != ROW_SIZE {
+            return Err(invalid(format!(
+                "HUD icon key {key:08X} is not a valid row"
+            )));
+        }
+        if rows.insert(key, row).is_some() {
             return Err(invalid(format!(
                 "HUD icon key {key:08X} collides with an existing row"
             )));
         }
-        let mut row = template.clone();
-        write_u32(&mut row, 0, key)?;
-        write_u32(&mut row, 4, layer.0)?;
-        rows.insert(key, row);
     }
     table.truncate(48);
     write_u64(&mut table, 8, rows.len() as u64)?;
@@ -149,6 +184,6 @@ pub(crate) fn build<'a>(
     }
     Ok(Some(ReplacementSpec {
         tag: TABLE,
-        payload: add_rows(table, &rows)?,
+        payload: add_rows(table, &rows, AMMUNITION_TEMPLATE)?,
     }))
 }

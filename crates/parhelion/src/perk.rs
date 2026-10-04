@@ -8,9 +8,18 @@ use crate::{
 };
 
 mod bundled;
+#[cfg(feature = "d2-model-importer")]
+pub mod import;
 pub mod library;
+pub(crate) mod preflight;
+pub(crate) mod verification;
 
 const SCHEMA: u32 = 1;
+/// How many sandbox-perk entries Sunrise reads from one item or plug: `items::kSandboxPerkCapacity`
+/// in its package reader, which Dawn shares, and where `read_sandbox_perks` returns.
+/// Everything at Once's fifth and sixth effects never fired in game on 2026-09-27 while its
+/// first four did.
+pub(crate) const SANDBOX_PERK_CAPACITY: usize = 4;
 /// An ordinary native trait plug supplies the item layout for a new document.
 /// Its effects are always replaced by the explicit authored effect list.
 pub const DEFAULT_PLUG_LAYOUT: u32 = 0x45A0_BDD7;
@@ -67,6 +76,21 @@ pub struct PerkRecipe {
     pub stats: Vec<WeaponStatOverride>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<WeaponSandboxPerkRuntimeRecipe>,
+    /// Native configurations copied from the catalog, retained across library round trips.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<CatalogSource>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogSource {
+    pub effect: u16,
+    pub group: usize,
+    pub role: String,
+    pub kind: u8,
+    pub stock_perk: Option<u16>,
+    pub native_sha256: String,
+    pub client_build: String,
 }
 
 impl Default for PerkRecipe {
@@ -95,6 +119,7 @@ impl PerkRecipe {
             classification: None,
             stats: Vec::new(),
             effects: Vec::new(),
+            sources: Vec::new(),
         }
     }
 

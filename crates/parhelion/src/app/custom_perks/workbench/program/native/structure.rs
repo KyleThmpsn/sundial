@@ -1,6 +1,7 @@
 //! Authoring edits to native lists. Copy the owning list before changing its rows.
 use super::*;
 use sundial::package_authoring::sandbox_perk::action;
+use sundial::package_authoring::sandbox_perk::action::native::NodeKind as NativeNodeKind;
 
 #[derive(Clone, Copy)]
 pub(super) enum Part {
@@ -31,6 +32,8 @@ impl Part {
 pub(super) enum Edit {
     AddGroup,
     Add(NativeNode),
+    /// Catalog insertion carries the node exactly and leaves the behavior's ending alone.
+    AddVerbatim(NativeNode),
     /// Nodes added in order, all or none.
     AddAll(Vec<NativeNode>),
     Replace(usize, NativeNode),
@@ -426,12 +429,12 @@ impl List {
         let owner = unique(&mut changed, &self.owner)?;
         if self.class == 0 {
             match edit {
-                Edit::Add(node) | Edit::Replace(0, node) => {
+                Edit::Add(node) | Edit::AddVerbatim(node) | Edit::Replace(0, node) => {
                     let class = nodes::condition(node.kind)
                         .ok_or("Unknown condition kind.")?
                         .class;
                     let source = Graph::read(&node.bytes, 0, class)?;
-                    source.validate_node(true, node.kind)?;
+                    source.validate_node(NativeNodeKind::Condition(node.kind))?;
                     let target = changed.append(&source)?;
                     changed.blocks[owner].links.insert(self.field, target);
                 }
@@ -469,19 +472,18 @@ impl List {
                 _ => None,
             };
             match edit {
-                Edit::Add(node) | Edit::Replace(_, node) => {
+                Edit::Add(node) | Edit::AddVerbatim(node) | Edit::Replace(_, node) => {
                     if replacement.is_none() && count >= 256 {
                         return Err("This list has reached its entry limit.".into());
                     }
-                    let class = if reversed {
-                        nodes::effect(node.kind)
+                    let kind = if reversed {
+                        NativeNodeKind::Effect(node.kind)
                     } else {
-                        nodes::condition(node.kind)
-                    }
-                    .ok_or("Unknown node kind.")?
-                    .class;
+                        NativeNodeKind::Condition(node.kind)
+                    };
+                    let class = kind.entry().ok_or("Unknown node kind.")?.class;
                     let source = Graph::read(&node.bytes, 0, class)?;
-                    source.validate_node(!reversed, node.kind)?;
+                    source.validate_node(kind)?;
                     let target = changed.append(&source)?;
                     if let Some(index) = replacement {
                         rows.get_mut(index)

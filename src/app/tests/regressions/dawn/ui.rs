@@ -15,6 +15,9 @@ fn sunrise_and_dawn_v6_show_no_conversion_or_format_warning() {
                 app.draw_runtime_banner(ctx);
                 egui::CentralPanel::default().show(ctx, |ui| app.draw_runtime_preferences(ui));
             });
+            assert!(output.shapes.iter().any(|shape| matches!(
+                &shape.shape, egui::Shape::Text(text) if text.galley.text().contains("Recheck Runtime Copies")
+            )), "runtime controls must actually render");
             for shape in output.shapes {
                 if let egui::Shape::Text(text) = shape.shape {
                     assert!(!text.galley.text().contains("requires settings"));
@@ -26,7 +29,7 @@ fn sunrise_and_dawn_v6_show_no_conversion_or_format_warning() {
 }
 
 #[test]
-fn runtime_preferences_show_dawn_and_the_v18_account_mismatch() {
+fn runtime_preferences_show_dawn_without_a_sunrise_storage_warning() {
     for theme in [egui::Theme::Dark, egui::Theme::Light] {
         for size in [egui::vec2(640.0, 480.0), egui::vec2(1240.0, 900.0)] {
             let (directory, mut app, inspection) = setup();

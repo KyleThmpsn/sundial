@@ -12,9 +12,11 @@ use std::{
 
 pub use crate::model_preview::{
     SurfaceOverride,
-    weapon::{Appearance, DyeTextureOverride},
+    appearance::{Appearance, DyeTextureOverride},
 };
 pub mod chooser;
+mod details;
+mod image_job;
 pub mod still;
 mod window;
 pub use window::show;
@@ -27,6 +29,9 @@ pub struct Loadout {
     pub dyes: [Vec<(i8, u16)>; 3],
     pub plugs: Vec<Option<u32>>,
 }
+
+/// The loading block: a spinner line, the bar line and the Cancel button with their spacing.
+const LOADING_BLOCK_HEIGHT: f32 = 84.0;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Target {
@@ -67,16 +72,19 @@ struct Preview {
     seconds: f32,
     last_tick: Option<std::time::Instant>,
     rendered_seconds: Option<f32>,
+    software: image_job::Job,
     preserve_camera: bool,
     request: Option<window::Request>,
     source_selection: Option<Selection>,
     navigation: Vec<(u32, String)>,
-    particle_page: usize,
-    effect_page: usize,
-    sound_page: usize,
-    child_page: usize,
-    component_page: usize,
-    reference_page: usize,
+    /// Whether the Details window is open beside the viewer.
+    details_open: bool,
+    details_focus_requested: bool,
+    /// The model the Details window last saw, so a new one repaints it.
+    details_shown: Option<usize>,
+    /// The entry the Assets and Effects browser shows, and its filter.
+    asset_entry: Option<details::Entry>,
+    asset_query: String,
     focus_requested: bool,
     source_viewport: Option<egui::ViewportId>,
     paused: bool,
@@ -94,6 +102,7 @@ struct Preview {
     saving: Option<mpsc::Receiver<String>>,
     audio_pending:
         Option<mpsc::Receiver<Result<(tempfile::NamedTempFile, std::time::Duration), String>>>,
+    audio_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     playback: Option<tempfile::NamedTempFile>,
     audio_ends: Option<std::time::Instant>,
     audio_tag: Option<u32>,
@@ -114,6 +123,28 @@ pub fn selection(ui: &mut egui::Ui, packages: Option<&Path>, tag: u32, name: &st
 pub fn weapon(ui: &mut egui::Ui, packages: &Path, appearance: Appearance, name: &str) {
     let id = weapon_source(ui.ctx());
     weapon_preview(ui, packages, appearance, name, id, None);
+}
+
+/// Open an account item's saved appearance directly, retaining package inspection guards.
+pub(crate) fn open_inspected_weapon(
+    ctx: &egui::Context,
+    packages: &Path,
+    appearance: Appearance,
+    name: &str,
+    access: Arc<crate::catalog::PackageInspectionAccess>,
+) {
+    let generation = access.generation();
+    window::open_request(
+        ctx,
+        egui::Id::new(("item-menu-model-preview", ctx.viewport_id())),
+        window::Request::new(
+            packages,
+            Target::Weapon(appearance, Some(generation)),
+            name,
+            Some(access),
+            false,
+        ),
+    );
 }
 
 /// Inspector reads participate in package suspension and invalidate after package changes.
@@ -187,6 +218,40 @@ pub fn weapon_is_open(ctx: &egui::Context) -> bool {
     window::owned_by(ctx, weapon_source(ctx))
 }
 
+/// An icon in the top-right corner of the preview `id` at `over` that opens `appearance` in the
+/// shared viewer, which has the full tools. It shows while the pointer is on the preview. While
+/// the viewer stays open it follows the preview's appearance.
+pub fn pop_out(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    over: egui::Rect,
+    packages: &Path,
+    (appearance, name): (Appearance, &str),
+) -> Option<egui::Response> {
+    let owner = pop_out_source(ui.ctx(), id);
+    window::corner_launcher(
+        ui,
+        owner,
+        over,
+        window::Request::new(
+            packages,
+            Target::Weapon(appearance, None),
+            name,
+            None,
+            false,
+        ),
+    )
+}
+
+/// Whether the shared viewer is open on the preview `id` through its `pop_out`.
+pub fn popped_out(ctx: &egui::Context, id: egui::Id) -> bool {
+    window::owned_by(ctx, pop_out_source(ctx, id))
+}
+
+fn pop_out_source(ctx: &egui::Context, id: egui::Id) -> egui::Id {
+    egui::Id::new(("model-preview-pop-out", id, ctx.viewport_id()))
+}
+
 /// What the preview shows, for the label beside its name.
 fn preview_kind(model: &Model) -> &'static str {
     if model.has_object_mesh() {
@@ -242,22 +307,19 @@ impl Preview {
             self.audio_pending = None;
             self.audio_status = None;
             self.clip = None;
-            self.particle_page = 0;
-            self.effect_page = 0;
-            self.sound_page = 0;
-            self.child_page = 0;
-            self.component_page = 0;
-            self.reference_page = 0;
+            self.asset_entry = None;
             self.selection = Some(selection.clone());
             self.model = None;
             self.error = None;
             self.texture = None;
+            self.software = image_job::Job::default();
             self.asset_textures.clear();
             self.rendered = None;
             if !keep_camera {
                 self.camera = Camera::default();
             }
             self.playing = false;
+            self.scene.particle_study = false;
             self.seconds = 0.0;
             self.last_tick = None;
             self.rendered_seconds = None;
@@ -275,22 +337,8 @@ impl Preview {
                     self.load_time = self.load_started.take().map(|start| start.elapsed());
                     match result {
                         Ok(model) => {
-                            if model.has_particle_material_study() {
-                                self.seconds = model
-                                    .assets
-                                    .particles
-                                    .iter()
-                                    .filter_map(|particle| {
-                                        particle.program.as_ref()?.lifetime_default()
-                                    })
-                                    .next()
-                                    .unwrap_or(0.85)
-                                    * 0.2;
-                            }
-                            self.playing = model.animation.is_some()
-                                || model.has_shader_animation()
-                                || !model.particle_sources.is_empty()
-                                || model.has_particle_material_study();
+                            self.playing =
+                                model.animation.is_some() || model.has_shader_animation();
                             self.last_tick = None;
                             self.model = Some(Arc::new(model));
                         }
@@ -317,9 +365,11 @@ impl Preview {
                     Target::Object(tag) => {
                         model_preview::load_reported(&selection.0, tag, &progress, clip)
                     }
-                    Target::Weapon(appearance, _) => {
-                        model_preview::weapon::load_reported(&selection.0, &appearance, &progress)
-                    }
+                    Target::Weapon(appearance, _) => model_preview::appearance::load_reported(
+                        &selection.0,
+                        &appearance,
+                        &progress,
+                    ),
                 };
                 let result = match access {
                     Some(access) => access.read(load),
@@ -335,29 +385,48 @@ impl Preview {
         }
     }
 
-    /// The wait, showing what the reader is doing and offering a way out of it.
+    /// The wait, showing what the reader is doing and offering a way out of it: a small block
+    /// in the middle of the space the model will take, not a strip across the top.
     fn draw_loading(&mut self, ui: &mut egui::Ui) {
         let stage = self.load.as_ref().map(model_preview::Load::stage);
         let stage = stage.unwrap_or_default();
-        ui.horizontal(|ui| {
-            ui.spinner();
-            ui.label(if stage.message.is_empty() {
-                "Loading"
-            } else {
-                stage.message.as_str()
-            });
-        });
-        ui.add_space(6.0);
-        let bar = if stage.total > 0 {
-            egui::ProgressBar::new(stage.done as f32 / stage.total as f32)
-                .text(format!("{} / {}", stage.done, stage.total))
+        let message = if stage.message.is_empty() {
+            "Loading"
         } else {
-            // Nothing countable yet, so the bar only shows that work is still moving.
-            egui::ProgressBar::new(0.0).animate(true)
+            stage.message.as_str()
         };
-        ui.add(bar.desired_height(8.0));
-        ui.add_space(6.0);
-        if ui.button("Cancel").clicked() {
+        let cancel = self.draw_centered(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(14.0));
+                ui.label(message);
+            });
+            // The bar keeps the block's width, with the count beside it in the weak colour.
+            let width = ui.available_width();
+            ui.allocate_ui_with_layout(
+                egui::vec2(width, 12.0),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    if stage.total > 0 {
+                        ui.weak(
+                            egui::RichText::new(format!("{} of {}", stage.done, stage.total))
+                                .small(),
+                        );
+                    }
+                    let fraction = if stage.total > 0 {
+                        stage.done as f32 / stage.total as f32
+                    } else {
+                        0.0
+                    };
+                    ui.add(
+                        egui::ProgressBar::new(fraction)
+                            .desired_width(ui.available_width())
+                            .desired_height(4.0),
+                    );
+                },
+            );
+            ui.small_button("Cancel").clicked()
+        });
+        if cancel {
             if let Some(load) = self.load.take() {
                 load.stop();
             }
@@ -401,7 +470,12 @@ impl Preview {
             return;
         };
         let (model, seconds) = (model.clone(), self.seconds);
-        self.write_in_background(ctx, "Model saved", path, move || {
+        let message = if model.triangle_effects.iter().any(Option::is_some) {
+            "Model saved. Transparent shader effects are omitted from GLB. Save an image to retain them."
+        } else {
+            "Model saved"
+        };
+        self.write_in_background(ctx, message, path, move || {
             model_preview::export::glb(&model, seconds)
         });
     }
@@ -454,13 +528,18 @@ impl Preview {
             .and_then(|request| request.access.clone());
         let (sender, receiver) = mpsc::channel();
         self.audio_pending = Some(receiver);
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.audio_cancel = Some(Arc::clone(&cancel));
         self.audio_tag = Some(tag);
         self.audio_status = Some("Decoding audio".into());
         let (repaint, viewport) = (ctx.clone(), ctx.viewport_id());
         std::thread::spawn(move || {
             let decode = || {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err("Audio decoding canceled".to_owned());
+                }
                 let bytes = model_preview::assets::clip_bytes(&packages, tag)?;
-                let wave = model_preview::assets::decoded_wave(&bytes)?;
+                let wave = model_preview::assets::decoded_wave_cancelable(&bytes, &cancel)?;
                 let duration = model_preview::assets::wave_duration(&wave)
                     .ok_or("Decoded audio has no valid duration")?;
                 let mut file = tempfile::Builder::new()
@@ -483,6 +562,10 @@ impl Preview {
     }
 
     fn stop_audio(&mut self) {
+        if let Some(cancel) = self.audio_cancel.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.audio_pending = None;
         #[cfg(windows)]
         if self.playback.is_some() {
             // SAFETY: A null sound name stops the process's asynchronous PlaySound clip.
@@ -499,7 +582,7 @@ impl Preview {
         self.audio_tag = None;
     }
 
-    fn draw_audio_status(&mut self, ui: &mut egui::Ui) {
+    fn poll_audio(&mut self, ctx: &egui::Context) {
         if let Some(receiver) = &self.audio_pending {
             match receiver.try_recv() {
                 Ok(Ok((file, duration))) => {
@@ -531,8 +614,7 @@ impl Preview {
                     self.audio_pending = None;
                 }
                 Err(mpsc::TryRecvError::Empty) => {
-                    ui.ctx()
-                        .request_repaint_after(std::time::Duration::from_millis(100));
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
                 }
             }
         }
@@ -541,13 +623,11 @@ impl Preview {
                 self.stop_audio();
                 self.audio_status = None;
             } else {
-                ui.ctx().request_repaint_after(
-                    end.saturating_duration_since(std::time::Instant::now()),
-                );
+                ctx.request_repaint_after(end.saturating_duration_since(std::time::Instant::now()));
             }
         }
-        if let Some(status) = &self.audio_status {
-            ui.label(status);
+        if self.audio_pending.is_none() {
+            self.audio_cancel = None;
         }
     }
 
@@ -576,7 +656,7 @@ impl Preview {
     }
 
     /// Picks up a finished save, or shows that one is still running.
-    fn draw_saving(&mut self, ui: &mut egui::Ui) {
+    fn poll_saving(&mut self, ctx: &egui::Context) {
         let Some(receiver) = &self.saving else {
             return;
         };
@@ -590,12 +670,7 @@ impl Preview {
                 self.saving = None;
             }
             Err(mpsc::TryRecvError::Empty) => {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Saving");
-                });
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(100));
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
         }
     }
@@ -618,11 +693,13 @@ impl Preview {
             });
         });
         ui.add_space(4.0);
-        if let Some(error) = &self.error {
-            ui.label(error);
-            if ui.button("Retry").clicked() {
-                self.error = None;
-            }
+        if let Some(error) = self.error.clone() {
+            self.draw_centered(ui, |ui| {
+                ui.add(egui::Label::new(error).wrap());
+                ui.add_space(4.0);
+                ui.small_button("Retry").clicked()
+            })
+            .then(|| self.error = None);
             return;
         }
         let Some(model) = self.model.clone() else {
@@ -638,14 +715,38 @@ impl Preview {
         } else {
             self.chosen_style
         };
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().interact_size.y = 24.0;
+        self.poll_saving(ui.ctx());
+        self.poll_audio(ui.ctx());
+        self.draw_toolbar(ui, &model);
+        // The transport sits under the canvas, so the canvas keeps its top edge whatever it
+        // shows.
+        egui::TopBottomPanel::bottom(ui.id().with("model-preview-bottom"))
+            .frame(egui::Frame::NONE.inner_margin(egui::Margin {
+                left: 0,
+                right: 0,
+                top: 6,
+                bottom: 2,
+            }))
+            .show_separator_line(false)
+            .resizable(false)
+            .show_inside(ui, |ui| self.draw_playback(ui, &model));
+        self.draw_viewport(ui, &model);
+    }
+
+    /// One row: the shading and the view reset at the left, the menus at the right.
+    fn draw_toolbar(&mut self, ui: &mut egui::Ui, model: &Arc<Model>) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().interact_size.y = 22.0;
             if !model.triangles.is_empty() && (model.has_surface_mesh() || model.particle_geometry)
             {
-                egui::ComboBox::from_id_salt("preview-style")
-                    .selected_text(self.chosen_style.label())
-                    .width(100.0)
-                    .show_ui(ui, |ui| {
+                // The three shadings side by side, in the theme's faint frame.
+                egui::Frame::NONE
+                    .fill(ui.visuals().faint_bg_color)
+                    .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+                    .corner_radius(3)
+                    .inner_margin(egui::Margin::same(2))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
                         for style in [
                             render::Style::Textured,
                             render::Style::Solid,
@@ -659,124 +760,109 @@ impl Preview {
             if ui.button("Reset View").clicked() {
                 self.camera = Camera::default();
             }
-            ui.menu_button("View", |ui| {
-                ui.set_max_width(260.0);
-                ui.horizontal(|ui| {
-                    ui.label("Background");
-                    ui.color_edit_button_srgb(&mut self.scene.background);
-                });
-                ui.add(egui::Slider::new(&mut self.scene.exposure, 0.2..=3.0).text("Exposure"));
-                ui.add(egui::Slider::new(&mut self.scene.key, 0.0..=1.5).text("Key"));
-                ui.add(egui::Slider::new(&mut self.scene.fill, 0.0..=1.0).text("Fill"));
-                let (mut yaw, mut pitch) = light_angles(self.scene.light);
-                let turned = ui.add(
-                    egui::Slider::new(&mut yaw, -std::f32::consts::PI..=std::f32::consts::PI)
-                        .text("Light Yaw"),
-                );
-                let tipped = ui.add(
-                    egui::Slider::new(&mut pitch, -render::MAX_PITCH..=render::MAX_PITCH)
-                        .text("Light Pitch"),
-                );
-                // Only a real edit rewrites the vector, so an untouched rig stays exact.
-                if turned.changed() || tipped.changed() {
-                    self.scene.light = light_vector(yaw, pitch);
+            // The menus sit at the right, Details outermost.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let details = ui
+                    .add(egui::Button::new("Details").selected(self.details_open))
+                    .on_hover_text("Open in a separate window");
+                if details.clicked() {
+                    self.details_open = !self.details_open;
+                    self.details_focus_requested = self.details_open;
+                    // The host frame shows the window, so it has to run.
+                    ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
                 }
-                if ui.button("Reset Lighting").clicked() {
-                    self.scene = Scene {
-                        background: self.scene.background,
-                        ..Scene::default()
-                    };
-                }
-            });
-            ui.add_enabled_ui(self.saving.is_none(), |ui| {
-                ui.menu_button("Save", |ui| {
-                    if ui.button("Image…").clicked() {
-                        ui.close_menu();
-                        self.save_image(ui.ctx(), &model);
-                    }
-                    if !model.triangles.is_empty() {
-                        let model_label = if model.light_geometry && !model.has_surface_mesh() {
-                            "Light Volume…"
-                        } else if model.particle_geometry {
-                            "Particle Mesh…"
-                        } else {
-                            "3D Model…"
-                        };
-                        if ui.button(model_label).clicked() {
+                ui.add_enabled_ui(self.saving.is_none(), |ui| {
+                    ui.menu_button("Save", |ui| {
+                        if ui.button("Image…").clicked() {
                             ui.close_menu();
-                            self.save_model(ui.ctx(), &model);
+                            self.save_image(ui.ctx(), model);
                         }
+                        if !model.triangles.is_empty() {
+                            let model_label = if model.light_geometry && !model.has_surface_mesh() {
+                                "Light Volume…"
+                            } else if model.particle_geometry {
+                                "Particle Mesh…"
+                            } else {
+                                "3D Model…"
+                            };
+                            if ui.button(model_label).clicked() {
+                                ui.close_menu();
+                                self.save_model(ui.ctx(), model);
+                            }
+                        }
+                    });
+                });
+                ui.menu_button("View", |ui| {
+                    ui.set_max_width(260.0);
+                    if !model.particle_sources.is_empty() || model.has_particle_material_study() {
+                        if ui.checkbox(&mut self.scene.particle_study, "Particle Study").changed() {
+                            self.playing = self.scene.particle_study
+                                || model.animation.is_some()
+                                || model.has_shader_animation();
+                            self.last_tick = None;
+                        }
+                        ui.small("Approximate material and sprite study. Native spawning, placement and motion are unavailable.");
+                        ui.separator();
+                    }
+                    // The picker sits in the menu itself: a color button's own popup lies
+                    // outside the menu, so its first click closed the menu.
+                    ui.label("Background");
+                    let [r, g, b] = self.scene.background;
+                    let mut background = egui::Color32::from_rgb(r, g, b);
+                    if egui::color_picker::color_picker_color32(
+                        ui,
+                        &mut background,
+                        egui::color_picker::Alpha::Opaque,
+                    ) {
+                        self.scene.background = [background.r(), background.g(), background.b()];
+                    }
+                    ui.separator();
+                    ui.add(egui::Slider::new(&mut self.scene.exposure, 0.2..=3.0).text("Exposure"));
+                    ui.add(egui::Slider::new(&mut self.scene.key, 0.0..=1.5).text("Key"));
+                    ui.add(egui::Slider::new(&mut self.scene.fill, 0.0..=1.0).text("Fill"));
+                    let (mut yaw, mut pitch) = light_angles(self.scene.light);
+                    let turned = ui.add(
+                        egui::Slider::new(&mut yaw, -std::f32::consts::PI..=std::f32::consts::PI)
+                            .text("Light Yaw"),
+                    );
+                    let tipped = ui.add(
+                        egui::Slider::new(&mut pitch, -render::MAX_PITCH..=render::MAX_PITCH)
+                            .text("Light Pitch"),
+                    );
+                    // Only a real edit rewrites the vector, so an untouched rig stays exact.
+                    if turned.changed() || tipped.changed() {
+                        self.scene.light = light_vector(yaw, pitch);
+                    }
+                    if ui.button("Reset Lighting").clicked() {
+                        self.scene = Scene {
+                            background: self.scene.background,
+                            particle_study: self.scene.particle_study,
+                            ..Scene::default()
+                        };
                     }
                 });
-            });
-            ui.menu_button("Details", |ui| {
-                ui.set_max_width(320.0);
-                ui.label(format!("{} triangles", model.triangles.len()));
-                ui.label(format!("{} vertices", model.vertices.len()));
-                ui.label(format!("{} meshes", model.tags.len()));
-                ui.label(format!("{} textures", model.textures.len()));
-                if let Some(elapsed) = self.load_time {
-                    ui.label(format!("Loaded in {:.2} s", elapsed.as_secs_f32()));
-                }
-                if model.particle_geometry {
-                    if model.has_particle_material_study() {
-                        ui.label("One static instance evaluated");
-                    } else if model.particle_sources.is_empty() {
-                        ui.label("Spawn, motion and timing not shown");
-                    } else {
-                        ui.label("Packaged sprites · native timing not mapped");
-                    }
-                } else if !model.particle_sources.is_empty() {
-                    ui.label("Packaged sprites at the point emitter · native timing not mapped");
-                }
-                if model.light_geometry {
-                    if model.has_surface_mesh() {
-                        ui.label("Linked light volumes listed below");
-                    } else {
-                        ui.label("Outline only · illumination not simulated");
-                    }
-                }
-                if !model.particle_geometry
-                    && !model.light_geometry
-                    && model.particle_sources.is_empty()
-                {
-                    ui.label("Approximate lighting · no runtime physics");
-                }
-                if let Some(notice) = &model.animation_notice {
-                    ui.label(notice);
-                }
-                for notice in &model.notices {
-                    ui.label(notice);
-                }
             });
         });
-        self.draw_saving(ui);
-        self.draw_audio_status(ui);
-        if let Some(status) = &self.status {
-            ui.label(status);
-        }
-        if model.particle_geometry && model.particle_sources.is_empty() {
-            ui.weak(if model.has_particle_material_study() {
-                "Material study · spawn and motion not shown"
-            } else {
-                "Draw mesh only · emitted particles not shown"
-            });
-        } else if !model.particle_sources.is_empty() {
-            ui.weak("Sprite study · spawn and motion not shown");
-        }
-        if !model.assets.is_empty() {
-            let heading = asset_heading(&model.assets);
-            egui::CollapsingHeader::new(heading)
-                .default_open(model.triangles.is_empty() && model.particle_sources.is_empty())
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .max_height(220.0)
-                        .show(ui, |ui| self.draw_asset_rows(ui, &model));
-                });
-        }
-        ui.add_space(4.0);
-        self.draw_playback(ui, &model);
-        self.draw_viewport(ui, &model);
+    }
+
+    /// A small block in the middle of the space the model takes, for a state with no model:
+    /// returns what its contents return.
+    fn draw_centered<T>(
+        &mut self,
+        ui: &mut egui::Ui,
+        contents: impl FnOnce(&mut egui::Ui) -> T,
+    ) -> T {
+        let space = ui.available_rect_before_wrap();
+        let width = (space.width() - 48.0).clamp(160.0, 360.0);
+        let block = egui::Align2::CENTER_CENTER
+            .align_size_within_rect(egui::vec2(width, LOADING_BLOCK_HEIGHT), space);
+        let mut ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(block)
+                .layout(egui::Layout::top_down(egui::Align::Center)),
+        );
+        ui.spacing_mut().item_spacing.y = 8.0;
+        contents(&mut ui)
     }
 
     /// Transport controls and the timeline for animated, particle and shader-driven objects.
@@ -786,13 +872,12 @@ impl Preview {
         if model.animation.is_some()
             || !model.clips.is_empty()
             || model.has_shader_animation()
-            || !model.particle_sources.is_empty()
-            || model.has_particle_material_study()
+            || self.scene.particle_study
         {
             let duration = model.animation.as_ref().map_or_else(
                 || {
-                    if model.particle_sources.is_empty() {
-                        if model.has_particle_material_study() {
+                    if !self.scene.particle_study || model.particle_sources.is_empty() {
+                        if self.scene.particle_study && model.has_particle_material_study() {
                             model
                                 .assets
                                 .particles
@@ -819,14 +904,26 @@ impl Preview {
                 if let Some(last) = self.last_tick {
                     self.seconds += now.duration_since(last).as_secs_f32() * self.speed.0;
                     if !model.has_shader_animation() {
-                        self.seconds = self.seconds.rem_euclid(duration);
+                        self.seconds = if duration > 0.0 {
+                            self.seconds.rem_euclid(duration)
+                        } else {
+                            0.0
+                        };
                     }
                 }
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(33));
             }
             self.last_tick = Some(now);
+            let timeline_end = if model.has_shader_animation() {
+                self.seconds.max(60.0)
+            } else {
+                duration
+            };
+            // One row: transport at the left, the clip, speed and name at the right, the
+            // timeline across what is left.
             ui.horizontal(|ui| {
+                ui.spacing_mut().interact_size.y = 22.0;
                 if ui
                     .button(if self.playing { "Pause" } else { "Play" })
                     .clicked()
@@ -836,89 +933,85 @@ impl Preview {
                 if ui.button("Restart").clicked() {
                     self.seconds = 0.0;
                 }
-                ui.label("Speed");
-                ui.add(
-                    egui::DragValue::new(&mut self.speed.0)
-                        .range(0.1..=4.0)
-                        .speed(0.02)
-                        .prefix("x")
-                        .fixed_decimals(2),
-                )
-                .on_hover_text("Playback speed");
-                if model.clips.len() > 1 || (model.animation.is_none() && !model.clips.is_empty()) {
-                    let playing = self.clip.or(model.animation.as_ref().map(|a| a.tag));
-                    let selected = model
-                        .clips
-                        .iter()
-                        .find(|clip| Some(clip.tag) == playing)
-                        .map_or("Clip", |clip| clip.name.as_str());
-                    egui::ComboBox::from_id_salt("preview-clip")
-                        .selected_text(selected)
-                        .width(120.0)
-                        .show_ui(ui, |ui| {
-                            for clip in &model.clips {
-                                if ui
-                                    .selectable_label(Some(clip.tag) == playing, &clip.name)
-                                    .clicked()
-                                    && Some(clip.tag) != playing
-                                {
-                                    // Clips are read with the object, so pick one and reload.
-                                    self.clip = Some(clip.tag);
-                                    self.model = None;
-                                    self.texture = None;
-                                    self.rendered = None;
-                                    self.seconds = 0.0;
-                                }
-                            }
-                        });
-                }
-                if model.has_shader_animation() {
-                    ui.label("Shader Animation")
-                        .on_hover_text("Native material timing, UV motion and color changes.");
-                } else if let Some(animation) = &model.animation {
-                    // Several clips are named by the combo above.
-                    if model.clips.len() <= 1 {
-                        let name = model
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if model.has_shader_animation() {
+                        ui.label("Shader Animation")
+                            .on_hover_text("Native material timing, UV motion and color changes.");
+                    } else if let Some(animation) = &model.animation {
+                        // Several clips are named by the combo above.
+                        if model.clips.len() <= 1 {
+                            let name = model
+                                .clips
+                                .iter()
+                                .find(|clip| clip.tag == animation.tag)
+                                .map_or("Animation", |clip| clip.name.as_str());
+                            ui.label(name).on_hover_text(format!(
+                                "Native clip 0x{:08X} · {} frames at {} preview FPS",
+                                animation.tag, animation.frames, animation.fps
+                            ));
+                        }
+                    } else if self.scene.particle_study && !model.particle_sources.is_empty() {
+                        ui.label("Particle Study");
+                    } else if self.scene.particle_study && model.has_particle_material_study() {
+                        ui.label("Particle Material Study");
+                    }
+                    if model.clips.len() > 1
+                        || (model.animation.is_none() && !model.clips.is_empty())
+                    {
+                        let playing = self.clip.or(model.animation.as_ref().map(|a| a.tag));
+                        let selected = model
                             .clips
                             .iter()
-                            .find(|clip| clip.tag == animation.tag)
-                            .map_or("Animation", |clip| clip.name.as_str());
-                        ui.label(name).on_hover_text(format!(
-                            "Native clip 0x{:08X} · {} frames at {} FPS",
-                            animation.tag, animation.frames, animation.fps
-                        ));
+                            .find(|clip| Some(clip.tag) == playing)
+                            .map_or("Clip", |clip| clip.name.as_str());
+                        egui::ComboBox::from_id_salt("preview-clip")
+                            .selected_text(selected)
+                            .width(120.0)
+                            .show_ui(ui, |ui| {
+                                for clip in &model.clips {
+                                    if ui
+                                        .selectable_label(Some(clip.tag) == playing, &clip.name)
+                                        .clicked()
+                                        && Some(clip.tag) != playing
+                                    {
+                                        // Clips are read with the object, so pick one and reload.
+                                        self.clip = Some(clip.tag);
+                                        self.model = None;
+                                        self.texture = None;
+                                        self.rendered = None;
+                                        self.seconds = 0.0;
+                                    }
+                                }
+                            });
                     }
-                } else if !model.particle_sources.is_empty() {
-                    ui.label("Particle Study");
-                } else if model.has_particle_material_study() {
-                    ui.label("Particle Material Study");
-                }
-            });
-            ui.scope(|ui| {
-                ui.spacing_mut().slider_width = (ui.available_width() - 80.0).max(80.0);
-                let timeline_end = if model.has_shader_animation() {
-                    self.seconds.max(60.0)
-                } else {
-                    duration
-                };
-                let response = ui.add(
-                    egui::Slider::new(&mut self.seconds, 0.0..=timeline_end)
-                        // Rounding the running clock must not look like a user edit.
-                        .clamping(egui::SliderClamping::Edits)
-                        .suffix(" s")
-                        .fixed_decimals(2),
-                );
-                if response.dragged() || response.changed() {
-                    self.playing = false;
-                }
+                    ui.add(
+                        egui::DragValue::new(&mut self.speed.0)
+                            .range(0.1..=4.0)
+                            .speed(0.02)
+                            .prefix("x")
+                            .fixed_decimals(2),
+                    )
+                    .on_hover_text("Playback speed");
+                    ui.spacing_mut().slider_width = (ui.available_width() - 64.0).max(60.0);
+                    let response = ui.add(
+                        egui::Slider::new(&mut self.seconds, 0.0..=timeline_end)
+                            // Rounding the running clock must not look like a user edit.
+                            .clamping(egui::SliderClamping::Edits)
+                            .suffix(" s")
+                            .fixed_decimals(2),
+                    );
+                    if response.dragged() || response.changed() {
+                        self.playing = false;
+                    }
+                });
             });
         }
     }
 
     /// The model view: drag and scroll move the camera, then the GPU or software path paints.
     fn draw_viewport(&mut self, ui: &mut egui::Ui, model: &Arc<Model>) {
-        let available = ui.available_size();
-        let size = egui::vec2(available.x.max(32.0), (available.y - 24.0).max(32.0));
+        let available = ui.available_size_before_wrap();
+        let size = egui::vec2(available.x.max(32.0), available.y.max(32.0));
         let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
         if response.dragged() {
             let delta = ui.input(|i| i.pointer.delta());
@@ -942,13 +1035,9 @@ impl Preview {
             self.camera.zoom = (self.camera.zoom * (scroll * 0.002).exp()).clamp(0.25, 5.0);
         }
         if model_preview::gpu::available()
-            && !(self.style == render::Style::Textured
-                && (!model.particle_sources.is_empty() || model.has_particle_material_study()))
+            && !(self.style == render::Style::Textured && self.scene.particle_study)
         {
-            let positions = model
-                .animation
-                .as_ref()
-                .map(|a| Arc::new(a.vertices(model, self.seconds.rem_euclid(a.duration()))));
+            let pose = model.pose(self.seconds).map(Arc::new);
             self.gpu.paint(
                 ui,
                 rect,
@@ -958,20 +1047,25 @@ impl Preview {
                     scene: self.scene,
                     style: self.style,
                     seconds: self.seconds,
-                    positions,
+                    pose,
                 },
             );
-            ui.label("Drag to rotate · Shift-drag to pan · Scroll to zoom");
+            self.draw_overlays(ui, rect, model);
             return;
         }
-        let pixels = render_size(size, self.playing);
+        let pixels = render_size(size, ui.ctx().pixels_per_point());
         // Limit software rendering to 30 FPS even when the surrounding app repaints faster.
         let seconds = (self.seconds * 30.0).floor() / 30.0;
-        if self.rendered != Some((self.camera, self.scene, pixels, self.style))
-            || self.rendered_seconds != Some(seconds)
-        {
-            let image =
-                render::styled_image(model, self.camera, self.scene, pixels, seconds, self.style);
+        let request = image_job::Key {
+            model: Arc::as_ptr(model) as usize,
+            camera: self.camera,
+            scene: self.scene,
+            size: pixels,
+            seconds,
+            style: self.style,
+            overrides: Vec::new(),
+        };
+        if let Some((rendered, image)) = self.software.update(ui.ctx(), model.clone(), request) {
             if let Some(texture) = &mut self.texture {
                 texture.set(image, egui::TextureOptions::LINEAR);
             } else {
@@ -982,7 +1076,7 @@ impl Preview {
                 ));
             }
             self.rendered = Some((self.camera, self.scene, pixels, self.style));
-            self.rendered_seconds = Some(seconds);
+            self.rendered_seconds = Some(rendered.seconds);
         }
         if let Some(texture) = &self.texture {
             ui.painter().image(
@@ -992,356 +1086,44 @@ impl Preview {
                 egui::Color32::WHITE,
             );
         }
-        ui.label("Drag to rotate · Shift-drag to pan · Scroll to zoom");
+        self.draw_overlays(ui, rect, model);
     }
 
-    fn draw_assets(&mut self, ui: &mut egui::Ui, model: &Model) {
-        let assets = &model.assets;
-        let counts = [
-            (
-                assets.particles.len(),
-                "particle system",
-                "particle systems",
-            ),
-            (assets.sounds.len(), "sound event", "sound events"),
-            (assets.effect_nodes.len(), "effect node", "effect nodes"),
-            (assets.lights.len(), "light", "lights"),
-            (model.clips.len(), "animation clip", "animation clips"),
-            (assets.children.len(), "child object", "child objects"),
-            (assets.components.len(), "component", "components"),
-        ];
-        let summary: Vec<_> = counts
-            .into_iter()
-            .filter(|(count, _, _)| *count > 0)
-            .map(|(count, singular, plural)| {
-                format!("{count} {}", if count == 1 { singular } else { plural })
-            })
-            .collect();
-        if !summary.is_empty() {
-            ui.label(summary.join(" · "));
+    /// Short notes over the canvas, bottom left: a save or sound in progress, what the drawing
+    /// leaves out, and how to move the view. They take no room from the model.
+    fn draw_overlays(&self, ui: &egui::Ui, rect: egui::Rect, model: &Model) {
+        let painter = ui.painter_at(rect);
+        let font = egui::FontId::proportional(11.5);
+        let color = ui.visuals().weak_text_color();
+        let mut lines: Vec<String> = Vec::new();
+        if self.saving.is_some() {
+            lines.push("Saving…".into());
         }
-        ui.collapsing("Source Details", |ui| {
-            ui.label(format!("Resource 0x{:08X}", assets.source));
-            ui.label(format!(
-                "Class 0x{:08X} · type {} · {} bytes",
-                assets.class, assets.file_type, assets.size
-            ));
-        });
-        if model.triangles.is_empty() && model.particle_sources.is_empty() && assets.image.is_none()
-        {
-            if !assets.particles.is_empty() {
-                ui.group(|ui| {
-                    ui.heading("No Visual Output");
-                });
-            } else if assets.sounds.is_empty() && assets.lights.is_empty() && assets.image.is_none()
-            {
-                ui.group(|ui| {
-                    ui.heading("No Visual Output");
-                });
-            }
+        lines.extend(self.status.iter().chain(&self.audio_status).cloned());
+        if self.scene.particle_study {
+            lines.push(
+                if model.particle_sources.is_empty() {
+                    "Material study · spawn and motion not shown"
+                } else {
+                    "Sprite study · synthetic placement and motion"
+                }
+                .into(),
+            );
+        } else if model.particle_geometry && !model.has_object_mesh() {
+            lines.push("Draw mesh only · emitted particles not shown".into());
+        } else if model.triangles.is_empty() && !model.particle_sources.is_empty() {
+            lines.push("Particle playback unavailable · View > Particle Study".into());
         }
-        ui.add_space(8.0);
-        self.draw_saving(ui);
-        self.draw_audio_status(ui);
-        if let Some(status) = &self.status {
-            ui.label(status);
-        }
-        for notice in &model.notices {
-            ui.label(notice);
-        }
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            self.draw_asset_rows(ui, model);
-        });
-    }
-
-    fn draw_asset_rows(&mut self, ui: &mut egui::Ui, model: &Model) {
-        let assets = &model.assets;
-        if assets.is_empty() && model.clips.is_empty() {
-            ui.label("No Previewable Components");
-        }
-        if !model.clips.is_empty() && model.triangles.is_empty() {
-            ui.collapsing("Animation Clips", |ui| {
-                for clip in &model.clips {
-                    if ui
-                        .button(format!("{} · 0x{:08X}", clip.name, clip.tag))
-                        .clicked()
-                    {
-                        self.browse(clip.tag, Some(&clip.name));
-                    }
-                }
-            });
-        }
-        if let Some(texture) = &assets.image {
-            self.draw_asset_texture(ui, texture.tag, texture.size, &texture.rgba, "Texture");
-        }
-        if !assets.effect_nodes.is_empty() {
-            egui::CollapsingHeader::new("Effect Sequence")
-                .default_open(true)
-                .show(ui, |ui| {
-                    let page = asset_page(
-                        ui,
-                        "Effect Nodes",
-                        assets.effect_nodes.len(),
-                        &mut self.effect_page,
-                    );
-                    for node in &assets.effect_nodes[page] {
-                        if node.index == 0
-                            && assets.source != node.source
-                            && ui
-                                .button(format!("Effect Component 0x{:08X}", node.source))
-                                .clicked()
-                        {
-                            self.browse(node.source, None);
-                        }
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(format!(
-                                "{}. {} · class 0x{:08X}",
-                                node.index + 1,
-                                node.kind(),
-                                node.class
-                            ));
-                            if let Some(timing) = node.timing {
-                                ui.label(format!(
-                                    "Start {:.4} s · Duration {:.4} s",
-                                    timing.start, timing.duration
-                                ));
-                            }
-                            if let Some(tag) = node.target {
-                                if ui.button(format!("Open 0x{tag:08X}")).clicked() {
-                                    self.browse(tag, None);
-                                }
-                            }
-                        });
-                    }
-                });
-        }
-        let particles = asset_page(
-            ui,
-            "Particle Systems",
-            assets.particles.len(),
-            &mut self.particle_page,
-        );
-        for particle in &assets.particles[particles] {
-            ui.group(|ui| {
-                ui.heading("Particle System");
-                ui.label(
-                    particle
-                        .name
-                        .as_deref()
-                        .unwrap_or(&format!("0x{:08X}", particle.tag)),
-                );
-                if assets.source != particle.tag && ui.button("Open Particle System").clicked() {
-                    self.browse(particle.tag, particle.name.as_deref());
-                }
-                if let Some(definition) = particle.definition {
-                    if ui
-                        .button(format!("Particle Definition 0x{definition:08X}"))
-                        .clicked()
-                    {
-                        self.browse(definition, None);
-                    }
-                }
-                draw_particle_program(ui, particle);
-                if !particle.compute_passes.is_empty() {
-                    ui.collapsing("Native Compute Passes", |ui| {
-                        for pass in &particle.compute_passes {
-                            ui.label(format!(
-                                "{}: shader 0x{:08X}, material 0x{:08X}, {} bytes",
-                                pass.phase, pass.shader, pass.material, pass.size
-                            ));
-                        }
-                    });
-                }
-                self.draw_particle_links(ui, particle);
-                if !particle.material_textures.is_empty() {
-                    ui.collapsing("Material Texture Slots", |ui| {
-                        for (slot, texture) in &particle.material_textures {
-                            self.draw_asset_texture(
-                                ui,
-                                texture.tag,
-                                texture.size,
-                                &texture.rgba,
-                                &format!("Shader Slot {slot} · 0x{:08X}", texture.tag),
-                            );
-                        }
-                    });
-                }
-                if !particle.material_samplers.is_empty() {
-                    ui.collapsing("Pixel Samplers", |ui| {
-                        for (index, sampler) in particle.material_samplers.iter().enumerate() {
-                            ui.label(format!(
-                                "Sampler {}: U {:?}, V {:?}",
-                                index + 1,
-                                sampler.u,
-                                sampler.v
-                            ));
-                        }
-                    });
-                }
-                if particle.material_slot_omissions > 0 {
-                    ui.label(format!(
-                        "{} material texture slots not shown",
-                        particle.material_slot_omissions
-                    ));
-                }
-                if let Some(gradient) = &particle.gradient {
-                    self.draw_asset_gradient(ui, gradient.tag, gradient.size, &gradient.rgba);
-                }
-                if let Some(notice) = &particle.notice {
-                    ui.label(notice);
-                } else if particle.definition.is_none() {
-                }
-            });
-        }
-        let sounds = asset_page(
-            ui,
-            "Sound Events",
-            assets.sounds.len(),
-            &mut self.sound_page,
-        );
-        for sound in &assets.sounds[sounds] {
-            ui.group(|ui| {
-                ui.heading("Sound");
-                ui.label(
-                    sound
-                        .name
-                        .as_deref()
-                        .unwrap_or(&format!("0x{:08X}", sound.tag)),
-                );
-                if assets.source != sound.tag && ui.button("Open Sound").clicked() {
-                    self.browse(sound.tag, sound.name.as_deref());
-                }
-                for clip in &sound.clips {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(format!(
-                            "{} · {} · {} bytes",
-                            clip.name
-                                .as_deref()
-                                .unwrap_or(&format!("0x{:08X}", clip.tag)),
-                            clip.format(),
-                            clip.size
-                        ));
-                        if self.audio_tag == Some(clip.tag) && self.playback.is_some() {
-                            if ui.button("Stop").clicked() {
-                                self.stop_audio();
-                                self.audio_status = None;
-                            }
-                        } else if ui
-                            .add_enabled(
-                                cfg!(windows) && self.audio_pending.is_none(),
-                                egui::Button::new("Play"),
-                            )
-                            .clicked()
-                        {
-                            self.play_audio(ui.ctx(), clip.tag);
-                        }
-                        if ui
-                            .add_enabled(self.saving.is_none(), egui::Button::new("Save WAV…"))
-                            .clicked()
-                        {
-                            self.save_audio(ui.ctx(), clip.tag, true);
-                        }
-                        if ui
-                            .add_enabled(self.saving.is_none(), egui::Button::new("Save Source…"))
-                            .clicked()
-                        {
-                            self.save_audio(ui.ctx(), clip.tag, false);
-                        }
-                    });
-                }
-                if let Some(notice) = &sound.notice {
-                    ui.label(notice);
-                } else if sound.clips.is_empty() {
-                }
-            });
-        }
-        for light in &assets.lights {
-            ui.group(|ui| {
-                ui.heading("Light");
-                ui.label(format!("Range: {:.2}", light.radius));
-                ui.label(format!(
-                    "Volume Offset: {:.2}, {:.2}, {:.2}",
-                    light.volume_offset[0], light.volume_offset[1], light.volume_offset[2]
-                ));
-                if light.half_fov > 0.0 {
-                    ui.label(format!(
-                        "Half Field of View: {:.1}°",
-                        light.half_fov.to_degrees()
-                    ));
-                }
-                if assets.source != light.tag
-                    && ui
-                        .button(format!("Open Light 0x{:08X}", light.tag))
-                        .clicked()
-                {
-                    self.browse(light.tag, None);
-                }
-            });
-        }
-        if !assets.children.is_empty() {
-            ui.collapsing("Child Objects", |ui| {
-                let page = asset_page(
-                    ui,
-                    "Child Objects",
-                    assets.children.len(),
-                    &mut self.child_page,
-                );
-                for &tag in &assets.children[page] {
-                    if ui.button(format!("0x{tag:08X}")).clicked() {
-                        self.browse(tag, None);
-                    }
-                }
-            });
-        }
-        if !assets.components.is_empty() {
-            ui.collapsing("Components", |ui| {
-                let page = asset_page(
-                    ui,
-                    "Components",
-                    assets.components.len(),
-                    &mut self.component_page,
-                );
-                for component in &assets.components[page] {
-                    let header = component
-                        .header
-                        .map_or("Unknown".into(), |class| format!("0x{class:08X}"));
-                    let data = component
-                        .data
-                        .map_or("Unknown".into(), |class| format!("0x{class:08X}"));
-                    if ui
-                        .button(format!("0x{:08X} · {header} / {data}", component.tag))
-                        .clicked()
-                    {
-                        self.browse(component.tag, None);
-                    }
-                }
-            });
-        }
-        if !assets.references.is_empty() {
-            ui.collapsing("Resource Handles", |ui| {
-                let page = asset_page(
-                    ui,
-                    "Resource Handles",
-                    assets.references.len(),
-                    &mut self.reference_page,
-                );
-                for reference in &assets.references[page] {
-                    if ui
-                        .button(format!(
-                            "{} · class 0x{:08X} · type {}",
-                            reference
-                                .name
-                                .as_deref()
-                                .unwrap_or(&format!("0x{:08X}", reference.tag)),
-                            reference.class,
-                            reference.file_type
-                        ))
-                        .clicked()
-                    {
-                        self.browse(reference.tag, reference.name.as_deref());
-                    }
-                }
-            });
+        lines.push("Drag to rotate · Shift-drag to pan · Scroll to zoom".into());
+        let mut bottom = rect.bottom() - 8.0;
+        for line in lines.iter().rev() {
+            let galley = painter.layout_no_wrap(line.clone(), font.clone(), color);
+            let at = egui::pos2(rect.left() + 10.0, bottom - galley.size().y);
+            let backing =
+                egui::Rect::from_min_size(at, galley.size()).expand2(egui::vec2(6.0, 3.0));
+            painter.rect_filled(backing, 3.0, egui::Color32::from_black_alpha(110));
+            painter.galley(at, galley, color);
+            bottom = backing.top() - 4.0;
         }
     }
 
@@ -1396,29 +1178,6 @@ impl Preview {
         ui.label("Particle Color Ramp");
         ui.image((handle.id(), egui::vec2(280.0, 24.0)));
     }
-
-    /// Buttons that open the emitter, particle mesh and material of one particle system.
-    fn draw_particle_links(
-        &mut self,
-        ui: &mut egui::Ui,
-        particle: &model_preview::assets::Particle,
-    ) {
-        if let Some(emitter) = particle.emitter {
-            if ui.button(format!("Emitter 0x{emitter:08X}")).clicked() {
-                self.browse(emitter, None);
-            }
-        }
-        if let Some(model) = particle.emitter_model {
-            if ui.button(format!("Particle Mesh 0x{model:08X}")).clicked() {
-                self.browse(model, None);
-            }
-        }
-        if let Some(material) = particle.material {
-            if ui.button(format!("Material 0x{material:08X}")).clicked() {
-                self.browse(material, None);
-            }
-        }
-    }
 }
 
 /// The decoded particle program, or a note when a definition exists without one.
@@ -1434,6 +1193,21 @@ fn draw_particle_program(ui: &mut egui::Ui, particle: &model_preview::assets::Pa
                     program.defaults.len()
                 ));
                 ui.label(format!("Section Sizes: {:?}", program.sections));
+                match program.coverage() {
+                    Ok(coverage) => {
+                        ui.label(format!("Expression Instructions: {} of {} supported",
+                            coverage.available, coverage.instructions));
+                        if !coverage.unsupported.is_empty() {
+                            ui.label(format!("Unsupported Instructions: {}", coverage.unsupported.iter()
+                                .map(|opcode| format!("0x{opcode:02X}")).collect::<Vec<_>>().join(", ")));
+                        }
+                        if coverage.runtime_inputs {
+                            ui.weak("This program requires engine inputs or controller state.");
+                        }
+                        ui.weak("Expression support does not include native spawn, motion or shader playback.");
+                    }
+                    Err(error) => { ui.label(format!("Expression coverage unavailable: {error}")); }
+                }
                 if let Some(seconds) = program.lifetime_default() {
                     ui.label(format!(
                         "Default Lifetime: {seconds:.3} s · Compiled Ceiling: {:.3} s",
@@ -1523,66 +1297,6 @@ fn draw_particle_program(ui: &mut egui::Ui, particle: &model_preview::assets::Pa
     }
 }
 
-fn asset_heading(assets: &model_preview::assets::Assets) -> String {
-    let mut kinds = Vec::new();
-    for (count, singular, plural) in [
-        (
-            assets.particles.len(),
-            "Particle System",
-            "Particle Systems",
-        ),
-        (assets.sounds.len(), "Sound Event", "Sound Events"),
-        (assets.lights.len(), "Light", "Lights"),
-        (assets.effect_nodes.len(), "Effect Node", "Effect Nodes"),
-    ] {
-        if count > 0 {
-            kinds.push(format!(
-                "{count} {}",
-                if count == 1 { singular } else { plural }
-            ));
-        }
-    }
-    if kinds.is_empty() {
-        "Assets and Effects".to_owned()
-    } else {
-        format!(
-            "Assets and Effects ({})",
-            kinds.into_iter().take(2).collect::<Vec<_>>().join(", ")
-        )
-    }
-}
-
-fn asset_page(
-    ui: &mut egui::Ui,
-    label: &str,
-    total: usize,
-    page: &mut usize,
-) -> std::ops::Range<usize> {
-    const SIZE: usize = 16;
-    *page = (*page).min(total.saturating_sub(1) / SIZE);
-    let start = *page * SIZE;
-    let end = (start + SIZE).min(total);
-    if total > SIZE {
-        ui.horizontal(|ui| {
-            ui.label(format!("{label} {}–{end} of {total}", start + 1));
-            if ui
-                .add_enabled(*page > 0, egui::Button::new("Previous"))
-                .clicked()
-            {
-                *page -= 1;
-            }
-            if ui
-                .add_enabled(end < total, egui::Button::new("Next"))
-                .clicked()
-            {
-                *page += 1;
-            }
-        });
-    }
-    let start = *page * SIZE;
-    start..(start + SIZE).min(total)
-}
-
 #[cfg(windows)]
 fn play_wave(path: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
@@ -1616,11 +1330,14 @@ fn light_vector(yaw: f32, pitch: f32) -> [f32; 3] {
     [cp * sy, sp, -cp * cy]
 }
 
-fn render_size(size: egui::Vec2, playing: bool) -> [usize; 2] {
-    // Keep CPU-rendered motion responsive, restoring inspection detail on pause.
-    let resolution = if playing { 320.0 } else { 640.0 };
-    let density = (resolution / size.x.max(size.y)).min(1.0);
-    [(size.x * density) as usize, (size.y * density) as usize]
+fn render_size(size: egui::Vec2, pixels_per_point: f32) -> [usize; 2] {
+    // Match display density during playback and inspection. Background jobs coalesce
+    // frames, while the fixed budget bounds software work on large displays.
+    let density = pixels_per_point.min(1536.0 / size.x.max(size.y).max(1.0));
+    [
+        (size.x * density).round().max(1.0) as usize,
+        (size.y * density).round().max(1.0) as usize,
+    ]
 }
 
 #[cfg(test)]

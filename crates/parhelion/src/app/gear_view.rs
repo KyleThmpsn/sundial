@@ -1,13 +1,13 @@
 //! The main page for armor, Sparrows, Ships and Ghost Shells.
 //!
-//! Gear keeps its base item's slot, class, look and sockets. This page edits what the build
-//! compiles for gear: name, text and lore, icon, rarity, armor energy, stats and each socket's
-//! choices, which work as a weapon's do and can hold custom perks from the Custom Perk Workbench.
+//! Gear keeps its base item's slot and look. Armor can select another equip class. This page edits what the build compiles for
+//! gear: name, text and lore, icon, rarity, armor energy, stats and sockets, which work as a
+//! weapon's do. Sockets can be added, removed and given another role, and hold custom perks from
+//! the Custom Perk Workbench. An emblem has no lore tab, stats, sockets or model, and shows its
+//! nameplate instead (`emblem_view`).
 use super::*;
+use crate::item::ENERGY_SOCKET_TYPES;
 use sundial::investment::{WeaponSocket, WeaponSupportedPlugSet};
-
-/// Armor Energy Upgrade sockets. Their plug sets the energy type and capacity.
-const ENERGY_SOCKET_TYPES: [u16; 2] = [678, 679];
 /// The general armor mod socket, which only Armor 2.0 carries. Sundial's equipment view tells the
 /// two generations apart by it too.
 const ARMOR_2_MOD_SOCKET_TYPE: u16 = 643;
@@ -24,9 +24,10 @@ const ARMOR_STATS: [&str; 6] = [
 /// sets a named property per drive (Standard, Tuned, Custom) that picks the speed tier.
 const SPARROW_STATS: [&str; 3] = ["Speed", "Boost", "Durability"];
 const ENERGY_TYPES: [&str; 3] = ["Arc", "Solar", "Void"];
-
 type PlugSets = Result<Vec<WeaponSupportedPlugSet>, String>;
 
+#[cfg(feature = "d2-model-importer")]
+mod source;
 #[cfg(test)]
 mod tests;
 
@@ -49,6 +50,21 @@ fn is_armor_2(socket_types: impl IntoIterator<Item = u16>) -> bool {
 
 const fn armor_generation(armor_2: bool) -> &'static str {
     if armor_2 { "Armor 2.0" } else { "Armor 1.0" }
+}
+
+/// An armor piece's slot, class and generation, which tell two pieces of one set apart.
+fn armor_detail(catalog: &InvestmentCatalog, hash: u32, slot: Option<&str>) -> String {
+    [
+        slot,
+        catalog.item_class_type(hash).and_then(class_label),
+        Some(armor_generation(is_armor_2(
+            catalog.item_socket_types(hash),
+        ))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ")
 }
 
 /// "Solar Energy 7" as ("Solar", 7).
@@ -88,13 +104,18 @@ fn socket_variant(
         })
 }
 
-/// The plug a socket starts with: the recipe's first choice, or the base item's own.
+/// The plug a socket starts with: the recipe's first choice, or the base item's own. A removed
+/// socket holds none.
 fn current_plug(recipe: &WeaponRecipe, socket: &WeaponSocket) -> Option<u32> {
-    recipe
+    let column = recipe
         .overrides
         .socket_columns
         .get(socket.index)
-        .and_then(Option::as_ref)
+        .and_then(Option::as_ref);
+    if column.is_some_and(|column| column.socket_type == Some(u16::MAX)) {
+        return None;
+    }
+    column
         .and_then(|column| column.choices.first())
         .and_then(|hash| hash.parse_u32().ok())
         .or(socket.native_default)
@@ -215,8 +236,10 @@ fn stat_rows(
             .map(|stat| (stat.definition_index, stat.value))
             .collect()
     };
-    // A custom perk that replaces its effects carries its complete stat list.
-    let current = donor
+    // A custom perk that replaces its effects carries its complete stat list. Sockets the recipe
+    // adds count too.
+    let sockets = super::socket_editor::socket_editor_donor(donor, recipe);
+    let current = sockets
         .sockets
         .iter()
         .map(|socket| match socket_variant(recipe, socket.index) {
@@ -322,7 +345,7 @@ impl PackageAuthoringApp {
                 .catalog
                 .as_ref()
                 .ok_or_else(|| "Catalog unavailable.".to_owned())
-                .and_then(|catalog| catalog.gear_supported_plug_sets(donor_hash));
+                .and_then(|catalog| catalog.supported_plug_sets(donor_hash, &[]));
             self.gear_plug_sets = Some((donor_hash, sets));
         }
         self.gear_plug_sets
@@ -330,6 +353,11 @@ impl PackageAuthoringApp {
             .map_or_else(|| Ok(Vec::new()), |(_, sets)| sets.clone())
     }
 
+    /// The page in two bands. Above, the base and its icon, the item's text and rarity, and the
+    /// item as the game draws it. Below, the stats with the sockets beside them, as a weapon's
+    /// are. Where there are no stats the sockets start at the page's edge at the same width, since
+    /// wider rows only stretch their choices. An emblem has no model and shows its nameplate below
+    /// instead.
     pub(super) fn draw_gear_editor(&mut self, ui: &mut egui::Ui) {
         match self.recipe.kind {
             ItemKind::Shader => return self.draw_shader_editor(ui),
@@ -341,29 +369,42 @@ impl PackageAuthoringApp {
         let plug_sets = donor
             .as_ref()
             .map(|donor| self.gear_plug_sets(donor.summary.hash));
+        let model = self.recipe.kind != ItemKind::Emblem && donor.is_some();
+        let column = egui::Layout::top_down(egui::Align::Min);
         if let Some(base_width) = workbench_left_column_width(ui.available_width()) {
-            let definition_width = ui.available_width() - base_width - ui.spacing().item_spacing.x;
+            let spacing = ui.spacing().item_spacing.x;
+            let beside = ui.available_width() - base_width - spacing;
+            let preview_width = model
+                .then(|| preview_column_width(beside, spacing))
+                .flatten();
+            let definition_width = beside - preview_width.map_or(0.0, |width| width + spacing);
             ui.horizontal_top(|ui| {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(base_width, 0.0),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
+                let base = ui
+                    .allocate_ui_with_layout(egui::vec2(base_width, 0.0), column, |ui| {
                         ui.set_width(base_width);
                         self.draw_gear_base(ui);
                         ui.add_space(8.0);
                         self.draw_icon_donor_picker(ui);
-                    },
-                );
-                ui.allocate_ui_with_layout(
-                    egui::vec2(definition_width, 0.0),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        ui.set_width(definition_width);
-                        self.draw_gear_definition(ui, donor.as_ref(), plug_sets.as_ref());
+                    })
+                    .response
+                    .rect;
+                ui.allocate_ui_with_layout(egui::vec2(definition_width, 0.0), column, |ui| {
+                    ui.set_width(definition_width);
+                    self.draw_gear_definition(ui, donor.as_ref(), plug_sets.as_ref());
+                    // Without the room for a column of its own, the preview goes under the text.
+                    if model && preview_width.is_none() {
                         ui.add_space(8.0);
-                        self.draw_gear_lore(ui);
-                    },
-                );
+                        self.draw_gear_preview(ui, None);
+                    }
+                });
+                // The preview ends with the base column, which keeps its height while Text
+                // Presentation opens and closes.
+                if let Some(width) = preview_width {
+                    ui.allocate_ui_with_layout(egui::vec2(width, 0.0), column, |ui| {
+                        ui.set_width(width);
+                        self.draw_gear_preview(ui, Some(base.height()));
+                    });
+                }
             });
         } else {
             self.draw_gear_base(ui);
@@ -371,8 +412,10 @@ impl PackageAuthoringApp {
             self.draw_icon_donor_picker(ui);
             ui.separator();
             self.draw_gear_definition(ui, donor.as_ref(), plug_sets.as_ref());
-            ui.add_space(8.0);
-            self.draw_gear_lore(ui);
+            if model {
+                ui.add_space(8.0);
+                self.draw_gear_preview(ui, None);
+            }
         }
         ui.add_space(4.0);
         ui.separator();
@@ -384,45 +427,99 @@ impl PackageAuthoringApp {
             );
             return;
         };
+        if self.recipe.kind == ItemKind::Emblem {
+            self.draw_emblem_trackers(ui);
+            ui.add_space(8.0);
+            self.draw_emblem_nameplate(ui);
+            return;
+        }
         let stats: &[&'static str] = match self.recipe.kind {
             ItemKind::Armor => &ARMOR_STATS,
             ItemKind::Sparrow => &SPARROW_STATS,
             _ => &[],
         };
-        let stats_width =
-            workbench_left_column_width(ui.available_width()).filter(|_| !stats.is_empty());
-        if let Some(stats_width) = stats_width {
-            let sockets_width = ui.available_width() - stats_width - ui.spacing().item_spacing.x;
-            ui.horizontal_top(|ui| {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(stats_width, 0.0),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        ui.set_width(stats_width);
-                        self.draw_gear_stats(ui, &donor, stats);
-                    },
-                );
-                ui.allocate_ui_with_layout(
-                    egui::vec2(sockets_width, 0.0),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
+        match workbench_left_column_width(ui.available_width()) {
+            Some(stats_width) => {
+                let sockets_width =
+                    ui.available_width() - stats_width - ui.spacing().item_spacing.x;
+                if stats.is_empty() {
+                    ui.allocate_ui_with_layout(egui::vec2(sockets_width, 0.0), column, |ui| {
                         ui.set_width(sockets_width);
                         self.draw_gear_sockets(ui, &donor, &plug_sets);
-                    },
-                );
-            });
-        } else {
-            if !stats.is_empty() {
-                self.draw_gear_stats(ui, &donor, stats);
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(6.0);
+                    });
+                } else {
+                    ui.horizontal_top(|ui| {
+                        ui.allocate_ui_with_layout(egui::vec2(stats_width, 0.0), column, |ui| {
+                            ui.set_width(stats_width);
+                            self.draw_gear_stats(ui, &donor, stats);
+                        });
+                        ui.allocate_ui_with_layout(egui::vec2(sockets_width, 0.0), column, |ui| {
+                            ui.set_width(sockets_width);
+                            self.draw_gear_sockets(ui, &donor, &plug_sets);
+                        });
+                    });
+                }
             }
-            self.draw_gear_sockets(ui, &donor, &plug_sets);
+            None => {
+                if !stats.is_empty() {
+                    self.draw_gear_stats(ui, &donor, stats);
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+                }
+                self.draw_gear_sockets(ui, &donor, &plug_sets);
+            }
+        }
+    }
+
+    /// The base item as the game draws it, which drags to turn as the Shader page's preview does.
+    /// Gear keeps its base's look, so this is also how the authored item looks. Beside the item's
+    /// text it ends where the base column ends, `band`, within its bounds. Its corner opens it in
+    /// the model viewer, which has the full tools.
+    fn draw_gear_preview(&mut self, ui: &mut egui::Ui, band: Option<f32>) {
+        #[cfg(feature = "d2-model-importer")]
+        if self.recipe.overrides.imported_graph.is_some() {
+            ui.label("Native Runtime Preview")
+                .on_hover_text("This view shows the native runtime template. The imported appearance is applied when the recipe is built.");
+        }
+        let (Some(catalog), Ok(hash)) = (
+            self.catalog.as_ref(),
+            self.recipe.donor.item_hash.parse_u32(),
+        ) else {
+            return;
+        };
+        let id = egui::Id::new("gear-preview");
+        // No shader rows leave the item's own dyes.
+        let appearance =
+            catalog.shader_preview_appearance(hash, &[Vec::new(), Vec::new(), Vec::new()]);
+        let width = ui.available_width();
+        let height = preview_height(width, band);
+        let response = sundial::ui::model_preview::still::show(
+            ui,
+            id,
+            &self.packages,
+            appearance.clone(),
+            &[],
+            egui::vec2(width, height),
+        )
+        .on_hover_text("Drag to rotate · Double-click to reset");
+        if let Some(appearance) = appearance {
+            let name = catalog.item_display_name(hash).unwrap_or("Base Item");
+            sundial::ui::model_preview::pop_out(
+                ui,
+                id,
+                response.rect,
+                &self.packages,
+                (appearance, name),
+            );
         }
     }
 
     pub(super) fn draw_gear_base(&mut self, ui: &mut egui::Ui) {
+        #[cfg(feature = "d2-model-importer")]
+        if source::show(self, ui) {
+            return;
+        }
         let kind = self.recipe.kind;
         draw_donor_section_label(
             ui,
@@ -430,6 +527,7 @@ impl PackageAuthoringApp {
             Some(match kind {
                 ItemKind::Shader => "Starting dyes.",
                 ItemKind::Subclass => "Class, element and starting abilities.",
+                ItemKind::Emblem => "Starting icon and nameplate.",
                 _ => "Slot, class, look and starting sockets.",
             }),
         );
@@ -441,23 +539,23 @@ impl PackageAuthoringApp {
             .ok()
             .filter(|hash| *hash != 0);
         let candidates = self.gear_donors.get(&kind).map_or(&[][..], Vec::as_slice);
-        let selected_text = current_hash
-            .and_then(|hash| candidates.iter().find(|donor| donor.hash == hash))
-            .map_or_else(
-                || {
-                    self.recipe
-                        .donor
-                        .expected_name
-                        .clone()
-                        .unwrap_or_else(|| self.recipe.donor.item_hash.to_string())
-                },
-                |donor| {
-                    format!(
-                        "{} · {} · 0x{:08X}",
-                        donor.name, donor.type_name, donor.hash
-                    )
-                },
-            );
+        let selected =
+            current_hash.and_then(|hash| candidates.iter().find(|donor| donor.hash == hash));
+        let selected_text = selected.map_or_else(
+            || {
+                self.recipe
+                    .donor
+                    .expected_name
+                    .clone()
+                    .unwrap_or_else(|| self.recipe.donor.item_hash.to_string())
+            },
+            |donor| {
+                format!(
+                    "{} · {} · 0x{:08X}",
+                    donor.name, donor.type_name, donor.hash
+                )
+            },
+        );
         let selection = self.catalog.as_ref().and_then(|catalog| {
             let class_detail = |hash: u32| {
                 catalog
@@ -468,26 +566,25 @@ impl PackageAuthoringApp {
             // An armor row names its slot, class and generation, which is what tells two pieces
             // of one set apart. The slot names are looked up only while the list is open.
             let slots = std::cell::OnceCell::new();
-            let armor_detail = |hash: u32| {
+            let armor_row = |hash: u32| {
                 let slots = slots.get_or_init(|| {
                     candidates
                         .iter()
                         .map(|donor| (donor.hash, donor.type_name.as_str()))
                         .collect::<BTreeMap<_, _>>()
                 });
-                let generation = armor_generation(is_armor_2(catalog.item_socket_types(hash)));
-                let parts = [
-                    slots.get(&hash).copied(),
-                    catalog.item_class_type(hash).and_then(class_label),
-                    Some(generation),
-                ];
-                Some(parts.into_iter().flatten().collect::<Vec<_>>().join(" · "))
+                Some(armor_detail(catalog, hash, slots.get(&hash).copied()))
             };
             let row_detail: Option<&dyn Fn(u32) -> Option<String>> = match kind {
-                ItemKind::Armor => Some(&armor_detail),
+                ItemKind::Armor => Some(&armor_row),
                 ItemKind::Subclass => Some(&class_detail),
                 _ => None,
             };
+            // The base's own card names them too. A subclass's type already names its class, as
+            // "Hunter Subclass".
+            let selected_detail = selected
+                .filter(|_| kind == ItemKind::Armor)
+                .map(|donor| armor_detail(catalog, donor.hash, Some(donor.type_name.as_str())));
             catalog.draw_weapon_donor_header_picker(
                 ui,
                 ("gear-base", kind),
@@ -502,26 +599,12 @@ impl PackageAuthoringApp {
                     secondary_action_label: None,
                     row_detail,
                     clear: None,
+                    selected_detail: selected_detail.as_deref(),
                 },
             )
         });
         if self.catalog.is_none() {
             ui.add_enabled(false, egui::Button::new(selected_text));
-        }
-        // Armor names its class and generation under the base. A subclass's type already names
-        // its class, as "Hunter Subclass".
-        if kind == ItemKind::Armor
-            && let Some((catalog, hash)) = self.catalog.as_ref().zip(current_hash)
-        {
-            ui.horizontal(|ui| {
-                if let Some(class) = catalog.item_class_type(hash).and_then(class_label) {
-                    ui.weak(class);
-                }
-                crate::app::style::badge(
-                    ui,
-                    armor_generation(is_armor_2(catalog.item_socket_types(hash))),
-                );
-            });
         }
         if let Some(WeaponDonorPickerAction::Select(hash)) = selection
             && current_hash != Some(hash)
@@ -552,7 +635,19 @@ impl PackageAuthoringApp {
             }
             _ => None,
         };
-        let fields: &[usize] = if energy.is_some() { &[0, 1, 2] } else { &[0] };
+        let inherited_class =
+            donor.and_then(|donor| self.catalog.as_ref()?.item_class_type(donor.summary.hash));
+        let fields: &[usize] = if kind == ItemKind::Armor {
+            if energy.is_some() {
+                &[0, 3, 1, 2]
+            } else {
+                &[0, 3]
+            }
+        } else if energy.is_some() {
+            &[0, 1, 2]
+        } else {
+            &[0]
+        };
         let column_count = core_profile_column_count(ui.available_width());
         for fields in fields.chunks(column_count) {
             ui.columns(column_count, |columns| {
@@ -570,6 +665,7 @@ impl PackageAuthoringApp {
                                 draw_energy_type(column, &mut self.recipe, donor, energy);
                             }
                         }
+                        3 => draw_armor_class(column, &mut self.recipe.overrides, inherited_class),
                         _ => {
                             if let (Some(energy), Some(donor)) = (&energy, donor) {
                                 draw_energy_capacity(column, &mut self.recipe, donor, energy);
@@ -713,8 +809,8 @@ impl PackageAuthoringApp {
         }
     }
 
-    /// The base's sockets, edited the way a weapon's are. Gear keeps its base's sockets, so the
-    /// shared editor names each one where a weapon offers a role, and adds or removes none.
+    /// The item's sockets, edited the way a weapon's are: added, removed or given another role.
+    /// The energy sockets keep theirs, since the energy controls own them.
     fn draw_gear_sockets(&mut self, ui: &mut egui::Ui, donor: &WeaponDonor, plug_sets: &PlugSets) {
         let has_authored_columns = !self.recipe.overrides.socket_columns.is_empty()
             || !self.recipe.overrides.socket_plug_variants.is_empty();
@@ -773,19 +869,39 @@ impl PackageAuthoringApp {
             );
         }
     }
+}
 
-    /// The item's lore tab: its base's, none, or a story of its own.
-    fn draw_gear_lore(&mut self, ui: &mut egui::Ui) {
-        self.presentation_editor.draw_lore(
-            ui,
-            &mut self.recipe.overrides,
-            &self.packages,
-            (
-                self.recipe.donor.item_hash.parse_u32().ok(),
-                self.recipe.kind,
-            ),
-        );
-    }
+fn draw_armor_class(
+    ui: &mut egui::Ui,
+    overrides: &mut WeaponRecipeOverrides,
+    inherited: Option<u8>,
+) {
+    let label = ui.horizontal(|ui| {
+        let label = ui.label("Class");
+        draw_authoring_info_icon(ui, "Choose which class can equip this armor. Any Class removes the class restriction. Collections and badges follow this choice. The base supplies its appearance.");
+        label
+    }).inner;
+    let default_label = inherited.map_or_else(
+        || "Base Class".to_owned(),
+        |class| format!("{} (Base Armor)", class_label(class).unwrap_or("Any Class")),
+    );
+    egui::ComboBox::from_id_salt("armor_class")
+        .selected_text(
+            overrides
+                .armor_class
+                .map_or_else(|| default_label.clone(), |class| class.label().to_owned()),
+        )
+        .width(ui.available_width())
+        .truncate()
+        .show_ui(ui, |ui| {
+            workbench_style(ui);
+            ui.selectable_value(&mut overrides.armor_class, None, default_label);
+            for class in crate::ArmorClass::ALL {
+                ui.selectable_value(&mut overrides.armor_class, Some(class), class.label());
+            }
+        })
+        .response
+        .labelled_by(label.id);
 }
 
 pub(super) fn draw_gear_rarity(
@@ -795,11 +911,33 @@ pub(super) fn draw_gear_rarity(
     kind: ItemKind,
     branding: crate::branding::Branding,
 ) {
+    let imported = {
+        #[cfg(feature = "d2-model-importer")]
+        {
+            overrides.imported_graph.is_some()
+        }
+        #[cfg(not(feature = "d2-model-importer"))]
+        {
+            false
+        }
+    };
+    let default_label = if imported {
+        "Default Rarity".to_owned()
+    } else {
+        base_rarity_label(kind, inherited)
+    };
     ui.horizontal(|ui| {
         ui.label("Rarity");
         draw_authoring_info_icon(
             ui,
-            if crate::collection::GearPage::for_kind(kind).is_some() {
+            if imported {
+                if kind == ItemKind::Armor {
+                    "Sets the imported armor's rarity. Exotic armor appears under Exotics for its class and equips one piece at a time.".to_owned()
+                } else {
+                    "Sets the imported item's rarity in Collections and its inventory icon.".to_owned()
+                }
+            }
+            else if crate::collection::GearPage::for_kind(kind).is_some() {
                 format!(
                     "Exotic needs an Exotic base. Any rarity appears on the {} page under {}.",
                     branding.name(),
@@ -812,7 +950,7 @@ pub(super) fn draw_gear_rarity(
     });
     let base_exotic = inherited == WeaponRarity::Exotic;
     let selected_text = overrides.rarity.map_or_else(
-        || base_rarity_label(kind, inherited),
+        || default_label.clone(),
         |rarity| recipe_rarity_label(rarity).to_owned(),
     );
     egui::ComboBox::from_id_salt("gear_rarity")
@@ -822,10 +960,7 @@ pub(super) fn draw_gear_rarity(
         .show_ui(ui, |ui| {
             workbench_style(ui);
             if ui
-                .selectable_label(
-                    overrides.rarity.is_none(),
-                    base_rarity_label(kind, inherited),
-                )
+                .selectable_label(overrides.rarity.is_none(), default_label.clone())
                 .clicked()
             {
                 overrides.rarity = None;
@@ -838,7 +973,7 @@ pub(super) fn draw_gear_rarity(
                 RecipeRarity::Exotic,
             ] {
                 // Exotic stays with Exotic bases.
-                let allowed = (rarity == RecipeRarity::Exotic) == base_exotic;
+                let allowed = imported || (rarity == RecipeRarity::Exotic) == base_exotic;
                 if ui
                     .add_enabled(
                         allowed,

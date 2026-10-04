@@ -5,7 +5,8 @@ mod audio;
 mod effects;
 mod particle_program;
 mod particle_shaders;
-pub(crate) use audio::{decoded_wave, wave_duration};
+use audio::wave_info;
+pub(crate) use audio::{decoded_wave, decoded_wave_cancelable, wave_duration};
 pub(crate) use particle_program::{Program, Registers};
 pub(crate) use particle_shaders::PixelKind;
 
@@ -23,19 +24,6 @@ pub(crate) struct Assets {
     pub effect_nodes: Vec<effects::Node>,
     pub image: Option<texture::Texture>,
     pub references: Vec<Reference>,
-}
-
-impl Assets {
-    pub fn is_empty(&self) -> bool {
-        self.particles.is_empty()
-            && self.sounds.is_empty()
-            && self.lights.is_empty()
-            && self.children.is_empty()
-            && self.components.is_empty()
-            && self.effect_nodes.is_empty()
-            && self.image.is_none()
-            && self.references.is_empty()
-    }
 }
 
 pub(crate) struct Particle {
@@ -504,46 +492,6 @@ fn sound_clip_tags(bytes: &[u8], class: u32) -> Result<Vec<u32>, String> {
     (0..count)
         .map(|index| u32_at(bytes, rows + index * 4))
         .collect::<Result<Vec<_>, _>>()
-}
-
-/// Only native RIFF/WAVE payloads are playable clips. Wwise bank metadata shares file type 26.
-fn wave_info(bytes: &[u8]) -> Option<(u16, u16, u32)> {
-    if bytes.get(..4)? != b"RIFF" || bytes.get(8..12)? != b"WAVE" {
-        return None;
-    }
-    let declared =
-        8usize.checked_add(u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?) as usize)?;
-    if declared > bytes.len() {
-        return None;
-    }
-    let mut offset = 12usize;
-    let mut format = None;
-    let mut data = false;
-    while offset.checked_add(8)? <= declared {
-        let kind = bytes.get(offset..offset + 4)?;
-        let size = u32::from_le_bytes(bytes.get(offset + 4..offset + 8)?.try_into().ok()?) as usize;
-        let start = offset + 8;
-        let end = start.checked_add(size)?;
-        if end > declared {
-            return None;
-        }
-        if kind == b"fmt " {
-            if size < 16 {
-                return None;
-            }
-            let codec = u16::from_le_bytes(bytes.get(start..start + 2)?.try_into().ok()?);
-            let channels = u16::from_le_bytes(bytes.get(start + 2..start + 4)?.try_into().ok()?);
-            let sample_rate = u32::from_le_bytes(bytes.get(start + 4..start + 8)?.try_into().ok()?);
-            if !(1..=8).contains(&channels) || !(8_000..=192_000).contains(&sample_rate) {
-                return None;
-            }
-            format = Some((codec, channels, sample_rate));
-        } else if kind == b"data" {
-            data = true;
-        }
-        offset = end.checked_add(size & 1)?;
-    }
-    format.filter(|_| data)
 }
 
 pub(crate) fn clip_bytes(packages: &Path, tag: u32) -> Result<Vec<u8>, String> {

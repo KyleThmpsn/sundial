@@ -366,7 +366,7 @@ fn build_watermark_plan_with_context(
                 &request.icon_edit,
             )?;
             let resolved = graph.map(|graph| {
-                let primary_layer_tag = graph.primary_layer_tag;
+                let primary_layer_tag = graph.layer_tag;
                 let dependencies = graph.dependencies;
                 reference_overrides.extend(graph.reference_overrides);
                 new_tags.extend(graph.new_tags);

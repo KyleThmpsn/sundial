@@ -1,6 +1,6 @@
 # Parhelion
 
-Parhelion is an **experimental** item workbench bundled with [Sundial](../../README.md) for Project Sunrise and Dawn. Build weapons by mixing gameplay, appearance, perks, and stats, including Exotics and unusual combinations. You can also author armor, Sparrows, Ships, Ghost Shells, Shaders, and Subclasses from stock items.
+Parhelion is an **experimental** item workbench bundled with [Sundial](../../README.md) for Project Sunrise and Dawn. Build weapons by mixing gameplay, appearance, perks, and stats, including Exotics and unusual combinations. You can also author armor, Sparrows, Ships, Ghost Shells, Emblems, Shaders, and Subclasses from stock items.
 
 Your items are saved as **recipes** that you can edit and share. Some combinations may not work or may crash the game, so test them in-game after installing them.
 
@@ -40,7 +40,7 @@ See Sundial's [Compatibility](../../README.md#compatibility) section for support
 5. Check the install location and any listed removals. Close Destiny and any other apps editing the same account, then confirm the installation.
 6. Relaunch Destiny and find your authored weapons, gear, and Shaders in Collections. Weapons appear under their type, or under **Exotics** for Exotic weapons. [Making Other Items](#making-other-items) covers where the rest appear. Subclasses do not appear in Collections. Equip them in game like any other Subclass.
 
-Each install replaces the previously installed Parhelion overlay package set. Select every recipe you want to keep, not just those you've changed.
+Each install replaces the previously installed Parhelion package set, including its standalone asset packages. Select every recipe you want to keep, not just those you've changed. If a selected item uses an authored Shader saved in your library, Parhelion includes that Shader automatically.
 
 If the new build leaves out an installed item or custom perk, Parhelion lists what needs to be removed from your selected account. This can include equipped items, inventory items, saved perk selections, Collections unlocks, and reward rules for any character in that account. Review the list, then click **Back Up, Remove & Install** to continue or **Cancel** to make no changes. Other accounts aren't changed.
 
@@ -52,9 +52,13 @@ Check the build selection before each build. Opening a recipe doesn't automatica
 
 Your weapon starts with the **base weapon**'s firing behavior, stats, and perks. The **appearance donor** determines the weapon's in-game model and iconography. The picker opens on your base weapon's type, and you can clear that filter to use any weapon's appearance. Appearances from another weapon type can carry the appearance weapon's rig and animations when the two weapon types can share them. Otherwise, the model uses the base weapon's rig and some moving parts may remain still. The picker shows which result to expect.
 
-Most editing happens on **Weapon** and **Appearance**. **Advanced Gameplay** contains experimental controls that are more prone to bugs and crashes and aren't yet recommended for normal use. **Identity** shows the weapon's hex hash identifiers for reference.
+**Weapon** holds the weapon's text, base, slot, damage, stats, and perks. **Appearance** holds its model, animations, artwork, and placement. **Gameplay** controls how it fires and which parts it takes from other weapons. **Identity** shows the weapon's hex hash identifiers for reference.
 
-**Advanced Gameplay** swaps one gameplay component at a time, such as a weapon's **Firing Behavior**, for another weapon's. Donors of the same weapon type are listed first. **Show Experimental Matches** adds donors of other types, which Parhelion rewires to fit, a Hand Cannon's **Firing Behavior** on a Sidearm for example. **Show Rejected Donors** lists the ones it cannot fit and why.
+On **Gameplay**, **Parts** lets you borrow behavior and firing parts from other weapons. **Firing Behavior**, **Barrel**, and **Magazine** can each use a different source while keeping your weapon's runtime. **Reload** swaps the whole runtime. On **Appearance**, **Animations** and **Actions** borrow whole animation profiles or individual actions. Test borrowed parts in game.
+
+The runtime donor picker groups choices under **Lower Risk**, **Experimental**, and **Rejected**. Experimental choices require **Accept Crash Risk**. Rejected choices explain why they cannot be used.
+
+For runtime and inventory controls, turn on **Enable Experimental Features** under **Preferences… > Editor & Library**, then open **Technical** on **Gameplay**.
 
 You can choose the weapon slot, damage type, and ammo type separately. The editor shows any restrictions. Changing ammo type doesn't rebalance the weapon's stats. Adjust those separately as needed.
 
@@ -95,7 +99,7 @@ To create and use a custom perk:
 
 Saving a perk and applying it are separate. **Save to Library** updates the saved perk. **Apply to Weapon** copies the current perk into the chosen socket choice, and later edits to the saved perk do not change that copy. Use **Save as New Perk** in the perk's menu to experiment without replacing the saved original. When a perk cannot be applied, the footer says why, such as an action with no object chosen, and **Show Problem** opens the card that needs it.
 
-The workbench keeps open drafts between sessions, marked **Draft** until you save them. **Use Effect Summary** under the description writes a starting description from the effects. **Copy Test Plan** in the perk's menu copies an in-game checklist built from the perk's triggers, actions, and timing.
+The workbench keeps open drafts between sessions, marked **Draft** until you save them. **Use Effect Summary** under the description writes a starting description from the effects. **Copy Test Plan** in the perk's menu copies an in-game checklist built from the perk's triggers, actions, and timing. **Perk Diagnostics…** lists every problem found in the perk, and **Gameplay Verification…** keeps your in-game test results with the exact perk you tested.
 
 Use **Import…** and **Export…** in the library menu to share perk files. **Restore Default Custom Perks…** puts the bundled examples back and backs up any you changed.
 
@@ -165,7 +169,7 @@ Collapse cards you are done with. A collapsed card still shows its trigger and a
 
 **Tools > Engine Catalog…** is a technical browser for the behavior read out of the perks your game already has. Turn on **Enable Experimental Features** under **Preferences… > Editor & Library** if the entry is not there.
 
-Choose a kind to see what it does and which installed perks use it. An entry shows its graph, how its components fit together, what links to it and what it links to, and the details of the scan that found it. Use **Authorable Only** to narrow the list to kinds you can put in a perk, or **All Kinds** to see everything the scan found. The **Markers** tab lets you search markers found in stock objects and see where they are used.
+Choose a kind to see what it does and which installed perks use it. An entry shows its graph, how its components fit together, what links to it and what it links to, and the details of the scan that found it. Use **Authorable Only** to narrow the list to kinds you can put in a perk, or **All Kinds** to see everything the scan found. The **Markers** tab lets you search markers found in stock objects and see where they are used. **Find All Uses** on a resource page lists every resource that uses it.
 
 Use it to find behavior worth copying into a perk of your own, or to check what a stock perk really does before you borrow from it. The catalog reads your installed packages as you browse, so use **Retry Scan** if a scan reports an error.
 
@@ -196,7 +200,7 @@ For example, to put Malfeasance's rounds on an ordinary Hand Cannon:
 
 **Appearance** and the ornament, shader, and appearance donor pickers show a preview of the weapon model, with its textures, animations, and shader colors, so you can see a choice before you commit to it. Drag to turn the model and Shift-drag or right-drag to pan. **View** changes the background and lighting, and **Clip** and **Speed** play one of its animations. Previews are not exact yet, so some models light or shade differently from how they look in game.
 
-**Use Ornament** lists compatible stock ornaments, including ones from other weapons. Picking one takes that ornament's model, its own colors when available, and its inventory icon. An ornament has no rig of its own, so choosing one from another weapon also makes that weapon the appearance donor. Everything the ornament sets stays editable afterwards, and **Default Appearance** puts it back. The button sits beside the appearance picker on **Weapon** as well as on **Appearance**.
+**Use Ornament** lists compatible stock ornaments, including ones from other weapons. Picking one takes that ornament's model, its own colors when available, and its inventory icon. An ornament has no rig of its own, so choosing one from another weapon also makes that weapon the appearance donor. When the base weapon has no ornaments of its own, the list opens filtered to its weapon type. Everything the ornament sets stays editable afterwards, and **Default Appearance** puts it back. The button sits beside the appearance picker on **Weapon** as well as on **Appearance**.
 
 On **Appearance**, use **Change Icon** to choose another weapon's icon. Use **Edit Icon…** to import an image, adjust or replace colors, rotate, or flip it. Use PNG for transparent artwork. Imported images are saved in the recipe, so you don't need to share them separately.
 
@@ -206,7 +210,7 @@ Custom perks, badges, and watermarks share an icon browser. Choose from game ass
 
 Use **Edit Artwork…** under **Release Watermark** on **Appearance** to customize the small watermark on the weapon's inventory icon. Custom badges have the same artwork editor on **Collections**. Both support crop, placement, rotation, and flipping, and badges also offer background colors and gradients.
 
-Adding a shader choice lets it recolor supported dye channels, including channels normally locked by an Exotic appearance. The original colors remain when no shader is selected. Explicit render-dye overrides in Advanced Gameplay take precedence.
+Authored weapons accept shaders even when their base, appearance, or ornament is Exotic. The original colors remain when no shader is selected. Shader colors still depend on the model's supported dye channels. **Render Dyes** under **Appearance > Technical Appearance Data** edits the underlying dye rows when experimental features are enabled.
 
 To change the small weapon icon beside the ammo count, use **Ammo HUD Icon > Import HUD PNG…** and choose a transparent PNG. This doesn't change the inventory icon. **Use Appearance** switches back to the donor's HUD icon. Rebuild and install to see your changes in-game.
 
@@ -222,11 +226,11 @@ Placement is presentation only. It does not change ammo, stats, or gameplay.
 
 ## Making Other Items
 
-The **New Item** menu beside **New Weapon** starts an armor piece, Sparrow, Ship, Ghost Shell, Shader, or Subclass from a stock base. Save it as a recipe and select it in **Items in This Build** before building. This section covers gear. Shaders and Subclasses have their own sections below.
+The **New Item** menu beside **New Weapon** starts an armor piece, Sparrow, Ship, Ghost Shell, Emblem, Shader, or Subclass from a stock base. Save it as a recipe and select it in **Items in This Build** before building. This section covers gear. Shaders and Subclasses have their own sections below.
 
-Edit the name, description, icon, rarity, supported stats, and socket choices. Gear keeps the base item's slot, class, model, and runtime behavior. Armor also has **Energy Type** and **Energy Capacity** controls. Exotic gear requires an Exotic base.
+Edit the name, description, icon, rarity, supported stats, and socket choices. Gear keeps the base item's slot, class, model, and runtime behavior. Armor also has **Energy Type** and **Energy Capacity** controls. Exotic gear requires an Exotic base. An Emblem's nameplate takes its banner, overlay, and background from another Emblem or your own image, and **Customize Colors** sets its colors.
 
-In Collections, armor appears beside its base. Sparrows, Ships, Ghost Shells, and Shaders appear on a **Project Sunrise** or **Dawn** page under their kind, and each of these pages uses one node from the [Collections budget](#collections-placement). Authored armor does not appear in the Project Sunrise or Dawn badge. Sparrow Speed, Boost, and Durability are tooltip stats. Changing the displayed Speed alone does not make a Sparrow travel faster, since its engine perk controls the speed tier.
+In Collections, armor appears beside its base. Sparrows, Ships, Ghost Shells, Emblems, and Shaders appear on a **Project Sunrise** or **Dawn** page under their kind, and each of these pages uses one node from the [Collections budget](#collections-placement). Authored armor does not appear in the Project Sunrise or Dawn badge. Sparrow Speed, Boost, and Durability are tooltip stats. Changing the displayed Speed alone does not make a Sparrow travel faster, since its engine perk controls the speed tier.
 
 Armor authoring will gain more options in future releases.
 
@@ -252,7 +256,11 @@ For each ability, keep the base's or choose one from any stock Subclass, includi
 
 You can also build attunement paths node by node. Each node can come from any Subclass and take its own name, description, and perks, and each path takes its own name.
 
-Installing adds each authored Subclass to every character of its base Subclass's class and equips the first one. Authored Subclasses have no Collections entry.
+Each ability and node can also take its own name, description, icon, and perks, including custom perks from the workbench. **Charges** adds extra charges, **Modifiers** changes what it affects, and **Tuning** adjusts the ability's own values, projectiles, and effects.
+
+**Effect Colors** changes the hue, saturation, and brightness of the color palettes an ability's effects use. The changes belong to that ability, so other abilities using the same stock palettes keep their colors.
+
+Installing adds each authored Subclass to every character of its base Subclass's class and equips the first one. **Every Class** adds it to every character, and any of them can equip it. Authored Subclasses have no Collections entry.
 
 Subclass authoring will gain more options in future releases as more of how Subclasses work is understood.
 
@@ -318,24 +326,49 @@ You can edit any of the default weapons bundled with Parhelion too. Parhelion us
 
 ## Generated Packages
 
-These are examples of files Parhelion generates. Your selected recipes determine which files are needed. The build result and manifest list them all. Keep the files from each build together, even if you only changed one weapon.
+Parhelion installs each build's packages together into your game's `packages` folder. Every build includes asset and investment packages. Other files depend on your selected recipes. The build result and manifest list the exact files.
+
+### Required Packages
 
 | Package File | Purpose |
 | --- | --- |
-| `w64_parhelion_assets_0aa0_0.pkg` | Holds new artwork and other assets used by your weapons, including Sunrise or Dawn badge and watermark assets. |
-| `w64_investment_0361_7.pkg` | Connects weapons and perks to their in-game behavior. |
-| `w64_investment_globals_client_058c_4.pkg` | Adds Collections entries, unlocks, and badge progression. |
-| `w64_investment_globals_client_0593_4.pkg` | Registers custom items and connects them to their Collections entries. |
-| `w64_investment_globals_client_0709_4.pkg` | Provides item and perk information shown in menus. |
-| `w64_investment_globals_client_0913_4.pkg` | Stores weapon names, descriptions, and other custom text. |
-| `w64_investment_globals_client_0914_4.pkg` | Defines custom items and connects them to their icons and appearance. |
-| `w64_sandbox_01bb_7.pkg` | Adds custom perk behavior when a recipe needs it. |
-| `w64_shared_manifest_0374_7.pkg` | Makes additional gameplay resources available when needed. |
-| `w64_ui_037e_6.pkg` | Adds custom ammo HUD icons when a recipe uses them. |
+| `w64_parhelion_assets_0aa0_0.pkg` | Holds authored artwork, models, materials, and other private assets, including badges and watermarks. |
+| `w64_investment_0361_7.pkg` | Connects authored items and perks to their in-game behavior. |
+| `w64_investment_globals_client_058c_4.pkg` | Adds Collections entries, unlocks, and Sunrise or Dawn badge progression. |
+| `w64_investment_globals_client_0593_4.pkg` | Registers authored items and connects them to their Collections entries. |
+| `w64_investment_globals_client_0709_4.pkg` | Provides item and perk display information used by the game's menus. |
+| `w64_investment_globals_client_0913_4.pkg` | Stores authored names, descriptions, lore, and other localized text. |
+| `w64_investment_globals_client_0914_4.pkg` | Defines authored items and links them to their icons and appearance resources. |
+
+### Optional Packages
+
+Generated only when your recipes need them. Ability property banks gain entries needed by custom perks, such as extra ability charges. Only packages containing the affected ability data are included.
+
+| Package File | Purpose |
+| --- | --- |
+| `w64_parhelion_assets_0aa1_0.pkg` through `w64_parhelion_assets_0cff_0.pkg` | Holds additional authored assets when they no longer fit in the first package. Only the needed files are generated. |
+| `w64_sandbox_01bb_7.pkg` | Adds the custom perk behavior that selected items use. |
+| `w64_sandbox_01c0_6.pkg` | Extends an ability property bank. |
+| `w64_sandbox_01d5_7.pkg` | Extends an ability property bank. |
+| `w64_sandbox_01de_7.pkg` | Extends an ability property bank. |
+| `w64_sandbox_01e0_6.pkg` | Extends an ability property bank. |
+| `w64_sandbox_01e1_7.pkg` | Extends an ability property bank. |
+| `w64_sandbox_01e2_6.pkg` | Extends an ability property bank. |
+| `w64_sandbox_01e4_6.pkg` | Extends an ability property bank. |
+| `w64_sandbox_01fd_6.pkg` | Extends an ability property bank. |
+| `w64_sandbox_0397_6.pkg` | Extends an ability property bank. |
+| `w64_shared_manifest_0374_7.pkg` | Makes additional gameplay resources available to the items and perks that need them. |
+| `w64_ui_01a3_7.pkg` | Adds crosshair definitions brought in by imported weapons. |
+| `w64_ui_02af_6.pkg` | Adds custom perk statuses shown on the HUD, with their names and icons. |
+| `w64_ui_037e_6.pkg` | Adds custom weapon icons shown beside the ammo count. |
+| `w64_globals_03ab_7.pkg` | Stores the localized text for custom HUD status names. |
+| `w64_globals_06dc_7.pkg` | Registers custom HUD status names and connects them to their localized text. |
+
+Keep the complete set together, even if you only changed one item. Parhelion manages these files during install and uninstall and leaves stock packages intact.
 
 ## Backups and Recovery
 
-Parhelion leaves stock package files intact and backs up the installed overlay package set before replacing it.
+Parhelion backs up the installed package set before replacing it and removes old Parhelion files the new build no longer needs.
 
 If installation also removes anything from your account, Parhelion backs up the account with the packages. These backups aren't deleted automatically.
 
@@ -362,7 +395,7 @@ Custom recipes, build selection, and installed packages are kept. Rebuild and in
 3. Leave **Remove Custom Items and Progression** checked to remove custom items, saved perk selections, Collections unlocks, and reward rules from the selected account. Equipped custom weapons are removed too, leaving those slots empty.
 4. Review the removals, confirm, then click **Back Up & Uninstall**.
 
-This removes the installed Parhelion overlay package set.
+This removes the complete installed Parhelion package set.
 
 Stock items, unrelated progress, other settings, and recipes are kept. Other accounts aren't edited. If cleanup is off or unavailable, remove the custom items and their unlock data in Sundial yourself before uninstalling.
 
@@ -386,7 +419,7 @@ Existing weapons may keep their selected perks. Get a fresh copy from Collection
 
 ### Where Are the Advanced Controls?
 
-Enable them under **Preferences… > Editor & Library**, then open **Advanced Gameplay**. Advanced controls are not yet recommended for normal use, as some combinations may freeze or crash the game. Please use with caution.
+The main donor controls are on **Gameplay** and **Appearance**. Turn on **Enable Experimental Features** under **Preferences… > Editor & Library**, then open **Technical** on **Gameplay** for runtime and inventory controls, or **Technical Appearance Data** on **Appearance** for art and dye rows. Some combinations may freeze or crash the game, so test changes one at a time.
 
 Turning them off hides the controls without removing your saved changes.
 

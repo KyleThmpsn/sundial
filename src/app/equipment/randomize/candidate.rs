@@ -210,6 +210,10 @@ pub(super) fn random_plug(
             let options = catalog.gear_type_options(item, socket_index);
             rng.pick_valid_hash(&options)
         }
+        PlugSelectionMode::GearKind => {
+            let options = catalog.gear_kind_options(item, socket_index);
+            rng.pick_valid_hash(&options)
+        }
         PlugSelectionMode::AnyPlug => rng.pick_valid_hash(catalog.all_plug_options()),
     }
 }

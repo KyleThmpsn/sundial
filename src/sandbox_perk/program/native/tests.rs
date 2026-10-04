@@ -84,10 +84,11 @@ fn complete_program_drafts_can_add_empty_lists_before_choosing_nodes() {
 }
 
 #[test]
-#[ignore = "requires the captured native action survey"]
+#[ignore = "requires PARHELION_PERK_SURVEY with captured native actions"]
 fn captured_programs_preserve_all_groups_policies_and_auxiliary_records() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tmp/projectile-picker-20260910/runtime");
+    let root = std::path::PathBuf::from(
+        std::env::var_os("PARHELION_PERK_SURVEY").expect("survey directory"),
+    );
     let index: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join("inventory.json")).unwrap()).unwrap();
     let mut counts = [0usize; 4];

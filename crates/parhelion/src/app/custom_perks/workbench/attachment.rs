@@ -1,8 +1,19 @@
 //! Resolve exact socket choices and guard against edits made while a perk draft is open.
 use super::*;
 
+mod ability;
 #[cfg(test)]
 mod tests;
+
+pub(super) use ability::Target as AbilityTarget;
+
+/// What an apply from the footer changes: a socket choice or a subclass ability or node. Both are
+/// boxed, since a socket target carries the socket's whole plug variant and an ability change
+/// its perk.
+pub(super) enum Applied {
+    Socket(Box<Change>),
+    Ability(Box<ability::Change>),
+}
 
 fn stock_variant(hash: u32) -> WeaponSocketPlugVariantRecipe {
     WeaponSocketPlugVariantRecipe {
@@ -174,6 +185,12 @@ impl Change {
         let target = &self.target;
         if let Some(perk) = &self.perk {
             perk.validate()?;
+            if let Some(issue) = crate::perk::preflight::check(perk, weapon.kind)
+                .into_iter()
+                .find(|issue| issue.blocking)
+            {
+                return Err(issue.message);
+            }
             let mut variant = perk.at_socket(target.socket as u16, target.choice as u16);
             if let Some(plug) = target.gear_plug() {
                 // A gear socket only takes plugs of its own kind, so the perk is built on the
@@ -561,6 +578,49 @@ impl Workbench {
 }
 
 impl PackageAuthoringApp {
+    /// Opens what a page asked the workbench for: a perk of a subclass ability or node, or a
+    /// socket choice to edit or to pick a perk for.
+    fn open_perk_request(
+        &self,
+        workbench: &mut Workbench,
+        request: Option<Request>,
+        donor: Option<&WeaponDonor>,
+    ) {
+        match request {
+            Some(Request::Ability { place, perk }) => {
+                let copy = match perk {
+                    AbilityPerk::Stock(index) => Some(self.stock_perk_copy(index)),
+                    AbilityPerk::New | AbilityPerk::Custom(_) => None,
+                };
+                workbench.open_ability(&self.recipe, (place, perk), copy);
+            }
+            Some(
+                request @ (Request::EditChoice { socket, choice }
+                | Request::SelectChoice { socket, choice }),
+            ) => {
+                let (Some(donor), Some(catalog)) = (donor, &self.catalog) else {
+                    return;
+                };
+                match Target::capture(&self.recipe, donor, socket, choice) {
+                    Ok(target) if matches!(request, Request::EditChoice { .. }) => {
+                        workbench.open_target(target, catalog);
+                    }
+                    Ok(target) => workbench.open_picker(
+                        target,
+                        catalog,
+                        self.recipe_library.as_ref(),
+                        &self.recipe,
+                    ),
+                    Err(error) => {
+                        workbench.error = Some(error);
+                        workbench.open = true;
+                    }
+                }
+            }
+            None => {}
+        }
+    }
+
     pub(in crate::app) fn draw_perk_workbench(&mut self, ctx: &egui::Context) {
         if self.build_receiver.is_some() || self.install_receiver.is_some() {
             return;
@@ -569,28 +629,9 @@ impl PackageAuthoringApp {
         let donor = self
             .current_item_donor()
             .map(|donor| socket_editor::socket_editor_donor(&donor, &self.recipe).into_owned());
-        if let Some(request) = self.perk_request.take()
-            && let (Some(donor), Some(catalog)) = (&donor, &self.catalog)
-        {
-            let choice = match request {
-                Request::EditChoice { choice, .. } | Request::SelectChoice { choice, .. } => choice,
-            };
-            match Target::capture(&self.recipe, donor, request.socket(), choice) {
-                Ok(target) => match request {
-                    Request::EditChoice { .. } => workbench.open_target(target, catalog),
-                    Request::SelectChoice { .. } => workbench.open_picker(
-                        target,
-                        catalog,
-                        self.recipe_library.as_ref(),
-                        &self.recipe,
-                    ),
-                },
-                Err(error) => {
-                    workbench.error = Some(error);
-                    workbench.open = true;
-                }
-            }
-        }
+        workbench.ability_places = self.subclass_places();
+        let request = self.perk_request.take();
+        self.open_perk_request(&mut workbench, request, donor.as_ref());
         if workbench.picker.is_some() {
             if let (Some(donor), Some(catalog)) = (&donor, &self.catalog) {
                 if workbench.show_picker(ctx, &mut self.recipe, donor, catalog) {
@@ -617,16 +658,28 @@ impl PackageAuthoringApp {
             self.show_experimental_options,
             (&self.recipe, donor.as_ref()),
         );
-        if let (Some(change), Some(donor), Some(catalog)) = (change, donor, &self.catalog) {
-            match change.apply(&mut self.recipe, &donor) {
+        match change {
+            Some(Applied::Socket(change)) => {
+                if let (Some(donor), Some(catalog)) = (donor, &self.catalog) {
+                    match change.apply(&mut self.recipe, &donor) {
+                        Ok(()) => {
+                            workbench.applied(&self.recipe, &donor, catalog, change.perk.is_none());
+                            self.plug_queries.clear();
+                            // Save Recipe reads this on the next frame of the workbench.
+                            self.synchronize_recipe_dirty();
+                        }
+                        Err(error) => workbench.error = Some(error),
+                    }
+                }
+            }
+            Some(Applied::Ability(change)) => match change.apply(&mut self.recipe) {
                 Ok(()) => {
-                    workbench.applied(&self.recipe, &donor, catalog, change.perk.is_none());
-                    self.plug_queries.clear();
-                    // Save Recipe reads this on the next frame of the workbench.
+                    workbench.applied_to_ability(&change);
                     self.synchronize_recipe_dirty();
                 }
                 Err(error) => workbench.error = Some(error),
-            }
+            },
+            None => {}
         }
         let save_recipe = std::mem::take(&mut workbench.save_recipe_requested);
         self.perk_workbench = workbench;

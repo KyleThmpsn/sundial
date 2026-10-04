@@ -51,6 +51,10 @@ impl SundialApp {
             self.next_workspace_refresh_poll = now;
         }
         self.window_was_focused = focused;
+        if self.package_authoring_busy {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        }
         if !should_poll_pending_workspace_refresh(
             focused,
             self.has_unsaved_changes(),

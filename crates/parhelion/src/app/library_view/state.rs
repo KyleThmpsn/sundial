@@ -40,7 +40,7 @@ pub(crate) struct LibraryState {
     pub(super) export_selection: Option<BTreeSet<PathBuf>>,
     pub(super) restore: Option<crate::recipe_library::RestoreRecipe>,
     pub(super) delete: Option<crate::recipe_library::DeleteRecipe>,
-    pub(super) notice: Option<String>,
+    pub(in crate::app) notice: Option<String>,
     pub(super) errors: Vec<String>,
     pub(super) job: Option<thread::JoinHandle<TransferResult>>,
     modified: BTreeMap<PathBuf, SystemTime>,

@@ -78,11 +78,9 @@ fn load_inner(path: &Path) -> Result<DawnAccountDocumentLoad, DawnAccountError> 
     let profile = read!(reader::profile(&connection));
     let characters = read!(reader::characters(&connection));
     let (settings, settings_index) = read!(reader::settings(&connection));
-    let loaded_settings = settings.clone();
     let carried = super::carried::read(&connection, &profile)?;
     let activity = super::activity::ActivityState::load(&connection)?;
     let progression = super::progression::Progression::load(&connection)?;
-    let loaded_dismantle = super::dismantle::rows(&profile);
     let reward_debts = super::rewards::load(&connection)?;
     let reward_sequence = super::rewards::sequence(&connection)?;
 
@@ -91,24 +89,26 @@ fn load_inner(path: &Path) -> Result<DawnAccountDocumentLoad, DawnAccountError> 
             path: PathBuf::from(path),
             metadata,
             allocators,
-            loaded_characters: characters.clone(),
-            loaded_profile: profile.clone(),
+            loaded: super::Loaded {
+                carried: carried.clone(),
+                characters: characters.clone(),
+                profile: profile.clone(),
+                activity: activity.clone(),
+                settings: settings.clone(),
+                progression: progression.clone(),
+                dismantle: super::dismantle::rows(&profile),
+                reward_debts: reward_debts.clone(),
+            },
             snapshot: DawnAccountSnapshot {
                 primary_soid,
                 profile,
                 characters,
                 settings,
             },
-            loaded_carried: carried.clone(),
             carried,
-            loaded_activity: activity.clone(),
             activity,
             settings_index,
-            loaded_settings,
-            loaded_progression: progression.clone(),
             progression,
-            loaded_dismantle,
-            loaded_reward_debts: reward_debts.clone(),
             reward_debts,
             reward_sequence,
             editor_cancelled_debts: Default::default(),

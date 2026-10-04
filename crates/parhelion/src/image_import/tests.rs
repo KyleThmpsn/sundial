@@ -2,6 +2,69 @@ use super::*;
 use crate::{hud_icon::HudImage, icon_edit::ImportedIcon, presentation::Artwork};
 
 #[test]
+fn extreme_aspect_imports_render_the_center_at_canvas_size() {
+    let directory = tempfile::tempdir().unwrap();
+    for horizontal in [false, true] {
+        let (width, height) = if horizontal { (2400, 1) } else { (1, 2400) };
+        let source = RgbaImage::from_fn(width, height, |x, y| {
+            let position = if horizontal { x } else { y };
+            image::Rgba(if (1100..1300).contains(&position) {
+                [255, 255, 255, 128]
+            } else {
+                [255, 0, 0, 0]
+            })
+        });
+        let path = directory.path().join("narrow.png");
+        source.save(&path).unwrap();
+        let imported = EmbeddedImage::from_path(&path).unwrap();
+        let result = cover(imported.pixels(), 512, 256);
+        assert_eq!(result.dimensions(), (512, 256));
+        assert!(result.pixels().all(|pixel| pixel.0 == [255, 255, 255, 128]));
+        if let Some(directory) = std::env::var_os("PARHELION_UI_CAPTURE_DIR") {
+            std::fs::create_dir_all(&directory).unwrap();
+            result
+                .save(std::path::PathBuf::from(directory).join(format!("cover-{horizontal}.png")))
+                .unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_detailed_import_can_be_saved_and_reopened_at_its_supported_resolution() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut random = 0xA193_84F5_u32;
+    let source = image::RgbImage::from_fn(MAX_EMBEDDED_EDGE, MAX_EMBEDDED_EDGE, |_, _| {
+        random ^= random << 13;
+        random ^= random >> 17;
+        random ^= random << 5;
+        let bytes = random.to_le_bytes();
+        image::Rgb([bytes[0], bytes[1], bytes[2]])
+    });
+    let input = directory.path().join("detailed.jpg");
+    source.save(&input).unwrap();
+    let imported = EmbeddedImage::from_path(&input).unwrap();
+    let saved = directory.path().join("embedded.json");
+    serde_json::to_writer(File::create(&saved).unwrap(), &imported).unwrap();
+    assert!(
+        std::fs::metadata(&saved).unwrap().len() > 12 * 1024 * 1024,
+        "fixture must exceed the old reader limit"
+    );
+    let reopened: EmbeddedImage =
+        serde_json::from_reader(std::io::BufReader::new(File::open(saved).unwrap())).unwrap();
+    assert_eq!(
+        reopened.pixels().dimensions(),
+        (MAX_EMBEDDED_EDGE, MAX_EMBEDDED_EDGE)
+    );
+    assert_eq!(reopened, imported);
+    if let Some(directory) = std::env::var_os("PARHELION_UI_CAPTURE_DIR") {
+        std::fs::create_dir_all(&directory).unwrap();
+        cover(reopened.pixels(), 320, 180)
+            .save(std::path::PathBuf::from(directory).join("reopened-image.png"))
+            .unwrap();
+    }
+}
+
+#[test]
 fn importers_preserve_their_format_and_composition_contracts() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("image.png");

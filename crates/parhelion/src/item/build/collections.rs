@@ -1,0 +1,151 @@
+//! Build badge membership and acquired-count programs from completed weapon rows.
+use super::*;
+mod pages;
+
+pub(super) struct Tables {
+    pub nodes: Vec<u8>,
+    pub node_strings: Vec<u8>,
+    pub objective_strings: Vec<u8>,
+    pub records: Vec<u8>,
+    pub record_strings: Vec<u8>,
+    pub objectives: Vec<u8>,
+    pub pools: Vec<u8>,
+}
+
+pub(super) fn author(
+    sources: &mut sources::ProjectSources,
+    plan: &placements::Plan,
+    project_rows: &[ProjectAuthoredRow],
+    badge_icon_index: u16,
+    weapons: &[WeaponCloneSpec],
+    custom_icons: &BTreeMap<String, u16>,
+    collectibles: &mut Vec<u8>,
+) -> AuthoringResult<Tables> {
+    // A project of items without an entry, such as subclasses alone, leaves Collections as
+    // they are.
+    if project_rows.is_empty() {
+        return Ok(Tables {
+            nodes: std::mem::take(&mut sources.stock_nodes),
+            node_strings: std::mem::take(&mut sources.stock_node_strings),
+            objective_strings: std::mem::take(&mut sources.stock_objective_strings),
+            records: std::mem::take(&mut sources.stock_records),
+            record_strings: std::mem::take(&mut sources.stock_record_strings),
+            objectives: std::mem::take(&mut sources.stock_objectives),
+            pools: std::mem::take(&mut sources.stock_pools),
+        });
+    }
+    let badge_placements = project_rows
+        .iter()
+        .map(|row| SunriseBadgePlacement {
+            pages: row.pages,
+            classes: row.classes,
+            donor_collectible_index: row.donor_collectible_index,
+            authored_collectible_index: row.authored_collectible_index,
+            authored_unlock_index: row.authored_unlock_index,
+        })
+        .collect::<Vec<_>>();
+    let badge = author_sunrise_badge_graph(SunriseBadgeGraphInput {
+        stock_nodes: std::mem::take(&mut sources.stock_nodes),
+        stock_node_strings: std::mem::take(&mut sources.stock_node_strings),
+        stock_objectives: std::mem::take(&mut sources.stock_objectives),
+        stock_objective_strings: std::mem::take(&mut sources.stock_objective_strings),
+        stock_records: std::mem::take(&mut sources.stock_records),
+        stock_record_strings: std::mem::take(&mut sources.stock_record_strings),
+        shared_expression_pools: &sources.stock_pools,
+        localization_table_index: LOCALIZATION_DONOR_TABLE_INDEX as u32,
+        badge_icon_index,
+        placements: &badge_placements,
+    })?;
+    let sunrise_members = weapons
+        .iter()
+        .zip(&badge_placements)
+        .filter(|(weapon, _)| weapon.joins_sunrise_badge())
+        .map(|(_, placement)| *placement)
+        .collect::<Vec<_>>();
+    let mut badge = crate::badge::append_custom_badges(
+        badge,
+        weapons,
+        &badge_placements,
+        custom_icons,
+        &sources.stock_pools,
+        collectibles,
+        LOCALIZATION_DONOR_TABLE_INDEX as u32,
+    )?;
+    pages::append(
+        &mut badge,
+        plan,
+        project_rows,
+        &sources.stock_pools,
+        badge_icon_index,
+    )?;
+    if sunrise_members.len() != badge_placements.len() {
+        crate::badge::set_sunrise_members(&mut badge, &sunrise_members, &sources.stock_pools)?;
+    }
+    let nodes = badge.nodes;
+    let node_strings = badge.node_strings;
+    let objective_strings = badge.objective_strings;
+    let records = badge.records;
+    let record_strings = badge.record_strings;
+    let mut page_members = BTreeMap::<u16, BTreeSet<u16>>::new();
+    let (_, _, node_rows, _) = array_at(&nodes, 8)?;
+    for row in project_rows {
+        for page in row.pages.iter() {
+            if read_u16(
+                &nodes,
+                node_rows
+                    + usize::from(page) * crate::progression::PRESENTATION_NODE_ROW_SIZE
+                    + crate::progression::PRESENTATION_NODE_OBJECTIVE_INDEX_OFFSET,
+            )? == u16::MAX
+            {
+                continue;
+            }
+            page_members
+                .entry(page)
+                .or_default()
+                .insert(row.authored_unlock_index);
+        }
+    }
+    // A collectible in more than one class branch or in Exotics counts once at shared ancestors.
+    let mut objectives = crate::progression::patch_project_collection_objectives_with_members(
+        badge.objectives,
+        &nodes,
+        &page_members,
+    )?;
+    pages::add_counts(&mut objectives, &nodes, project_rows, &sources.stock_pools)?;
+    let authored_unlock_indices = sunrise_members
+        .iter()
+        .map(|row| row.authored_unlock_index)
+        .collect::<Vec<_>>();
+    let mut groups = vec![authored_unlock_indices];
+    let mut custom_groups = BTreeMap::<&str, Vec<u16>>::new();
+    for (weapon, row) in weapons.iter().zip(project_rows) {
+        if let Some(badge) = &weapon.overrides.badge {
+            custom_groups
+                .entry(&badge.name)
+                .or_default()
+                .push(row.authored_unlock_index);
+        }
+    }
+    groups.extend(custom_groups.into_values());
+    let objectives =
+        crate::badge::patch_badge_objectives(objectives, &nodes, &sources.stock_pools, &groups)?;
+    let inherited_rows = project_rows
+        .iter()
+        .filter(|row| !row.count_selection.is_direct())
+        .cloned()
+        .collect::<Vec<_>>();
+    let pools = patch_project_acquired_count_programs(
+        std::mem::take(&mut sources.stock_pools),
+        &inherited_rows,
+    )?;
+
+    Ok(Tables {
+        nodes,
+        node_strings,
+        objective_strings,
+        records,
+        record_strings,
+        objectives,
+        pools,
+    })
+}

@@ -1,13 +1,10 @@
 //! Layout checks for the program canvas at a small and a large window. Nothing here opens a
 //! window or touches packages.
 use super::*;
+use sundial::package_authoring::runtime::{BindingHash, SchemaHandle};
 use sundial::package_authoring::{
-    sandbox_perk::{
-        action::{ActionSummary, GroupSummary, SummaryLine},
-        nodes::Support,
-        program::{Action, Asset, Position, Program, Trigger},
-    },
-    weapon_runtime::{WeaponRuntimeResource, WeaponRuntimeRoot, WeaponRuntimeRootKind},
+    runtime::{WeaponRuntimeResource, WeaponRuntimeRoot, WeaponRuntimeRootKind},
+    sandbox_perk::program::{Action, Asset, Position, Program, Trigger},
 };
 
 const SIZES: [egui::Vec2; 2] = [egui::vec2(640.0, 480.0), egui::vec2(1320.0, 900.0)];
@@ -127,7 +124,10 @@ fn action_picker_reaches_a_technical_native_kind_near_viewport_edges() {
         // Kind 51's enum values are unresolved, so it has no plain-language name: it is
         // reachable only under Advanced and renders as the engine operation it was traced
         // to. Naming a kind moves it out of this list, which is the point of the check.
-        let name = sundial::package_authoring::sandbox_perk::nodes::EFFECTS[51]
+        let name = sundial::package_authoring::sandbox_perk::nodes::EFFECTS
+            .iter()
+            .find(|entry| entry.kind == 51)
+            .unwrap()
             .name
             .to_owned();
         assert_visible(&output, &name, screen);
@@ -142,69 +142,19 @@ fn action_picker_reaches_a_technical_native_kind_near_viewport_edges() {
     }
 }
 
-fn line(text: &str, kind: &str, support: Support, asset: Option<u32>) -> SummaryLine {
-    SummaryLine {
-        native: None,
-        text: text.into(),
-        detail: vec!["Asset: 0x815282E1".into()],
-        kind_name: kind.into(),
-        support,
-        depth: 0,
-        asset,
-    }
-}
-
-fn stock_summary() -> ActionSummary {
-    ActionSummary {
-        headline: "The weapon is drawn, then applies 2 actions.".into(),
-        groups: vec![GroupSummary {
-            label: "Main Program".into(),
-            activation: vec![line(
-                "The weapon is drawn",
-                "Draw Event",
-                Support::Authorable,
-                None,
-            )],
-            effects: vec![
-                line(
-                    "Attach demo for as long as the effect lasts",
-                    "Create Entity",
-                    Support::Authorable,
-                    Some(0x8152_82E1),
-                ),
-                line(
-                    "Extend the running timers by 5 s, up to 5 s",
-                    "Extend Timers",
-                    Support::Readable,
-                    None,
-                ),
-            ],
-            removal: vec![line(
-                "The weapon is holstered",
-                "Holster Event",
-                Support::Authorable,
-                None,
-            )],
-            rearm: Vec::new(),
-        }],
-        notes: vec!["This describes the compiled action.".into()],
-        support: Support::Readable,
-    }
-}
-
-/// A moving-projectile resource shaped the way `projectile::parameters::discover` expects,
+/// A moving-projectile resource shaped the way `entity::projectile::parameters::discover` expects,
 /// carrying only the speed lanes.
 pub(super) fn movement_resource() -> WeaponRuntimeResource {
     let root = |kind: WeaponRuntimeRootKind, schema: u32, size: u32, offset: u32| {
         let field = WeaponRuntimeField {
             locator: WeaponRuntimeFieldLocator {
                 graph_tag: None,
-                binding_hash: 1,
+                binding_hash: BindingHash::new(1),
                 resource_index: 0,
                 root: kind,
-                root_schema: schema,
+                root_schema: schema.into(),
                 path: vec![],
-                type_handle: 2,
+                type_handle: SchemaHandle::new(2),
                 value_offset: offset,
                 byte_size: 8,
             },
@@ -252,9 +202,7 @@ pub(super) fn movement_resource() -> WeaponRuntimeResource {
 
 fn stock_editor() -> PerkEditor {
     let mut loaded = fixture();
-    loaded.summary = Some(stock_summary());
     loaded.projectile_slots = vec![(0x8152_82E1, 0x8152_82E1)];
-    loaded.program = Some(Err("Test reason".into()));
     loaded.graphs[0].1.resources.push(movement_resource());
     editor(loaded)
 }
@@ -273,12 +221,14 @@ fn program_recipe() -> PerkRecipe {
                 graph: 0x80BC_5810,
                 path: "content/sandbox/effects/trail/trail.entity.tft".into(),
                 values: Vec::new(),
+                hud_status: None,
             }),
             Action::Spawn {
                 asset: Asset {
                     graph: 0x80BC_2F21,
                     path: "content/sandbox/effects/burst/burst.entity.tft".into(),
                     values: Vec::new(),
+                    hud_status: None,
                 },
                 position: Position::Event,
             },
@@ -288,6 +238,7 @@ fn program_recipe() -> PerkRecipe {
             },
             Action::property(0x5EE2_66FC),
         ],
+        native_asset_patches: Vec::new(),
         removal_key: None,
         native_trigger: None,
         native_removal: None,
@@ -297,6 +248,8 @@ fn program_recipe() -> PerkRecipe {
         alternative_triggers: Vec::new(),
         alternative_removals: Vec::new(),
         native_rearm: None,
+        ability_tunings: Vec::new(),
+        ability_inputs: Vec::new(),
         alternative_rearms: Vec::new(),
         additional_groups: Vec::new(),
     });
@@ -391,7 +344,7 @@ fn every_complete_native_record_reader_fits_the_private_perk_window() {
 }
 
 #[test]
-fn stock_canvas_fits_without_mutating_the_draft() {
+fn stock_behavior_editor_fits_without_mutating_the_draft() {
     for size in SIZES {
         // The whole window: the editor chrome stays reachable and nothing overflows.
         let mut workbench = Workbench::default();

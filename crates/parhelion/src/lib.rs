@@ -7,13 +7,17 @@
 //! Maintenance boundaries:
 //! - `recipe` owns the saved authoring model; `capabilities` validates supported combinations.
 //! - `app` owns drafts, selection and background-job lifetimes, not package layout knowledge.
-//! - `weapon` resolves donors and builds native definition/runtime plans; `icon_edit`
-//!   separates image transforms, previews and controls from private icon-graph emission.
+//! - `item` is the build every item kind goes through: it resolves donors and builds native
+//!   definition and runtime plans. `weapon` and `subclass` hold their kinds' own rules, which it
+//!   applies. `icon_edit` separates image transforms, previews and controls from private
+//!   icon-graph emission.
 //! - `workflow` coordinates compilation and staging; `install` owns commit and recovery.
 //! - Sundial's `investment` and `package_authoring` APIs provide shared catalog/account services.
 
+mod ability;
 mod app;
 mod appended_tags;
+mod armor;
 mod artifact;
 pub(crate) mod artwork_browser;
 mod asset_packages;
@@ -26,13 +30,17 @@ mod capabilities;
 mod chain;
 pub mod collection;
 pub mod dye;
+pub mod emblem;
 mod error;
 mod extend;
 mod format;
 pub mod hud_icon;
 mod icon_edit;
 mod image_import;
+#[cfg(feature = "d2-model-importer")]
+mod imported;
 mod install;
+mod item;
 mod item_kind;
 mod manifest;
 mod package_profile;
@@ -45,20 +53,24 @@ mod progression;
 mod recipe;
 mod recipe_library;
 mod runtime;
+#[cfg(feature = "d2-model-importer")]
+pub mod shader;
 mod shader_icon;
 mod shared_tag_dependency_index;
 pub use shared_tag_dependency_index::partition::{LoadingResource, partition_loading_resources};
 pub use shared_tag_dependency_index::scoped::{LoadingOwner, clone_scoped_dependencies};
 mod shared_tag_memory;
+pub mod stat_group;
 pub mod subclass;
 mod tag_payload;
+#[cfg(test)]
+mod test_support;
 mod watermark;
-mod weapon;
-mod weapon_ammo;
-pub mod weapon_behavior;
+pub mod weapon;
 mod workflow;
 
 pub use app::Parhelion;
+pub use armor::Class as ArmorClass;
 pub use artifact::ArtifactMetadata;
 pub(crate) use badge::SunriseProjectMetadata;
 pub(crate) use badge::{
@@ -91,6 +103,18 @@ pub use install::{
     preview_uninstall_with_account_cleanup, prune_package_backups, resync_account,
     uninstall_custom_packages,
 };
+pub(crate) use item::{
+    AuthoredWeaponRarity, ModernDamageType, NewCollectionPlan, NewWeaponPlan,
+    NewWeaponProjectBundle, SwordProfileOverride, WeaponAmmoType, WeaponArtArrangementOverride,
+    WeaponCloneIdentity, WeaponCloneOverrides, WeaponCloneSpec, WeaponCloneText,
+    WeaponDyeReferenceOverride, WeaponIconDonorReference, WeaponInventorySlot,
+    WeaponLocaleTextOverride, WeaponNumericInstruction, WeaponPresentationDonorReference,
+    WeaponProjectSpec, WeaponRawPayloadPatch, WeaponRawPayloadTarget,
+    WeaponRenderGearDonorReference, WeaponRuntimeComponentDonorReference,
+    WeaponRuntimeResourcePatch, WeaponSandboxPerkActionFloatOverride,
+    WeaponSandboxPerkRuntimeOverride, WeaponSocketColumnOverride, WeaponSocketPlugVariantOverride,
+    WeaponVariableDamage,
+};
 pub use item_kind::ItemKind;
 #[cfg(test)]
 pub(crate) use recipe::ARC_LOGIC_DONOR_HASH;
@@ -101,22 +125,11 @@ pub(crate) use recipe::{
     WeaponRuntimeResourcePatchRecipe, WeaponSocketColumnRecipe, WeaponStatOverride,
 };
 pub use recipe::{
-    WeaponRecipe, WeaponSandboxPerkActionFloatRecipe, WeaponSandboxPerkRuntimeRecipe,
-    WeaponSocketPlugVariantRecipe,
+    SwordProfileRecipe, WeaponRecipe, WeaponSandboxPerkActionFloatRecipe,
+    WeaponSandboxPerkRuntimeRecipe, WeaponSocketPlugVariantRecipe,
 };
 pub(crate) use recipe_library::{RecipeLibrary, RecipeLibraryEntry};
 pub(crate) use watermark::{WeaponIconRequest, item_icon_row_with_container};
-pub(crate) use weapon::{
-    AuthoredWeaponRarity, ModernDamageType, NewCollectionPlan, NewWeaponPlan,
-    NewWeaponProjectBundle, WeaponAmmoType, WeaponArtArrangementOverride, WeaponCloneIdentity,
-    WeaponCloneOverrides, WeaponCloneSpec, WeaponCloneText, WeaponDyeReferenceOverride,
-    WeaponIconDonorReference, WeaponInventorySlot, WeaponLocaleTextOverride,
-    WeaponNumericInstruction, WeaponPresentationDonorReference, WeaponProjectSpec,
-    WeaponRawPayloadPatch, WeaponRawPayloadTarget, WeaponRenderGearDonorReference,
-    WeaponRuntimeComponentDonorReference, WeaponRuntimeResourcePatch,
-    WeaponSandboxPerkActionFloatOverride, WeaponSandboxPerkRuntimeOverride,
-    WeaponSocketColumnOverride, WeaponSocketPlugVariantOverride, WeaponVariableDamage,
-};
 pub use workflow::{
     BatchBuildRequest, BatchBuildSnapshot, BuildFailure, BuildProgress, BuildReport,
     build_and_stage_snapshot_reporting, build_and_stage_snapshot_with_progress,

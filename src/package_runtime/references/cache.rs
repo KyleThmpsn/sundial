@@ -14,7 +14,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tiger_pkg::TagHash;
 
-use super::{MAX_RESOURCES, Registry, children, is_reference, read_resource};
+use super::{Registry, children, is_reference, read_resource, resource_limit};
 use crate::package_runtime::{
     cache_file, parallel, reader::PackageManager, snapshot::Snapshot, tft::shards::prune_siblings,
 };
@@ -87,7 +87,8 @@ pub(super) fn prefetch(manager: &PackageManager, roots: &BTreeSet<u32>) -> HashM
     let mut answers = HashMap::new();
     let mut wave = roots.iter().copied().collect::<Vec<_>>();
     // The walk stops at the same limit, so reading beyond it would be wasted.
-    while !wave.is_empty() && answers.len() <= MAX_RESOURCES {
+    let limit = resource_limit(roots.len());
+    while !wave.is_empty() && answers.len() <= limit {
         wave.sort_unstable();
         wave.dedup();
         let jobs = wave

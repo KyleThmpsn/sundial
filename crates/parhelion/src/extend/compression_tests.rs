@@ -436,6 +436,11 @@ fn native_installed_asset_compressed_copy_round_trips_without_source_changes() {
     let blocks = (0..layout.block_count)
         .map(|index| source.get_block(index).unwrap().as_ref().to_vec())
         .collect::<Vec<_>>();
+    assert!(
+        !payloads.is_empty(),
+        "configured asset package has no entries"
+    );
+    assert!(!blocks.is_empty(), "configured asset package has no blocks");
     let after = rebuild_asset_copy(&before, &layout, &blocks, &encoder);
     let copy_path = fixture.native_packages.join(path.file_name().unwrap());
     let mut copy_file = OpenOptions::new()

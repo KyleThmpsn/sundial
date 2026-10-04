@@ -16,11 +16,15 @@ fn load(path: &Path) -> Result<Value> {
 }
 
 pub(crate) fn decompile(tool: &Path, path: &Path) -> Result<()> {
+    crate::cancellation::check()?;
     let mut cmd = Command::new(tool);
     cmd.arg("-D").arg(path);
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     #[cfg(windows)]
     cmd.creation_flags(0x08000000);
-    let output = cmd.output().context("Launching shader decompiler")?;
+    let child = cmd.spawn().context("Launching shader decompiler")?;
+    let output = crate::cancellation::wait_with_output(child)?;
     let mut log = output.stdout;
     log.extend(output.stderr);
     fs::write(path.with_extension("decompile.log"), log)?;
@@ -68,7 +72,8 @@ pub(crate) fn export_with_progress(
     for entry in report["models"].as_array().context("source models")? {
         let tag = profile::hash(entry, "model")?;
         let model = Payload(fs::read(source.join(format!("raw/{tag:08X}.bin")))?);
-        for mesh in model.array(16, 128, None)? {
+        let mesh = super::geometry::selected_mesh(&model, entry)?;
+        {
             let parts = model.array(mesh + 32, 36, None)?;
             for stage in [0, 1, 3, 7, 9, 12, 14, 16] {
                 for &at in parts
@@ -85,7 +90,7 @@ pub(crate) fn export_with_progress(
                 }
             }
         }
-        models.push(tag);
+        models.push(entry.clone());
     }
     let mut bindings = serde_json::Map::new();
     let mut shaders = BTreeSet::new();
@@ -137,11 +142,14 @@ pub(crate) fn export_with_progress(
         }
     }
     r.finish()?;
-    for tag in &models {
-        let path = refs.join(format!("library-surfaces-01/vertex-colors/{tag:08X}"));
+    for entry in &models {
+        let path = refs.join(format!(
+            "library-surfaces-01/vertex-colors/{}",
+            super::geometry::mesh_key(entry)?
+        ));
         if !path.join("colors.json").exists() {
             r.begin_export(&path)?;
-            let colors = material::vertex_colors(&mut r, *tag)?;
+            let colors = material::vertex_colors_for(&mut r, entry)?;
             write_json(&path.join("colors.json"), &colors)?;
             r.finish()?;
         }

@@ -65,7 +65,11 @@ impl Preview {
                     .unwrap_or_else(|_| Err("HUD preview loading stopped unexpectedly".into()));
                 self.result = Some(result.map(|image| {
                     image.map(|image| {
-                        ctx.load_texture("inherited-ammo-hud", image, egui::TextureOptions::LINEAR)
+                        ctx.load_texture(
+                            "inherited-ammo-hud",
+                            super::squared(image),
+                            egui::TextureOptions::LINEAR,
+                        )
                     })
                 }));
             }

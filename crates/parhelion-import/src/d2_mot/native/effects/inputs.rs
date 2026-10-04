@@ -2,6 +2,10 @@
 use super::*;
 use crate::d2_mot::native::shader::replace_once;
 use std::collections::BTreeSet;
+mod dyes;
+pub(super) use dyes::{
+    runtime as runtime_dyes, texture_slot as dye_texture_slot, textures as dye_textures,
+};
 
 pub(super) fn slots(text: &str, kind: char) -> Result<BTreeSet<u32>> {
     let marker = format!("register({kind}");
@@ -256,11 +260,20 @@ pub(super) fn reads(text: &str, slot: usize) -> Option<BTreeSet<usize>> {
 }
 
 pub(super) fn pixel_scopes(text: &str, stage: usize) -> Result<()> {
-    let allowed = if stage == 0 {
+    pixel_scopes_with_dyes(text, stage, &BTreeSet::new())
+}
+
+pub(super) fn pixel_scopes_with_dyes(
+    text: &str,
+    stage: usize,
+    dye_slots: &BTreeSet<u32>,
+) -> Result<()> {
+    let mut allowed = if stage == 0 {
         BTreeSet::from([0, 12])
     } else {
         BTreeSet::from([0, 8, 12, 13])
     };
+    allowed.extend(dye_slots.iter().copied());
     let unsupported = slots(text, 'b')?
         .difference(&allowed)
         .copied()
@@ -397,21 +410,6 @@ mod tests {
             )
             .is_err()
         );
-    }
-
-    #[test]
-    #[ignore = "Requires explicitly configured exported source shader and render inputs"]
-    fn configured_pixel_camera_mapping_compiles() {
-        let root = std::env::var_os("PARHELION_IMPORT_RENDER_INPUTS")
-            .expect("PARHELION_IMPORT_RENDER_INPUTS");
-        let source = std::env::var_os("PARHELION_IMPORT_PIXEL_SHADER")
-            .expect("PARHELION_IMPORT_PIXEL_SHADER");
-        validate_pixel_view(Path::new(&root)).unwrap();
-        let source = fs::read_to_string(source).unwrap().replace("\r\n", "\n");
-        let mapped = pixel(&source, [0, 0, 4, 4], [4, 4]).unwrap();
-        assert_eq!(cb_count(&mapped, 12).unwrap(), Some(14));
-        #[cfg(windows)]
-        crate::d2_mot::native::shader::compile(&mapped, false).unwrap();
     }
 
     #[test]

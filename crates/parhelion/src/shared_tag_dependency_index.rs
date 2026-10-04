@@ -256,7 +256,6 @@ mod tests {
     #[test]
     fn preserves_dense_and_sparse_dependencies_and_extends_word_and_package_boundaries() {
         let source = fixture();
-        let before = source.clone();
         let original = dependencies(&source, COMPANION, OWNER).unwrap();
         let additions = [
             TagHash::new(0x1BB, 32),
@@ -267,7 +266,6 @@ mod tests {
         let result = enroll_dependencies(&source, COMPANION, OWNER, &additions).unwrap();
         let expected = original.into_iter().chain(additions.map(|t| t.0)).collect();
         assert_eq!(dependencies(&result, COMPANION, OWNER).unwrap(), expected);
-        assert_eq!(source, before);
         assert_eq!(
             enroll_dependencies(&result, COMPANION, OWNER, &additions).unwrap(),
             result

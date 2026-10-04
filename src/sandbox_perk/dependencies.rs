@@ -20,16 +20,16 @@ use super::{
     validate_sandbox_perk_runtime_map,
 };
 use crate::{
+    entity::{
+        WEAPON_ENTITY_CLASS, sandbox_pattern_identity_at, validate_weapon_entity,
+        weapon_component_binding_hashes, weapon_component_bindings, weapon_entity_assignment,
+    },
     investment_schema::{
         GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, GLOBALS_SANDBOX_PATTERN_TABLE_SLOT,
         investment_globals_table_tag,
     },
     package_payload::{native_array_at, u32_at},
     package_runtime::{parallel, resolve_live_named_tag},
-    weapon_entity::{
-        WEAPON_ENTITY_CLASS, sandbox_pattern_identity_at, validate_weapon_entity,
-        weapon_component_binding_hashes, weapon_component_bindings, weapon_entity_assignment,
-    },
 };
 
 /// A component selected by a validated entity binding. This is not a host requirement.
@@ -169,6 +169,21 @@ pub fn cached(
     manager: &PackageManager,
     progress: impl FnMut(usize, usize),
 ) -> Result<Arc<Index>, String> {
+    cached_cancellable(
+        packages,
+        manager,
+        &std::sync::atomic::AtomicBool::new(false),
+        progress,
+    )
+}
+
+pub fn cached_cancellable(
+    packages: &Path,
+    manager: &PackageManager,
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: impl FnMut(usize, usize),
+) -> Result<Arc<Index>, String> {
+    crate::package_runtime::check_cancelled(cancel)?;
     crate::package_runtime::index_cache::cached(
         packages,
         crate::sandbox_perk::CACHE_DIRECTORY,
@@ -176,7 +191,7 @@ pub fn cached(
         // headline, support and editability of every perk are cached here.
         "dependencies-v17",
         &CACHE,
-        || inspect(manager, progress),
+        || inspect_cancellable(manager, cancel, progress),
         |_| true,
     )
 }
@@ -261,8 +276,22 @@ fn entity(manager: &PackageManager, tag: u32) -> Result<Entity, String> {
 /// Direct graph discovery does not follow selectors or prove event/host compatibility.
 pub fn inspect(
     manager: &PackageManager,
+    progress: impl FnMut(usize, usize),
+) -> Result<Index, String> {
+    inspect_cancellable(
+        manager,
+        &std::sync::atomic::AtomicBool::new(false),
+        progress,
+    )
+}
+
+fn inspect_cancellable(
+    manager: &PackageManager,
+    cancel: &std::sync::atomic::AtomicBool,
     mut progress: impl FnMut(usize, usize),
 ) -> Result<Index, String> {
+    use crate::package_runtime::check_cancelled;
+    check_cancelled(cancel)?;
     let globals_tag = resolve_live_named_tag(manager, "investment_globals", None)?;
     let globals = read(manager, globals_tag.0)?;
     let patterns = read(
@@ -288,6 +317,7 @@ pub fn inspect(
     let mut result = Index::default();
     let mut entities = BTreeMap::<u32, Result<Entity, String>>::new();
     for index in 0..pattern_count {
+        check_cancelled(cancel)?;
         let row = sandbox_pattern_identity_at(&patterns, index)?
             .ok_or("Pattern row disappeared during inspection")?;
         let resolved = if matches!(row.item_hash, 0 | 0x811C_9DC5)
@@ -324,6 +354,7 @@ pub fn inspect(
     let mut rows = Vec::with_capacity(perk_count);
     let mut first_perk = BTreeMap::<u32, usize>::new();
     for index in 0..perk_count {
+        check_cancelled(cancel)?;
         let row = finished_sandbox_perk_at(&perks, index)?;
         let assignment = sandbox_perk_runtime_assignment(&assignments, row.runtime_key)?;
         let action_tag = assignment
@@ -336,6 +367,7 @@ pub fn inspect(
     }
     let loads = first_perk.into_iter().collect::<Vec<_>>();
     let loaded = parallel::map_jobs(&loads, |(_, index)| {
+        check_cancelled(cancel)?;
         load_sandbox_perk_runtime_action(manager, &globals, *index).map(|action| {
             let graphs = action
                 .graphs
@@ -353,7 +385,11 @@ pub fn inspect(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let read = parallel::map_jobs(&needed, |tag| entity(manager, *tag));
+    let read = parallel::map_jobs(&needed, |tag| {
+        check_cancelled(cancel)?;
+        entity(manager, *tag)
+    });
+    check_cancelled(cancel)?;
     entities.extend(needed.into_iter().zip(read));
     let mut actions = BTreeMap::<u32, Result<(Vec<Entity>, Option<Behavior>), String>>::new();
     for ((tag, _), result) in loads.into_iter().zip(loaded) {
@@ -367,6 +403,7 @@ pub fn inspect(
         actions.insert(tag, inspected);
     }
     for (index, (row, action_tag)) in rows.into_iter().enumerate() {
+        check_cancelled(cancel)?;
         let mut perk = Perk {
             index,
             hash: row.perk_hash,
@@ -389,6 +426,7 @@ pub fn inspect(
         progress(pattern_count + index + 1, total);
     }
     result.caster = caster_configuration(manager, &result);
+    check_cancelled(cancel)?;
     Ok(result)
 }
 

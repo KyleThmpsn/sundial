@@ -7,34 +7,51 @@ use text_fields::{OptionalText, TextSection};
 impl PackageAuthoringApp {
     pub(super) fn draw_core_recipe_editor(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing.y = 4.0;
+        let donor = self.current_donor();
+        let model = self.catalog.is_some() && donor.is_some();
+        let column = egui::Layout::top_down(egui::Align::Min);
         if let Some(donor_width) = workbench_left_column_width(ui.available_width()) {
-            let definition_width = ui.available_width() - donor_width - ui.spacing().item_spacing.x;
+            let spacing = ui.spacing().item_spacing.x;
+            let beside = ui.available_width() - donor_width - spacing;
+            let preview_width = model
+                .then(|| preview_column_width(beside, spacing))
+                .flatten();
+            let definition_width = beside - preview_width.map_or(0.0, |width| width + spacing);
             ui.horizontal_top(|ui| {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(donor_width, 0.0),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
+                let donors = ui
+                    .allocate_ui_with_layout(egui::vec2(donor_width, 0.0), column, |ui| {
                         ui.set_width(donor_width);
                         self.draw_donor_section(ui);
-                    },
-                );
-                ui.allocate_ui_with_layout(
-                    egui::vec2(definition_width, 0.0),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        ui.set_width(definition_width);
-                        let donor = self.current_donor();
-                        self.draw_definition_panel(ui, donor.as_ref());
-                    },
-                );
+                    })
+                    .response
+                    .rect;
+                ui.allocate_ui_with_layout(egui::vec2(definition_width, 0.0), column, |ui| {
+                    ui.set_width(definition_width);
+                    self.draw_definition_panel(ui, donor.as_ref());
+                    // Without the room for a column of its own, the preview goes under the text.
+                    if model && preview_width.is_none() {
+                        ui.add_space(8.0);
+                        self.draw_weapon_preview(ui, None);
+                    }
+                });
+                // The preview ends with the donor column, which keeps its height while Text
+                // Presentation opens and closes.
+                if let Some(width) = preview_width {
+                    ui.allocate_ui_with_layout(egui::vec2(width, 0.0), column, |ui| {
+                        ui.set_width(width);
+                        self.draw_weapon_preview(ui, Some(donors.height()));
+                    });
+                }
             });
         } else {
             self.draw_donor_section(ui);
             ui.separator();
-            let donor = self.current_donor();
             self.draw_definition_panel(ui, donor.as_ref());
+            if model {
+                ui.add_space(8.0);
+                self.draw_weapon_preview(ui, None);
+            }
         }
-        let donor = self.current_donor();
         let donor = donor.as_ref();
         if donor.is_none() {
             ui.colored_label(
@@ -74,6 +91,39 @@ impl PackageAuthoringApp {
             ui.separator();
             ui.add_space(6.0);
             self.draw_investment_stats_panel(ui, donor);
+        }
+    }
+
+    /// The recipe's weapon as the game draws it: the appearance donor's model in the recipe's
+    /// colors with its ornament, turning on drag. Beside the weapon's text it ends where the
+    /// donor column ends, `band`, within its bounds. Its corner opens the model viewer, which
+    /// has the full tools.
+    fn draw_weapon_preview(&self, ui: &mut egui::Ui, band: Option<f32>) {
+        let Some(catalog) = self.catalog.as_ref() else {
+            return;
+        };
+        let appearance = donor_view::preview::loadout(catalog, &self.recipe)
+            .map(|loadout| catalog.preview_appearance(&loadout));
+        let id = egui::Id::new("weapon-preview");
+        let width = ui.available_width();
+        let height = preview_height(width, band);
+        let response = sundial::ui::model_preview::still::show(
+            ui,
+            id,
+            &self.packages,
+            appearance.clone(),
+            &[],
+            egui::vec2(width, height),
+        )
+        .on_hover_text("Drag to rotate · Double-click to reset");
+        if let Some(appearance) = appearance {
+            sundial::ui::model_preview::pop_out(
+                ui,
+                id,
+                response.rect,
+                &self.packages,
+                (appearance, &self.recipe.name),
+            );
         }
     }
 
@@ -159,7 +209,7 @@ impl PackageAuthoringApp {
                 let mut custom_type = self.recipe.type_name.is_some();
                 if ui
                     .checkbox(&mut custom_type, "Custom Item-Type Label")
-                    .on_hover_text("Off keeps the gameplay donor's item type.")
+                    .on_hover_text("Off uses the default item type.")
                     .changed()
                 {
                     let value = custom_type.then(|| inherited_type.unwrap_or_default().to_owned());
@@ -195,8 +245,8 @@ impl PackageAuthoringApp {
                     );
                 }
                 ui.separator();
-                // Gear shows its lore tab in a section of its own, and a shader has none.
-                if matches!(self.recipe.kind, ItemKind::Weapon | ItemKind::Subclass) {
+                // A shader and an emblem have no lore tab.
+                if self.recipe.kind.has_lore_tab() {
                     self.presentation_editor.draw_lore(
                         ui,
                         &mut self.recipe.overrides,
@@ -212,7 +262,7 @@ impl PackageAuthoringApp {
             });
     }
 
-    /// Slot, damage, ammo, rarity, power cap and any unique behavior for a weapon.
+    /// Slot, damage, ammo, rarity and power cap for a weapon.
     fn draw_weapon_profile(&mut self, ui: &mut egui::Ui, donor: Option<&WeaponDonor>) {
         ui.add_space(4.0);
         // A behavior copied from Hard Light or Borealis owns the damage type.
@@ -221,19 +271,18 @@ impl PackageAuthoringApp {
             .overrides
             .additional_behaviors
             .iter()
-            .filter_map(|chosen| crate::weapon_behavior::behavior(&chosen.behavior))
-            .any(crate::weapon_behavior::source_switches_element);
+            .filter_map(|chosen| crate::weapon::behavior::behavior(&chosen.behavior))
+            .any(crate::weapon::behavior::source_switches_element);
         let variable_available =
             donor.is_some_and(|gameplay| variable_damage_supported(&gameplay.summary));
         let mut inventory_slot_changed = false;
         let mut damage_changed = false;
-        let behaviors = crate::app::donor_view::unique_behavior_sources(donor);
-        let column_count = core_profile_column_count(ui.available_width());
-        let fields: &[usize] = if behaviors.is_empty() {
-            &[0, 1, 2, 3, 4]
-        } else {
-            &[0, 1, 2, 3, 4, 5]
+        // Six fields fill one wide row or two rows of three.
+        let column_count = match core_profile_column_count(ui.available_width()) {
+            5 => 6,
+            count => count,
         };
+        let fields: &[usize] = &[0, 1, 2, 3, 4, 5];
         for fields in fields.chunks(column_count) {
             ui.columns(column_count, |columns| {
                 for (&field, column) in fields.iter().zip(columns) {
@@ -258,28 +307,8 @@ impl PackageAuthoringApp {
                             donor,
                             self.catalog.as_ref(),
                         ),
-                        _ => {
-                            crate::app::donor_view::draw_unique_behavior_control(
-                                column,
-                                &mut self.recipe.overrides,
-                                &behaviors,
-                                self.catalog.as_ref(),
-                                &self.donor_summaries,
-                                &mut self.behavior_query,
-                                donor.is_some_and(|gameplay| {
-                                    crate::app::donor_view::has_unique_behavior(
-                                        gameplay.summary.hash,
-                                    )
-                                }),
-                            );
-                            // What the choice brings with it belongs under the choice. Drawn
-                            // below the whole row it started at the panel's left edge, a column
-                            // or two away from the list it was describing.
-                            crate::app::donor_view::draw_unique_behavior_details(
-                                column,
-                                &mut self.recipe.overrides,
-                            );
-                        }
+                        5 => self.draw_behavior_cell(column, donor),
+                        _ => {}
                     }
                 }
             });
@@ -300,68 +329,23 @@ impl PackageAuthoringApp {
         donor: Option<&WeaponDonor>,
     ) {
         ui.horizontal(|ui| {
-            ui.heading("Gameplay Properties");
+            ui.heading("Gameplay");
             draw_authoring_info_icon(
                 ui,
-                "Components from different weapons can conflict. Test in game.",
+                "How the weapon fires and behaves: its runtime, and the parts it takes from other \
+                 weapons. Test in game.",
             );
         });
         self.draw_runtime_source_summary(ui);
-        if self.show_experimental_options && ui.button("Perks & Patterns…").clicked() {
-            runtime_dependencies::request(ui.ctx(), None);
-        }
-        ui.add_space(5.0);
-        if !self.show_experimental_options
-            && !AdvancedGameplayPage::STABLE.contains(&self.advanced_gameplay_page)
-        {
-            self.advanced_gameplay_page = AdvancedGameplayPage::Runtime;
-            self.scroll_recipe_to_top = true;
-        }
-        let visible_pages: &[AdvancedGameplayPage] = if self.show_experimental_options {
-            &AdvancedGameplayPage::ALL
-        } else {
-            &AdvancedGameplayPage::STABLE
-        };
-        ui.horizontal_wrapped(|ui| {
-            for &page in visible_pages {
-                if ui
-                    .selectable_value(&mut self.advanced_gameplay_page, page, page.label())
-                    .changed()
-                {
-                    self.scroll_recipe_to_top = true;
-                }
-            }
-        });
-        ui.separator();
-        ui.add_space(5.0);
-        match self.advanced_gameplay_page {
-            AdvancedGameplayPage::Runtime => {
-                self.draw_weapon_pattern_picker(ui, donor);
-                ui.add_space(6.0);
-                ui.separator();
-                ui.add_space(5.0);
-                if self.show_experimental_options {
-                    self.draw_runtime_component_donors(ui);
-                } else {
-                    ui.label(
-                        "Enable Experimental Features to mix components and edit runtime values.",
-                    );
-                    ui.label("Saved overrides stay active.");
-                    if ui.button("Open Preferences…").clicked() {
-                        self.preferences_page = preferences_view::PreferencesPage::EditorLibrary;
-                        self.preferences_open = true;
-                    }
-                }
-            }
-            AdvancedGameplayPage::PerksTraits => {
-                self.draw_base_sandbox_perks(ui, donor);
-                ui.add_space(6.0);
-                ui.separator();
-                ui.add_space(5.0);
-                self.draw_item_traits(ui, donor);
-            }
-            AdvancedGameplayPage::Inventory => self.draw_native_inventory_fields(ui, donor),
-            AdvancedGameplayPage::Raw => self.draw_raw_payload_patches(ui),
+        ui.add_space(10.0);
+        self.draw_weapon_pattern_picker(ui, donor);
+        ui.add_space(14.0);
+        self.draw_gameplay_parts(ui, donor);
+        if self.show_experimental_options {
+            ui.add_space(12.0);
+            ui.separator();
+            ui.add_space(4.0);
+            self.draw_gameplay_technical(ui, donor);
         }
     }
 
@@ -369,10 +353,10 @@ impl PackageAuthoringApp {
         let mut badges = self
             .recipe_entries
             .iter()
-            .filter_map(|entry| entry.badge.clone())
+            .filter_map(|entry| Some((entry.badge.clone()?, entry.path.clone())))
             .collect::<Vec<_>>();
-        badges.sort_by(|a, b| a.name.cmp(&b.name));
-        badges.dedup();
+        badges.sort_by(|a, b| a.0.name.cmp(&b.0.name));
+        badges.dedup_by(|a, b| a.0 == b.0);
         let class_armor = self.recipe.kind == ItemKind::Armor;
         ui.scope(|ui| {
             ui.horizontal_wrapped(|ui| {
@@ -512,39 +496,84 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn draw_appearance_workspace(&mut self, ui: &mut egui::Ui) {
+        #[cfg(feature = "d2-model-importer")]
+        let imported = self.recipe.overrides.imported_graph.is_some();
+        #[cfg(not(feature = "d2-model-importer"))]
+        let imported = false;
+        // A weapon's model shows in Placement below. Other items, and imported models, which
+        // Placement does not draw, keep the preview beside the heading.
+        let previewed = self.recipe.kind.is_weapon() && !imported;
         ui.horizontal_wrapped(|ui| {
             ui.heading("Appearance");
-            self.draw_appearance_preview(ui);
+            if !previewed {
+                self.draw_appearance_preview(ui);
+            }
         });
+        // Where the model comes from, on one line: an ornament, or an imported model. Without
+        // either there is nothing to choose, and the row stays out.
         #[cfg(feature = "d2-model-importer")]
-        self.draw_imported_model_picker(ui);
-        ui.add_space(8.0);
-        self.draw_appearance_ornaments(ui);
-        if ui.available_width() >= 880.0 {
-            ui.columns(2, |columns| {
-                self.draw_icon_donor_picker(&mut columns[0]);
-                self.draw_render_gear_donor_picker(&mut columns[1]);
+        let importing = self.importer.enabled;
+        #[cfg(not(feature = "d2-model-importer"))]
+        let importing = false;
+        ui.add_space(6.0);
+        if importing || self.appearance_ornaments_offered() {
+            ui.horizontal(|ui| {
+                let width = Self::appearance_label_width(ui);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(width, ui.spacing().interact_size.y),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.set_width(width);
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.weak("Model");
+                        draw_authoring_info_icon(
+                            ui,
+                            "Where the model comes from: an ornament, or an imported model.",
+                        );
+                    },
+                );
+                self.draw_appearance_ornaments(ui);
+                #[cfg(feature = "d2-model-importer")]
+                self.draw_imported_model_picker(ui);
             });
-        } else {
-            self.draw_icon_donor_picker(ui);
-            ui.add_space(8.0);
-            self.draw_render_gear_donor_picker(ui);
         }
-        ui.add_space(12.0);
+        // How the model is held, fired and reloaded, beside where it comes from.
+        if self.recipe.kind.is_weapon() {
+            self.draw_animation_part(ui);
+        }
+        ui.add_space(10.0);
+        // The four smaller parts side by side when they fit, two by two, or stacked.
+        let width = ui.available_width();
+        let per_row = if width >= 1240.0 {
+            4
+        } else if width >= 640.0 {
+            2
+        } else {
+            1
+        };
+        for row in [0, 1, 2, 3].chunks(per_row) {
+            if per_row == 1 {
+                for &tile in row {
+                    self.draw_appearance_tile(ui, tile);
+                    ui.add_space(10.0);
+                }
+                continue;
+            }
+            ui.columns(per_row, |columns| {
+                for (column, &tile) in columns.iter_mut().zip(row) {
+                    self.draw_appearance_tile(column, tile);
+                }
+            });
+            ui.add_space(10.0);
+        }
+        if self.recipe.kind == ItemKind::Weapon {
+            self.draw_shader_glow(ui);
+            ui.add_space(8.0);
+        }
         ui.separator();
         ui.add_space(8.0);
-        if ui.available_width() >= 880.0 {
-            ui.columns(2, |columns| {
-                self.presentation_editor
-                    .draw_corner(&mut columns[0], &mut self.recipe.overrides);
-                self.draw_appearance_hud_icon(&mut columns[1]);
-            });
-        } else {
-            self.presentation_editor
-                .draw_corner(ui, &mut self.recipe.overrides);
-            ui.add_space(12.0);
-            ui.separator();
-            self.draw_appearance_hud_icon(ui);
+        if self.recipe.kind.is_weapon() {
+            self.draw_appearance_placement(ui);
         }
         if self.show_experimental_options {
             let geometry_donor = self.current_geometry_donor();
@@ -561,6 +590,44 @@ impl PackageAuthoringApp {
                         render_gear_donor.as_ref(),
                     );
                 });
+        }
+    }
+
+    /// Whether equipped shaders with an animated glow also light the weapon's glowing parts.
+    /// New weapons start with it on. An imported model keeps its own materials, so it is off there.
+    fn draw_shader_glow(&mut self, ui: &mut egui::Ui) {
+        #[cfg(feature = "d2-model-importer")]
+        let imported = self.recipe.overrides.imported_graph.is_some();
+        #[cfg(not(feature = "d2-model-importer"))]
+        let imported = false;
+        ui.horizontal(|ui| {
+            let response = ui.add_enabled(
+                !imported,
+                egui::Checkbox::new(
+                    &mut self.recipe.overrides.shader_glow,
+                    "Shaders Light Glowing Parts",
+                ),
+            );
+            if imported {
+                response.on_disabled_hover_text("Imported models keep their own materials.");
+            }
+            draw_authoring_info_icon(
+                ui,
+                "Shaders with an animated glow also light this weapon's glowing parts, such as \
+                 sights and vents. Other parts stay as they are. Test in game.",
+            );
+        });
+    }
+
+    /// One of the Appearance tab's four smaller parts, by position.
+    fn draw_appearance_tile(&mut self, ui: &mut egui::Ui, tile: usize) {
+        match tile {
+            0 => self.draw_icon_donor_picker(ui),
+            1 => self.draw_render_gear_donor_picker(ui),
+            2 => self
+                .presentation_editor
+                .draw_corner(ui, &mut self.recipe.overrides),
+            _ => self.draw_appearance_hud_icon(ui),
         }
     }
 
@@ -989,17 +1056,43 @@ impl PackageAuthoringApp {
                         );
                     self.draw_stat_group_picker(ui, Some(donor));
                 });
+            let warnings = self
+                .rate_conversion_warning(donor)
+                .map(|warning| (super::stat_editor::ROUNDS_PER_MINUTE_HASH, warning))
+                .into_iter()
+                .collect::<Vec<_>>();
             draw_investment_stats(
                 ui,
                 &mut self.recipe.overrides.investment_stats,
                 &mut self.recipe.overrides.removed_investment_stats,
                 donor,
                 self.show_internal_stats,
+                &warnings,
             );
         } else {
             ui.heading("Weapon Stats");
             ui.label("Load the catalog to edit stats.");
         }
+    }
+
+    /// Why Rounds Per Minute fires at another weapon type's rates, when the build is known to
+    /// make it. The stat translator keeps one table per weapon type, and a swapped runtime's
+    /// pattern row names its own type. An appearance whose rig moves keeps the base's table.
+    fn rate_conversion_warning(&self, donor: &WeaponDonor) -> Option<String> {
+        let base = &donor.summary;
+        let index = self.recipe.overrides.weapon_pattern_index?;
+        let runtime = self
+            .donor_summaries
+            .iter()
+            .find(|other| other.weapon_pattern_index == Some(index))?;
+        (runtime.weapon_translation_group != base.weapon_translation_group
+            && runtime.type_name != base.type_name)
+            .then(|| {
+                format!(
+                    "Fires at {} rates from the {} runtime. Preview may differ.",
+                    runtime.type_name, runtime.name
+                )
+            })
     }
 
     pub(super) fn draw_socket_columns_panel(
@@ -1079,7 +1172,7 @@ impl PackageAuthoringApp {
             &mut self.plug_selection_mode,
         );
         ui.menu_button("Socket Options", |ui| {
-            // Gear keeps its base's sockets, so their native fields stay as they are.
+            // Socket details are a weapon option. A gear socket keeps its base's plug sets.
             if self.show_experimental_options && self.recipe.kind.is_weapon() {
                 ui.checkbox(&mut self.show_technical_socket_rows, "Show Socket Details")
                     .on_hover_text("Shows extra settings under each socket.");

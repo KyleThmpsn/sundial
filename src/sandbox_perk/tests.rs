@@ -403,7 +403,7 @@ fn runtime_map_writers_grow_auxiliary_storage_at_word_boundary() {
     validate_sandbox_perk_runtime_map(&payload).unwrap();
     let outputs = [
         insert_sandbox_perk_runtime_assignment(&payload, 33, 0x81234568).unwrap(),
-        crate::weapon_entity::append_weapon_entity_assignment(payload, 33, 0x81234568).unwrap(),
+        crate::entity::append_weapon_entity_assignment(payload, 33, 0x81234568).unwrap(),
     ];
     for output in outputs {
         let layout = runtime_map_layout(&output).unwrap();

@@ -86,9 +86,9 @@ properties! {
     },
     // Melee.
     [2] => EventKey {
-        hash: 0xD80D_2810,
+        hash: crate::ability::bank::MELEE_CHARGE_KEY,
         name: "Extra Melee Charge",
-        evidence: "Adds one charge in the Warlock melee bank. Used by The Whispers. The key is absent from the other stock melee banks, so it does not add a charge to every class's melee.",
+        evidence: "Adds one charge in the Warlock melee bank, where The Whispers uses it. The other stock melee banks lack the row, so when a perk applies this key Parhelion's build gives each of them the row, and the charge reaches any class's melee.",
     },
     [2] => EventKey {
         hash: 0xA2C6_D0FB,
@@ -139,9 +139,9 @@ properties! {
     },
     // Class ability.
     [7] => EventKey {
-        hash: 0x8354_9A10,
-        name: "Extra Dodge Charge",
-        evidence: "Adds one charge in the Dodge bank and sets dodge_recharge_scalar to approximately 0.02136752. That value is a script parameter, not a Boolean flag. Used by Double Dodge. Does not add a Rift or Barricade charge.",
+        hash: crate::ability::bank::CLASS_ABILITY_CHARGE_KEY,
+        name: "Extra Class Ability Charge",
+        evidence: "Adds one charge in the Dodge bank and sets dodge_recharge_scalar to approximately 0.02136752. That value is a script parameter, not a Boolean flag. Used by Double Dodge. The Barricade and Rift banks lack the row, so when a perk applies this key Parhelion's build gives each of them the row, and the charge reaches any class ability.",
     },
     [0] => EventKey {
         hash: 0x927D_7EAD,

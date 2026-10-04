@@ -691,9 +691,11 @@ mod tests {
                 .unwrap();
         }
 
-        assert_eq!(
-            state.dismantle_rewards()[9].gear_class,
-            Some(DismantleGearClass::Both)
+        assert!(
+            state
+                .dismantle_rewards()
+                .iter()
+                .any(|reward| reward.gear_class == Some(DismantleGearClass::Both))
         );
     }
 

@@ -1,4 +1,6 @@
 //! Build an unallocated native asset graph for the isolated staging adapter.
+mod materials;
+mod plates;
 use crate::d2_mot::{
     payload::Payload,
     reader::{Reader, write_json},
@@ -28,6 +30,22 @@ pub(crate) fn add(
 }
 fn patch(offset: usize, symbol: &str) -> Value {
     json!({"offset":offset,"symbol":symbol})
+}
+fn components(r: &mut Reader, entity: &Payload, owner: u32) -> Result<Vec<Value>> {
+    let mut components = Vec::new();
+    for at in entity.array(16, 12, None)? {
+        let component_tag = entity.u32(at)?;
+        let component = r.tag(component_tag, Some(0x80809C36))?;
+        let resource = component.pointer(24)?;
+        let class = component.u32(resource.checked_sub(4).context("Native component layout")?)?;
+        ensure!(
+            class != 0x808072BD || component_tag == owner,
+            "Native carrier contains additional model geometry"
+        );
+        components.push(json!({"owner":format!("{component_tag:08X}"),
+            "class":format!("{class:08X}"),"source_geometry":component_tag == owner}));
+    }
+    Ok(components)
 }
 pub fn build(r: &mut Reader, source: &Path, mapped: &Path) -> Result<Value> {
     build_configured(r, source, mapped, None)
@@ -121,8 +139,7 @@ pub fn build_configured(
     );
     let model_slot = resource + 0x1DC;
     let plates_slot = resource + 0x248;
-    let plates_tag = original_owner.u32(plates_slot)?;
-    let native_plates = r.tag(plates_tag, None)?;
+    let (plates_tag, native_plates) = plates::template(r, original_owner.u32(plates_slot)?)?;
     for (symbol, file, template, reference) in [
         (
             "positions-data",
@@ -182,7 +199,15 @@ pub fn build_configured(
         } else {
             crate::d2_mot::plates::source_plate(source, &provenance, entries)?
         };
-        let mut native = r.tag(0x80BA7101, None)?.0.clone();
+        let original_plate = native_plates.u32(0x24 + i * 4)?;
+        let plate_template = r.tag(original_plate, Some(0x80809EBB))?;
+        let texture_header = plate_template.u32(0x40)?;
+        let texture_data = r.reference(texture_header)?;
+        let mut native = r.tag(texture_header, None)?.0.clone();
+        ensure!(
+            native.len() == 40,
+            "Unsupported native plate texture header"
+        );
         let w = composed.side;
         let height = composed.side;
         let data = composed.data;
@@ -202,21 +227,25 @@ pub fn build_configured(
         crate::d2_mot::texture::resident(&mut native, data.len())?;
         let hs = format!("texture-{name}-header");
         let ds = format!("texture-{name}-data");
-        add(&out, &mut nodes, &ds, 0x80BA7100, &data, Some(&hs), vec![])?;
+        add(
+            &out,
+            &mut nodes,
+            &ds,
+            texture_data,
+            &data,
+            Some(&hs),
+            vec![],
+        )?;
         add(
             &out,
             &mut nodes,
             &hs,
-            0x80BA7101,
+            texture_header,
             &native,
             Some(&ds),
             vec![],
         )?;
-        let original_plate = native_plates.u32(0x24 + i * 4)?;
-        let mut plate = r.tag(original_plate, None)?.0.clone();
-        put(&mut plate, 0x40, &u32::MAX.to_le_bytes())?;
-        put(&mut plate, 0x4C, &(w as u32).to_le_bytes())?;
-        put(&mut plate, 0x50, &(height as u32).to_le_bytes())?;
+        let plate = plates::single(r, original_plate, [w as u32, height as u32])?;
         let ps = format!("plate-{name}");
         add(
             &out,
@@ -244,52 +273,7 @@ pub fn build_configured(
         None,
         plate_patches,
     )?;
-    for (symbol, material) in mapping["materials"]
-        .as_object()
-        .context("mapped materials")?
-    {
-        let tag = u32::from_str_radix(
-            material["native_donor"]
-                .as_str()
-                .context("material donor")?,
-            16,
-        )?;
-        let mut payload = Payload(fs::read(
-            mapped.join(material["payload"].as_str().context("material payload")?),
-        )?);
-        let mut fixups = vec![];
-        // Audited Hook alpha-clipped G-buffer shader: t3 albedo, t4 normal,
-        // t5 gstack. Modern plated materials have no fixed texture rows.
-        // Retain the alpha-capable shader, but point it at this weapon's plates.
-        if tag == 0x80EC2704
-            && material["stage"] == "GenerateGbuffer"
-            && material["source_texture_slots"]
-                .as_array()
-                .context("source texture slots")?
-                .is_empty()
-        {
-            let rows = payload.array(0x2D0, 8, None)?;
-            for (slot, symbol) in [
-                (3, "texture-albedo-header"),
-                (4, "texture-normal-header"),
-                (5, "texture-gstack-header"),
-            ] {
-                let matches = rows
-                    .iter()
-                    .copied()
-                    .filter(|&o| payload.u32(o).ok() == Some(slot))
-                    .collect::<Vec<_>>();
-                ensure!(
-                    matches.len() == 1,
-                    "native plated shader slot {slot} missing or ambiguous"
-                );
-                let offset = matches[0] + 4;
-                put(&mut payload.0, offset, &u32::MAX.to_le_bytes())?;
-                fixups.push(patch(offset, symbol));
-            }
-        }
-        add(&out, &mut nodes, symbol, tag, &payload.0, None, fixups)?;
-    }
+    materials::append(&out, &mut nodes, mapped, &mapping)?;
     let mut model = fs::read(mapped.join("model.unlinked.bin"))?;
     // Native array serialization requires the marker immediately preceding each header.
     put(&mut model, 0x9C, &0x80809FBDu32.to_le_bytes())?;
@@ -330,6 +314,11 @@ pub fn build_configured(
         owner_patches,
     )?;
     let original = r.tag(entity_tag, Some(0x80809C0F))?;
+    let native_components = if report["independent_art_entity"].is_string() {
+        components(r, &original, owner_tag)?
+    } else {
+        Vec::new()
+    };
     let slots = crate::d2_mot::entity::owner_slots(&original, &original_owner, owner_tag)?;
     let mut entity = original.0.clone();
     let mut ep = vec![];
@@ -391,7 +380,7 @@ pub fn build_configured(
     let c = nodes.last_mut().unwrap();
     c["shared_owner"] = json!("parent");
     c["source_parent"] = json!(parent_tag);
-    let result = json!({"item_hash":config.and_then(|c|c["item_hash"].as_u64()).unwrap_or(0x50EE7278),"art_key":config.and_then(|c|c["art_key"].as_u64()).unwrap_or(0xE2507278),"nodes":nodes,"parent":"parent","companion":"parent-companion","source_model":variant["model"],"source_owner":owner_tag,"source_entity":entity_tag,"native_model":model_tag,"native_item":native_item,"native_assignment":assignment,"model_slot":model_slot,"plates_slot":plates_slot,"native_draw_parts":mapping["native_parts"],"appearance":"Source geometry and plated textures; native material carriers","markers":marker_report,"installable":false});
+    let result = json!({"item_hash":config.and_then(|c|c["item_hash"].as_u64()).unwrap_or(0x50EE7278),"art_key":config.and_then(|c|c["art_key"].as_u64()).unwrap_or(0xE2507278),"nodes":nodes,"parent":"parent","companion":"parent-companion","source_model":variant["model"],"source_owner":owner_tag,"source_entity":entity_tag,"native_model":model_tag,"native_item":native_item,"native_assignment":assignment,"model_slot":model_slot,"plates_slot":plates_slot,"native_draw_parts":mapping["native_parts"],"appearance":"Source geometry and plated textures with native material carriers","markers":marker_report,"native_components":native_components,"installable":false});
     write_json(&out.join("asset-graph.json"), &result)?;
     Ok(result)
 }

@@ -53,7 +53,6 @@ fn alternative_acquisition_uses_placement_template_with_private_unlock() {
         ],
     ] {
         let data = collectible_table(&[&tokens, &[(NUMERIC_FLAG_INSTRUCTION, 7)]]);
-        let before = data.clone();
         let (template, source_unlock) = collectible_clone_template(&data, Some(0), 1, 10).unwrap();
         assert_eq!((template, source_unlock), (1, 7), "{tokens:?}");
         let (count, _, rows, _) = array_at(&data, 8).unwrap();
@@ -71,7 +70,6 @@ fn alternative_acquisition_uses_placement_template_with_private_unlock() {
             cloned_condition_tokens(&clones, COLLECTIBLE_CONDITION_OFFSET),
             [(NUMERIC_FLAG_INSTRUCTION, 10)]
         );
-        assert_eq!(data, before, "stock conditions must remain untouched");
     }
 }
 

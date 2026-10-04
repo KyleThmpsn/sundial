@@ -59,48 +59,69 @@ pub(crate) fn shadowkeep_catalog_path() -> Option<PathBuf> {
 /// Resolves an existing path, or its closest existing ancestor, for security-sensitive
 /// comparisons that may involve an output path which has not been created yet.
 pub fn resolve_path_for_comparison(path: &Path) -> io::Result<PathBuf> {
-    let absolute = normalize_absolute(path)?;
-    if absolute.exists() {
-        return fs::canonicalize(absolute);
-    }
-
+    // Preserve the platform's traversal rules. On Unix, a link followed by `..`
+    // must be resolved by the filesystem before any missing suffix is normalized.
+    let mut ancestor = std::path::absolute(path)?;
     let mut missing = Vec::new();
-    let mut ancestor = absolute.as_path();
-    while !ancestor.exists() {
-        let name = ancestor.file_name().ok_or_else(|| {
+    let mut resolved = loop {
+        if let Some(resolved) = canonical_existing_path(&ancestor)? {
+            break resolved;
+        }
+        let component = ancestor.components().next_back().ok_or_else(|| {
             io::Error::new(io::ErrorKind::NotFound, "path has no existing ancestor")
         })?;
-        missing.push(name.to_owned());
-        ancestor = ancestor.parent().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "path has no existing ancestor")
-        })?;
-    }
-    let mut resolved = fs::canonicalize(ancestor)?;
-    for component in missing.into_iter().rev() {
-        resolved.push(component);
-    }
-    Ok(resolved)
-}
-
-fn normalize_absolute(path: &Path) -> io::Result<PathBuf> {
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-    let mut normalized = PathBuf::new();
-    for component in absolute.components() {
         match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
+            Component::Normal(_) | Component::ParentDir | Component::CurDir => {
+                missing.push(component.as_os_str().to_owned());
             }
-            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
-                normalized.push(component.as_os_str());
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "path has no existing ancestor",
+                ));
             }
         }
+        ancestor.pop();
+    };
+    if !missing.is_empty() && !fs::metadata(&resolved)?.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            "output ancestor is not a directory",
+        ));
     }
-    Ok(normalized)
+    let mut traversed_parent = false;
+    for component in missing.into_iter().rev() {
+        if component == ".." {
+            resolved.pop();
+            traversed_parent = true;
+        } else if component != "." {
+            resolved.push(component);
+        }
+    }
+    if traversed_parent {
+        // Removing a missing directory can expose a different existing link,
+        // as in `missing/../alias/output`. Resolve that ancestry as well. The
+        // normalized suffix has no parent components, so this cannot repeat.
+        resolve_path_for_comparison(&resolved)
+    } else {
+        Ok(resolved)
+    }
+}
+
+fn canonical_existing_path(path: &Path) -> io::Result<Option<PathBuf>> {
+    match fs::canonicalize(path) {
+        Ok(resolved) => Ok(Some(resolved)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            // A dangling link exists but cannot be resolved. Do not treat it
+            // as an ordinary output directory that can safely be created.
+            match fs::symlink_metadata(path) {
+                Ok(_) => Err(error),
+                Err(metadata_error) if metadata_error.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(metadata_error) => Err(metadata_error),
+            }
+        }
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(windows)]
@@ -160,6 +181,43 @@ pub fn paths_equal(left: &Path, right: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_outputs_resolve_but_files_cannot_be_used_as_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        let expected = fs::canonicalize(directory.path())
+            .unwrap()
+            .join("new/output.json");
+        assert_eq!(
+            resolve_path_for_comparison(&directory.path().join("new/output.json")).unwrap(),
+            expected
+        );
+        let file = directory.path().join("file");
+        fs::write(&file, b"keep").unwrap();
+        assert!(resolve_path_for_comparison(&file.join("output.json")).is_err());
+        assert_eq!(fs::read(file).unwrap(), b"keep");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parent_traversal_resolves_links_before_missing_outputs_and_rejects_dangling_links() {
+        let directory = tempfile::tempdir().unwrap();
+        let protected = directory.path().join("protected");
+        fs::create_dir_all(protected.join("child")).unwrap();
+        let alias = directory.path().join("alias");
+        std::os::unix::fs::symlink(protected.join("child"), &alias).unwrap();
+        let target = alias.join("../output.json");
+        let expected = fs::canonicalize(&protected).unwrap().join("output.json");
+        assert_eq!(resolve_path_for_comparison(&target).unwrap(), expected);
+        fs::write(&target, b"same destination").unwrap();
+        assert_eq!(
+            resolve_path_for_comparison(&target).unwrap(),
+            fs::canonicalize(&target).unwrap()
+        );
+        let dangling = directory.path().join("dangling");
+        std::os::unix::fs::symlink(directory.path().join("absent"), &dangling).unwrap();
+        assert!(resolve_path_for_comparison(&dangling.join("output.json")).is_err());
+    }
 
     #[test]
     fn resolved_and_canonical_windows_paths_compare_equally() {

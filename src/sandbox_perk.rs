@@ -4,26 +4,26 @@ use std::mem::size_of;
 
 use crate::package_runtime::reader::PackageManager;
 use crate::{
+    entity::{
+        SANDBOX_PATTERN_ENTITY_ASSIGNMENT_CLASS, SANDBOX_PATTERN_ENTITY_ASSIGNMENT_ROW_CLASS,
+        SANDBOX_PATTERN_ENTITY_ASSIGNMENT_ROW_SIZE, SANDBOX_PATTERN_ENTITY_ASSIGNMENT_TAG,
+        WEAPON_ENTITY_CLASS, validate_weapon_entity,
+    },
     investment_schema::{
         GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, NESTED_ARRAY_TRAILER,
         investment_globals_table_tag,
     },
     package_payload::{i64_at, relative_offset, u32_at, u64_at},
-    weapon_entity::{
-        SANDBOX_PATTERN_ENTITY_ASSIGNMENT_CLASS, SANDBOX_PATTERN_ENTITY_ASSIGNMENT_ROW_CLASS,
-        SANDBOX_PATTERN_ENTITY_ASSIGNMENT_ROW_SIZE, SANDBOX_PATTERN_ENTITY_ASSIGNMENT_TAG,
-        WEAPON_ENTITY_CLASS, validate_weapon_entity,
-    },
 };
 use tiger_pkg::TagHash;
 
 pub mod action;
 pub mod activation;
 pub mod dependencies;
+pub mod entity;
 pub mod ingredients;
 pub mod nodes;
 pub mod program;
-pub mod projectile;
 
 pub(crate) const CACHE_DIRECTORY: &str = "discovery";
 
@@ -346,6 +346,13 @@ pub fn clone_and_append_presented_finished_sandbox_perk(
         ];
     }
 
+    // A declaration-only row has no action, and its runtime key is the no-hash sentinel that
+    // every such row shares. Its copy keeps the sentinel, so the copy has no action either.
+    let declaration_only = new_runtime_key == crate::hash::FNV1_EMPTY_HASH
+        && u32_at(
+            payload,
+            primary_row(layout, donor_index, FINISHED_SANDBOX_PERK_ROW_SIZE)? + 4,
+        )? == crate::hash::FNV1_EMPTY_HASH;
     for index in 0..layout.primary.count {
         let row = primary_row(layout, index, FINISHED_SANDBOX_PERK_ROW_SIZE)?;
         let perk_hash = u32_at(payload, row)?;
@@ -355,7 +362,7 @@ pub fn clone_and_append_presented_finished_sandbox_perk(
                 "Finished sandbox-perk hash 0x{new_perk_hash:08X} already exists at row {index}"
             ));
         }
-        if runtime_key == new_runtime_key {
+        if runtime_key == new_runtime_key && !declaration_only {
             return Err(format!(
                 "Sandbox-perk runtime key 0x{new_runtime_key:08X} already exists at row {index}"
             ));

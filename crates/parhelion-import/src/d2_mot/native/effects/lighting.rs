@@ -5,6 +5,8 @@ use super::*;
 use crate::d2_mot::native::shader::replace_once;
 use std::collections::BTreeSet;
 
+mod ambient;
+
 type Components = BTreeSet<(String, char)>;
 
 fn references(text: &str) -> Components {
@@ -144,6 +146,38 @@ fn probes(lines: &mut Vec<String>) -> Result<()> {
     replace_region(lines, start, second + 3, replacement)
 }
 
+/// Whether five lines evaluate the clipmap coefficients for one normal: the normal's w set to
+/// one, its dot product with each coefficient, then the clamp. Lines that start otherwise are
+/// not an evaluation. Lines that start as one must finish as one.
+fn evaluation(lines: &[String], coefficients: &[String]) -> Result<bool> {
+    let Some((red, dot_expression)) = assignment(&lines[1]) else {
+        return Ok(false);
+    };
+    let Some(normal) = dot_expression
+        .strip_prefix(&format!("dot({}, ", coefficients[0]))
+        .and_then(|v| v.strip_suffix(')'))
+    else {
+        return Ok(false);
+    };
+    let color = red
+        .strip_suffix(".x")
+        .context("irradiance red destination")?;
+    ensure!(
+        lines[0].trim()
+            == format!(
+                "{}.w = 1;",
+                normal
+                    .strip_suffix(".xyzw")
+                    .context("irradiance normal layout")?
+            )
+            && lines[2].trim() == format!("{color}.y = dot({}, {normal});", coefficients[1])
+            && lines[3].trim() == format!("{color}.z = dot({}, {normal});", coefficients[2])
+            && lines[4].trim() == format!("{color}.xyz = max(float3(0,0,0), {color}.xyz);"),
+        "irradiance coefficient evaluation differs"
+    );
+    Ok(true)
+}
+
 fn irradiance(lines: &mut Vec<String>) -> Result<()> {
     let start = unique(lines, "= -cb3[0].xyz +")?;
     let samples = [16, 17, 18].map(|slot| {
@@ -162,6 +196,9 @@ fn irradiance(lines: &mut Vec<String>) -> Result<()> {
         })
         .collect::<Result<Vec<_>>>()?;
     let shadow = unique(lines, "= t19.SampleLevel(")?;
+    if samples.iter().all(|&at| lines[at].trim().ends_with(").w;")) {
+        return ambient::replace(lines, start, &samples, shadow);
+    }
     let dot = lines
         .iter()
         .position(|l| l.contains(&format!("= dot({},", coefficients[0])))
@@ -172,38 +209,32 @@ fn irradiance(lines: &mut Vec<String>) -> Result<()> {
             && samples[1] < samples[2]
             && samples[2] < dot
             && shadow > dot
-            && (shadow - dot + 1).is_multiple_of(5)
             && shadow + 2 < lines.len(),
         "irradiance equation order differs"
     );
     let shadow_result = assignment(&lines[shadow + 2])
         .context("shadow blend destination")?
         .0;
-    for evaluation in lines[dot - 1..shadow].chunks_exact(5) {
-        let (red, dot_expression) =
-            assignment(&evaluation[1]).context("irradiance red evaluation")?;
-        let normal = dot_expression
-            .strip_prefix(&format!("dot({}, ", coefficients[0]))
-            .and_then(|v| v.strip_suffix(')'))
-            .context("irradiance normal vector")?;
-        let color = red
-            .strip_suffix(".x")
-            .context("irradiance red destination")?;
+    let mut evaluated = 0;
+    for chunk in lines[dot - 1..shadow].chunks_exact(5) {
+        if !evaluation(chunk, &coefficients)? {
+            break;
+        }
+        evaluated += 1;
+    }
+    ensure!(evaluated > 0, "irradiance normal vector");
+    // The material's own math can follow the evaluations before the shadow sample. It stays as
+    // it is, so it must not read the clipmap coefficients the native samples replace.
+    let reserved = coefficients
+        .iter()
+        .map(|c| c.split('.').next().unwrap_or(c).to_owned())
+        .collect::<BTreeSet<_>>();
+    for line in &lines[dot - 1 + evaluated * 5..shadow] {
+        let read =
+            assignment(line).map_or_else(|| references(line), |(_, right)| references(right));
         ensure!(
-            evaluation[0].trim()
-                == format!(
-                    "{}.w = 1;",
-                    normal
-                        .strip_suffix(".xyzw")
-                        .context("irradiance normal layout")?
-                )
-                && evaluation[2].trim()
-                    == format!("{color}.y = dot({}, {normal});", coefficients[1])
-                && evaluation[3].trim()
-                    == format!("{color}.z = dot({}, {normal});", coefficients[2])
-                && evaluation[4].trim()
-                    == format!("{color}.xyz = max(float3(0,0,0), {color}.xyz);"),
-            "irradiance coefficient evaluation differs"
+            read.iter().all(|(name, _)| !reserved.contains(name)),
+            "material math after the irradiance evaluation reads clipmap coefficients"
         );
     }
     let mut replacement = coefficients.iter().enumerate().map(|(i, name)| format!("  {name} = t{}.SampleLevel(s5_s, cb8[4].zw * float2(1,0.5) + float2(0,0.5), 0).xyzw;",28+i)).collect::<Vec<_>>();
@@ -224,6 +255,7 @@ pub(super) fn adapt(text: &str) -> Result<(String, bool)> {
         (27..=31).all(|slot| !text.contains(&format!("register(t{slot})"))),
         "native irradiance lookup slots are occupied"
     );
+    let fog_is_colored = inputs::slots(text, 't')?.contains(&11) && ambient::colors_fog(text)?;
     let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
     if count == Some(36) {
         probes(&mut lines)?;
@@ -285,9 +317,9 @@ pub(super) fn adapt(text: &str) -> Result<(String, bool)> {
         result = format!("Texture2D<float4> t{slot} : register(t{slot});\n{result}");
     }
     if inputs::slots(&result, 't')?.contains(&11) {
-        // Resolve native RGB and directional fog into the pre-lit color used
-        // by modern shaders. Alpha is zero because its directional term is
-        // already included in RGB, not another term for the source to relight.
+        // Some source materials color raw fog themselves. Only pre-light the
+        // sample when the source shader consumes pre-lit fog, otherwise its
+        // unchanged equations would apply the environment colors twice.
         for slot in [11, 13] {
             ensure!(
                 result.matches(&format!("t{slot}.")).count() == 1
@@ -302,11 +334,12 @@ pub(super) fn adapt(text: &str) -> Result<(String, bool)> {
             result = result.replace(&format!("t{slot}.Sample("), "native_fog(");
         }
         result = format!("Texture2D<float4> t27 : register(t27);\n{result}");
-        result = replace_once(
-            &result,
-            "void main(\n",
-            "float4 native_fog(SamplerState fog_sampler, float2 uv) { float4 fog = t27.Sample(fog_sampler, uv); return float4(cb8[5].xyz * fog.xyz + cb8[6].xyz * fog.w, 0); }\nvoid main(\n",
-        )?;
+        let helper = if fog_is_colored {
+            "float4 native_fog(SamplerState fog_sampler, float2 uv) { return t27.Sample(fog_sampler, uv); }\nvoid main(\n"
+        } else {
+            "float4 native_fog(SamplerState fog_sampler, float2 uv) { float4 fog = t27.Sample(fog_sampler, uv); return float4(cb8[5].xyz * fog.xyz + cb8[6].xyz * fog.w, 0); }\nvoid main(\n"
+        };
+        result = replace_once(&result, "void main(\n", helper)?;
     }
     Ok((result, true))
 }

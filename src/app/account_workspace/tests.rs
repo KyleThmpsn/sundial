@@ -520,6 +520,10 @@ fn sqlite_subclass_item() -> ItemDef {
             entry_perks: Default::default(),
             entry_icons: Default::default(),
             entry_descriptions: Default::default(),
+            entry_entities: Default::default(),
+            entry_rows: Default::default(),
+            entry_modifiers: Default::default(),
+            authored: false,
             attunements: vec![
                 AttunementChoice {
                     name: "Default path".to_owned(),

@@ -18,6 +18,7 @@ mod icons;
 mod items;
 pub use items::stock_subclass_list_classes;
 pub(crate) use items::{inventory_bucket_capacity, weapon_bucket_capacities};
+pub(crate) use items::{item_subtype_label, item_type_label};
 pub(crate) mod package;
 mod package_access;
 mod progression;
@@ -228,6 +229,7 @@ pub(crate) struct Catalog {
     trait_definitions: Vec<ObjectiveOwnerTraitDef>,
     reusable_plug_set_count: usize,
     socket_entry_list_count: usize,
+    ability_rows: Vec<crate::investment::AbilityRowSummary>,
     package_names: HashMap<u16, String>,
     pub cache_path: PathBuf,
     pub loaded_from_cache: bool,
@@ -262,7 +264,8 @@ pub(crate) struct Catalog {
     plug_pools: Vec<Vec<u64>>,
     socket_type_options: HashMap<u16, Vec<u64>>,
     socket_and_gear_type_options: HashMap<String, HashMap<u16, Vec<u64>>>,
-    gear_type_options: HashMap<GearKind, Vec<u64>>,
+    gear_type_options: HashMap<String, Vec<u64>>,
+    gear_kind_options: HashMap<GearKind, Vec<u64>>,
     cosmetic_socket_pools: HashSet<u32>,
     cosmetic_socket_types: HashSet<u16>,
     all_plug_options: Vec<u64>,
@@ -516,6 +519,12 @@ impl Catalog {
     }
 
     #[cfg(test)]
+    pub(crate) fn with_test_character_stat_rows(mut self, rows: [u16; 6]) -> Self {
+        self.character_stat_rows = Some(rows);
+        self
+    }
+
+    #[cfg(test)]
     pub(crate) fn with_test_item_package_metadata(
         mut self,
         hash: u64,
@@ -579,25 +588,23 @@ impl Catalog {
         validate_install(install)?;
         let fingerprint = install_fingerprint(install)?;
         if !force && cache_is_current(&cache_path) {
-            if let Ok(raw) = fs::read(&cache_path) {
-                if let Ok(cache) = serde_json::from_slice::<CatalogCache>(&raw) {
-                    if cache.schema == CACHE_SCHEMA
-                        && cache.sundial_version == SUNDIAL_VERSION
-                        && cache.fingerprint == fingerprint
-                    {
-                        report(CatalogProgress {
-                            message: "Loaded the local catalog",
-                            completed: 1,
-                            total: 1,
-                        });
-                        return Ok(Self::finish(
-                            cache.contents,
-                            cache_path,
-                            install.to_path_buf(),
-                            true,
-                        ));
-                    }
-                }
+            let cached = fs::read(&cache_path).ok().and_then(|raw| {
+                crate::package_runtime::cache_file::read::<CatalogCache>(&raw).ok()
+            });
+            if let Some(cache) = cached.filter(|cache| {
+                cache.schema == CACHE_SCHEMA
+                    && cache.sundial_version == SUNDIAL_VERSION
+                    && cache.fingerprint == fingerprint
+            }) {
+                report(CatalogProgress {
+                    message: "Loaded the local catalog",
+                    completed: 1,
+                    total: 1,
+                });
+                let catalog = Self::finish(cache.contents, cache_path, install.to_path_buf(), true);
+                // The file and its inflated copy are gone once parsed.
+                crate::memory::release_free_memory();
+                return Ok(catalog);
             }
         }
         let mut contents = scan_packages(install, &mut report)?;
@@ -627,8 +634,10 @@ impl Catalog {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("Could not create catalog cache: {e}"))?;
         }
-        let encoded =
-            serde_json::to_vec(&cache).map_err(|e| format!("Could not encode catalog: {e}"))?;
+        // Compressed like the native caches.
+        let mut encoded = Vec::new();
+        crate::package_runtime::cache_file::write(&mut encoded, &cache)
+            .map_err(|e| format!("Could not encode catalog: {e}"))?;
         report(CatalogProgress::stage("Saving the local catalog…"));
         crate::storage::replace_file(&cache_path, &encoded)
             .map_err(|e| format!("Could not save catalog cache: {e}"))?;
@@ -666,6 +675,7 @@ impl Catalog {
             trait_definitions,
             reusable_plug_set_count,
             socket_entry_list_count,
+            ability_rows,
             package_names,
             inventory_metadata,
             objectives,
@@ -687,8 +697,8 @@ impl Catalog {
         }
         let (socket_type_options, socket_and_gear_type_options) =
             build_socket_type_options(&items, &plug_pools, &names);
-        let (gear_type_options, cosmetic_socket_pools) =
-            build_gear_type_options(&items, &plug_pools, &names);
+        let (gear_type_options, gear_kind_options, cosmetic_socket_pools) =
+            build_gear_type_options(&items, &plug_pools, &names, &type_names);
         let cosmetic_socket_types = items
             .iter()
             .flat_map(|item| &item.sockets)
@@ -770,6 +780,7 @@ impl Catalog {
             trait_definitions,
             reusable_plug_set_count,
             socket_entry_list_count,
+            ability_rows,
             package_names,
             cache_path,
             loaded_from_cache,
@@ -805,6 +816,7 @@ impl Catalog {
             socket_type_options,
             socket_and_gear_type_options,
             gear_type_options,
+            gear_kind_options,
             cosmetic_socket_pools,
             cosmetic_socket_types,
             all_plug_options,
@@ -1116,6 +1128,10 @@ impl Catalog {
 
     pub(crate) fn socket_entry_list_count(&self) -> usize {
         self.socket_entry_list_count
+    }
+
+    pub(crate) fn ability_rows(&self) -> &[crate::investment::AbilityRowSummary] {
+        &self.ability_rows
     }
 
     pub(crate) fn item_package_name(&self, hash: u64) -> Option<&str> {

@@ -17,6 +17,14 @@ pub(crate) struct AssetPackages {
     pub packages: Vec<AssetPackage>,
 }
 
+/// A pure package choice. No empty package or tag slot is inserted until commit.
+pub(crate) struct GroupPlan {
+    pub package_index: usize,
+    pub package_id: u16,
+    pub base: usize,
+    bounds: Vec<usize>,
+}
+
 #[derive(Clone, Copy)]
 struct Budget {
     entries: usize,
@@ -84,7 +92,31 @@ impl AssetPackages {
         &mut self,
         lengths: impl IntoIterator<Item = usize>,
     ) -> AuthoringResult<usize> {
-        let added = Budget::for_lengths(lengths)?;
+        let plan = self.plan_group(lengths)?;
+        if plan.package_index == self.packages.len() {
+            self.packages.push(AssetPackage {
+                id: plan.package_id,
+                tags: Vec::new(),
+                references: Vec::new(),
+            });
+        }
+        Ok(plan.package_index)
+    }
+
+    pub(crate) fn plan_group(
+        &self,
+        lengths: impl IntoIterator<Item = usize>,
+    ) -> AuthoringResult<GroupPlan> {
+        let mut bounds = Vec::new();
+        for length in lengths {
+            if bounds.len() == MAX_PACKAGE_ENTRY_COUNT {
+                return Err(invalid(
+                    "A resource group exceeds one native asset package's entry capacity",
+                ));
+            }
+            bounds.push(length);
+        }
+        let added = Budget::for_lengths(bounds.iter().copied())?;
         if added.entries == 0 || !added.within_capacity() {
             return Err(invalid(
                 "A resource group exceeds one native asset package's entry or block capacity",
@@ -93,7 +125,12 @@ impl AssetPackages {
         if let Some(last) = self.packages.last() {
             let current = Budget::for_lengths(last.tags.iter().map(|tag| tag.payload.len()))?;
             if current.fits(added) {
-                return Ok(self.packages.len() - 1);
+                return Ok(GroupPlan {
+                    package_index: self.packages.len() - 1,
+                    package_id: last.id,
+                    base: last.tags.len(),
+                    bounds,
+                });
             }
         }
         let index = self.packages.len();
@@ -102,12 +139,67 @@ impl AssetPackages {
             .and_then(|n| PARHELION_ASSET_PACKAGE_ID.checked_add(n))
             .filter(|id| *id <= MAX_AUTHORED_STANDALONE_PACKAGE_ID)
             .ok_or_else(|| invalid("The authored asset package id range is exhausted"))?;
-        self.packages.push(AssetPackage {
-            id,
-            tags: Vec::new(),
-            references: Vec::new(),
-        });
-        Ok(index)
+        Ok(GroupPlan {
+            package_index: index,
+            package_id: id,
+            base: 0,
+            bounds,
+        })
+    }
+
+    /// Validate the decision and the complete group before one append operation.
+    pub(crate) fn commit_group(
+        &mut self,
+        plan: GroupPlan,
+        tags: Vec<NewTagSpec>,
+        references: Vec<NewTagReferenceOverride>,
+    ) -> AuthoringResult<usize> {
+        let current = self.plan_group(plan.bounds.iter().copied())?;
+        if (current.package_index, current.package_id, current.base)
+            != (plan.package_index, plan.package_id, plan.base)
+        {
+            return Err(validation(
+                "The private asset package plan changed before commit",
+            ));
+        }
+        if tags.is_empty()
+            || tags.len() > plan.bounds.len()
+            || tags
+                .iter()
+                .zip(&plan.bounds)
+                .any(|(tag, bound)| tag.payload.is_empty() || tag.payload.len() > *bound)
+        {
+            return Err(validation(
+                "Materialized assets exceeded their declared bounds",
+            ));
+        }
+        let final_count = plan
+            .base
+            .checked_add(tags.len())
+            .ok_or_else(|| invalid("Asset count overflow"))?;
+        let mut seen = std::collections::BTreeSet::new();
+        for reference in &references {
+            if !(plan.base..final_count).contains(&reference.new_tag_ordinal)
+                || !seen.insert(reference.new_tag_ordinal)
+                || matches!(reference.reference, crate::NewTagReference::Appended(index) if index >= final_count)
+            {
+                return Err(validation(
+                    "Materialized asset reference is outside its package group",
+                ));
+            }
+        }
+        if plan.package_index == self.packages.len() {
+            self.packages.push(AssetPackage {
+                id: plan.package_id,
+                tags,
+                references,
+            });
+        } else {
+            let package = &mut self.packages[plan.package_index];
+            package.tags.extend(tags);
+            package.references.extend(references);
+        }
+        Ok(plan.package_index)
     }
 
     pub(crate) fn validate(&self) -> AuthoringResult<()> {

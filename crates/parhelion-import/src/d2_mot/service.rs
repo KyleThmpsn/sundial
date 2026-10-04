@@ -1,5 +1,9 @@
 //! Source discovery and conservative automatic donor matching for the workbench.
 mod cache;
+mod emblems;
+mod family;
+mod gear;
+mod shaders;
 pub use crate::d2_mot::catalog::ScanProgress;
 use crate::d2_mot::{
     GraphReference, batch, catalog, extract, profile,
@@ -8,6 +12,7 @@ use crate::d2_mot::{
 };
 use anyhow::{Context, Result, ensure};
 pub use cache::{package_stamp, scan_cached};
+pub use family::Family;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -15,7 +20,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Weapon {
     pub hash: u32,
     pub name: String,
@@ -29,6 +34,23 @@ pub struct Weapon {
     pub dummy: bool,
     #[serde(default)]
     pub icon_index: Option<usize>,
+    #[serde(default)]
+    pub bucket_hash: Option<u32>,
+    #[serde(default)]
+    pub class_type: Option<u8>,
+    /// Source presentation metadata for browsing, independent of the native donor.
+    #[serde(default)]
+    pub rarity: Option<u8>,
+    #[serde(default)]
+    pub ammo: Option<u16>,
+    #[serde(default)]
+    pub damage: Option<String>,
+}
+
+impl Weapon {
+    pub fn is_shader(&self) -> bool {
+        self.family() == Family::Shader
+    }
 }
 
 /// The stable authored identity also detects previous imports with a renamed weapon.
@@ -42,6 +64,11 @@ pub fn destination_hash(source: u32) -> Result<u32> {
 /// The native model donor a retained compatibility profile names for a source weapon.
 pub fn profile_donor(source: u32) -> Option<u32> {
     super::compatibility::profile(source).map(|profile| profile.model_donor)
+}
+
+/// The native weapon a source weapon type is built on when Shadowkeep has none of that type.
+pub fn type_base(weapon_type: &str) -> Option<u32> {
+    (weapon_type == "Glaive").then_some(super::glaive::BASE)
 }
 
 /// Source weapons covered by the retained, gameplay-tested compatibility profiles.
@@ -84,7 +111,7 @@ pub fn model_directory(root: &Path, name: &str, hash: u32) -> Result<PathBuf> {
     let name = name.trim().trim_end_matches('.');
     ensure!(
         !name.is_empty() && name != "." && name != "..",
-        "Weapon name cannot form a model folder"
+        "Item name cannot form a model folder"
     );
     let reserved = name.split('.').next().unwrap_or("").to_ascii_uppercase();
     ensure!(
@@ -195,7 +222,16 @@ pub fn prepare_with_progress(
 ) -> Result<PathBuf> {
     let started = std::time::Instant::now();
     let mut steps = Vec::new();
-    let result = prepare_steps(
+    let prepare = if weapon.is_shader() {
+        shaders::prepare
+    } else if weapon.family() == Family::Emblem {
+        emblems::prepare
+    } else if weapon.family().is_model_gear() {
+        gear::prepare
+    } else {
+        prepare_steps
+    };
+    let result = prepare(
         weapon,
         modern,
         native,
@@ -228,7 +264,7 @@ pub fn prepare_with_progress(
 
 /// The source export's format. Bump it whenever extraction writes different files or reports,
 /// so an export made by an earlier importer is extracted again rather than reused.
-const SOURCE_EXPORT: u32 = 4;
+const SOURCE_EXPORT: u32 = 6;
 
 /// The newest finished export of `weapon` from the same modern packages and export format.
 /// An export is only read once it is finished, by every donor attempt alike, so a later import
@@ -387,6 +423,44 @@ fn convert_with_donor(
     progress("Matching source perks, stats and weapon properties…".into());
     let gameplay: Value = serde_json::from_slice(&fs::read(source.join("gameplay.json"))?)?;
     super::gameplay::apply(&gameplay, native, &attempt.join("gameplay"), &mut document)?;
+    if super::glaive::is_glaive(&gameplay) {
+        progress("Adding the glaive shield and intrinsic…".into());
+        let prepared_folder = PathBuf::from(
+            prepared["prepared"]
+                .as_str()
+                .context("Missing prepared folder")?,
+        );
+        let folder = PathBuf::from(
+            prepared["folder"]
+                .as_str()
+                .context("Missing import folder")?,
+        );
+        let source_rig: Value = serde_json::from_slice(&fs::read(source.join("rig.json"))?)?;
+        let native_rig: Value =
+            serde_json::from_slice(&fs::read(folder.join("native").join("rig.json"))?)?;
+        let kit = super::glaive::Inputs {
+            modern,
+            native,
+            prepared: &prepared_folder,
+            graph: &graph,
+            work: &attempt.join("glaive"),
+            source_rig: &source_rig,
+            native_rig: &native_rig,
+        };
+        // Another donor may have the frame socket this one lacks.
+        if let Err(error) = super::glaive::apply(&kit, &gameplay, &mut document, progress) {
+            return Ok(Attempt::Rejected(
+                error.context("glaive shield and intrinsic"),
+            ));
+        }
+    }
+    progress("Converting the hip-fire crosshair…".into());
+    if let Err(error) =
+        super::crosshair::apply(modern, native, source, &attempt.join("crosshair"), &graph)
+    {
+        crate::cancellation::check()?;
+        super::crosshair::record_failure(&graph, &error)?;
+    }
     progress("Verifying and saving recipe assets…".into());
     let item = profile::hash(&document["identity"], "item_hash")?;
     document["overrides"]["imported_graph"] =
@@ -404,6 +478,10 @@ fn convert_with_donor(
 /// Record a rejected donor. A limit of the source itself ends the import, because every
 /// remaining donor would rediscover it, which is what turned such imports into long timeouts.
 fn rejected(donor: &Value, error: &anyhow::Error, errors: &mut Vec<String>) -> Result<()> {
+    crate::cancellation::check()?;
+    if crate::cancellation::is_cancelled(error) {
+        return Err(crate::cancellation::Cancelled.into());
+    }
     let detail = format!("{}: {error:#}", donor["name"]);
     eprintln!("Donor conversion failed: {detail}");
     errors.push(detail);
@@ -454,9 +532,15 @@ fn prepare_steps(
         source: &source,
         output,
     };
-    let preferred = super::compatibility::profile(weapon.hash)
-        .map(|p| p.model_donor)
-        .or_else(|| previous_model_donor(output, weapon.hash));
+    // Shadowkeep has no glaive, so a glaive is built on the glaive base without a donor search.
+    let glaive = super::glaive::exported_glaive(&source)?;
+    let preferred = if glaive {
+        Some(super::glaive::BASE)
+    } else {
+        super::compatibility::profile(weapon.hash)
+            .map(|p| p.model_donor)
+            .or_else(|| previous_model_donor(output, weapon.hash))
+    };
     let mut errors = Vec::new();
     // Converting checks a donor in full, and the donor that converted this weapon before
     // usually converts it again. The sweep over every compatible donor only runs if it fails.
@@ -467,15 +551,29 @@ fn prepare_steps(
         })
     });
     if let Some(donor) = first {
-        progress(format!(
-            "Trying the previous donor: {}",
-            donor["name"].as_str().unwrap_or("Weapon")
-        ));
+        progress(if glaive {
+            "Building on the glaive base…".into()
+        } else {
+            format!(
+                "Trying the previous donor: {}",
+                donor["name"].as_str().unwrap_or("Weapon")
+            )
+        });
         match try_donor(&inputs, donor, &native_reader, progress)? {
             Attempt::Prepared(recipe) => return Ok(recipe),
             Attempt::Rejected(error) => rejected(donor, &error, &mut errors)?,
         }
     }
+    // No other native weapon carries the glaive rig.
+    ensure!(
+        !glaive,
+        "The glaive base could not carry this glaive: {}",
+        if errors.is_empty() {
+            "the base is not among the installed weapons".to_owned()
+        } else {
+            errors.join("\n")
+        }
+    );
     progress("Opening destination packages for donor matching…".into());
     let matches = batch::donors_with_reader(
         &source,

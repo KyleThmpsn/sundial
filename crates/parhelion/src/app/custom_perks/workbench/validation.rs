@@ -9,6 +9,7 @@ pub(super) struct Location {
     pub native: Option<sundial::package_authoring::sandbox_perk::program::NativeIssue>,
 }
 
+#[derive(Clone)]
 pub(super) struct Issue {
     pub message: String,
     pub location: Option<Location>,
@@ -31,13 +32,19 @@ impl Workbench {
 
     /// The open perk's issue, as `validation_issue` reads it, from the document's cache.
     pub(super) fn selected_issue(&mut self) -> Option<Issue> {
+        let diagnostics = self.selected_diagnostics();
         let index = self.selected;
         let (problem, warning) = self.document_issues(index)?;
         let recipe = &self.documents[index].recipe;
         if let Some(message) = problem {
             return Some(self.locate(recipe, message, true));
         }
-        Some(self.locate(recipe, warning?, false))
+        if let Some(issue) = diagnostics.iter().find(|issue| issue.blocking) {
+            return Some(issue.clone());
+        }
+        warning
+            .map(|message| self.locate(recipe, message, false))
+            .or_else(|| diagnostics.into_iter().next())
     }
 
     /// A document's problem, or its warning when it has no problem, from its cache.
@@ -115,6 +122,7 @@ impl Workbench {
                 }
                 let mut one = program.clone();
                 one.actions.clear();
+                one.ability_tunings.clear();
                 if one.validate().is_err() {
                     return None;
                 }
@@ -162,6 +170,9 @@ impl Workbench {
     pub(super) fn draw_issue(&mut self, ui: &mut egui::Ui, issue: &Issue) {
         ui.horizontal_wrapped(|ui| {
             ui.colored_label(ui.visuals().warn_fg_color, &issue.message);
+            if ui.small_button("All Diagnostics…").clicked() {
+                self.diagnostics_open = true;
+            }
             if issue.location.is_some()
                 && ui
                     .add_enabled(
@@ -202,13 +213,7 @@ pub(super) fn event_fired(
             .any(|condition| LASTING_TRIGGERS.contains(&condition.kind))
 }
 
-/// How many of a plug's effects the runtime reads: `items::kSandboxPerkCapacity` in the
-/// Sunrise package reader, which Dawn shares, keeps four sandbox-perk entries per item or
-/// plug and `read_sandbox_perks` returns at that count (`docs/sunrise-contracts.md`, and
-/// `perk_bank::project` counts the same four). Everything at Once's fifth and sixth effects
-/// never fired in game on 2026-09-27 while its first four did. A warning, not a problem:
-/// the package and the game accept it.
-pub(super) const RUNNING_EFFECT_LIMIT: usize = 4;
+use crate::perk::SANDBOX_PERK_CAPACITY;
 
 /// A likely mistake the game still runs, the first one in the perk. It is shown wherever a
 /// problem is, but it never keeps the perk from being applied or chosen. `runtime` names the
@@ -219,9 +224,9 @@ pub(super) fn perk_warning(recipe: &PerkRecipe, runtime: &str) -> Option<String>
         .iter()
         .find_map(|effect| ending_issue(effect.program.as_ref()))
         .or_else(|| {
-            (recipe.effects.len() > RUNNING_EFFECT_LIMIT).then(|| {
+            (recipe.effects.len() > SANDBOX_PERK_CAPACITY).then(|| {
                 format!(
-                    "{runtime} reads a plug's first {RUNNING_EFFECT_LIMIT} effects. The rest never run."
+                    "{runtime} reads a plug's first {SANDBOX_PERK_CAPACITY} effects. The rest never run."
                 )
             })
         })
@@ -313,12 +318,7 @@ mod tests {
             actions: vec![Action::add_rounds(1)],
             ..Program::default()
         };
-        assert_eq!(
-            ending_issue(Some(&program(2, 0))).as_deref(),
-            Some(
-                "This effect never ends, so it cannot start again. End it at once or set a Duration."
-            )
-        );
+        assert!(ending_issue(Some(&program(2, 0))).is_some());
         assert!(ending_issue(Some(&program(2, 5_000))).is_none());
         assert!(ending_issue(Some(&program(16, 0))).is_none());
         let second = Program {

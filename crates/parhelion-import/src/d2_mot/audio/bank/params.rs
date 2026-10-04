@@ -1,4 +1,5 @@
 use super::*;
+mod position;
 
 fn property(id: u8) -> Result<u8> {
     // This source bank dialect adds a property at 0x38. Shared object IDs
@@ -212,56 +213,6 @@ fn states(r: &mut Read<'_>, w: &mut Write, c: &mut Convert, owner: u32) -> Resul
     Ok(())
 }
 
-fn positioning(r: &mut Read<'_>, w: &mut Write, attenuation: Option<u32>) -> Result<()> {
-    let bits = r.u8()?;
-    ensure!(bits & 0x90 == 0, "unsupported positioning flags {bits:02X}");
-    if bits & 1 == 0 {
-        ensure!(
-            attenuation.is_none_or(|id| id == 0),
-            "inherited position overrides attenuation"
-        );
-        w.u8(0xC0);
-        return Ok(());
-    }
-    let panner = (bits >> 2) & 3;
-    ensure!(panner <= 1, "unsupported speaker panner {panner}");
-    if bits & 2 == 0 {
-        ensure!(
-            attenuation.is_none_or(|id| id == 0),
-            "2D position has attenuation"
-        );
-        w.u8(0xC1 | if panner == 1 { 6 } else { 0 });
-        return Ok(());
-    }
-    let spatial = r.u8()?;
-    ensure!(
-        spatial & 0x80 == 0,
-        "diffraction needs a native implementation"
-    );
-    let mode = spatial & 3;
-    ensure!(mode <= 2, "unknown spatialization mode");
-    ensure!(bits & 0x60 == 0, "automated 3D paths need conversion");
-    if mode == 0 {
-        ensure!(
-            attenuation.is_none_or(|id| id == 0),
-            "nonspatial audio has attenuation"
-        );
-        w.u8(0xC7);
-    } else {
-        w.u8(0xD9);
-        w.u8(1 | ((spatial & 0x70) >> 1));
-        w.reference(
-            if spatial & 8 != 0 {
-                attenuation.unwrap_or(0)
-            } else {
-                0
-            },
-            Kind::Object,
-        );
-    }
-    Ok(())
-}
-
 pub(super) fn node(r: &mut Read<'_>, w: &mut Write, c: &mut Convert, id: u32) -> Result<()> {
     w.copy(r, 1)?; // FX inheritance.
     let fx = r.u8()?;
@@ -300,7 +251,7 @@ pub(super) fn node(r: &mut Read<'_>, w: &mut Write, c: &mut Convert, id: u32) ->
     w.copy(r, 1)?;
     let attenuation = props(r, w, false)?;
     props(r, w, true)?;
-    positioning(r, w, attenuation)?;
+    position::emit(r, w, attenuation)?;
     let aux = r.u8()?;
     ensure!(aux & 0x10 == 0, "reflection bus override is unsupported");
     w.u8(aux);

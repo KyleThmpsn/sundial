@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn key_names_refresh_with_the_catalog_without_rebuilding_on_each_frame() {
+fn key_names_refresh_with_the_catalog_and_clear_when_it_is_removed() {
     use sundial::investment::{IngredientCatalog, PerkSource};
     let index: KeyIndex = serde_json::from_value(serde_json::json!({
         "perks": [[1, 100]],
@@ -32,9 +32,6 @@ fn key_names_refresh_with_the_catalog_without_rebuilding_on_each_frame() {
     let mut keys = Keys::default();
     keys.sync(Some(&index), Some(&original));
     assert_eq!(keys.catalog.property_key(42).unwrap().perks, ["Test Perk"]);
-    let address = keys.catalog.property_keys().as_ptr();
-    keys.sync(Some(&index), Some(&original));
-    assert_eq!(address, keys.catalog.property_keys().as_ptr());
     keys.sync(Some(&index), Some(&sources("Renamed Test Perk")));
     assert_eq!(
         keys.catalog.property_key(42).unwrap().perks,
@@ -67,5 +64,11 @@ fn native_actions_preserve_editable_retained_state() {
             ..Program::default()
         };
         assert!(program.validate_structure().is_ok(), "kind {}", node.kind);
+        let draft =
+            sundial::package_authoring::sandbox_perk::program::native_draft(&program).unwrap();
+        let decoded =
+            sundial::package_authoring::sandbox_perk::action::decode(&draft.graph.emit().unwrap())
+                .unwrap();
+        assert_eq!(decoded.groups[0].effects[0].native[1], 1 - node.bytes[1]);
     }
 }

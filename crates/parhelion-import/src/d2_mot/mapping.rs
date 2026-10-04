@@ -462,10 +462,9 @@ pub(crate) fn uncarried(
     for entry in report["models"].as_array().context("source models")? {
         let tag = u32::from_str_radix(entry["model"].as_str().context("source model tag")?, 16)?;
         let model = raw(source, tag)?;
-        let meshes = model.array(16, 128, Some(0x80806EC5))?;
-        ensure!(meshes.len() == 1, "expected single mesh");
-        if choose_carrier(source, native, &model, meshes[0], template, (true, stride)).is_err() {
-            missing.push((tag, meshes[0]));
+        let mesh = super::geometry::selected_mesh(&model, entry)?;
+        if choose_carrier(source, native, &model, mesh, template, (true, stride)).is_err() {
+            missing.push((tag, mesh));
         }
     }
     Ok(missing)
@@ -494,9 +493,8 @@ pub(crate) fn primary_carrier_owner(
         source,
         u32::from_str_radix(entry["model"].as_str().context("source model")?, 16)?,
     )?;
-    let meshes = model.array(16, 128, Some(0x80806EC5))?;
-    ensure!(meshes.len() == 1, "expected single mesh");
-    let (tag, _, _) = choose_carrier(source, native, &model, meshes[0], template, (true, stride))?;
+    let mesh = super::geometry::selected_mesh(&model, entry)?;
+    let (tag, _, _) = choose_carrier(source, native, &model, mesh, template, (true, stride))?;
     let carriers = carrier_candidates(template);
     let selected = carriers
         .iter()
@@ -521,12 +519,11 @@ pub(crate) fn check_carriers(
     template: &Value,
     stride: i16,
 ) -> Result<()> {
-    for model in report["models"].as_array().context("source models")? {
-        let tag = model["model"].as_str().context("source model tag")?;
+    for entry in report["models"].as_array().context("source models")? {
+        let tag = entry["model"].as_str().context("source model tag")?;
         let model = raw(source, u32::from_str_radix(tag, 16)?)?;
-        let meshes = model.array(16, 128, Some(0x80806EC5))?;
-        ensure!(meshes.len() == 1, "expected single mesh");
-        choose_carrier(source, native, &model, meshes[0], template, (true, stride))
+        let mesh = super::geometry::selected_mesh(&model, entry)?;
+        choose_carrier(source, native, &model, mesh, template, (true, stride))
             .with_context(|| format!("source model {tag}"))?;
     }
     Ok(())

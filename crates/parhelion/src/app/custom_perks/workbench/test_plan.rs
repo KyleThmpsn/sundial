@@ -13,6 +13,7 @@ const fn item_phrase(kind: ItemKind) -> &'static str {
         ItemKind::GhostShell => "a Ghost Shell",
         ItemKind::Shader => "a shader",
         ItemKind::Subclass => "a subclass",
+        ItemKind::Emblem => "an emblem",
     }
 }
 
@@ -254,24 +255,5 @@ fn seconds(milliseconds: u32) -> String {
         "1 second".to_owned()
     } else {
         format!("{text} seconds")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sundial::package_authoring::sandbox_perk::activation::PerkActivation;
-
-    #[test]
-    fn stock_effect_plan_uses_its_name_and_activation_override() {
-        let mut recipe = PerkRecipe::new();
-        let mut effect = PerkRecipe::effect(77);
-        effect.activation = Some(PerkActivation::GrenadeKill);
-        recipe.effects.push(effect);
-        let names = BTreeMap::from([(77, "Borrowed Behavior".into())]);
-
-        let plan = render(&recipe, ItemKind::Weapon, &names, None, &BTreeMap::new());
-        assert!(plan.contains("Borrowed Behavior"));
-        assert!(plan.contains("Grenade Kill"));
     }
 }

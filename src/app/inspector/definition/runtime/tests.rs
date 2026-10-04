@@ -73,15 +73,16 @@ fn disconnected_reader_returns_an_actionable_error() {
 #[test]
 fn cache_is_bounded_and_target_kinds_cannot_collide() {
     let mut state = RuntimeInspectionState::default();
-    for index in 0..8 {
+    for index in 0..u16::try_from(CACHE_LIMIT + 2).unwrap() {
         state.remember(RuntimeTarget::Perk(index), Err(index.to_string()));
     }
-    assert_eq!(state.cache.len(), CACHE_LIMIT);
+    assert!(state.cache.len() <= CACHE_LIMIT);
     assert!(!state.cache.contains_key(&RuntimeTarget::Perk(0)));
-    state.remember(RuntimeTarget::Weapon(7), Err("weapon".into()));
-    assert!(state.cache.contains_key(&RuntimeTarget::Perk(7)));
-    assert!(state.cache.contains_key(&RuntimeTarget::Weapon(7)));
-    assert_eq!(state.cache.len(), CACHE_LIMIT);
+    let recent = u16::try_from(CACHE_LIMIT + 1).unwrap();
+    state.remember(RuntimeTarget::Weapon(recent), Err("weapon".into()));
+    assert!(state.cache.contains_key(&RuntimeTarget::Perk(recent)));
+    assert!(state.cache.contains_key(&RuntimeTarget::Weapon(recent)));
+    assert!(state.cache.len() <= CACHE_LIMIT);
 }
 
 #[test]

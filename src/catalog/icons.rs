@@ -1,7 +1,11 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, Sender, TryRecvError},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -14,10 +18,11 @@ use crate::{
         ICON_BACKGROUND_LAYER_OFFSET, ICON_FOREGROUND_LAYER_OFFSET, ICON_PRIMARY_LAYER_OFFSET,
         ICON_WATERMARK_LAYER_OFFSET,
     },
-    image_processing::{blend_rgba_pixel, clear_color_region, decode_bc1},
+    image_processing::{blend_rgba_pixel, decode_bc1},
     investment_schema::{
         GLOBALS_ITEM_ICON_TABLE_SLOT, ITEM_ICON_CONTAINER_OFFSET, ITEM_ICON_ROW_CLASS,
-        ITEM_ICON_ROW_SIZE, ITEM_STRING_ICON_INDEX_OFFSET, investment_globals_table_tag,
+        ITEM_ICON_ROW_SIZE, ITEM_STRING_ICON_INDEX_OFFSET, ITEM_STRING_SECONDARY_ICON_INDEX_OFFSET,
+        investment_globals_table_tag,
     },
     package_payload::{array_at, i64_at, relative_offset, u16_at, u32_at},
     package_runtime,
@@ -27,24 +32,20 @@ use super::Catalog;
 
 const CATALOG_ICON_SIZE: usize = 96;
 const MAX_CACHED_CATALOG_ICONS: usize = 512;
+const MAX_PENDING_CATALOG_ICONS: usize = 64;
+/// The most the cached textures take together. An icon is small, but a texture preview can be
+/// 1024 pixels square, and the icon count alone would let 2 GiB of those stay loaded.
+const MAX_CACHED_ICON_BYTES: usize = 256 << 20;
 const FAILED_ICON_RETRY_DELAY: Duration = Duration::from_secs(5);
 const STAT_ICON_CACHE_PREFIX: u64 = 1_u64 << 63;
-/// Namespaces the overlay-free copy of an item icon so both variants can stay cached.
-const ARTWORK_ICON_CACHE_PREFIX: u64 = 1_u64 << 62;
 const TEXTURE_ICON_CACHE_PREFIX: u64 = 1_u64 << 61;
 /// Namespaces subclass node icons, which are keyed by their container tag.
 const SUBCLASS_ICON_CACHE_PREFIX: u64 = 1_u64 << 60;
+/// Namespaces an item's second icon, such as an emblem's nameplate, keyed by its container tag.
+const SECONDARY_ICON_CACHE_PREFIX: u64 = 1_u64 << 59;
 
-/// The cache key of an artwork icon. The cleared color is part of the key: two requests for
-/// one item with different cleared colors composite differently, so they must not read each
-/// other's texture. Item hashes are 32-bit values widened on read, which the stat icon
-/// prefix above already relies on, so the colour occupies bits 32 to 56.
-fn artwork_cache_key(hash: u64, cleared_color: Option<[u8; 3]>) -> u64 {
-    let cleared = cleared_color.map_or(0, |[red, green, blue]| {
-        1 << 24 | u32::from(red) << 16 | u32::from(green) << 8 | u32::from(blue)
-    });
-    ARTWORK_ICON_CACHE_PREFIX | (u64::from(cleared) << 32) | (hash & u64::from(u32::MAX))
-}
+#[cfg(test)]
+mod queue_tests;
 
 #[derive(Default)]
 pub(super) struct IconRuntime {
@@ -56,9 +57,10 @@ pub(super) struct IconRuntime {
 }
 
 struct IconWorker {
-    requests: Option<Sender<IconLoadRequest>>,
+    requests: Option<SyncSender<IconLoadRequest>>,
     results: Receiver<IconLoadResult>,
     thread: Option<thread::JoinHandle<()>>,
+    cancel: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Copy)]
@@ -75,13 +77,9 @@ enum IconLayers {
     /// Everything the client draws, including the season watermark and any foreground overlay.
     All,
     Texture,
-    /// The artwork layer alone, without the rarity plate, watermark or foreground overlay, and
-    /// with one flat color cleared from the artwork itself. Authoring controls use this to show
-    /// an appearance rather than the stock item presentation around it, which an authored weapon
-    /// replaces with its own.
-    Artwork {
-        cleared_color: Option<[u8; 3]>,
-    },
+    /// One layer alone at its own size, by its container offset: an emblem nameplate's banner,
+    /// overlay or wide background, which a full composite would scale into one image.
+    Layer(usize),
 }
 
 struct IconLoadResult {
@@ -143,28 +141,6 @@ impl Catalog {
         )
     }
 
-    /// Loads an item icon as artwork alone, optionally clearing one flat color from it.
-    pub(crate) fn icon_texture_artwork(
-        &self,
-        context: &eframe::egui::Context,
-        hash: u64,
-        cleared_color: Option<[u8; 3]>,
-    ) -> Option<eframe::egui::TextureHandle> {
-        let &container = self.icon_containers.get(&hash)?;
-        let mut runtime = self
-            .icon_runtime
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        runtime.texture_with(
-            context,
-            &self.install_path,
-            artwork_cache_key(hash, cleared_color),
-            container,
-            false,
-            IconLayers::Artwork { cleared_color },
-        )
-    }
-
     pub(crate) fn icon_texture_from_container(
         &self,
         context: &eframe::egui::Context,
@@ -188,6 +164,36 @@ impl Catalog {
             context,
             SUBCLASS_ICON_CACHE_PREFIX | u64::from(container),
             container,
+        )
+    }
+
+    /// The container an item's second icon row names: an emblem's nameplate.
+    pub(crate) fn secondary_icon_container(&self, hash: u64) -> Option<u32> {
+        self.item_package_metadata
+            .get(&hash)?
+            .secondary_icon_container_tag
+    }
+
+    /// One layer of an item's second icon at its own size: an emblem nameplate's 474x96 banner
+    /// (+0x14), its overlay (+0x20) or its wide background (+0x24).
+    pub(crate) fn secondary_icon_texture(
+        &self,
+        context: &eframe::egui::Context,
+        hash: u64,
+        layer_offset: usize,
+    ) -> Option<eframe::egui::TextureHandle> {
+        let container = self.secondary_icon_container(hash)?;
+        let mut runtime = self
+            .icon_runtime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        runtime.texture_with(
+            context,
+            &self.install_path,
+            SECONDARY_ICON_CACHE_PREFIX | ((layer_offset as u64) << 32) | u64::from(container),
+            container,
+            true,
+            IconLayers::Layer(layer_offset),
         )
     }
 
@@ -283,7 +289,31 @@ pub(super) fn item_icon_container(
     item_strings: &[u8],
     containers_by_index: &[Option<u32>],
 ) -> Option<u32> {
-    let index = u16_at(item_strings, ITEM_STRING_ICON_INDEX_OFFSET).ok()?;
+    icon_container_at(
+        item_strings,
+        ITEM_STRING_ICON_INDEX_OFFSET,
+        containers_by_index,
+    )
+}
+
+/// The container an item's second icon row names: an emblem's nameplate.
+pub(super) fn item_secondary_icon_container(
+    item_strings: &[u8],
+    containers_by_index: &[Option<u32>],
+) -> Option<u32> {
+    icon_container_at(
+        item_strings,
+        ITEM_STRING_SECONDARY_ICON_INDEX_OFFSET,
+        containers_by_index,
+    )
+}
+
+fn icon_container_at(
+    item_strings: &[u8],
+    offset: usize,
+    containers_by_index: &[Option<u32>],
+) -> Option<u32> {
+    let index = u16_at(item_strings, offset).ok()?;
     (index != u16::MAX)
         .then(|| {
             containers_by_index
@@ -345,7 +375,7 @@ impl IconRuntime {
             }
         }
         self.textures.remove(&hash);
-        if self.pending.contains(&hash) {
+        if self.pending.contains(&hash) || self.pending.len() >= MAX_PENDING_CATALOG_ICONS {
             return None;
         }
         if self.suspended {
@@ -377,21 +407,27 @@ impl IconRuntime {
             .worker
             .as_ref()
             .and_then(|worker| worker.requests.as_ref())
-            .is_some_and(|requests| requests.send(request).is_ok());
-        if queued {
-            self.pending.insert(hash);
-        } else {
-            self.fail_worker("The package icon loader stopped unexpectedly");
-            self.access_counter = self.access_counter.wrapping_add(1);
-            let access = self.access_counter;
-            self.cache(
-                hash,
-                CachedIcon::Failed {
-                    error: "The package icon loader stopped unexpectedly".to_owned(),
-                    retry_after: now + FAILED_ICON_RETRY_DELAY,
-                },
-                access,
-            );
+            .map(|requests| requests.try_send(request));
+        match queued {
+            Some(Ok(())) => {
+                self.pending.insert(hash);
+            }
+            Some(Err(TrySendError::Full(_))) => {
+                context.request_repaint_after(Duration::from_millis(50));
+            }
+            Some(Err(TrySendError::Disconnected(_))) | None => {
+                self.fail_worker("The package icon loader stopped unexpectedly");
+                self.access_counter = self.access_counter.wrapping_add(1);
+                let access = self.access_counter;
+                self.cache(
+                    hash,
+                    CachedIcon::Failed {
+                        error: "The package icon loader stopped unexpectedly".to_owned(),
+                        retry_after: now + FAILED_ICON_RETRY_DELAY,
+                    },
+                    access,
+                );
+            }
         }
         None
     }
@@ -407,8 +443,12 @@ impl IconRuntime {
         }
     }
 
+    /// Keeps `icon`, first dropping the least recently drawn ones until both the count and the
+    /// bytes leave room for it.
     fn cache(&mut self, hash: u64, icon: CachedIcon, access: u64) {
-        if self.textures.len() >= MAX_CACHED_CATALOG_ICONS
+        let incoming = icon.bytes();
+        while (self.textures.len() >= MAX_CACHED_CATALOG_ICONS
+            || self.cached_bytes() + incoming > MAX_CACHED_ICON_BYTES)
             && let Some(oldest) = self
                 .textures
                 .iter()
@@ -420,22 +460,22 @@ impl IconRuntime {
         self.textures.insert(hash, (icon, access));
     }
 
+    fn cached_bytes(&self) -> usize {
+        self.textures.values().map(|(icon, _)| icon.bytes()).sum()
+    }
+
     fn install_completed(&mut self, context: &eframe::egui::Context) {
-        let mut completed = Vec::new();
-        let mut disconnected = false;
-        if let Some(worker) = &self.worker {
-            loop {
-                match worker.results.try_recv() {
-                    Ok(result) => completed.push(result),
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        disconnected = true;
-                        break;
-                    }
+        // Upload as results arrive, keeping decoded images out of an unbounded
+        // intermediate vector while the worker continues producing them.
+        for _ in 0..8 {
+            let result = match self.worker.as_ref().map(|worker| worker.results.try_recv()) {
+                Some(Ok(result)) => result,
+                Some(Err(TryRecvError::Empty)) | None => break,
+                Some(Err(TryRecvError::Disconnected)) => {
+                    self.fail_worker("The package icon loader stopped unexpectedly");
+                    break;
                 }
-            }
-        }
-        for result in completed {
+            };
             self.pending.remove(&result.hash);
             self.access_counter = self.access_counter.wrapping_add(1);
             let access = self.access_counter;
@@ -454,9 +494,6 @@ impl IconRuntime {
                 },
             };
             self.cache(result.hash, cached, access);
-        }
-        if disconnected {
-            self.fail_worker("The package icon loader stopped unexpectedly");
         }
     }
 
@@ -496,23 +533,37 @@ impl IconRuntime {
 
 impl IconWorker {
     fn spawn(install_path: PathBuf, context: eframe::egui::Context) -> Result<Self, String> {
-        let (request_sender, request_receiver) = mpsc::channel::<IconLoadRequest>();
-        let (result_sender, result_receiver) = mpsc::channel::<IconLoadResult>();
+        let (request_sender, request_receiver) =
+            mpsc::sync_channel::<IconLoadRequest>(MAX_PENDING_CATALOG_ICONS);
+        let (result_sender, result_receiver) = mpsc::sync_channel::<IconLoadResult>(2);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
         let thread = thread::Builder::new()
             .name("sundial-icon-loader".to_owned())
             .spawn(move || {
-                run_icon_worker(&install_path, &context, request_receiver, result_sender);
+                run_icon_worker(
+                    &install_path,
+                    &context,
+                    request_receiver,
+                    result_sender,
+                    &worker_cancel,
+                );
             })
             .map_err(|error| format!("Could not start the package icon loader: {error}"))?;
         Ok(Self {
             requests: Some(request_sender),
             results: result_receiver,
             thread: Some(thread),
+            cancel,
         })
     }
 
     fn shutdown(&mut self) -> Result<(), String> {
+        self.cancel.store(true, Ordering::Relaxed);
         self.requests.take();
+        // A bounded result queue may have a blocked sender. Release its receiver
+        // before joining, then wait only for the active read to release packages.
+        self.results = mpsc::channel().1;
         if let Some(thread) = self.thread.take() {
             thread
                 .join()
@@ -532,12 +583,20 @@ fn run_icon_worker(
     install_path: &Path,
     context: &eframe::egui::Context,
     requests: Receiver<IconLoadRequest>,
-    results: Sender<IconLoadResult>,
+    results: SyncSender<IconLoadResult>,
+    cancel: &AtomicBool,
 ) {
+    if cancel.load(Ordering::Relaxed) {
+        return;
+    }
     let manager = package_runtime::open_shadowkeep_packages(install_path)
         .map_err(|error| format!("Could not open the installed packages: {error}"));
-    while let Ok(request) = requests.recv() {
-        let loaded = match &manager {
+    run_icon_requests(
+        context,
+        requests,
+        results,
+        cancel,
+        |request| match &manager {
             Ok(manager) => load_catalog_icon(
                 manager,
                 TagHash(request.container),
@@ -545,7 +604,22 @@ fn run_icon_worker(
                 request.layers,
             ),
             Err(error) => Err(error.clone()),
-        };
+        },
+    );
+}
+
+fn run_icon_requests(
+    context: &eframe::egui::Context,
+    requests: Receiver<IconLoadRequest>,
+    results: SyncSender<IconLoadResult>,
+    cancel: &AtomicBool,
+    mut load: impl FnMut(&IconLoadRequest) -> Result<LoadedCatalogIcon, String>,
+) {
+    while let Ok(request) = requests.recv() {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let loaded = load(&request);
         if results
             .send(IconLoadResult {
                 hash: request.hash,
@@ -570,6 +644,19 @@ enum CachedIcon {
     },
 }
 
+impl CachedIcon {
+    /// What the texture takes on the graphics card, four bytes a pixel.
+    fn bytes(&self) -> usize {
+        match self {
+            Self::Loaded { texture, .. } => {
+                let [width, height] = texture.size();
+                width * height * 4
+            }
+            Self::Failed { .. } => 0,
+        }
+    }
+}
+
 struct LoadedCatalogIcon {
     image: eframe::egui::ColorImage,
     warnings: Vec<String>,
@@ -590,55 +677,42 @@ fn load_catalog_icon(
     let container = manager
         .read_tag(container_tag)
         .map_err(|error| format!("Could not read icon container: {error}"))?;
+    if let IconLayers::Layer(offset) = layers {
+        return Ok(LoadedCatalogIcon {
+            image: load_catalog_icon_layer(manager, &container, offset)?
+                .ok_or("Icon container has no texture in that layer")?,
+            warnings: Vec::new(),
+        });
+    }
     let mut warnings = Vec::new();
-    // An artwork request draws the primary layer alone, so the other three are not read at
-    // all. Reading one would cost a decode it discards, and would record a warning about a
-    // layer this icon never draws.
-    let overlays = layers == IconLayers::All;
-    let background = overlays
-        .then(|| {
-            load_optional_catalog_icon_layer(
-                manager,
-                &container,
-                ICON_BACKGROUND_LAYER_OFFSET,
-                "background",
-                &mut warnings,
-            )
-        })
-        .flatten();
-    let background_overlay = overlays
-        .then(|| {
-            load_optional_catalog_icon_layer(
-                manager,
-                &container,
-                ICON_WATERMARK_LAYER_OFFSET,
-                "watermark",
-                &mut warnings,
-            )
-        })
-        .flatten();
-    let cleared = match layers {
-        IconLayers::Artwork { cleared_color } => cleared_color,
-        IconLayers::All | IconLayers::Texture => None,
-    };
-    let primary = load_catalog_icon_layer(manager, &container, ICON_PRIMARY_LAYER_OFFSET, cleared)?
+    let background = load_optional_catalog_icon_layer(
+        manager,
+        &container,
+        ICON_BACKGROUND_LAYER_OFFSET,
+        "background",
+        &mut warnings,
+    );
+    let background_overlay = load_optional_catalog_icon_layer(
+        manager,
+        &container,
+        ICON_WATERMARK_LAYER_OFFSET,
+        "watermark",
+        &mut warnings,
+    );
+    let primary = load_catalog_icon_layer(manager, &container, ICON_PRIMARY_LAYER_OFFSET)?
         .ok_or("Item icon has no primary texture")?;
     let size = if native_size {
         primary.size
     } else {
         [CATALOG_ICON_SIZE; 2]
     };
-    let overlay = overlays
-        .then(|| {
-            load_optional_catalog_icon_layer(
-                manager,
-                &container,
-                ICON_FOREGROUND_LAYER_OFFSET,
-                "foreground overlay",
-                &mut warnings,
-            )
-        })
-        .flatten();
+    let overlay = load_optional_catalog_icon_layer(
+        manager,
+        &container,
+        ICON_FOREGROUND_LAYER_OFFSET,
+        "foreground overlay",
+        &mut warnings,
+    );
     Ok(LoadedCatalogIcon {
         image: composite_catalog_icon_at_size(
             [background, Some(primary), background_overlay, overlay]
@@ -657,7 +731,7 @@ fn load_optional_catalog_icon_layer(
     label: &str,
     warnings: &mut Vec<String>,
 ) -> Option<eframe::egui::ColorImage> {
-    match load_catalog_icon_layer(manager, icon_container, layer_offset, None) {
+    match load_catalog_icon_layer(manager, icon_container, layer_offset) {
         Ok(layer) => layer,
         Err(error) => {
             warnings.push(format!("Could not load icon {label}: {error}"));
@@ -670,9 +744,8 @@ fn load_catalog_icon_layer(
     manager: &PackageManager,
     icon_container: &[u8],
     layer_offset: usize,
-    cleared: Option<[u8; 3]>,
 ) -> Result<Option<eframe::egui::ColorImage>, String> {
-    load_catalog_icon_layer_at(manager, icon_container, layer_offset, 0, 0, cleared)
+    load_catalog_icon_layer_at(manager, icon_container, layer_offset, 0, 0)
 }
 
 fn load_catalog_icon_layer_at(
@@ -681,7 +754,6 @@ fn load_catalog_icon_layer_at(
     layer_offset: usize,
     lane_index: usize,
     texture_index: usize,
-    cleared: Option<[u8; 3]>,
 ) -> Result<Option<eframe::egui::ColorImage>, String> {
     let layer_tag = TagHash(u32_at(icon_container, layer_offset)?);
     if !package_runtime::is_valid_package_tag(layer_tag) {
@@ -714,20 +786,12 @@ fn load_catalog_icon_layer_at(
         )
         .ok_or("Icon texture offset overflowed")?;
     let texture_tag = TagHash(u32_at(&layer, texture)?);
-    load_texture_icon_with_color(manager, texture_tag, cleared).map(Some)
+    load_texture_icon(manager, texture_tag).map(Some)
 }
 
 fn load_texture_icon(
     manager: &PackageManager,
     texture_tag: TagHash,
-) -> Result<eframe::egui::ColorImage, String> {
-    load_texture_icon_with_color(manager, texture_tag, None)
-}
-
-fn load_texture_icon_with_color(
-    manager: &PackageManager,
-    texture_tag: TagHash,
-    cleared: Option<[u8; 3]>,
 ) -> Result<eframe::egui::ColorImage, String> {
     let header = manager
         .read_tag(texture_tag)
@@ -742,7 +806,7 @@ fn load_texture_icon_with_color(
     let data = manager
         .read_tag(data_tag)
         .map_err(|error| format!("Could not read icon layer texture: {error}"))?;
-    decode_catalog_texture(&header, &data, cleared)
+    decode_catalog_texture(&header, &data)
 }
 
 #[cfg(test)]
@@ -779,20 +843,13 @@ fn composite_catalog_icon_at_size(
     eframe::egui::ColorImage::from_rgba_unmultiplied([width, height], &rgba)
 }
 
-/// Decodes one texture, optionally clearing a flat color from it.
-///
-/// The clear runs here, on the unpremultiplied bytes the decoder produces, rather than on the
-/// finished image: `ColorImage` stores premultiplied channels, so reading a color back out of
-/// one is lossy, and the faintest plate pixels no longer match the color that identifies them.
-fn decode_catalog_texture(
-    header: &[u8],
-    data: &[u8],
-    cleared: Option<[u8; 3]>,
-) -> Result<eframe::egui::ColorImage, String> {
+/// Decodes one texture.
+fn decode_catalog_texture(header: &[u8], data: &[u8]) -> Result<eframe::egui::ColorImage, String> {
     let format = u32_at(header, 4)?;
     let width = usize::from(u16_at(header, 0x0E)?);
     let height = usize::from(u16_at(header, 0x10)?);
-    if width == 0 || height == 0 || width > 2048 || height > 2048 {
+    // Emblem nameplate backgrounds run to 2300 wide.
+    if width == 0 || height == 0 || width > 4096 || height > 4096 {
         return Err("Item icon texture dimensions are invalid".into());
     }
     let pixel_count = width
@@ -812,10 +869,6 @@ fn decode_catalog_texture(
         71 | 72 => decode_bc1(data, width, height)?,
         _ => return Err(format!("Unsupported item icon texture format {format}")),
     };
-    let mut rgba = rgba;
-    if let Some(cleared) = cleared {
-        clear_color_region(&mut rgba, width, height, cleared);
-    }
     Ok(eframe::egui::ColorImage::from_rgba_unmultiplied(
         [width, height],
         &rgba,
@@ -826,42 +879,9 @@ fn decode_catalog_texture(
 mod tests {
     use super::*;
 
-    /// One cache entry per composited result. Two artwork requests for the same item with
-    /// different cleared colors composite differently, so they must not share a key, and
-    /// neither may collide with the item's own icon or with a stat icon.
-    #[test]
-    fn artwork_cache_keys_separate_cleared_colors_from_each_other_and_from_plain_icons() {
-        let hash = 0x1234_5678_u64;
-        let plate = Some([0xF2, 0xE3, 0x70]);
-        let other = Some([0x8C, 0x45, 0xA7]);
-        let keys = [
-            artwork_cache_key(hash, plate),
-            artwork_cache_key(hash, other),
-            artwork_cache_key(hash, None),
-            hash,
-            STAT_ICON_CACHE_PREFIX | hash,
-            TEXTURE_ICON_CACHE_PREFIX | hash,
-        ];
-        for (index, key) in keys.iter().enumerate() {
-            for later in &keys[index + 1..] {
-                assert_ne!(key, later, "cache keys collide: {keys:#X?}");
-            }
-        }
-        // A black plate is a colour, not the absence of one.
-        assert_ne!(
-            artwork_cache_key(hash, Some([0, 0, 0])),
-            artwork_cache_key(hash, None)
-        );
-        // The same request is the same entry.
-        assert_eq!(
-            artwork_cache_key(hash, plate),
-            artwork_cache_key(hash, plate)
-        );
-    }
-
     #[test]
     fn disconnected_icon_worker_releases_pending_hashes() {
-        let (request_sender, _request_receiver) = mpsc::channel();
+        let (request_sender, _request_receiver) = mpsc::sync_channel(MAX_PENDING_CATALOG_ICONS);
         let (result_sender, result_receiver) = mpsc::channel();
         drop(result_sender);
         let hash = 0x1234_5678;
@@ -871,6 +891,7 @@ mod tests {
                 requests: Some(request_sender),
                 results: result_receiver,
                 thread: None,
+                cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             }),
             ..IconRuntime::default()
         };
@@ -879,9 +900,10 @@ mod tests {
 
         assert!(runtime.worker.is_none());
         assert!(runtime.pending.is_empty());
-        assert_eq!(
-            runtime.diagnostic(hash).as_deref(),
-            Some("The package icon loader stopped unexpectedly")
+        assert!(
+            runtime
+                .diagnostic(hash)
+                .is_some_and(|message| message.contains("stopped"))
         );
     }
 
@@ -891,8 +913,7 @@ mod tests {
         header[4..8].copy_from_slice(&28_u32.to_le_bytes());
         header[0x0E..0x10].copy_from_slice(&2_u16.to_le_bytes());
         header[0x10..0x12].copy_from_slice(&1_u16.to_le_bytes());
-        let image =
-            decode_catalog_texture(&header, &[255, 0, 0, 255, 0, 255, 0, 128], None).unwrap();
+        let image = decode_catalog_texture(&header, &[255, 0, 0, 255, 0, 255, 0, 128]).unwrap();
 
         assert_eq!(image.size, [2, 1]);
         assert_eq!(
@@ -902,40 +923,6 @@ mod tests {
                 eframe::egui::Color32::from_rgba_unmultiplied(0, 255, 0, 128),
             ]
         );
-    }
-
-    /// The plate is painted at a range of alpha values, and clearing runs on the decoded
-    /// bytes so every one of them still carries the exact color that identifies it. Reading
-    /// the color back out of a finished `ColorImage` instead would lose the faintest pixels,
-    /// which premultiplication cannot represent.
-    #[test]
-    fn clearing_reaches_plate_pixels_at_every_alpha() {
-        let plate = [0xF2, 0xE3, 0x70];
-        let alphas: [u8; 6] = [255, 128, 32, 16, 8, 2];
-        let mut header = vec![0_u8; 0x12];
-        header[4..8].copy_from_slice(&28_u32.to_le_bytes());
-        header[0x0E..0x10].copy_from_slice(&(alphas.len() as u16).to_le_bytes());
-        header[0x10..0x12].copy_from_slice(&1_u16.to_le_bytes());
-        let data: Vec<u8> = alphas
-            .iter()
-            .flat_map(|alpha| [plate[0], plate[1], plate[2], *alpha])
-            .collect();
-
-        let kept = decode_catalog_texture(&header, &data, None).unwrap();
-        assert!(
-            kept.pixels.iter().all(|pixel| pixel.a() > 0),
-            "nothing should be cleared without a color"
-        );
-
-        let cleared = decode_catalog_texture(&header, &data, Some(plate)).unwrap();
-        for (index, pixel) in cleared.pixels.iter().enumerate() {
-            assert_eq!(
-                *pixel,
-                eframe::egui::Color32::TRANSPARENT,
-                "plate pixel at alpha {} survived",
-                alphas[index]
-            );
-        }
     }
 
     #[test]

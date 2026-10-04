@@ -164,9 +164,9 @@ mod tests {
         let directory = TestDirectory::new("karisma-runtime-state-header");
         let runtime_directory = directory.0.join("bin").join("x64").join("Sunrise");
         fs::create_dir_all(&runtime_directory).unwrap();
-        let mut header = Vec::from(RUNTIME_STATE_MAGIC.to_le_bytes());
+        let mut header = Vec::from(*b"TSRS");
         header.extend_from_slice(&7u32.to_le_bytes());
-        fs::write(runtime_directory.join(RUNTIME_STATE_FILE_NAME), header).unwrap();
+        fs::write(runtime_directory.join("runtime-state.bin"), header).unwrap();
 
         let inspection = PersistenceCompatibility::inspect(&directory.0);
 
@@ -184,7 +184,11 @@ mod tests {
         let module = sunrise_module_path(&directory.0);
         fs::create_dir_all(module.parent().unwrap()).unwrap();
         let mut bytes = b"unrelated-prefix".to_vec();
-        bytes.extend_from_slice(RUNTIME_STATE_MODULE_MARKER);
+        bytes.extend(
+            "runtime-state.bin"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes),
+        );
         fs::write(module, bytes).unwrap();
 
         let inspection = PersistenceCompatibility::inspect(&directory.0);
@@ -203,7 +207,7 @@ mod tests {
         let runtime_directory = directory.0.join("bin").join("x64").join("Sunrise");
         fs::create_dir_all(&runtime_directory).unwrap();
         fs::write(
-            runtime_directory.join(RUNTIME_STATE_FILE_NAME),
+            runtime_directory.join("runtime-state.bin"),
             b"not a Sunrise runtime state",
         )
         .unwrap();
@@ -235,7 +239,7 @@ mod tests {
         .unwrap();
         let runtime_state = directory.path().join("bin/x64/Sunrise/runtime-state.bin");
         fs::create_dir_all(runtime_state.parent().unwrap()).unwrap();
-        let mut bytes = Vec::from(RUNTIME_STATE_MAGIC.to_le_bytes());
+        let mut bytes = Vec::from(*b"TSRS");
         bytes.extend_from_slice(&7_u32.to_le_bytes());
         fs::write(runtime_state, bytes).unwrap();
 

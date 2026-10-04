@@ -59,12 +59,18 @@ fn detail_color_and_alpha_change_only_dyeable_materials() {
     let mut dye = dye();
     dye.roughness = [0.0, 1.0, 0.0, 1.0];
     let base = evaluate([0.25; 3], mask, None, &dye);
-    let detail = evaluate([0.25; 3], mask, Some([80.0, 128.0, 200.0, 255.0]), &dye);
+    let detail_color = [
+        linear(80.0 / 255.0),
+        linear(128.0 / 255.0),
+        linear(200.0 / 255.0),
+        1.0,
+    ];
+    let detail = evaluate([0.25; 3], mask, Some(detail_color), &dye);
     assert_ne!(base.albedo, detail.albedo);
     assert_ne!(base.roughness, detail.roughness);
     dye.params[0] = 0.0;
     dye.params[2] = 0.0;
-    let disabled = evaluate([0.25; 3], mask, Some([80.0, 128.0, 200.0, 255.0]), &dye);
+    let disabled = evaluate([0.25; 3], mask, Some(detail_color), &dye);
     assert_eq!(base.albedo, disabled.albedo);
     assert_eq!(base.roughness, disabled.roughness);
 }

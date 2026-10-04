@@ -376,6 +376,47 @@ impl Table {
             .shapes
             .get(&bones)
             .with_context(|| format!("no paired clip establishes slots for a {bones}-bone rig"))?;
+        self.apply_shape(clip, declared, shape)
+    }
+
+    /// Project onto a calibrated prefix rig. Only constant trailing tracks can
+    /// leave the clip, and both independently derived slot maps must agree on
+    /// every retained slot. Animated tracks or markers outside it are errors.
+    pub fn apply_prefix(&self, clip: &mut Payload, target_bones: u16) -> Result<usize> {
+        let (bones, declared) = counts(clip, NATIVE_COUNTS)?;
+        if bones == target_bones {
+            return self.apply(clip);
+        }
+        ensure!(target_bones < bones, "clip prefix cannot extend its rig");
+        let source = self
+            .shapes
+            .get(&bones)
+            .context("source rig has no calibrated slot map")?;
+        let target = self
+            .shapes
+            .get(&target_bones)
+            .context("prefix rig has no calibrated slot map")?;
+        ensure!(
+            source.map.len().checked_sub(target.map.len())
+                == Some(usize::from(bones - target_bones))
+                && source.map.starts_with(&target.map),
+            "clip rig mappings are not a shared prefix"
+        );
+        let mut map = target.map.clone();
+        map.resize(source.map.len(), None);
+        let count = self.apply_shape(
+            clip,
+            declared,
+            &Shape {
+                native_slots: target.native_slots,
+                map,
+            },
+        )?;
+        clip.0[NATIVE_COUNTS..NATIVE_COUNTS + 2].copy_from_slice(&target_bones.to_le_bytes());
+        Ok(count)
+    }
+
+    fn apply_shape(&self, clip: &mut Payload, declared: u16, shape: &Shape) -> Result<usize> {
         ensure!(
             usize::from(declared) == shape.map.len(),
             "clip declares {declared} slots where its rig's modern clips declare {}",

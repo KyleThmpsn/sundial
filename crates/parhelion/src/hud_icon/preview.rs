@@ -6,7 +6,7 @@ pub(super) fn load(
     pattern_index: u16,
 ) -> Result<Option<egui::ColorImage>, String> {
     let source =
-        sundial::package_authoring::weapon_runtime::load_weapon_runtime_entity_at_pattern_index_with_manager(
+        sundial::package_authoring::runtime::load_weapon_runtime_entity_at_pattern_index_with_manager(
             manager, pattern_index,
         )?;
     let key =
@@ -61,9 +61,7 @@ mod tests {
             std::path::PathBuf::from(std::env::var_os("PARHELION_HUD_TEST_PACKAGES").unwrap());
         let manager =
             sundial::package_authoring::open_shadowkeep_package_manager(&packages).unwrap();
-        let catalog =
-            sundial::investment::InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {})
-                .unwrap();
+        let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
         let donors = catalog.weapon_donors();
         let pattern = |hash| {
             donors

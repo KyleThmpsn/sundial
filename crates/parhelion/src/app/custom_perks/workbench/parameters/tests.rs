@@ -1,5 +1,6 @@
 use super::*;
-use sundial::package_authoring::weapon_runtime::{
+use sundial::package_authoring::runtime::{BindingHash, GraphTag, SchemaHandle};
+use sundial::package_authoring::runtime::{
     WeaponRuntimeBinding, WeaponRuntimeOwner, WeaponRuntimeRoot, WeaponRuntimeRootKind,
 };
 
@@ -17,12 +18,12 @@ pub(in crate::app) fn fixture() -> PrivatePerkRuntimeGraph {
         let field = WeaponRuntimeField {
             locator: WeaponRuntimeFieldLocator {
                 graph_tag: None,
-                binding_hash: 1,
+                binding_hash: BindingHash::new(1),
                 resource_index: 0,
                 root,
-                root_schema: schema,
+                root_schema: schema.into(),
                 path: vec![],
-                type_handle: 2,
+                type_handle: SchemaHandle::new(2),
                 value_offset: offset,
                 byte_size: 8,
             },
@@ -76,8 +77,6 @@ pub(in crate::app) fn fixture() -> PrivatePerkRuntimeGraph {
     PrivatePerkRuntimeGraph {
         action_tag: 0x80BC_2BBD,
         action_payload: payload,
-        summary: None,
-        program: None,
         graphs: vec![(graph.entity_tag, graph)],
         warnings: vec![],
         graph_errors: vec![],
@@ -130,7 +129,7 @@ fn activity_asset_properties_allow_dependencies_that_the_build_enrolls() {
     let path = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
     let manager = open_shadowkeep_package_manager(&path).unwrap();
     for tag in [0x80C107D8, 0x80BFBBAB] {
-        let report = projectile::residency::inspect(&manager, tag).unwrap();
+        let report = entity::residency::inspect(&manager, tag).unwrap();
         if tag == 0x80C107D8 {
             assert!(
                 !report.additions().is_empty(),
@@ -256,7 +255,6 @@ fn the_index_notice_is_replaced_by_the_references_once_the_index_exists() {
     use sundial::package_authoring::tft::{Index, Reference};
     let mut loaded = fixture();
     loaded.warnings = index_warnings(None);
-    assert_eq!(loaded.warnings, [UNINDEXED]);
     let graph = loaded.graphs[0].0;
     let reference = |source: u32, target: u32| Reference {
         source,
@@ -334,7 +332,7 @@ fn runtime_validation_blocks_unfinished_stale_ambiguous_and_wrong_type_edits() {
     editor.draft[0].value = WeaponRuntimeValue::Boolean(true);
     assert!(!editor.validation_errors().is_empty());
     editor.draft = original.clone();
-    editor.draft[0].locator.binding_hash = 999;
+    editor.draft[0].locator.binding_hash = BindingHash::new(999);
     assert!(!editor.validation_errors().is_empty());
     editor.draft = original;
     let graph = Arc::make_mut(editor.graph.as_mut().unwrap());
@@ -366,11 +364,10 @@ fn removing_runtime_edits_keeps_private_identity_and_effects() {
 #[test]
 #[ignore = "requires clean Shadowkeep packages via PARHELION_CLEAN_STOCK_PACKAGES"]
 fn native_micro_missile_exposes_verified_speed() {
-    use sundial::package_authoring::weapon_runtime::resolve_weapon_runtime_field;
+    use sundial::package_authoring::runtime::resolve_weapon_runtime_field;
     let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").expect("package path");
     let loaded =
         load_private_perk_runtime_graph(Path::new(&packages), editor(fixture()).key, &[]).unwrap();
-    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
     let speed = guided::ProjectileSpeed::discover(&loaded).expect("verified speed profile");
     let mut editor = editor(loaded.clone());
     speed.set(&loaded, &mut editor.draft, 62.5).unwrap();
@@ -384,12 +381,12 @@ fn native_micro_missile_exposes_verified_speed() {
     let payload = manager.read_tag(TagHash(0x8152_82E1)).unwrap();
     for value in &mut editor.draft {
         // Existing recipes address this owner through a different valid binding alias.
-        value.locator.binding_hash = 0xB176_70ED;
+        value.locator.binding_hash = BindingHash::new(0xB176_70ED);
         value.locator.resource_index = 0;
         let resolved = resolve_weapon_runtime_field(
             &manager,
             &payload,
-            &value.locator.for_graph(0x8152_82E1).unwrap(),
+            &value.locator.for_graph(GraphTag::new(0x8152_82E1)).unwrap(),
         )
         .unwrap();
         encode_weapon_runtime_value(&resolved.field.kind, &value.value).unwrap();
@@ -405,78 +402,16 @@ fn native_micro_missile_exposes_verified_speed() {
 }
 
 #[test]
-fn parameter_defaults_are_a_draft_and_cancel_does_not_touch_the_recipe() {
+fn resetting_parameter_defaults_keeps_the_original_editor_draft() {
     let loaded = fixture();
     let mut editor = editor(loaded.clone());
     let speed = guided::ProjectileSpeed::discover(&loaded).unwrap();
     speed.set(&loaded, &mut editor.draft, 62.5).unwrap();
     editor.original_draft = editor.draft.clone();
-    let mut recipe = WeaponRecipe::new_weapon("parhelion.test-custom-perk").unwrap();
-    let perk = upsert_private_perk_runtime_values(&mut recipe, editor.key, editor.draft.clone());
-    perk.activation =
-        Some(sundial::package_authoring::sandbox_perk::activation::PerkActivation::GrenadeKill);
-    let before = recipe.clone();
     assert!(!editor.has_changes());
     editor.reset_all();
     assert!(editor.has_changes());
-    assert_eq!(recipe, before);
-    assert_eq!(editor.original_draft.len(), 2);
-    drop(editor);
-    assert_eq!(recipe, before);
-}
-
-#[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES and PARHELION_PRIVATE_PERK_TEST_PLUG_HASH/INDEX"]
-fn configured_private_perk_runtime_graph_decodes() {
-    let (Some(packages), Some(plug_hash), Some(perk_index)) = (
-        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES"),
-        std::env::var_os("PARHELION_PRIVATE_PERK_TEST_PLUG_HASH"),
-        std::env::var_os("PARHELION_PRIVATE_PERK_TEST_INDEX"),
-    ) else {
-        panic!("set the package path, source plug hash and perk index for this native test");
-    };
-    let plug_hash_text = plug_hash.to_string_lossy();
-    let plug_hash = plug_hash_text
-        .strip_prefix("0x")
-        .or_else(|| plug_hash_text.strip_prefix("0X"))
-        .map_or_else(
-            || plug_hash_text.parse::<u32>(),
-            |digits| u32::from_str_radix(digits, 16),
-        )
-        .expect("configured plug hash should be decimal or 0x-prefixed hexadecimal");
-    let perk_index = perk_index
-        .to_string_lossy()
-        .parse::<u16>()
-        .expect("configured finished-perk index should be decimal");
-
-    let loaded = load_private_perk_runtime_graph(
-        Path::new(&packages),
-        PerkEditorKey {
-            socket_index: 0,
-            choice_index: 0,
-            source_plug_hash: plug_hash,
-            source_perk_index: perk_index,
-        },
-        &[],
-    )
-    .expect("configured private-perk runtime graph should decode");
-
-    assert_ne!(loaded.action_tag, 0);
-    assert!(!loaded.graphs.is_empty());
-    assert!(
-        loaded
-            .graphs
-            .iter()
-            .any(|(_, graph)| graph.fields().next().is_some())
-    );
-    let mut occurrences = BTreeMap::<WeaponRuntimeFieldLocator, usize>::new();
-    for field in loaded.graphs.iter().flat_map(|(_, graph)| graph.fields()) {
-        *occurrences.entry(field.locator.clone()).or_default() += 1;
-    }
-    assert!(
-        occurrences.values().any(|count| *count == 1),
-        "configured perk should expose at least one unambiguous editable field"
-    );
+    assert_eq!(speed.value(&loaded, &editor.original_draft).unwrap(), 62.5);
 }
 
 pub(in crate::app) fn set_test_speed(

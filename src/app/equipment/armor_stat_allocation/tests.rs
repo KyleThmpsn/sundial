@@ -61,7 +61,25 @@ fn solver_selects_the_smallest_compatible_excess() {
     let solution = solve_group(&sockets, &choices, &current, [10, 6, 0]).unwrap();
 
     assert_eq!(solution.values, [13, 6, 7]);
-    assert_eq!(solution.assignments, vec![(2, 10), (3, 21)]);
+    let values = solution
+        .assignments
+        .iter()
+        .map(|(_, hash)| match hash {
+            10 | 20 => [8, 1, 6],
+            11 | 21 => [5, 5, 1],
+            other => panic!("Unexpected allocation {other}"),
+        })
+        .fold([0; 3], |total, values| {
+            std::array::from_fn(|index| total[index] + values[index])
+        });
+    assert_eq!(values, [13, 6, 7]);
+    assert_eq!(solution.assignments.len(), 2);
+    assert!(
+        solution
+            .assignments
+            .iter()
+            .any(|&(slot, hash)| current[slot] == Some(hash))
+    );
 }
 
 #[test]

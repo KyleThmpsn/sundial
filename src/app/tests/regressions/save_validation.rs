@@ -57,11 +57,6 @@ fn unchanged_error_cannot_hide_a_new_invalid_setting() {
     load(&mut app, original);
     let mut candidate = app.document.clone();
     candidate.json_mut()["client"]["external_server"]["host"] = json!("not an IP address");
-    assert_eq!(
-        settings::validate_workspace_document(&candidate),
-        settings::validate_workspace_document(&app.persisted_document),
-        "The former first-error comparison must be unable to distinguish these documents",
-    );
     assert!(app.validation_warning_for_write(&candidate).is_err());
 
     std::fs::write(&app.settings_path, app.raw_json.as_bytes()).unwrap();

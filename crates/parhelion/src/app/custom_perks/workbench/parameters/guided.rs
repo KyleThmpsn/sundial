@@ -1,6 +1,6 @@
 //! Verified parameter adapters. Recipes still use the compiler's validated native locators.
 use super::*;
-use sundial::package_authoring::weapon_runtime::WeaponRuntimeRootKind;
+use sundial::package_authoring::runtime::WeaponRuntimeRootKind;
 mod profiles;
 use profiles::{PROJECTILE_PROFILES, ProjectileProfile};
 
@@ -53,7 +53,7 @@ impl ProjectileSpeed {
             let mut fields = graph.fields().filter(|field| {
                 field.source != WeaponRuntimeFieldSource::NativeDeclaration
                     && field.locator.root == root
-                    && field.locator.root_schema == schema
+                    && field.locator.root_schema.get() == schema
                     && field.locator.value_offset <= offset
                     && field
                         .locator
@@ -61,7 +61,7 @@ impl ProjectileSpeed {
                         .checked_add(field.locator.byte_size)
                         .is_some_and(|end| end >= offset + 4)
                     && graph.bindings.iter().any(|binding| {
-                        binding.binding_hash == field.locator.binding_hash
+                        binding.binding_hash == field.locator.binding_hash.get()
                             && binding.resource_index == field.locator.resource_index
                             && binding.owner_tag == profile.owner_tag
                     })
@@ -176,9 +176,9 @@ pub(super) fn equivalent(
     if left.binding_hash == right.binding_hash && left.resource_index == right.resource_index {
         return true;
     }
-    loaded.graphs.iter().filter(|(tag, _)| left.graph_tag.or(right.graph_tag).is_none_or(|scope| scope == *tag)).any(|(_, graph)| {
+    loaded.graphs.iter().filter(|(tag, _)| left.graph_tag.map(|tag| tag.get()).or(right.graph_tag.map(|tag| tag.get())).is_none_or(|scope| scope == *tag)).any(|(_, graph)| {
         let binding = |locator: &WeaponRuntimeFieldLocator| graph.bindings.iter().find(|binding| {
-            binding.binding_hash == locator.binding_hash && binding.resource_index == locator.resource_index
+            binding.binding_hash == locator.binding_hash.get() && binding.resource_index == locator.resource_index
         });
         matches!((binding(left), binding(right)), (Some(a), Some(b)) if a.owner_tag == b.owner_tag && a.resource_offset == b.resource_offset)
     })

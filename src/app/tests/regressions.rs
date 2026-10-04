@@ -8,6 +8,7 @@ mod edit_tracking;
 mod inventory_recovery;
 mod loadout_safety;
 mod parhelion_confirmation;
+mod parhelion_resync;
 mod profile_editing;
 mod progression_access;
 mod recovery;

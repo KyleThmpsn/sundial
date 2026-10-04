@@ -9,8 +9,9 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
-use tiger_pkg::{GameVersion, Package, PackagePlatform, TagHash, TagHash64, Version};
+use tiger_pkg::{GameVersion, Package, PackagePlatform, TagHash, Version};
 mod pool;
+mod trace;
 
 static NEXT_READER: AtomicU64 = AtomicU64::new(1);
 // Reserve room for GUI, database, cache and metadata-index handles even on low-limit systems.
@@ -23,6 +24,7 @@ pub struct PackageManager {
     pub version: GameVersion,
     pub platform: PackagePlatform,
     identity: u64,
+    trace: Mutex<Option<trace::Reads>>,
 }
 impl PackageManager {
     pub fn new(
@@ -39,10 +41,21 @@ impl PackageManager {
             version: metadata.version,
             platform: metadata.platform,
             identity: NEXT_READER.fetch_add(1, Ordering::Relaxed),
+            trace: Mutex::new(None),
         })
     }
     pub fn read_tag(&self, tag: impl Into<TagHash>) -> Result<Vec<u8>, String> {
         let tag = tag.into();
+        let result = self.read_payload(tag);
+        if let Ok(mut trace) = self.trace.lock()
+            && let Some(trace) = trace.as_mut()
+        {
+            trace.record(tag.0, &result);
+        }
+        result
+    }
+
+    fn read_payload(&self, tag: TagHash) -> Result<Vec<u8>, String> {
         let path = self
             .package_paths
             .get(&tag.pkg_id())
@@ -67,16 +80,6 @@ impl PackageManager {
                 tag.0, path.filename
             )
         })
-    }
-    pub fn read_tag64(&self, hash: impl Into<TagHash64>) -> Result<Vec<u8>, String> {
-        let hash = hash.into();
-        let tag = self
-            .lookup
-            .tag64_entries
-            .get(&hash.0)
-            .ok_or_else(|| format!("Hash 0x{:016X} was not found", hash.0))?
-            .hash32;
-        self.read_tag(tag)
     }
 }
 impl Drop for PackageManager {

@@ -153,6 +153,7 @@ fn a_replaced_definition_resizes_the_sockets_of_items_that_stay() {
                 definition_hash: 4070132608,
                 previous_socket_count: previous,
                 default_plugs: defaults,
+                replaced_defaults: Vec::new(),
             }],
             None,
         )
@@ -184,6 +185,7 @@ fn a_socket_count_the_review_did_not_see_is_refused() {
             definition_hash: 4070132608,
             previous_socket_count: 3,
             default_plugs: vec![Some(1)],
+            replaced_defaults: Vec::new(),
         }],
         None,
     )

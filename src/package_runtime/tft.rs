@@ -14,8 +14,8 @@ use tiger_pkg::TagHash;
 
 use super::index_cache;
 use crate::{
+    entity::WEAPON_ENTITY_CLASS,
     package_payload::{i64_at, relative_offset, u64_at},
-    weapon_entity::WEAPON_ENTITY_CLASS,
 };
 pub(crate) mod shards;
 
@@ -473,12 +473,27 @@ pub fn cached(
     manager: &PackageManager,
     progress: impl FnMut(usize, usize),
 ) -> Result<Arc<Index>, String> {
+    cached_cancellable(
+        packages,
+        manager,
+        &std::sync::atomic::AtomicBool::new(false),
+        progress,
+    )
+}
+
+pub fn cached_cancellable(
+    packages: &Path,
+    manager: &PackageManager,
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: impl FnMut(usize, usize),
+) -> Result<Arc<Index>, String> {
+    crate::package_runtime::check_cancelled(cancel)?;
     index_cache::cached(
         packages,
         crate::sandbox_perk::CACHE_DIRECTORY,
         "tft-v5",
         &CACHE,
-        || shards::inspect(packages, manager, progress),
+        || shards::inspect(packages, manager, cancel, progress),
         // Read errors remain visible in the index. They must not force an
         // otherwise identical installation to repeat the entire scan on launch.
         |_| true,

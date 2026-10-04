@@ -1,7 +1,15 @@
 //! Resource pointers embedded in native model entities are (owner, class, offset)
 //! triples in addition to the top-level component rows. They must move together.
 use crate::d2_mot::payload::Payload;
+pub mod category;
+pub mod context;
+pub mod shared;
+pub mod spatial;
+pub mod transform;
 use anyhow::{Result, ensure};
+pub mod assembly;
+pub mod links;
+pub mod sequence;
 pub fn owner_slots(entity: &Payload, owner: &Payload, source: u32) -> Result<Vec<usize>> {
     let bindings = entity.array(16, 12, Some(0x80809C04))?;
     let roots = bindings
@@ -64,7 +72,7 @@ mod tests {
         (Payload(b), Payload(vec![0; 64]))
     }
     #[test]
-    fn remaps_internal_references_as_well_as_component_row() {
+    fn owner_slots_find_component_and_internal_references() {
         let (mut entity, owner) = fixture();
         let slots = owner_slots(&entity, &owner, 0x80EC2727).unwrap();
         assert_eq!(slots, vec![96, 128, 160]);

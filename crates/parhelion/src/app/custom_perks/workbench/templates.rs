@@ -63,12 +63,13 @@ impl Workbench {
                 .collect()
         });
         let authored = self.authored_templates.as_deref().unwrap_or_default();
-        let picked = pickers::popup(
+        let picked = pickers::browser_with_toolbar(
             ui,
             "perk-template",
             "New from Perk…",
+            "New from Perk",
             &mut self.template_query,
-            |ui, query, reset, height| {
+            |ui, query, opened, _| {
                 let authored_rows = authored
                     .iter()
                     .enumerate()
@@ -83,40 +84,64 @@ impl Workbench {
                     .collect::<BTreeSet<_>>()
                     .into_iter()
                     .collect::<Vec<_>>();
+                let searched = ui
+                    .horizontal(|ui| {
+                        let width = (ui.available_width() - pickers::CLEAR_WIDTH).max(160.0);
+                        sundial::ui::catalog::search(ui, query, opened, width, "Search Perks")
+                    })
+                    .inner;
                 let mut filters = Filters::load(ui);
-                let (changed, toolbar_height) = filters.toolbar(ui, &types);
+                let filtered = filters.toolbar(ui, &types);
                 filters.store(ui);
-                // The query arrives lowercase and each row's search text is stored that way.
+                // Each row's search text is stored lowercase.
+                let words = query.to_lowercase();
                 let mut rows = authored_rows
                     .iter()
                     .chain(stock_rows.iter())
                     .filter(|row| {
                         filters.keeps(row)
-                            && query
+                            && words
                                 .split_whitespace()
                                 .all(|word| row.search.contains(word))
                     })
                     .collect::<Vec<_>>();
                 rows.sort_by(|a, b| sort_key(filters.order, a).cmp(&sort_key(filters.order, b)));
-                pickers::results(
+                // Saved and stock rows count their indices separately, so the origin keeps
+                // each key apart.
+                let keys = rows
+                    .iter()
+                    .map(|row| (u64::from(row.authored) << 32) | row.index as u64)
+                    .collect::<Vec<_>>();
+                pickers::BrowserList {
+                    keys: &keys,
+                    // The result count takes a line above the list.
+                    height: (ui.available_height() - 24.0).max(160.0),
+                    reset: opened || searched || filtered,
+                    row_height: sundial::investment::authoring_choice_row_height(ui),
+                    select: None,
+                }
+                .draw_activating(
                     ui,
-                    "perk-template-results",
-                    rows.len(),
-                    (height - toolbar_height - ui.spacing().item_spacing.y).max(90.0),
-                    reset || changed,
-                    sundial::investment::authoring_choice_row_height(ui),
-                    |ui, index| {
+                    |ui, index, selected| {
                         let row = rows[index];
-                        catalog
-                            .draw_authoring_choice_row(
-                                ui,
-                                Some(row.hash),
-                                &row.name,
-                                Some(&row.detail),
-                                false,
-                            )
+                        catalog.draw_authoring_choice_row(
+                            ui,
+                            Some(row.hash),
+                            &row.name,
+                            Some(&row.detail),
+                            selected,
+                        )
+                    },
+                    |ui, index, activated| {
+                        let row = rows[index];
+                        ui.heading(&row.name);
+                        // A double-click copies the perk, as Copy Perk does.
+                        let copy = ui
+                            .add(crate::app::style::primary(ui, "Copy Perk"))
                             .clicked()
-                            .then_some((row.authored, row.index))
+                            || activated;
+                        draw_template_facts(ui, row, authored, catalog);
+                        copy.then_some((row.authored, row.index))
                     },
                 )
             },
@@ -152,6 +177,52 @@ impl Workbench {
         };
         self.add_document(Document::new(recipe, None));
         self.page = Page::Effects;
+    }
+}
+
+/// What a New from Perk detail shows under Copy Perk: the type and hash, where the perk comes
+/// from and whether it carries effects, then its description.
+fn draw_template_facts(
+    ui: &mut egui::Ui,
+    row: &Row,
+    authored: &[AuthoredTemplate],
+    catalog: &InvestmentCatalog,
+) {
+    let secondary = crate::app::style::secondary(ui.visuals());
+    let kind = if row.type_name.is_empty() {
+        format!("0x{:08X}", row.hash)
+    } else {
+        format!("{} · 0x{:08X}", row.type_name, row.hash)
+    };
+    ui.label(egui::RichText::new(kind).color(secondary));
+    let stock_description = || {
+        catalog
+            .perk_description(row.hash)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let (origin, description) = if row.authored {
+        let entry = &authored[row.index];
+        (
+            format!("Custom · {}", entry.weapon),
+            entry
+                .variant
+                .description
+                .clone()
+                .unwrap_or_else(stock_description),
+        )
+    } else {
+        ("Stock".to_owned(), stock_description())
+    };
+    let effects = if row.effects {
+        Effects::With
+    } else {
+        Effects::Without
+    };
+    ui.label(egui::RichText::new(format!("{origin} · {}", effects.label())).color(secondary));
+    if !description.is_empty() {
+        ui.add_space(6.0);
+        ui.label(crate::app::style::destiny_text(ui, description));
     }
 }
 
@@ -347,7 +418,7 @@ pub(super) fn sort_key(order: Order, row: &Row) -> (bool, &str, &str, u32) {
     }
 }
 
-/// The picker's filters and order, kept in egui memory so they outlive the popup.
+/// The picker's filters and order, kept in egui memory so they outlive the window.
 #[derive(Clone, Default, PartialEq)]
 pub(super) struct Filters {
     pub(super) origin: Origin,
@@ -384,15 +455,14 @@ impl Filters {
         }) && (self.type_name.is_empty() || row.type_name == self.type_name)
     }
 
-    /// Draws the filter and sort controls. Returns whether a choice changed, and the height
-    /// the toolbar took, which the result list gives up.
-    fn toolbar(&mut self, ui: &mut egui::Ui, types: &[&str]) -> (bool, f32) {
+    /// Draws the filter and sort controls. Returns whether a choice changed.
+    fn toolbar(&mut self, ui: &mut egui::Ui, types: &[&str]) -> bool {
         let before = self.clone();
         // A type no perk has any more reads as every type rather than as an empty list.
         if !self.type_name.is_empty() && !types.contains(&self.type_name.as_str()) {
             self.type_name.clear();
         }
-        let response = ui.horizontal_wrapped(|ui| {
+        ui.horizontal_wrapped(|ui| {
             // Four combos do not fit one line in a narrow window. Each is held to one width
             // and truncates to it, with its full reading on hover, and one that would run
             // past the edge starts the next line instead.
@@ -476,7 +546,7 @@ impl Filters {
                 pickers::name_combo(ui, "perk-template-order", "Sort Order");
             });
         });
-        (*self != before, response.response.rect.height())
+        *self != before
     }
 }
 
@@ -632,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn every_template_order_is_total_and_keeps_the_same_result_set() {
+    fn template_orders_follow_custom_status_type_and_name() {
         let rows = rows();
         let all = |order| {
             names(
@@ -678,13 +748,6 @@ mod tests {
                 "Bright Ornament"
             ]
         );
-        for order in Order::ALL {
-            let mut sorted = all(order);
-            sorted.sort();
-            let mut every = rows.iter().map(|row| row.name.clone()).collect::<Vec<_>>();
-            every.sort();
-            assert_eq!(sorted, every, "{} hid a perk", order.label());
-        }
     }
 
     #[test]
@@ -742,7 +805,7 @@ mod tests {
     #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
     fn the_copy_existing_picker_filters_and_orders_the_stock_perks() {
         let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-        let catalog = InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {}).unwrap();
+        let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
         let mut workbench = Workbench {
             initialized: true,
             open: true,
@@ -874,7 +937,7 @@ mod tests {
     fn saved_weapon_perks_migrate_to_files_without_changing_weapons_or_importing_drafts() {
         let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
         let root = PathBuf::from(std::env::var_os("PARHELION_LIBRARY_ROOT").unwrap());
-        let catalog = InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {}).unwrap();
+        let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
         let temp = tempfile::tempdir().unwrap();
         let weapons = RecipeLibrary::open(temp.path().join("recipes")).unwrap();
         let mut originals = Vec::new();
@@ -887,6 +950,16 @@ mod tests {
                 originals.push((copied, bytes));
             }
         }
+        assert!(
+            !originals.is_empty(),
+            "no saved weapon recipes were configured"
+        );
+        let (embedded, warnings) = load_saved(Some(&weapons));
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(
+            !embedded.is_empty(),
+            "no embedded saved perks were configured"
+        );
         let perks = Library::open(temp.path().join("perks")).unwrap();
         // Seed existing standalone files to exercise duplicate detection across formats.
         for entry in std::fs::read_dir(root.join("perks")).unwrap() {

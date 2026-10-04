@@ -29,6 +29,25 @@ pub(in crate::catalog) enum GearKind {
 type SocketOptionsByType = HashMap<u16, Vec<u64>>;
 type SocketOptionsByGearType = HashMap<String, SocketOptionsByType>;
 
+/// The item's subtype as the game prints it under its name, such as Sidearm, or a stand-in.
+pub(crate) fn item_subtype_label(item: &ItemDef) -> String {
+    let type_name = item.type_name.trim();
+    if type_name.is_empty() {
+        "Item Subtype".to_owned()
+    } else {
+        type_name.to_owned()
+    }
+}
+
+/// The item's type in Bungie's sense, Weapon or Armor, or a stand-in for anything else.
+pub(crate) fn item_type_label(item: &ItemDef) -> &'static str {
+    match gear_kind(item.bucket_hash) {
+        GearKind::Weapon => "Weapon",
+        GearKind::Armor => "Armor",
+        GearKind::Other(_) => "Item Type",
+    }
+}
+
 fn item_gear_type(item: &ItemDef) -> Cow<'_, str> {
     let type_name = item.type_name.trim();
     if type_name.is_empty() {
@@ -65,11 +84,25 @@ fn tracker_marker(name: &str) -> bool {
     name == "tracker disabled" || name.contains("kill tracker")
 }
 
+/// Whether a plug is cosmetic by what it is, not by the pool it sits in: shaders, ornaments,
+/// transmat effects, projections and trackers. An ornament socket without a marker plug
+/// otherwise leaks its ornaments into every wider scope.
+fn cosmetic_plug(name: Option<&str>, type_name: Option<&str>) -> bool {
+    let type_name = type_name.map(str::to_ascii_lowercase).unwrap_or_default();
+    ["shader", "ornament", "transmat", "projection", "tracker"]
+        .iter()
+        .any(|kind| type_name.contains(kind))
+        || name.is_some_and(|name| cosmetic_marker(name) || tracker_marker(name))
+}
+
+/// Every non-cosmetic plug used anywhere on a gear type (the item's type name, such as a
+/// sidearm) and on a gear kind (all weapons or all armor), plus the cosmetic pools.
 pub(in crate::catalog) fn build_gear_type_options(
     items: &[ItemDef],
     plug_pools: &[Vec<u64>],
     names: &HashMap<u64, String>,
-) -> (HashMap<GearKind, Vec<u64>>, HashSet<u32>) {
+    type_names: &HashMap<u64, String>,
+) -> GearTypeOptions {
     let mut cosmetic_pools = plug_pools
         .iter()
         .enumerate()
@@ -85,29 +118,42 @@ pub(in crate::catalog) fn build_gear_type_options(
             cosmetic_pools.insert(socket.pool);
         }
     }
-    let cosmetic_hashes = cosmetic_pools
+    let mut cosmetic_hashes = cosmetic_pools
         .iter()
         .filter_map(|pool| plug_pools.get(*pool as usize))
         .flatten()
         .copied()
         .collect::<HashSet<_>>();
+    cosmetic_hashes.extend(plug_pools.iter().flatten().copied().filter(|hash| {
+        cosmetic_plug(
+            names.get(hash).map(String::as_str),
+            type_names.get(hash).map(String::as_str),
+        )
+    }));
 
-    let mut options = HashMap::<GearKind, Vec<u64>>::new();
+    let mut type_options = HashMap::<String, Vec<u64>>::new();
+    let mut class_options = HashMap::<GearKind, Vec<u64>>::new();
     for item in items {
+        let gear_type = item_gear_type(item).into_owned();
         let gear_kind = gear_kind(item.bucket_hash);
         for socket in &item.sockets {
             if let Some(pool) = plug_pools.get(socket.pool as usize) {
-                options
-                    .entry(gear_kind)
+                let plugs = pool.iter().filter(|hash| !cosmetic_hashes.contains(hash));
+                type_options
+                    .entry(gear_type.clone())
                     .or_default()
-                    .extend(pool.iter().filter(|hash| !cosmetic_hashes.contains(hash)));
+                    .extend(plugs.clone());
+                class_options.entry(gear_kind).or_default().extend(plugs);
             }
         }
     }
-    for values in options.values_mut() {
+    for values in type_options.values_mut() {
         sort_plug_options(values, names);
     }
-    (options, cosmetic_pools)
+    for values in class_options.values_mut() {
+        sort_plug_options(values, names);
+    }
+    (type_options, class_options, cosmetic_pools)
 }
 
 pub(in crate::catalog) fn build_socket_type_options(
@@ -348,13 +394,14 @@ impl Catalog {
         rows
     }
 
+    /// Plugs used anywhere on this item's gear type, such as every sidearm.
     pub(crate) fn gear_type_options(&self, item: &ItemDef, socket_index: usize) -> Vec<u64> {
         let Some(socket) = item.sockets.get(socket_index) else {
             return Vec::new();
         };
         let mut options = self
             .gear_type_options
-            .get(&gear_kind(item.bucket_hash))
+            .get(item_gear_type(item).as_ref())
             .cloned()
             .unwrap_or_default();
         if self.cosmetic_socket_pools.contains(&socket.pool) {
@@ -367,6 +414,36 @@ impl Catalog {
     pub(crate) fn gear_type_options_for_type(&self, item: &ItemDef, socket_type: u16) -> Vec<u64> {
         let mut options = self
             .gear_type_options
+            .get(item_gear_type(item).as_ref())
+            .cloned()
+            .unwrap_or_default();
+        if self.cosmetic_socket_types.contains(&socket_type) {
+            options.extend(self.socket_type_options(socket_type));
+            sort_plug_options(&mut options, &self.names);
+        }
+        options
+    }
+
+    /// Plugs used anywhere on this item's gear kind, all weapons or all armor.
+    pub(crate) fn gear_kind_options(&self, item: &ItemDef, socket_index: usize) -> Vec<u64> {
+        let Some(socket) = item.sockets.get(socket_index) else {
+            return Vec::new();
+        };
+        let mut options = self
+            .gear_kind_options
+            .get(&gear_kind(item.bucket_hash))
+            .cloned()
+            .unwrap_or_default();
+        if self.cosmetic_socket_pools.contains(&socket.pool) {
+            options.extend(self.socket_type_options(socket.socket_type));
+            sort_plug_options(&mut options, &self.names);
+        }
+        options
+    }
+
+    pub(crate) fn gear_kind_options_for_type(&self, item: &ItemDef, socket_type: u16) -> Vec<u64> {
+        let mut options = self
+            .gear_kind_options
             .get(&gear_kind(item.bucket_hash))
             .cloned()
             .unwrap_or_default();
@@ -437,7 +514,8 @@ fn intern_socket_pool(
 ) -> Result<u32, String> {
     sort_plug_options(values, names);
     if let Some(index) = indices.get(values) {
-        values.clear();
+        // The pool holds these values now, so the socket's own list gives its space back.
+        *values = Vec::new();
         return Ok(*index);
     }
     let index = u32::try_from(pools.len())
@@ -828,6 +906,12 @@ fn plug_member_hashes(
     Some(DecodedPlugMembers { values, complete })
 }
 
+type GearTypeOptions = (
+    HashMap<String, Vec<u64>>,
+    HashMap<GearKind, Vec<u64>>,
+    HashSet<u32>,
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -921,7 +1005,8 @@ mod tests {
             ),
         ];
 
-        let (options, cosmetic_pools) = build_gear_type_options(&items, &pools, &names);
+        let (_, options, cosmetic_pools) =
+            build_gear_type_options(&items, &pools, &names, &HashMap::new());
 
         assert_eq!(options.get(&GearKind::Weapon).unwrap(), &vec![1, 3, 2]);
         assert_eq!(options.get(&GearKind::Armor).unwrap(), &vec![20]);
@@ -1199,7 +1284,6 @@ mod tests {
         assert!(pools[socket.pool as usize].contains(&2));
         assert!(pools[socket.pool as usize].contains(&2_285_418_970));
         for source in &socket.sources {
-            assert!(source.allowed.is_empty());
             assert!(source.pool < pools.len() as u32);
         }
     }
@@ -1227,7 +1311,6 @@ mod tests {
 
         assert_eq!(pools[source.pool as usize], vec![100, 200]);
         assert_eq!(source.ordered_members, vec![200, 100]);
-        assert!(source.allowed.is_empty());
     }
 
     fn write_u16(data: &mut [u8], offset: usize, value: u16) {

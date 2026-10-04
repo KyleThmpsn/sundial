@@ -164,7 +164,7 @@ fn settings_and_key_bindings_become_storage_neutral_keys() {
     assert!(
         values
             .keys()
-            .all(|key| !format!("{key:?}").contains("configured"))
+            .all(|key| !matches!(key, sundial_account::AccountSettingKey::Preference { name, .. } if name.as_ref() == "configured"))
     );
 }
 
@@ -309,7 +309,7 @@ fn soids_round_trip_through_dawn_fixed_width_hexadecimal() {
 /// belongs to, so anything this build does not model has to survive being written over. Without
 /// this, opening an account and saving it would quietly take every roll with it.
 #[test]
-fn a_save_keeps_the_rows_this_build_does_not_model() {
+fn a_save_preserves_existing_rolls_postmaster_and_campaigns() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("player-state.db");
     create_fixture(&path);

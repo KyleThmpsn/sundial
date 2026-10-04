@@ -67,14 +67,8 @@ fn click(ctx: &egui::Context, app: &mut PackageAuthoringApp, label: &str) {
         .find(|(name, _)| name == label)
         .map(|(_, at)| *at)
         .unwrap_or_else(|| panic!("no {label} button among {offered:?}"));
-    for pressed in [true, false] {
-        let press = egui::Event::PointerButton {
-            pos: at,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::NONE,
-        };
-        frame(ctx, app, vec![egui::Event::PointerMoved(at), press]);
+    for events in crate::test_support::driver::tap(at) {
+        frame(ctx, app, events);
     }
 }
 

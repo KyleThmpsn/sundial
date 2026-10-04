@@ -51,38 +51,36 @@ fn plate(
     }
     let plate = checked(manager, tag, 0x8080_9EBB)?;
     let rects = rectangles(&plate)?;
-    let dimension = rects
-        .iter()
-        .map(|r| (r.x + r.width).max(r.y + r.height))
-        .max()
-        .unwrap_or(0);
-    if dimension == 0 {
+    let dimensions = [
+        rects.iter().map(|r| r.x + r.width).max().unwrap_or(0),
+        rects.iter().map(|r| r.y + r.height).max().unwrap_or(0),
+    ];
+    if dimensions.contains(&0) {
         return Ok(None);
     }
-    let dimension = dimension.next_power_of_two();
-    let size = dimension.min(2048);
-    let mut rgba = vec![0; size * size * 4];
+    // Gear atlases can be rectangular. A square canvas changes normalized UVs even
+    // when every placement is copied correctly, including the normal and mask plates.
+    let dimensions = dimensions.map(usize::next_power_of_two);
+    let divisor = (dimensions[0].max(dimensions[1]) / 2048).max(1);
+    let size = dimensions.map(|axis| (axis / divisor).max(1));
+    let mut rgba = vec![0; size[0] * size[1] * 4];
     for rect in rects {
         let source = load(manager, rect.tag)?;
-        let x0 = rect.x * size / dimension;
-        let y0 = rect.y * size / dimension;
-        let x1 = (rect.x + rect.width) * size / dimension;
-        let y1 = (rect.y + rect.height) * size / dimension;
+        let x0 = rect.x * size[0] / dimensions[0];
+        let y0 = rect.y * size[1] / dimensions[1];
+        let x1 = (rect.x + rect.width) * size[0] / dimensions[0];
+        let y1 = (rect.y + rect.height) * size[1] / dimensions[1];
         for y in y0..y1 {
             for x in x0..x1 {
                 let sx = (x - x0) * source.size[0] / (x1 - x0);
                 let sy = (y - y0) * source.size[1] / (y1 - y0);
                 let from = (sy * source.size[0] + sx) * 4;
-                let to = (y * size + x) * 4;
+                let to = (y * size[0] + x) * 4;
                 rgba[to..to + 4].copy_from_slice(&source.rgba[from..from + 4]);
             }
         }
     }
-    model.textures.push(Texture {
-        tag,
-        size: [size, size],
-        rgba,
-    });
+    model.textures.push(Texture { tag, size, rgba });
     Ok(Some(model.textures.len() - 1))
 }
 

@@ -161,7 +161,11 @@ fn unresolved_output_reads_keep_dependencies_and_validate_bounds() {
     let result = lower(&decode("5c12345678 5200 5100 5201"), &bindings()).unwrap();
     assert!(result.code.is_empty());
     assert_eq!(
-        result.evidence[1]["unresolved"],
+        result
+            .evidence
+            .iter()
+            .find(|row| row["output"] == 1)
+            .unwrap()["unresolved"],
         json!(["object channel 12345678"])
     );
     assert!(lower(&decode("51ff"), &bindings()).is_err());

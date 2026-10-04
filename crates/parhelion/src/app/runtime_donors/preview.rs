@@ -39,8 +39,7 @@ pub(super) fn can_apply(review: Option<&Review>, recipe: &WeaponRecipe, picker: 
 }
 
 pub(super) fn draw_review(ui: &mut egui::Ui, picker: &mut Picker, review: Option<&Review>) -> bool {
-    ui.separator();
-    ui.strong("Your Settings");
+    section(ui, "Your Settings");
     let Some(review) = review else {
         ui.horizontal(|ui| {
             ui.spinner();
@@ -53,25 +52,15 @@ pub(super) fn draw_review(ui: &mut egui::Ui, picker: &mut Picker, review: Option
         Err(error) => {
             ui.colored_label(
                 ui.visuals().error_fg_color,
-                format!("This donor change could not be checked: {error}"),
+                format!("Settings check failed: {error}"),
             );
             return ui.button("Retry Settings Check").clicked();
         }
     };
     ui.label(format!(
-        "{} saved {} kept · {} {} adapted",
+        "{} kept · {} adapted",
         plan.kept,
-        if plan.kept == 1 {
-            "setting"
-        } else {
-            "settings"
-        },
-        plan.transferred.len(),
-        if plan.transferred.len() == 1 {
-            "setting"
-        } else {
-            "settings"
-        }
+        plan.transferred.len()
     ));
     if !plan.transferred.is_empty() {
         egui::CollapsingHeader::new("Adapted Settings").show(ui, |ui| {
@@ -81,7 +70,10 @@ pub(super) fn draw_review(ui: &mut egui::Ui, picker: &mut Picker, review: Option
         });
     }
     if !plan.resets.is_empty() {
-        ui.label("Not carried over:");
+        ui.label(
+            egui::RichText::new("Not Carried Over")
+                .color(crate::app::style::secondary(ui.visuals())),
+        );
         egui::ScrollArea::vertical()
             .id_salt("swap-reset-settings")
             .max_height(100.0)
@@ -95,7 +87,7 @@ pub(super) fn draw_review(ui: &mut egui::Ui, picker: &mut Picker, review: Option
     if let Some(error) = &plan.error {
         ui.colored_label(
             ui.visuals().error_fg_color,
-            format!("Resolve this recipe issue before applying: {error}"),
+            format!("Recipe conflict: {error}"),
         );
     }
     false

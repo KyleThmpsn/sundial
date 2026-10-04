@@ -284,8 +284,13 @@ fn source_channels(
             if objects.contains_key(&hash) {
                 continue;
             }
-            let link = source_input(&owner, &hash)?
-                .with_context(|| format!("source owner has no input {hash}"))?;
+            let link = source_input(&owner, &hash)?.ok_or_else(|| {
+                crate::d2_mot::source_limit(anyhow::anyhow!(
+                    "Source model {} requires material input {hash}, but its source owner {} provides no binding",
+                    model["model"].as_str().unwrap_or("unknown"),
+                    model["owner"].as_str().unwrap_or("unknown")
+                ))
+            })?;
             let links = connections
                 .iter()
                 .copied()
