@@ -38,7 +38,7 @@ pub mod artwork;
 pub mod crosshair;
 mod graph;
 pub mod markers;
-pub use graph::GraphReference;
+pub use graph::{GraphReference, manifest_converter_revision};
 
 pub mod assets;
 pub mod batch;

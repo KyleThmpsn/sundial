@@ -34,11 +34,23 @@ pub(crate) struct Material {
     pub color: [bool; 3],
     pub samplers: Vec<texture::Sampler>,
     pub native: Option<native::Native>,
+    /// A validated native surface contract without a retained RGB or vertex program.
+    pub(in crate::model_preview) normal: Option<native::LegacyNormal>,
 }
 
 pub(super) type Frame = [[f32; 4]; 128];
 
 impl Material {
+    pub(in crate::model_preview) fn sampling(&self) -> Option<[usize; 5]> {
+        let units = self.normal.as_ref()?.sampling()?;
+        units
+            .iter()
+            .all(|&unit| self.samplers.get(unit).is_some_and(|s| s.filter.is_some()))
+            .then_some(units)
+    }
+    pub(in crate::model_preview) fn opaque(&self) -> bool {
+        self.normal.is_some() || self.native.as_ref().is_some_and(native::Native::opaque)
+    }
     pub fn frame(&self, seconds: f32) -> Option<Frame> {
         if self.kind == Kind::Unavailable || self.constants.len() > 128 {
             return None;
@@ -76,4 +88,8 @@ pub(super) fn frames(model: &Model, seconds: f32) -> Vec<Option<Frame>> {
 
 pub(super) fn index(model: &Model, triangle: usize) -> Option<usize> {
     model.triangle_effects.get(triangle).copied().flatten()
+}
+
+pub(super) fn transparent(model: &Model, triangle: usize) -> bool {
+    index(model, triangle).is_some_and(|index| !model.effects[index].opaque())
 }

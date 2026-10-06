@@ -65,15 +65,7 @@ fn installation_and_recovery_offer_the_active_source_resets_without_writing() {
                 frame(
                     &mut app,
                     &context,
-                    vec![
-                        egui::Event::PointerMoved(reset),
-                        egui::Event::PointerButton {
-                            pos: reset,
-                            button: egui::PointerButton::Primary,
-                            pressed,
-                            modifiers: egui::Modifiers::NONE,
-                        },
-                    ],
+                    crate::test_support::primary_press(reset, pressed),
                 );
             }
             assert!(app.confirmation == Some(ConfirmationDialog::ResetDefaults));

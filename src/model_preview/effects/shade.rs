@@ -21,6 +21,10 @@ fn texture_sample(model: &Model, material: &Material, slot: usize, uv: [f32; 2])
         return [0.0; 4];
     };
     let fallback = texture::Sampler {
+        filter: None,
+        mip_bias: 0.0,
+        anisotropy: 1,
+        lod: [0.0, f32::MAX],
         u: texture::AddressMode::Wrap,
         v: texture::AddressMode::Wrap,
         border: [0.0; 4],

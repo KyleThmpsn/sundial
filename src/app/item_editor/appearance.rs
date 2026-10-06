@@ -30,7 +30,7 @@ fn item_loadout(catalog: &Catalog, hash: u64) -> Option<Loadout> {
 }
 
 /// Resolve an account item's opening-time appearance without changing its saved plugs.
-pub(super) fn saved(
+pub(crate) fn saved(
     catalog: &Catalog,
     hash: u64,
     plugs: Option<&serde_json::Value>,

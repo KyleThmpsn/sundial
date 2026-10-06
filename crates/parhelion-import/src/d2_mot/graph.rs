@@ -9,6 +9,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+/// The importer revision a new import records in its graph. Raise it with any change to what
+/// conversion writes. Raise [`MINIMUM_CONVERTER_REVISION`] to it as well when imports made before
+/// the change are unsafe or wrong to install, so Parhelion asks for those to be imported again.
+/// Revision 1 is the first recorded, after the reticle lens fix of 2026-10-05.
+pub const CONVERTER_REVISION: u32 = 1;
+/// Imports from an earlier revision need importing again. Imports made before revisions were
+/// recorded count as revision 0.
+pub const MINIMUM_CONVERTER_REVISION: u32 = 0;
+
 /// A content-pinned local asset graph. Changing any payload requires reselection.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -17,9 +26,47 @@ pub struct GraphReference {
     pub sha256: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<GraphReference>,
+    /// The importer revision that converted this graph, read from its manifest when it was
+    /// pinned. 0 for imports made before revisions were recorded.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub converter_revision: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+/// The importer revision a graph's manifest records, 0 when it records none.
+#[must_use]
+pub fn manifest_converter_revision(directory: &Path) -> u32 {
+    fs::read(directory.join("asset-graph.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|graph| graph["converter_revision"].as_u64())
+        .and_then(|revision| u32::try_from(revision).ok())
+        .unwrap_or(0)
+}
+
+/// Writes the current [`CONVERTER_REVISION`] into a freshly converted graph's manifest, before
+/// it is pinned.
+pub fn record_converter_revision(directory: &Path) -> Result<()> {
+    let path = directory.join("asset-graph.json");
+    let mut graph: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    graph["converter_revision"] = CONVERTER_REVISION.into();
+    super::reader::write_json(&path, &graph)
 }
 
 impl GraphReference {
+    /// Whether an importer fix since this graph was converted means it has to be imported again.
+    #[must_use]
+    #[allow(
+        clippy::absurd_extreme_comparisons,
+        reason = "the minimum is 0 until an importer fix makes older imports unsafe"
+    )]
+    pub fn needs_reimport(&self) -> bool {
+        self.converter_revision < MINIMUM_CONVERTER_REVISION
+    }
+
     /// Copy an existing model into an independent authored identity without touching its source.
     pub fn copy_model(&self, source_item: u32, target_item: u32, output: &Path) -> Result<Self> {
         self.validate(source_item)?;
@@ -124,10 +171,12 @@ impl GraphReference {
             .canonicalize()
             .context("Open imported asset folder")?;
         let sha256 = fingerprint(&directory, Some(item))?;
+        let converter_revision = manifest_converter_revision(&directory);
         Ok(Self {
             directory,
             sha256,
             attachments: Vec::new(),
+            converter_revision,
         })
     }
 

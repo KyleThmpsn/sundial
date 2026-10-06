@@ -309,13 +309,14 @@ pub(super) fn asset_edits(
     Ok(edits)
 }
 
-/// Every asset of the programs that carries a HUD status of the project's own.
+/// Every asset of the programs that carries a HUD status of the project's own, whether the
+/// program keeps it on a guided action or in its native form.
 fn status_assets<'a>(
     programs: impl IntoIterator<Item = &'a Program>,
 ) -> Vec<(&'a Asset, &'a HudStatus)> {
     programs
         .into_iter()
-        .flat_map(|program| program.actions.iter().filter_map(|action| action.asset()))
+        .flat_map(Program::assets)
         .filter_map(|asset| Some((asset, asset.hud_status.as_ref()?)))
         .collect()
 }

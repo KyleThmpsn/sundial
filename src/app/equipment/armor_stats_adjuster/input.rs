@@ -19,7 +19,7 @@ pub(super) fn refresh_input(
     state.input = Some(build_input(catalog, &key));
     state.source_key = Some(key);
     state.preview = None;
-    state.preview_task = None;
+    state.retire_preview_task();
     if state.preserve_feedback_once {
         state.preserve_feedback_once = false;
     } else {
@@ -29,19 +29,26 @@ pub(super) fn refresh_input(
 
 pub(super) fn refresh_preview(state: &mut State, context: &egui::Context) {
     if let Some(task) = state.preview_task.take() {
-        if state.source_key.as_ref() != Some(&task.source_key) || state.targets != task.targets {
-            // The worker can finish in the background; its stale result is intentionally dropped.
-        } else {
-            match task.receiver.try_recv() {
-                Ok(solution) => {
-                    state.preview = Some(solution);
-                    state.preview_due_at = None;
-                }
-                Err(TryRecvError::Empty) => {
-                    state.preview_task = Some(task);
-                    context.request_repaint_after(Duration::from_millis(16));
-                }
-                Err(TryRecvError::Disconnected) => {
+        let current = state.source_key.as_ref() == Some(&task.source_key)
+            && state.targets == task.targets
+            && !task.cancel.load(AtomicOrdering::Relaxed);
+        if !current {
+            task.cancel.store(true, AtomicOrdering::Relaxed);
+        }
+        // A stale search is kept until its worker ends rather than detached, so searches never
+        // pile up while targets change. Only a current one's result is shown.
+        match task.receiver.try_recv() {
+            Ok(Some(solution)) if current => {
+                state.preview = Some(solution);
+                state.preview_due_at = None;
+            }
+            Ok(_) => {}
+            Err(TryRecvError::Empty) => {
+                state.preview_task = Some(task);
+                context.request_repaint_after(Duration::from_millis(16));
+            }
+            Err(TryRecvError::Disconnected) => {
+                if current {
                     state.preview_due_at = None;
                 }
             }
@@ -69,13 +76,16 @@ pub(super) fn refresh_preview(state: &mut State, context: &egui::Context) {
     };
     let targets = state.targets;
     let (sender, receiver) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let stop = Arc::clone(&cancel);
     thread::spawn(move || {
-        let _ = sender.send(solve(&input, targets));
+        let _ = sender.send(solve_until(&input, targets, &stop));
     });
     state.preview_task = Some(PreviewTask {
         source_key,
         targets,
         receiver,
+        cancel,
     });
     context.request_repaint_after(Duration::from_millis(16));
 }

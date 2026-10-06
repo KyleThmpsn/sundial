@@ -179,7 +179,14 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn draw_definition_panel(&mut self, ui: &mut egui::Ui, donor: Option<&WeaponDonor>) {
-        self.draw_item_text(ui, donor.map(|donor| donor.summary.type_name.as_str()));
+        let type_donor = self.recipe.type_donor_hash();
+        let shown_type = self
+            .donor_summaries
+            .iter()
+            .find(|summary| summary.hash == type_donor)
+            .map(|summary| summary.type_name.clone())
+            .or_else(|| donor.map(|donor| donor.summary.type_name.clone()));
+        self.draw_item_text(ui, shown_type.as_deref());
         self.draw_weapon_profile(ui, donor);
     }
 
@@ -537,6 +544,23 @@ impl PackageAuthoringApp {
                 self.draw_imported_model_picker(ui);
             });
         }
+        // An import an importer fix has since made unsafe or wrong to install.
+        #[cfg(feature = "d2-model-importer")]
+        if self
+            .recipe
+            .overrides
+            .imported_graph
+            .as_ref()
+            .is_some_and(parhelion_import::GraphReference::needs_reimport)
+        {
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(Self::appearance_label_width(ui));
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    "Made by an older importer. Import it again.",
+                );
+            });
+        }
         // How the model is held, fired and reloaded, beside where it comes from.
         if self.recipe.kind.is_weapon() {
             self.draw_animation_part(ui);
@@ -567,7 +591,12 @@ impl PackageAuthoringApp {
             ui.add_space(10.0);
         }
         if self.recipe.kind == ItemKind::Weapon {
-            self.draw_shader_glow(ui);
+            // Offered only while the D2 importer is turned on.
+            #[cfg(feature = "d2-model-importer")]
+            if self.importer.enabled {
+                self.draw_shader_glow(ui);
+            }
+            self.draw_type_source(ui);
             ui.add_space(8.0);
         }
         ui.separator();
@@ -595,11 +624,9 @@ impl PackageAuthoringApp {
 
     /// Whether equipped shaders with an animated glow also light the weapon's glowing parts.
     /// New weapons start with it on. An imported model keeps its own materials, so it is off there.
+    #[cfg(feature = "d2-model-importer")]
     fn draw_shader_glow(&mut self, ui: &mut egui::Ui) {
-        #[cfg(feature = "d2-model-importer")]
         let imported = self.recipe.overrides.imported_graph.is_some();
-        #[cfg(not(feature = "d2-model-importer"))]
-        let imported = false;
         ui.horizontal(|ui| {
             let response = ui.add_enabled(
                 !imported,
@@ -615,6 +642,42 @@ impl PackageAuthoringApp {
                 ui,
                 "Shaders with an animated glow also light this weapon's glowing parts, such as \
                  sights and vents. Other parts stay as they are. Test in game.",
+            );
+        });
+    }
+
+    /// Whether a weapon wearing another type's appearance shows that type, and files under it in
+    /// Collections, or keeps the base weapon's. Shown only when the two types differ.
+    fn draw_type_source(&mut self, ui: &mut egui::Ui) {
+        let summary = |hash: Option<u32>| {
+            hash.and_then(|hash| self.donor_summaries.iter().find(|d| d.hash == hash))
+                .map(|summary| summary.type_name.clone())
+                .filter(|name| !name.trim().is_empty())
+        };
+        let base = summary(self.recipe.donor.item_hash.parse_u32().ok());
+        let look = summary(
+            self.recipe
+                .presentation_donor
+                .as_ref()
+                .and_then(|donor| donor.item_hash.parse_u32().ok()),
+        );
+        let (Some(base), Some(look)) = (base, look) else {
+            return;
+        };
+        if base == look {
+            return;
+        }
+        ui.horizontal(|ui| {
+            ui.checkbox(
+                &mut self.recipe.overrides.base_type,
+                format!("Keep {base} Type"),
+            );
+            draw_authoring_info_icon(
+                ui,
+                format!(
+                    "Shows {base} as the weapon type and files it under {base} in Collections. \
+                     Off, it takes {look} from the appearance."
+                ),
             );
         });
     }

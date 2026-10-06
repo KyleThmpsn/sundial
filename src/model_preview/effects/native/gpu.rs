@@ -32,6 +32,9 @@ pub(in crate::model_preview) fn source(model: &Model, vertex: bool) -> String {
     if vertex {
         vertex_source(model, &mut text);
     } else {
+        paint_source(model, &mut text);
+        normal_source(model, &mut text);
+        grain_source(model, &mut text);
         pixel_source(model, &mut text);
     }
     text
@@ -52,7 +55,7 @@ fn sample_source(model: &Model, text: &mut String) {
         };
         writeln!(text, "if(uNativeIndex=={index}){{").unwrap();
         for (unit, binding) in native.bindings.iter().enumerate() {
-            sample_binding(text, unit, binding);
+            sample_binding(text, unit, native.opaque(), binding);
         }
         text.push_str("}\n");
     }
@@ -61,7 +64,7 @@ fn sample_source(model: &Model, text: &mut String) {
 
 /// One binding's read in `nSample`: a scene constant, nothing for depth and masks, or the
 /// texture in texture unit `unit` with a neutral value when it is absent.
-fn sample_binding(text: &mut String, unit: usize, binding: &Binding) {
+fn sample_binding(text: &mut String, unit: usize, opaque: bool, binding: &Binding) {
     if matches!(binding.role, Role::Scene) {
         writeln!(
             text,
@@ -75,7 +78,7 @@ fn sample_binding(text: &mut String, unit: usize, binding: &Binding) {
     if matches!(binding.role, Role::Depth | Role::Mask) {
         return;
     }
-    let sampler = SAMPLERS[unit];
+    let sampler = SAMPLERS[unit + if opaque { 6 } else { 0 }];
     let fallback = match binding.role {
         Role::Normal | Role::DetailNormal => "vec4(0.5,0.5,1.0,1.0)",
         Role::Detail => "vec4(0.25)",
@@ -115,7 +118,7 @@ fn size_source(model: &Model, text: &mut String) {
                     )
                     .unwrap();
                 } else if !matches!(binding.role, Role::Depth | Role::Mask) {
-                    let sampler = SAMPLERS[unit];
+                    let sampler = SAMPLERS[native.texture_unit(unit)];
                     let size = if let Some(cube) = binding.cube {
                         format!("uvec4({}u,{}u,0u,{}u)", cube.edge, cube.edge, cube.levels)
                     } else {
@@ -160,6 +163,15 @@ fn vertex_source(model: &Model, text: &mut String) {
     text.push_str("void nativeVertex(inout vec3 position,inout vec3 normal){\n");
     text.push_str("vNative[0]=vec4(normal,1.0);vNative[1]=aTangent;vNative[2]=vec4(cross(normal,aTangent.xyz)*aTangent.w,0.0);vNative[3]=vec4(aUv,aDetailUv);vNative[4]=vec4(position,1.0);vNative[5]=aColor;vNative[6]=vec4(0.0);vNative[7]=vec4(0.0);vNative[8]=aColor;\n");
     for (index, material) in model.effects.iter().enumerate() {
+        if let Some(uv) = material.native.as_ref().and_then(|n| n.opaque_uv) {
+            writeln!(
+                text,
+                "if(uNativeIndex=={index}){{vNative[3].xy=aUv*vec2({},{})+vec2({},{});return;}}",
+                uv[0], uv[1], uv[2], uv[3]
+            )
+            .unwrap();
+            continue;
+        }
         let Some(vertex) = material.native.as_ref().and_then(|n| n.vertex.as_ref()) else {
             continue;
         };
@@ -170,14 +182,6 @@ fn vertex_source(model: &Model, text: &mut String) {
                 uv[0], uv[1], uv[2], uv[3]
             )
             .unwrap();
-            if let Some(c) = vertex.stored_color {
-                writeln!(
-                    text,
-                    "vNative[8]=vec4({:.9},{:.9},{:.9},{:.9});",
-                    c[0], c[1], c[2], c[3]
-                )
-                .unwrap();
-            }
             text.push_str("return;}\n");
             continue;
         }
@@ -224,9 +228,109 @@ fn vertex_source(model: &Model, text: &mut String) {
     text.push_str("}\n");
 }
 
+fn paint_source(model: &Model, text: &mut String) {
+    text.push_str("bool nHasPaint(){\n");
+    for (index, material) in model.effects.iter().enumerate() {
+        if material
+            .native
+            .as_ref()
+            .is_some_and(|native| native.paint.is_some())
+        {
+            writeln!(text, "if(uNativeIndex=={index})return true;").unwrap();
+        }
+    }
+    text.push_str("return false;}\nvec2 nPaintSmooth(){\n");
+    for (index, material) in model.effects.iter().enumerate() {
+        if let Some(paint) = material
+            .native
+            .as_ref()
+            .and_then(|native| native.paint.as_ref())
+        {
+            writeln!(text, "if(uNativeIndex=={index})return {};", paint.glsl()).unwrap();
+        }
+    }
+    text.push_str("return vec2(0.0);}\n");
+    text.push_str("bool nHasBaseMetal(){\n");
+    for (index, material) in model.effects.iter().enumerate() {
+        if material
+            .native
+            .as_ref()
+            .and_then(|native| native.paint.as_ref())
+            .and_then(|p| p.metal_glsl())
+            .is_some()
+        {
+            writeln!(text, "if(uNativeIndex=={index})return true;").unwrap();
+        }
+    }
+    text.push_str("return false;}\nfloat nBaseMetal(){\n");
+    for (index, material) in model.effects.iter().enumerate() {
+        if let Some(value) = material
+            .native
+            .as_ref()
+            .and_then(|native| native.paint.as_ref())
+            .and_then(|p| p.metal_glsl())
+        {
+            writeln!(text, "if(uNativeIndex=={index})return {value};").unwrap();
+        }
+    }
+    text.push_str("return 0.0;}\n");
+}
+
+fn normal_source(model: &Model, text: &mut String) {
+    text.push_str("bool nHasDecodedNormal(){\n");
+    for (index, material) in model.effects.iter().enumerate() {
+        if let Some(value) = material
+            .native
+            .as_ref()
+            .and_then(|n| n.paint.as_ref())
+            .and_then(|p| p.normal_valid_glsl())
+        {
+            writeln!(text, "if(uNativeIndex=={index})return {value};").unwrap();
+        }
+    }
+    text.push_str("return false;}\nvec4 nNormalDecode(){\n");
+    for (index, material) in model.effects.iter().enumerate() {
+        if let Some(value) = material
+            .native
+            .as_ref()
+            .and_then(|n| n.paint.as_ref())
+            .and_then(|p| p.normal_glsl())
+        {
+            writeln!(text, "if(uNativeIndex=={index})return {value};").unwrap();
+        }
+    }
+    text.push_str("return vec4(2.0,-1.0,2.0,-1.0);}\n");
+}
+
+fn grain_source(model: &Model, text: &mut String) {
+    text.push_str("bool nHasNormalGrain(){\n");
+    for (index, material) in model.effects.iter().enumerate() {
+        if let Some(value) = material
+            .native
+            .as_ref()
+            .and_then(|n| n.paint.as_ref())
+            .and_then(|p| p.grain_valid_glsl())
+        {
+            writeln!(text, "if(uNativeIndex=={index})return {value};").unwrap();
+        }
+    }
+    text.push_str("return false;}\nfloat nNormalGrain(){\n");
+    for (index, material) in model.effects.iter().enumerate() {
+        if let Some(value) = material
+            .native
+            .as_ref()
+            .and_then(|n| n.paint.as_ref())
+            .and_then(|p| p.grain_glsl())
+        {
+            writeln!(text, "if(uNativeIndex=={index})return {value};").unwrap();
+        }
+    }
+    text.push_str("return 0.0;}\n");
+}
+
 fn pixel_source(model: &Model, text: &mut String) {
     text.push_str(
-        "vec4 nativePixel(){\nvec4 v[16];vec4 o[16];for(int i=0;i<16;i++)v[i]=vec4(0.0);\n",
+        "vec4 nativePixel(vec3 gearBase){\nvec4 v[16];vec4 o[16];for(int i=0;i<16;i++)v[i]=vec4(0.0);\n",
     );
     for (index, material) in model.effects.iter().enumerate() {
         let Some(native) = &material.native else {
@@ -244,7 +348,24 @@ fn pixel_source(model: &Model, text: &mut String) {
             };
             writeln!(text, "v[{}]={value};", semantic.register).unwrap();
         }
-        writeln!(text,"nProgram{index}(v,o);vec4 result=vec4(max(o[0].rgb*uExposure,vec3(0.0)),clamp(o[0].a,0.0,1.0));if(any(isnan(result))||any(isinf(result)))return vec4(0.0);return result;}}").unwrap();
+        if native.opaque() {
+            if let Some(gain) = &native.base_gain {
+                writeln!(
+                    text,
+                    "if(uHasGear==1 && texture(uGear,vUv).a<40.0/255.0)gearBase*={};",
+                    gain.glsl()
+                )
+                .unwrap();
+            }
+            text.push_str("v[15]=vec4(gearBase,1.0);\n");
+        }
+        let exposure = if native.opaque() { "1.0" } else { "uExposure" };
+        let alpha = if native.opaque() {
+            "1.0"
+        } else {
+            "clamp(o[0].a,0.0,1.0)"
+        };
+        writeln!(text,"nProgram{index}(v,o);vec4 result=vec4(max(o[0].rgb*{exposure},vec3(0.0)),{alpha});if(any(isnan(result))||any(isinf(result)))return vec4(0.0);return result;}}").unwrap();
     }
     text.push_str("return vec4(0.0);}\n");
 }

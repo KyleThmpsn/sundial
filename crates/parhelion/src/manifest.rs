@@ -165,8 +165,17 @@ impl ManifestProject {
                         definition_tag: ManifestHash::new(plan.template_definition_tag.0),
                         string_tag: ManifestHash::new(plan.template_string_tag.0),
                     },
+                    // A subclass for another class goes to that class's characters.
                     class_type: (recipe.kind == ItemKind::Subclass)
-                        .then(|| subclass_classes.get(&plan.template_item_hash).copied())
+                        .then(|| {
+                            recipe
+                                .overrides
+                                .subclass_class
+                                .and_then(crate::ArmorClass::native_class)
+                                .or_else(|| {
+                                    subclass_classes.get(&plan.template_item_hash).copied()
+                                })
+                        })
                         .flatten(),
                     every_class: recipe.kind == ItemKind::Subclass
                         && recipe.overrides.subclass_every_class,

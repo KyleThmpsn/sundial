@@ -225,6 +225,8 @@ pub(super) fn uninstall_inner(
     validate_install_transaction(&record, &plan.target)?;
     let journal = plan.target.join(INSTALL_TRANSACTION_FILE_NAME);
     write_install_transaction(&backup.join("uninstall-recovery.json"), &record)?;
+    // The journal sends recovery to the backup, so the backup is on disk before the journal is.
+    sync_backup_directories(&backup, &root).map_err(after_backup)?;
     write_install_transaction(&journal, &record)?;
     let result = commit_removal(
         plan,

@@ -7,8 +7,15 @@
 //! sorting again.
 //!
 //! A weapon chooses its row through its runtime content: every property block holds a type key
-//! at +0x30 and a style key at +0x18, which the client matches against the row's style sub-rows.
-//! Type keys are FNV-1 names of weapon types, such as `sidearm` and `glaive`.
+//! at +0x30, an FNV-1 name of the weapon type such as `sidearm` or `glaive`. The block's style key
+//! at +0x18 names the variant's archetype. The client looks it up among the row's style sub-rows,
+//! and stock rows hold none of the styles their weapons name, so it falls back there. Other
+//! systems match the style too, so a weapon keeps its base's styles.
+//!
+//! The type key also names a first-person animation parameter. The client activates that name,
+//! with its ancestors, in the weapon's first-person parameter dictionary, and the base's state
+//! selectors test the base's type. A weapon whose dictionary does not activate the base's type
+//! through the new key keeps the base's key, or those selectors stop matching.
 // Only imported weapons add crosshair rows. Without the importer the build only keeps the
 // table's own package apart, through `TABLE`.
 #![cfg_attr(not(feature = "d2-model-importer"), allow(dead_code))]
@@ -31,25 +38,24 @@ pub(crate) const SUB_ROW_SIZE: usize = 0x14;
 /// Root descriptors: the rows, the index by row hash and the index by bucket and key.
 const DESCRIPTORS: [usize; 3] = [0x08, 0x18, 0x28];
 const ROOT_SIZE: usize = 0x3C;
-/// Weapon content property fields: the style key the client looks up among the row's style
-/// sub-rows (exe+0xC63DA7 through the accessor at exe+0xC9F420), and the type key that selects
-/// the row (accessor at exe+0xC9D3A0).
-const STYLE_FIELD: usize = 0x18;
+/// The weapon content property field that holds the type key selecting the row (accessor at
+/// exe+0xC9D3A0). The style key at +0x18 (accessor at exe+0xC9F420) is left as the base has it,
+/// since exe+0xCB1AC1 matches it against other records as well as the crosshair's style rows.
 const TYPE_FIELD: usize = 0x30;
 
 /// Point a weapon's runtime content at a crosshair row: every property block, the default and
-/// each variant, takes the row's type key and one of its style keys.
+/// each variant, takes the row's type key.
 pub(crate) fn content_patches(
     manager: &PackageManager,
     entity: &[u8],
     type_key: u32,
-    style_key: u32,
 ) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
-    crate::hud_icon::runtime::field_patches(
-        manager,
-        entity,
-        &[(STYLE_FIELD, style_key), (TYPE_FIELD, type_key)],
-    )
+    crate::hud_icon::runtime::field_patches(manager, entity, &[(TYPE_FIELD, type_key)])
+}
+
+/// The type keys the weapon content's property blocks hold now.
+pub(crate) fn type_keys(manager: &PackageManager, entity: &[u8]) -> AuthoringResult<Vec<u32>> {
+    crate::hud_icon::runtime::field_values(manager, entity, TYPE_FIELD)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

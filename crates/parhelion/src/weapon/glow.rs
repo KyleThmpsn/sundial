@@ -1,9 +1,7 @@
 //! Add dye emission to structurally recognized native opaque gear pixel programs.
 //! Existing emission consumers and programs outside this material contract stay intact.
 use crate::AuthoringResult;
-use dxbc::{Program, temp};
-mod checksum;
-mod dxbc;
+use crate::dxbc::{Program, temp};
 mod kernel;
 mod plan;
 

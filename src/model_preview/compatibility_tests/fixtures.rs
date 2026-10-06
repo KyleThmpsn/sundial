@@ -15,9 +15,22 @@ impl Fixture {
         .unwrap()
     }
 }
+
+/// Temporary packages use the same reader without the installed-root discovery cache.
+pub(super) fn load(directory: &Path, tag: u32) -> Result<Model, String> {
+    let manager = PackageManager::new(
+        directory,
+        tiger_pkg::GameVersion::Destiny(tiger_pkg::DestinyVersion::Destiny2Shadowkeep),
+        Some(tiger_pkg::PackagePlatform::Win64),
+    )?;
+    load_with_manager(&manager, tag, &Load::default(), None)
+}
 #[derive(Default)]
 pub(super) struct Package(Vec<(u32, u8, u8, Vec<u8>)>);
 impl Package {
+    pub(super) fn reference(&self, tag: u32) -> u32 {
+        self.0[(tag - 0x8080_2000) as usize].0
+    }
     pub(super) fn payload_mut(&mut self, tag: u32) -> &mut Vec<u8> {
         &mut self.0[(tag - 0x8080_2000) as usize].3
     }

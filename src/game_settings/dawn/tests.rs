@@ -222,15 +222,7 @@ fn dawn_page_is_gated_by_detection_and_readonly_until_clicked() {
             assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, size).contains(pos));
             let mut clicked = false;
             for pressed in [true, false] {
-                let events = vec![
-                    egui::Event::PointerMoved(pos),
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: Default::default(),
-                    },
-                ];
+                let events = crate::test_support::primary_press(pos, pressed);
                 clicked |= draw_page(
                     &context,
                     size,

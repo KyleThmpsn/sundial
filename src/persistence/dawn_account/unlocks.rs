@@ -63,14 +63,18 @@ pub(crate) fn apply_authored_unlocks(
         for (scope, owner, slot) in rows {
             // Re-read inside the transaction. The pass that chose these rows held no lock, so a
             // flag Dawn set in between is left as Dawn set it.
-            if stored_flag(&transaction, scope, owner, slot)? == Some(i64::from(FLAG_SET)) {
-                continue;
-            }
-            transaction.execute(
-                "INSERT INTO durable_flags VALUES(?1,?2,?3,?4) \
-                 ON CONFLICT DO UPDATE SET value=excluded.value",
-                params![scope, owner, slot, i64::from(FLAG_SET)],
-            )?;
+            match stored_flag(&transaction, scope, owner, slot)? {
+                Some((_, value)) if value == i64::from(FLAG_SET) => continue,
+                // The stored row keeps its own spelling of the owner, so no second row appears.
+                Some((stored, _)) => transaction.execute(
+                    "UPDATE durable_flags SET value=?4 WHERE scope=?1 AND owner_soid=?2 AND slot=?3",
+                    params![scope, stored, slot, i64::from(FLAG_SET)],
+                )?,
+                None => transaction.execute(
+                    "INSERT INTO durable_flags(scope,owner_soid,slot,value) VALUES(?1,?2,?3,?4)",
+                    params![scope, owner, slot, i64::from(FLAG_SET)],
+                )?,
+            };
             wrote = true;
         }
         changed += usize::from(wrote);
@@ -104,19 +108,32 @@ pub(crate) fn apply_authored_unlocks(
     })
 }
 
+/// The flag stored for this scope, owner and slot, with the owner spelled as it is stored.
+///
+/// Dawn and Sundial's reader both resolve an owner SOID as a hexadecimal number, so differently
+/// cased spellings name one owner. Matching only the exact text would miss a stored row and write
+/// a second one beside it, which the reader then refuses as a duplicate owner.
 fn stored_flag(
     connection: &Connection,
     scope: &i64,
     owner: &String,
     slot: &i64,
-) -> Result<Option<i64>, rusqlite::Error> {
-    connection
-        .query_row(
-            "SELECT value FROM durable_flags WHERE scope=?1 AND owner_soid=?2 AND slot=?3",
-            params![scope, owner, slot],
-            |row| row.get(0),
-        )
-        .optional()
+) -> Result<Option<(String, i64)>, DawnAccountError> {
+    let rows = connection
+        .prepare(
+            "SELECT owner_soid,value FROM durable_flags \
+             WHERE scope=?1 AND upper(owner_soid)=upper(?2) AND slot=?3",
+        )?
+        .query_map(params![scope, owner, slot], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .collect::<Result<Vec<(String, i64)>, _>>()?;
+    if rows.len() > 1 {
+        return Err(DawnAccountError::Unwritable(format!(
+            "player-state.db stores durable flag {slot} more than once for owner {owner}. Nothing was changed"
+        )));
+    }
+    Ok(rows.into_iter().next())
 }
 
 /// The rows each unlock still has to write, read before anything is backed up so an installation
@@ -159,7 +176,9 @@ fn pending_rows(
         let mut rows = Vec::new();
         for owner in owners {
             let scope = durable_scope(scope);
-            if stored_flag(&connection, &scope, owner, &slot)? != Some(i64::from(FLAG_SET)) {
+            if stored_flag(&connection, &scope, owner, &slot)?.map(|(_, value)| value)
+                != Some(i64::from(FLAG_SET))
+            {
                 rows.push((scope, owner.clone(), slot));
             }
         }

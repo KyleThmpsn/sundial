@@ -111,6 +111,8 @@ impl PackageAuthoringApp {
         let current_key = self.runtime_graph_key();
         let baseline_hash = self.runtime_component_baseline_hash(current_key.as_ref());
         let experimental = self.show_experimental_options;
+        // The crash warning shows only while another weapon's runtime component is swapped in.
+        let mixed = !self.recipe.runtime_component_donors.is_empty();
         ui.horizontal(|ui| {
             draw_donor_section_label_with_warning(
                 ui,
@@ -119,7 +121,7 @@ impl PackageAuthoringApp {
                     "Parts of the weapon taken from other weapons. Each follows the base weapon \
                      until another is chosen. Test in game.",
                 ),
-                experimental.then_some("Mixing runtime components can crash the game."),
+                mixed.then_some("Mixing runtime components can crash the game."),
             );
             if experimental {
                 self.draw_runtime_donor_undo(ui);

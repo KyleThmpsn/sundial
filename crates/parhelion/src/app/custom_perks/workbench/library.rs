@@ -86,6 +86,41 @@ fn read_drafts(bytes: &[u8]) -> (Vec<Document>, Vec<serde_json::Value>) {
     (documents, rejected)
 }
 
+/// A name for this window's set-aside drafts that no other window shares.
+fn draft_session() -> String {
+    let started = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    format!("{started}-{}", std::process::id())
+}
+
+/// Writes the drafts this window changed since it last wrote the drafts file into its own file
+/// beside it, and returns what the status line says about it. Drafts the window left as it
+/// found them stay out, so a stale copy never comes back as a second draft.
+fn set_aside(
+    library: &Library,
+    session: &str,
+    documents: &[&Document],
+    baseline: Option<&[u8]>,
+) -> Result<String, String> {
+    let before = baseline
+        .and_then(|bytes| serde_json::from_slice::<Vec<serde_json::Value>>(bytes).ok())
+        .unwrap_or_default();
+    let mut changed = Vec::new();
+    for document in documents {
+        let value = serde_json::to_value(document).map_err(|error| error.to_string())?;
+        if !before.contains(&value) {
+            changed.push(value);
+        }
+    }
+    let bytes = serde_json::to_vec_pretty(&changed).map_err(|error| error.to_string())?;
+    let path = library.save_set_aside_drafts(session, &bytes)?;
+    Ok(format!(
+        "Another window changed the drafts file. This window's drafts are kept in {} and open with the others on the next start.",
+        path.display().to_string().trim_start_matches(r"\\?\")
+    ))
+}
+
 /// The right-click menu of one Custom Perks row.
 fn draw_row_menu(
     response: &egui::Response,
@@ -171,6 +206,7 @@ impl Workbench {
                 }
                 let refresh = library.defaults_refresh().cloned();
                 self.library = Some(library);
+                self.adopt_set_aside_drafts();
                 self.refresh_library();
                 if let Some(refresh) = refresh {
                     self.reload_bundled_documents();
@@ -246,24 +282,110 @@ impl Workbench {
             .iter()
             .filter(|document| !document.untouched_copy())
             .collect::<Vec<_>>();
-        let result = serde_json::to_vec_pretty(&documents)
-            .map_err(|error| error.to_string())
-            .and_then(|bytes| {
-                library.save_drafts(&bytes, self.draft_baseline.as_deref())?;
-                Ok(bytes)
-            });
-        match result {
-            Ok(bytes) => {
+        // Another window wrote the drafts file since this one last did. Taking that file as the
+        // baseline would let the next write replace the other window's drafts with these, so
+        // this window keeps its own drafts beside it for the rest of the session instead.
+        if let Some(session) = &self.drafts_set_aside {
+            self.drafts_error = Some(
+                set_aside(library, session, &documents, self.draft_baseline.as_deref())
+                    .unwrap_or_else(|error| error),
+            );
+            return;
+        }
+        let bytes = match serde_json::to_vec_pretty(&documents) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.drafts_error = Some(error.to_string());
+                return;
+            }
+        };
+        match library.save_drafts(&bytes, self.draft_baseline.as_deref()) {
+            Ok(DraftsWrite::Written) => {
                 self.draft_baseline = Some(bytes);
                 self.drafts_error = None;
             }
+            Ok(DraftsWrite::Conflict) => {
+                let session = draft_session();
+                self.drafts_error = Some(
+                    set_aside(
+                        library,
+                        &session,
+                        &documents,
+                        self.draft_baseline.as_deref(),
+                    )
+                    .unwrap_or_else(|error| error),
+                );
+                self.drafts_set_aside = Some(session);
+            }
+            // Tried again on the next edit, against the same baseline.
+            Err(error) => self.drafts_error = Some(error),
+        }
+    }
+
+    /// Opens the drafts other windows set aside after losing the drafts file, and folds them
+    /// into it. A draft already open under the same id with other content opens as a copy.
+    fn adopt_set_aside_drafts(&mut self) {
+        if !self.drafts_writable {
+            return;
+        }
+        let Some(library) = &self.library else {
+            return;
+        };
+        let found = match library.set_aside_drafts() {
+            Ok(found) => found,
             Err(error) => {
-                // A failed write is tried again on the next edit rather than pausing autosave
-                // for the session. The drafts file is this reader's scratch, so whatever
-                // another instance wrote there is taken as the baseline for that next write.
-                self.drafts_error = Some(error);
-                self.draft_baseline =
-                    std::fs::read(library.root().join("workbench-drafts.json")).ok();
+                self.error = Some(format!("Could not read set-aside drafts: {error}"));
+                return;
+            }
+        };
+        if found.is_empty() {
+            return;
+        }
+        let mut adopted = Vec::new();
+        for (path, bytes) in found {
+            let (documents, rejected) = read_drafts(&bytes);
+            // A file that does not read whole stays where it is for the reader to inspect.
+            if !rejected.is_empty() {
+                continue;
+            }
+            for mut document in documents {
+                if document.origin.is_none() {
+                    document.origin = Some(document.recipe.clone());
+                }
+                document.read_baseline();
+                match self
+                    .documents
+                    .iter()
+                    .find(|open| open.recipe.id == document.recipe.id)
+                {
+                    Some(open)
+                        if open.recipe == document.recipe
+                            && open.pending_effect == document.pending_effect =>
+                    {
+                        continue;
+                    }
+                    Some(_) => {
+                        document.recipe.id = PerkRecipe::new().id;
+                        document.recipe.name =
+                            format!("{} Copy", display_name(&document.recipe.name));
+                        document.origin = Some(document.recipe.clone());
+                        document.set_baseline(None);
+                    }
+                    None => {}
+                }
+                self.documents.push(document);
+            }
+            adopted.push((path, bytes));
+        }
+        self.persist_drafts();
+        if self.drafts_set_aside.is_some() || self.drafts_error.is_some() {
+            return;
+        }
+        if let Some(library) = &self.library {
+            for (path, bytes) in adopted {
+                if let Err(error) = library.remove_set_aside_drafts(&path, &bytes) {
+                    self.error = Some(format!("Could not remove {}: {error}", path.display()));
+                }
             }
         }
     }
@@ -316,6 +438,9 @@ impl Workbench {
         }
         if !self.drafts_writable {
             ui.colored_label(ui.visuals().warn_fg_color, "Draft autosave is paused.");
+        } else if let (Some(_), Some(note)) = (&self.drafts_set_aside, &self.drafts_error) {
+            ui.colored_label(ui.visuals().warn_fg_color, "Drafts are kept separately.")
+                .on_hover_text(note);
         } else if let Some(error) = &self.drafts_error {
             ui.colored_label(ui.visuals().warn_fg_color, "Draft autosave failed.")
                 .on_hover_text(error);

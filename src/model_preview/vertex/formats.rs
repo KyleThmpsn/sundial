@@ -79,7 +79,7 @@ pub(super) fn read(format: u8, bytes: &[u8]) -> Result<[f32; 4], String> {
     Ok(value)
 }
 
-fn half(bits: u16) -> f32 {
+pub(in crate::model_preview) fn half(bits: u16) -> f32 {
     let sign = if bits & 0x8000 == 0 { 1.0 } else { -1.0 };
     sign * unsigned_float(u32::from(bits & 0x7FFF), 10)
 }

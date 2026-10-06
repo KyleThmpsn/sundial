@@ -1,5 +1,6 @@
 //! Validate the native opaque material contract before allocating any resources.
-use super::{SAT, dxbc::Program};
+use super::SAT;
+use crate::dxbc::Program;
 use crate::{AuthoringResult, error::invalid};
 
 pub(super) enum Choice {

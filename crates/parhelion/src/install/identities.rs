@@ -8,6 +8,7 @@ use tiger_pkg::TagHash;
 mod grants;
 mod placement;
 mod sockets;
+pub(crate) use grants::SHADER_STACK;
 pub(super) use grants::{GrantedItem, grant_items, installed_grants};
 pub(super) use placement::slot_replacement;
 #[cfg(test)]

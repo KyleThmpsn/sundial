@@ -414,20 +414,13 @@ fn recipe_combat_profile_actions_round_trip_into_compiler_overrides() {
     use crate::capabilities::CombatProfile;
     use sundial::investment::WeaponDamageType;
     let donor = WeaponDonorSummary {
-        hash: 0x4CE3_CE93,
-        name: "Breachlight".into(),
-        type_name: "Sidearm".into(),
-        bucket_hash: 0,
-        collection_backed: true,
-        power_cap: None,
         damage_type: Some(WeaponDamageType::Kinetic),
         inventory_slot: Some(WeaponInventorySlot::Kinetic),
         damage_profile: WeaponDamageProfile::KineticEmpty,
-        rarity: WeaponRarity::Legendary,
         ammo_type: Some(WeaponAmmoType::Primary),
         weapon_pattern_index: Some(1),
         weapon_translation_group: Some(1),
-        stat_group_index: None,
+        ..crate::test_support::donor_summary(0x4CE3_CE93, "Breachlight", "Sidearm")
     };
     for (ammo, native_ammo) in [
         (

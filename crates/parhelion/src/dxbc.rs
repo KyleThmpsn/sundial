@@ -1,8 +1,12 @@
-//! Bounded SM5 operands and container rebuilding for native gear material edits.
+//! Bounded SM5 operands and container rebuilding for edits of native pixel programs: gear
+//! material glow and effect color grades.
 use crate::{AuthoringResult, error::invalid};
 
+mod checksum;
+pub(crate) mod grade;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Operand(pub Vec<u32>);
+pub(crate) struct Operand(pub Vec<u32>);
 
 impl Operand {
     pub fn kind(&self) -> u32 {
@@ -47,7 +51,7 @@ impl Operand {
 }
 
 #[derive(Clone)]
-pub(super) struct Instruction {
+pub(crate) struct Instruction {
     pub words: Vec<u32>,
     pub args: Vec<Operand>,
     prefix: usize,
@@ -57,11 +61,25 @@ impl Instruction {
     pub fn opcode(&self) -> u32 {
         self.words[0] & 0x7ff
     }
+    /// The instruction with its operands read, for an operation past the declarations, whose
+    /// operands the reader leaves unread.
+    pub fn parsed(&self) -> AuthoringResult<Self> {
+        let mut cursor = self.prefix;
+        let mut args = Vec::new();
+        while cursor < self.words.len() {
+            args.push(operand(&self.words, &mut cursor, 0)?);
+        }
+        Ok(Self {
+            words: self.words.clone(),
+            args,
+            prefix: self.prefix,
+        })
+    }
     pub fn replace(&self, args: Vec<Operand>) -> AuthoringResult<Self> {
         let mut words = self.words[..self.prefix].to_vec();
         words.extend(args.iter().flat_map(|arg| arg.0.iter().copied()));
         if words.len() > 127 {
-            return Err(invalid("Glow instruction exceeds the SM5 length limit"));
+            return Err(invalid("Shader instruction exceeds the SM5 length limit"));
         }
         words[0] = (words[0] & !0x7f00_0000) | ((words.len() as u32) << 24);
         Ok(Self {
@@ -120,7 +138,7 @@ fn operand(words: &[u32], at: &mut usize, depth: usize) -> AuthoringResult<Opera
     ))
 }
 
-pub(super) struct Program {
+pub(crate) struct Program {
     chunks: Vec<([u8; 4], Vec<u8>)>,
     code_chunk: usize,
     pub instructions: Vec<Instruction>,
@@ -143,10 +161,10 @@ impl Program {
             || word(bytes, 20)? != 1
             || bytes.len() > 4 * 1024 * 1024
         {
-            return Err(invalid("Unsupported glow shader container"));
+            return Err(invalid("Unsupported shader container"));
         }
-        if bytes.get(4..20) != Some(super::checksum::compute(bytes)?.as_slice()) {
-            return Err(invalid("Shader Glow source program checksum differs"));
+        if bytes.get(4..20) != Some(checksum::compute(bytes)?.as_slice()) {
+            return Err(invalid("Shader program checksum differs"));
         }
         let count = word(bytes, 28)? as usize;
         if count == 0 || count > 64 {
@@ -181,7 +199,7 @@ impl Program {
             || word(data, 0)? != 0x50
             || word(data, 4)? as usize != data.len() / 4
         {
-            return Err(invalid("Shader Glow requires an SM5 pixel program"));
+            return Err(invalid("The shader is not an SM5 pixel program"));
         }
         let tokens = data
             .chunks_exact(4)
@@ -241,6 +259,14 @@ impl Program {
         })
     }
 
+    /// The data of the container's chunk named `name`.
+    pub fn chunk(&self, name: &[u8; 4]) -> Option<&[u8]> {
+        self.chunks
+            .iter()
+            .find(|(each, _)| each == name)
+            .map(|(_, data)| data.as_slice())
+    }
+
     pub fn emit(mut self) -> AuthoringResult<Vec<u8>> {
         let mut tokens = vec![0x50, 0];
         tokens.extend(
@@ -267,34 +293,34 @@ impl Program {
         }
         let len = result.len() as u32;
         result[24..28].copy_from_slice(&len.to_le_bytes());
-        let hash = super::checksum::compute(&result)?;
+        let hash = checksum::compute(&result)?;
         result[4..20].copy_from_slice(&hash);
         Ok(result)
     }
 }
 
-pub(super) fn dst(index: u32, mask: u32) -> Operand {
+pub(crate) fn dst(index: u32, mask: u32) -> Operand {
     Operand(vec![2 | (mask << 4) | (1 << 20), index])
 }
-pub(super) fn temp(index: u32, swizzle: u32) -> Operand {
+pub(crate) fn temp(index: u32, swizzle: u32) -> Operand {
     Operand(vec![2 | (1 << 2) | (swizzle << 4) | (1 << 20), index])
 }
-pub(super) fn cb(slot: u32, index: u32, swizzle: u32) -> Operand {
+pub(crate) fn cb(slot: u32, index: u32, swizzle: u32) -> Operand {
     Operand(vec![
         2 | (1 << 2) | (swizzle << 4) | (8 << 12) | (2 << 20),
         slot,
         index,
     ])
 }
-pub(super) fn lit(value: f32) -> Operand {
+pub(crate) fn lit(value: f32) -> Operand {
     Operand(vec![1 | (4 << 12), value.to_bits()])
 }
-pub(super) fn neg(mut source: Operand) -> Operand {
+pub(crate) fn neg(mut source: Operand) -> Operand {
     source.0[0] |= 1 << 31;
     source.0.insert(1, 0x41);
     source
 }
-pub(super) fn ins(opcode: u32, args: Vec<Operand>) -> Instruction {
+pub(crate) fn ins(opcode: u32, args: Vec<Operand>) -> Instruction {
     let mut words = vec![opcode];
     words.extend(args.iter().flat_map(|arg| arg.0.iter().copied()));
     words[0] |= (words.len() as u32) << 24;

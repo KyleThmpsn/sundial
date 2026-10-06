@@ -1,11 +1,11 @@
 //! The emblem page's Nameplate section: a tile for each of its three images, the banner, the
 //! overlay drawn on it and the wide background, and an editor for the selected one. Each image is
 //! the base emblem's, another emblem's or a picture of the recipe's own, and exports as a PNG.
+use super::image_files::{self, ImageFiles, draw_contained};
 use super::*;
 use crate::emblem::{Nameplate, NameplateImage, NameplatePart};
 use crate::image_import::EmbeddedImage;
-use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::path::Path;
 
 /// Thumbnail height inside a tile.
 const THUMBNAIL_HEIGHT: f32 = 48.0;
@@ -20,13 +20,6 @@ const PREVIEW_HEIGHT: f32 = 160.0;
 /// The widest the editor's source picker gets.
 const SOURCE_WIDTH: f32 = 420.0;
 
-/// A file dialog and the work after it, running on another thread.
-enum Task {
-    Import(Receiver<Result<Option<EmbeddedImage>, String>>),
-    /// Whether a file was saved.
-    Export(Receiver<Result<bool, String>>),
-}
-
 /// What an export writes: an image read from an emblem's nameplate container, or a picture at the
 /// size it builds at.
 pub(super) enum Export {
@@ -39,119 +32,47 @@ pub(super) enum Export {
 pub(super) struct EmblemPage {
     pub(super) selected: NameplatePart,
     query: String,
-    task: Option<(NameplatePart, Task)>,
-    outcome: Option<Result<&'static str, String>>,
+    files: ImageFiles<NameplatePart>,
     trackers: Option<Result<Vec<sundial::investment::EmblemTrackerCategory>, String>>,
 }
 
 impl EmblemPage {
-    fn busy(&self) -> bool {
-        self.task.is_some()
-    }
-
-    /// Picks a picture for `part` and decodes it off the frame.
-    fn import(&mut self, part: NameplatePart, context: egui::Context) {
-        let (sender, receiver) = mpsc::channel();
-        self.spawn(part, Task::Import(receiver), move || {
-            let picked = rfd::FileDialog::new()
-                .set_title(format!("Import {}", part.label()))
-                .add_filter("PNG or JPEG Image", &["png", "jpg", "jpeg"])
-                .pick_file()
-                .map(|path| EmbeddedImage::from_path(&path))
-                .transpose();
-            let _ = sender.send(picked);
-            context.request_repaint();
-        });
-    }
-
-    /// Asks where to save `part` and writes it there as a PNG.
-    fn export(
-        &mut self,
-        part: NameplatePart,
-        (packages, file_name): (PathBuf, String),
-        source: Export,
-        context: egui::Context,
-    ) {
-        let (sender, receiver) = mpsc::channel();
-        self.spawn(part, Task::Export(receiver), move || {
-            let saved = rfd::FileDialog::new()
-                .set_title(format!("Export {}", part.label()))
-                .add_filter("PNG Image", &["png"])
-                .set_file_name(file_name)
-                .save_file()
-                .map_or(Ok(false), |path| {
-                    write_png(&path, &packages, part, source).map(|()| true)
-                });
-            let _ = sender.send(saved);
-            context.request_repaint();
-        });
-    }
-
-    fn spawn(&mut self, part: NameplatePart, task: Task, work: impl FnOnce() + Send + 'static) {
-        self.task = Some((part, task));
-        self.outcome = None;
-        if let Err(error) = std::thread::Builder::new()
-            .name("nameplate-file".to_owned())
-            .spawn(work)
-        {
-            self.task = None;
-            self.outcome = Some(Err(format!("Could not open the file dialog: {error}")));
-        }
-    }
-
-    /// Takes a finished import into the recipe and notes how an export went.
+    /// Takes a finished import into the recipe, for the image it was started for.
     fn poll(&mut self, recipe: &mut WeaponRecipe) {
-        let Some((part, task)) = &self.task else {
-            return;
-        };
-        let part = *part;
-        let outcome = match task {
-            Task::Import(receiver) => match receiver.try_recv() {
-                Err(TryRecvError::Empty) => return,
-                Err(TryRecvError::Disconnected) => Some(Err("The import stopped.".to_owned())),
-                Ok(Ok(Some(image))) => {
-                    set_part(recipe, part, Some(NameplateImage::Image { image }));
-                    None
-                }
-                Ok(Ok(None)) => None,
-                Ok(Err(error)) => Some(Err(error)),
-            },
-            Task::Export(receiver) => match receiver.try_recv() {
-                Err(TryRecvError::Empty) => return,
-                Err(TryRecvError::Disconnected) => Some(Err("The export stopped.".to_owned())),
-                Ok(Ok(true)) => Some(Ok("Image saved")),
-                Ok(Ok(false)) => None,
-                Ok(Err(error)) => Some(Err(error)),
-            },
-        };
-        self.task = None;
-        self.outcome = outcome;
+        if let Some((part, image)) = self.files.poll() {
+            set_part(recipe, part, Some(NameplateImage::Image { image }));
+        }
     }
 }
 
-/// Writes one image to `path` as a PNG, replacing what is there only once it is whole.
+/// The pixels an export writes.
+fn export_pixels(
+    packages: &Path,
+    part: NameplatePart,
+    source: Export,
+) -> Result<image::RgbaImage, String> {
+    match source {
+        Export::Layer(container) => {
+            let manager = sundial::package_authoring::open_shadowkeep_package_manager(packages)?;
+            crate::emblem::layer_pixels(&manager, TagHash(container), part)
+                .map_err(|error| error.to_string())
+        }
+        Export::Picture(image, (width, height)) => {
+            Ok(crate::image_import::cover(image.pixels(), width, height))
+        }
+    }
+}
+
+/// Writes one image to `path` as a PNG, replacing what is there only once it is whole. The page
+/// exports through its file task, so only the emblem tests write directly.
+#[cfg(test)]
 pub(super) fn write_png(
     path: &Path,
     packages: &Path,
     part: NameplatePart,
     source: Export,
 ) -> Result<(), String> {
-    let pixels = match source {
-        Export::Layer(container) => {
-            let manager = sundial::package_authoring::open_shadowkeep_package_manager(packages)?;
-            crate::emblem::layer_pixels(&manager, TagHash(container), part)
-                .map_err(|error| error.to_string())?
-        }
-        Export::Picture(image, (width, height)) => {
-            crate::image_import::cover(image.pixels(), width, height)
-        }
-    };
-    let mut png = std::io::Cursor::new(Vec::new());
-    pixels
-        .write_to(&mut png, image::ImageFormat::Png)
-        .map_err(|error| format!("Could not encode the image: {error}"))?;
-    sundial::package_authoring::replace_authoring_file(path, png.get_ref())
-        .map_err(|error| format!("Could not save {}: {error}", path.display()))
+    image_files::write_png(path, export_pixels(packages, part, source)?)
 }
 
 /// Gives one image a source, or the base's with `None`.
@@ -189,53 +110,6 @@ fn texture_size(texture: &egui::TextureHandle) -> (u32, u32) {
 /// A size as the section writes it after a name.
 fn size_label((width, height): (u32, u32)) -> String {
     format!("({width} × {height} px)")
-}
-
-/// A picture as a texture at the size it builds at, kept while the picture and size stay the same.
-fn picture_texture(
-    ctx: &egui::Context,
-    image: &EmbeddedImage,
-    (width, height): (u32, u32),
-) -> egui::TextureHandle {
-    let id = egui::Id::new(("nameplate-picture", image.fingerprint(), width, height));
-    if let Some(texture) = ctx.data(|data| data.get_temp::<egui::TextureHandle>(id)) {
-        return texture;
-    }
-    let covered = crate::image_import::cover(image.pixels(), width, height);
-    let texture = ctx.load_texture(
-        format!("nameplate-{:016x}-{width}x{height}", image.fingerprint()),
-        egui::ColorImage::from_rgba_unmultiplied(
-            [width as usize, height as usize],
-            covered.as_raw(),
-        ),
-        egui::TextureOptions::LINEAR,
-    );
-    ctx.data_mut(|data| data.insert_temp(id, texture.clone()));
-    texture
-}
-
-/// `texture` fitted inside `frame` at its own aspect, over a checkerboard that shows where it is
-/// clear. While it loads, or where there is none, the frame is an outline.
-fn draw_contained(ui: &egui::Ui, frame: egui::Rect, texture: Option<&egui::TextureHandle>) {
-    let Some(texture) = texture else {
-        ui.painter().rect_stroke(
-            frame,
-            3.0,
-            ui.visuals().widgets.noninteractive.bg_stroke,
-            egui::StrokeKind::Inside,
-        );
-        return;
-    };
-    let size = texture.size_vec2();
-    let scale = (frame.width() / size.x.max(1.0)).min(frame.height() / size.y.max(1.0));
-    let rect = egui::Rect::from_center_size(frame.center(), size * scale);
-    style::transparency_backdrop(ui, rect);
-    ui.painter().image(
-        texture.id(),
-        rect,
-        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-        egui::Color32::WHITE,
-    );
 }
 
 /// One image's tile: its thumbnail, its name and size, and where it comes from. The selected tile
@@ -425,8 +299,9 @@ impl PackageAuthoringApp {
                 // A picture builds at the size of the base's own image.
                 let size = base.and_then(layer).as_ref().map(texture_size);
                 Shown {
-                    texture: Some(picture_texture(
+                    texture: Some(image_files::covered_texture(
                         ctx,
+                        "nameplate-picture",
                         image,
                         size.unwrap_or_else(|| part.size()),
                     )),
@@ -543,7 +418,7 @@ impl PackageAuthoringApp {
             draw_contained(ui, frame, shown.texture.as_ref());
             ui.add_space(4.0);
             self.draw_nameplate_source(ui, part, shown);
-            match &self.emblem_page.outcome {
+            match &self.emblem_page.files.outcome {
                 Some(Ok(message)) => {
                     ui.weak(*message);
                 }
@@ -558,7 +433,7 @@ impl PackageAuthoringApp {
     /// The emblem the image comes from, as a picker, then Import Image… and Export PNG….
     fn draw_nameplate_source(&mut self, ui: &mut egui::Ui, part: NameplatePart, shown: &Shown) {
         let base = self.recipe.donor.item_hash.parse_u32().ok();
-        let busy = self.emblem_page.busy();
+        let busy = self.emblem_page.files.busy();
         let (mut import, mut export, mut selection) = (false, false, None);
         let emblems = self
             .gear_donors
@@ -620,7 +495,12 @@ impl PackageAuthoringApp {
             Some(WeaponDonorPickerAction::Secondary) | None => {}
         }
         if import {
-            self.emblem_page.import(part, ui.ctx().clone());
+            self.emblem_page.files.import(
+                part,
+                format!("Import {}", part.label()),
+                "nameplate-file",
+                ui.ctx().clone(),
+            );
         }
         if export {
             self.export_nameplate_image(ui.ctx(), part, shown);
@@ -643,10 +523,12 @@ impl PackageAuthoringApp {
             _ => return,
         };
         let file_name = format!("{}-{}.png", self.recipe.slug(), part.label().to_lowercase());
-        self.emblem_page.export(
+        let packages = self.packages.clone();
+        self.emblem_page.files.export(
             part,
-            (self.packages.clone(), file_name),
-            source,
+            (format!("Export {}", part.label()), file_name),
+            "nameplate-file",
+            move || export_pixels(&packages, part, source),
             ctx.clone(),
         );
     }

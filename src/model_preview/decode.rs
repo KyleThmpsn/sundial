@@ -27,12 +27,14 @@ pub(super) fn append(
         model.colors.truncate(vertices);
         model.uvs.truncate(vertices);
         model.detail_uvs.truncate(vertices);
+        model.triangle_detail_uv.truncate(triangles);
         model.weights.truncate(vertices);
         model.triangles.truncate(triangles);
         model.triangle_textures.truncate(triangles);
         model.triangle_dyes.truncate(triangles);
         model.triangle_dye_maps.truncate(triangles);
         model.triangle_clip.truncate(triangles);
+        model.triangle_cutoff.truncate(triangles);
         model.triangle_constant.truncate(triangles);
         model.triangle_effects.truncate(triangles);
         model.effects.truncate(effects);
@@ -132,7 +134,11 @@ fn append_stages(
     let mut drawn = BTreeSet::new();
     let mut materials = std::collections::BTreeMap::new();
     let mut gear_materials = std::collections::BTreeMap::new();
+    let mut attributes = std::collections::BTreeMap::new();
+    let mut cutoffs = std::collections::BTreeMap::new();
     let mut effects = std::collections::BTreeMap::new();
+    let mut opaque_materials = std::collections::BTreeMap::new();
+    let mut normal_materials = std::collections::BTreeMap::new();
     let mut loaded = std::collections::BTreeMap::new();
     let plate = optional_texture(
         component
@@ -174,7 +180,7 @@ fn append_stages(
         } else {
             u32_at(&bytes, part)
         };
-        let effect = if stage == Some(7) {
+        let mut effect = if stage == Some(7) {
             let key = (material.clone(), bytes[part + 0x1A]);
             Some(*effects.entry(key).or_insert_with(|| {
                 let decoded = material.as_ref().map_err(Clone::clone).and_then(|&tag| {
@@ -215,7 +221,7 @@ fn append_stages(
         )) {
             continue;
         }
-        let motion = if matches!(stage, Some(0 | 7)) {
+        let motion = if stage_drawn(stage) {
             material.as_ref().ok().and_then(|tag| {
                 match effects::native::load_motion(
                     manager,
@@ -232,23 +238,93 @@ fn append_stages(
         } else {
             None
         };
+        let cutoff = material.as_ref().ok().and_then(|tag| {
+            *cutoffs.entry(*tag).or_insert_with(|| {
+                match effects::native::load_cutoff(manager, *tag) {
+                    Ok(cutoff) => cutoff,
+                    Err(error) => {
+                        model.notices.push(format!("Material coverage: {error}"));
+                        None
+                    }
+                }
+            })
+        });
         let gear = explicit_gear(
             manager,
             &material,
-            stage == Some(0) && bytes[part + 0x1A] < 6,
+            (stage == Some(0) && bytes[part + 0x1A] < 6)
+                || (cutoff.is_some() && matches!(stage, Some(1 | 2 | 6))),
             &mut gear_materials,
             model,
         );
         let uv = gear.and_then(|g| g.uv).unwrap_or(model_uv);
+        if effect.is_none()
+            && let Some(gear) = gear
+            && let Some(map) = gear.map
+        {
+            let local_uv = map.transform.map(f32::from_bits);
+            let key = (material.clone(), bytes[part + 0x1A], map.transform);
+            effect = *opaque_materials.entry(key).or_insert_with(|| {
+                let decoded = material.as_ref().ok().and_then(|&tag| {
+                    match effects::native::load_opaque(
+                        manager,
+                        tag,
+                        inputs.as_ref().map(Vec::as_slice).map_err(String::as_str),
+                        bytes[part + 0x1A],
+                        local_uv,
+                        model,
+                    ) {
+                        Ok(material) => material,
+                        Err(error) => {
+                            model.notices.push(format!("Opaque color: {error}"));
+                            None
+                        }
+                    }
+                })?;
+                let index = model.effects.len();
+                model.effects.push(decoded);
+                Some(index)
+            });
+        }
+        effect = effect.or_else(|| {
+            let tag = material
+                .as_ref()
+                .ok()
+                .copied()
+                .filter(|_| stage == Some(0) && (dyed || gear.is_some()));
+            normal_material(
+                manager,
+                tag.map(|tag| (tag, bytes[part + 0x1A])),
+                inputs,
+                &mut normal_materials,
+                model,
+            )
+        });
+        let attributes = material.as_ref().ok().and_then(|tag| {
+            attributes
+                .entry(*tag)
+                .or_insert_with(|| match effects::native::load_attributes(manager, *tag) {
+                    Ok(attributes) => attributes,
+                    Err(error) => {
+                        model
+                            .notices
+                            .push(format!("Stored vertex attributes: {error}"));
+                        None
+                    }
+                })
+                .as_ref()
+        });
         // Material-local geometry and atlas equations can differ on shared stored vertices.
         let key = (
             mesh,
             layout,
-            motion
-                .as_ref()
-                .and_then(|_| material.as_ref().ok())
-                .copied(),
+            (motion.is_some() || attributes.is_some())
+                .then(|| material.as_ref().ok().copied())
+                .flatten(),
             uv.map(f32::to_bits),
+            offset,
+            count,
+            primitive,
         );
         if let std::collections::btree_map::Entry::Vacant(slot) = loaded.entry(key) {
             let read = read_mesh(
@@ -260,16 +336,17 @@ fn append_stages(
                 scale,
                 translation,
                 uv,
+                (offset, count, primitive),
+                attributes,
                 model,
             )?;
             if let Some(mut motion) = motion {
-                motion.vertices = read.0..read.0 + read.1;
+                motion.vertices = read.0..model.vertices.len();
                 model.motions.push(motion);
             }
             slot.insert(read);
         }
-        let (base, vertices, width, indices, has_uv) = &loaded[&key];
-        let triangles = triangles(indices, *width, offset, count, primitive, *vertices)?;
+        let (base, triangles, has_uv, native_detail) = &loaded[&key];
         let gear = gear.filter(|_| *has_uv);
         let map = bounded_map(gear.and_then(|g| g.map), triangles.len(), model);
         let passes = if map.is_some() { 6 } else { 1 };
@@ -293,16 +370,18 @@ fn append_stages(
         };
         append_part(
             model,
-            &triangles,
+            triangles,
             *base as u32,
             passes,
             Part {
+                native_detail: *native_detail,
                 texture,
                 map,
                 dye: bytes[part + 0x1A],
                 effect,
                 // Decal-stage parts are cut out by the gearstack blue channel.
-                clip: matches!(stage, Some(1 | 2 | 6)),
+                clip: cutoff.is_some() || matches!(stage, Some(1 | 2 | 6)),
+                cutoff,
                 mask: gear.map(|g| g.mask).or_else(|| {
                     gearstack.filter(|_| *has_uv && plate.is_some() && texture == plate)
                 }),
@@ -313,6 +392,33 @@ fn append_stages(
         );
     }
     Ok(())
+}
+
+fn normal_material(
+    manager: &PackageManager,
+    key: Option<(u32, u8)>,
+    inputs: &Result<Vec<[f32; 4]>, String>,
+    materials: &mut std::collections::BTreeMap<(u32, u8), Option<usize>>,
+    model: &mut Model,
+) -> Option<usize> {
+    let (tag, surface) = key?;
+    *materials.entry((tag, surface)).or_insert_with(|| {
+        let decoded = match effects::native::load_normal(
+            manager,
+            tag,
+            inputs.as_ref().map(Vec::as_slice).map_err(String::as_str),
+            surface,
+        ) {
+            Ok(material) => material?,
+            Err(error) => {
+                model.notices.push(format!("Surface normal: {error}"));
+                return None;
+            }
+        };
+        let index = model.effects.len();
+        model.effects.push(decoded);
+        Some(index)
+    })
 }
 
 fn part_texture(
@@ -333,11 +439,13 @@ fn part_texture(
 }
 
 struct Part {
+    native_detail: bool,
     texture: Option<usize>,
     map: Option<texture::DyeMap>,
     dye: u8,
     effect: Option<usize>,
     clip: bool,
+    cutoff: Option<f32>,
     mask: Option<usize>,
     normal: Option<usize>,
 }
@@ -370,12 +478,22 @@ fn append_part(model: &mut Model, triangles: &[[u32; 3]], base: u32, passes: usi
         model
             .triangle_clip
             .extend(std::iter::repeat_n(part.clip, count));
+        model.triangle_cutoff.resize(model.triangles.len(), None);
+        model
+            .triangle_cutoff
+            .extend(std::iter::repeat_n(part.cutoff, count));
         model
             .triangle_gearstacks
             .extend(std::iter::repeat_n(part.mask, count));
         model
             .triangle_normals
             .extend(std::iter::repeat_n(part.normal, count));
+        model
+            .triangle_detail_uv
+            .resize(model.triangles.len(), false);
+        model
+            .triangle_detail_uv
+            .extend(std::iter::repeat_n(part.native_detail, count));
         model
             .triangles
             .extend(triangles.iter().map(|tri| tri.map(|v| v + base)));
@@ -464,7 +582,7 @@ fn external_material(component: &[u8], variant: usize) -> Result<u32, String> {
     u32_at(component, rows + start * 4)
 }
 
-type MeshBuffers = (usize, usize, usize, Vec<u8>, bool);
+type MeshBuffers = (usize, Vec<[u32; 3]>, bool, bool);
 
 #[allow(clippy::too_many_arguments)]
 fn read_mesh(
@@ -476,6 +594,8 @@ fn read_mesh(
     scale: [f32; 3],
     translation: [f32; 3],
     uv: [f32; 4],
+    draw: (usize, usize, u16),
+    attributes: Option<&effects::native::Attributes>,
     model: &mut Model,
 ) -> Result<MeshBuffers, String> {
     let tags = [
@@ -484,12 +604,55 @@ fn read_mesh(
         u32_at(bytes, mesh + 8)?,
         u32_at(bytes, mesh + 12)?,
     ];
-    let mut decoded =
-        layouts.read_vertices(manager, layout, tags, MAX_VERTICES - model.vertices.len())?;
-    decoded.transform(scale, translation, uv)?;
+    let mut decoded = layouts.read_vertices(manager, layout, tags, MAX_VERTICES)?;
     let (width, indices) = vertex::indices(manager, u32_at(bytes, mesh + 0x10)?)?;
+    let mut triangles = triangles(
+        &indices,
+        width,
+        draw.0,
+        draw.1,
+        draw.2,
+        decoded.positions.len(),
+    )?;
+    let selected: Vec<_> = triangles
+        .iter()
+        .flatten()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if selected.len() > MAX_VERTICES - model.vertices.len() {
+        return Err("This model exceeds the preview vertex budget.".into());
+    }
+    // Material-local attributes and motion require separate vertices, but only for the
+    // actual draw. Keep native SV_VertexID before remapping these sparse indices.
+    decoded.select(&selected);
+    for triangle in &mut triangles {
+        for index in triangle {
+            *index = selected.binary_search(index).expect("selected draw vertex") as u32;
+        }
+    }
+    let applied =
+        attributes.and_then(
+            |attributes| match attributes.apply(&mut decoded, &selected) {
+                Ok(()) => Some(attributes),
+                Err(error) => {
+                    decoded
+                        .notices
+                        .push(format!("Stored vertex attributes: {error}"));
+                    None
+                }
+            },
+        );
+    let detail = applied
+        .filter(|a| a.has_detail())
+        .map(|_| decoded.detail_uvs.clone());
+    decoded.transform(scale, translation, uv)?;
+    let native_detail = detail.is_some() || applied.is_some_and(|a| a.scaled_detail());
+    if let Some(detail) = detail {
+        decoded.detail_uvs = detail;
+    }
     let base = model.vertices.len();
-    let count = decoded.positions.len();
     let has_uv = decoded.has_uv;
     model
         .vertices
@@ -513,7 +676,7 @@ fn read_mesh(
             model.notices.push(notice);
         }
     }
-    Ok((base, count, width, indices, has_uv))
+    Ok((base, triangles, has_uv, native_detail))
 }
 
 fn vector(bytes: &[u8], offset: usize) -> Result<[f32; 3], String> {

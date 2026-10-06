@@ -63,10 +63,12 @@ fn bucket_picker_choices(
                 &[definition.name, definition.type_name],
             )
         })
+        // The filters read equipment records, so an item without one, such as a bounty, shows
+        // only while no filter is set.
         .filter(|definition| {
             definition
                 .item
-                .is_some_and(|item| filter.matches(catalog, item))
+                .map_or(!filter.is_active(), |item| filter.matches(catalog, item))
         });
     let choices = DefinitionPickerChoices {
         definitions: character_bucket_definition_choices(definitions),

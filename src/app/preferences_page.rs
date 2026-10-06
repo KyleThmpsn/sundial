@@ -398,7 +398,7 @@ impl SundialApp {
         let package_authoring_response = ui
             .horizontal(|ui| {
                 let response =
-                    ui.checkbox(&mut enable_parhelion, "Enable Parhelion Weapon Workbench");
+                    ui.checkbox(&mut enable_parhelion, "Enable Parhelion Package Authoring");
                 crate::ui_help::info(
                     ui,
                     "Build custom weapons from stock weapons, perks and appearances.",

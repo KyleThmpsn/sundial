@@ -92,6 +92,7 @@ use crate::persistence::json_account::inventory;
 pub(crate) mod components;
 
 pub(crate) mod authoring_bridge;
+mod item_art;
 mod item_editor;
 
 mod glyphs;
@@ -1073,6 +1074,12 @@ impl SundialApp {
         if inspector::take_owned_quantities_request(ctx) {
             self.publish_owned_quantities(ctx);
         }
+        if inspector::take_add_targets_request(ctx) {
+            self.publish_add_targets(ctx);
+        }
+        if let Some((hash, destination)) = inspector::take_add_request(ctx) {
+            self.add_from_inspector(hash, destination);
+        }
         if let Some(selection) = inspector::take_progression_selection(ctx) {
             self.open_progression_selection(selection);
         }
@@ -1302,6 +1309,93 @@ impl SundialApp {
     /// What the account holds per item hash, for the inspector's owned-quantity columns. Runs
     /// only on a window's request. An account that cannot be read, such as a blocked one,
     /// withdraws the map so the column reads as unavailable rather than as zero.
+    /// Tells the inspector which characters it can add items to, or that it can add none.
+    fn publish_add_targets(&self, ctx: &egui::Context) {
+        let editable = self.document.account_editing_blocked().is_none()
+            && !self.json_editor.has_unapplied_changes();
+        let targets = editable.then(|| {
+            std::sync::Arc::new(inspector::AddTargets {
+                characters: (0..account::character_count(&self.document))
+                    .map(|index| {
+                        account::character_metadata(&self.document, index)
+                            .ok()
+                            .map(|metadata| metadata.class_type)
+                    })
+                    .collect(),
+                cross_class_subclasses: self.preferences.experimental_cross_class_subclasses,
+            })
+        });
+        inspector::publish_add_targets(ctx, targets);
+    }
+
+    /// Adds one of an item the inspector offered, within the installed bucket limits, where
+    /// saving accepts it.
+    fn add_from_inspector(&mut self, hash: u64, destination: inspector::AddDestination) {
+        let Ok(definition) = u32::try_from(hash) else {
+            self.set_status("The item hash does not fit in 32 bits", true);
+            return;
+        };
+        let fits = match destination {
+            inspector::AddDestination::Character(index) => {
+                account::character_metadata(&self.document, index).is_ok_and(|metadata| {
+                    self.manifest.fits_character_inventory(
+                        hash,
+                        u64::from(metadata.class_type),
+                        self.preferences.experimental_cross_class_subclasses,
+                    )
+                })
+            }
+            inspector::AddDestination::Profile => self
+                .manifest
+                .inventory_metadata(hash)
+                .is_some_and(|metadata| metadata.is_profile_items_candidate()),
+        };
+        if !fits {
+            self.set_status("The account cannot hold this item there", true);
+            return;
+        }
+        let name = self
+            .manifest
+            .display_name(hash)
+            .unwrap_or("Item")
+            .to_owned();
+        let level = self
+            .manifest
+            .inventory_metadata(hash)
+            .map_or(0, |metadata| {
+                item_editor::new_inventory_item_level(
+                    metadata.native_bucket_id,
+                    self.manifest.item_power_cap(hash),
+                )
+            });
+        let outcome = account_validation::apply_with_bucket_limits(
+            &mut self.document,
+            &self.manifest,
+            |document| match destination {
+                inspector::AddDestination::Character(index) => {
+                    let level = i32::try_from(level)
+                        .map_err(|_| "Could not infer a valid item level".to_owned())?;
+                    account::add_inventory_item(
+                        document,
+                        index,
+                        inventory::NewInventoryItem::single(definition, level),
+                    )
+                    .map(|_| format!("Added {name} to Character {}", index + 1))
+                    .map_err(|error| error.to_string())
+                }
+                inspector::AddDestination::Profile => {
+                    account::add_profile_item(document, definition, 1)
+                        .map(|_| format!("Added {name} to Profile"))
+                        .map_err(|error| error.to_string())
+                }
+            },
+        );
+        match outcome {
+            Ok(label) => self.report_edit(label),
+            Err(error) => self.set_status(error, true),
+        }
+    }
+
     fn publish_owned_quantities(&self, ctx: &egui::Context) {
         let Ok(Some(items)) = account_workspace::profile_items(&self.document) else {
             inspector::clear_owned_quantities(ctx);
@@ -1329,7 +1423,7 @@ impl SundialApp {
         inspector::publish_owned_quantities(ctx, std::sync::Arc::new(quantities));
     }
 
-    /// Shows an unlock definition from the Definition Inspector on the Progression page.
+    /// Shows an unlock definition from the Inspector on the Progression page.
     fn open_progression_selection(&mut self, selection: inspector::MetadataSelection) {
         self.select_view(ViewMode::Progression);
         if self.view_mode != ViewMode::Progression {

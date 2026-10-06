@@ -130,7 +130,7 @@ pub(super) fn apply_preview(app: &mut SundialApp, state: &mut State, character_i
             state.source_key = None;
             state.input = None;
             state.preview = None;
-            state.preview_task = None;
+            state.retire_preview_task();
             state.preview_due_at = None;
             state.preserve_feedback_once = true;
         }

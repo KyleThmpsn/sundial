@@ -62,6 +62,7 @@ pub(crate) fn preflight_runtime_edits(
             },
             splices: &[],
             actions: &[],
+            markers: &[],
         },
         allocator,
         &mut Vec::new(),
@@ -156,6 +157,8 @@ pub(super) struct Sources<'a> {
         crate::recipe::AnimationAction,
         crate::weapon::animations::Profile,
     )],
+    /// The moved rig's marker set, grown by the base's own markers.
+    pub markers: &'a [WeaponRuntimeResourceAppend],
 }
 
 pub(super) fn author_runtime_edits(
@@ -171,6 +174,7 @@ pub(super) fn author_runtime_edits(
         groups,
         splices,
         actions,
+        markers,
     } = sources;
     let mut patches = overrides.runtime_resource_patches.clone();
     // Before any owner is copied, so the private arms rig's tags come first and the attachment
@@ -219,6 +223,7 @@ pub(super) fn author_runtime_edits(
         appends.extend(edits.appends);
     }
     appends.extend(grafts.appends);
+    appends.extend_from_slice(markers);
     patches.extend(grafts.patches);
     if let Some(fired) = &overrides.fired_graph {
         if !overrides.additional_behaviors.is_empty() {
@@ -549,15 +554,15 @@ pub(super) fn append_patched_runtime_resource_owners(
             owner_payload[..8].copy_from_slice(&length.to_le_bytes());
         }
         owner_patches.extend(grown);
-        owner_patches.sort_by_key(|patch| (patch.start, patch.end, patch.label.clone()));
-        for pair in owner_patches.windows(2) {
-            if pair[1].start < pair[0].end {
-                return Err(invalid(format!(
-                    "Runtime edits {} and {} overlap inside component owner {owner_tag}",
-                    pair[0].label, pair[1].label
-                )));
-            }
-        }
+        // A wider edit sorts before the edits inside it.
+        owner_patches.sort_by_key(|patch| {
+            (
+                patch.start,
+                std::cmp::Reverse(patch.end),
+                patch.label.clone(),
+            )
+        });
+        let owner_patches = nest_runtime_patches(owner_patches, owner_tag)?;
 
         let authored_owner_tag = runtime_tag_allocator.assigned_tag(
             runtime_new_tags.len(),
@@ -598,6 +603,33 @@ pub(super) fn append_patched_runtime_resource_owners(
         });
     }
     validate_weapon_entity(entity).map_err(invalid)
+}
+
+/// Writes each edit that lies wholly inside a wider one over the wider one's bytes, so the
+/// narrower and more specific edit wins: a movement value rewrites a whole opaque field, and a
+/// named field inside that field can be set on its own. `patches` are sorted by start, wider
+/// first. Edits that only partly overlap, or cover one range with different bytes, are refused.
+fn nest_runtime_patches(
+    patches: Vec<ResolvedRuntimeResourcePatch>,
+    owner_tag: TagHash,
+) -> AuthoringResult<Vec<ResolvedRuntimeResourcePatch>> {
+    let mut nested = Vec::<ResolvedRuntimeResourcePatch>::with_capacity(patches.len());
+    for patch in patches {
+        let Some(outer) = nested.last_mut().filter(|outer| patch.start < outer.end) else {
+            nested.push(patch);
+            continue;
+        };
+        let same_range = (patch.start, patch.end) == (outer.start, outer.end);
+        if patch.end > outer.end || (same_range && patch.bytes != outer.bytes) {
+            return Err(invalid(format!(
+                "Runtime edits {} and {} overlap inside component owner {owner_tag}",
+                outer.label, patch.label
+            )));
+        }
+        outer.bytes[patch.start - outer.start..patch.end - outer.start]
+            .copy_from_slice(&patch.bytes);
+    }
+    Ok(nested)
 }
 
 /// Clone only the referenced graph and edited component owners. All stock tags remain intact.
@@ -720,16 +752,168 @@ fn widen_trajectory_pool(
 
 /// Most levels of graphs a copy follows below its source: the graphs an ability spawns, and
 /// theirs.
-const SPAWN_DEPTH: usize = 3;
+const SPAWN_DEPTH: usize = crate::subclass::SPAWN_DEPTH;
+
+/// Where an entity graph keeps the client's object type, and the type of a projectile.
+const OBJECT_TYPE: usize = 0x96;
+const PROJECTILE: u8 = 18;
+
+/// The patches that make each swap's graph spawn a private copy of its replacement wherever it
+/// spawned the replaced projectile, by graph. Each replacement is copied once, with the graphs
+/// below it that `colors` recolors for it. Refuses a swap whose graph spawns no such projectile,
+/// and one between graphs that are not both projectiles.
+pub(super) fn swap_patches(
+    manager: &PackageManager,
+    swaps: &[crate::subclass::SpawnSwap],
+    colors: &BTreeMap<u32, palettes::ColorPatches>,
+    allocator: AppendedTagAllocator,
+    tags: &mut Vec<NewTagSpec>,
+) -> AuthoringResult<BTreeMap<u32, Vec<WeaponRuntimeResourcePatch>>> {
+    let mut patches = BTreeMap::<u32, Vec<WeaponRuntimeResourcePatch>>::new();
+    let mut copies = BTreeMap::<u32, TagHash>::new();
+    for swap in swaps {
+        for tag in [swap.replaced, swap.replacement] {
+            let payload = read_tag(manager, TagHash(tag), "swapped projectile")?;
+            if payload.get(OBJECT_TYPE) != Some(&PROJECTILE) {
+                return Err(invalid(format!("Graph 0x{tag:08X} is not a projectile")));
+            }
+        }
+        let payload = read_tag(manager, TagHash(swap.graph), "spawning graph")?;
+        let places =
+            sundial::package_authoring::ability_spawns::spawns(manager, swap.graph, &payload)
+                .map_err(invalid)?
+                .into_iter()
+                .filter(|place| place.graph == swap.replaced)
+                .collect::<Vec<_>>();
+        if places.is_empty() {
+            return Err(invalid(format!(
+                "Graph 0x{:08X} spawns no projectile 0x{:08X}",
+                swap.graph, swap.replaced
+            )));
+        }
+        let copy = match copies.get(&swap.replacement) {
+            Some(copy) => *copy,
+            None => {
+                let copy = match colors
+                    .get(&swap.replacement)
+                    .filter(|each| !each.is_empty())
+                {
+                    Some(colors) => append_private_graph_tree(
+                        manager,
+                        TagHash(swap.replacement),
+                        &[],
+                        colors,
+                        allocator,
+                        tags,
+                    )?,
+                    None => append_private_patched_graph(
+                        manager,
+                        TagHash(swap.replacement),
+                        &[],
+                        &[],
+                        allocator,
+                        tags,
+                    )?,
+                };
+                copies.insert(swap.replacement, copy);
+                copy
+            }
+        };
+        for place in places {
+            patches
+                .entry(swap.graph)
+                .or_default()
+                .push(WeaponRuntimeResourcePatch {
+                    binding_hash: place.binding_hash,
+                    resource_index: place.resource_index,
+                    offset: place.offset,
+                    bytes: copy.0.to_le_bytes().to_vec(),
+                    graph_values: Vec::new(),
+                    graph_removals: Vec::new(),
+                    graph_trajectories: None,
+                });
+        }
+    }
+    Ok(patches)
+}
+
+/// The patches that write each bank value into the bank of the ability entity `source`, each
+/// through the entity's binding of the bank whose resource starts nearest before the value. The
+/// graph tree copies the bank they patch, so the copy carries a private bank. Refuses a value
+/// whose row and lane the stock bank does not hold.
+pub(super) fn bank_value_patches(
+    manager: &PackageManager,
+    source: TagHash,
+    values: &[crate::subclass::BankValue],
+) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+    use sundial::package_authoring::entity::weapon_component_binding_hashes;
+    let entity = read_tag(manager, source, "ability entity")?;
+    let bank = sundial::package_authoring::ability_modifier::entity_bank(&entity)
+        .map_err(invalid)?
+        .ok_or_else(|| invalid(format!("Ability entity {source} has no bank to change")))?;
+    let payload = read_tag(manager, TagHash(bank), "ability bank")?;
+    let mut places = Vec::new();
+    for binding in weapon_component_binding_hashes(&entity).map_err(invalid)? {
+        for resource in weapon_component_bindings(&entity, binding).map_err(invalid)? {
+            if resource.owner_tag == bank {
+                places.push((binding, resource.resource_index, resource.resource_offset));
+            }
+        }
+    }
+    values
+        .iter()
+        .map(|value| {
+            let context = |error: String| invalid(format!("Ability bank 0x{bank:08X}: {error}"));
+            use sundial::package_authoring::ability_movement::{
+                PARAMETER_RESET, parameter_lane, row_lane,
+            };
+            let lane = if value.parameter {
+                if value.lane != PARAMETER_RESET {
+                    return Err(context(format!(
+                        "parameter 0x{:08X} has no lane +0x{:X}",
+                        value.key, value.lane
+                    )));
+                }
+                parameter_lane(&payload, (value.key, value.row))
+            } else {
+                row_lane(&payload, (value.key, value.row, value.lane))
+            }
+            .map_err(context)?;
+            let &(binding, index, start) = places
+                .iter()
+                .filter(|(_, _, start)| usize::try_from(*start).is_ok_and(|s| s <= lane.offset))
+                .max_by_key(|(_, _, start)| *start)
+                .ok_or_else(|| {
+                    context(format!(
+                        "{source} binds no resource before row {}",
+                        value.row
+                    ))
+                })?;
+            let offset = u32::try_from(lane.offset - start as usize)
+                .map_err(|_| context("the row lies too far from the bound resource".into()))?;
+            Ok(WeaponRuntimeResourcePatch {
+                binding_hash: binding,
+                resource_index: u16::try_from(index)
+                    .map_err(|_| context("the bound resource index is too large".into()))?,
+                offset,
+                bytes: value.bits.to_le_bytes().to_vec(),
+                graph_values: Vec::new(),
+                graph_removals: Vec::new(),
+                graph_trajectories: None,
+            })
+        })
+        .collect()
+}
 
 /// Copies `source` and every graph below it, up to [`SPAWN_DEPTH`] levels, whose values
 /// `values` change or that `patches` patch, each graph once. A value names its graph by its
 /// locator's graph tag, and one without a tag belongs to `source`. Each copy names the copies of
 /// the graphs under it in place of the stock ones, so the stock graphs and every other graph
 /// naming them stay as they are.
-/// Refuses a value whose graph `source` does not reach, and a copy of an ability bank: the build
-/// adds its property rows to the stock banks, which a copy would leave behind, so a graph a bank
-/// names is not reached through the bank.
+/// A graph the ability bank names is reached through the bank, and the copy of `source` then
+/// takes a private copy of the bank that names the copies. The build gives that copy the rows it
+/// adds to the stock bank afterwards (`ability::banks::sync_private_banks`).
+/// Refuses a value whose graph `source` does not reach.
 pub(super) fn append_private_graph_tree(
     manager: &PackageManager,
     source: TagHash,
@@ -755,6 +939,9 @@ pub(super) fn append_private_graph_tree(
         manager,
         edited: by_graph.keys().chain(patches.keys()).copied().collect(),
         spawns: BTreeMap::new(),
+        selves: BTreeMap::new(),
+        entries: BTreeMap::new(),
+        walked: BTreeMap::new(),
         needed: BTreeSet::new(),
         copies: BTreeMap::new(),
     };
@@ -781,49 +968,125 @@ type GraphEdits<'a> = (
 struct GraphTree<'a> {
     manager: &'a PackageManager,
     edited: BTreeSet<u32>,
-    /// Where each walked graph names the graphs below it.
+    /// Where each walked graph names the graphs and impact tables below it.
     spawns: BTreeMap<u32, Vec<sundial::package_authoring::ability_spawns::Spawn>>,
-    /// Graphs below the source that are edited or lead to an edited one.
+    /// Where each walked graph names itself, as a chain that spawns itself again does.
+    selves: BTreeMap<u32, Vec<sundial::package_authoring::ability_spawns::Spawn>>,
+    /// The graphs and tables each walked impact table names, with the fields naming each.
+    entries: BTreeMap<u32, Vec<(u32, Vec<usize>)>>,
+    /// The shallowest level each graph or table was walked from, and whether it leads to an
+    /// edited graph. One many others name is walked once from each level, not once per route.
+    walked: BTreeMap<u32, (usize, bool)>,
+    /// Graphs and tables below the source that are edited or lead to an edited graph.
     needed: BTreeSet<u32>,
+    /// The copy of each graph and table, its tag taken before what is below it is copied, so a
+    /// route back to one, such as a chain that spawns itself again, names the copy.
     copies: BTreeMap<u32, TagHash>,
 }
 
 impl GraphTree<'_> {
-    /// Walks `graph` and the graphs below it, and returns whether any of them is edited.
+    /// Walks `node`, a graph or an impact table, and what is below it, and returns whether any
+    /// graph among them is edited. A table's graphs are at the table's level, the level below
+    /// the graph naming it.
     fn walk(
         &mut self,
-        graph: u32,
+        node: u32,
         depth: usize,
         visiting: &mut BTreeSet<u32>,
     ) -> AuthoringResult<bool> {
-        let mut leads = self.edited.contains(&graph);
-        if depth >= SPAWN_DEPTH || !visiting.insert(graph) {
+        use sundial::package_authoring::ability_spawns;
+        // Walked from this level or above, it reached at least as deep as it would now.
+        if let Some(&(level, leads)) = self.walked.get(&node)
+            && level <= depth
+        {
             return Ok(leads);
         }
-        let payload = read_tag(self.manager, TagHash(graph), "spawned graph")?;
-        let spawns =
-            sundial::package_authoring::ability_spawns::spawns(self.manager, graph, &payload)
-                .map_err(invalid)?
-                .into_iter()
-                .filter(|spawn| !sundial::package_authoring::ability_modifier::is_bank(spawn.owner))
-                .collect::<Vec<_>>();
-        let below = spawns
-            .iter()
-            .map(|spawn| spawn.graph)
-            .collect::<BTreeSet<_>>();
-        self.spawns.insert(graph, spawns);
-        for child in below {
-            if self.walk(child, depth + 1, visiting)? {
+        let table = ability_spawns::is_table(self.manager, node);
+        let mut leads = !table && self.edited.contains(&node);
+        let last = if table { SPAWN_DEPTH + 1 } else { SPAWN_DEPTH };
+        if depth >= last || !visiting.insert(node) {
+            return Ok(leads);
+        }
+        let below = if table {
+            let entries = ability_spawns::table_entries(self.manager, node).map_err(invalid)?;
+            let below = entries
+                .iter()
+                .map(|(tag, _)| (*tag, depth))
+                .collect::<BTreeSet<_>>();
+            self.entries.insert(node, entries);
+            below
+        } else {
+            let payload = read_tag(self.manager, TagHash(node), "spawned graph")?;
+            let mut places =
+                ability_spawns::spawns(self.manager, node, &payload).map_err(invalid)?;
+            places.extend(ability_spawns::tables(self.manager, node, &payload).map_err(invalid)?);
+            self.selves.insert(
+                node,
+                ability_spawns::self_spawns(self.manager, node, &payload).map_err(invalid)?,
+            );
+            let below = places
+                .iter()
+                .map(|place| (place.graph, depth + 1))
+                .collect::<BTreeSet<_>>();
+            self.spawns.insert(node, places);
+            below
+        };
+        for (child, level) in below {
+            if self.walk(child, level, visiting)? {
                 self.needed.insert(child);
                 leads = true;
             }
         }
-        visiting.remove(&graph);
+        visiting.remove(&node);
+        self.walked.insert(node, (depth, leads));
         Ok(leads)
     }
 
+    /// Copies `table`, naming the copies of the needed graphs and tables in it at every field
+    /// that names them. A table it names that names it back is copied too, so a chain such as
+    /// `80C70C91` and `80C70C92`, which name each other, stays private throughout. Its tag is
+    /// taken before the tables it names are copied, so a table that names itself, or the table
+    /// above it, names the copies.
+    fn copy_table(
+        &mut self,
+        table: u32,
+        edits: GraphEdits<'_>,
+        allocator: AppendedTagAllocator,
+        tags: &mut Vec<NewTagSpec>,
+    ) -> AuthoringResult<TagHash> {
+        let mut payload = read_tag(self.manager, TagHash(table), "impact table")?;
+        let ordinal = tags.len();
+        let authored = allocator.assigned_tag(ordinal, "Private impact table", "impact table")?;
+        tags.push(NewTagSpec {
+            template_tag: TagHash(table),
+            payload: Vec::new(),
+            storage: crate::NewTagStorageMode::InheritTemplate,
+        });
+        self.copies.insert(table, authored);
+        self.needed.insert(table);
+        for (child, offsets) in self.entries.get(&table).cloned().unwrap_or_default() {
+            let names_back = self
+                .entries
+                .get(&child)
+                .is_some_and(|entries| entries.iter().any(|(tag, _)| *tag == table));
+            if !(self.needed.contains(&child) || names_back || self.copies.contains_key(&child)) {
+                continue;
+            }
+            let copy = self.copy(child, edits, allocator, tags)?;
+            retarget_exact_tag_occurrences(
+                &mut payload,
+                TagHash(child),
+                copy,
+                &offsets,
+                &format!("Impact table 0x{table:08X}"),
+            )?;
+        }
+        tags[ordinal].payload = payload;
+        Ok(authored)
+    }
+
     /// Copies `graph` with its own values and patches, naming the copies of the needed graphs
-    /// below it.
+    /// and impact tables below it, and of any graph above it that it names again.
     fn copy(
         &mut self,
         graph: u32,
@@ -834,9 +1097,28 @@ impl GraphTree<'_> {
         if let Some(copy) = self.copies.get(&graph) {
             return Ok(*copy);
         }
+        if self.entries.contains_key(&graph) {
+            return self.copy_table(graph, (values, own_patches), allocator, tags);
+        }
+        let ordinal = tags.len();
+        let authored =
+            allocator.assigned_tag(ordinal, "Private referenced graph", "runtime graph")?;
+        tags.push(NewTagSpec {
+            template_tag: TagHash(graph),
+            payload: Vec::new(),
+            storage: crate::NewTagStorageMode::InheritTemplate,
+        });
+        self.copies.insert(graph, authored);
         let mut patches = own_patches.get(&graph).cloned().unwrap_or_default();
         for spawn in self.spawns.get(&graph).cloned().unwrap_or_default() {
-            if !self.needed.contains(&spawn.graph) {
+            // A place a swap patches names its replacement, not a copy of the stock graph.
+            let swapped = patches.iter().any(|patch| {
+                (patch.binding_hash, patch.resource_index, patch.offset)
+                    == (spawn.binding_hash, spawn.resource_index, spawn.offset)
+            });
+            if swapped
+                || !(self.needed.contains(&spawn.graph) || self.copies.contains_key(&spawn.graph))
+            {
                 continue;
             }
             let child = self.copy(spawn.graph, (values, own_patches), allocator, tags)?;
@@ -850,27 +1132,28 @@ impl GraphTree<'_> {
                 graph_trajectories: None,
             });
         }
-        let own = values.get(&graph).map_or(&[][..], Vec::as_slice);
-        let first = tags.len();
-        let copy = append_private_patched_graph(
-            self.manager,
-            TagHash(graph),
-            own,
-            &patches,
-            allocator,
-            tags,
-        )?;
-        if let Some(bank) = tags[first..]
-            .iter()
-            .find(|tag| sundial::package_authoring::ability_modifier::is_bank(tag.template_tag.0))
-        {
-            return Err(invalid(format!(
-                "A value changes ability bank {}, which the build keeps stock. Use Parameters.",
-                bank.template_tag
-            )));
+        // Where the stock graph names itself, the copy names itself.
+        for place in self.selves.get(&graph).cloned().unwrap_or_default() {
+            if patches.iter().any(|patch| {
+                (patch.binding_hash, patch.resource_index, patch.offset)
+                    == (place.binding_hash, place.resource_index, place.offset)
+            }) {
+                continue;
+            }
+            patches.push(WeaponRuntimeResourcePatch {
+                binding_hash: place.binding_hash,
+                resource_index: place.resource_index,
+                offset: place.offset,
+                bytes: authored.0.to_le_bytes().to_vec(),
+                graph_values: Vec::new(),
+                graph_removals: Vec::new(),
+                graph_trajectories: None,
+            });
         }
-        self.copies.insert(graph, copy);
-        Ok(copy)
+        let own = values.get(&graph).map_or(&[][..], Vec::as_slice);
+        tags[ordinal].payload =
+            private_patched_graph(self.manager, TagHash(graph), own, &patches, allocator, tags)?;
+        Ok(authored)
     }
 }
 
@@ -884,6 +1167,27 @@ fn append_private_patched_graph(
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<TagHash> {
+    let graph = private_patched_graph(manager, source, values, patches, allocator, tags)?;
+    let authored =
+        allocator.assigned_tag(tags.len(), "Private referenced graph", "runtime graph")?;
+    tags.push(NewTagSpec {
+        template_tag: source,
+        payload: graph,
+        storage: crate::NewTagStorageMode::InheritTemplate,
+    });
+    Ok(authored)
+}
+
+/// The payload of a private copy of graph `source` with its edited values and raw patches,
+/// appending a copy of every component owner they touch.
+fn private_patched_graph(
+    manager: &PackageManager,
+    source: TagHash,
+    values: &[WeaponRuntimeValueOverride],
+    patches: &[WeaponRuntimeResourcePatch],
+    allocator: AppendedTagAllocator,
+    tags: &mut Vec<NewTagSpec>,
+) -> AuthoringResult<Vec<u8>> {
     if manager
         .get_entry(source)
         .is_none_or(|entry| entry.reference != WEAPON_ENTITY_CLASS)
@@ -917,14 +1221,7 @@ fn append_private_patched_graph(
         tags,
     )?;
     validate_weapon_entity(&graph).map_err(invalid)?;
-    let authored =
-        allocator.assigned_tag(tags.len(), "Private referenced graph", "runtime graph")?;
-    tags.push(NewTagSpec {
-        template_tag: source,
-        payload: graph,
-        storage: crate::NewTagStorageMode::InheritTemplate,
-    });
-    Ok(authored)
+    Ok(graph)
 }
 
 pub(super) fn validate_exact_tag_occurrences(
@@ -1601,7 +1898,10 @@ fn append_private_program_runtime(
         let asset = program
             .asset(*index)
             .ok_or_else(|| invalid("A compiled asset has no authored component settings."))?;
-        if asset.values.is_empty() {
+        // A guided program's HUD status without settings joins its action's asset edits below.
+        // The native form has no per-action edits, so its asset takes the private copy here.
+        let native_status = program.native.is_some() && asset.hud_status.is_some();
+        if asset.values.is_empty() && !native_status {
             sundial::package_authoring::sandbox_perk::entity::residency::inspect(
                 manager,
                 asset.graph,

@@ -235,13 +235,7 @@ fn compile_canonical(
                 .flat_map(crate::subclass::compile::EntryPlan::private_perks),
         )
         .filter_map(|perk| perk.program.as_ref())
-        .filter(|program| {
-            program
-                .actions
-                .iter()
-                .filter_map(|action| action.asset())
-                .any(|asset| asset.hud_status.is_some())
-        })
+        .filter(|program| program.assets().any(|asset| asset.hud_status.is_some()))
         .cloned()
         .collect::<Vec<_>>();
     let mut assets = progress.step("Planning Artwork", || {
@@ -414,15 +408,22 @@ fn compile_canonical(
         // The build's own copies of ability entities follow their banks' moves too.
         crate::ability::banks::retarget_new_tags(
             &sources.manager,
-            &banks,
+            &banks.replacements,
             &mut runtime.private_perk_tags,
         )?;
         crate::ability::banks::retarget_new_tags(
             &sources.manager,
-            &banks,
+            &banks.replacements,
             &mut runtime.weapon_tags,
         )?;
-        Ok(banks)
+        // A private copy of a bank takes the rows its stock bank took, and the copies that bind
+        // it follow its move.
+        crate::ability::banks::sync_private_banks(
+            &banks.rows,
+            &mut runtime.private_perk_tags,
+            &mut runtime.weapon_tags,
+        )?;
+        Ok(banks.replacements)
     })?;
     let hud_statuses = progress.step("Planning HUD Statuses", || {
         super::hud_status::replacements(&sources.manager, &programs, &assets.hud_status_layers)

@@ -1,17 +1,10 @@
 use super::*;
-use sundial::investment::{
-    WeaponInvestmentStat, WeaponRarity, WeaponSocket, WeaponStatDisplayPoint,
-};
+use sundial::investment::{WeaponInvestmentStat, WeaponSocket, WeaponStatDisplayPoint};
 
 use crate::recipe::WeaponDonorReference;
 
 fn summary(slot: Option<WeaponInventorySlot>, profile: WeaponDamageProfile) -> WeaponDonorSummary {
     WeaponDonorSummary {
-        hash: 0x1234_5678,
-        name: "Test Donor".to_owned(),
-        type_name: "Test Weapon".to_owned(),
-        bucket_hash: 0,
-        collection_backed: true,
         power_cap: Some(1_060),
         damage_type: match profile {
             WeaponDamageProfile::KineticEmpty => Some(WeaponDamageType::Kinetic),
@@ -24,11 +17,8 @@ fn summary(slot: Option<WeaponInventorySlot>, profile: WeaponDamageProfile) -> W
         },
         inventory_slot: slot,
         damage_profile: profile,
-        rarity: WeaponRarity::Legendary,
-        ammo_type: None,
-        weapon_pattern_index: None,
         weapon_translation_group: Some(1),
-        stat_group_index: None,
+        ..crate::test_support::donor_summary(0x1234_5678, "Test Donor", "Test Weapon")
     }
 }
 

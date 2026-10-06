@@ -311,6 +311,7 @@ pub(super) fn convert(
         descriptor_map,
         required,
         None,
+        None,
     )
 }
 
@@ -464,8 +465,18 @@ fn select(source: &Dictionary, used: &mut [BTreeSet<u32>]) -> Result<(Vec<Kept>,
     Ok((kept, maps))
 }
 
-/// Write the native parameter dictionary for the kept names.
-fn write_params(source: &Dictionary, kept: &[Kept], maps: &[Ordinals]) -> Result<Vec<u8>> {
+/// Write the native parameter dictionary for the kept names. Each name's lookup row sets the bits
+/// of the name and its ancestors. With `implied` (a source profile and the native profile it
+/// replaces), the source profile's row also sets the native profile's chain. The client activates
+/// the weapon content's type key as well as the attachment profile, and the native fallback states
+/// test the native profile, so a weapon whose type key becomes the source profile's still matches
+/// them.
+fn write_params(
+    source: &Dictionary,
+    kept: &[Kept],
+    maps: &[Ordinals],
+    implied: Option<(u32, u32)>,
+) -> Result<Vec<u8>> {
     let mut params = Write(vec![0; 0x50]);
     params.0[24..72].copy_from_slice(&source.header);
     let rows = params.array(8, kept.len(), 32, 0x80808EE5);
@@ -485,15 +496,23 @@ fn write_params(source: &Dictionary, kept: &[Kept], maps: &[Ordinals]) -> Result
         let lookup = params.array(row + 16, names.len(), 24, 0x80808EE8);
         for (ordinal, (name, index)) in maps[group].iter().enumerate() {
             let at = lookup + ordinal * 24;
-            let mut old = names[*index].0;
-            loop {
-                let new = maps[group][&source.groups[group][old].0];
-                params.0[at + new / 8] |= 1 << (new % 8);
-                let parent = source.groups[group][old].1;
-                if parent == u16::MAX {
-                    break;
+            let mut chains = vec![names[*index].0];
+            if let Some((profile, native)) = implied
+                && *name == profile
+                && let Some(&kept) = maps[group].get(&native)
+            {
+                chains.push(names[kept].0);
+            }
+            for mut old in chains {
+                loop {
+                    let new = maps[group][&source.groups[group][old].0];
+                    params.0[at + new / 8] |= 1 << (new % 8);
+                    let parent = source.groups[group][old].1;
+                    if parent == u16::MAX {
+                        break;
+                    }
+                    old = usize::from(parent);
                 }
-                old = usize::from(parent);
             }
             params.0[at + 15] |= 128;
             params.word(at + 16, *name);
@@ -574,6 +593,7 @@ pub(super) fn convert_for_profile(
     descriptor_map: &BTreeMap<u32, u32>,
     required: &[u32],
     profile: Option<u32>,
+    implied: Option<(u32, u32)>,
 ) -> Result<Converted> {
     let source = Dictionary::read(source_parameters, true)?;
     let native = Dictionary::read(native_parameters, false)?;
@@ -591,7 +611,7 @@ pub(super) fn convert_for_profile(
     );
     let mut used = used_names(&source, required, &nodes)?;
     let (kept, maps) = select(&source, &mut used)?;
-    let parameters = write_params(&source, &kept, &maps)?;
+    let parameters = write_params(&source, &kept, &maps, implied)?;
     let states = write_states(&ns, &nodes, &maps)?;
     Ok(Converted {
         parameters,

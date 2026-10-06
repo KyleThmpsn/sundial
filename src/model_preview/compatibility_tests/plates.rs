@@ -4,8 +4,24 @@ use fixtures::{Package, array, floats, put};
 
 const COLORS: [[u8; 4]; 3] = [[16, 48, 240, 255], [220, 208, 176, 255], [12, 12, 12, 255]];
 
-fn plate(package: &mut Package, rect: [u32; 4], channel: usize) -> (u32, u32) {
-    let rgba = (0..8)
+pub(in crate::model_preview) fn camera(case: &serde_json::Value) -> render::Camera {
+    let mut camera = render::Camera::default();
+    for (name, field) in [
+        ("yaw", &mut camera.yaw),
+        ("pitch", &mut camera.pitch),
+        ("zoom", &mut camera.zoom),
+    ] {
+        if let Some(value) = case["camera"][name].as_f64() {
+            *field = value as f32;
+            assert!(field.is_finite(), "Configured camera {name} is not finite");
+        }
+    }
+    assert!(camera.pitch.abs() <= render::MAX_PITCH && camera.zoom > 0.0);
+    camera
+}
+
+fn plate(package: &mut Package, rect: [u32; 4], channel: usize, size: [usize; 2]) -> (u32, u32) {
+    let rgba = (0..size[1])
         .flat_map(|y| {
             let color = match channel {
                 0 => {
@@ -21,19 +37,23 @@ fn plate(package: &mut Package, rect: [u32; 4], channel: usize) -> (u32, u32) {
                 2 => [255, if y < 2 { 32 } else { 192 }, 0, 0],
                 _ => [240, 16, 16, 255],
             };
-            std::iter::repeat_n(color, 8).flatten()
+            std::iter::repeat_n(color, size[0]).flatten()
         })
         .collect();
     let data = package.raw(0, 0, 0, rgba);
     let mut header = vec![0; 0x40];
-    put(&mut header, 0, &(8u32 * 8 * 4).to_le_bytes());
+    put(
+        &mut header,
+        0,
+        &((size[0] * size[1] * 4) as u32).to_le_bytes(),
+    );
     put(
         &mut header,
         4,
         &(if channel == 0 { 29u32 } else { 28 }).to_le_bytes(),
     );
-    for at in [14, 16] {
-        put(&mut header, at, &8u16.to_le_bytes());
+    for (at, length) in [14, 16].into_iter().zip(size) {
+        put(&mut header, at, &(length as u16).to_le_bytes());
     }
     for at in [18, 20] {
         put(&mut header, at, &1u16.to_le_bytes());
@@ -49,15 +69,38 @@ fn plate(package: &mut Package, rect: [u32; 4], channel: usize) -> (u32, u32) {
     (package.add(0x8080_9EBB, bytes), texture)
 }
 
-fn fixture(rect: [u32; 4], canvas: [usize; 2], explicit: bool) -> (tempfile::TempDir, u32) {
+pub(super) fn fixture(
+    rect: [u32; 4],
+    canvas: [usize; 2],
+    explicit: bool,
+) -> (tempfile::TempDir, u32) {
+    fixture_material(rect, canvas, explicit, 0, |package, bindings| {
+        if explicit {
+            let mut bytes = vec![0; 0x400];
+            array(&mut bytes, 0x2D0, 0x8080_7211, bindings, 8);
+            package.add(0x8080_71E8, bytes)
+        } else {
+            0
+        }
+    })
+}
+
+pub(super) fn fixture_material(
+    rect: [u32; 4],
+    canvas: [usize; 2],
+    explicit: bool,
+    slot: u8,
+    material: impl FnOnce(&mut Package, &[u8]) -> u32,
+) -> (tempfile::TempDir, u32) {
     let mut package = Package::default();
     fixtures::layouts(&mut package);
     let mut plates = vec![0; 0x30];
     let mut bindings = Vec::new();
+    let image_size = if explicit { [16, 8] } else { [8, 8] };
     for channel in 0..3 {
-        let (own, texture) = plate(&mut package, rect, channel);
+        let (own, texture) = plate(&mut package, rect, channel, image_size);
         let tag = if explicit {
-            plate(&mut package, rect, 3).0
+            plate(&mut package, rect, 3, image_size).0
         } else {
             own
         };
@@ -66,13 +109,7 @@ fn fixture(rect: [u32; 4], canvas: [usize; 2], explicit: bool) -> (tempfile::Tem
         bindings.extend(texture.to_le_bytes());
     }
     let plates = package.add(0x8080_72D2, plates);
-    let material = if explicit {
-        let mut bytes = vec![0; 0x400];
-        array(&mut bytes, 0x2D0, 0x8080_7211, &bindings, 8);
-        package.add(0x8080_71E8, bytes)
-    } else {
-        0
-    };
+    let material = material(&mut package, &bindings);
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     for (panel, v) in [0.125f32, 0.5, 0.875].into_iter().enumerate() {
@@ -126,6 +163,7 @@ fn fixture(rect: [u32; 4], canvas: [usize; 2], explicit: bool) -> (tempfile::Tem
     put(&mut part, 4, &(-1i16).to_le_bytes());
     put(&mut part, 6, &3u16.to_le_bytes());
     put(&mut part, 12, &18u32.to_le_bytes());
+    part[0x1A] = slot;
     array(&mut model, mesh + 0x18, 0x8080_737E, &part, 0x20);
     let model = package.add(MODEL, model);
     let mut component = vec![0; 0x400];
@@ -141,6 +179,34 @@ fn fixture(rect: [u32; 4], canvas: [usize; 2], explicit: bool) -> (tempfile::Tem
     (directory, component)
 }
 
+#[cfg_attr(
+    not(windows),
+    allow(dead_code, reason = "used by the Windows GPU verification")
+)]
+pub(in crate::model_preview) fn canvas_cases() -> Vec<(String, Model)> {
+    [
+        ("wide", [0, 0, 16, 8], [16, 16], false),
+        ("tall", [0, 0, 8, 16], [16, 16], false),
+        ("square", [0, 0, 8, 8], [8, 8], false),
+        ("offset", [8, 4, 8, 4], [16, 16], false),
+        ("explicit", [0, 0, 16, 8], [16, 8], true),
+    ]
+    .into_iter()
+    .map(|(name, rect, canvas, explicit)| {
+        let (directory, tag) = fixture(rect, canvas, explicit);
+        let manager = PackageManager::new(
+            directory.path(),
+            tiger_pkg::GameVersion::Destiny(tiger_pkg::DestinyVersion::Destiny2Shadowkeep),
+            Some(tiger_pkg::PackagePlatform::Win64),
+        )
+        .unwrap();
+        let model = load_with_manager(&manager, tag, &Load::default(), None).unwrap();
+        validate(&model);
+        (format!("native-canvas-{name}"), model)
+    })
+    .collect()
+}
+
 #[test]
 fn gear_plate_landmarks_survive_package_loading_rendering_and_export() {
     let temporary = tempfile::tempdir().unwrap();
@@ -152,18 +218,18 @@ fn gear_plate_landmarks_survive_package_loading_rendering_and_export() {
     std::fs::create_dir_all(output).unwrap();
     let mut receipt = Vec::new();
     for (name, rect, canvas, expected_size, explicit) in [
-        ("wide", [0, 0, 16, 8], [16, 8], [16, 8], false),
-        ("tall", [0, 0, 8, 16], [8, 16], [8, 16], false),
+        ("wide", [0, 0, 16, 8], [16, 16], [16, 16], false),
+        ("tall", [0, 0, 8, 16], [16, 16], [16, 16], false),
         ("square", [0, 0, 8, 8], [8, 8], [8, 8], false),
-        ("offset", [8, 4, 8, 4], [16, 8], [16, 8], false),
+        ("offset", [8, 4, 8, 4], [16, 16], [16, 16], false),
         (
-            "reduced",
+            "high-resolution",
             [0, 0, 4096, 1024],
-            [4096, 1024],
-            [2048, 512],
+            [4096, 4096],
+            [4096, 4096],
             false,
         ),
-        ("explicit", [0, 0, 16, 8], [16, 8], [8, 8], true),
+        ("explicit", [0, 0, 16, 8], [16, 8], [16, 8], true),
     ] {
         let (directory, tag) = fixture(rect, canvas, explicit);
         let manager = PackageManager::new(
@@ -256,22 +322,76 @@ fn installed_gear_plates_render_catalog_appearances() {
     let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     let mut receipt = Vec::new();
     for case in cases {
+        let camera = camera(&case);
         let hash = u32::from_str_radix(case["hash"].as_str().unwrap(), 16).unwrap();
         let appearance = catalog
             .shader_preview_appearance(hash, &Default::default())
             .unwrap();
         let model = appearance::load(&packages, &appearance).unwrap();
         validate(&model);
+        // Retain material inputs before acceptance assertions, so a failed image remains
+        // traceable to its loaded geometry, colors and unavailable native inputs.
+        let surfaces: Vec<_> = model
+            .dyes
+            .iter()
+            .enumerate()
+            .map(|(slot, dye)| {
+                dye.as_ref().map(|d| {
+                    json!({"slot":slot,"vectors":d.vectors,
+                "albedo":d.surface.albedo,"emissive":d.surface.emissive,
+                "detail":d.detail,"normal":d.normal})
+                })
+            })
+            .collect();
+        let textures: Vec<_> = model.textures.iter().map(|t| {
+            json!({"tag":format!("{:08X}",t.tag),"size":t.size,"linear":t.linear.is_some()})
+        }).collect();
+        let color_consumers: Vec<_> = model.effects.iter().enumerate().filter(|(_, m)| m.native.as_ref().is_some_and(|n| n.opaque())).map(|(index, m)| {
+            let frames: Vec<_> = [0.0, 0.5, 1.0].into_iter().map(|seconds| {
+                let frame = m.frame(seconds);
+                json!({"seconds":seconds,"base_gain":frame.as_ref().and_then(|f| m.native.as_ref()?.base_gain(f)),"base_metal":frame.as_ref().and_then(|f| m.native.as_ref()?.base_metal(f)),"paint_smoothness":frame.as_ref().and_then(|f| m.native.as_ref()?.paint(f)),"normal_decode":frame.as_ref().and_then(|f| m.native.as_ref()?.normal(f)),"normal_grain":frame.as_ref().and_then(|f| m.native.as_ref()?.grain(f)),"constants":frame.map(|f| f[..m.constants.len()].to_vec())})
+            }).collect();
+            json!({"index":index,"local_uv":m.native.as_ref().and_then(|n| n.opaque_uv),"frames":frames})
+        }).collect();
+        let normal_consumers: Vec<_> = model.effects.iter().enumerate().filter_map(|(index, material)| {
+            let normal = material.normal.as_ref()?;
+            let frames: Vec<_> = [0.0, 0.5, 1.0].into_iter().map(|seconds| {
+                json!({"seconds":seconds,"decode":material.frame(seconds).as_ref().and_then(|f| normal.frame(f))})
+            }).collect();
+            let triangles = model.triangle_effects.iter().filter(|&&effect| effect == Some(index)).count();
+            Some(json!({"index":index,"triangles":triangles,"frames":frames}))
+        }).collect();
+        std::fs::write(
+            output.join(format!("{hash:08X}-loaded.json")),
+            serde_json::to_vec_pretty(&json!({"case":case,"arrangement":appearance.arrangement,
+                "dyes":appearance.dyes,"surfaces":surfaces,"textures":textures,
+                "tags":model.tags,"vertices":model.vertices.len(),"triangles":model.triangles.len(),
+                "mapped_triangles":model.triangle_dye_maps.iter().filter(|m| m.is_some()).count(),
+                "detail_triangles":model.triangle_detail_uv.iter().filter(|&&m| m).count(),
+                "opaque_triangles":(0..model.triangles.len()).filter(|&i| !crate::model_preview::effects::transparent(&model,i)).count(),
+                "opaque_color_consumers":color_consumers,
+                "native_normal_consumers":normal_consumers,
+                "motions":model.motions.len(),"notices":model.notices}))
+            .unwrap(),
+        )
+        .unwrap();
         assert!(!model.triangles.is_empty());
+        if let Some(minimum) = case["minimum_triangles"].as_u64() {
+            assert!(
+                model.triangles.len() >= minimum as usize,
+                "{hash:08X}: only {} triangles loaded",
+                model.triangles.len()
+            );
+        }
         assert_eq!(model.vertices.len(), model.uvs.len());
         assert!(model.vertices.iter().flatten().all(|v| v.is_finite()));
         let name = format!("{hash:08X}");
-        let image = render::image(&model, render::Camera::default(), [800, 480]);
+        let image = render::image(&model, camera, [800, 480]);
         let rgba: Vec<_> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
         if case["verify_particle_study"] == true {
             let study = render::animated_image(
                 &model,
-                render::Camera::default(),
+                camera,
                 render::Scene {
                     particle_study: true,
                     ..Default::default()
@@ -329,7 +449,7 @@ fn installed_gear_plates_render_catalog_appearances() {
         let mut layers = std::collections::BTreeMap::<[u32; 6], (Vec<usize>, Vec<usize>)>::new();
         if case["verify_layer_motion"] == true {
             for (triangle, vertices) in model.triangles.iter().enumerate() {
-                let effect = model.triangle_effects[triangle].is_some();
+                let effect = crate::model_preview::effects::transparent(&model, triangle);
                 for &index in vertices {
                     let index = index as usize;
                     let key = std::array::from_fn(|lane| {
@@ -418,7 +538,7 @@ fn installed_gear_plates_render_catalog_appearances() {
             }
             let image = render::animated_image(
                 &model,
-                render::Camera::default(),
+                camera,
                 render::Scene::default(),
                 [800, 480],
                 seconds,

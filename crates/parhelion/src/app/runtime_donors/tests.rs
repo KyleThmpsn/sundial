@@ -13,22 +13,7 @@ const BINDING: u32 = WEAPON_RELOAD_COMPONENT_KEY;
 const VIEWPORT: egui::Vec2 = egui::vec2(1000.0, 900.0);
 
 fn donor(hash: u32, name: &str) -> WeaponDonorSummary {
-    WeaponDonorSummary {
-        hash,
-        name: name.into(),
-        type_name: "Sidearm".into(),
-        bucket_hash: 0,
-        collection_backed: true,
-        power_cap: None,
-        damage_type: None,
-        inventory_slot: None,
-        ammo_type: None,
-        weapon_pattern_index: None,
-        weapon_translation_group: None,
-        stat_group_index: None,
-        damage_profile: WeaponDamageProfile::Unknown,
-        rarity: WeaponRarity::Legendary,
-    }
+    crate::test_support::donor_summary(hash, name, "Sidearm")
 }
 
 fn report() -> ComponentCompatibilityReport {

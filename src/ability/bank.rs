@@ -61,8 +61,8 @@ pub use names::{
     parameter_meaning, parameter_name,
 };
 pub use read::{
-    block_count, handler_slot, instance_shift, parameters, property_rows, retarget_references,
-    validate,
+    bank_owner, block_count, handler_slot, instance_shift, parameter_rows, parameters,
+    property_rows, retarget_references, row_modifiers, validate,
 };
 pub use registry::{bank_name, bank_names, parameter_abilities, register_bank_names};
 
@@ -143,8 +143,8 @@ pub struct ChargeRow {
 /// The Dodge bank `80BC2C8A` and the Warlock melee bank `80BC3439` carry theirs and are not
 /// listed. The Hunter melee bank's own charge row is the throwing knife's, under a key of its
 /// own, so it is listed for the melee key. The Rift bank and the second Titan melee bank
-/// `80BC4036` hand no charge modifier to any slot, so `handler_slot` finds none and the
-/// build leaves them as they are.
+/// `80BC4036` have no charge row of their own. Each shares its native class with a bank that
+/// has one, so `handler_slot` numbers a charge handler after their others.
 pub const CHARGE_ROWS: [ChargeRow; 2] = [
     ChargeRow {
         slot: CLASS_ABILITY_SLOT,
@@ -255,8 +255,8 @@ pub fn slot_name(slot: AbilityTarget) -> Option<&'static str> {
 }
 
 /// The key an authored tuning is applied and defined under. It is a hash of the tuning
-/// itself, so equal tunings on any perk share one row and different ones never collide with
-/// each other or, in practice, with a stock key.
+/// itself, so equal tunings on any perk share one row. It is 32 bits, so different tunings or a
+/// stock row can share a key, and the build refuses that rather than reuse the other row.
 #[must_use]
 pub fn tuning_key(slot: AbilityTarget, parameter: u32, value_bits: u32, add: bool) -> u32 {
     crate::hash::fnv1_name_hash(&format!(
@@ -355,12 +355,13 @@ pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result
     let layout = layout(payload)?;
     let table = table_parameters(payload, layout.parameters.as_ref())?;
     let parameter = listed_parameter(&table, modifier)?;
-    let handler = handler_slot_in(&before, modifier)?.ok_or_else(|| {
-        format!(
-            "The bank hands no {} modifier to any handler slot",
-            modifier_kind(modifier)
-        )
-    })?;
+    let handler =
+        handler_slot_in(&before, read::bank_class(payload)?, modifier)?.ok_or_else(|| {
+            format!(
+                "The bank hands no {} modifier to any handler slot",
+                modifier_kind(modifier)
+            )
+        })?;
     let count = layout.definition_rows.count;
     let links = blocks(payload, layout.owner);
     let classes = modifier_classes(modifier);

@@ -164,9 +164,48 @@ fn installation_lock_excludes_a_second_process() {
     assert!(status.success());
 }
 
-fn replace_then_fail(source: &Path, target: &Path) -> Result<(), String> {
-    sundial::package_authoring::replace_file_from_path_atomically(source, target)?;
+fn replace_then_fail(
+    source: &Path,
+    target: &Path,
+    original: Option<&FileDigest>,
+) -> Result<(), String> {
+    publish_package(source, target, original)?;
     Err("Injected directory synchronization failure after replacement".to_owned())
+}
+
+/// An outside tool writes a target after preflight checked it. The install must refuse rather
+/// than replace those bytes with a package whose backup holds something else, whether the target
+/// had a file before or not.
+#[test]
+fn normal_install_preserves_a_target_changed_after_preflight() {
+    for existing in [false, true] {
+        let fixture = if existing {
+            installed_fixture()
+        } else {
+            Fixture::new()
+        };
+        let target = fixture.target.join(AUTHORED_PACKAGES[0].file_name);
+        let external = b"an external tool published this after preflight";
+        let mut injected = false;
+        let result = install_with_progress(
+            &fixture.request(),
+            None,
+            DEFAULT_CACHE_INVALIDATION_OPS,
+            publish_package,
+            &mut |event| {
+                if !injected && event.phase == InstallPhase::Installing && event.completed == 0 {
+                    fs::write(&target, external).unwrap();
+                    injected = true;
+                }
+            },
+        );
+        assert!(injected);
+        assert!(
+            result.is_err(),
+            "an unbacked-up external change must be refused"
+        );
+        assert_eq!(fs::read(&target).unwrap(), external);
+    }
 }
 
 #[test]
@@ -217,8 +256,12 @@ fn post_replacement_failure_restores_existing_and_removes_new_packages() {
     }
 }
 
-fn replace_then_corrupt_backup(source: &Path, target: &Path) -> Result<(), String> {
-    sundial::package_authoring::replace_file_from_path_atomically(source, target)?;
+fn replace_then_corrupt_backup(
+    source: &Path,
+    target: &Path,
+    original: Option<&FileDigest>,
+) -> Result<(), String> {
+    publish_package(source, target, original)?;
     let journal = target.parent().unwrap().join(INSTALL_TRANSACTION_FILE_NAME);
     let record = read_install_transaction(&journal).unwrap();
     fs::write(
@@ -337,12 +380,7 @@ fn interrupted_mixed_replacement_and_removal_recovers_after_restart() {
     validate_install_transaction(&record, &validated.target_packages_directory).unwrap();
     write_install_transaction(&fixture.target.join(INSTALL_TRANSACTION_FILE_NAME), &record)
         .unwrap();
-    commit_prepared_files(
-        &prepared,
-        None,
-        sundial::package_authoring::replace_file_from_path_atomically,
-    )
-    .unwrap();
+    commit_prepared_files(&prepared, None, publish_package).unwrap();
     recover_interrupted_install(&fixture.recovery_request()).unwrap();
     for (name, bytes) in &fixture.staged_bytes {
         assert_eq!(fs::read(fixture.target.join(name)).unwrap(), *bytes);

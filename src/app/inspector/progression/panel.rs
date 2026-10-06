@@ -144,7 +144,7 @@ fn draw_metadata_panel(
         }
         ui.menu_button("More", |ui| {
             if let Some(definition) = definition
-                && ui.button("Open Definition Inspector").clicked()
+                && ui.button("Open Inspector").clicked()
             {
                 request_definition(ui.ctx(), definition.hash);
                 ui.close_menu();

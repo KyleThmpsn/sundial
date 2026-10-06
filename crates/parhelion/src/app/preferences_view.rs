@@ -103,15 +103,6 @@ impl PackageAuthoringApp {
         {
             self.set_show_experimental_options(show);
         }
-        let mut technical = self.show_technical_build;
-        if ui
-            .checkbox(&mut technical, "Show Technical Build")
-            .on_hover_text("What the next build assigns, and what a staged build produced.")
-            .changed()
-        {
-            self.show_technical_build = technical;
-            self.save_backup_preferences();
-        }
         ui.add_space(12.0);
         let editable = self.package_preferences_editable();
         preference_heading(ui, "Recipe Library");

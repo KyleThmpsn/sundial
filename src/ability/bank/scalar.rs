@@ -54,7 +54,7 @@ pub(super) fn with_row(
         ));
     }
     let layout = layout(payload)?;
-    let handler = handler_slot_in(&before, modifier)?
+    let handler = handler_slot_in(&before, read::bank_class(payload)?, modifier)?
         .ok_or("The bank has no native numeric property handler")?;
     let runtime = rows(
         payload,

@@ -23,15 +23,7 @@ fn click(app: &mut SundialApp, ctx: &egui::Context, position: egui::Pos2) {
         frame(
             app,
             ctx,
-            vec![
-                egui::Event::PointerMoved(position),
-                egui::Event::PointerButton {
-                    pos: position,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
+            crate::test_support::primary_press(position, pressed),
         );
     }
 }

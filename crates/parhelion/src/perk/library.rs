@@ -231,13 +231,60 @@ impl Library {
         })
     }
 
-    pub fn save_drafts(&self, bytes: &[u8], expected: Option<&[u8]>) -> Result<(), String> {
-        self.save_checked_or(
-            &self.root.join("workbench-drafts.json"),
-            bytes,
-            expected,
-            "The drafts file changed outside the workbench.",
-        )
+    /// Writes the drafts file when it still holds `expected`. Another window that wrote it since
+    /// is a conflict, and nothing is written.
+    pub fn save_drafts(
+        &self,
+        bytes: &[u8],
+        expected: Option<&[u8]>,
+    ) -> Result<DraftsWrite, String> {
+        self.write_checked(&self.root.join(DRAFTS), bytes, expected)
+    }
+
+    /// Writes the drafts of a window that lost the drafts file to another window, beside it
+    /// under the window's own `session` name. Neither window's drafts replace the other's, and
+    /// the next start opens both.
+    pub fn save_set_aside_drafts(&self, session: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+        let path = self
+            .root
+            .join(format!("workbench-drafts.{session}{SET_ASIDE_SUFFIX}"));
+        sundial::package_authoring::replace_authoring_file(&path, bytes)
+            .map_err(|error| error.to_string())?;
+        Ok(path)
+    }
+
+    /// The drafts other windows set aside, each with the bytes it holds, in name order.
+    pub fn set_aside_drafts(&self) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
+        let mut found = Vec::new();
+        for entry in fs::read_dir(&self.root).map_err(|error| error.to_string())? {
+            let path = entry.map_err(|error| error.to_string())?.path();
+            let set_aside = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.starts_with("workbench-drafts.") && name.ends_with(SET_ASIDE_SUFFIX)
+                });
+            if set_aside && path.is_file() {
+                let bytes = fs::read(&path).map_err(|error| error.to_string())?;
+                found.push((path, bytes));
+            }
+        }
+        found.sort();
+        Ok(found)
+    }
+
+    /// Removes a set-aside drafts file once its drafts are in the drafts file. One that changed
+    /// since it was read belongs to a window still writing it and is kept.
+    pub fn remove_set_aside_drafts(&self, path: &Path, expected: &[u8]) -> Result<(), String> {
+        let _lock = self.lock()?;
+        match fs::read(path) {
+            Ok(current) if current == expected => {
+                fs::remove_file(path).map_err(|error| error.to_string())
+            }
+            Ok(_) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     /// Removes a saved perk. The file must still hold `expected`, so a copy edited outside
@@ -342,6 +389,19 @@ impl Library {
         expected: Option<&[u8]>,
         conflict: &str,
     ) -> Result<(), String> {
+        match self.write_checked(path, bytes, expected)? {
+            DraftsWrite::Written => Ok(()),
+            DraftsWrite::Conflict => Err(conflict.to_owned()),
+        }
+    }
+
+    /// Writes `bytes` when the file still holds `expected`.
+    fn write_checked(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        expected: Option<&[u8]>,
+    ) -> Result<DraftsWrite, String> {
         let _lock = self.lock()?;
         let current = match fs::read(path) {
             Ok(bytes) => Some(bytes),
@@ -349,11 +409,26 @@ impl Library {
             Err(error) => return Err(error.to_string()),
         };
         if current.as_deref() != expected {
-            return Err(conflict.to_owned());
+            return Ok(DraftsWrite::Conflict);
         }
         sundial::package_authoring::replace_authoring_file(path, bytes)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        Ok(DraftsWrite::Written)
     }
+}
+
+/// The drafts file every window of the workbench shares.
+const DRAFTS: &str = "workbench-drafts.json";
+
+/// The end of a set-aside drafts file's name. Its middle names the window that wrote it.
+const SET_ASIDE_SUFFIX: &str = ".set-aside.json";
+
+/// What a checked write of the drafts file did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DraftsWrite {
+    Written,
+    /// The file no longer held what the writer last saw, so nothing was written.
+    Conflict,
 }
 
 /// The bundled examples as shipped, each with its validated recipe.

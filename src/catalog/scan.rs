@@ -217,6 +217,8 @@ pub(super) fn scan_packages(
         descriptions: item_scan.descriptions,
         perk_descriptions,
         icon_containers: item_scan.icon_containers,
+        ammo_icon_containers: crate::investment_schema::AMMO_ICON_ROWS
+            .map(|row| icon_containers_by_index.get(row).copied().flatten()),
         item_package_metadata: item_scan.item_package_metadata,
         item_stat_definitions,
         character_stat_rows,

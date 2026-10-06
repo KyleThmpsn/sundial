@@ -220,6 +220,26 @@ impl EmbeddedImage {
     }
 }
 
+/// The width and height an embedded picture's base64 PNG declares, read from its header without
+/// decoding it, so a document's pictures can be counted before any is decoded.
+pub(crate) fn embedded_dimensions(png_base64: &str) -> Result<(u32, u32), String> {
+    // Eight signature bytes, the header chunk's length and type, then its width and height.
+    let head = png_base64
+        .get(..32)
+        .and_then(|head| STANDARD.decode(head).ok())
+        .filter(|head| {
+            head.starts_with(b"\x89PNG\r\n\x1a\n") && head.get(12..16) == Some(&b"IHDR"[..])
+        })
+        .ok_or("An embedded picture is not a PNG")?;
+    let read = |at: usize| {
+        head.get(at..at + 4)
+            .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+            .map(u32::from_be_bytes)
+            .ok_or("An embedded picture is not a PNG")
+    };
+    Ok((read(16)?, read(20)?))
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EmbeddedPng {

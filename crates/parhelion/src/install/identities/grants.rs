@@ -8,7 +8,7 @@ use sundial::package_authoring::account::{
 use sundial::package_authoring::stock_subclass_list_classes;
 
 /// The stack an authored shader arrives as, within its own stack limit.
-const SHADER_STACK: i32 = 777;
+pub(crate) const SHADER_STACK: i32 = 777;
 
 /// An authored item the install adds to the account, as the manifest records it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

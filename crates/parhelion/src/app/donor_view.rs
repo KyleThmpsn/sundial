@@ -1213,17 +1213,31 @@ impl PackageAuthoringApp {
                     carried,
                 ) {
                     (true, _, Some(true)) => Some("Different weapon type. The game can crash."),
-                    (true, _, Some(false)) => {
-                        Some("Different weapon type. Moving parts stay still. The game can crash.")
-                    }
+                    (true, _, Some(false)) => Some(
+                        "Different weapon type. Plays the base weapon's animations. Moving parts \
+                         stay still and the model can sit or aim wrong. The game can crash.",
+                    ),
                     (false, true, Some(true)) => Some("Different rig. The game can crash."),
-                    (false, true, Some(false)) => {
-                        Some("Different rig. Moving parts stay still. The game can crash.")
-                    }
+                    (false, true, Some(false)) => Some(
+                        "Different rig. Plays the base weapon's animations. Moving parts stay \
+                         still and the model can sit or aim wrong. The game can crash.",
+                    ),
                     // While the rig is checked there is nothing to warn about yet.
                     (true, _, None) | (false, true, None) | (false, false, _) => None,
                 }
             });
+        // A sword model shows its blade only on a sword. On Bane of Sorrow, Throne-Cleaver drew
+        // nothing in first person and no blade in third person.
+        let sword = current_summary
+            .zip(gameplay_summary)
+            .is_some_and(|(current, gameplay)| {
+                current.type_name == "Sword" && gameplay.type_name != "Sword"
+            })
+            .then_some("Sword models can be invisible on other weapon types.");
+        let warning = match (warning, sword) {
+            (Some(rig), Some(sword)) => Some(format!("{rig}\n{sword}")),
+            (rig, sword) => rig.or(sword).map(str::to_owned),
+        };
         draw_donor_section_label_with_warning(
             ui,
             "Appearance",
@@ -1232,7 +1246,7 @@ impl PackageAuthoringApp {
                  icon and colors.\n\
                  Keeps the base weapon's stats, perks, firing, reload speed and firing sound.",
             ),
-            match (slot_warning.as_deref(), warning) {
+            match (slot_warning.as_deref(), warning.as_deref()) {
                 (Some(slot), Some(rig)) => Some(format!("{rig}\n{slot}")),
                 (slot, rig) => slot.or(rig).map(str::to_owned),
             }

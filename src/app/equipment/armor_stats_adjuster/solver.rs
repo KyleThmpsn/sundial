@@ -2,7 +2,18 @@
 
 use super::*;
 
+#[cfg(test)]
 pub(super) fn solve(input: &LoadoutInput, targets: [u16; 6]) -> Solution {
+    solve_until(input, targets, &AtomicBool::new(false)).expect("an uncancelled search finishes")
+}
+
+/// The best loadout for `targets`, or `None` once `cancel` is set. The flag is read before each
+/// slot and each search state it extends, so a stale search stops within part of a layer.
+pub(super) fn solve_until(
+    input: &LoadoutInput,
+    targets: [u16; 6],
+    cancel: &AtomicBool,
+) -> Option<Solution> {
     let mut states = vec![SearchState {
         totals: [0; 6],
         plans: Vec::with_capacity(input.candidates.len()),
@@ -12,9 +23,15 @@ pub(super) fn solve(input: &LoadoutInput, targets: [u16; 6]) -> Solution {
         exotics: 0,
     }];
     for candidates in &input.candidates {
+        if cancel.load(AtomicOrdering::Relaxed) {
+            return None;
+        }
         let plans = slot_plans(candidates, targets);
         let mut next = HashMap::<([i32; 6], usize), SearchState>::new();
         for state in &states {
+            if cancel.load(AtomicOrdering::Relaxed) {
+                return None;
+            }
             for plan in &plans {
                 let candidate = &candidates[plan.candidate_index];
                 let exotics = state.exotics + usize::from(candidate.exotic);
@@ -60,7 +77,7 @@ pub(super) fn solve(input: &LoadoutInput, targets: [u16; 6]) -> Solution {
             masterworks: 0,
             exotics: 0,
         });
-    solution_from_search(input, targets, best)
+    Some(solution_from_search(input, targets, best))
 }
 
 pub(super) fn slot_plans(candidates: &[ArmorCandidate], targets: [u16; 6]) -> Vec<PiecePlan> {

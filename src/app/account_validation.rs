@@ -265,24 +265,32 @@ fn validate_character_item<C: AccountCatalog>(
         class_type,
         expected_bucket,
     } = reference;
-    let Some(item) = catalog.item(hash) else {
+    // Only items in an equipment bucket have an equipment record, which gives the class and
+    // bucket checked here. An equipped item needs one.
+    let item = catalog.item(hash);
+    if expected_bucket.is_some() && item.is_none() {
         issues.push(format!(
-            "{context} is not present in the installed item catalog"
+            "{context} is not equipment in the installed catalog"
         ));
         return;
-    };
+    }
     let Some(metadata) = catalog.inventory_metadata(hash) else {
         issues.push(format!(
             "{context} has no decoded installed inventory definition"
         ));
         return;
     };
-    if !metadata.is_character_inventory_candidate() {
+    if crate::catalog::character_row_class(item, metadata).is_none() {
         issues.push(format!("{context} is not valid for character inventory"));
         return;
     }
 
     validate_quantity(context, quantity, metadata.max_stack_size, issues);
+    // A bounty, quest step or other item with no equipment record names no class Sundial
+    // reads, so it fits every character.
+    let Some(item) = item else {
+        return;
+    };
     // An authored subclass reads as its base's class, but the game holds no subclass to a
     // class and a build may give one to every character, so it is not an issue anywhere.
     let authored_subclass =

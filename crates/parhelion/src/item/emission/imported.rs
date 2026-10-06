@@ -250,6 +250,79 @@ pub(super) fn apply(
         })
         .collect())
 }
+/// One node of an imported asset graph, with its payload read from `folder` and prepared:
+/// model draw indices declared and moved markers applied.
+fn graph_node(
+    folder: &Path,
+    n: &Value,
+    spec: Option<&WeaponCloneSpec>,
+) -> AuthoringResult<linking::Node> {
+    let name = n["symbol"]
+        .as_str()
+        .ok_or_else(|| invalid("Asset symbol missing"))?;
+    let template = n["template"]
+        .as_u64()
+        .ok_or_else(|| invalid("Template missing"))? as u32;
+    let is_companion = name == "parent-companion" || n["shared_owner"].is_string();
+    let mut payload = if is_companion {
+        Vec::new()
+    } else {
+        fs::read(
+            folder.join(
+                n["file"]
+                    .as_str()
+                    .ok_or_else(|| invalid("Payload missing"))?,
+            ),
+        )
+        .map_err(|e| invalid(e.to_string()))?
+    };
+    if name == "model" || n["model"] == true {
+        parhelion_import::d2_mot::audit::draws::declare_model_draw_indices(&mut payload)
+            .map_err(|e| invalid(format!("Imported model draw indices: {e}")))?;
+    }
+    // Moved markers move in the imported model's own marker sets, matched by name.
+    if let Some(spec) = spec
+        && !spec.overrides.marker_offsets.is_empty()
+        && sundial::package_authoring::gear_markers::is_marker_set(&payload)
+    {
+        sundial::package_authoring::gear_markers::offset_markers(
+            &mut payload,
+            &spec.overrides.marker_offsets,
+        )
+        .map_err(|error| invalid(format!("Imported marker set {name}: {error}")))?;
+    }
+    let mut node = linking::Node::new(name, template, payload);
+    for p in n["patches"]
+        .as_array()
+        .ok_or_else(|| invalid("Fixups missing"))?
+    {
+        let offset = p["offset"]
+            .as_u64()
+            .ok_or_else(|| invalid("Offset missing"))? as usize;
+        let target = p["symbol"]
+            .as_str()
+            .ok_or_else(|| invalid("Fixup symbol missing"))?;
+        node.patches.push((offset, target.to_owned()));
+    }
+    node.reference = n["reference"].as_str().map(str::to_owned);
+    if is_companion {
+        let mut companion = linking::Companion::new(
+            n["shared_owner"].as_str().unwrap_or("parent"),
+            n["source_parent"].as_u64().unwrap_or(0x80EC272A) as u32,
+        );
+        for parent in n["inherited"].as_array().into_iter().flatten() {
+            companion.inherited.push(
+                parent
+                    .as_u64()
+                    .and_then(|tag| u32::try_from(tag).ok())
+                    .ok_or_else(|| invalid("Inherited loading owner is not a tag"))?,
+            );
+        }
+        node.companion = Some(companion);
+    }
+    Ok(node)
+}
+
 fn apply_one(
     directory: &Path,
     emission: &mut PackageEmission,
@@ -279,70 +352,7 @@ fn apply_one(
         .ok_or_else(|| invalid("Asset nodes missing"))?;
     let mut nodes = Vec::with_capacity(json_nodes.len());
     for n in json_nodes {
-        let name = n["symbol"]
-            .as_str()
-            .ok_or_else(|| invalid("Asset symbol missing"))?;
-        let template = n["template"]
-            .as_u64()
-            .ok_or_else(|| invalid("Template missing"))? as u32;
-        let is_companion = name == "parent-companion" || n["shared_owner"].is_string();
-        let mut payload = if is_companion {
-            Vec::new()
-        } else {
-            fs::read(
-                folder.join(
-                    n["file"]
-                        .as_str()
-                        .ok_or_else(|| invalid("Payload missing"))?,
-                ),
-            )
-            .map_err(|e| invalid(e.to_string()))?
-        };
-        if name == "model" || n["model"] == true {
-            parhelion_import::d2_mot::audit::draws::declare_model_draw_indices(&mut payload)
-                .map_err(|e| invalid(format!("Imported model draw indices: {e}")))?;
-        }
-        // Moved markers move in the imported model's own marker sets, matched by name.
-        if let Some(spec) = spec
-            && !spec.overrides.marker_offsets.is_empty()
-            && sundial::package_authoring::gear_markers::is_marker_set(&payload)
-        {
-            sundial::package_authoring::gear_markers::offset_markers(
-                &mut payload,
-                &spec.overrides.marker_offsets,
-            )
-            .map_err(|error| invalid(format!("Imported marker set {name}: {error}")))?;
-        }
-        let mut node = linking::Node::new(name, template, payload);
-        for p in n["patches"]
-            .as_array()
-            .ok_or_else(|| invalid("Fixups missing"))?
-        {
-            let offset = p["offset"]
-                .as_u64()
-                .ok_or_else(|| invalid("Offset missing"))? as usize;
-            let target = p["symbol"]
-                .as_str()
-                .ok_or_else(|| invalid("Fixup symbol missing"))?;
-            node.patches.push((offset, target.to_owned()));
-        }
-        node.reference = n["reference"].as_str().map(str::to_owned);
-        if is_companion {
-            let mut companion = linking::Companion::new(
-                n["shared_owner"].as_str().unwrap_or("parent"),
-                n["source_parent"].as_u64().unwrap_or(0x80EC272A) as u32,
-            );
-            for parent in n["inherited"].as_array().into_iter().flatten() {
-                companion.inherited.push(
-                    parent
-                        .as_u64()
-                        .and_then(|tag| u32::try_from(tag).ok())
-                        .ok_or_else(|| invalid("Inherited loading owner is not a tag"))?,
-                );
-            }
-            node.companion = Some(companion);
-        }
-        nodes.push(node);
+        nodes.push(graph_node(folder, n, spec)?);
     }
     let extra_bounds = if graph["ornament_icon_png"].is_string() {
         8

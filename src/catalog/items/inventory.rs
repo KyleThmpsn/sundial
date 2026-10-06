@@ -17,7 +17,7 @@ use crate::{
 
 use super::{
     super::{Catalog, CatalogSearchQuery},
-    ItemDef,
+    ItemDef, SUBCLASS_BUCKET_HASH,
 };
 
 const INVENTORY_BUCKET_TABLE_SLOT: usize = 17;
@@ -292,14 +292,12 @@ impl Catalog {
             .iter()
             .filter_map(|hash| self.inventory_definition(*hash))
             .filter(move |definition| {
-                definition.item.is_some_and(|item| {
-                    (item.class_type == 3
-                        || item.class_type == class_type
-                        || (allow_cross_class_subclasses
-                            && definition.metadata.native_bucket_id == SUBCLASS_BUCKET_ID
-                            && bucket_hash(SUBCLASS_BUCKET_ID) == Some(item.bucket_hash)))
-                        && (show_dummy_items || !crate::dummy_items::contains(item.hash))
-                }) && definition.metadata.is_character_inventory_candidate()
+                (show_dummy_items || !crate::dummy_items::contains(definition.hash))
+                    && self.fits_character_inventory(
+                        definition.hash,
+                        class_type,
+                        allow_cross_class_subclasses,
+                    )
                     && query.matches(
                         self,
                         definition.hash,
@@ -307,6 +305,56 @@ impl Catalog {
                     )
             })
     }
+
+    /// Whether a character of `class_type` can hold the definition in its inventory, by
+    /// [`character_row_class`]. Saving holds every character's inventory to the same.
+    pub(crate) fn fits_character_inventory(
+        &self,
+        hash: u64,
+        class_type: u64,
+        allow_cross_class_subclasses: bool,
+    ) -> bool {
+        let item = self.item(hash);
+        let Some(own) = self
+            .inventory_metadata(hash)
+            .and_then(|metadata| character_row_class(item, metadata))
+        else {
+            return false;
+        };
+        // An authored subclass reads as its base's class, but a build may give it to every
+        // character.
+        let subclass = item.filter(|item| item.bucket_hash == SUBCLASS_BUCKET_HASH);
+        own == 3
+            || own == class_type
+            || subclass.is_some_and(|item| allow_cross_class_subclasses || item.abilities.authored)
+    }
+}
+
+/// The class whose characters may hold the definition as an inventory row of its own, 3 for any
+/// class, or `None` when no character's inventory takes it. An item in a bucket that holds
+/// equipment needs its equipment record, which gives its class. Any other instanced item in a
+/// character bucket, such as a bounty, quest step or engram, needs only its inventory data, and
+/// fits every class, since Sundial reads no class for it. A stackable one is a material, which
+/// a character holds apart from its inventory rows.
+pub(crate) fn character_row_class(
+    item: Option<&ItemDef>,
+    metadata: &InventoryMetadata,
+) -> Option<u64> {
+    match item {
+        Some(item) => metadata
+            .is_character_inventory_candidate()
+            .then_some(item.class_type),
+        None => (!holds_equipment(metadata.native_bucket_id)
+            && metadata.is_instanced_character_candidate())
+        .then_some(3),
+    }
+}
+
+/// Whether a native bucket holds equipment: those Sundial knows a bucket hash for, and the emote
+/// collection's, where only one item has a hash.
+const fn holds_equipment(bucket: u8) -> bool {
+    bucket == crate::account_contract::EMOTE_COLLECTION_NATIVE_BUCKET
+        || bucket_hash(bucket).is_some()
 }
 
 pub(crate) fn weapon_bucket_capacities(

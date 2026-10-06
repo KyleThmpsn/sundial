@@ -283,8 +283,7 @@ pub(in crate::model_preview) fn load(
                 if model.textures.len() >= MAX_TEXTURES {
                     return Err("The preview texture budget is full".into());
                 }
-                model.textures.push(texture::load(manager, tag)?);
-                model.textures.len() - 1
+                texture::load_model(manager, tag, model)?
             };
             material.textures[(slot - first) as usize] = Some(index);
             material.color[(slot - first) as usize] = color;

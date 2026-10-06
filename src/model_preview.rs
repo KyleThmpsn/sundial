@@ -34,8 +34,11 @@ pub(crate) struct Model {
     pub uvs: Vec<[f32; 2]>,
     /// Native secondary UVs used by transparent gear passes.
     pub detail_uvs: Vec<[f32; 2]>,
+    /// The material's stored vertex program supplied these secondary coordinates.
+    pub triangle_detail_uv: Vec<bool>,
     pub triangle_textures: Vec<Option<usize>>,
-    /// Emitter shape triangles are shown only in solid and wireframe inspection modes.
+    /// Composed textured previews exclude uninstanced particle meshes. Inspection modes
+    /// and standalone resource previews retain their stored geometry.
     pub triangle_emitter: Vec<bool>,
     /// Light volume outlines are kept for direct light previews, but excluded from mesh framing.
     pub triangle_light: Vec<bool>,
@@ -45,11 +48,12 @@ pub(crate) struct Model {
     pub weights: Vec<Option<animation::Weights>>,
     pub(crate) motions: Vec<effects::Motion>,
     pub animation: Option<animation::Animation>,
+    pub rigs: Vec<animation::Rig>,
     pub animation_notice: Option<String>,
     /// Every clip the object can play, for the viewer's picker.
     pub clips: Vec<animation::Clip>,
     pub assets: assets::Assets,
-    /// The recovered emitter shape is a static mesh, not simulated particle output.
+    /// Stored particle mesh geometry, without native instancing or simulation.
     pub particle_geometry: bool,
     /// Outlines of native light volumes, without the game's illumination shader.
     pub light_geometry: bool,
@@ -57,6 +61,8 @@ pub(crate) struct Model {
     pub(crate) triangle_dye_maps: Vec<Option<texture::DyeMap>>,
     /// Parts flagged alpha-clipped: the gearstack blue channel is coverage, not emission.
     pub triangle_clip: Vec<bool>,
+    /// Native gear-mask cutoff, including cutout materials in the gbuffer stage.
+    pub triangle_cutoff: Vec<Option<f32>>,
     /// Flat emissive colour for textureless transparent parts.
     pub triangle_constant: Vec<Option<[f32; 3]>>,
     pub triangle_effects: Vec<Option<usize>>,
@@ -90,7 +96,7 @@ pub struct SurfaceOverride {
 impl Model {
     /// Shared stored-pose, material motion and skeletal deformation for every renderer/export.
     pub(crate) fn pose(&self, seconds: f32) -> Option<animation::Deformed> {
-        if self.motions.is_empty() {
+        if self.motions.is_empty() && self.rigs.is_empty() {
             return self
                 .animation
                 .as_ref()
@@ -100,11 +106,43 @@ impl Model {
         for motion in &self.motions {
             motion.apply(self, seconds, &mut stored);
         }
-        Some(if let Some(a) = &self.animation {
-            a.sample_from(self, a.looped_seconds(seconds), Some(&stored))
-        } else {
-            stored
-        })
+        if let Some(a) = &self.animation {
+            a.apply(
+                self,
+                a.looped_seconds(seconds),
+                0..self.vertices.len(),
+                &mut stored,
+                true,
+            );
+        }
+        for rig in &self.rigs {
+            rig.animation.apply(
+                self,
+                rig.animation.looped_seconds(seconds),
+                rig.vertices.clone(),
+                &mut stored,
+                self.rigs.len() == 1 && rig.vertices.len() == self.vertices.len(),
+            );
+        }
+        Some(stored)
+    }
+
+    pub(crate) fn has_animation(&self) -> bool {
+        self.animation.is_some() || !self.rigs.is_empty()
+    }
+
+    pub(crate) fn animation_duration(&self) -> Option<f32> {
+        self.animation
+            .iter()
+            .chain(self.rigs.iter().map(|r| &r.animation))
+            .map(animation::Animation::duration)
+            .reduce(f32::max)
+    }
+
+    pub(crate) fn active_clip(&self) -> Option<&animation::Animation> {
+        self.animation
+            .as_ref()
+            .or_else(|| self.rigs.first().map(|r| &r.animation))
     }
     /// Draws surfaces with an editor's colors.
     pub(crate) fn set_surface_overrides(&self, overrides: &[SurfaceOverride]) {
@@ -188,6 +226,32 @@ pub(crate) struct Load {
 
 /// Returned when a load stops early. Callers discard it rather than showing it.
 pub(crate) const CANCELLED: &str = "The model load was cancelled.";
+
+/// Preview reads still running in any viewer. Each keeps package files open until it returns.
+static PACKAGE_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Counts one preview read of the packages for as long as it is alive. Move it into the
+/// reading thread so it ends with the read, however the read ends.
+pub(crate) struct PackageRead(());
+
+impl PackageRead {
+    pub(crate) fn start() -> Self {
+        PACKAGE_READS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(())
+    }
+}
+
+impl Drop for PackageRead {
+    fn drop(&mut self) {
+        PACKAGE_READS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Whether a preview read of the packages is still running. Pausing a viewer stops it from
+/// starting new reads, but one already started finishes, so a package operation waits for this.
+pub(crate) fn package_reads_running() -> bool {
+    PACKAGE_READS.load(std::sync::atomic::Ordering::SeqCst) != 0
+}
 
 impl Load {
     pub fn stop(&self) {

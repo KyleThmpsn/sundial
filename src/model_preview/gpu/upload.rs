@@ -10,8 +10,8 @@ pub(super) struct Prepared {
     attributes: Vec<f32>,
     groups: Vec<Group>,
     order: Vec<u32>,
-    center: [f32; 3],
-    radius: f32,
+    framing: [([f32; 3], f32); 2],
+    hide_emitter: bool,
     roles: Vec<[bool; 2]>,
 }
 
@@ -19,7 +19,8 @@ impl Prepared {
     fn new(held: Arc<Model>) -> Self {
         let model: &Model = &held;
         let hide_light = model.has_surface_mesh();
-        let (center, radius) = bounds(model, hide_light);
+        let hide_emitter = model.has_object_mesh();
+        let framing = [Style::Textured, Style::Solid].map(|style| bounds(model, style));
 
         let mut order: Vec<u32> = (0..model.triangles.len() as u32)
             .filter(|&index| {
@@ -32,6 +33,22 @@ impl Prepared {
             })
             .collect();
         let key_of = |triangle: usize| Key {
+            emitter: model
+                .triangle_emitter
+                .get(triangle)
+                .copied()
+                .unwrap_or(false),
+            cutoff: model
+                .triangle_cutoff
+                .get(triangle)
+                .copied()
+                .flatten()
+                .map(f32::to_bits),
+            native_detail: model
+                .triangle_detail_uv
+                .get(triangle)
+                .copied()
+                .unwrap_or(false),
             effect: effects::index(model, triangle),
             albedo: model.triangle_textures.get(triangle).copied().flatten(),
             gearstack: model.triangle_gearstacks.get(triangle).copied().flatten(),
@@ -50,7 +67,7 @@ impl Prepared {
                 .flatten()
                 .map(|c| c.map(f32::to_bits)),
         };
-        order.sort_by_key(|&t| key_of(t as usize));
+        order.sort_by_key(|&t| (effects::transparent(model, t as usize), key_of(t as usize)));
         let mut groups: Vec<Group> = Vec::new();
         for (position, &triangle) in order.iter().enumerate() {
             let key = key_of(triangle as usize);
@@ -81,8 +98,8 @@ impl Prepared {
             attributes,
             groups,
             order,
-            center,
-            radius,
+            framing,
+            hide_emitter,
             roles,
         }
     }
@@ -123,6 +140,7 @@ pub(super) struct Pending {
     roles: Vec<[bool; 2]>,
     cursor: usize,
     row: usize,
+    level: usize,
 }
 
 pub(super) unsafe fn begin(gl: &glow::Context, prepared: Prepared) -> Uploaded {
@@ -132,8 +150,8 @@ pub(super) unsafe fn begin(gl: &glow::Context, prepared: Prepared) -> Uploaded {
         attributes,
         groups,
         order,
-        center,
-        radius,
+        framing,
+        hide_emitter,
         roles,
     } = prepared;
     // SAFETY: the paint callback supplies its current context. These objects remain owned
@@ -158,15 +176,17 @@ pub(super) unsafe fn begin(gl: &glow::Context, prepared: Prepared) -> Uploaded {
             glow::DYNAMIC_DRAW,
         );
         gl.enable_vertex_attrib_array(1);
-        gl.vertex_attrib_pointer_f32(1, 3, glow::FLOAT, false, 60, 0);
+        gl.vertex_attrib_pointer_f32(1, 3, glow::FLOAT, false, 64, 0);
         gl.enable_vertex_attrib_array(2);
-        gl.vertex_attrib_pointer_f32(2, 2, glow::FLOAT, false, 60, 12);
+        gl.vertex_attrib_pointer_f32(2, 2, glow::FLOAT, false, 64, 12);
         gl.enable_vertex_attrib_array(3);
-        gl.vertex_attrib_pointer_f32(3, 2, glow::FLOAT, false, 60, 20);
+        gl.vertex_attrib_pointer_f32(3, 2, glow::FLOAT, false, 64, 20);
         gl.enable_vertex_attrib_array(4);
-        gl.vertex_attrib_pointer_f32(4, 4, glow::FLOAT, false, 60, 28);
+        gl.vertex_attrib_pointer_f32(4, 4, glow::FLOAT, false, 64, 28);
         gl.enable_vertex_attrib_array(5);
-        gl.vertex_attrib_pointer_f32(5, 4, glow::FLOAT, false, 60, 44);
+        gl.vertex_attrib_pointer_f32(5, 4, glow::FLOAT, false, 64, 44);
+        gl.enable_vertex_attrib_array(6);
+        gl.vertex_attrib_pointer_f32(6, 1, glow::FLOAT, false, 64, 60);
         gl.bind_vertex_array(None);
         let lookup = model.iridescence.as_ref().map(|texture| {
             let handle = gl.create_texture().expect("texture");
@@ -174,13 +194,24 @@ pub(super) unsafe fn begin(gl: &glow::Context, prepared: Prepared) -> Uploaded {
             gl.tex_image_2d(
                 glow::TEXTURE_2D,
                 0,
-                glow::RGBA8 as i32,
+                if texture.linear.is_some() {
+                    glow::RGBA32F
+                } else {
+                    glow::RGBA8
+                } as i32,
                 texture.size[0] as i32,
                 texture.size[1] as i32,
                 0,
                 glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(&texture.rgba)),
+                if texture.linear.is_some() {
+                    glow::FLOAT
+                } else {
+                    glow::UNSIGNED_BYTE
+                },
+                glow::PixelUnpackData::Slice(Some(texture.linear.as_ref().map_or_else(
+                    || texture.rgba.as_slice(),
+                    |pixels| bytes_of(pixels.as_flattened()),
+                ))),
             );
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
@@ -224,16 +255,7 @@ pub(super) unsafe fn begin(gl: &glow::Context, prepared: Prepared) -> Uploaded {
                         } as i32;
                         gl.sampler_parameter_i32(sampler, glow::TEXTURE_WRAP_S, mode(source.u));
                         gl.sampler_parameter_i32(sampler, glow::TEXTURE_WRAP_T, mode(source.v));
-                        gl.sampler_parameter_i32(
-                            sampler,
-                            glow::TEXTURE_MIN_FILTER,
-                            glow::LINEAR as i32,
-                        );
-                        gl.sampler_parameter_i32(
-                            sampler,
-                            glow::TEXTURE_MAG_FILTER,
-                            glow::LINEAR as i32,
-                        );
+                        configure_sampler(gl, sampler, source, effect.sampling().is_some());
                         gl.sampler_parameter_f32_slice(
                             sampler,
                             glow::TEXTURE_BORDER_COLOR,
@@ -256,8 +278,8 @@ pub(super) unsafe fn begin(gl: &glow::Context, prepared: Prepared) -> Uploaded {
             lookup,
             groups,
             order,
-            center,
-            radius,
+            framing,
+            hide_emitter,
             samplers,
             pending: Some(Pending {
                 positions,
@@ -266,6 +288,7 @@ pub(super) unsafe fn begin(gl: &glow::Context, prepared: Prepared) -> Uploaded {
                 roles,
                 cursor: 0,
                 row: 0,
+                level: 0,
             }),
         }
     }
@@ -281,116 +304,209 @@ impl Uploaded {
         // and transfer lengths are bounded by their allocated source and destination.
         unsafe {
             loop {
-                let mut transferred = false;
-                for (index, buffer, data) in [
-                    (
-                        0,
-                        self.positions,
-                        bytes_of(pending.positions.as_flattened()),
-                    ),
-                    (1, self.attributes, bytes_of(&pending.attributes)),
-                ] {
-                    let offset = pending.offsets[index];
-                    if offset < data.len() {
-                        let end = (offset + 1024 * 1024).min(data.len());
-                        gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
-                        gl.buffer_sub_data_u8_slice(
-                            glow::ARRAY_BUFFER,
-                            offset as i32,
-                            &data[offset..end],
-                        );
-                        pending.offsets[index] = end;
-                        transferred = true;
-                        break;
-                    }
-                }
-                if !transferred {
+                if !transfer_buffer(gl, pending, [self.positions, self.attributes]) {
                     if pending.cursor >= pending.roles.len() * 2 {
                         self.pending = None;
                         return true;
                     }
                     let (index, role) = (pending.cursor / 2, pending.cursor % 2);
-                    if !pending.roles[index][role] {
-                        pending.cursor += 1;
-                        continue;
-                    }
-                    let texture = &self.model.textures[index];
-                    if pending.row == 0 {
-                        let handle = gl.create_texture().expect("texture");
-                        self.textures[index][role] = Some(handle);
-                        gl.bind_texture(glow::TEXTURE_2D, Some(handle));
-                        gl.tex_image_2d(
-                            glow::TEXTURE_2D,
-                            0,
-                            if role == 1 {
-                                glow::SRGB8_ALPHA8
-                            } else {
-                                glow::RGBA8
-                            } as i32,
-                            texture.size[0] as i32,
-                            texture.size[1] as i32,
-                            0,
-                            glow::RGBA,
-                            glow::UNSIGNED_BYTE,
-                            glow::PixelUnpackData::Slice(None),
+                    if pending.roles[index][role] {
+                        transfer_texture(
+                            gl,
+                            pending,
+                            &self.model.textures[index],
+                            &mut self.textures[index][role],
+                            role,
                         );
                     } else {
-                        gl.bind_texture(glow::TEXTURE_2D, self.textures[index][role]);
-                    }
-                    let end = (pending.row + 256).min(texture.size[1]);
-                    let stride = texture.size[0] * 4;
-                    gl.tex_sub_image_2d(
-                        glow::TEXTURE_2D,
-                        0,
-                        0,
-                        pending.row as i32,
-                        texture.size[0] as i32,
-                        (end - pending.row) as i32,
-                        glow::RGBA,
-                        glow::UNSIGNED_BYTE,
-                        glow::PixelUnpackData::Slice(Some(
-                            &texture.rgba[pending.row * stride..end * stride],
-                        )),
-                    );
-                    pending.row = end;
-                    if end == texture.size[1] {
-                        gl.generate_mipmap(glow::TEXTURE_2D);
-                        gl.tex_parameter_i32(
-                            glow::TEXTURE_2D,
-                            glow::TEXTURE_MIN_FILTER,
-                            glow::LINEAR_MIPMAP_LINEAR as i32,
-                        );
-                        gl.tex_parameter_i32(
-                            glow::TEXTURE_2D,
-                            glow::TEXTURE_MAG_FILTER,
-                            glow::LINEAR as i32,
-                        );
-                        gl.tex_parameter_i32(
-                            glow::TEXTURE_2D,
-                            glow::TEXTURE_WRAP_S,
-                            glow::REPEAT as i32,
-                        );
-                        gl.tex_parameter_i32(
-                            glow::TEXTURE_2D,
-                            glow::TEXTURE_WRAP_T,
-                            glow::REPEAT as i32,
-                        );
-                        if gl
-                            .supported_extensions()
-                            .contains("GL_EXT_texture_filter_anisotropic")
-                        {
-                            gl.tex_parameter_f32(glow::TEXTURE_2D, 0x84FE, 8.0);
-                        }
                         pending.cursor += 1;
-                        pending.row = 0;
                     }
-                    gl.bind_texture(glow::TEXTURE_2D, None);
                 }
                 if started.elapsed() >= Duration::from_millis(4) {
                     return false;
                 }
             }
         }
+    }
+}
+
+unsafe fn transfer_buffer(
+    gl: &glow::Context,
+    pending: &mut Pending,
+    buffers: [glow::Buffer; 2],
+) -> bool {
+    // SAFETY: buffers were allocated for these prepared slices, with bounded offsets.
+    unsafe {
+        for (index, buffer, data) in [
+            (0, buffers[0], bytes_of(pending.positions.as_flattened())),
+            (1, buffers[1], bytes_of(&pending.attributes)),
+        ] {
+            let offset = pending.offsets[index];
+            if offset < data.len() {
+                let end = (offset + 1024 * 1024).min(data.len());
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
+                gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, offset as i32, &data[offset..end]);
+                pending.offsets[index] = end;
+                return true;
+            }
+        }
+        false
+    }
+}
+
+unsafe fn transfer_texture(
+    gl: &glow::Context,
+    pending: &mut Pending,
+    texture: &crate::model_preview::texture::Texture,
+    handle: &mut Option<glow::Texture>,
+    role: usize,
+) {
+    // SAFETY: the upload owns the handle in the current context, and each row is bounded.
+    unsafe {
+        let image = texture.level(pending.level);
+        transfer_image(gl, handle, image, pending.level, &mut pending.row, role);
+        if pending.row == image.size[1] {
+            pending.row = 0;
+            if pending.level < texture.mips.as_ref().map_or(0, Vec::len) {
+                pending.level += 1;
+            } else {
+                finish_texture(gl, texture);
+                pending.cursor += 1;
+                pending.level = 0;
+            }
+        }
+        gl.bind_texture(glow::TEXTURE_2D, None);
+    }
+}
+
+unsafe fn finish_texture(gl: &glow::Context, texture: &crate::model_preview::texture::Texture) {
+    // SAFETY: transfer_texture has bound and fully uploaded this image and its levels.
+    unsafe {
+        if let Some(levels) = &texture.mips {
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MAX_LEVEL,
+                levels.len() as i32,
+            );
+        } else {
+            gl.generate_mipmap(glow::TEXTURE_2D);
+        }
+        for (key, value) in [
+            (glow::TEXTURE_MIN_FILTER, glow::LINEAR_MIPMAP_LINEAR),
+            (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
+            (glow::TEXTURE_WRAP_S, glow::REPEAT),
+            (glow::TEXTURE_WRAP_T, glow::REPEAT),
+        ] {
+            gl.tex_parameter_i32(glow::TEXTURE_2D, key, value as i32);
+        }
+        if gl
+            .supported_extensions()
+            .contains("GL_EXT_texture_filter_anisotropic")
+        {
+            let maximum = gl.get_parameter_f32(0x84FF).max(1.0);
+            gl.tex_parameter_f32(glow::TEXTURE_2D, 0x84FE, 8.0f32.min(maximum));
+        }
+    }
+}
+
+unsafe fn configure_sampler(
+    gl: &glow::Context,
+    handle: glow::Sampler,
+    source: &crate::model_preview::texture::Sampler,
+    native: bool,
+) {
+    // SAFETY: the upload owns this sampler in the painter's current context.
+    unsafe {
+        let filter = source.filter.unwrap_or(0x15);
+        let min = if native {
+            match (filter & 16 != 0, filter & 1 != 0) {
+                (false, false) => glow::NEAREST_MIPMAP_NEAREST,
+                (false, true) => glow::NEAREST_MIPMAP_LINEAR,
+                (true, false) => glow::LINEAR_MIPMAP_NEAREST,
+                (true, true) => glow::LINEAR_MIPMAP_LINEAR,
+            }
+        } else {
+            glow::LINEAR
+        };
+        let mag = if native && filter & 4 == 0 {
+            glow::NEAREST
+        } else {
+            glow::LINEAR
+        };
+        gl.sampler_parameter_i32(handle, glow::TEXTURE_MIN_FILTER, min as i32);
+        gl.sampler_parameter_i32(handle, glow::TEXTURE_MAG_FILTER, mag as i32);
+        if native {
+            gl.sampler_parameter_f32(handle, glow::TEXTURE_LOD_BIAS, source.mip_bias);
+            gl.sampler_parameter_f32(handle, glow::TEXTURE_MIN_LOD, source.lod[0]);
+            gl.sampler_parameter_f32(handle, glow::TEXTURE_MAX_LOD, source.lod[1]);
+            if gl
+                .supported_extensions()
+                .contains("GL_EXT_texture_filter_anisotropic")
+            {
+                let maximum = gl.get_parameter_f32(0x84FF).max(1.0);
+                gl.sampler_parameter_f32(handle, 0x84FE, (source.anisotropy as f32).min(maximum));
+            }
+        }
+    }
+}
+
+unsafe fn transfer_image(
+    gl: &glow::Context,
+    handle: &mut Option<glow::Texture>,
+    image: &crate::model_preview::texture::Texture,
+    level: usize,
+    row: &mut usize,
+    role: usize,
+) {
+    // SAFETY: the upload owns the texture and image, and rows are bounded by this mip.
+    unsafe {
+        if level == 0 && *row == 0 {
+            *handle = Some(gl.create_texture().expect("texture"));
+        }
+        gl.bind_texture(glow::TEXTURE_2D, *handle);
+        let format = if image.linear.is_some() {
+            glow::FLOAT
+        } else {
+            glow::UNSIGNED_BYTE
+        };
+        if *row == 0 {
+            let internal = if image.linear.is_some() {
+                glow::RGBA32F
+            } else if role == 1 {
+                glow::SRGB8_ALPHA8
+            } else {
+                glow::RGBA8
+            };
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                level as i32,
+                internal as i32,
+                image.size[0] as i32,
+                image.size[1] as i32,
+                0,
+                glow::RGBA,
+                format,
+                glow::PixelUnpackData::Slice(None),
+            );
+        }
+        let end = (*row + 256).min(image.size[1]);
+        let stride = image.size[0] * 4;
+        let data = image.linear.as_ref().map_or_else(
+            || &image.rgba[*row * stride..end * stride],
+            |pixels| bytes_of(pixels[*row * image.size[0]..end * image.size[0]].as_flattened()),
+        );
+        gl.tex_sub_image_2d(
+            glow::TEXTURE_2D,
+            level as i32,
+            0,
+            *row as i32,
+            image.size[0] as i32,
+            (end - *row) as i32,
+            glow::RGBA,
+            format,
+            glow::PixelUnpackData::Slice(Some(data)),
+        );
+        *row = end;
     }
 }
 

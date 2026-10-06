@@ -63,6 +63,8 @@ struct Loaded {
     progression: progression::Progression,
     dismantle: Vec<(u32, i32)>,
     reward_debts: Vec<RewardDebt>,
+    /// A digest of the rows a save rewrites whole, as loaded or last saved.
+    guarded: Vec<u8>,
 }
 
 /// One loaded player-state database, with the runtime bookkeeping a later write must respect.

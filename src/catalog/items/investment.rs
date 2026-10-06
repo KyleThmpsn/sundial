@@ -300,6 +300,11 @@ impl Catalog {
         references
     }
 
+    /// The six character stat rows in character screen order, when the install names them.
+    pub(crate) const fn character_stat_rows(&self) -> Option<[u16; 6]> {
+        self.character_stat_rows
+    }
+
     /// Which of the six character stats one investment stat row is, in character screen order.
     ///
     /// The rows are the ones the client's investment constants name, so a stat is matched by

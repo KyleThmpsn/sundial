@@ -16,6 +16,23 @@ const IMAGE_EDGE: u32 = 128;
 type Read = Result<(Option<Vec<StockStatus>>, Vec<u32>), String>;
 type Import = Option<Result<String, String>>;
 
+/// Where an imported image goes: the asset row that asked for it, by the id of the row's own
+/// interface and the asset's graph. Several effects can attach one graph, each with a HUD status
+/// of its own, so the graph alone does not name the asset.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Destination {
+    row: egui::Id,
+    graph: u32,
+}
+
+/// An imported image waiting for its asset row to draw again.
+struct Ready {
+    destination: Destination,
+    image: String,
+    /// Whether a whole frame passed without the row taking it.
+    waited: bool,
+}
+
 /// The stock HUD statuses with names, and the statuses each asset's graph shows, read in the
 /// background. The names come from every string bank, so they are read once.
 #[derive(Default)]
@@ -24,15 +41,23 @@ pub(super) struct HudStatuses {
     shown: BTreeMap<u32, Result<Vec<u32>, String>>,
     pending: Option<(u32, Receiver<Read>)>,
     query: String,
-    /// An image being imported, for the asset with this graph.
-    import: Option<(u32, Receiver<Import>)>,
+    /// An image being chosen and imported.
+    import: Option<(Destination, Receiver<Import>)>,
+    /// A finished import its row has not taken yet.
+    ready: Option<Ready>,
     import_error: Option<String>,
     /// The preview of the last image drawn, by a hash of its PNG.
     preview: Option<(u64, egui::TextureHandle)>,
 }
 
 impl HudStatuses {
+    /// Whether a package read is still going. An image import reads no package.
+    pub(super) fn busy(&self) -> bool {
+        self.pending.is_some()
+    }
+
     pub(super) fn poll(&mut self) {
+        self.poll_import();
         let Some((graph, receiver)) = &self.pending else {
             return;
         };
@@ -79,7 +104,7 @@ impl HudStatuses {
         ui.ctx().request_repaint_after(Duration::from_millis(100));
     }
 
-    fn start_import(&mut self, ui: &egui::Ui, graph: u32) {
+    fn start_import(&mut self, ui: &egui::Ui, destination: Destination) {
         let (sender, receiver) = std::sync::mpsc::channel();
         let ctx = ui.ctx().clone();
         std::thread::spawn(move || {
@@ -91,34 +116,55 @@ impl HudStatuses {
             let _ = sender.send(result);
             ctx.request_repaint();
         });
-        self.import = Some((graph, receiver));
+        self.import = Some((destination, receiver));
+        self.ready = None;
         self.import_error = None;
     }
 
-    /// The finished import for the asset with `graph`, once it arrives.
-    fn finished_import(&mut self, ui: &egui::Ui, graph: u32) -> Option<String> {
-        let (from, receiver) = self.import.as_ref()?;
-        if *from != graph {
+    /// Collects a finished import, whichever rows draw this frame. A result its row has not
+    /// taken after a whole frame is dropped, since that row is gone or no longer shows its
+    /// HUD status, and another row must never take it in its place.
+    fn poll_import(&mut self) {
+        if let Some((destination, receiver)) = &self.import {
+            let destination = *destination;
+            let result = match receiver.try_recv() {
+                Ok(result) => result,
+                Err(TryRecvError::Disconnected) => {
+                    Some(Err("The image import stopped before finishing.".into()))
+                }
+                Err(TryRecvError::Empty) => return,
+            };
+            self.import = None;
+            match result {
+                Some(Ok(image)) => {
+                    self.ready = Some(Ready {
+                        destination,
+                        image,
+                        waited: false,
+                    });
+                }
+                Some(Err(error)) => self.import_error = Some(error),
+                None => {}
+            }
+        } else if let Some(ready) = &mut self.ready {
+            if ready.waited {
+                self.ready = None;
+                self.import_error = Some(
+                    "The imported image was not applied because its attachment is no longer open."
+                        .into(),
+                );
+            } else {
+                ready.waited = true;
+            }
+        }
+    }
+
+    /// The finished import for this row, once it arrives.
+    fn take_ready(&mut self, destination: Destination) -> Option<String> {
+        if self.ready.as_ref()?.destination != destination {
             return None;
         }
-        let result = match receiver.try_recv() {
-            Ok(result) => result,
-            Err(TryRecvError::Disconnected) => {
-                Some(Err("The image import stopped before finishing.".into()))
-            }
-            Err(TryRecvError::Empty) => {
-                ui.ctx().request_repaint_after(Duration::from_millis(100));
-                return None;
-            }
-        };
-        self.import = None;
-        match result? {
-            Ok(image) => Some(image),
-            Err(error) => {
-                self.import_error = Some(error);
-                None
-            }
-        }
+        self.ready.take().map(|ready| ready.image)
     }
 
     fn preview(&mut self, ctx: &egui::Context, image: &str) -> Option<egui::TextureHandle> {
@@ -162,9 +208,19 @@ fn import_image(path: &Path) -> Result<String, String> {
 }
 
 impl Properties {
+    /// Forgets an image still being imported, and one its row has not taken yet.
+    pub fn discard_hud_import(&mut self) {
+        self.hud.import = None;
+        self.hud.ready = None;
+    }
+
     /// The HUD name and icon of an attachment whose graph has a Status Icon. Nothing for one
     /// without, or while its properties are still being read.
     pub fn hud_status(&mut self, ui: &mut egui::Ui, asset: &mut Asset) {
+        let destination = Destination {
+            row: ui.id(),
+            graph: asset.graph,
+        };
         if matches!(asset.graph, 0 | u32::MAX) {
             return;
         }
@@ -193,8 +249,9 @@ impl Properties {
                 return;
             }
         };
-        if let Some(image) = self.hud.finished_import(ui, asset.graph)
-            && let Some(status) = &mut asset.hud_status
+        // Only a row that still shows a HUD status takes the image it asked for.
+        if let Some(status) = &mut asset.hud_status
+            && let Some(image) = self.hud.take_ready(destination)
         {
             status.image = Some(image);
         }
@@ -363,7 +420,7 @@ impl Properties {
             import
         });
         if import {
-            self.hud.start_import(ui, asset.graph);
+            self.hud.start_import(ui, destination);
         }
         if let Some(error) = &self.hud.import_error {
             ui.colored_label(ui.visuals().error_fg_color, error);

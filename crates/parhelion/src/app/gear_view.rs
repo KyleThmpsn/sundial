@@ -21,10 +21,12 @@ const ARMOR_STATS: [&str; 6] = [
 ];
 /// The Sparrow Engine plug carries Speed. The Sparrow itself carries Boost and Durability. These are
 /// tooltip stats: a Sparrow with Speed 300 drove no faster in game (2026-09-25). The engine's perk
-/// sets a named property per drive (Standard, Tuned, Custom) that picks the speed tier.
+/// contributes a continuous input to ordinary motion. Fixed-speed profiles ignore that input.
+/// `vehicle` authors the actual forward and reverse motion programs independently of the tooltip.
 const SPARROW_STATS: [&str; 3] = ["Speed", "Boost", "Durability"];
 const ENERGY_TYPES: [&str; 3] = ["Arc", "Solar", "Void"];
 type PlugSets = Result<Vec<WeaponSupportedPlugSet>, String>;
+mod vehicle;
 
 #[cfg(feature = "d2-model-importer")]
 mod source;
@@ -420,6 +422,9 @@ impl PackageAuthoringApp {
         ui.add_space(4.0);
         ui.separator();
         ui.add_space(4.0);
+        if self.recipe.kind == ItemKind::Sparrow {
+            self.draw_vehicle_controls(ui);
+        }
         let (Some(donor), Some(plug_sets)) = (donor, plug_sets) else {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
@@ -477,6 +482,15 @@ impl PackageAuthoringApp {
     /// text it ends where the base column ends, `band`, within its bounds. Its corner opens it in
     /// the model viewer, which has the full tools.
     fn draw_gear_preview(&mut self, ui: &mut egui::Ui, band: Option<f32>) {
+        if self
+            .recipe
+            .overrides
+            .sparrow
+            .as_ref()
+            .is_some_and(|s| s.summon != crate::vehicle::Summon::Sparrow)
+        {
+            ui.label("Inventory Appearance");
+        }
         #[cfg(feature = "d2-model-importer")]
         if self.recipe.overrides.imported_graph.is_some() {
             ui.label("Native Runtime Preview")
@@ -691,7 +705,7 @@ impl PackageAuthoringApp {
             ui.heading(format!("{} Stats", kind.label()));
             let hint = match kind {
                 ItemKind::Sparrow => {
-                    "Tooltip stats. The Sparrow Engine's perk sets how fast it drives."
+                    "Tooltip stats. Use Driving Speed to change motion. The Engine also affects ordinary Sparrow motion."
                 }
                 _ => "Totals include the starting plugs. A change here adds to the armor itself.",
             };

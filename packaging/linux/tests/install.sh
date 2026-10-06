@@ -43,4 +43,36 @@ else:
     raise AssertionError(f"Launcher did not execute {executable!r}")
 PY
 done
-printf 'Linux desktop installation and launch passed for seven path cases.\n'
+
+# A link already at the launcher's path is replaced, never followed: the file it names keeps
+# its bytes and mode, a dangling link's target is not created, and a linked folder stays empty.
+for link in file dangling folder; do
+    export SUNDIAL_BIN_DIR="$test_root/link-$link/bin"
+    export XDG_DATA_HOME="$test_root/link-$link/data"
+    applications="$XDG_DATA_HOME/applications"
+    desktop="$applications/io.github.kylethmpsn.Sundial.desktop"
+    sentinel="$test_root/link-$link/sentinel"
+    mkdir -p "$applications"
+    case $link in
+        file)
+            printf 'KEEP MY CONTENTS\n' > "$sentinel"
+            chmod 600 "$sentinel"
+            ;;
+        folder) mkdir -p "$sentinel" ;;
+        dangling) ;;
+    esac
+    ln -s "$sentinel" "$desktop"
+    sh "$bundle/install.sh" > /dev/null
+    [ -f "$desktop" ] && [ ! -L "$desktop" ]
+    desktop-file-validate "$desktop"
+    case $link in
+        file)
+            [ "$(cat "$sentinel")" = 'KEEP MY CONTENTS' ]
+            [ "$(stat -c %a "$sentinel")" = 600 ]
+            ;;
+        folder) [ -z "$(ls -A "$sentinel")" ] ;;
+        dangling) [ ! -e "$sentinel" ] ;;
+    esac
+    [ -z "$(find "$applications" -name '.io.github.kylethmpsn.Sundial.*')" ]
+done
+printf 'Linux desktop installation and launch passed for seven path cases and three linked launchers.\n'

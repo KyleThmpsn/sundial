@@ -4,7 +4,13 @@ use super::*;
 use crate::model_preview::effects::{Kind, Material};
 use fixtures::{Package, array, floats, put};
 mod glow;
-mod native;
+pub(super) mod native;
+pub(crate) use native::opaque_detail_case;
+#[cfg_attr(
+    not(windows),
+    allow(unused_imports, reason = "used by the Windows GPU verification")
+)]
+pub(crate) use native::{derivative, hdr, integer, metal, normal_blue, normals, opaque, paint};
 
 fn gradient() -> Material {
     Material {
@@ -171,6 +177,8 @@ fn form_cases(cases: &mut Vec<(String, Model, [u8; 3])>) {
         let mut model = Model::default();
         let mask = kind == Kind::ScrollingMasks;
         model.textures.push(texture::Texture {
+            mips: None,
+            linear: None,
             tag: 1,
             size: [1, 1],
             rgba: if mask {
@@ -180,6 +188,8 @@ fn form_cases(cases: &mut Vec<(String, Model, [u8; 3])>) {
             },
         });
         model.textures.push(texture::Texture {
+            mips: None,
+            linear: None,
             tag: 2,
             size: [1, 1],
             rgba: if mask { vec![255; 4] } else { vec![0; 4] },

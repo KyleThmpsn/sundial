@@ -463,6 +463,7 @@ fn convert_with_donor(
     }
     progress("Verifying and saving recipe assets…".into());
     let item = profile::hash(&document["identity"], "item_hash")?;
+    super::graph::record_converter_revision(&graph)?;
     document["overrides"]["imported_graph"] =
         serde_json::to_value(GraphReference::new(&graph, item)?)?;
     write_json(&recipe, &document)?;

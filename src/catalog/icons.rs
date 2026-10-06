@@ -43,6 +43,8 @@ const TEXTURE_ICON_CACHE_PREFIX: u64 = 1_u64 << 61;
 const SUBCLASS_ICON_CACHE_PREFIX: u64 = 1_u64 << 60;
 /// Namespaces an item's second icon, such as an emblem's nameplate, keyed by its container tag.
 const SECONDARY_ICON_CACHE_PREFIX: u64 = 1_u64 << 59;
+/// Namespaces the ammunition marks, keyed by their container tag.
+const AMMO_ICON_CACHE_PREFIX: u64 = 1_u64 << 58;
 
 #[cfg(test)]
 mod queue_tests;
@@ -152,6 +154,25 @@ impl Catalog {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         runtime.texture(context, &self.install_path, cache_key, container)
+    }
+
+    /// The game's mark for an ammunition type, which carries its own class colour.
+    pub(crate) fn ammo_icon_texture(
+        &self,
+        context: &eframe::egui::Context,
+        ammo: super::ItemWeaponAmmoType,
+    ) -> Option<eframe::egui::TextureHandle> {
+        let index = match ammo {
+            super::ItemWeaponAmmoType::Primary => 0,
+            super::ItemWeaponAmmoType::Special => 1,
+            super::ItemWeaponAmmoType::Heavy => 2,
+        };
+        let container = self.ammo_icon_containers[index]?;
+        self.icon_texture_from_container(
+            context,
+            AMMO_ICON_CACHE_PREFIX | u64::from(container),
+            container,
+        )
     }
 
     /// A subclass node's icon, from the container its display record names.

@@ -305,9 +305,6 @@ fn real_breachlight_private_micro_missile_perk_chain_round_trips_when_configured
         value_bits: 5.0_f32.to_bits(),
     };
 
-    let source_root = packages
-        .parent()
-        .expect("configured package directory should have an install root");
     let source_root_table_tag = TagHash(read_u32(&source_globals, 16).unwrap());
     let source_root_table = read_tag(&source_manager, source_root_table_tag, "investment root")
         .expect("investment root should load");
@@ -548,31 +545,8 @@ fn real_breachlight_private_micro_missile_perk_chain_round_trips_when_configured
             && read_u32(row, 4).unwrap() == authored_residency_companion_tag.0
     }));
 
-    let view = tempfile::Builder::new()
-        .prefix(".parhelion-private-perk-test-")
-        .tempdir_in(source_root)
-        .expect("temporary package view should be created on the package volume");
-    let view_packages = view.path().join("packages");
-    fs::create_dir(&view_packages).expect("temporary packages directory should be created");
-    for entry in fs::read_dir(&packages).expect("clean-stock packages should be listable") {
-        let entry = entry.expect("clean-stock package entry should be readable");
-        let source = entry.path();
-        if source.extension().and_then(|value| value.to_str()) != Some("pkg") {
-            continue;
-        }
-        fs::hard_link(&source, view_packages.join(entry.file_name()))
-            .expect("clean-stock package should hard-link into the temporary view");
-    }
-    let source_oodle = source_root
-        .join("bin")
-        .join("x64")
-        .join("oo2core_3_win64.dll");
-    if source_oodle.is_file() {
-        let target_bin = view.path().join("bin").join("x64");
-        fs::create_dir_all(&target_bin).expect("temporary Oodle directory should be created");
-        fs::hard_link(&source_oodle, target_bin.join("oo2core_3_win64.dll"))
-            .expect("Oodle runtime should hard-link into the temporary view");
-    }
+    let (_view, view_packages) =
+        stock_view(&packages, ".parhelion-private-perk-test-", Oodle::IfPresent);
     let staged = bundle
         .write_new(&view_packages)
         .expect("private-perk overlays should stage create-new in the temporary view");

@@ -1,8 +1,6 @@
 use super::*;
 use sundial::{
-    investment::{
-        InvestmentCatalog, WeaponAmmoType, WeaponDamageProfile, WeaponInventorySlot, WeaponRarity,
-    },
+    investment::{InvestmentCatalog, WeaponAmmoType, WeaponInventorySlot},
     package_authoring::entity::{
         WEAPON_ENTITY_COMPONENT_ROW_CLASS, WEAPON_ENTITY_DEFINITION_MAP_ROW_CLASS,
         WEAPON_ENTITY_RESOURCE_DESCRIPTOR_ROW_CLASS, WEAPON_ENTITY_RESOURCE_MAP_ROW_CLASS,
@@ -15,20 +13,12 @@ fn no_owners(tag: u32) -> Result<Vec<u8>, String> {
 
 fn summary(hash: u32) -> WeaponDonorSummary {
     WeaponDonorSummary {
-        hash,
-        name: format!("Test {hash}"),
-        type_name: "Sidearm".into(),
         bucket_hash: 1,
-        collection_backed: true,
-        power_cap: None,
-        damage_type: None,
         inventory_slot: Some(WeaponInventorySlot::Kinetic),
         ammo_type: Some(WeaponAmmoType::Primary),
         weapon_pattern_index: Some(hash as u16),
         weapon_translation_group: Some(0x1234_5678),
-        stat_group_index: None,
-        damage_profile: WeaponDamageProfile::Unknown,
-        rarity: WeaponRarity::Legendary,
+        ..crate::test_support::donor_summary(hash, &format!("Test {hash}"), "Sidearm")
     }
 }
 

@@ -57,15 +57,7 @@ fn pending_audio_can_be_canceled_without_playing_a_late_result() {
     for pressed in [true, false] {
         let _ = frame(
             &mut preview,
-            vec![
-                egui::Event::PointerMoved(cancel),
-                egui::Event::PointerButton {
-                    pos: cancel,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
+            crate::test_support::primary_press(cancel, pressed),
         );
     }
     assert!(preview.audio_pending.is_none());

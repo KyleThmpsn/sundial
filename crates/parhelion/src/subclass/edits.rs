@@ -6,8 +6,10 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use super::modifiers::{self, AbilityModifier, MOST_CHARGES, ParameterValue, StockModifier};
-use super::palette::PaletteEdit;
+use super::modifiers::{
+    self, AbilityModifier, MOST_CHARGES, ParameterValue, RECHARGE_RANGE, StockModifier,
+};
+use super::palette::{EffectGrade, PaletteEdit, TintEdit};
 use super::{Place, layout};
 use crate::perk::{Icon, PerkRecipe};
 use sundial::package_authoring::runtime::WeaponRuntimeValueOverride;
@@ -40,6 +42,15 @@ pub struct EntryEdits {
     /// Charges the ability gets beyond its own while it is selected.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub extra_charges: u8,
+    /// A multiplier on the ability's recharge rate while it is selected, faster above 1, as the
+    /// float's bits. Zero leaves the rate stock.
+    #[serde(
+        default,
+        rename = "recharge",
+        skip_serializing_if = "is_unset",
+        with = "super::f32_bits"
+    )]
+    pub recharge_bits: u32,
     /// Changes it makes to abilities of its subclass while it is selected, beyond its stock
     /// ones.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -58,11 +69,60 @@ pub struct EntryEdits {
     /// Color changes to palettes its effects draw with, on private copies.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub palettes: Vec<PaletteEdit>,
+    /// Color changes to color constants its effects draw with, on private copies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tints: Vec<TintEdit>,
+    /// A grade over the final color of every effect, on private copies of their pixel programs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grade: Option<EffectGrade>,
+    /// Projectiles it fires in place of the stock ones its graphs spawn, each a private copy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spawn_swaps: Vec<SpawnSwap>,
+    /// Values of property rows of the ability's bank, changed in a private copy of the bank.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bank_values: Vec<BankValue>,
+}
+
+/// A traced lane of a property row of the ability's stock bank, by the row's key and place among
+/// the bank's rows and the lane's offset in the row's modifier block, and the four bytes it
+/// holds in place of the stock ones.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BankValue {
+    #[serde(with = "super::hex_hash")]
+    pub key: u32,
+    pub row: u16,
+    pub lane: u16,
+    pub bits: u32,
+    /// Whether it is a script parameter's reset value, the value the bank's script reads while no
+    /// applied key sets the parameter: `key` is then the parameter's name and `row` its row of
+    /// the parameter table.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub parameter: bool,
+}
+
+/// A projectile a graph of the ability spawns, and the stock projectile spawned in its place.
+/// Every place the graph names the replaced projectile names a private copy of the other.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpawnSwap {
+    /// The graph that spawns it: the ability's entity or a graph below it.
+    #[serde(with = "super::hex_hash")]
+    pub graph: u32,
+    #[serde(with = "super::hex_hash")]
+    pub replaced: u32,
+    #[serde(with = "super::hex_hash")]
+    pub replacement: u32,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_zero(value: &u8) -> bool {
     *value == 0
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_unset(bits: &u32) -> bool {
+    *bits == 0
 }
 
 /// The icon an entry shows in place of its source's.
@@ -136,6 +196,93 @@ impl EntryEdits {
         }
     }
 
+    /// Whether it leaves the ability's entity as it is: no value, color or projectile changes.
+    #[must_use]
+    pub fn keeps_entity(&self) -> bool {
+        self.ability_values.is_empty()
+            && !self.recolors()
+            && self.spawn_swaps.is_empty()
+            && self.bank_values.is_empty()
+    }
+
+    /// The bits it gives a bank row's lane, if any.
+    #[must_use]
+    pub fn bank_value(&self, key: u32, row: u16, lane: u16) -> Option<u32> {
+        self.bank_values
+            .iter()
+            .find(|each| !each.parameter && (each.key, each.row, each.lane) == (key, row, lane))
+            .map(|each| each.bits)
+    }
+
+    /// Gives a bank row's lane `bits`, or with `None` its stock bits again.
+    pub fn set_bank_value(&mut self, key: u32, row: u16, lane: u16, bits: Option<u32>) {
+        self.bank_values
+            .retain(|each| each.parameter || (each.key, each.row, each.lane) != (key, row, lane));
+        if let Some(bits) = bits {
+            self.bank_values.push(BankValue {
+                key,
+                row,
+                lane,
+                bits,
+                parameter: false,
+            });
+        }
+    }
+
+    /// Gives script parameter `name`, the `row`th of the bank's parameter table, the reset value
+    /// `value`, or with `None` its stock one again.
+    pub fn set_parameter_default(&mut self, name: u32, row: u16, value: Option<f32>) {
+        self.bank_values
+            .retain(|each| !(each.parameter && (each.key, each.row) == (name, row)));
+        if let Some(value) = value {
+            self.bank_values.push(BankValue {
+                key: name,
+                row,
+                lane: sundial::package_authoring::ability_movement::PARAMETER_RESET,
+                bits: value.to_bits(),
+                parameter: true,
+            });
+        }
+    }
+
+    /// The projectile spawned in place of `replaced` where `graph` names it, if any.
+    #[must_use]
+    pub fn swap(&self, graph: u32, replaced: u32) -> Option<u32> {
+        self.spawn_swaps
+            .iter()
+            .find(|swap| swap.graph == graph && swap.replaced == replaced)
+            .map(|swap| swap.replacement)
+    }
+
+    /// Spawns `replacement` in place of `replaced` where `graph` names it, or with `None` the
+    /// stock one again. Values of the replaced graph go with it, since nothing spawns it now.
+    pub fn set_swap(&mut self, graph: u32, replaced: u32, replacement: Option<u32>) {
+        self.spawn_swaps
+            .retain(|swap| !(swap.graph == graph && swap.replaced == replaced));
+        if let Some(replacement) = replacement.filter(|replacement| *replacement != replaced) {
+            self.ability_values
+                .retain(|value| value.locator.graph_tag.map(|tag| tag.get()) != Some(replaced));
+            self.spawn_swaps.push(SpawnSwap {
+                graph,
+                replaced,
+                replacement,
+            });
+        }
+    }
+
+    /// The multiplier it gives its ability's recharge rate, if any.
+    #[must_use]
+    pub fn recharge(&self) -> Option<f32> {
+        (self.recharge_bits != 0).then(|| f32::from_bits(self.recharge_bits))
+    }
+
+    /// Multiplies its ability's recharge rate, or with `None` or 1 leaves the rate stock.
+    pub fn set_recharge(&mut self, multiplier: Option<f32>) {
+        self.recharge_bits = multiplier
+            .filter(|multiplier| multiplier.is_finite() && *multiplier != 1.0)
+            .map_or(0, f32::to_bits);
+    }
+
     /// Sets a parameter of the ability's bank, or with `None` leaves it stock.
     pub fn set_parameter(&mut self, parameter: u32, value: Option<f32>) {
         self.parameters.retain(|each| each.parameter != parameter);
@@ -164,6 +311,35 @@ impl EntryEdits {
         }
     }
 
+    /// Sets a tint's change, or with a stock one leaves the color as it is.
+    pub fn set_tint(&mut self, edit: TintEdit) {
+        self.tints.retain(|each| each.color != edit.color);
+        if !edit.is_stock() {
+            self.tints.push(edit);
+        }
+    }
+
+    /// The change it makes to the stock color `rgb`, which is none for one it leaves stock.
+    #[must_use]
+    pub fn tint(&self, rgb: [f32; 3]) -> Option<TintEdit> {
+        self.tints
+            .iter()
+            .find(|each| each.starts_from(rgb))
+            .copied()
+            .or_else(|| TintEdit::new(rgb))
+    }
+
+    /// Whether it changes any of its effects' colors.
+    #[must_use]
+    pub fn recolors(&self) -> bool {
+        !self.palettes.is_empty() || !self.tints.is_empty() || self.grade.is_some()
+    }
+
+    /// Sets the grade over every effect, or with a stock one leaves their colors as they are.
+    pub fn set_grade(&mut self, grade: EffectGrade) {
+        self.grade = (!grade.is_stock()).then_some(grade);
+    }
+
     /// The change it makes to a palette, which is none for one it leaves stock.
     #[must_use]
     pub fn palette(&self, palette: u32) -> PaletteEdit {
@@ -180,7 +356,21 @@ impl EntryEdits {
                 "{context} takes at most {MOST_CHARGES} extra charges"
             ));
         }
-        if (self.extra_charges > 0 || !self.parameters.is_empty() || !self.palettes.is_empty())
+        if let Some(multiplier) = self.recharge()
+            && !RECHARGE_RANGE.contains(&multiplier)
+        {
+            return Err(format!(
+                "{context} multiplies recharge by {} to {}",
+                RECHARGE_RANGE.start(),
+                RECHARGE_RANGE.end()
+            ));
+        }
+        if (self.extra_charges > 0
+            || self.recharge().is_some()
+            || !self.parameters.is_empty()
+            || self.recolors()
+            || !self.spawn_swaps.is_empty()
+            || !self.bank_values.is_empty())
             && !modifiers::holds_ability(modifiers::place_entry(place))
         {
             return Err(format!("{context} holds no ability of its own"));
@@ -236,6 +426,20 @@ impl EntryEdits {
         }
         for edit in &self.palettes {
             edit.validate(context)?;
+        }
+        let tints = self
+            .tints
+            .iter()
+            .map(|edit| edit.color)
+            .collect::<std::collections::HashSet<_>>();
+        if tints.len() != self.tints.len() {
+            return Err(format!("{context} changes one tint twice"));
+        }
+        for edit in &self.tints {
+            edit.validate(context)?;
+        }
+        if let Some(grade) = &self.grade {
+            grade.validate(context)?;
         }
         let ids = self
             .custom_perks

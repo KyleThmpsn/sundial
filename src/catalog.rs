@@ -12,12 +12,13 @@ use crate::{
     unnamed_plugs,
 };
 
+mod browse;
 mod cache;
 mod collections;
 mod icons;
 mod items;
 pub use items::stock_subclass_list_classes;
-pub(crate) use items::{inventory_bucket_capacity, weapon_bucket_capacities};
+pub(crate) use items::{character_row_class, inventory_bucket_capacity, weapon_bucket_capacities};
 pub(crate) use items::{item_subtype_label, item_type_label};
 pub(crate) mod package;
 mod package_access;
@@ -27,6 +28,7 @@ mod scan;
 mod search;
 
 use crate::investment_localization::resolve_string;
+pub(crate) use browse::{BrowseEntry, Shelf};
 pub(crate) use cache::cache_is_current;
 use cache::{CACHE_SCHEMA, CatalogCache, CatalogContents, SUNDIAL_VERSION};
 pub(crate) use collections::{
@@ -220,6 +222,7 @@ pub(crate) struct Catalog {
     descriptions: HashMap<u64, String>,
     perk_descriptions: HashMap<u16, String>,
     icon_containers: HashMap<u64, u32>,
+    ammo_icon_containers: [Option<u32>; 3],
     item_package_metadata: HashMap<u64, ItemPackageMetadata>,
     item_structure_index: OnceLock<ItemStructureIndex>,
     item_stat_definitions: Vec<ItemStatDefinition>,
@@ -287,17 +290,13 @@ impl CharacterInventoryCandidateBuckets {
     ) -> Self {
         let mut buckets = Self::default();
         for hash in inventory_hashes {
-            let Some(item) = item_indices.get(hash).and_then(|index| items.get(*index)) else {
+            let item = item_indices.get(hash).and_then(|index| items.get(*index));
+            let Some((metadata, class_type)) = metadata.get(hash).and_then(|metadata| {
+                character_row_class(item, metadata).map(|class_type| (*metadata, class_type))
+            }) else {
                 continue;
             };
-            let Some(metadata) = metadata
-                .get(hash)
-                .filter(|metadata| metadata.is_character_inventory_candidate())
-                .copied()
-            else {
-                continue;
-            };
-            let class_indices = match item.class_type {
+            let class_indices = match class_type {
                 0 => &[0][..],
                 1 => &[1][..],
                 2 => &[2][..],
@@ -667,6 +666,7 @@ impl Catalog {
             descriptions,
             perk_descriptions,
             icon_containers,
+            ammo_icon_containers,
             item_package_metadata,
             item_stat_definitions,
             character_stat_rows,
@@ -771,6 +771,7 @@ impl Catalog {
             descriptions,
             perk_descriptions,
             icon_containers,
+            ammo_icon_containers,
             item_package_metadata,
             item_structure_index: OnceLock::new(),
             item_stat_definitions,

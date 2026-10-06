@@ -1,22 +1,7 @@
 use super::*;
 
 fn donor(hash: u32, name: &str, type_name: &str) -> WeaponDonorSummary {
-    WeaponDonorSummary {
-        hash,
-        name: name.into(),
-        type_name: type_name.into(),
-        bucket_hash: 0,
-        collection_backed: true,
-        power_cap: None,
-        damage_type: None,
-        inventory_slot: None,
-        ammo_type: None,
-        weapon_pattern_index: None,
-        weapon_translation_group: None,
-        stat_group_index: None,
-        damage_profile: WeaponDamageProfile::Unknown,
-        rarity: WeaponRarity::Legendary,
-    }
+    crate::test_support::donor_summary(hash, name, type_name)
 }
 
 fn entry(name: &str, path: &str, donor_hash: u32) -> RecipeLibraryEntry {
@@ -31,8 +16,10 @@ fn entry(name: &str, path: &str, donor_hash: u32) -> RecipeLibraryEntry {
         namespace: format!("parhelion.{}", name.to_ascii_lowercase()),
         bundled: false,
         donor_hash,
+        type_donor_hash: donor_hash,
         identity_hash: 0,
         type_name: None,
+        class_type_name: None,
         ammo_type: None,
         damage_type: None,
         rarity: None,

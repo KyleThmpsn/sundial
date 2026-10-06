@@ -103,6 +103,14 @@ impl evaluate::Context for Context<'_, '_> {
         })
     }
     fn input(&self, register: usize) -> [u32; 4] {
+        if register == 15
+            && let Some(t) = self.native.opaque_uv
+        {
+            let uv = std::array::from_fn(|i| (self.pixel.varyings[3][i] - t[i + 2]) / t[i]);
+            let detail = [self.pixel.varyings[3][2], self.pixel.varyings[3][3]];
+            let rgb = self.gear.base_color(uv, detail);
+            return [rgb[0], rgb[1], rgb[2], 1.0].map(f32::to_bits);
+        }
         self.input_value(register, &self.pixel.varyings)
     }
     fn constant(&self, buffer: usize, index: usize) -> [u32; 4] {
@@ -270,13 +278,14 @@ pub(in crate::model_preview) fn sample(
     let Some(native) = &material.native else {
         return [0.0; 4];
     };
-    let exposure = pixel.exposure;
+    let exposure = if native.opaque() { 1.0 } else { pixel.exposure };
+    let gear = gear.with_native(native, constants);
     let context = Context {
         model,
         material,
         native,
         constants,
-        gear,
+        gear: &gear,
         pixel,
     };
     let Some(outputs) = native.pixel.evaluate(&context) else {
@@ -286,7 +295,11 @@ pub(in crate::model_preview) fn sample(
     for value in &mut output[..3] {
         *value = (*value * exposure).max(0.0);
     }
-    output[3] = output[3].clamp(0.0, 1.0);
+    output[3] = if native.opaque() {
+        1.0
+    } else {
+        output[3].clamp(0.0, 1.0)
+    };
     if output.iter().any(|v| !v.is_finite()) {
         [0.0; 4]
     } else {

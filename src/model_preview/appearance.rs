@@ -31,6 +31,15 @@ pub(crate) fn load_reported(
     appearance: &Appearance,
     cancel: &super::Load,
 ) -> Result<Model, String> {
+    load_clip_reported(packages, appearance, cancel, None)
+}
+
+pub(crate) fn load_clip_reported(
+    packages: &Path,
+    appearance: &Appearance,
+    cancel: &super::Load,
+    clip: Option<u32>,
+) -> Result<Model, String> {
     cancel.say("Opening packages", 0, 0);
     let manager = crate::investment::discovery::open_packages(packages)?;
     let globals = manager.read_tag(resolve_live_named_tag(
@@ -76,7 +85,7 @@ pub(crate) fn load_reported(
             done,
             total,
         );
-        let model = match load_with_manager(&manager, entity, cancel, None) {
+        let mut model = match load_with_manager(&manager, entity, cancel, None) {
             Ok(model) => model,
             Err(error) => {
                 result
@@ -85,141 +94,10 @@ pub(crate) fn load_reported(
                 continue;
             }
         };
-        let base = result.vertices.len() as u32;
-        let texture_map: Vec<_> = model
-            .textures
-            .into_iter()
-            .map(|texture| {
-                if let Some(index) = result.textures.iter().position(|t| t.tag == texture.tag) {
-                    return Some(index);
-                }
-                if result.textures.len() >= MAX_TEXTURES {
-                    return None;
-                }
-                result.textures.push(texture);
-                Some(result.textures.len() - 1)
-            })
-            .collect();
-        if result.vertices.len() + model.vertices.len() > MAX_VERTICES
-            || result.triangles.len() + model.triangles.len() > MAX_TRIANGLES
-        {
-            return Err("This appearance exceeds the preview geometry budget".into());
+        if let Some(tag) = clip.filter(|tag| model.clips.iter().any(|c| c.tag == *tag)) {
+            model = load_with_manager(&manager, entity, cancel, Some(tag))?;
         }
-        let first_triangle = result.triangles.len();
-        let effect_base = result.effects.len();
-        for mut material in model.effects {
-            material.remap_textures(&texture_map);
-            result.effects.push(material);
-        }
-        let part_triangles = model.triangles.len();
-        result
-            .triangles
-            .extend(model.triangles.into_iter().map(|t| t.map(|v| v + base)));
-        result.triangle_light.resize(first_triangle, false);
-        result.triangle_light.extend(
-            (0..part_triangles)
-                .map(|index| model.triangle_light.get(index).copied().unwrap_or(false)),
-        );
-        result.triangle_emitter.resize(first_triangle, false);
-        result.triangle_emitter.extend(
-            (0..part_triangles)
-                .map(|index| model.triangle_emitter.get(index).copied().unwrap_or(false)),
-        );
-        for mut source in model.particle_sources {
-            let Some(texture) = texture_map.get(source.texture).copied().flatten() else {
-                continue;
-            };
-            source.texture = texture;
-            source.gradient = source
-                .gradient
-                .and_then(|index| texture_map.get(index).copied().flatten());
-            result.particle_sources.push(source);
-        }
-        result.particle_geometry |= model.particle_geometry;
-        result.light_geometry |= model.light_geometry;
-        result.triangle_textures.extend(
-            model
-                .triangle_textures
-                .into_iter()
-                .map(|t| t.and_then(|i| texture_map[i])),
-        );
-        result.triangle_dyes.extend(model.triangle_dyes);
-        result.triangle_dye_maps.resize(first_triangle, None);
-        result
-            .triangle_dye_maps
-            .extend((0..part_triangles).map(|index| {
-                model
-                    .triangle_dye_maps
-                    .get(index)
-                    .copied()
-                    .flatten()
-                    .and_then(|mut map| {
-                        map.texture = texture_map[map.texture]?;
-                        Some(map)
-                    })
-            }));
-        result.triangle_clip.extend(model.triangle_clip);
-        result.triangle_constant.extend(model.triangle_constant);
-        result.triangle_effects.resize(first_triangle, None);
-        result
-            .triangle_effects
-            .extend((0..part_triangles).map(|index| {
-                model
-                    .triangle_effects
-                    .get(index)
-                    .copied()
-                    .flatten()
-                    .map(|index| effect_base + index)
-            }));
-        result.triangle_gearstacks.extend(
-            model
-                .triangle_gearstacks
-                .into_iter()
-                .map(|t| t.and_then(|i| texture_map[i])),
-        );
-        result.triangle_normals.extend(
-            model
-                .triangle_normals
-                .into_iter()
-                .map(|t| t.and_then(|i| texture_map[i])),
-        );
-        result.normals.extend(model.normals);
-        result.weights.extend(model.weights);
-        for mut motion in model.motions {
-            motion.vertices =
-                motion.vertices.start + base as usize..motion.vertices.end + base as usize;
-            result.motions.push(motion);
-        }
-        result
-            .tangents
-            .resize(result.vertices.len(), [0.0, 0.0, 0.0, 1.0]);
-        result.colors.resize(result.vertices.len(), [1.0; 4]);
-        result.tangents.extend((0..model.vertices.len()).map(|i| {
-            model
-                .tangents
-                .get(i)
-                .copied()
-                .unwrap_or([0.0, 0.0, 0.0, 1.0])
-        }));
-        result.colors.extend(
-            (0..model.vertices.len()).map(|i| model.colors.get(i).copied().unwrap_or([1.0; 4])),
-        );
-        result.vertices.extend(model.vertices);
-        result.uvs.extend(model.uvs);
-        result.detail_uvs.resize(base as usize, [0.0; 2]);
-        result.detail_uvs.extend(model.detail_uvs);
-        result.tags.extend(model.tags);
-        result.notices.extend(model.notices);
-        result.assets.particles.extend(model.assets.particles);
-        result.assets.sounds.extend(model.assets.sounds);
-        result.assets.lights.extend(model.assets.lights);
-        result.assets.children.extend(model.assets.children);
-        result.assets.components.extend(model.assets.components);
-        result.assets.effect_nodes.extend(model.assets.effect_nodes);
-        result.assets.references.extend(model.assets.references);
-        if result.assets.image.is_none() {
-            result.assets.image = model.assets.image;
-        }
+        append(&mut result, model, &format!("Part {}", done + 1))?;
     }
     if result.triangles.is_empty() {
         return Err(format!(
@@ -260,6 +138,184 @@ pub(crate) fn load_reported(
         .effect_nodes
         .retain(|node| nodes.insert((node.source, node.index)));
     Ok(result)
+}
+
+/// Compose independent model owners without merging their bone namespaces.
+pub(super) fn append(result: &mut Model, model: Model, label: &str) -> Result<(), String> {
+    if result.vertices.len() + model.vertices.len() > MAX_VERTICES
+        || result.triangles.len() + model.triangles.len() > MAX_TRIANGLES
+    {
+        return Err("This appearance exceeds the preview geometry budget".into());
+    }
+    let base = result.vertices.len() as u32;
+    let range = base as usize..base as usize + model.vertices.len();
+    if let Some(animation) = model.animation {
+        result.rigs.push(animation::Rig {
+            vertices: range,
+            animation,
+        });
+    }
+    for mut rig in model.rigs {
+        rig.vertices = rig.vertices.start + base as usize..rig.vertices.end + base as usize;
+        result.rigs.push(rig);
+    }
+    if let Some(notice) = model.animation_notice {
+        result.notices.push(format!("{label}: {notice}"));
+    }
+    for mut clip in model.clips {
+        if result.clips.iter().any(|other| other.tag == clip.tag) {
+            continue;
+        }
+        clip.name = format!("{label}: {}", clip.name);
+        result.clips.push(clip);
+    }
+    let texture_map: Vec<_> = model
+        .textures
+        .into_iter()
+        .map(|texture| {
+            if let Some(index) = result.textures.iter().position(|t| t.tag == texture.tag) {
+                return Some(index);
+            }
+            if result.textures.len() >= MAX_TEXTURES {
+                let notice = "The preview texture budget is full".to_owned();
+                if !result.notices.contains(&notice) {
+                    result.notices.push(notice);
+                }
+                return None;
+            }
+            match texture::retain(result, texture) {
+                Ok(index) => Some(index),
+                Err(error) => {
+                    result.notices.push(error);
+                    None
+                }
+            }
+        })
+        .collect();
+    let first_triangle = result.triangles.len();
+    let effect_base = result.effects.len();
+    for mut material in model.effects {
+        material.remap_textures(&texture_map);
+        result.effects.push(material);
+    }
+    let part_triangles = model.triangles.len();
+    result.triangle_detail_uv.resize(first_triangle, false);
+    result.triangle_detail_uv.extend(
+        (0..part_triangles).map(|i| model.triangle_detail_uv.get(i).copied().unwrap_or(false)),
+    );
+    result
+        .triangles
+        .extend(model.triangles.into_iter().map(|t| t.map(|v| v + base)));
+    result.triangle_light.resize(first_triangle, false);
+    result.triangle_light.extend(
+        (0..part_triangles).map(|index| model.triangle_light.get(index).copied().unwrap_or(false)),
+    );
+    result.triangle_emitter.resize(first_triangle, false);
+    result.triangle_emitter.extend(
+        (0..part_triangles)
+            .map(|index| model.triangle_emitter.get(index).copied().unwrap_or(false)),
+    );
+    for mut source in model.particle_sources {
+        let Some(texture) = texture_map.get(source.texture).copied().flatten() else {
+            continue;
+        };
+        source.texture = texture;
+        source.gradient = source
+            .gradient
+            .and_then(|index| texture_map.get(index).copied().flatten());
+        result.particle_sources.push(source);
+    }
+    result.particle_geometry |= model.particle_geometry;
+    result.light_geometry |= model.light_geometry;
+    result.triangle_textures.extend(
+        model
+            .triangle_textures
+            .into_iter()
+            .map(|t| t.and_then(|i| texture_map[i])),
+    );
+    result.triangle_dyes.extend(model.triangle_dyes);
+    result.triangle_dye_maps.resize(first_triangle, None);
+    result
+        .triangle_dye_maps
+        .extend((0..part_triangles).map(|index| {
+            model
+                .triangle_dye_maps
+                .get(index)
+                .copied()
+                .flatten()
+                .and_then(|mut map| {
+                    map.texture = texture_map[map.texture]?;
+                    Some(map)
+                })
+        }));
+    result.triangle_clip.extend(model.triangle_clip);
+    result.triangle_cutoff.resize(first_triangle, None);
+    result
+        .triangle_cutoff
+        .extend((0..part_triangles).map(|i| model.triangle_cutoff.get(i).copied().flatten()));
+    result.triangle_constant.extend(model.triangle_constant);
+    result.triangle_effects.resize(first_triangle, None);
+    result
+        .triangle_effects
+        .extend((0..part_triangles).map(|index| {
+            model
+                .triangle_effects
+                .get(index)
+                .copied()
+                .flatten()
+                .map(|index| effect_base + index)
+        }));
+    result.triangle_gearstacks.extend(
+        model
+            .triangle_gearstacks
+            .into_iter()
+            .map(|t| t.and_then(|i| texture_map[i])),
+    );
+    result.triangle_normals.extend(
+        model
+            .triangle_normals
+            .into_iter()
+            .map(|t| t.and_then(|i| texture_map[i])),
+    );
+    result.normals.extend(model.normals);
+    result.weights.resize_with(base as usize, || None);
+    result.weights.extend(model.weights);
+    for mut motion in model.motions {
+        motion.vertices =
+            motion.vertices.start + base as usize..motion.vertices.end + base as usize;
+        result.motions.push(motion);
+    }
+    result
+        .tangents
+        .resize(result.vertices.len(), [0.0, 0.0, 0.0, 1.0]);
+    result.colors.resize(result.vertices.len(), [1.0; 4]);
+    result.tangents.extend((0..model.vertices.len()).map(|i| {
+        model
+            .tangents
+            .get(i)
+            .copied()
+            .unwrap_or([0.0, 0.0, 0.0, 1.0])
+    }));
+    result.colors.extend(
+        (0..model.vertices.len()).map(|i| model.colors.get(i).copied().unwrap_or([1.0; 4])),
+    );
+    result.vertices.extend(model.vertices);
+    result.uvs.extend(model.uvs);
+    result.detail_uvs.resize(base as usize, [0.0; 2]);
+    result.detail_uvs.extend(model.detail_uvs);
+    result.tags.extend(model.tags);
+    result.notices.extend(model.notices);
+    result.assets.particles.extend(model.assets.particles);
+    result.assets.sounds.extend(model.assets.sounds);
+    result.assets.lights.extend(model.assets.lights);
+    result.assets.children.extend(model.assets.children);
+    result.assets.components.extend(model.assets.components);
+    result.assets.effect_nodes.extend(model.assets.effect_nodes);
+    result.assets.references.extend(model.assets.references);
+    if result.assets.image.is_none() {
+        result.assets.image = model.assets.image;
+    }
+    Ok(())
 }
 
 /// The dye keys of each gear type's armor, cloth and suit channels: armor, weapons, ships,
@@ -370,13 +426,10 @@ fn load_detail(manager: &PackageManager, tag: u32, model: &mut Model) -> Option<
     let loaded = if model.textures.len() >= MAX_TEXTURES + GEAR_KEYS[0].len() * 2 {
         Err("The preview texture budget is full".into())
     } else {
-        texture::load(manager, tag)
+        texture::load_model(manager, tag, model)
     };
     match loaded {
-        Ok(texture) => {
-            model.textures.push(texture);
-            Some(model.textures.len() - 1)
-        }
+        Ok(index) => Some(index),
         Err(error) => {
             model
                 .notices

@@ -42,8 +42,12 @@ pub(super) struct SourceIdentity {
 pub(in crate::app) struct DyeMaterials {
     #[cfg(feature = "d2-model-importer")]
     source_key: Option<String>,
+    /// The one source read that may run, with the source key it reads.
     #[cfg(feature = "d2-model-importer")]
-    source_job: Option<thread::JoinHandle<SourceRead>>,
+    source_job: Option<(String, thread::JoinHandle<SourceRead>)>,
+    /// Whether the current source still needs a read, which waits for an earlier one to end.
+    #[cfg(feature = "d2-model-importer")]
+    source_wanted: bool,
     #[cfg(feature = "d2-model-importer")]
     pub(super) sources: BTreeMap<i8, crate::shader::DyeSource>,
     #[cfg(feature = "d2-model-importer")]
@@ -65,7 +69,7 @@ pub(in crate::app) struct DyeMaterials {
 impl Drop for DyeMaterials {
     fn drop(&mut self) {
         #[cfg(feature = "d2-model-importer")]
-        if let Some(job) = self.source_job.take() {
+        if let Some((_, job)) = self.source_job.take() {
             let _ = job.join();
         }
         // No package handles may outlive the catalog, as with the dye colors.
@@ -84,10 +88,8 @@ impl DyeMaterials {
             .as_ref()
             .and_then(|g| serde_json::to_string(g).ok());
         if self.source_key != key {
-            if let Some(job) = self.source_job.take() {
-                let _ = job.join();
-            }
             self.source_key = key.clone();
+            self.source_wanted = key.is_some();
             self.sources.clear();
             self.source_error = None;
             self.source = None;
@@ -97,29 +99,42 @@ impl DyeMaterials {
             self.thumbnails.clear();
             self.swatches = Default::default();
             self.drawn = None;
-            if key.is_some() {
-                let recipe = recipe.clone();
-                let ctx = ctx.clone();
-                self.source_job = Some(thread::spawn(move || {
+        }
+        // A read of an earlier source is left to finish rather than joined here, which would hold
+        // the whole interface until its files were read. Its result is dropped, and the latest
+        // source's read starts once it ends.
+        if let Some((read, job)) = self.source_job.take_if(|(_, job)| job.is_finished()) {
+            let result = job
+                .join()
+                .unwrap_or_else(|_| Err("Source material loading stopped".into()));
+            if self.source_key.as_deref() == Some(read.as_str()) {
+                self.source_wanted = false;
+                match result {
+                    Ok((sources, materials, textures, identity)) => {
+                        self.source = Some(identity);
+                        self.sources = sources;
+                        self.materials.extend(materials);
+                        self.textures.extend(textures);
+                    }
+                    Err(error) => self.source_error = Some(error),
+                }
+            }
+        }
+        if self.source_wanted
+            && self.source_job.is_none()
+            && let Some(key) = &self.source_key
+        {
+            let recipe = recipe.clone();
+            let ctx = ctx.clone();
+            self.source_job = Some((
+                key.clone(),
+                thread::spawn(move || {
                     let result = read_source(&recipe);
                     ctx.request_repaint();
                     result
-                }));
-            }
-        }
-        if let Some(job) = self.source_job.take_if(|job| job.is_finished()) {
-            match job
-                .join()
-                .unwrap_or_else(|_| Err("Source material loading stopped".into()))
-            {
-                Ok((sources, materials, textures, identity)) => {
-                    self.source = Some(identity);
-                    self.sources = sources;
-                    self.materials.extend(materials);
-                    self.textures.extend(textures);
-                }
-                Err(error) => self.source_error = Some(error),
-            }
+                }),
+            ));
+            self.source_wanted = false;
         }
     }
 

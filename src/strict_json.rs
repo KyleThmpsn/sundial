@@ -8,15 +8,33 @@ use serde_json::{Map, Number, Value};
 const MAX_CONTAINER_DEPTH: usize = 16;
 
 pub(crate) fn from_str<T: DeserializeOwned>(input: &str) -> Result<T, serde_json::Error> {
+    from_str_within(input, 0)
+}
+
+/// Parses a document allowed `envelope` containers beyond the usual limit: a container of
+/// documents of their own, such as a bundle whose members are each parsed again on their own,
+/// or a document that holds others, such as a recipe holding custom perks.
+pub(crate) fn from_str_within<T: DeserializeOwned>(
+    input: &str,
+    envelope: usize,
+) -> Result<T, serde_json::Error> {
     let mut deserializer = serde_json::Deserializer::from_str(input);
-    let value = StrictValueSeed { depth: 0 }.deserialize(&mut deserializer)?;
+    let value = StrictValueSeed {
+        depth: 0,
+        limit: MAX_CONTAINER_DEPTH + envelope,
+    }
+    .deserialize(&mut deserializer)?;
     deserializer.end()?;
     serde_json::from_value(value)
 }
 
 pub(crate) fn from_reader<R: Read, T: DeserializeOwned>(reader: R) -> Result<T, serde_json::Error> {
     let mut deserializer = serde_json::Deserializer::from_reader(reader);
-    let value = StrictValueSeed { depth: 0 }.deserialize(&mut deserializer)?;
+    let value = StrictValueSeed {
+        depth: 0,
+        limit: MAX_CONTAINER_DEPTH,
+    }
+    .deserialize(&mut deserializer)?;
     deserializer.end()?;
     serde_json::from_value(value)
 }
@@ -24,6 +42,7 @@ pub(crate) fn from_reader<R: Read, T: DeserializeOwned>(reader: R) -> Result<T, 
 #[derive(Clone, Copy)]
 struct StrictValueSeed {
     depth: usize,
+    limit: usize,
 }
 
 impl<'de> DeserializeSeed<'de> for StrictValueSeed {
@@ -35,28 +54,35 @@ impl<'de> DeserializeSeed<'de> for StrictValueSeed {
     {
         // The runtime rejects any value reached at depth 16. An empty container at depth 15 is
         // still valid because parsing it never descends to another value.
-        if self.depth >= MAX_CONTAINER_DEPTH {
+        if self.depth >= self.limit {
             return Err(de::Error::custom(format!(
-                "JSON nesting exceeds the supported {MAX_CONTAINER_DEPTH}-container limit"
+                "JSON nesting exceeds the supported {}-container limit",
+                self.limit
             )));
         }
-        deserializer.deserialize_any(StrictValueVisitor { depth: self.depth })
+        deserializer.deserialize_any(StrictValueVisitor {
+            depth: self.depth,
+            limit: self.limit,
+        })
     }
 }
 
 struct StrictValueVisitor {
     depth: usize,
+    limit: usize,
 }
 
 impl StrictValueVisitor {
     fn nested<E: de::Error>(&self) -> Result<StrictValueSeed, E> {
-        if self.depth >= MAX_CONTAINER_DEPTH {
+        if self.depth >= self.limit {
             return Err(E::custom(format!(
-                "JSON nesting exceeds the supported {MAX_CONTAINER_DEPTH}-container limit"
+                "JSON nesting exceeds the supported {}-container limit",
+                self.limit
             )));
         }
         Ok(StrictValueSeed {
             depth: self.depth + 1,
+            limit: self.limit,
         })
     }
 }

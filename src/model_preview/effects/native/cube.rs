@@ -61,12 +61,14 @@ impl Cube {
         let cube = Self { edge, levels };
         let size = [edge * 6, (0..levels).map(|i| (edge >> i).max(1)).sum()];
         let mut rgba = vec![0; size[0] * size[1] * 4];
+        let mut linear = matches!(format, 10 | 26).then(|| vec![[0.0; 4]; size[0] * size[1]]);
         let mut offset = 0;
         let mut top = 0;
         for level in 0..levels {
             let width = (edge >> level).max(1);
             let length = match format {
-                28 | 29 | 87 | 88 | 91 | 93 => width * width * 4,
+                26 | 28 | 29 | 87 | 88 | 91 | 93 => width * width * 4,
+                10 => width * width * 8,
                 71 | 72 | 80 => width.div_ceil(4).pow(2) * 8,
                 74 | 75 | 77 | 78 | 83 | 98 | 99 => width.div_ceil(4).pow(2) * 16,
                 _ => return Err(format!("Unsupported reflection texture format {format}")),
@@ -76,16 +78,30 @@ impl Cube {
                     .get(offset..offset + length)
                     .ok_or("Truncated reflection texture mip")?;
                 let pixels = texture::decode(data, format, width, width)?;
+                let floats = texture::float::decode(data, format, width, width)?;
                 for y in 0..width {
                     let to = ((top + y) * size[0] + face * edge) * 4;
                     rgba[to..to + width * 4]
                         .copy_from_slice(&pixels[y * width * 4..(y + 1) * width * 4]);
+                    if let (Some(atlas), Some(pixels)) = (&mut linear, &floats) {
+                        atlas[to / 4..to / 4 + width]
+                            .copy_from_slice(&pixels[y * width..(y + 1) * width]);
+                    }
                 }
                 offset += length;
             }
             top += width;
         }
-        Ok((cube, texture::Texture { tag, size, rgba }))
+        Ok((
+            cube,
+            texture::Texture {
+                mips: None,
+                tag,
+                size,
+                rgba,
+                linear,
+            },
+        ))
     }
 
     pub(super) fn sample(
@@ -104,11 +120,12 @@ impl Cube {
             let first = xy.map(|v| v.floor() as usize);
             let last = first.map(|v| (v + 1).min(width - 1));
             let t = [xy[0] - first[0] as f32, xy[1] - first[1] as f32];
-            let pixel = |x, y, channel| {
-                let value = f32::from(
-                    texture.rgba
-                        [((top + y) * texture.size[0] + face * self.edge + x) * 4 + channel],
-                ) / 255.0;
+            let pixel = |x: usize, y: usize, channel: usize| {
+                let index = (top + y) * texture.size[0] + face * self.edge + x;
+                if let Some(pixels) = &texture.linear {
+                    return pixels[index][channel];
+                }
+                let value = f32::from(texture.rgba[index * 4 + channel]) / 255.0;
                 if color && channel < 3 {
                     shader::linear(value)
                 } else {

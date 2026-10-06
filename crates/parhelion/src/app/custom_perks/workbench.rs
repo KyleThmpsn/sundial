@@ -2,7 +2,7 @@
 use super::*;
 use crate::perk::{
     PerkRecipe,
-    library::{Entry, Library},
+    library::{DraftsWrite, Entry, Library},
 };
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
@@ -212,6 +212,9 @@ pub(in crate::app) struct Workbench {
     drafts_writable: bool,
     /// Why the last draft write failed. Autosave tries again on the next edit.
     drafts_error: Option<String>,
+    /// This window's own drafts file, named after it, once another window wrote the shared
+    /// drafts file since this one last did. Autosave writes there for the rest of the session.
+    drafts_set_aside: Option<String>,
     library: Option<Library>,
     entries: Vec<Entry>,
     /// Each saved perk's problem, by path, with the modified time and size it was checked at.
@@ -409,6 +412,8 @@ impl Workbench {
         self.editing_program_action = None;
         self.selected = index;
         self.reveal_document = true;
+        // An image still being imported belongs to the perk it was asked for.
+        self.properties.discard_hud_import();
         // A result or an error belongs to the perk it came from.
         self.message = None;
         self.message_path = None;

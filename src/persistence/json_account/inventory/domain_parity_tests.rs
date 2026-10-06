@@ -6,25 +6,8 @@ use sundial_account as domain;
 use crate::persistence::json_account::JsonProfileAdapter;
 
 use super::legacy_profile_tests as legacy;
+use super::tests::document;
 use super::*;
-
-fn document(version: u64) -> Value {
-    json!({
-        "version": version,
-        "state": {
-            "account": {
-                "primary_soid": "0x9EAA300100100100",
-                "profile_items": []
-            },
-            "characters": [{
-                "soid": "0x9EAA300200100100",
-                "class": 0,
-                "equipment": {},
-                "inventory": []
-            }]
-        }
-    })
-}
 
 #[test]
 fn adapter_capabilities_match_every_current_json_schema_mode() {

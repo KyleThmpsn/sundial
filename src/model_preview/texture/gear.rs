@@ -58,8 +58,7 @@ pub(in crate::model_preview) fn gear(
         if model.textures.len() >= MAX_TEXTURES {
             return Err("The preview texture budget is full".into());
         }
-        model.textures.push(super::load(manager, tag)?);
-        Ok(model.textures.len() - 1)
+        super::load_model(manager, tag, model)
     };
     let albedo = load(albedo, model)?;
     let normal = load(normal, model)?;

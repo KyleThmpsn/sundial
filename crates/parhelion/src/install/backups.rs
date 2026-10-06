@@ -181,6 +181,67 @@ pub(super) fn backup_recipe_snapshots(
         })
 }
 
+/// Flushes the directory entries that make a backup generation reachable after a power loss:
+/// every directory inside it, the generation itself, and each directory from there up to the
+/// backup root's parent, which may have been created for it. Its files were flushed as they were
+/// written. The journal names the backup only after this, so recovery can never be left
+/// pointing at a backup whose names the disk did not record.
+///
+/// Windows journals NTFS directory changes itself and offers no directory flush through the
+/// standard library, so there this checks nothing.
+pub(super) fn sync_backup_directories(backup: &Path, backup_root: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        fn nested(directory: &Path, found: &mut Vec<PathBuf>) -> io::Result<()> {
+            for entry in fs::read_dir(directory)? {
+                let entry = entry?;
+                if entry.file_type()?.is_dir() {
+                    nested(&entry.path(), found)?;
+                    found.push(entry.path());
+                }
+            }
+            Ok(())
+        }
+        let flush = |directory: &Path| {
+            fs::File::open(directory)
+                .and_then(|handle| handle.sync_all())
+                .map_err(|error| {
+                    format!(
+                        "Could not flush backup directory {}: {error}",
+                        directory.display()
+                    )
+                })
+        };
+        let mut inner = Vec::new();
+        nested(backup, &mut inner)
+            .map_err(|error| format!("Could not list backup {}: {error}", backup.display()))?;
+        // Deepest first, so each entry is recorded before the directory that names it.
+        for directory in &inner {
+            flush(directory)?;
+        }
+        let root = fs::canonicalize(backup_root).map_err(|error| {
+            format!(
+                "Could not resolve backup root {}: {error}",
+                backup_root.display()
+            )
+        })?;
+        let mut current = Some(backup);
+        while let Some(directory) = current {
+            flush(directory)?;
+            if directory == root.as_path() {
+                if let Some(parent) = directory.parent() {
+                    flush(parent)?;
+                }
+                break;
+            }
+            current = directory.parent();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (backup, backup_root);
+    Ok(())
+}
+
 pub(super) fn create_backup_directory(backup_root: &Path) -> io::Result<PathBuf> {
     fs::create_dir_all(backup_root)?;
     let canonical_root = fs::canonicalize(backup_root)?;

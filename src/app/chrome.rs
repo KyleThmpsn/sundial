@@ -128,7 +128,7 @@ impl SundialApp {
                 }
                 // Opens its own window beside whichever view is showing.
                 if ui
-                    .selectable_label(false, "Definition Inspector")
+                    .selectable_label(false, "Inspector")
                     .on_hover_text("Opens in a separate window (Ctrl+I)")
                     .clicked()
                 {
@@ -285,7 +285,7 @@ impl SundialApp {
                     ui.weak(display_version());
                     ui.add_space(8.0);
                     ui.label(
-                        "Edit accounts and settings, and create custom weapon packages for Project Sunrise and Dawn.",
+                        "Edit accounts and settings, and author your own weapons and other items for Project Sunrise and Dawn.",
                     );
                     ui.hyperlink_to("github.com/kylethmpsn/sundial", PROJECT_URL);
                     ui.add_space(8.0);

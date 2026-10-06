@@ -677,7 +677,7 @@ fn owner_retarget_includes_both_event_endpoints_and_is_atomic() {
 }
 
 #[test]
-fn owner_retarget_follows_nested_reciprocal_objects_without_rewriting_collisions() {
+fn owner_retarget_follows_typed_self_references_without_rewriting_collisions() {
     const OLD: u32 = 0x8111_0001;
     const NEW: u32 = 0x8123_0001;
     let entity = two_resource_weapon_entity();
@@ -700,13 +700,14 @@ fn owner_retarget_follows_nested_reciprocal_objects_without_rewriting_collisions
     let original = owner.clone();
     assert_eq!(
         retarget_weapon_component_owner_payload(&mut owner, &entity, OLD, NEW),
-        Ok(4)
+        Ok(6)
     );
-    for offset in [0x80, 0x100, 0x120, 0x160] {
+    // 0x1A0 and 0x1E0 name the owner one way, as a melee ability owner's +0x238 does.
+    for offset in [0x80, 0x100, 0x120, 0x160, 0x1A0, 0x1E0] {
         assert_eq!(read_u32(&owner, offset), Ok(NEW));
         owner[offset..offset + 4].copy_from_slice(&original[offset..offset + 4]);
     }
-    assert_eq!(owner, original, "only proven object references may change");
+    assert_eq!(owner, original, "only typed self references may change");
 }
 
 #[test]

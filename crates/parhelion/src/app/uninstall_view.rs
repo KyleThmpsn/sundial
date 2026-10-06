@@ -85,6 +85,11 @@ impl PackageAuthoringApp {
         let (sender, receiver) = mpsc::channel();
         self.uninstall.remove_receiver = Some(receiver);
         thread::spawn(move || {
+            // Previews pause while this runs, and a read already running is let finish first.
+            if !sundial::ui::model_preview::wait_for_package_reads(super::jobs::PREVIEW_READ_WAIT) {
+                let _ = sender.send(Err(super::jobs::PREVIEW_READ_BUSY.to_owned()));
+                return;
+            }
             let result = uninstall_custom_packages(
                 &plan,
                 &backup,

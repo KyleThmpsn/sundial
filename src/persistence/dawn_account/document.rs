@@ -83,6 +83,10 @@ fn load_inner(path: &Path) -> Result<DawnAccountDocumentLoad, DawnAccountError> 
     let progression = super::progression::Progression::load(&connection)?;
     let reward_debts = super::rewards::load(&connection)?;
     let reward_sequence = super::rewards::sequence(&connection)?;
+    let guarded = super::writer::guarded_digest(
+        &crate::persistence::native_account::snapshot::snapshot(&connection)
+            .map_err(DawnAccountError::Unwritable)?,
+    );
 
     Ok(DawnAccountDocumentLoad::Loaded(Box::new(
         DawnAccountDocument {
@@ -98,6 +102,7 @@ fn load_inner(path: &Path) -> Result<DawnAccountDocumentLoad, DawnAccountError> 
                 progression: progression.clone(),
                 dismantle: super::dismantle::rows(&profile),
                 reward_debts: reward_debts.clone(),
+                guarded,
             },
             snapshot: DawnAccountSnapshot {
                 primary_soid,

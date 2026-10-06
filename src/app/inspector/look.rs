@@ -323,6 +323,46 @@ pub(in crate::app) fn section<R>(
         .body_returned
 }
 
+/// A row of tabs in one recessed frame. Tabs are `SelectableLabel`s added by the caller.
+pub(in crate::app) fn tab_bar(ui: &mut egui::Ui, add_tabs: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::NONE
+        .fill(ui.visuals().extreme_bg_color)
+        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+        .corner_radius(egui::CornerRadius::same(4))
+        .inner_margin(egui::Margin::same(3))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                ui.spacing_mut().button_padding = egui::vec2(12.0, 4.0);
+                add_tabs(ui);
+            });
+        });
+}
+
+/// A label with an optional count muted after it, for tabs and list choices.
+pub(in crate::app) fn tab_text(
+    ui: &egui::Ui,
+    label: &str,
+    count: Option<usize>,
+) -> egui::WidgetText {
+    let Some(count) = count else {
+        return label.into();
+    };
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        label,
+        0.0,
+        egui::TextFormat::simple(font.clone(), egui::Color32::PLACEHOLDER),
+    );
+    job.append(
+        &count.to_string(),
+        6.0,
+        egui::TextFormat::simple(font, muted(ui)),
+    );
+    job.into()
+}
+
 /// A plain heading inside a section, for grouping properties without another fold.
 pub(in crate::app) fn subheading(ui: &mut egui::Ui, title: &str) {
     ui.add_space(8.0);

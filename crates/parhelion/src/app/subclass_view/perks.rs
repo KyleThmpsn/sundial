@@ -97,6 +97,24 @@ pub(super) fn perk_chip(
     (response, removed, on_remove)
 }
 
+/// Where a perk the entry grants itself comes from: the entry, with the perk's number among its
+/// perks when it grants several.
+fn own_source(
+    (summary, entry): (Option<&SubclassSummary>, u8),
+    perk: u16,
+) -> Option<(&SubclassSummary, u8, Option<usize>)> {
+    let summary = summary?;
+    let perks = summary.entry_perks.get(&entry)?;
+    let ordinal = perks.iter().position(|each| *each == perk)?;
+    Some((summary, entry, (perks.len() > 1).then_some(ordinal + 1)))
+}
+
+/// A perk by the entry that grants it, numbered when the entry grants several.
+fn source_label((subclass, entry, number): (&SubclassSummary, u8, Option<usize>)) -> String {
+    let name = entry_name(subclass, entry);
+    number.map_or_else(|| name.to_owned(), |number| format!("{name} {number}"))
+}
+
 impl PackageAuthoringApp {
     /// An entry's perks, each with a remove button, then a menu of every stock node's perks and
     /// the command that authors a new one in the workbench. A custom perk opens in the workbench
@@ -105,6 +123,7 @@ impl PackageAuthoringApp {
         &self,
         ui: &mut egui::Ui,
         base: &SubclassSummary,
+        own: (Option<&SubclassSummary>, u8),
         edits: &EntryEdits,
         stock_perks: &[u16],
     ) -> Option<Change> {
@@ -112,8 +131,10 @@ impl PackageAuthoringApp {
         let perks = edits.perks(stock_perks);
         ui.horizontal_wrapped(|ui| {
             for &perk in &perks {
-                let label = self.perk_label(perk);
-                let source = self.perk_source(perk);
+                // A perk the entry grants itself reads as the entry, whichever ability grants it
+                // first.
+                let source = own_source(own, perk).or_else(|| self.perk_source(perk));
+                let label = source.map_or_else(|| format!("Perk {perk}"), source_label);
                 let icon = source.and_then(|(subclass, entry, _)| {
                     self.entry_icon(ui.ctx(), Some(subclass), entry)
                 });
@@ -250,13 +271,8 @@ impl PackageAuthoringApp {
     /// A sandbox perk by the first stock entry that grants it, numbered as the Add Perk list
     /// numbers it when that entry grants several, or by its number.
     fn perk_label(&self, perk: u16) -> String {
-        self.perk_source(perk).map_or_else(
-            || format!("Perk {perk}"),
-            |(subclass, entry, number)| {
-                let name = entry_name(subclass, entry);
-                number.map_or_else(|| name.to_owned(), |number| format!("{name} {number}"))
-            },
-        )
+        self.perk_source(perk)
+            .map_or_else(|| format!("Perk {perk}"), source_label)
     }
 
     /// A new custom perk that copies a stock perk, named for it.

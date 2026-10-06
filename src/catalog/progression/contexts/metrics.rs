@@ -143,6 +143,13 @@ pub(in crate::catalog) fn scan_trait_definitions(
     if definition_count != string_count {
         return Err("The installed trait definition and string tables do not match".into());
     }
+    rows_fit(
+        &definitions,
+        definition_rows,
+        definition_count,
+        TRAIT_DEFINITION_ROW_SIZE,
+    )?;
+    rows_fit(&strings, string_rows, string_count, TRAIT_STRING_ROW_SIZE)?;
 
     let mut traits = Vec::with_capacity(definition_count);
     for index in 0..definition_count {

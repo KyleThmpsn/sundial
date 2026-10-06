@@ -98,8 +98,8 @@ fn native_perk_icons_author_private_wrappers_and_preserve_stock_pixels() {
     );
     eprintln!("Verified native texture {texture} and private icon {authored_container}");
     let private_strings = plug.authored_string_tag;
-    let icon_table = sources.item_icon_table_tag;
-    let finished_table = sources.finished_sandbox_perk_table_tag;
+    let icon_table = sources.table_tags.item_icon_table_tag;
+    let finished_table = sources.table_tags.finished_sandbox_perk_table_tag;
     let expected_container = authored_container;
     let mut png = std::io::Cursor::new(Vec::new());
     let pixels = image::RgbaImage::from_fn(96, 96, |x, y| {
@@ -213,8 +213,8 @@ fn bundled_custom_images_reach_private_weapon_tooltip_rows() {
         !image_plugs.is_empty(),
         "the selected recipes must exercise embedded icons"
     );
-    let finished_table = sources.finished_sandbox_perk_table_tag;
-    let icon_table = sources.item_icon_table_tag;
+    let finished_table = sources.table_tags.finished_sandbox_perk_table_tag;
+    let icon_table = sources.table_tags.item_icon_table_tag;
     drop(sources);
     let bundle = build_weapon_project_after_catalog_validation(view.path(), &project).unwrap();
     let staged = tempfile::tempdir().unwrap();

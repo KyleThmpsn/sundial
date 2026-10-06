@@ -44,11 +44,15 @@ pub(super) fn render_cases(cases: &mut Vec<(String, Model, [u8; 3])>) {
                 _ => unreachable!(),
             };
             model.textures.push(texture::Texture {
+                mips: None,
+                linear: None,
                 tag: 1,
                 size: [1, 1],
                 rgba: vec![0; 4],
             });
             model.textures.push(texture::Texture {
+                mips: None,
+                linear: None,
                 tag: 2,
                 size: [1, 1],
                 rgba,

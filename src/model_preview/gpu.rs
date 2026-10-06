@@ -21,6 +21,7 @@ use std::{
 static AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 mod draw;
+mod resolve;
 mod upload;
 #[cfg(all(test, windows))]
 mod verification;
@@ -50,6 +51,15 @@ pub(crate) struct Frame {
 pub(crate) struct Shared(Arc<Mutex<State>>);
 
 impl Shared {
+    pub fn fallback(&self, model: &Arc<Model>) -> Option<String> {
+        self.0.lock().ok().and_then(|state| {
+            state
+                .fallback
+                .as_ref()
+                .filter(|(source, _)| Arc::ptr_eq(source, model))
+                .map(|(_, reason)| reason.clone())
+        })
+    }
     pub fn paint(&self, ui: &egui::Ui, rect: egui::Rect, frame: Frame) {
         let state = self.0.clone();
         let (repaint, viewport) = (ui.ctx().clone(), ui.ctx().viewport_id());
@@ -71,6 +81,7 @@ impl Shared {
 
 #[derive(Default)]
 struct State {
+    fallback: Option<(Arc<Model>, String)>,
     program: Option<(glow::Program, Uniforms)>,
     program_model: Option<Arc<Model>>,
     model: Option<Uploaded>,
@@ -108,7 +119,12 @@ struct Uniforms {
     worn_rough: Option<glow::UniformLocation>,
     wear: Option<glow::UniformLocation>,
     detail_transform: Option<glow::UniformLocation>,
+    native_detail: Option<glow::UniformLocation>,
+    cutoff: Option<glow::UniformLocation>,
     normal_transform: Option<glow::UniformLocation>,
+    has_legacy_normal: Option<glow::UniformLocation>,
+    legacy_normal: Option<glow::UniformLocation>,
+    legacy_detail: Option<glow::UniformLocation>,
     effect: Option<glow::UniformLocation>,
     effect_constants: Option<glow::UniformLocation>,
     effect_textures: [Option<glow::UniformLocation>; 3],
@@ -136,8 +152,9 @@ struct Uploaded {
     groups: Vec<Group>,
     /// Triangle indices in draw order, for expanding skinned positions.
     order: Vec<u32>,
-    center: [f32; 3],
-    radius: f32,
+    /// Textured object framing followed by stored mesh inspection framing.
+    framing: [([f32; 3], f32); 2],
+    hide_emitter: bool,
     samplers: Vec<Vec<glow::Sampler>>,
     pending: Option<upload::Pending>,
 }
@@ -146,7 +163,9 @@ struct Uploaded {
 struct Key {
     /// Native transparents follow every opaque surface, including emissive panels.
     effect: Option<usize>,
-    /// First so emissive panels sort after the surfaces they sit on.
+    /// Keep particle and object draws distinct even when their materials match.
+    emitter: bool,
+    /// Emissive panels sort after the surfaces they sit on.
     constant: Option<[u32; 3]>,
     albedo: Option<usize>,
     gearstack: Option<usize>,
@@ -154,6 +173,8 @@ struct Key {
     slot: u8,
     clip: bool,
     dye_map: Option<super::texture::DyeMap>,
+    native_detail: bool,
+    cutoff: Option<u32>,
 }
 
 struct Group {
@@ -169,6 +190,7 @@ struct Target {
     size: [i32; 2],
     scene_depth: glow::Texture,
     scene_fbo: glow::Framebuffer,
+    resolve: resolve::Resolve,
 }
 
 impl State {
@@ -176,6 +198,30 @@ impl State {
         // SAFETY: called only from draw with its live context. Uploads and deletes use
         // that same context and preparation itself runs without GL on a worker.
         unsafe {
+            if self
+                .fallback
+                .as_ref()
+                .is_some_and(|(model, _)| Arc::ptr_eq(model, &frame.model))
+            {
+                return false;
+            }
+            self.fallback = None;
+            let maximum = gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE).max(0) as usize;
+            if frame
+                .model
+                .textures
+                .iter()
+                .chain(frame.model.iridescence.iter())
+                .any(|texture| texture.size.iter().any(|&axis| axis > maximum))
+            {
+                self.fallback = Some((
+                    frame.model.clone(),
+                    format!(
+                        "Software rendering preserves textures above this GPU's {maximum}-pixel limit."
+                    ),
+                ));
+                return false;
+            }
             if self
                 .program_model
                 .as_ref()
@@ -190,6 +236,7 @@ impl State {
                 self.program_model = Some(frame.model.clone());
             }
             if self.program.is_none() {
+                self.fallback = Some((frame.model.clone(), "Software rendering is active because this model's GPU shader could not initialize.".into()));
                 return false;
             }
             if self
@@ -272,8 +319,10 @@ impl State {
                     old.delete(gl);
                 }
                 self.target = Target::new(gl, size);
+                gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
             }
             let Some(target) = self.target.as_ref() else {
+                self.fallback = Some((frame.model.clone(), "Software rendering is active because the GPU could not initialize a float color target.".into()));
                 return false;
             };
 
@@ -287,19 +336,21 @@ impl State {
             // Equal passes so emissive panels coincident with a surface win by draw order.
             gl.depth_func(glow::LEQUAL);
             gl.depth_mask(true);
-            let background = frame.scene.background.map(|v| f32::from(v) / 255.0);
+            let background = frame
+                .scene
+                .background
+                .map(|v| shader::linear(f32::from(v) / 255.0));
             gl.clear_color(background[0], background[1], background[2], 1.0);
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
 
             gl.use_program(Some(*program));
             gl.bind_vertex_array(Some(uploaded.vao));
+            let (bind_center, radius) =
+                uploaded.framing[usize::from(frame.style != Style::Textured)];
             let (sy, cy) = frame.camera.yaw.sin_cos();
             let (sp, cp) = frame.camera.pitch.sin_cos();
             gl.uniform_3_f32(uniforms.native_direction.as_ref(), -cp * sy, -cp * cy, sp);
-            gl.uniform_1_f32(
-                uniforms.native_distance.as_ref(),
-                (uploaded.radius * 4.0).max(1.0),
-            );
+            gl.uniform_1_f32(uniforms.native_distance.as_ref(), (radius * 4.0).max(1.0));
             // Same rotation as the CPU rasterizer, with y up instead of down.
             let rotate = [
                 cy,
@@ -314,11 +365,11 @@ impl State {
             ];
             let scale =
                 size[0].min(size[1]) as f32 * super::render::RADIUS_SCALE * frame.camera.zoom
-                    / uploaded.radius;
+                    / radius;
             let center = frame
                 .pose
                 .as_ref()
-                .map_or(uploaded.center, |pose| pose.framing_center(uploaded.center));
+                .map_or(bind_center, |pose| pose.framing_center(bind_center));
             gl.uniform_3_f32(uniforms.center.as_ref(), center[0], center[1], center[2]);
             gl.uniform_matrix_3_f32_slice(uniforms.rotate.as_ref(), false, &rotate);
             gl.uniform_2_f32(
@@ -328,14 +379,12 @@ impl State {
             );
             // Keep the stable bind-pose screen scale, but include every posed vertex in
             // the depth range. Bone motion can extend far beyond the stored bounding sphere.
-            let depth_radius = frame.pose.as_ref().map_or(uploaded.radius, |pose| {
-                pose.positions
-                    .iter()
-                    .fold(uploaded.radius, |radius, point| {
-                        let [x, y, z] =
-                            std::array::from_fn::<_, 3, _>(|axis| point[axis] - center[axis]);
-                        radius.max((cp * (sy * x + cy * y) - sp * z).abs())
-                    })
+            let depth_radius = frame.pose.as_ref().map_or(radius, |pose| {
+                pose.positions.iter().fold(radius, |radius, point| {
+                    let [x, y, z] =
+                        std::array::from_fn::<_, 3, _>(|axis| point[axis] - center[axis]);
+                    radius.max((cp * (sy * x + cy * y) - sp * z).abs())
+                })
             });
             gl.uniform_1_f32(uniforms.depth_scale.as_ref(), (1.0 - 1e-4) / depth_radius);
             // Pan is a fraction of the viewport; clip space spans two units and points up.
@@ -390,23 +439,12 @@ impl State {
             gl.disable(glow::DEPTH_TEST);
             gl.active_texture(glow::TEXTURE0);
 
-            // Resolve into egui's framebuffer, clipped by the scissor the painter left set.
-            gl.enable(glow::SCISSOR_TEST);
-            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(target.fbo));
-            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, previous);
-            gl.blit_framebuffer(
-                0,
-                0,
-                size[0],
-                size[1],
-                viewport.left_px,
-                viewport.from_bottom_px,
-                viewport.left_px + size[0],
-                viewport.from_bottom_px + size[1],
-                glow::COLOR_BUFFER_BIT,
-                glow::NEAREST,
+            target.resolve.paint(
+                gl,
+                target,
+                previous,
+                [viewport.left_px, viewport.from_bottom_px],
             );
-            gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
             true
         }
     }
@@ -426,7 +464,7 @@ fn expand_attributes(
     normals: &[[f32; 3]],
     tangents: &[[f32; 4]],
 ) -> Vec<f32> {
-    let mut attributes = Vec::with_capacity(order.len() * 45);
+    let mut attributes = Vec::with_capacity(order.len() * 48);
     for &triangle in order {
         let corners = model.triangles[triangle as usize];
         let [a, b, c] = corners.map(|v| positions.get(v as usize).copied().unwrap_or_default());
@@ -440,9 +478,16 @@ fn expand_attributes(
         let native = super::effects::index(model, triangle as usize)
             .and_then(|index| model.effects[index].native.as_ref())
             .is_some();
+        let stored_basis = corners.iter().all(|&v| {
+            normals
+                .get(v as usize)
+                .zip(tangents.get(v as usize))
+                .and_then(|(&n, &t)| shader::normal::Basis::stored(n, t))
+                .is_some()
+        });
         for vertex in corners {
             let mut normal = normals.get(vertex as usize).copied().unwrap_or(flat);
-            if native {
+            if native || stored_basis {
                 normal = shader::normal::normalize(normal)
                     .or_else(|| shader::normal::normalize(flat))
                     .unwrap_or([0.0, 0.0, 1.0]);
@@ -461,6 +506,7 @@ fn expand_attributes(
                     .copied()
                     .unwrap_or([1.0; 4]),
             );
+            attributes.push(f32::from(u8::from(stored_basis)));
         }
     }
     attributes
@@ -477,21 +523,8 @@ fn expand_positions(order: &[u32], model: &Model, positions: &[[f32; 3]]) -> Vec
 }
 
 /// Center and half diagonal of the triangles drawn, leaving out light volumes when hidden.
-fn bounds(model: &Model, hide_light: bool) -> ([f32; 3], f32) {
-    let mut low = [f32::INFINITY; 3];
-    let mut high = [f32::NEG_INFINITY; 3];
-    for (index, triangle) in model.triangles.iter().enumerate() {
-        if hide_light && model.triangle_light.get(index).copied().unwrap_or(false) {
-            continue;
-        }
-        for &vertex in triangle {
-            let vertex = model.vertices[vertex as usize];
-            for axis in 0..3 {
-                low[axis] = low[axis].min(vertex[axis]);
-                high[axis] = high[axis].max(vertex[axis]);
-            }
-        }
-    }
+fn bounds(model: &Model, style: Style) -> ([f32; 3], f32) {
+    let (low, high) = super::render::drawn_bounds(model, style);
     let center: [f32; 3] = std::array::from_fn(|axis| (low[axis] + high[axis]) * 0.5);
     let radius = (0..3)
         .map(|axis| (high[axis] - low[axis]).powi(2))
@@ -528,13 +561,26 @@ impl Target {
         unsafe {
             for samples in [4, 0] {
                 let fbo = gl.create_framebuffer().ok()?;
-                let color = gl.create_renderbuffer().ok()?;
-                let depth = gl.create_renderbuffer().ok()?;
+                let color = match gl.create_renderbuffer() {
+                    Ok(value) => value,
+                    Err(_) => {
+                        gl.delete_framebuffer(fbo);
+                        return None;
+                    }
+                };
+                let depth = match gl.create_renderbuffer() {
+                    Ok(value) => value,
+                    Err(_) => {
+                        gl.delete_renderbuffer(color);
+                        gl.delete_framebuffer(fbo);
+                        return None;
+                    }
+                };
                 gl.bind_renderbuffer(glow::RENDERBUFFER, Some(color));
                 gl.renderbuffer_storage_multisample(
                     glow::RENDERBUFFER,
                     samples,
-                    glow::SRGB8_ALPHA8,
+                    glow::RGBA32F,
                     size[0],
                     size[1],
                 );
@@ -563,7 +609,15 @@ impl Target {
                 let complete =
                     gl.check_framebuffer_status(glow::FRAMEBUFFER) == glow::FRAMEBUFFER_COMPLETE;
                 if complete {
-                    let scene_depth = gl.create_texture().ok()?;
+                    let scene_depth = match gl.create_texture() {
+                        Ok(value) => value,
+                        Err(_) => {
+                            gl.delete_renderbuffer(depth);
+                            gl.delete_renderbuffer(color);
+                            gl.delete_framebuffer(fbo);
+                            return None;
+                        }
+                    };
                     gl.bind_texture(glow::TEXTURE_2D, Some(scene_depth));
                     gl.tex_image_2d(
                         glow::TEXTURE_2D,
@@ -587,7 +641,16 @@ impl Target {
                         glow::NEAREST as i32,
                     );
                     gl.bind_texture(glow::TEXTURE_2D, None);
-                    let scene_fbo = gl.create_framebuffer().ok()?;
+                    let scene_fbo = match gl.create_framebuffer() {
+                        Ok(value) => value,
+                        Err(_) => {
+                            gl.delete_texture(scene_depth);
+                            gl.delete_renderbuffer(depth);
+                            gl.delete_renderbuffer(color);
+                            gl.delete_framebuffer(fbo);
+                            return None;
+                        }
+                    };
                     gl.bind_framebuffer(glow::FRAMEBUFFER, Some(scene_fbo));
                     gl.framebuffer_texture_2d(
                         glow::FRAMEBUFFER,
@@ -598,6 +661,23 @@ impl Target {
                     );
                     gl.draw_buffer(glow::NONE);
                     gl.read_buffer(glow::NONE);
+                    if gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE
+                    {
+                        gl.delete_framebuffer(scene_fbo);
+                        gl.delete_texture(scene_depth);
+                        gl.delete_framebuffer(fbo);
+                        gl.delete_renderbuffer(color);
+                        gl.delete_renderbuffer(depth);
+                        continue;
+                    }
+                    let Some(resolve) = resolve::Resolve::new(gl, size) else {
+                        gl.delete_framebuffer(scene_fbo);
+                        gl.delete_texture(scene_depth);
+                        gl.delete_framebuffer(fbo);
+                        gl.delete_renderbuffer(color);
+                        gl.delete_renderbuffer(depth);
+                        return None;
+                    };
                     return Some(Self {
                         fbo,
                         color,
@@ -605,6 +685,7 @@ impl Target {
                         size,
                         scene_depth,
                         scene_fbo,
+                        resolve,
                     });
                 }
                 gl.delete_framebuffer(fbo);
@@ -623,31 +704,26 @@ impl Target {
             gl.delete_renderbuffer(self.depth);
             gl.delete_framebuffer(self.scene_fbo);
             gl.delete_texture(self.scene_depth);
+            self.resolve.delete(gl);
         }
     }
 }
 
-unsafe fn compile(gl: &glow::Context, model: &Model) -> Option<(glow::Program, Uniforms)> {
-    // SAFETY: live context; shaders are deleted after linking and the program on failure.
+unsafe fn link(gl: &glow::Context, vertex: &str, fragment: &str) -> Option<glow::Program> {
+    // SAFETY: shaders and the program are created and released on the supplied context.
     unsafe {
         let program = gl.create_program().ok()?;
-        let fragment = FRAGMENT.replace(
-            "// EFFECT FUNCTIONS",
-            &format!(
-                "{}\n{}",
-                include_str!("effects/shader.glsl"),
-                super::effects::native::source(model, false)
-            ),
-        );
-        let vertex = VERTEX.replace(
-            "// NATIVE VERTEX FUNCTIONS",
-            &super::effects::native::source(model, true),
-        );
         for (kind, source) in [
-            (glow::VERTEX_SHADER, vertex.as_str()),
-            (glow::FRAGMENT_SHADER, fragment.as_str()),
+            (glow::VERTEX_SHADER, vertex),
+            (glow::FRAGMENT_SHADER, fragment),
         ] {
-            let shader = gl.create_shader(kind).ok()?;
+            let shader = match gl.create_shader(kind) {
+                Ok(value) => value,
+                Err(_) => {
+                    gl.delete_program(program);
+                    return None;
+                }
+            };
             gl.shader_source(shader, source);
             gl.compile_shader(shader);
             if !gl.get_shader_compile_status(shader) {
@@ -671,6 +747,26 @@ unsafe fn compile(gl: &glow::Context, model: &Model) -> Option<(glow::Program, U
             gl.delete_program(program);
             return None;
         }
+        Some(program)
+    }
+}
+
+unsafe fn compile(gl: &glow::Context, model: &Model) -> Option<(glow::Program, Uniforms)> {
+    // SAFETY: live context; shaders are deleted after linking and the program on failure.
+    unsafe {
+        let fragment = FRAGMENT.replace(
+            "// EFFECT FUNCTIONS",
+            &format!(
+                "{}\n{}",
+                include_str!("effects/shader.glsl"),
+                super::effects::native::source(model, false)
+            ),
+        );
+        let vertex = VERTEX.replace(
+            "// NATIVE VERTEX FUNCTIONS",
+            &super::effects::native::source(model, true),
+        );
+        let program = link(gl, &vertex, &fragment)?;
         let location = |name: &str| gl.get_uniform_location(program, name);
         let uniforms = Uniforms {
             center: location("uCenter"),
@@ -719,7 +815,12 @@ unsafe fn compile(gl: &glow::Context, model: &Model) -> Option<(glow::Program, U
             worn_rough: location("uWornRough"),
             wear: location("uWear"),
             detail_transform: location("uDetailTransform"),
+            native_detail: location("uNativeDetail"),
+            cutoff: location("uCutoff"),
             normal_transform: location("uNormalTransform"),
+            has_legacy_normal: location("uHasLegacyNormal"),
+            legacy_normal: location("uLegacyNormal"),
+            legacy_detail: location("uLegacyDetail"),
             effect: location("uEffect"),
             effect_constants: location("uEffectConstants[0]"),
             effect_textures: [
@@ -747,6 +848,7 @@ layout(location = 2) in vec2 aUv;
 layout(location = 3) in vec2 aDetailUv;
 layout(location = 4) in vec4 aTangent;
 layout(location = 5) in vec4 aColor;
+layout(location = 6) in float aBasisValid;
 uniform vec3 uCenter;
 uniform mat3 uRotate;
 uniform vec2 uScale;
@@ -757,6 +859,7 @@ out vec3 vNormal;
 out vec2 vUv;
 out vec2 vDetailUv;
 out vec4 vNative[9];
+flat out float vBasisValid;
 // NATIVE VERTEX FUNCTIONS
 void main() {
     vec3 position=aPosition,normal=aNormal;
@@ -764,6 +867,7 @@ void main() {
     vec3 p = uRotate * (position - uCenter);
     vView = p;
     vNormal = uRotate * normal;
+    vBasisValid = aBasisValid;
     vUv = aUv;
     vDetailUv = aDetailUv;
     gl_Position = vec4(p.x * uScale.x + uPan.x, p.y * uScale.y + uPan.y, p.z * uDepthScale, 1.0);
@@ -775,6 +879,8 @@ in vec3 vView;
 in vec3 vNormal;
 in vec2 vUv;
 in vec4 vNative[9];
+flat in float vBasisValid;
+uniform mat3 uRotate;
 uniform sampler2D uAlbedo;
 uniform sampler2D uGear;
 uniform sampler2D uNormal;
@@ -783,6 +889,8 @@ uniform sampler2D uDetailNormal;
 uniform sampler2D uIridescence;
 uniform sampler2D uDyeMap;
 uniform int uHasDyeMap, uMapSlot;
+uniform int uNativeDetail;
+uniform float uCutoff;
 uniform vec4 uMapTransform;
 uniform int uHasAlbedo, uHasGear, uHasNormal, uHasDetail, uHasDetailNormal, uHasDye, uClip, uHasIridescence, uHasConstant;
 uniform vec3 uConstant;
@@ -791,6 +899,8 @@ uniform int uStyle;
 uniform int uFlat;
 uniform vec3 uDyeAlbedo, uDyeWorn, uEmissive;
 uniform vec4 uParams, uWornParams, uRough, uWornRough, uWear, uDetailTransform, uNormalTransform;
+uniform int uHasLegacyNormal;
+uniform vec3 uLegacyNormal, uLegacyDetail;
 out vec4 fragColor;
 
 uniform vec3 uKeyDir, uHalfDir;
@@ -798,18 +908,29 @@ uniform float uKey, uFill, uExposure;
 
 float sat(float v) { return clamp(v, 0.0, 1.0); }
 float remap(float v, vec4 m) {
-    float e = m.z + m.w;
-    return clamp(v * m.y + m.x, min(m.z, e), max(m.z, e));
+    return sat(m.z + m.w * sat(v * m.y + m.x));
 }
 float overlay(float base, float blend) { return blend * sat(base * 4.0) + sat(base - 0.25); }
 vec3 overlay3(vec3 base, vec3 blend) {
     return vec3(overlay(base.r, blend.r), overlay(base.g, blend.g), overlay(base.b, blend.b));
 }
-vec3 encode(vec3 v) {
+vec3 legacyColor(vec3 base, vec4 detail, vec3 dye, float strength) {
+    vec3 detailed = clamp(overlay3(detail.rgb,dye),0.0,1.0);
+    return overlay3(base,mix(dye,detailed,strength));
+}
+float paintRemap(float value, vec4 map) { return sat(map.z + map.w * sat(map.x + map.y * value)); }
+vec3 paintColor(vec3 base, vec4 detail, vec3 dye, float strength) {
+    vec3 detailed = clamp(overlay3(detail.rgb, dye), 0.0, 1.0);
+    return clamp(overlay3(base, mix(dye, detailed, sat(strength))), 0.0, 1.0);
+}
+float paintSmooth(float raw, float detail, vec4 map, float strength) {
+    return mix(paintRemap(raw, map), paintRemap(sat(overlay(raw, detail)), map), sat(strength));
+}
+vec3 linear(vec3 v) {
     v = clamp(v, 0.0, 1.0);
-    vec3 lo = v * 12.92;
-    vec3 hi = 1.055 * pow(v, vec3(1.0 / 2.4)) - 0.055;
-    return mix(lo, hi, step(vec3(0.0031308), v));
+    vec3 lo = v / 12.92;
+    vec3 hi = pow((v + 0.055) / 1.055, vec3(2.4));
+    return mix(lo, hi, step(vec3(0.04045), v));
 }
 
 // Mirrors shader.rs `value_noise`.
@@ -860,7 +981,7 @@ vec3 light(vec3 albedo, float rough, float metal, float ao, vec3 emission, vec3 
 
 // EFFECT FUNCTIONS
 void main() {
-    if(uStyle==0 && uNativeIndex>=0){fragColor=nativePixel();return;}
+    if(uStyle==0 && uNativeIndex>=0 && uEffect>=0){fragColor=nativePixel(vec3(0.0));return;}
     vec2 uv = vUv;
     if (uHasDyeMap == 1 && uStyle == 0) {
         vec3 map = texture(uDyeMap, uv * uMapTransform.xy + uMapTransform.zw).rgb;
@@ -869,7 +990,7 @@ void main() {
         int slot = bank * 2 + (map.r >= 0.5 ? 1 : 0);
         if (slot != uMapSlot) discard;
     }
-    if (uClip == 1 && uHasGear == 1 && texture(uGear, uv).b * 7.96875 < 0.5) discard;
+    if (uClip == 1 && uHasGear == 1 && texture(uGear, uv).b * 7.96875 < uCutoff) discard;
     vec3 dp1 = dFdx(vView);
     vec3 dp2 = dFdy(vView);
     vec3 face = normalize(cross(dp1, dp2));
@@ -881,7 +1002,7 @@ void main() {
         return;
     }
     if (uStyle == 2) {
-        fragColor = vec4(180.0 / 255.0, 215.0 / 255.0, 245.0 / 255.0, 1.0);
+        fragColor = vec4(linear(vec3(180.0, 215.0, 245.0) / 255.0), 1.0);
         return;
     }
     float lighting = uFill + uKey * min(abs(dot(n, uKeyDir)), 1.0);
@@ -889,15 +1010,15 @@ void main() {
         // Panel art lives in the colour plate: alpha cuts the segments, colour tints them.
         vec4 base = uHasAlbedo == 1 ? texture(uAlbedo, uv) : vec4(1.0);
         if (base.a < 0.5) discard;
-        fragColor = vec4(encode(uConstant * base.rgb * uExposure), 1.0);
+        fragColor = vec4(uConstant * base.rgb * uExposure, 1.0);
         return;
     }
     if (uStyle == 1 || (uHasAlbedo == 0 && uHasDye == 0)) {
-        fragColor = vec4(vec3(205.0, 216.0, 230.0) / 255.0 * lighting * uExposure, 1.0);
+        fragColor = vec4(linear(vec3(205.0, 216.0, 230.0) / 255.0 * lighting * uExposure), 1.0);
         return;
     }
     if (uHasAlbedo == 0) {
-        fragColor = vec4(encode(uDyeAlbedo * lighting * uExposure), 1.0);
+        fragColor = vec4(uDyeAlbedo * lighting * uExposure, 1.0);
         return;
     }
     vec3 base = texture(uAlbedo, uv).rgb;
@@ -910,59 +1031,113 @@ void main() {
     vec3 dyeColor = vec3(1.0);
     bool painted = false;
     bool dyed = uHasDye == 1 && uHasGear == 1;
+    bool nativePaint = uNativeIndex>=0 && uEffect<0 && nHasPaint();
+    bool legacyNormal = uHasLegacyNormal == 1 && uEffect < 0;
+    vec2 nativeSmooth = nativePaint ? nPaintSmooth() : vec2(0.0);
     if (dyed) {
-        rough = 1.0 - mask.g / 255.0;
+        rough = nativePaint ? 1.0 - nativeSmooth.y : 1.0 - mask.g / 255.0;
         metal = sat(mask.a / 32.0);
         ao = sat(mask.r / 255.0);
         emission = base * sat((mask.b - 40.0) / 215.0);
         if (mask.a >= 40.0) {
-            float intact = sat(remap(sat((mask.a - 48.0) / 207.0), uWear));
-            vec4 params = mix(uWornParams, uParams, intact);
+            float wear = sat((mask.a - 48.0) / 207.0);
+            float intact = nativePaint ? paintRemap(wear, uWear) : sat(remap(wear, uWear));
+            vec4 params = nativePaint ? mix(clamp(uWornParams,0.0,1.0),clamp(uParams,0.0,1.0),intact) : mix(uWornParams, uParams, intact);
             dyeColor = mix(uDyeWorn, uDyeAlbedo, intact);
             painted = true;
             albedo = overlay3(base, dyeColor);
             float smoothness = mask.g / 255.0;
+            vec4 detail = vec4(0.25);
             if (uHasDetail == 1) {
-                vec4 detail = texture(uDetail, uv * 5.0 * uDetailTransform.xy + uDetailTransform.zw);
-                albedo = mix(albedo, overlay3(detail.rgb, albedo), sat(params.x));
+                vec2 detailUv = uNativeDetail == 1 ? vNative[3].zw : uv * 5.0;
+                detail = texture(uDetail, detailUv * uDetailTransform.xy + uDetailTransform.zw);
                 smoothness = mix(smoothness, overlay(smoothness, detail.a), sat(params.z));
             }
+            albedo = mix(legacyColor(base,detail,uDyeWorn,sat(uWornParams.x)),legacyColor(base,detail,uDyeAlbedo,uParams.x),intact);
             rough = 1.0 - sat(mix(remap(smoothness, uWornRough), remap(smoothness, uRough), intact));
+            if (nativePaint) {
+                albedo = mix(paintColor(base,detail,uDyeWorn,uWornParams.x),paintColor(base,detail,uDyeAlbedo,uParams.x),intact);
+                rough = 1.0 - mix(paintSmooth(nativeSmooth.x,detail.a,uWornRough,uWornParams.z),paintSmooth(nativeSmooth.x,detail.a,uRough,uParams.z),intact);
+            }
             metal = sat(params.w);
             emission = uEmissive * sat((mask.b - 40.0) / 215.0);
+            if (uNativeIndex<0 && !nativePaint && all(equal(emission,vec3(0.0)))) {
+                float peak = max(albedo.r,max(albedo.g,albedo.b));
+                albedo *= 1.0-sat(peak-1.0);
+                albedo /= max(1.0,max(albedo.r,max(albedo.g,albedo.b)));
+            }
         }
-    } else if (uHasNormal == 0) {
+    } else if (uHasNormal == 0 && !(nativePaint && uHasGear == 1)) {
         // No material information: the CPU path lights the colour texture directly.
-        fragColor = vec4(encode(base) * lighting * uExposure, 1.0);
+        fragColor = vec4(base * lighting * uExposure, 1.0);
         return;
+    }
+    if (nativePaint && uHasGear == 1 && mask.a < 40.0) {
+        rough = 1.0 - nativeSmooth.y;
+        if (nHasBaseMetal()) metal = nBaseMetal();
+    }
+    if (nativePaint && dyed && uHasDetailNormal == 1 && mask.a >= 40.0 && nHasNormalGrain()) {
+        float intact = paintRemap(sat((mask.a - 48.0) / 207.0),uWear);
+        float strength = mix(sat(uWornParams.y),sat(uParams.y),intact);
+        vec2 detailUv = uNativeDetail == 1 ? vNative[3].zw : uv * 5.0;
+        float blue = texture(uDetailNormal,detailUv*uNormalTransform.xy+uNormalTransform.zw).b;
+        float limit = mix(1.0,sat(blue+nNormalGrain()),strength);
+        rough = max(rough,1.0-limit);
+    }
+    if (legacyNormal && uHasNormal == 1) {
+        float limit = sat(texture(uNormal,uv).b+uLegacyNormal.z);
+        if (dyed && uHasDetailNormal == 1 && !isnan(uLegacyDetail.z) && !isinf(uLegacyDetail.z)) {
+            float intact = paintRemap(sat((mask.a-48.0)/207.0),uWear);
+            float strength = mix(sat(uWornParams.y),uParams.y,intact);
+            vec2 detailUv = uNativeDetail == 1 ? vNative[3].zw : uv*5.0;
+            float blue = texture(uDetailNormal,detailUv*uNormalTransform.xy+uNormalTransform.zw).b;
+            limit = min(limit,mix(1.0,sat(blue+uLegacyDetail.z),strength));
+        }
+        rough = max(rough,1.0-limit);
     }
     if (uHasNormal == 1) {
         vec2 duv1 = dFdx(uv);
         vec2 duv2 = dFdy(uv);
         float det = duv1.x * duv2.y - duv2.x * duv1.y;
-        if (abs(det) > 1e-12) {
-            vec3 t = normalize((dp1 * duv2.y - dp2 * duv1.y) / det);
-            vec3 b = normalize((dp2 * duv1.x - dp1 * duv2.x) / det);
-            vec3 nn = n;
+        vec3 nn = vBasisValid > 0.5 ? normalize(uRotate*vNative[0].xyz) : n;
+        vec3 tangent = uRotate*vNative[1].xyz;
+        vec3 bitangent = uRotate*vNative[2].xyz;
+        vec3 storedT = tangent - nn * dot(tangent,nn);
+        bool storedBasis = vBasisValid > 0.5 && dot(storedT,storedT)>1e-12 && dot(bitangent,bitangent)>1e-12;
+        if (storedBasis || abs(det) > 1e-12) {
+            vec3 t = storedBasis ? normalize(storedT) : normalize((dp1 * duv2.y - dp2 * duv1.y) / det);
+            vec3 b = storedBasis ? bitangent : normalize((dp2 * duv1.x - dp1 * duv2.x) / det);
+            if (!storedBasis) nn = n;
             t = normalize(t - nn * dot(t, nn));
             vec3 bb = cross(nn, t);
             if (dot(bb, b) < 0.0) bb = -bb;
             vec4 sampled = texture(uNormal, uv);
             vec2 xy = sampled.rg;
-            ao *= sampled.b;
+            bool decodedNormal = legacyNormal || (uNativeIndex >= 0 && uEffect < 0 && nHasDecodedNormal());
+            vec4 decode = legacyNormal ? vec4(uLegacyNormal.xy,uLegacyDetail.xy) : nNormalDecode();
+            if (decodedNormal) xy = xy * decode.x + decode.y;
+            else ao *= sampled.b;
             if (dyed && uHasDetailNormal == 1 && mask.a >= 40.0) {
-                float intact = sat(remap(sat((mask.a - 48.0) / 207.0), uWear));
-                float strength = clamp(mix(uWornParams.y, uParams.y, intact), 0.0, 4.0);
-                vec4 detail = texture(uDetailNormal, uv * 5.0 * uNormalTransform.xy + uNormalTransform.zw);
+                float wear = sat((mask.a - 48.0) / 207.0);
+                float intact = nativePaint ? paintRemap(wear,uWear) : sat(remap(wear,uWear));
+                float strength = decodedNormal ? mix(sat(uWornParams.y), legacyNormal ? uParams.y : sat(uParams.y), intact) : clamp(mix(uWornParams.y, uParams.y, intact), 0.0, 4.0);
+                vec2 detailUv = uNativeDetail == 1 ? vNative[3].zw : uv * 5.0;
+                vec4 detail = texture(uDetailNormal, detailUv * uNormalTransform.xy + uNormalTransform.zw);
                 vec2 blended = mix(2.0 * xy * detail.rg, 1.0 - 2.0 * (1.0 - xy) * (1.0 - detail.rg), step(0.5, xy));
-                xy = mix(xy, blended, strength);
-                ao *= mix(1.0, detail.b, min(strength, 1.0));
+                if (decodedNormal) {
+                    if (!(any(isnan(decode.zw)) || any(isinf(decode.zw)))) xy += strength * (detail.rg * decode.z + decode.w);
+                }
+                else {
+                    xy = mix(xy, blended, strength);
+                    ao *= mix(1.0, detail.b, min(strength, 1.0));
+                }
             }
-            vec2 p = clamp(xy * 2.0 - 1.0, -1.0, 1.0);
+            vec2 p = decodedNormal ? xy : clamp(xy * 2.0 - 1.0, -1.0, 1.0);
             float z = sqrt(max(1.0 - dot(p, p), 0.0));
             n = normalize(t * p.x + bb * p.y + nn * z);
         }
     }
+    if(uNativeIndex>=0 && uEffect<0)albedo=nativePixel(albedo).rgb;
     vec3 tint = vec3(1.0);
     if (painted && uHasIridescence == 1 && uIridescenceId >= 0.0) {
         float nDotV = sat(abs(n.z));
@@ -979,6 +1154,6 @@ void main() {
             tint = mix(vec3(1.0), iri.rgb, strength);
         }
     }
-    fragColor = vec4(encode(light(albedo, rough, metal, ao, emission, n, tint)), 1.0);
+    fragColor = vec4(light(albedo, rough, metal, ao, emission, n, tint), 1.0);
 }
 "#;

@@ -1,8 +1,11 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    sync::Arc,
+};
 
 use eframe::egui;
 
-use crate::catalog::{Catalog, DefinitionSearchHit};
+use crate::catalog::{BrowseEntry, Catalog, DefinitionSearchHit, ItemRarity, Shelf};
 
 use super::matches::CatalogHashMatchIndex;
 use crate::app::inspector::DefinitionInspectionContext;
@@ -23,6 +26,8 @@ pub(in crate::app) struct HashInspectionState {
     pub(super) forward: Vec<InspectionTarget>,
     pub(super) match_index: Option<(u64, Arc<CatalogHashMatchIndex>)>,
     pub(super) search: DefinitionSearch,
+    /// The home page's shelves and filters, kept while the window is closed.
+    pub(super) browse: Browse,
     pub(super) source_context: Option<DefinitionInspectionContext>,
     pub(super) mutation_feedback: Option<(bool, String)>,
     pub(super) runtime: super::runtime::RuntimeInspectionState,
@@ -55,6 +60,115 @@ pub(super) struct SearchResults {
     /// A hash the query parses as, offered as a row of its own.
     pub(super) hash: Option<u64>,
     pub(super) highlighted: usize,
+}
+
+/// A home page tab: a shelf of items or the recently opened definitions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum BrowseTab {
+    Shelf(Shelf),
+    Recent,
+}
+
+impl Default for BrowseTab {
+    fn default() -> Self {
+        Self::Shelf(Shelf::default())
+    }
+}
+
+/// The order cards are listed in. Ordering never hides a card.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(super) enum BrowseSort {
+    #[default]
+    Type,
+    Name,
+    Rarity,
+}
+
+impl BrowseSort {
+    pub(super) const ALL: [Self; 3] = [Self::Type, Self::Name, Self::Rarity];
+
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::Type => "By Type",
+            Self::Name => "Name",
+            Self::Rarity => "Rarity",
+        }
+    }
+}
+
+/// The home page's tab, filters and the cards they leave.
+#[derive(Debug, Default)]
+pub(super) struct Browse {
+    pub(super) tab: BrowseTab,
+    /// None shows every type.
+    pub(super) type_name: Option<String>,
+    pub(super) rarity: Option<ItemRarity>,
+    /// 0 Titan, 1 Hunter, 2 Warlock. None shows every class.
+    pub(super) class: Option<u8>,
+    pub(super) sort: BrowseSort,
+    pub(super) dummy_items: bool,
+    /// Type groups folded on each shelf.
+    pub(super) folded: HashSet<(Shelf, String)>,
+    pub(super) index: Option<Arc<BrowseIndex>>,
+    pub(super) results: BrowseResults,
+    /// Definitions other than items that match the search.
+    pub(super) definitions: SearchResults,
+}
+
+impl Browse {
+    /// Whether a filter or the search narrows the cards beyond the defaults.
+    pub(super) fn narrowed(&self, query: &str) -> bool {
+        self.type_name.is_some()
+            || self.rarity.is_some()
+            || self.class.is_some()
+            || self.dummy_items
+            || !query.trim().is_empty()
+    }
+
+    pub(super) fn reset(&mut self) {
+        self.type_name = None;
+        self.rarity = None;
+        self.class = None;
+        self.dummy_items = false;
+    }
+}
+
+/// Every browsable entry of one catalog, with the text the search matches.
+#[derive(Debug)]
+pub(super) struct BrowseIndex {
+    /// The catalog's address, so a new catalog rebuilds the index.
+    pub(super) catalog: usize,
+    pub(super) entries: Vec<BrowseEntry>,
+    /// Lowercased name, type and hash per entry.
+    pub(super) text: Vec<String>,
+}
+
+/// The cards for one set of filters, rebuilt only when that set changes.
+#[derive(Debug, Default)]
+pub(super) struct BrowseResults {
+    pub(super) key: Option<BrowseKey>,
+    /// Indices into the index's entries, in display order.
+    pub(super) cards: Vec<usize>,
+    /// Cards each type would show, counted before the type filter.
+    pub(super) types: BTreeMap<String, usize>,
+    /// Cards across every type.
+    pub(super) total: usize,
+    /// Search matches on each shelf, in [`Shelf::ALL`] order.
+    pub(super) shelf_matches: [usize; 5],
+    /// Whether the shelf holds items of one class.
+    pub(super) has_classes: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct BrowseKey {
+    pub(super) catalog: usize,
+    pub(super) query: String,
+    pub(super) shelf: Shelf,
+    pub(super) type_name: Option<String>,
+    pub(super) rarity: Option<ItemRarity>,
+    pub(super) class: Option<u8>,
+    pub(super) sort: BrowseSort,
+    pub(super) dummy_items: bool,
 }
 
 pub(super) const HASH_INSPECTOR_HISTORY_LIMIT: usize = 32;
@@ -212,6 +326,7 @@ impl HashInspectionState {
     pub(in crate::app) fn reset(&mut self) {
         self.close();
         self.history.clear();
+        self.browse = Browse::default();
     }
 }
 

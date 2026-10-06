@@ -24,15 +24,18 @@ impl PackageAuthoringApp {
             .collect::<Vec<_>>();
         let mut members = entries
             .map(|entry| {
-                let donor = self
-                    .donor_summaries
-                    .iter()
-                    .find(|donor| donor.hash == entry.donor_hash);
+                let summary = |hash: u32| self.donor_summaries.iter().find(|d| d.hash == hash);
                 (
                     entry.badge.as_ref().map(|badge| badge.name.as_str()),
                     entry
                         .collection_destination
-                        .or_else(|| automatic_destination(donor, entry.ammo_type))
+                        .or_else(|| {
+                            automatic_destination(
+                                summary(entry.donor_hash),
+                                summary(entry.type_donor_hash),
+                                entry.ammo_type,
+                            )
+                        })
                         .filter(|_| !self.collection_is_exotic(entry.rarity, entry.donor_hash)),
                 )
             })
@@ -50,15 +53,7 @@ impl PackageAuthoringApp {
             self.recipe
                 .overrides
                 .collection_destination
-                .or_else(|| {
-                    automatic_destination(
-                        self.donor_summaries.iter().find(|donor| {
-                            donor.hash
-                                == self.recipe.donor.item_hash.parse_u32().unwrap_or_default()
-                        }),
-                        self.recipe.overrides.ammo_type,
-                    )
-                })
+                .or_else(|| self.current_automatic_destination())
                 .filter(|_| !exotic),
         );
         let included = self
@@ -219,12 +214,7 @@ impl PackageAuthoringApp {
             return;
         }
         let mut custom = self.recipe.overrides.collection_destination.is_some();
-        let automatic = automatic_destination(
-            self.donor_summaries.iter().find(|donor| {
-                donor.hash == self.recipe.donor.item_hash.parse_u32().unwrap_or_default()
-            }),
-            self.recipe.overrides.ammo_type,
-        );
+        let automatic = self.current_automatic_destination();
         egui::ComboBox::from_id_salt("collection_destination_mode")
             .selected_text(if custom { "Choose Page" } else { "Automatic" })
             .show_ui(ui, |ui| {
@@ -305,8 +295,23 @@ fn installed_custom_nodes(presentation_node_hashes: &[u64]) -> BTreeSet<u64> {
         .collect()
 }
 
+impl PackageAuthoringApp {
+    /// Where the open recipe files when no page is chosen.
+    fn current_automatic_destination(&self) -> Option<Destination> {
+        let summary = |hash: u32| self.donor_summaries.iter().find(|d| d.hash == hash);
+        automatic_destination(
+            summary(self.recipe.donor.item_hash.parse_u32().unwrap_or_default()),
+            summary(self.recipe.type_donor_hash()),
+            self.recipe.overrides.ammo_type,
+        )
+    }
+}
+
+/// The page a weapon files under: the family of the type it shows (`shown`, falling back to the
+/// base's when that type has no page) and the base weapon's ammo, unless the recipe sets one.
 fn automatic_destination(
     donor: Option<&WeaponDonorSummary>,
+    shown: Option<&WeaponDonorSummary>,
     authored_ammo: Option<crate::RecipeAmmoType>,
 ) -> Option<Destination> {
     let donor = donor?;
@@ -328,37 +333,26 @@ fn automatic_destination(
     )?;
     Some(Destination {
         ammo,
-        family: Family::from_type_name(&donor.type_name)?,
+        family: shown
+            .and_then(|shown| Family::from_type_name(&shown.type_name))
+            .or_else(|| Family::from_type_name(&donor.type_name))?,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Ammo, Destination, Family, WeaponAmmoType, WeaponDamageProfile, WeaponDonorSummary,
-        WeaponRarity, automatic_destination,
+        Ammo, Destination, Family, WeaponAmmoType, WeaponDonorSummary, automatic_destination,
     };
 
     #[test]
     fn automatic_destination_combines_authored_ammo_with_donor_weapon_type() {
         let donor = WeaponDonorSummary {
-            hash: 1,
-            name: "Sword donor".into(),
-            type_name: "Sword".into(),
-            bucket_hash: 0,
-            collection_backed: true,
-            power_cap: None,
-            damage_type: None,
-            inventory_slot: None,
             ammo_type: Some(WeaponAmmoType::Heavy),
-            weapon_pattern_index: None,
-            weapon_translation_group: None,
-            stat_group_index: None,
-            damage_profile: WeaponDamageProfile::Unknown,
-            rarity: WeaponRarity::Legendary,
+            ..crate::test_support::donor_summary(1, "Sword donor", "Sword")
         };
         assert_eq!(
-            automatic_destination(Some(&donor), Some(crate::RecipeAmmoType::Special)),
+            automatic_destination(Some(&donor), None, Some(crate::RecipeAmmoType::Special)),
             Some(Destination {
                 ammo: Ammo::Special,
                 family: Family::Swords,

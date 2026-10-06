@@ -212,6 +212,21 @@ impl Program {
                     output.push_str("}\n");
                     continue;
                 }
+                78 => {
+                    writeln!(
+                        output,
+                        "{{uvec4 dividend={},divisor={};uvec4 quotient,remainder;",
+                        b(2),
+                        b(3)
+                    )
+                    .unwrap();
+                    output.push_str("for(int lane=0;lane<4;lane++){quotient[lane]=divisor[lane]==0u?0xFFFFFFFFu:dividend[lane]/divisor[lane];remainder[lane]=divisor[lane]==0u?0xFFFFFFFFu:dividend[lane]%divisor[lane];}\n");
+                    write(&mut output, &v[0], "quotient", false);
+                    write(&mut output, &v[1], "remainder", false);
+                    output.push_str("}\n");
+                    continue;
+                }
+                80 => format!("uvec4(greaterThanEqual({},{}))*0xFFFFFFFFu", b(1), b(2)),
                 86 => wrap(format!("vec4({})", b(1))),
                 108 => {
                     let swizzle: String = v[2].lanes.iter().map(|&i| b"xyzw"[i] as char).collect();

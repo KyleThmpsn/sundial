@@ -162,10 +162,15 @@ pub(super) fn configure_destiny_symbol_fonts(
     );
     let mut loaded = Vec::new();
     let mut errors = Vec::new();
-    for &(name, file_name) in DESTINY_SYMBOL_FONTS {
+    super::ui::record_game_face(ctx, super::ui::GameFace::Symbol, None);
+    for (index, &(name, file_name)) in DESTINY_SYMBOL_FONTS.iter().enumerate() {
         let path = install.join("fonts").join(file_name);
         match fs::read(&path) {
             Ok(bytes) => {
+                // The PC face leads, and is the one Dawn merges into its text font.
+                if index == 0 {
+                    super::ui::record_game_face(ctx, super::ui::GameFace::Symbol, Some(&bytes));
+                }
                 fonts
                     .font_data
                     .insert(name.to_owned(), Arc::new(egui::FontData::from_owned(bytes)));
@@ -221,7 +226,9 @@ pub(super) fn configure_destiny_symbol_fonts(
     }
     let tooltip_family = egui::FontFamily::Name("Sundial Tooltip Title".into());
     let mut tooltip_fonts = fonts.families[&destiny_text_font_family()].clone();
-    if let Ok(bytes) = fs::read(install.join("fonts").join("NeueHaasUnicaW1G-Medium.otf")) {
+    let medium = fs::read(install.join("fonts").join("NeueHaasUnicaW1G-Medium.otf")).ok();
+    super::ui::record_game_face(ctx, super::ui::GameFace::Title, medium.as_deref());
+    if let Some(bytes) = medium {
         let name = "sundial-tooltip-medium".to_owned();
         fonts
             .font_data
@@ -229,6 +236,34 @@ pub(super) fn configure_destiny_symbol_fonts(
         tooltip_fonts.insert(0, name);
     }
     fonts.families.insert(tooltip_family.clone(), tooltip_fonts);
+    // The game's own text and figure faces, which item cards and tooltips are set in. Each family
+    // exists even without its file, falling back to the Destiny text fonts.
+    for (face, family, file_name) in [
+        (
+            super::ui::GameFace::Text,
+            super::ui::GAME_TEXT_FONT_FAMILY,
+            "NeueHaasUnicaW1G-Regular.otf",
+        ),
+        (
+            super::ui::GameFace::Figure,
+            super::ui::GAME_FIGURE_FONT_FAMILY,
+            "NHaasGroteskDSPro-75Bd.otf",
+        ),
+    ] {
+        let mut family_fonts = fonts.families[&destiny_text_font_family()].clone();
+        let bytes = fs::read(install.join("fonts").join(file_name)).ok();
+        super::ui::record_game_face(ctx, face, bytes.as_deref());
+        if let Some(bytes) = bytes {
+            fonts.font_data.insert(
+                family.to_owned(),
+                Arc::new(egui::FontData::from_owned(bytes)),
+            );
+            family_fonts.insert(0, family.to_owned());
+        }
+        fonts
+            .families
+            .insert(egui::FontFamily::Name(family.into()), family_fonts);
+    }
     ctx.all_styles_mut(|style| {
         let size = egui::TextStyle::Body.resolve(style).size + 2.0;
         style.text_styles.insert(

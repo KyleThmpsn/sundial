@@ -1,33 +1,31 @@
-//! An ability's tuning in one place, one tab at a time: its bank's script parameters, its
-//! entity's values, and the graphs it spawns with theirs, reached through a trail of the graphs
-//! above them.
+//! An ability's bank script parameters, as tiles of its Ability card, and its raw values in a
+//! closed Technical part: those of its entity and of the graphs it spawns, reached through a
+//! trail of the graphs above them.
 use super::modifiers::{ordered, parameter_name, parameter_value};
-use super::values::values_of;
 use super::*;
-use sundial::package_authoring::ability_bank::{ParameterKind, parameter_kind, parameter_meaning};
+use sundial::investment::AbilityParameter;
+use sundial::package_authoring::ability_bank::{
+    ParameterKind, parameter_kind, parameter_label, parameter_meaning,
+};
 
 /// Levels of spawned graphs the build copies below an ability.
-pub(super) const SPAWN_DEPTH: usize = 3;
+pub(super) const SPAWN_DEPTH: usize = crate::subclass::SPAWN_DEPTH;
 
-/// The tab the Tuning field shows.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) enum Tab {
-    #[default]
-    Parameters,
-    Values,
-    Spawns,
-}
-
-impl Tab {
-    const ALL: [Self; 3] = [Self::Parameters, Self::Values, Self::Spawns];
-
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Parameters => "Parameters",
-            Self::Values => "Values",
-            Self::Spawns => "Spawns",
-        }
-    }
+/// The keys an entry's own pool applies to its own ability, whose bank rows Properties shows.
+pub(super) fn own_keys(summary: Option<&SubclassSummary>, entry: u8) -> Vec<u32> {
+    summary
+        .and_then(|summary| {
+            let row = summary.entry_rows.get(&entry)?;
+            let applied = summary.entry_modifiers.get(&entry)?;
+            Some(
+                applied
+                    .iter()
+                    .filter(|(_, target)| target == row)
+                    .map(|(key, _)| *key)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .unwrap_or_default()
 }
 
 /// How the table shows a parameter: as its kind, unless its values contradict it, such as a
@@ -89,7 +87,90 @@ pub(super) fn value_field(
     }
 }
 
-/// The Spawns tab's trail: the graphs opened below an ability's entity, outermost first.
+/// The parameter filter's width, beside the Ability card's title.
+const PARAMETER_FILTER_WIDTH: f32 = 200.0;
+
+/// A bank's script parameters, named ones apart from the ones with only a hash. The Ability card
+/// shows the named, and Technical the rest, whose role is unknown.
+pub(super) fn split_parameters(
+    row: &sundial::investment::AbilityRowSummary,
+) -> (Vec<&AbilityParameter>, Vec<&AbilityParameter>) {
+    ordered(row)
+        .into_iter()
+        .partition(|parameter| parameter_label(parameter.name).is_some())
+}
+
+/// The parameter filter, where `count` parameters are enough to want one. Returns the lowercased
+/// query, empty when there is none.
+pub(super) fn parameter_filter(ui: &mut egui::Ui, count: usize, page: &mut PageState) -> String {
+    if !crate::app::pickers::wants_filter(count) {
+        return String::new();
+    }
+    ui.add(
+        egui::TextEdit::singleline(&mut page.parameter_query)
+            .hint_text(format!(
+                "{} Filter",
+                egui_phosphor::regular::MAGNIFYING_GLASS
+            ))
+            .desired_width(PARAMETER_FILTER_WIDTH),
+    );
+    page.parameter_query.trim().to_lowercase()
+}
+
+/// The script parameters `query` matches as tiles.
+pub(super) fn parameter_tiles(
+    ui: &mut egui::Ui,
+    width: f32,
+    (parameters, query): (&[&AbilityParameter], &str),
+    edits: &mut EntryEdits,
+) {
+    for parameter in parameters {
+        let name = parameter_name(parameter.name);
+        if query.is_empty()
+            || name.to_lowercase().contains(query)
+            || format!("{:08x}", parameter.name).contains(query)
+        {
+            parameter_tile(ui, width, (parameter, &name), edits);
+        }
+    }
+}
+
+/// One parameter: its name over its field, what it does and its stock value in the name's
+/// tooltip.
+fn parameter_tile(
+    ui: &mut egui::Ui,
+    width: f32,
+    (parameter, name): (&AbilityParameter, &str),
+    edits: &mut EntryEdits,
+) {
+    let own = edits.parameter(parameter.name);
+    let mut value = own.unwrap_or(parameter.reset);
+    let kind = shown_kind(parameter.name, parameter.reset, value);
+    let stock = format!("Stock {}", reading(kind, parameter.reset));
+    let hint = parameter_meaning(parameter.name)
+        .map_or_else(|| stock.clone(), |meaning| format!("{meaning}\n{stock}"));
+    let (edited, reset) = style::tile(
+        ui,
+        width,
+        parameter.name,
+        name,
+        &hint,
+        own.is_some(),
+        |ui| {
+            // A number field fills its tile.
+            ui.spacing_mut().interact_size.x = width;
+            let field = style::named_control(value_field(ui, kind, &mut value), name);
+            (field.changed() && value.is_finite()).then_some(value)
+        },
+    );
+    if let Some(value) = edited {
+        edits.set_parameter(parameter.name, Some(value));
+    } else if reset {
+        edits.set_parameter(parameter.name, None);
+    }
+}
+
+/// The Raw Values trail: the graphs opened below an ability's entity, outermost first.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Trail {
     entity: u32,
@@ -97,160 +178,56 @@ pub(super) struct Trail {
 }
 
 impl PackageAuthoringApp {
-    /// The Tuning field of an ability with an entity: its tabs, then the open one. Returns the
-    /// entry's edits once they change.
-    pub(super) fn draw_tuning(
+    /// The Technical part of an ability's Gameplay, closed until opened: its bank's parameters
+    /// with only a hash, then the raw values of its entity and of the graphs it spawns. Returns
+    /// the entry's edits once they change.
+    pub(super) fn draw_technical(
         &self,
         ui: &mut egui::Ui,
         (summary, entry, place): (Option<&SubclassSummary>, u8, Place),
         edits: &EntryEdits,
         page: &mut PageState,
     ) -> Option<EntryEdits> {
-        let entity = *summary?.entry_entities.get(&entry)?;
+        let entity = summary.and_then(|summary| summary.entry_entities.get(&entry).copied());
         let row = summary
             .and_then(|summary| summary.entry_rows.get(&entry))
             .and_then(|row| self.catalog.as_ref()?.ability_row(*row));
-        let entity_values = values_of(&edits.ability_values, entity, entity);
-        let edited = [
-            !edits.parameters.is_empty(),
-            !entity_values.is_empty(),
-            entity_values.len() != edits.ability_values.len(),
-        ];
-        let modified = edited.iter().any(|edited| *edited);
-        let (changed, reset) = detail::field(ui, "Tuning", modified, |ui| {
-            ui.horizontal(|ui| {
-                for (tab, edited) in Tab::ALL.into_iter().zip(edited) {
-                    if detail::marked_tab(ui, page.tuning == tab, tab.label(), edited).clicked() {
-                        page.tuning = tab;
-                    }
-                }
-            });
-            ui.add_space(4.0);
-            match page.tuning {
-                Tab::Parameters => self.draw_parameters(ui, row, edits, page),
-                Tab::Values => self.draw_spawn_values(ui, (entity, entity), place, edits, page),
-                Tab::Spawns => self.draw_spawns(ui, entity, place, edits, page),
-            }
-        });
-        changed.or_else(|| {
-            reset.then(|| EntryEdits {
-                parameters: Vec::new(),
-                ability_values: Vec::new(),
-                ..edits.clone()
-            })
-        })
-    }
-
-    /// The bank's script parameters, named ones first: each one's stock value and its own.
-    fn draw_parameters(
-        &self,
-        ui: &mut egui::Ui,
-        row: Option<&sundial::investment::AbilityRowSummary>,
-        edits: &EntryEdits,
-        page: &mut PageState,
-    ) -> Option<EntryEdits> {
-        let Some(row) = row.filter(|row| !row.parameters.is_empty()) else {
-            ui.weak("No parameters.");
-            return None;
-        };
-        let mut changed = None;
-        let long = crate::app::pickers::wants_filter(row.parameters.len());
-        if long {
-            ui.add(
-                egui::TextEdit::singleline(&mut page.parameter_query)
-                    .hint_text(format!(
-                        "{} Filter",
-                        egui_phosphor::regular::MAGNIFYING_GLASS
-                    ))
-                    .desired_width(f32::INFINITY),
-            );
-        }
-        let query = if long {
-            page.parameter_query.trim().to_lowercase()
-        } else {
-            String::new()
-        };
-        egui::Grid::new("subclass-parameters")
-            .num_columns(4)
-            .striped(true)
-            .spacing(egui::vec2(12.0, 4.0))
+        let unnamed = row.map(|row| split_parameters(row).1).unwrap_or_default();
+        let marked = !edits.ability_values.is_empty()
+            || unnamed
+                .iter()
+                .any(|parameter| edits.parameter(parameter.name).is_some());
+        let title = if marked { "Technical •" } else { "Technical" };
+        let technical = egui::CollapsingHeader::new(title)
+            .id_salt(("subclass-technical", place))
+            .default_open(false)
             .show(ui, |ui| {
-                ui.label(quiet(ui, "Parameter"));
-                ui.label(quiet(ui, "Stock"));
-                ui.label(quiet(ui, "Value"));
-                ui.label("");
-                ui.end_row();
-                for parameter in ordered(row) {
-                    let name = parameter_name(parameter.name);
-                    if !query.is_empty()
-                        && !name.to_lowercase().contains(&query)
-                        && !format!("{:08x}", parameter.name).contains(&query)
-                    {
-                        continue;
-                    }
-                    let own = edits.parameter(parameter.name);
-                    let text = egui::RichText::new(&name);
-                    let label = ui.label(if own.is_some() { text.strong() } else { text });
-                    if let Some(meaning) = parameter_meaning(parameter.name) {
-                        label.on_hover_text(meaning);
-                    }
-                    let mut value = own.unwrap_or(parameter.reset);
-                    let kind = shown_kind(parameter.name, parameter.reset, value);
-                    ui.label(quiet(ui, reading(kind, parameter.reset)));
-                    let field = value_field(ui, kind, &mut value);
-                    let field = style::named_control(field, &name);
-                    if field.changed() && value.is_finite() {
-                        let mut edited = edits.clone();
-                        edited.set_parameter(parameter.name, Some(value));
-                        changed = Some(edited);
-                    }
-                    if own.is_some() && detail::reset_icon(ui) {
-                        let mut edited = edits.clone();
-                        edited.set_parameter(parameter.name, None);
-                        changed = Some(edited);
-                    }
-                    ui.end_row();
+                let mut next = edits.clone();
+                if !unnamed.is_empty() {
+                    ui.label(quiet(ui, "Unnamed Parameters"));
+                    style::tiles(ui, |ui, width| {
+                        parameter_tiles(ui, width, (&unnamed, ""), &mut next);
+                    });
+                    ui.add_space(6.0);
                 }
+                let values = match entity {
+                    Some(entity) => self.draw_spawns(ui, entity, place, edits, page),
+                    None => {
+                        ui.weak("No values.");
+                        None
+                    }
+                };
+                values.or_else(|| (next != *edits).then_some(next))
             });
-        changed
-    }
-
-    /// The values of one graph, `(graph, entity)`, once it loads.
-    fn draw_spawn_values(
-        &self,
-        ui: &mut egui::Ui,
-        (graph, entity): (u32, u32),
-        place: Place,
-        edits: &EntryEdits,
-        page: &mut PageState,
-    ) -> Option<EntryEdits> {
-        let Some(loaded) = page.values.poll(ui.ctx(), &self.packages, graph) else {
-            ui.weak("Loading…");
-            return None;
-        };
-        match loaded {
-            Ok(loaded) => self
-                .draw_graph_values(
-                    ui,
-                    (&*loaded, entity),
-                    place,
-                    &edits.ability_values,
-                    &mut page.values,
-                )
-                .map(|ability_values| EntryEdits {
-                    ability_values,
-                    ..edits.clone()
-                }),
-            Err(error) => {
-                ui.colored_label(ui.visuals().warn_fg_color, "Values unavailable.")
-                    .on_hover_text(error);
-                None
-            }
+        // A screen reader hears the edit dot as "Changed".
+        if marked {
+            style::named_control(technical.header_response, "Technical, Changed");
         }
+        technical.body_returned.flatten()
     }
 
-    /// The graphs the ability spawns: a trail back to the ability, then the open graph's values
-    /// and the graphs it spawns in turn, each marked once its values change.
+    /// Raw Values: a trail back to the ability, then the open graph's values, the ability's own
+    /// at the trail's root, and the graphs it spawns in turn, each marked once its values change.
     fn draw_spawns(
         &self,
         ui: &mut egui::Ui,
@@ -312,22 +289,19 @@ impl PackageAuthoringApp {
                 return None;
             }
         };
-        let mut changed = None;
-        if open != entity {
-            changed = self
-                .draw_graph_values(
-                    ui,
-                    (&*loaded, entity),
-                    place,
-                    &edits.ability_values,
-                    &mut page.values,
-                )
-                .map(|ability_values| EntryEdits {
-                    ability_values,
-                    ..edits.clone()
-                });
-            ui.add_space(6.0);
-        }
+        let changed = self
+            .draw_graph_values(
+                ui,
+                (&*loaded, entity),
+                place,
+                &edits.ability_values,
+                &mut page.values,
+            )
+            .map(|ability_values| EntryEdits {
+                ability_values,
+                ..edits.clone()
+            });
+        ui.add_space(6.0);
         if page.trail.graphs.len() >= SPAWN_DEPTH {
             return changed;
         }

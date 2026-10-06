@@ -245,18 +245,7 @@ fn collection_bulk_buttons_commit_one_undoable_edit() {
             })
             .unwrap_or_else(|| panic!("Missing {label}"));
         for pressed in [true, false] {
-            frame(
-                &mut app,
-                vec![
-                    egui::Event::PointerMoved(pos),
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
-            );
+            frame(&mut app, crate::test_support::primary_press(pos, pressed));
         }
     }
     for _ in 0..8 {
@@ -286,18 +275,7 @@ fn collection_bulk_buttons_commit_one_undoable_edit() {
             panic!("Shared-state impact review must offer Apply: {labels:?}");
         });
     for pressed in [true, false] {
-        frame(
-            &mut app,
-            vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
-        );
+        frame(&mut app, crate::test_support::primary_press(pos, pressed));
     }
     assert!(app.dirty);
     assert_eq!(app.undo_history.len(), 1);
@@ -371,18 +349,7 @@ fn triumph_header_selection_commits_one_undoable_edit() {
         let output = frame(&mut app, Vec::new());
         let pos = triumph_control_position(&output, label);
         for pressed in [true, false] {
-            frame(
-                &mut app,
-                vec![
-                    egui::Event::PointerMoved(pos),
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
-            );
+            frame(&mut app, crate::test_support::primary_press(pos, pressed));
         }
         if label != "Complete Selected" {
             let output = frame(&mut app, Vec::new());
@@ -409,18 +376,7 @@ fn triumph_header_selection_commits_one_undoable_edit() {
         })
         .expect("Shared-state impact review must offer Apply");
     for pressed in [true, false] {
-        frame(
-            &mut app,
-            vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
-        );
+        frame(&mut app, crate::test_support::primary_press(pos, pressed));
     }
     assert!(app.dirty);
     assert_eq!(app.undo_history.len(), 1);

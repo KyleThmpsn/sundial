@@ -18,6 +18,37 @@ use sundial::package_authoring::{
     },
 };
 
+/// The output folder for `case`, and readers of the modern and native package sets that write
+/// their evidence under it.
+fn readers(case: &str) -> Result<(PathBuf, Reader, Reader), Box<dyn std::error::Error>> {
+    let configured = |key: &str| {
+        env::var_os(key)
+            .map(PathBuf::from)
+            .ok_or_else(|| format!("Set {key}"))
+    };
+    let output = configured("PARHELION_IMPORT_PERK_OUTPUT")?.join(case);
+    let source = Reader::new(
+        &configured("PARHELION_IMPORT_MODERN_PACKAGES")?,
+        &output.join("source"),
+        true,
+    )?;
+    let native = Reader::new(
+        &configured("PARHELION_IMPORT_NATIVE_PACKAGES")?,
+        &output.join("native"),
+        false,
+    )?;
+    Ok((output, source, native))
+}
+
+/// A package manager of its own over the native package set, for the program compiler.
+fn native_compiler(native: &Reader) -> Result<PackageManager, Box<dyn std::error::Error>> {
+    Ok(PackageManager::new(
+        &native.manager.package_dir,
+        native.manager.version,
+        Some(native.manager.platform),
+    )?)
+}
+
 fn boxed(p: &Payload, at: usize) -> Result<&[u8], Box<dyn std::error::Error>> {
     let record = p.pointer(at + 8)?;
     p.0.get(record..record + 72)
@@ -28,22 +59,7 @@ fn boxed(p: &Payload, at: usize) -> Result<&[u8], Box<dyn std::error::Error>> {
 #[ignore = "Requires PARHELION_IMPORT_MODERN_PACKAGES, PARHELION_IMPORT_NATIVE_PACKAGES and PARHELION_IMPORT_PERK_OUTPUT"]
 fn modern_movement_records_compile_as_native_private_perk_effects()
 -> Result<(), Box<dyn std::error::Error>> {
-    let configured = |key| {
-        env::var_os(key)
-            .map(PathBuf::from)
-            .ok_or_else(|| format!("Set {key}"))
-    };
-    let output = configured("PARHELION_IMPORT_PERK_OUTPUT")?.join("native-movement");
-    let mut source = Reader::new(
-        &configured("PARHELION_IMPORT_MODERN_PACKAGES")?,
-        &output.join("source"),
-        true,
-    )?;
-    let mut native = Reader::new(
-        &configured("PARHELION_IMPORT_NATIVE_PACKAGES")?,
-        &output.join("native"),
-        false,
-    )?;
+    let (output, mut source, mut native) = readers("native-movement")?;
 
     // These are independently shipped nodes of the same perk in the supported package eras.
     let modern_tome = source.tag(0x80C30D89, Some(0x8080B835))?;
@@ -73,11 +89,7 @@ fn modern_movement_records_compile_as_native_private_perk_effects()
         actions: vec![Action::Native { node }],
         ..Program::default()
     };
-    let compiler = PackageManager::new(
-        &native.manager.package_dir,
-        native.manager.version,
-        Some(native.manager.platform),
-    )?;
+    let compiler = native_compiler(&native)?;
     let compiled = program::compile(&compiler, &program)?;
     let decoded = action::decode(&compiled.payload)?;
     let emitted = decoded
@@ -138,22 +150,7 @@ fn hex_digest(bytes: &[u8]) -> String {
 )]
 fn modern_controller_routing_preserves_nested_and_multiple_transitions()
 -> Result<(), Box<dyn std::error::Error>> {
-    let configured = |key| {
-        env::var_os(key)
-            .map(PathBuf::from)
-            .ok_or_else(|| format!("Set {key}"))
-    };
-    let output = configured("PARHELION_IMPORT_PERK_OUTPUT")?.join("controller-routing");
-    let mut source = Reader::new(
-        &configured("PARHELION_IMPORT_MODERN_PACKAGES")?,
-        &output.join("source"),
-        true,
-    )?;
-    let mut native = Reader::new(
-        &configured("PARHELION_IMPORT_NATIVE_PACKAGES")?,
-        &output.join("native"),
-        false,
-    )?;
+    let (output, mut source, mut native) = readers("controller-routing")?;
     let mut artifacts = Vec::new();
     for tag in [
         0x80C30E09, 0x80C306B3, 0x80CECFB8, 0x80C30682, 0x80C30BB2, 0x80A5AAF6,
@@ -219,27 +216,8 @@ fn modern_controller_routing_preserves_nested_and_multiple_transitions()
 #[ignore = "Requires PARHELION_IMPORT_MODERN_PACKAGES, PARHELION_IMPORT_NATIVE_PACKAGES and PARHELION_IMPORT_PERK_OUTPUT"]
 fn modern_object_slot_conditions_compile_into_private_native_routing()
 -> Result<(), Box<dyn std::error::Error>> {
-    let configured = |key| {
-        env::var_os(key)
-            .map(PathBuf::from)
-            .ok_or_else(|| format!("Set {key}"))
-    };
-    let output = configured("PARHELION_IMPORT_PERK_OUTPUT")?.join("native-object-slot");
-    let mut source = Reader::new(
-        &configured("PARHELION_IMPORT_MODERN_PACKAGES")?,
-        &output.join("source"),
-        true,
-    )?;
-    let native = Reader::new(
-        &configured("PARHELION_IMPORT_NATIVE_PACKAGES")?,
-        &output.join("native"),
-        false,
-    )?;
-    let compiler = PackageManager::new(
-        &native.manager.package_dir,
-        native.manager.version,
-        Some(native.manager.platform),
-    )?;
+    let (output, mut source, native) = readers("native-object-slot")?;
+    let compiler = native_compiler(&native)?;
     let mut cases = Vec::new();
     for (tag, mask) in [(0x80C30E09, 4u8), (0x80C306B3, 4), (0x80C30BB2, 15)] {
         let payload = source.tag(tag, Some(0x8080B835))?;
@@ -336,22 +314,7 @@ fn modern_object_slot_conditions_compile_into_private_native_routing()
 #[ignore = "Requires PARHELION_IMPORT_MODERN_PACKAGES, PARHELION_IMPORT_NATIVE_PACKAGES and PARHELION_IMPORT_PERK_OUTPUT"]
 fn modern_ability_condition_matches_shipped_native_pair_and_eager_routing()
 -> Result<(), Box<dyn std::error::Error>> {
-    let configured = |key| {
-        env::var_os(key)
-            .map(PathBuf::from)
-            .ok_or_else(|| format!("Set {key}"))
-    };
-    let output = configured("PARHELION_IMPORT_PERK_OUTPUT")?.join("native-ability-condition");
-    let mut source = Reader::new(
-        &configured("PARHELION_IMPORT_MODERN_PACKAGES")?,
-        &output.join("source"),
-        true,
-    )?;
-    let mut native = Reader::new(
-        &configured("PARHELION_IMPORT_NATIVE_PACKAGES")?,
-        &output.join("native"),
-        false,
-    )?;
+    let (output, mut source, mut native) = readers("native-ability-condition")?;
     let source_pair = source.tag(0x80C2F8CE, Some(0x8080B835))?;
     // Vengeance's auxiliary list contains another source class. The independently
     // paired ability record is checked directly without accepting that class.
@@ -385,11 +348,7 @@ fn modern_ability_condition_matches_shipped_native_pair_and_eager_routing()
         .offset;
     let translated = perks::lower::ability_condition(&eager, eager_condition)?;
     assert_eq!(translated.bytes[8], 2);
-    let compiler = PackageManager::new(
-        &native.manager.package_dir,
-        native.manager.version,
-        Some(native.manager.platform),
-    )?;
+    let compiler = native_compiler(&native)?;
     let program = Program {
         name: "Translated Ability Condition".into(),
         trigger: Trigger::Drawn,
@@ -431,22 +390,7 @@ fn modern_ability_condition_matches_shipped_native_pair_and_eager_routing()
 #[ignore = "Requires PARHELION_IMPORT_MODERN_PACKAGES, PARHELION_IMPORT_NATIVE_PACKAGES and PARHELION_IMPORT_PERK_OUTPUT"]
 fn modern_timer_condition_matches_shipped_native_pair_and_eager_duration()
 -> Result<(), Box<dyn std::error::Error>> {
-    let configured = |key| {
-        env::var_os(key)
-            .map(PathBuf::from)
-            .ok_or_else(|| format!("Set {key}"))
-    };
-    let output = configured("PARHELION_IMPORT_PERK_OUTPUT")?.join("native-timer-condition");
-    let mut source = Reader::new(
-        &configured("PARHELION_IMPORT_MODERN_PACKAGES")?,
-        &output.join("source"),
-        true,
-    )?;
-    let mut native = Reader::new(
-        &configured("PARHELION_IMPORT_NATIVE_PACKAGES")?,
-        &output.join("native"),
-        false,
-    )?;
+    let (output, mut source, mut native) = readers("native-timer-condition")?;
     let en_garde = source.tag(0x80CECFB8, Some(0x8080B835))?;
     let source_timer = perks::controller::read(&en_garde)?
         .states
@@ -488,11 +432,7 @@ fn modern_timer_condition_matches_shipped_native_pair_and_eager_duration()
         .offset;
     let lowered = perks::lower::timer_condition(&eager, eager_timer)?;
     assert_eq!(lowered.bytes[8..12], 3f32.to_le_bytes());
-    let compiler = PackageManager::new(
-        &native.manager.package_dir,
-        native.manager.version,
-        Some(native.manager.platform),
-    )?;
+    let compiler = native_compiler(&native)?;
     let program = Program {
         name: "Translated Timer Condition".into(),
         trigger: Trigger::Drawn,
@@ -532,22 +472,7 @@ fn modern_timer_condition_matches_shipped_native_pair_and_eager_duration()
 #[ignore = "Requires PARHELION_IMPORT_MODERN_PACKAGES, PARHELION_IMPORT_NATIVE_PACKAGES and PARHELION_IMPORT_PERK_OUTPUT"]
 fn modern_weapon_swap_condition_relocates_shared_label_dependency()
 -> Result<(), Box<dyn std::error::Error>> {
-    let configured = |key| {
-        env::var_os(key)
-            .map(PathBuf::from)
-            .ok_or_else(|| format!("Set {key}"))
-    };
-    let output = configured("PARHELION_IMPORT_PERK_OUTPUT")?.join("native-weapon-swap");
-    let mut source = Reader::new(
-        &configured("PARHELION_IMPORT_MODERN_PACKAGES")?,
-        &output.join("source"),
-        true,
-    )?;
-    let mut native = Reader::new(
-        &configured("PARHELION_IMPORT_NATIVE_PACKAGES")?,
-        &output.join("native"),
-        false,
-    )?;
+    let (output, mut source, mut native) = readers("native-weapon-swap")?;
     let sprint = source.tag(0x80CECE71, Some(0x8080B835))?;
     let source_condition = perks::controller::read(&sprint)?
         .states
@@ -592,11 +517,7 @@ fn modern_weapon_swap_condition_relocates_shared_label_dependency()
         .offset;
     let translated = perks::lower::weapon_swap_condition(&eager, eager_condition)?;
     assert_eq!(translated.bytes[8], 1);
-    let compiler = PackageManager::new(
-        &native.manager.package_dir,
-        native.manager.version,
-        Some(native.manager.platform),
-    )?;
+    let compiler = native_compiler(&native)?;
     let program = Program {
         name: "Translated Weapon Swap Condition".into(),
         trigger: Trigger::Drawn,
@@ -638,27 +559,8 @@ fn modern_weapon_swap_condition_relocates_shared_label_dependency()
 #[ignore = "Requires PARHELION_IMPORT_MODERN_PACKAGES, PARHELION_IMPORT_NATIVE_PACKAGES and PARHELION_IMPORT_PERK_OUTPUT"]
 fn eager_active_transitions_compile_as_one_private_or_group()
 -> Result<(), Box<dyn std::error::Error>> {
-    let configured = |key| {
-        env::var_os(key)
-            .map(PathBuf::from)
-            .ok_or_else(|| format!("Set {key}"))
-    };
-    let output = configured("PARHELION_IMPORT_PERK_OUTPUT")?.join("native-eager-or-group");
-    let mut source = Reader::new(
-        &configured("PARHELION_IMPORT_MODERN_PACKAGES")?,
-        &output.join("source"),
-        true,
-    )?;
-    let native = Reader::new(
-        &configured("PARHELION_IMPORT_NATIVE_PACKAGES")?,
-        &output.join("native"),
-        false,
-    )?;
-    let compiler = PackageManager::new(
-        &native.manager.package_dir,
-        native.manager.version,
-        Some(native.manager.platform),
-    )?;
+    let (output, mut source, native) = readers("native-eager-or-group")?;
+    let compiler = native_compiler(&native)?;
     let mut cases = Vec::new();
     for tag in [0x80C30E09, 0x80C306B3] {
         let payload = source.tag(tag, Some(0x8080B835))?;
@@ -784,22 +686,7 @@ fn eager_active_transitions_compile_as_one_private_or_group()
 #[ignore = "Requires PARHELION_IMPORT_MODERN_PACKAGES, PARHELION_IMPORT_NATIVE_PACKAGES and PARHELION_IMPORT_PERK_OUTPUT"]
 fn modern_modifier_settings_match_independently_shipped_native_rows()
 -> Result<(), Box<dyn std::error::Error>> {
-    let configured = |key| {
-        env::var_os(key)
-            .map(PathBuf::from)
-            .ok_or_else(|| format!("Set {key}"))
-    };
-    let output = configured("PARHELION_IMPORT_PERK_OUTPUT")?.join("native-modifiers");
-    let mut source = Reader::new(
-        &configured("PARHELION_IMPORT_MODERN_PACKAGES")?,
-        &output.join("source"),
-        true,
-    )?;
-    let mut native = Reader::new(
-        &configured("PARHELION_IMPORT_NATIVE_PACKAGES")?,
-        &output.join("native"),
-        false,
-    )?;
+    let (output, mut source, mut native) = readers("native-modifiers")?;
     let modern_rapid = source.tag(0x80CEDE31, Some(0x80809B06))?;
     let native_rapid = native.tag(0x80FEFAA2, Some(0x80809C36))?;
     let source_rows = modern_rapid.array(modern_rapid.pointer(24)? + 88, 112, Some(0x80802D33))?;
@@ -857,22 +744,7 @@ fn modern_modifier_settings_match_independently_shipped_native_rows()
 #[ignore = "Requires PARHELION_IMPORT_MODERN_PACKAGES, PARHELION_IMPORT_NATIVE_PACKAGES and PARHELION_IMPORT_PERK_OUTPUT"]
 fn modern_dynamic_attachments_keep_their_equations_in_native_programs()
 -> Result<(), Box<dyn std::error::Error>> {
-    let configured = |key| {
-        env::var_os(key)
-            .map(PathBuf::from)
-            .ok_or_else(|| format!("Set {key}"))
-    };
-    let output = configured("PARHELION_IMPORT_PERK_OUTPUT")?.join("native-values");
-    let mut source = Reader::new(
-        &configured("PARHELION_IMPORT_MODERN_PACKAGES")?,
-        &output.join("source"),
-        true,
-    )?;
-    let mut native = Reader::new(
-        &configured("PARHELION_IMPORT_NATIVE_PACKAGES")?,
-        &output.join("native"),
-        false,
-    )?;
+    let (output, mut source, mut native) = readers("native-values")?;
     let harmonic = source.tag(0x80CECE78, Some(0x8080B835))?;
     let stock = native.tag(0x80BBC7FF, Some(0x808040B5))?;
     let stock_action = action::decode(&stock.0)?;
@@ -908,11 +780,7 @@ fn modern_dynamic_attachments_keep_their_equations_in_native_programs()
         }],
         ..Program::default()
     };
-    let compiler = PackageManager::new(
-        &native.manager.package_dir,
-        native.manager.version,
-        Some(native.manager.platform),
-    )?;
+    let compiler = native_compiler(&native)?;
     let compiled = program::compile(&compiler, &program)?;
     let decoded = action::decode(&compiled.payload)?;
     let emitted = decoded
@@ -955,22 +823,7 @@ fn modern_dynamic_attachments_keep_their_equations_in_native_programs()
 #[ignore = "Requires PARHELION_IMPORT_MODERN_PACKAGES, PARHELION_IMPORT_NATIVE_PACKAGES and PARHELION_IMPORT_PERK_OUTPUT"]
 fn modern_lunge_modifier_compiles_with_a_scoped_native_graph_patch()
 -> Result<(), Box<dyn std::error::Error>> {
-    let configured = |key| {
-        env::var_os(key)
-            .map(PathBuf::from)
-            .ok_or_else(|| format!("Set {key}"))
-    };
-    let output = configured("PARHELION_IMPORT_PERK_OUTPUT")?.join("native-lunge-graph");
-    let mut source = Reader::new(
-        &configured("PARHELION_IMPORT_MODERN_PACKAGES")?,
-        &output.join("source"),
-        true,
-    )?;
-    let mut native = Reader::new(
-        &configured("PARHELION_IMPORT_NATIVE_PACKAGES")?,
-        &output.join("native"),
-        false,
-    )?;
+    let (output, mut source, mut native) = readers("native-lunge-graph")?;
     let eager = source.tag(0x80C30E09, Some(0x8080B835))?;
     let modern_settings = source.tag(0x80C378E0, Some(0x80809B06))?;
     let native_settings = native.tag(0x8162C919, None)?;
@@ -1030,11 +883,7 @@ fn modern_lunge_modifier_compiles_with_a_scoped_native_graph_patch()
         }],
         ..Program::default()
     };
-    let compiler = PackageManager::new(
-        &native.manager.package_dir,
-        native.manager.version,
-        Some(native.manager.platform),
-    )?;
+    let compiler = native_compiler(&native)?;
     let compiled = program::compile(&compiler, &program)?;
     assert!(compiled.asset_offsets.is_empty());
     let offset = compiled.graph_offsets[0].ok_or("Native lunge graph offset")?;

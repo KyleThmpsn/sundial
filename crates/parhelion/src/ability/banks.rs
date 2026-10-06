@@ -20,7 +20,7 @@ use std::sync::atomic::AtomicBool;
 use sundial::package_authoring::{
     PackageManager,
     ability_bank::{
-        AbilityTarget, CHARGE_ROWS, Modifier, handler_slot, parameters, property_rows,
+        AbilityTarget, CHARGE_ROWS, Modifier, bank_owner, handler_slot, parameters, property_rows,
         retarget_references, slot_banks, with_property_row,
     },
     referrers,
@@ -47,6 +47,15 @@ pub(crate) struct MeleeImpact {
     pub responses: Option<u32>,
 }
 
+/// The banks a project replaces, and the rows it adds to each.
+pub(crate) struct Plan {
+    /// The replaced banks and their referrers, by the sandbox package each lives in.
+    pub replacements: BTreeMap<u16, Vec<ReplacementSpec>>,
+    /// Each edited stock bank's added rows, in the order they were added, so a private copy of
+    /// the bank can take them too.
+    pub rows: BTreeMap<u32, Vec<(u32, Modifier)>>,
+}
+
 /// The replaced banks a project needs, by the sandbox package each lives in: for each charge
 /// key its private perks apply, every stock bank of that slot still without the row, and for
 /// each tuning they apply, every bank of the slot that lists the parameter, each with the row
@@ -58,7 +67,7 @@ pub(crate) fn plan<'a>(
     perks: impl IntoIterator<Item = Perk<'a>>,
     impacts: &[MeleeImpact],
     rows: &[(u32, u32, Modifier)],
-) -> AuthoringResult<BTreeMap<u16, Vec<ReplacementSpec>>> {
+) -> AuthoringResult<Plan> {
     let mut applied = BTreeSet::new();
     let mut tunings: BTreeMap<u32, AbilityTuning> = BTreeMap::new();
     let mut inputs: BTreeMap<u32, AbilityInput> = BTreeMap::new();
@@ -75,7 +84,17 @@ pub(crate) fn plan<'a>(
                 }
             }
             for tuning in &program.ability_tunings {
-                tunings.entry(tuning.key).or_insert_with(|| tuning.clone());
+                // A key is a 32-bit hash of its tuning, so two different tunings can share one.
+                // Keeping the first would quietly give every perk that applies the key its value.
+                if tunings
+                    .insert(tuning.key, tuning.clone())
+                    .is_some_and(|old| old != *tuning)
+                {
+                    return Err(invalid(format!(
+                        "Two private ability tunings share key {:08X} with different values. Change one of their values slightly",
+                        tuning.key
+                    )));
+                }
             }
         }
     }
@@ -144,10 +163,17 @@ pub(crate) fn plan<'a>(
     }
     // A bank may take several rows, so each edit starts from the bank's latest payload.
     let mut edited: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
+    let mut added: BTreeMap<u32, Vec<(u32, Modifier)>> = BTreeMap::new();
+    let mut filed = BTreeSet::new();
     for (key, banks, modifier) in wanted {
         for &bank in &banks {
+            // A key names what its row does, so a second request for it is the same row.
+            if !filed.insert((bank, key)) {
+                continue;
+            }
             if let Some(next) = with_row(manager, &edited, bank, (key, modifier))? {
                 edited.insert(bank, next);
+                added.entry(bank).or_default().push((key, modifier));
             }
         }
     }
@@ -163,7 +189,66 @@ pub(crate) fn plan<'a>(
             .or_default()
             .push(ReplacementSpec { tag, payload });
     }
-    Ok(replacements)
+    Ok(Plan {
+        replacements,
+        rows: added,
+    })
+}
+
+/// Gives each private copy of an ability bank among `tags` the rows `rows` added to its stock
+/// bank, in the same order, as the stock bank took them. A copy names its blocks by its own tag,
+/// as do the copies of ability entities that bind it, so every other tag in `tags` and `others`
+/// that names the copy's blocks by offset follows the move of its instance region. Without the
+/// rows, a key a perk or node applies to the ability would find nothing in the copy.
+pub(crate) fn sync_private_banks(
+    rows: &BTreeMap<u32, Vec<(u32, Modifier)>>,
+    tags: &mut [crate::NewTagSpec],
+    others: &mut [crate::NewTagSpec],
+) -> AuthoringResult<()> {
+    for index in 0..tags.len() {
+        let stock = tags[index].template_tag;
+        let Some(added) = rows.get(&stock.0) else {
+            continue;
+        };
+        let context =
+            |error: String| invalid(format!("Private copy of ability bank {stock}: {error}"));
+        let before = tags[index].payload.clone();
+        let owner = bank_owner(&before).map_err(context)?;
+        let mut after = before.clone();
+        for &(key, modifier) in added {
+            if property_rows(&after)
+                .map_err(context)?
+                .iter()
+                .any(|row| row.key == key)
+            {
+                continue;
+            }
+            after = with_property_row(&after, key, modifier).map_err(context)?;
+        }
+        if after == before {
+            continue;
+        }
+        // The copy's own block headers already moved with the rows, so it is left out here.
+        for (other, tag) in tags.iter_mut().enumerate() {
+            if other == index {
+                continue;
+            }
+            if let Some(next) =
+                retarget_references(&tag.payload, owner, &before, &after).map_err(context)?
+            {
+                tag.payload = next;
+            }
+        }
+        for tag in others.iter_mut() {
+            if let Some(next) =
+                retarget_references(&tag.payload, owner, &before, &after).map_err(context)?
+            {
+                tag.payload = next;
+            }
+        }
+        tags[index].payload = after;
+    }
+    Ok(())
 }
 
 /// `bank`'s latest payload with a row for `key` added, or `None` when the bank has the row
@@ -187,14 +272,31 @@ fn with_row(
             .map_err(|error| invalid(format!("Could not read ability bank {tag}: {error}")))?,
     };
     let context = |error: String| invalid(format!("Ability bank {tag}: {error}"));
-    if property_rows(&payload)
+    if let Some(existing) = property_rows(&payload)
         .map_err(context)?
-        .iter()
-        .any(|row| row.key == key)
+        .into_iter()
+        .find(|row| row.key == key)
     {
-        if matches!(modifier, Modifier::Melee { .. } | Modifier::Scalar { .. }) {
+        // A row already under the key is only the same row when it does the same thing. A key
+        // shared with an unrelated row would bind the perk to that row's behavior instead.
+        let same = match modifier {
+            Modifier::Charges(count) => existing.charge == Some(count),
+            Modifier::Parameter { name, applied, add } => {
+                existing.parameters.iter().any(|parameter| {
+                    parameter.name == name
+                        && parameter.applied.to_bits() == applied.to_bits()
+                        && parameter.add == add
+                })
+            }
+            Modifier::Melee { .. } | Modifier::Scalar { .. } => {
+                return Err(invalid(format!(
+                    "Ability bank {tag} already defines private melee key {key:08X}"
+                )));
+            }
+        };
+        if !same {
             return Err(invalid(format!(
-                "Ability bank {tag} already defines private melee key {key:08X}"
+                "Ability bank {tag} already uses key {key:08X} for a different property"
             )));
         }
         return Ok(None);

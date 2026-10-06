@@ -281,8 +281,37 @@ pub fn palettes(
     Ok(found)
 }
 
+/// The graphs an ability's effects can be changed in: `entity` and the graphs below it, up to
+/// `depth` levels, including those its ability bank and its impact tables name, each once, with
+/// its payload.
+pub fn ability_graphs(
+    manager: &PackageManager,
+    entity: u32,
+    depth: usize,
+) -> Result<Vec<(u32, Vec<u8>)>, String> {
+    let mut graphs = Vec::new();
+    let mut seen = std::collections::BTreeSet::from([entity]);
+    let mut level = vec![entity];
+    for below in 0..=depth {
+        let mut next = Vec::new();
+        for graph in level {
+            let payload = manager.read_tag(graph)?;
+            if below < depth {
+                for child in super::spawns::reached_graphs(manager, graph, &payload)? {
+                    if seen.insert(child) {
+                        next.push(child);
+                    }
+                }
+            }
+            graphs.push((graph, payload));
+        }
+        level = next;
+    }
+    Ok(graphs)
+}
+
 /// The palettes an ability's effects draw with: those of `entity` and of the graphs below it, up
-/// to `depth` levels, that it names outside its ability bank, each graph once. Each palette lists
+/// to `depth` levels, including those its ability bank names, each graph once. Each palette lists
 /// every use across them.
 pub fn ability_palettes(
     manager: &PackageManager,
@@ -290,28 +319,13 @@ pub fn ability_palettes(
     depth: usize,
 ) -> Result<Vec<Palette>, String> {
     let mut found = Vec::<Palette>::new();
-    let mut seen = std::collections::BTreeSet::from([entity]);
-    let mut level = vec![entity];
-    for below in 0..=depth {
-        let mut next = Vec::new();
-        for graph in level {
-            let payload = manager.read_tag(graph)?;
-            for palette in palettes(manager, graph, &payload)? {
-                match found.iter_mut().find(|each| each.header == palette.header) {
-                    Some(each) => each.uses.extend(palette.uses),
-                    None => found.push(palette),
-                }
-            }
-            if below == depth {
-                continue;
-            }
-            for spawn in super::spawns::spawns(manager, graph, &payload)? {
-                if !super::modifier::is_bank(spawn.owner) && seen.insert(spawn.graph) {
-                    next.push(spawn.graph);
-                }
+    for (graph, payload) in ability_graphs(manager, entity, depth)? {
+        for palette in palettes(manager, graph, &payload)? {
+            match found.iter_mut().find(|each| each.header == palette.header) {
+                Some(each) => each.uses.extend(palette.uses),
+                None => found.push(palette),
             }
         }
-        level = next;
     }
     Ok(found)
 }

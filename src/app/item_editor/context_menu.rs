@@ -6,6 +6,17 @@ use super::{DefinitionInspectionContext, format_hash_hex, request_hash_inspectio
 
 const PREVIEW_REQUEST: &str = "item_menu_model_preview_request";
 
+/// Asks the main window to open an item's model preview with its saved plugs. The request is
+/// read in the main window's frame, so it reaches it from any viewport.
+pub(crate) fn request_model_preview(
+    ctx: &egui::Context,
+    hash: u64,
+    context: DefinitionInspectionContext,
+) {
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(PREVIEW_REQUEST), (hash, context)));
+    ctx.request_repaint_of(egui::ViewportId::ROOT);
+}
+
 /// Consume the menu action after drawing, with access to the app's current catalog.
 pub(crate) fn open_requested_preview(
     ctx: &egui::Context,
@@ -111,10 +122,7 @@ pub(crate) fn draw_context_menu(
         if let Some((hash, context)) = &item
             && ui.button("Model Preview").clicked()
         {
-            ui.data_mut(|data| {
-                data.insert_temp(egui::Id::new(PREVIEW_REQUEST), (*hash, context.clone()));
-            });
-            ui.ctx().request_repaint();
+            request_model_preview(ui.ctx(), *hash, context.clone());
             ui.close_menu();
         }
         contents(ui);

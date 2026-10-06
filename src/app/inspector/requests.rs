@@ -42,6 +42,67 @@ pub(in crate::app) fn owned_quantities(ctx: &egui::Context) -> Option<OwnedQuant
     ctx.data(|data| data.get_temp::<OwnedQuantitiesAnswer>(egui::Id::new(OWNED_QUANTITIES_ID)))
 }
 
+const ADD_TARGETS_ID: &str = "catalog_hash_inspection_add_targets";
+const ADD_TARGETS_REQUEST_ID: &str = "catalog_hash_inspection_add_targets_request";
+const ADD_REQUEST_ID: &str = "catalog_hash_inspection_add_request";
+
+/// Where the loaded account can take a new item, answered the same way as owned quantities.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(in crate::app) struct AddTargets {
+    /// Each character's class: 0 Titan, 1 Hunter, 2 Warlock, or `None` when unread.
+    pub(in crate::app) characters: Vec<Option<u8>>,
+    /// Whether a character may hold another class's subclass.
+    pub(in crate::app) cross_class_subclasses: bool,
+}
+
+/// Where an item from the inspector goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::app) enum AddDestination {
+    Character(usize),
+    Profile,
+}
+
+pub(in crate::app) fn request_add_targets(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(ADD_TARGETS_REQUEST_ID), true));
+}
+
+pub(in crate::app) fn take_add_targets_request(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|data| data.remove_temp::<bool>(egui::Id::new(ADD_TARGETS_REQUEST_ID)))
+        .unwrap_or(false)
+}
+
+/// Publishes the targets, or `None` while the account cannot be edited.
+pub(in crate::app) fn publish_add_targets(
+    ctx: &egui::Context,
+    targets: Option<std::sync::Arc<AddTargets>>,
+) {
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(ADD_TARGETS_ID), targets));
+}
+
+/// `None` until the app first answers, `Some(None)` while the account cannot be edited.
+pub(in crate::app) fn add_targets(
+    ctx: &egui::Context,
+) -> Option<Option<std::sync::Arc<AddTargets>>> {
+    ctx.data(|data| {
+        data.get_temp::<Option<std::sync::Arc<AddTargets>>>(egui::Id::new(ADD_TARGETS_ID))
+    })
+}
+
+/// Asks the app to add one of an item to a character's inventory or the profile.
+pub(in crate::app) fn request_add(ctx: &egui::Context, hash: u64, destination: AddDestination) {
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(ADD_REQUEST_ID), (hash, destination)));
+    ctx.request_repaint_of(egui::ViewportId::ROOT);
+}
+
+pub(in crate::app) fn take_add_request(ctx: &egui::Context) -> Option<(u64, AddDestination)> {
+    let id = egui::Id::new(ADD_REQUEST_ID);
+    ctx.data_mut(|data| {
+        let request = data.get_temp::<(u64, AddDestination)>(id);
+        data.remove::<(u64, AddDestination)>(id);
+        request
+    })
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub(in crate::app) struct DefinitionInspectionContext {
     pub source: String,

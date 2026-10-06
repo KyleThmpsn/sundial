@@ -673,6 +673,7 @@ impl WeaponInventorySlot {
 /// and embedded choices.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WeaponCloneOverrides {
+    pub sparrow: Option<crate::vehicle::Sparrow>,
     pub remove_lore: bool,
     #[cfg(feature = "d2-model-importer")]
     pub imported_graph: Option<parhelion_import::GraphReference>,
@@ -759,9 +760,15 @@ pub struct WeaponCloneOverrides {
     pub subclass_abilities: Option<crate::subclass::SubclassAbilities>,
     /// Removes the donor-class equip requirement and defaults to Guardian Subclass text.
     pub subclass_every_class: bool,
+    /// Points the donor-class equip requirement at another class, which receives the subclass
+    /// and names its default type label. None keeps the donor's class.
+    pub subclass_class: Option<crate::ArmorClass>,
     /// A shader's custom surface values, by gear type, channel and surface.
     pub dye_edits: Vec<crate::dye::DyeEdit>,
     pub shader_glow: bool,
+    /// Keeps the base weapon's type name and Collections page under another weapon's
+    /// appearance, which otherwise supplies both.
+    pub base_type: bool,
     /// A shader's custom detail textures and tiling, by gear type and channel.
     pub dye_texture_edits: Vec<crate::dye::DyeTextureEdit>,
     /// An emblem's nameplate images, each its base's, another emblem's or a picture.
@@ -1088,8 +1095,14 @@ pub struct WeaponCloneSpec {
 impl WeaponCloneSpec {
     pub(crate) fn effective_type_name(&self) -> Option<&str> {
         self.text.type_name.as_deref().or_else(|| {
-            (self.kind == ItemKind::Subclass && self.overrides.subclass_every_class)
-                .then_some(crate::subclass::EVERY_CLASS_TYPE_NAME)
+            (self.kind == ItemKind::Subclass)
+                .then(|| {
+                    crate::subclass::class_type_name(
+                        self.overrides.subclass_every_class,
+                        self.overrides.subclass_class,
+                    )
+                })
+                .flatten()
         })
     }
 
@@ -1145,6 +1158,22 @@ impl WeaponCloneSpec {
 
     pub fn validate(&self) -> AuthoringResult<()> {
         validate_parhelion_namespace(&self.namespace).map_err(invalid)?;
+        if let Some(sparrow) = &self.overrides.sparrow {
+            if self.kind != ItemKind::Sparrow {
+                return Err(invalid(
+                    "Only Sparrow recipes can set Driving Speed or Summon Vehicle",
+                ));
+            }
+            sparrow.validate().map_err(invalid)?;
+            #[cfg(feature = "d2-model-importer")]
+            if self.overrides.imported_graph.is_some()
+                && sparrow.summon != crate::vehicle::Summon::Sparrow
+            {
+                return Err(invalid(
+                    "Alternate vehicle summoning requires a native Sparrow base without an imported appearance",
+                ));
+            }
+        }
         if self.overrides.shader_glow && self.kind != ItemKind::Weapon {
             return Err(invalid("Shader Glow requires a weapon recipe"));
         }
@@ -1156,6 +1185,16 @@ impl WeaponCloneSpec {
         }
         if self.overrides.subclass_every_class && self.kind != ItemKind::Subclass {
             return Err(invalid("Only subclass recipes can set Every Class"));
+        }
+        if let Some(class) = self.overrides.subclass_class {
+            if self.kind != ItemKind::Subclass {
+                return Err(invalid("Only subclass recipes can select a class"));
+            }
+            if self.overrides.subclass_every_class || class.native_class().is_none() {
+                return Err(invalid(
+                    "A subclass for every class cannot also select one class",
+                ));
+            }
         }
         if self.overrides.armor_class.is_some() && self.kind != ItemKind::Armor {
             return Err(invalid("Only armor recipes can select an armor class"));
@@ -1208,6 +1247,63 @@ pub struct NewWeaponPlan {
     pub template_item_hash: u32,
     pub template_definition_tag: TagHash,
     pub template_string_tag: TagHash,
+    pub(crate) details: Option<WeaponBuildDetails>,
+    pub(crate) subclass: Option<SubclassBuildDetails>,
+}
+
+/// What the build wrote for an authored subclass.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SubclassBuildDetails {
+    /// The class the base's equip condition names, and the class the written one names, or
+    /// `None` once Every Class removed it.
+    pub base_class: Option<u8>,
+    pub class_condition: Option<u8>,
+    /// Its socket-entry list's row in the list table.
+    pub list_index: u16,
+    /// Its own list's and display record's tags, when it has a list of its own.
+    pub own_list: Option<(u32, u32)>,
+    /// Attunement paths with names of their own.
+    pub path_names: usize,
+    /// Each ability and node with edits of its own, in list order.
+    pub entries: Vec<SubclassEntryBuild>,
+    /// Stock lists with a Super lane, which Sunrise keeps selection state for beside the
+    /// authored ones.
+    pub stock_super_lane_lists: usize,
+}
+
+/// One authored ability or node as the build wrote it: its pool and node record, and what they
+/// carry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SubclassEntryBuild {
+    pub label: String,
+    pub pool_tag: u32,
+    pub record_tag: u32,
+    /// Sandbox perks compiled from its custom perks, and stock perks swapped for private copies.
+    pub custom_perks: usize,
+    pub retargeted_perks: usize,
+    /// Its own icon row, and its ability copy's row, when it has them.
+    pub icon_row: Option<u16>,
+    pub ability_row: Option<u8>,
+    /// Modifiers it applies to the subclass's abilities.
+    pub modifiers: usize,
+    /// What its ability copy changes: values, palettes, tints, the grade, projectile swaps and
+    /// bank values.
+    pub values: usize,
+    pub palettes: usize,
+    pub tints: usize,
+    pub grade: bool,
+    pub swaps: usize,
+    pub bank_values: usize,
+}
+
+/// Resolved source rows and the damage carrier in the finished definition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WeaponBuildDetails {
+    pub runtime_source: Option<u16>,
+    pub rig_donor: Option<u32>,
+    pub pinned_appearance: Option<u16>,
+    pub animation_donor: Option<u16>,
+    pub damage_carrier: WeaponDamageCarrier,
 }
 
 /// An authored item's collectible and the account unlock flag that marks it acquired.
@@ -1716,7 +1812,7 @@ struct WeaponTranslationTopology {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum WeaponDamageCarrier {
+pub(crate) enum WeaponDamageCarrier {
     Empty,
     Fixed {
         family: WeaponDamageCarrierFamily,

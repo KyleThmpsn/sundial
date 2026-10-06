@@ -120,56 +120,19 @@ pub(super) fn author_entities(
                 donor,
             )?;
             #[cfg(feature = "d2-model-importer")]
-            let mut imported_animation = donor
-                .weapon
-                .overrides
-                .imported_graph
-                .as_ref()
-                .map(crate::item::custom_runtime::animation::load)
-                .transpose()?
-                .flatten();
-            #[cfg(feature = "d2-model-importer")]
-            let mut imported_audio = donor
-                .weapon
-                .overrides
-                .imported_graph
-                .as_ref()
-                .map(crate::item::custom_runtime::audio::load)
-                .transpose()?
-                .flatten();
-            #[cfg(feature = "d2-model-importer")]
-            if let Some(audio) = imported_audio.as_mut() {
-                audio.set_item(donor.weapon.identity.item_hash);
-            }
+            let ImportedRuntime {
+                animation: mut imported_animation,
+                audio: imported_audio,
+                extensions: imported_extensions,
+                particles: imported_particles,
+                equipment: equipment_animation,
+                crosshair: imported_crosshair,
+            } = ImportedRuntime::load(donor)?;
             #[cfg(not(feature = "d2-model-importer"))]
             let imported_animation: Option<()> = None;
-            #[cfg(feature = "d2-model-importer")]
-            let imported_extensions = donor
-                .weapon
-                .overrides
-                .imported_graph
-                .as_ref()
-                .map(crate::item::custom_runtime::extensions::load)
-                .transpose()?
-                .unwrap_or_default();
-            #[cfg(feature = "d2-model-importer")]
-            let imported_particles = donor
-                .weapon
-                .overrides
-                .imported_graph
-                .as_ref()
-                .map(crate::item::custom_runtime::particles::load)
-                .transpose()?
-                .flatten();
-            #[cfg(feature = "d2-model-importer")]
-            let equipment_animation = donor.weapon.overrides.imported_graph.as_ref()
-                .map(crate::item::custom_runtime::animation::equipment::load)
-                .transpose()?.flatten();
-            #[cfg(feature = "d2-model-importer")]
-            let imported_crosshair = donor.weapon.overrides.imported_graph.as_ref()
-                .map(crate::item::custom_runtime::crosshair::load)
-                .transpose()?.flatten();
-            let has_runtime_edits = imported_animation.is_some()
+            let vehicle_settings = donor.weapon.overrides.sparrow.as_ref();
+            let has_runtime_edits = vehicle_settings.is_some_and(crate::vehicle::Sparrow::has_changes)
+                || imported_animation.is_some()
                 || {
                     #[cfg(feature = "d2-model-importer")]
                     { imported_audio.is_some() || equipment_animation.is_some()
@@ -193,39 +156,32 @@ pub(super) fn author_entities(
                 || !donor.weapon.overrides.additional_behaviors.is_empty()
                 || runtime_entity_patches;
             if !has_runtime_edits {
-                let stock_entity_tag = weapon_entity_assignment(
+                return reuse_stock_entity(
                     stock_entity_assignments,
+                    entity_assignments,
                     authored_pattern_source.pattern_global_id_hash,
-                )
-                .map_err(invalid)?
-                .ok_or_else(|| {
-                    invalid(format!(
-                        "Selected item pattern 0x{:08X} has no runtime entity assignment",
-                        authored_pattern_source.pattern_global_id_hash
-                    ))
-                })?;
-                *entity_assignments = append_weapon_entity_assignment(
-                    std::mem::take(entity_assignments),
                     donor.weapon.identity.pattern_global_id_hash,
-                    stock_entity_tag,
                 )
-                .map_err(invalid)?;
-                return Ok(Some(donor.weapon.identity.pattern_global_id_hash));
+                .map(Some);
             }
             let pattern_source = donor
                 .runtime_pattern_source
                 .as_ref()
                 .ok_or_else(|| invalid("Runtime edits require an active item sandbox pattern"))?;
-            let (pattern_entity_tag, mut pattern_entity) = resolve_runtime_weapon_entity(
+            let (pattern_entity_tag, pattern_entity) = resolve_runtime_weapon_entity(
                 manager,
                 stock_sandbox_patterns,
                 stock_entity_assignments,
                 pattern_source.item_hash,
                 "weapon-pattern donor entity",
             )?;
+            let (pattern_entity_tag, mut pattern_entity) = crate::vehicle::authoring::select(
+                manager, vehicle_settings, pattern_entity_tag, pattern_entity,
+            )?;
             // Before any component donor, so the appearance's rig is promoted onto exactly
             // the entity the resolver tested. A donor that then conflicts with it is reported
             // against that donor rather than silently dropping the appearance's animations.
+            let mut rig_markers = Vec::new();
             if let Some(item_hash) = donor.appearance_rig_donor {
                 let (_, appearance_entity) = resolve_runtime_weapon_entity(
                     manager,
@@ -234,12 +190,15 @@ pub(super) fn author_entities(
                     item_hash,
                     "appearance runtime entity",
                 )?;
+                let base_entity = pattern_entity.clone();
                 crate::weapon::rig::graft_presentation(&mut pattern_entity, &appearance_entity)
                     .map_err(|error| {
                         invalid(format!(
                             "Could not move the appearance's rig and animations onto this runtime: {error}"
                         ))
                     })?;
+                rig_markers =
+                    crate::weapon::rig::marker_set_appends(manager, &base_entity, &pattern_entity)?;
             }
             let mut component_entities = Vec::with_capacity(component_donors.len());
             for component in component_donors {
@@ -353,13 +312,17 @@ pub(super) fn author_entities(
                     )?,
                 );
                 // The hip-fire crosshair follows the runtime content's keys, not the item strings.
-                if let Some((type_key, style_key)) = imported_crosshair {
+                if let Some(crosshair) = &imported_crosshair
+                    && crosshair.replaces(&crate::weapon::crosshair::type_keys(
+                        manager,
+                        &pattern_entity,
+                    )?)?
+                {
                     overrides.runtime_resource_patches.extend(
                         crate::weapon::crosshair::content_patches(
                             manager,
                             &pattern_entity,
-                            type_key,
-                            style_key,
+                            crosshair.type_key,
                         )?,
                     );
                 }
@@ -443,7 +406,12 @@ pub(super) fn author_entities(
                 &mut pattern_entity,
                 runtime_overrides,
                 hud_key,
-                crate::item::custom_runtime::Sources { groups, splices: &splices, actions: &actions },
+                crate::item::custom_runtime::Sources {
+                    groups,
+                    splices: &splices,
+                    actions: &actions,
+                    markers: &rig_markers,
+                },
                 weapon_runtime_tag_allocator,
                 weapon_runtime_new_tags,
             )?;
@@ -524,6 +492,10 @@ pub(super) fn author_entities(
                     )?);
                 }
             }
+            crate::vehicle::authoring::speed(
+                manager, vehicle_settings, pattern_entity_tag, &mut pattern_entity,
+                &weapon_runtime_tag_allocator, weapon_runtime_new_tags,
+            )?;
             let authored_entity_tag = weapon_runtime_tag_allocator.assigned_tag(
                 weapon_runtime_new_tags.len(),
                 "Authored runtime weapon entity",
@@ -561,6 +533,71 @@ pub(super) fn author_entities(
     Ok(authored_pattern_global_ids)
 }
 
+/// Points `authored_pattern` at the stock runtime entity of `source_pattern`, for a weapon with
+/// no runtime edits, and returns `authored_pattern`.
+fn reuse_stock_entity(
+    stock_entity_assignments: &[u8],
+    entity_assignments: &mut Vec<u8>,
+    source_pattern: u32,
+    authored_pattern: u32,
+) -> AuthoringResult<u32> {
+    let stock_entity_tag = weapon_entity_assignment(stock_entity_assignments, source_pattern)
+        .map_err(invalid)?
+        .ok_or_else(|| {
+            invalid(format!(
+                "Selected item pattern 0x{source_pattern:08X} has no runtime entity assignment"
+            ))
+        })?;
+    *entity_assignments = append_weapon_entity_assignment(
+        std::mem::take(entity_assignments),
+        authored_pattern,
+        stock_entity_tag,
+    )
+    .map_err(invalid)?;
+    Ok(authored_pattern)
+}
+
+/// What an imported model brings to its runtime, read from its asset graph.
+#[cfg(feature = "d2-model-importer")]
+struct ImportedRuntime {
+    animation: Option<crate::item::custom_runtime::animation::ImportedAnimation>,
+    audio: Option<crate::item::custom_runtime::audio::ImportedAudio>,
+    extensions: Vec<crate::item::custom_runtime::extensions::Extension>,
+    particles: Option<crate::item::custom_runtime::particles::ImportedParticles>,
+    equipment: Option<crate::item::custom_runtime::animation::equipment::EquipmentAnimation>,
+    crosshair: Option<crate::item::custom_runtime::crosshair::Crosshair>,
+}
+
+#[cfg(feature = "d2-model-importer")]
+impl ImportedRuntime {
+    /// Reads each part from `donor`'s imported graph, all empty for a weapon without one.
+    fn load(donor: &resolve::ResolvedWeapon) -> AuthoringResult<Self> {
+        use crate::item::custom_runtime::{animation, audio, crosshair, extensions, particles};
+        let Some(graph) = donor.weapon.overrides.imported_graph.as_ref() else {
+            return Ok(Self {
+                animation: None,
+                audio: None,
+                extensions: Vec::new(),
+                particles: None,
+                equipment: None,
+                crosshair: None,
+            });
+        };
+        let mut audio = audio::load(graph)?;
+        if let Some(audio) = audio.as_mut() {
+            audio.set_item(donor.weapon.identity.item_hash);
+        }
+        Ok(Self {
+            animation: animation::load(graph)?,
+            audio,
+            extensions: extensions::load(graph)?,
+            particles: particles::load(graph)?,
+            equipment: animation::equipment::load(graph)?,
+            crosshair: crosshair::load(graph)?,
+        })
+    }
+}
+
 fn resolved_hud_key(
     manager: &PackageManager,
     patterns: &[u8],
@@ -583,9 +620,12 @@ fn resolved_hud_key(
             .hud_icon
             .as_ref()
             .map(|_| donor.weapon.identity.type_hash),
-        donor.runtime_pattern_source == donor.gear_art_pattern_source && !content_graft,
+        donor.runtime_pattern_source == donor.gear_art_pattern_source
+            && !content_graft
+            && donor.pinned_appearance.is_none(),
         || {
-            let Some(appearance) = donor.gear_art_pattern_source else {
+            // A pinned model keeps the base's rig and row, yet the HUD shows the model it wears.
+            let Some(appearance) = donor.pinned_appearance.or(donor.gear_art_pattern_source) else {
                 return Ok(None);
             };
             let (_, entity) = resolve_runtime_weapon_entity(

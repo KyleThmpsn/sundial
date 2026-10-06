@@ -23,14 +23,37 @@ pub mod palette;
 pub(crate) mod tables;
 
 pub use art::{ArtImage, ArtPart, ScreenArt};
-pub use edits::{EntryEdits, EntryIcon};
+pub use edits::{BankValue, EntryEdits, EntryIcon, SpawnSwap};
 pub use modifiers::{
-    AbilityModifier, MOST_CHARGES, ModifierEffect, ParameterValue, StockModifier, entry_place,
-    holds_ability, place_entry,
+    AbilityModifier, MOST_CHARGES, ModifierEffect, ParameterValue, RECHARGE_RANGE, StockModifier,
+    entry_place, holds_ability, place_entry,
 };
-pub use palette::PaletteEdit;
+pub use palette::{EffectGrade, PaletteEdit, TintEdit};
 
 pub(crate) const EVERY_CLASS_TYPE_NAME: &str = "Guardian Subclass";
+
+/// The type label a subclass defaults to: Guardian Subclass for every class, its chosen class's
+/// for another class, or none to keep its base's.
+pub(crate) const fn class_type_name(
+    every_class: bool,
+    class: Option<crate::ArmorClass>,
+) -> Option<&'static str> {
+    if every_class {
+        return Some(EVERY_CLASS_TYPE_NAME);
+    }
+    match class {
+        Some(crate::ArmorClass::Titan) => Some("Titan Subclass"),
+        Some(crate::ArmorClass::Hunter) => Some("Hunter Subclass"),
+        Some(crate::ArmorClass::Warlock) => Some("Warlock Subclass"),
+        Some(crate::ArmorClass::Any) => Some(EVERY_CLASS_TYPE_NAME),
+        None => None,
+    }
+}
+
+/// Levels of spawned graphs below an ability that its edits reach and the build copies. Every
+/// stock ability's graphs lie within it: the longest spawn route below a stock root is eight
+/// levels, and no graph is more than six from its root (2026-10-05 census of the 49 roots).
+pub const SPAWN_DEPTH: usize = 8;
 
 /// An ability slot a subclass recipe can fill from another subclass.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

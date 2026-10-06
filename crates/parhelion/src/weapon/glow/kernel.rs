@@ -1,7 +1,7 @@
 //! The native gear-mask and deferred emission equations, using fresh temporaries.
-use super::dxbc::{Instruction, cb, dst, ins, lit, neg, temp};
 use super::{SAT, W, X, XYZ, Y, Z, plan::Plan};
 use crate::AuthoringResult;
+use crate::dxbc::{Instruction, cb, dst, ins, lit, neg, temp};
 
 pub(super) fn instructions(code: &[Instruction], plan: &Plan) -> AuthoringResult<Vec<Instruction>> {
     let Plan {

@@ -41,15 +41,17 @@ impl Native {
         constants: &Frame,
     ) -> Option<Varyings> {
         let Some(vertex) = &self.vertex else {
-            return Some(input.default_varyings());
+            let mut values = input.default_varyings();
+            if let Some(uv) = self.opaque_uv {
+                values[3][0] = input.uv[0] * uv[0] + uv[2];
+                values[3][1] = input.uv[1] * uv[1] + uv[3];
+            }
+            return Some(values);
         };
         if let Some(uv) = vertex.stored_uv {
             let mut values = input.default_varyings();
             values[3][0] = input.uv[0] * uv[0] + uv[2];
             values[3][1] = input.uv[1] * uv[1] + uv[3];
-            if let Some(color) = vertex.stored_color {
-                values[8] = color;
-            }
             return Some(values);
         }
         let has_weights = vertex.code.inputs.iter().any(|s| s.name == "BLENDWEIGHT");

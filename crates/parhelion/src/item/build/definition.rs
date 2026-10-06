@@ -154,6 +154,19 @@ pub(super) fn apply_presentation(
             LOCALIZATION_DONOR_TABLE_INDEX as u32,
             identity.type_hash,
         )?;
+    } else if let Some(presentation) = donor
+        .presentation_donor
+        .as_ref()
+        .filter(|_| !donor.weapon.overrides.base_type)
+    {
+        // The appearance's own type reference, which names a global localized table, so the
+        // type reads in every language as the appearance's does.
+        write_localized_reference(
+            strings,
+            ITEM_TYPE_REFERENCE_OFFSET,
+            read_u32(&presentation.strings, ITEM_TYPE_REFERENCE_OFFSET)?,
+            read_u32(&presentation.strings, ITEM_TYPE_REFERENCE_OFFSET + 4)?,
+        )?;
     }
     write_localized_reference(
         strings,

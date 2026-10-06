@@ -80,7 +80,7 @@ pub(super) fn stored(code: &Code) -> bool {
 fn destinations(i: &Instruction) -> usize {
     match i.code {
         13 | 18 | 21 | 31 | 62 => 0,
-        38 | 77 => 2,
+        38 | 77 | 78 => 2,
         _ => 1,
     }
 }

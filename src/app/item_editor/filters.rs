@@ -385,15 +385,7 @@ mod tests {
                 changed |= donor_filter_frame(
                     &ctx,
                     &mut filter,
-                    vec![
-                        egui::Event::PointerMoved(pos),
-                        egui::Event::PointerButton {
-                            pos,
-                            button: egui::PointerButton::Primary,
-                            pressed,
-                            modifiers: Default::default(),
-                        },
-                    ],
+                    crate::test_support::primary_press(pos, pressed),
                 )
                 .1;
             }

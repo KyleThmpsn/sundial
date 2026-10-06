@@ -22,6 +22,20 @@ mod window;
 pub use window::show;
 pub use window::{pause_source, stop_reads};
 
+/// Waits for the model previews' package reads to end, up to `limit`, for an operation about to
+/// replace or remove packages. Pause the previews first so they start no new read. Returns
+/// whether every read ended.
+pub fn wait_for_package_reads(limit: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + limit;
+    while model_preview::package_reads_running() {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    true
+}
+
 /// Appearance before socket plugs are composed, allowing a candidate to replace one socket.
 #[derive(Clone, Debug)]
 pub struct Loadout {
@@ -337,8 +351,7 @@ impl Preview {
                     self.load_time = self.load_started.take().map(|start| start.elapsed());
                     match result {
                         Ok(model) => {
-                            self.playing =
-                                model.animation.is_some() || model.has_shader_animation();
+                            self.playing = model.has_animation() || model.has_shader_animation();
                             self.last_tick = None;
                             self.model = Some(Arc::new(model));
                         }
@@ -360,15 +373,18 @@ impl Preview {
             let clip = self.clip;
             self.load = Some(progress.clone());
             self.load_started = Some(std::time::Instant::now());
+            let read = model_preview::PackageRead::start();
             std::thread::spawn(move || {
+                let _read = read;
                 let load = || match selection.1 {
                     Target::Object(tag) => {
                         model_preview::load_reported(&selection.0, tag, &progress, clip)
                     }
-                    Target::Weapon(appearance, _) => model_preview::appearance::load_reported(
+                    Target::Weapon(appearance, _) => model_preview::appearance::load_clip_reported(
                         &selection.0,
                         &appearance,
                         &progress,
+                        clip,
                     ),
                 };
                 let result = match access {
@@ -533,7 +549,9 @@ impl Preview {
         self.audio_tag = Some(tag);
         self.audio_status = Some("Decoding audio".into());
         let (repaint, viewport) = (ctx.clone(), ctx.viewport_id());
+        let read = model_preview::PackageRead::start();
         std::thread::spawn(move || {
+            let _read = read;
             let decode = || {
                 if cancel.load(std::sync::atomic::Ordering::Relaxed) {
                     return Err("Audio decoding canceled".to_owned());
@@ -797,7 +815,7 @@ impl Preview {
                     if !model.particle_sources.is_empty() || model.has_particle_material_study() {
                         if ui.checkbox(&mut self.scene.particle_study, "Particle Study").changed() {
                             self.playing = self.scene.particle_study
-                                || model.animation.is_some()
+                                || model.has_animation()
                                 || model.has_shader_animation();
                             self.last_tick = None;
                         }
@@ -869,12 +887,12 @@ impl Preview {
     fn draw_playback(&mut self, ui: &mut egui::Ui, model: &Model) {
         // An object with clips but no idle clip has no animation until one is picked, so the
         // picker shows for it too.
-        if model.animation.is_some()
+        if model.has_animation()
             || !model.clips.is_empty()
             || model.has_shader_animation()
             || self.scene.particle_study
         {
-            let duration = model.animation.as_ref().map_or_else(
+            let duration = model.animation_duration().map_or_else(
                 || {
                     if !self.scene.particle_study || model.particle_sources.is_empty() {
                         if self.scene.particle_study && model.has_particle_material_study() {
@@ -897,13 +915,13 @@ impl Preview {
                             .fold(0.05, f32::max)
                     }
                 },
-                |a| a.duration(),
+                |duration| duration,
             );
             let now = std::time::Instant::now();
             if self.playing {
                 if let Some(last) = self.last_tick {
                     self.seconds += now.duration_since(last).as_secs_f32() * self.speed.0;
-                    if !model.has_shader_animation() {
+                    if !model.has_shader_animation() && model.rigs.len() <= 1 {
                         self.seconds = if duration > 0.0 {
                             self.seconds.rem_euclid(duration)
                         } else {
@@ -915,7 +933,7 @@ impl Preview {
                     .request_repaint_after(std::time::Duration::from_millis(33));
             }
             self.last_tick = Some(now);
-            let timeline_end = if model.has_shader_animation() {
+            let timeline_end = if model.has_shader_animation() || model.rigs.len() > 1 {
                 self.seconds.max(60.0)
             } else {
                 duration
@@ -937,7 +955,7 @@ impl Preview {
                     if model.has_shader_animation() {
                         ui.label("Shader Animation")
                             .on_hover_text("Native material timing, UV motion and color changes.");
-                    } else if let Some(animation) = &model.animation {
+                    } else if let Some(animation) = model.active_clip() {
                         // Several clips are named by the combo above.
                         if model.clips.len() <= 1 {
                             let name = model
@@ -955,10 +973,9 @@ impl Preview {
                     } else if self.scene.particle_study && model.has_particle_material_study() {
                         ui.label("Particle Material Study");
                     }
-                    if model.clips.len() > 1
-                        || (model.animation.is_none() && !model.clips.is_empty())
+                    if model.clips.len() > 1 || (!model.has_animation() && !model.clips.is_empty())
                     {
-                        let playing = self.clip.or(model.animation.as_ref().map(|a| a.tag));
+                        let playing = self.clip.or(model.active_clip().map(|a| a.tag));
                         let selected = model
                             .clips
                             .iter()
@@ -1035,6 +1052,7 @@ impl Preview {
             self.camera.zoom = (self.camera.zoom * (scroll * 0.002).exp()).clamp(0.25, 5.0);
         }
         if model_preview::gpu::available()
+            && self.gpu.fallback(model).is_none()
             && !(self.style == render::Style::Textured && self.scene.particle_study)
         {
             let pose = model.pose(self.seconds).map(Arc::new);
@@ -1096,6 +1114,11 @@ impl Preview {
         let font = egui::FontId::proportional(11.5);
         let color = ui.visuals().weak_text_color();
         let mut lines: Vec<String> = Vec::new();
+        if let Some(model) = &self.model
+            && let Some(reason) = self.gpu.fallback(model)
+        {
+            lines.push(reason);
+        }
         if self.saving.is_some() {
             lines.push("Saving…".into());
         }
@@ -1111,6 +1134,8 @@ impl Preview {
             );
         } else if model.particle_geometry && !model.has_object_mesh() {
             lines.push("Draw mesh only · emitted particles not shown".into());
+        } else if model.particle_geometry {
+            lines.push("Particle meshes available in Solid and Wireframe".into());
         } else if model.triangles.is_empty() && !model.particle_sources.is_empty() {
             lines.push("Particle playback unavailable · View > Particle Study".into());
         }

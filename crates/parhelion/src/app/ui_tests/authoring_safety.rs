@@ -3,22 +3,16 @@ use super::*;
 fn donor() -> WeaponDonor {
     WeaponDonor {
         summary: WeaponDonorSummary {
-            hash: 1,
-            name: "Test Weapon".into(),
-            type_name: "Trace Rifle".into(),
-            bucket_hash: 0,
-            collection_backed: true,
             power_cap: Some(1060),
             damage_type: Some(sundial::investment::WeaponDamageType::Arc),
             inventory_slot: Some(WeaponInventorySlot::Energy),
             ammo_type: Some(WeaponAmmoType::Special),
             weapon_pattern_index: Some(1),
-            weapon_translation_group: None,
-            stat_group_index: None,
             damage_profile: WeaponDamageProfile::ModernFixed(
                 sundial::investment::WeaponDamageType::Arc,
             ),
             rarity: WeaponRarity::Exotic,
+            ..crate::test_support::donor_summary(1, "Test Weapon", "Trace Rifle")
         },
         power_cap_groups: vec![7, 8],
         equipment_slot: Some(WeaponInventorySlot::Energy),

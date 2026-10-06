@@ -269,6 +269,9 @@ pub struct AbilityRowSummary {
     pub slot: Option<crate::ability::AbilityTarget>,
     /// Whether the bank's own rows show which handler takes a charge row.
     pub charges: bool,
+    /// Whether the bank takes a row that changes the ability's recharge rate.
+    #[serde(default)]
+    pub recharge: bool,
     pub parameters: Vec<AbilityParameter>,
     pub keys: Vec<AbilityKey>,
 }

@@ -1111,20 +1111,54 @@ impl crate::subclass::compile::Compiler for RecordCompiler<'_, '_> {
     fn entity(
         &mut self,
         source: TagHash,
-        (values, palettes): (
-            &[WeaponRuntimeValueOverride],
-            &[crate::subclass::PaletteEdit],
-        ),
+        changes: crate::subclass::compile::EntityChanges<'_>,
         pattern: u32,
     ) -> AuthoringResult<TagHash> {
-        // Recolored effects first, so the graphs that draw them can name the private systems.
+        let crate::subclass::compile::EntityChanges {
+            values,
+            palettes,
+            tints,
+            grade,
+            swaps,
+            bank_values,
+        } = changes;
+        // Recolored effects first, so the graphs that draw them can name the private systems. A
+        // grade reaches the projectiles swapped in too.
         let (packages, placed) = &mut self.assets;
-        let patches = custom_runtime::palettes::author(
+        let replacements = swaps
+            .iter()
+            .map(|swap| swap.replacement)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let (mut patches, swapped_colors) = custom_runtime::palettes::author(
             self.manager,
             source,
-            palettes,
+            (palettes, tints, grade),
+            &replacements,
             (&mut **packages, &mut **placed),
         )?;
+        // Each swapped projectile becomes a private copy, named where the stock one was.
+        for (graph, swapped) in custom_runtime::swap_patches(
+            self.manager,
+            swaps,
+            &swapped_colors,
+            self.catalog.private_perk_runtime_tag_allocator,
+            &mut *self.catalog.private_perk_runtime_new_tags,
+        )? {
+            patches.entry(graph).or_default().extend(swapped);
+        }
+        // Bank row values patch the entity's bank, which gives the copy a private bank.
+        if !bank_values.is_empty() {
+            patches
+                .entry(source.0)
+                .or_default()
+                .extend(custom_runtime::bank_value_patches(
+                    self.manager,
+                    source,
+                    bank_values,
+                )?);
+        }
         // The ability's own values, and those of the graphs it spawns, each on a copy.
         let copy = custom_runtime::append_private_graph_tree(
             self.manager,

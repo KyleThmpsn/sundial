@@ -101,7 +101,7 @@ impl Program {
         let mut branches = [(false, false); 8];
         let mut depth = 0;
         let mut active = true;
-        for instruction in &self.instructions {
+        for (at, instruction) in self.instructions.iter().enumerate() {
             let v = &instruction.operands;
             match instruction.code {
                 31 => {
@@ -258,6 +258,22 @@ impl Program {
                     let b = source(2);
                     std::array::from_fn(|i| a[i] | b[i])
                 }
+                78 => {
+                    let a = source(2);
+                    let b = source(3);
+                    let quotient =
+                        std::array::from_fn(|i| a[i].checked_div(b[i]).unwrap_or(u32::MAX));
+                    let remainder =
+                        std::array::from_fn(|i| a[i].checked_rem(b[i]).unwrap_or(u32::MAX));
+                    r.write(&v[0], quotient, false);
+                    r.write(&v[1], remainder, false);
+                    continue;
+                }
+                80 => {
+                    let a = source(1);
+                    let b = source(2);
+                    std::array::from_fn(|i| if a[i] >= b[i] { u32::MAX } else { 0 })
+                }
                 61 => {
                     let raw = context.size(r.index(&v[2], 0));
                     std::array::from_fn(|i| raw[v[2].lanes[i]])
@@ -282,8 +298,12 @@ impl Program {
                     let raw = context.lod(r.index(&v[2], 0), float(1));
                     std::array::from_fn(|i| raw[v[2].lanes[i]].to_bits())
                 }
-                122 | 124 => context
-                    .derivative(&v[1], instruction.code == 124)
+                122 | 124 => self.derivatives[at]
+                    .as_ref()
+                    .map_or_else(
+                        || context.derivative(&v[1], instruction.code == 124),
+                        |derivative| derivative.at(context, instruction.code == 124),
+                    )
                     .map(f32::to_bits),
                 140 => {
                     let width = source(1);

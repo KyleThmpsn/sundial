@@ -37,7 +37,7 @@ pub(in crate::app) fn draw_catalog_hash_window(
     let match_count = match_groups.iter().map(|group| group.count).sum();
     let resolved_name = definition_title(catalog, hash);
     let title = format!(
-        "Definition Inspector: {}",
+        "Inspector: {}",
         resolved_name
             .clone()
             .unwrap_or_else(|| format_hash_hex(hash))
@@ -1771,16 +1771,19 @@ fn hash_inspector_sections(matches: &CatalogHashMatches<'_>) -> Vec<HashInspecto
 
 fn hash_inspector_default_size(matches: &CatalogHashMatches<'_>) -> egui::Vec2 {
     if matches.item.is_some() || matches.item_package_metadata.is_some() {
-        return egui::vec2(1_000.0, 720.0);
+        return egui::vec2(1_240.0, 860.0);
     }
     if matches.progression_definitions.len() == 1 && matches.count() == 1 {
         let steps = matches.progression_definitions[0].1.steps.len() as f32;
-        return egui::vec2(920.0, (560.0 + steps.min(12.0) * 20.0).clamp(640.0, 820.0));
+        return egui::vec2(
+            1_040.0,
+            (640.0 + steps.min(12.0) * 20.0).clamp(720.0, 900.0),
+        );
     }
     if matches.count() <= 2 {
-        egui::vec2(880.0, 640.0)
+        egui::vec2(1_000.0, 720.0)
     } else {
-        egui::vec2(1_000.0, 760.0)
+        egui::vec2(1_160.0, 840.0)
     }
 }
 

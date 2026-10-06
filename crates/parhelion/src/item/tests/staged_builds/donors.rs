@@ -83,34 +83,8 @@ fn real_mountaintop_energy_solar_clone_preserves_socket_topology_when_configured
     .expect("configured clean-stock Second Sun build should succeed");
     let weapon_plan = &bundle.plan.weapons[0];
 
-    let source_root = packages
-        .parent()
-        .expect("configured package directory should have a parent");
-    let view = tempfile::Builder::new()
-        .prefix(".parhelion-second-sun-test-")
-        .tempdir_in(source_root)
-        .expect("temporary package view should be created on the package volume");
-    let view_packages = view.path().join("packages");
-    fs::create_dir(&view_packages).expect("temporary packages directory should be created");
-    for entry in fs::read_dir(&packages).expect("clean-stock packages should be listable") {
-        let entry = entry.expect("clean-stock package entry should be readable");
-        let source = entry.path();
-        if source.extension().and_then(|value| value.to_str()) != Some("pkg") {
-            continue;
-        }
-        fs::hard_link(&source, view_packages.join(entry.file_name()))
-            .expect("clean-stock package should hard-link into the temporary view");
-    }
-    let source_oodle = source_root
-        .join("bin")
-        .join("x64")
-        .join("oo2core_3_win64.dll");
-    if source_oodle.is_file() {
-        let target_bin = view.path().join("bin").join("x64");
-        fs::create_dir_all(&target_bin).expect("temporary Oodle directory should be created");
-        fs::hard_link(&source_oodle, target_bin.join("oo2core_3_win64.dll"))
-            .expect("Oodle runtime should hard-link into the temporary view");
-    }
+    let (_view, view_packages) =
+        stock_view(&packages, ".parhelion-second-sun-test-", Oodle::IfPresent);
     let staged = bundle
         .write_new(&view_packages)
         .expect("Second Sun overlays should stage create-new in the temporary view");
@@ -434,28 +408,8 @@ fn staged_cross_family_build(
         },
     )
     .expect("cross-family appearance should build");
-    let source_root = packages.parent().unwrap();
-    let view = tempfile::Builder::new()
-        .prefix(".parhelion-cross-family-test-")
-        .tempdir_in(source_root)
-        .unwrap();
-    let view_packages = view.path().join("packages");
-    fs::create_dir(&view_packages).unwrap();
-    for entry in fs::read_dir(&packages).unwrap() {
-        let entry = entry.unwrap();
-        if entry.path().extension().and_then(|value| value.to_str()) == Some("pkg") {
-            fs::hard_link(entry.path(), view_packages.join(entry.file_name())).unwrap();
-        }
-    }
-    let source_oodle = source_root
-        .join("bin")
-        .join("x64")
-        .join("oo2core_3_win64.dll");
-    if source_oodle.is_file() {
-        let target_bin = view.path().join("bin").join("x64");
-        fs::create_dir_all(&target_bin).unwrap();
-        fs::hard_link(&source_oodle, target_bin.join("oo2core_3_win64.dll")).unwrap();
-    }
+    let (view, view_packages) =
+        stock_view(&packages, ".parhelion-cross-family-test-", Oodle::IfPresent);
     let staged = bundle.write_new(&view_packages).unwrap();
     assert_eq!(staged.len(), bundle.artifacts.len());
     (bundle, view, packages)

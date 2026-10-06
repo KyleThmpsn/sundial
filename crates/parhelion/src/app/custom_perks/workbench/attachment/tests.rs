@@ -1,26 +1,11 @@
 use super::*;
-use sundial::investment::{WeaponDamageProfile, WeaponRarity, WeaponSocket};
+use sundial::investment::WeaponSocket;
 
 mod native;
 
 fn donor() -> WeaponDonor {
     WeaponDonor {
-        summary: WeaponDonorSummary {
-            hash: 1,
-            name: "Workbench Test".into(),
-            type_name: "Auto Rifle".into(),
-            bucket_hash: 0,
-            collection_backed: true,
-            power_cap: None,
-            damage_type: None,
-            inventory_slot: None,
-            ammo_type: None,
-            weapon_pattern_index: None,
-            weapon_translation_group: None,
-            stat_group_index: None,
-            damage_profile: WeaponDamageProfile::Unknown,
-            rarity: WeaponRarity::Legendary,
-        },
+        summary: crate::test_support::donor_summary(1, "Workbench Test", "Auto Rifle"),
         power_cap_groups: vec![],
         equipment_slot: None,
         sockets: vec![WeaponSocket {

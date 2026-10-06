@@ -203,7 +203,7 @@ impl WeaponTables {
         self.append_pattern(donor, &row, context, ordinal)?;
         self.append_item_rows(donor, &row)?;
         self.append_collection(donor, &row)?;
-        self.record_authored(donor, &row, definition, strings);
+        self.record_authored(donor, &row, definition, strings)?;
         Ok(())
     }
 
@@ -311,7 +311,7 @@ impl WeaponTables {
         self.append_pattern(donor, &row, context, ordinal)?;
         self.append_item_rows(donor, &row)?;
         self.append_collection(donor, &row)?;
-        self.record_authored(donor, &row, definition, strings);
+        self.record_authored(donor, &row, definition, strings)?;
         Ok(())
     }
 
@@ -329,6 +329,8 @@ impl WeaponTables {
         for offset in crate::subclass::native::IDENTITY_OFFSETS {
             write_u32(&mut definition, offset, row.identity.item_hash)?;
         }
+        let mut own_list = None;
+        let mut entries = Vec::new();
         let list_index = if let Some(list) = &donor.subclass_list {
             // Each pair of host tags holds a record and the one after it: the list and its
             // companion, the display record and its companion, then each authored entry's pool
@@ -349,6 +351,8 @@ impl WeaponTables {
                 .get(ordinal)
                 .map_or(&[][..], Vec::as_slice);
             let placed = list.place(&tag, compiled)?;
+            own_list = Some((u32::from(placed.list_tag), u32::from(placed.display_tag)));
+            entries = subclass_entry_builds(list, compiled, &tag)?;
             let index = self.subclass.append(
                 (list.base_index, list.hash),
                 placed.list_tag,
@@ -400,7 +404,30 @@ impl WeaponTables {
         )?;
         if donor.weapon.overrides.subclass_every_class {
             crate::subclass::native::allow_every_class(&mut definition)?;
+        } else if let Some(class) = donor
+            .weapon
+            .overrides
+            .subclass_class
+            .and_then(crate::ArmorClass::native_class)
+        {
+            crate::subclass::native::set_class(&mut definition, class)?;
         }
+        let class_of = |definition: &[u8]| {
+            sundial::package_authoring::investment_schema::subclass_equipment_class(definition)
+                .map_err(invalid)
+        };
+        let details = crate::item::SubclassBuildDetails {
+            base_class: class_of(&donor.definition)?,
+            class_condition: class_of(&definition)?,
+            list_index,
+            own_list,
+            path_names: donor
+                .subclass_list
+                .as_ref()
+                .map_or(0, |list| list.path_names.len()),
+            entries,
+            stock_super_lane_lists: self.subclass.super_lane_lists,
+        };
         gear::validate_payloads(
             &definition,
             &strings,
@@ -422,7 +449,10 @@ impl WeaponTables {
         )?;
         self.append_presentation(donor, &row, context, ordinal)?;
         self.append_item_rows(donor, &row)?;
-        self.record_authored(donor, &row, definition, strings);
+        self.record_authored(donor, &row, definition, strings)?;
+        if let Some(plan) = self.plans.last_mut() {
+            plan.subclass = Some(details);
+        }
         Ok(())
     }
 
@@ -432,7 +462,20 @@ impl WeaponTables {
         row: &WeaponRow,
         definition: Vec<u8>,
         strings: Vec<u8>,
-    ) {
+    ) -> AuthoringResult<()> {
+        let details = if donor.weapon.kind.is_weapon() {
+            Some(WeaponBuildDetails {
+                runtime_source: donor.runtime_pattern_source.map(|source| source.row_index),
+                rig_donor: donor.appearance_rig_donor,
+                pinned_appearance: donor.pinned_appearance.map(|source| source.row_index),
+                animation_donor: donor
+                    .animation_pattern_source
+                    .map(|source| source.row_index),
+                damage_carrier: weapon_damage_carrier(&definition)?,
+            })
+        } else {
+            None
+        };
         let identity = row.identity;
         self.definitions.push(NewTagSpec {
             template_tag: donor.definition_tag,
@@ -463,6 +506,8 @@ impl WeaponTables {
             template_item_hash: donor.weapon.donor_item_hash,
             template_definition_tag: donor.definition_tag,
             template_string_tag: donor.string_tag,
+            details,
+            subclass: None,
         });
         // Collections, badges and page counts cover only the items that have an entry.
         if let Some(collection) = &donor.collection {
@@ -476,6 +521,7 @@ impl WeaponTables {
                 count_selection: collection.count_selection.clone(),
             });
         }
+        Ok(())
     }
 
     fn append_presentation(
@@ -943,4 +989,41 @@ struct WeaponRow {
     authored_icon_container: TagHash,
     authored_pattern_index: Option<u16>,
     collection_material_set: u16,
+}
+
+/// What each authored ability and node of a subclass's own list was written with, for the
+/// Technical Build report. Its pool and node record take the list's host tags after the list's
+/// and display record's pairs, as `ResolvedList::place` places them.
+fn subclass_entry_builds(
+    list: &crate::subclass::authoring::ResolvedList,
+    compiled: &[crate::subclass::authoring::CompiledEntry],
+    tag: &dyn Fn(usize) -> AuthoringResult<TagHash>,
+) -> AuthoringResult<Vec<crate::item::SubclassEntryBuild>> {
+    list.entries
+        .iter()
+        .zip(compiled)
+        .enumerate()
+        .map(|(index, (authored, compiled))| {
+            let entity = authored.entity.as_ref();
+            let count = |count: fn(&crate::subclass::authoring::AbilityEntity) -> usize| {
+                entity.map_or(0, count)
+            };
+            Ok(crate::item::SubclassEntryBuild {
+                label: authored.label.clone(),
+                pool_tag: u32::from(tag(4 + 2 * index)?),
+                record_tag: u32::from(tag(5 + 2 * index)?),
+                custom_perks: compiled.perks.len(),
+                retargeted_perks: compiled.retargeted.len(),
+                icon_row: compiled.icon,
+                ability_row: compiled.row,
+                modifiers: authored.modifiers.len(),
+                values: count(|entity| entity.values.len()),
+                palettes: count(|entity| entity.palettes.len()),
+                tints: count(|entity| entity.tints.len()),
+                grade: entity.is_some_and(|entity| entity.grade.is_some()),
+                swaps: count(|entity| entity.swaps.len()),
+                bank_values: count(|entity| entity.bank_values.len()),
+            })
+        })
+        .collect()
 }

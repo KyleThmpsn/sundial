@@ -1,7 +1,10 @@
 //! Fail closed before rewriting a graph whose extensions we cannot preserve.
+use std::collections::BTreeSet;
+
 use rusqlite::Connection;
 
 use super::{contract, error::DawnAccountError};
+use crate::persistence::native_account::snapshot::Snapshot;
 
 const REWRITTEN: [&str; 6] = [
     "account",
@@ -52,6 +55,32 @@ pub(super) fn validate(db: &Connection) -> Result<(), DawnAccountError> {
         .transpose()?;
     if let Some(trigger) = trigger {
         return Err(refuse(format!("unrecognized trigger {trigger}")));
+    }
+    Ok(())
+}
+
+/// Refuses a save that changed a table Dawn's schema does not define. Sundial never writes one,
+/// so a difference there came through a cascade or trigger the edit could not see, such as an
+/// extension row that follows a rewritten vendor row.
+pub(super) fn extensions_unchanged(
+    before: &Snapshot,
+    after: &Snapshot,
+) -> Result<(), DawnAccountError> {
+    let reference = Connection::open_in_memory()?;
+    reference.execute_batch(contract::SCHEMA)?;
+    let known = reference
+        .prepare("SELECT name FROM sqlite_schema WHERE type='table'")?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    for (name, table) in &before.tables {
+        if name == "sqlite_sequence" || known.contains(name) {
+            continue;
+        }
+        if after.tables.get(name) != Some(table) {
+            return Err(DawnAccountError::Unwritable(format!(
+                "Saving would also change {name}, which Dawn's schema does not define. No changes were saved"
+            )));
+        }
     }
     Ok(())
 }

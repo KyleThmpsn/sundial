@@ -27,7 +27,73 @@ pub struct Block {
     pub count: Option<usize>,
     pub bytes: Vec<u8>,
     /// Pointer fields contain zero in `bytes` and refer to other blocks here.
+    #[serde(deserialize_with = "links::deserialize")]
     pub links: BTreeMap<usize, usize>,
+}
+
+/// A block's links, keyed by byte offset. JSON writes the offsets as strings. Read straight from
+/// JSON they arrive as numbers, but serde buffers a flattened struct's members first and hands
+/// such a key over as the string, which a `usize` key refuses. A subclass ability's custom perks
+/// sit in a flattened struct, so both forms are taken.
+mod links {
+    use std::{collections::BTreeMap, fmt};
+
+    use serde::de::{self, Deserializer, MapAccess, Visitor};
+
+    struct Offset(usize);
+
+    impl<'de> serde::Deserialize<'de> for Offset {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            deserializer.deserialize_any(OffsetVisitor)
+        }
+    }
+
+    struct OffsetVisitor;
+
+    impl Visitor<'_> for OffsetVisitor {
+        type Value = Offset;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a byte offset")
+        }
+
+        fn visit_u64<E: de::Error>(self, value: u64) -> Result<Offset, E> {
+            usize::try_from(value)
+                .map(Offset)
+                .map_err(|_| E::invalid_value(de::Unexpected::Unsigned(value), &self))
+        }
+
+        fn visit_str<E: de::Error>(self, value: &str) -> Result<Offset, E> {
+            value
+                .parse()
+                .map(Offset)
+                .map_err(|_| E::invalid_value(de::Unexpected::Str(value), &self))
+        }
+    }
+
+    struct LinksVisitor;
+
+    impl<'de> Visitor<'de> for LinksVisitor {
+        type Value = BTreeMap<usize, usize>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("links by byte offset")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut links = BTreeMap::new();
+            while let Some((Offset(offset), target)) = map.next_entry::<Offset, usize>()? {
+                links.insert(offset, target);
+            }
+            Ok(links)
+        }
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<usize, usize>, D::Error> {
+        deserializer.deserialize_map(LinksVisitor)
+    }
 }
 
 /// A closed native allocation graph whose first block is its root object.

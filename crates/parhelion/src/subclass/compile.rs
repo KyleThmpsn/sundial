@@ -13,9 +13,9 @@
 use sundial::package_authoring::runtime::WeaponRuntimeValueOverride;
 use tiger_pkg::TagHash;
 
-use super::PaletteEdit;
 use super::authoring::{AuthoredEntry, CompiledEntry, ResolvedList};
 use super::tables::SubclassTables;
+use super::{BankValue, EffectGrade, PaletteEdit, SpawnSwap, TintEdit};
 use crate::error::invalid;
 use crate::{AuthoringResult, WeaponSandboxPerkRuntimeOverride};
 
@@ -37,6 +37,17 @@ pub(crate) trait Planner {
     fn stock(&mut self, role: (&str, &str), perk: u16) -> AuthoringResult<Self::Perk>;
 }
 
+/// What a copy of an ability entity changes: its values, its effects' colors, the projectiles it
+/// fires and values of its bank's rows.
+pub(crate) struct EntityChanges<'a> {
+    pub(crate) values: &'a [WeaponRuntimeValueOverride],
+    pub(crate) palettes: &'a [PaletteEdit],
+    pub(crate) tints: &'a [TintEdit],
+    pub(crate) grade: Option<EffectGrade>,
+    pub(crate) swaps: &'a [SpawnSwap],
+    pub(crate) bank_values: &'a [BankValue],
+}
+
 /// How the build compiles them, into the same tables as the private plugs.
 pub(crate) trait Compiler {
     type Perk;
@@ -46,12 +57,11 @@ pub(crate) trait Compiler {
     /// Compiles `perk`, a private copy of a stock perk that names a moved ability, as `perk`
     /// does. Refuses one that names none.
     fn retargeted(&mut self, perk: &Self::Perk, moves: &[(u32, u32)]) -> AuthoringResult<u16>;
-    /// Copies `source` with `edits`, its values changed and its effects recolored, assigns
-    /// the copy to `pattern`, and returns the copy.
+    /// Copies `source` with `changes`, assigns the copy to `pattern`, and returns the copy.
     fn entity(
         &mut self,
         source: TagHash,
-        edits: (&[WeaponRuntimeValueOverride], &[PaletteEdit]),
+        changes: EntityChanges<'_>,
         pattern: u32,
     ) -> AuthoringResult<TagHash>;
 }
@@ -78,6 +88,10 @@ struct EntityPlan {
     source: TagHash,
     values: Vec<WeaponRuntimeValueOverride>,
     palettes: Vec<PaletteEdit>,
+    tints: Vec<TintEdit>,
+    grade: Option<EffectGrade>,
+    swaps: Vec<SpawnSwap>,
+    bank_values: Vec<BankValue>,
     identity: u32,
     pattern: u32,
 }
@@ -154,6 +168,10 @@ fn plan_entry<L: Planner>(
                 source: own.source,
                 values: own.values.clone(),
                 palettes: own.palettes.clone(),
+                tints: own.tints.clone(),
+                grade: own.grade,
+                swaps: own.swaps.clone(),
+                bank_values: own.bank_values.clone(),
                 identity,
                 pattern,
             })
@@ -198,7 +216,14 @@ pub(crate) fn compile<C: Compiler>(
         (|| -> AuthoringResult<()> {
             let copy = compiler.entity(
                 entity.source,
-                (&entity.values, &entity.palettes),
+                EntityChanges {
+                    values: &entity.values,
+                    palettes: &entity.palettes,
+                    tints: &entity.tints,
+                    grade: entity.grade,
+                    swaps: &entity.swaps,
+                    bank_values: &entity.bank_values,
+                },
                 entity.pattern,
             )?;
             entry.row = Some(tables.append_ability(entity.row, entity.identity, entity.pattern)?);

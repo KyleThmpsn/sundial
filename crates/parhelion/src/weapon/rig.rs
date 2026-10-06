@@ -1,12 +1,13 @@
 //! Cross-family appearances: move the appearance's rig and animations onto the gameplay
 //! runtime, so the model keeps its own bones and its own reload.
 //!
-//! A weapon family's runtime entity keeps its presentation in four component owners: the
-//! skeleton the gear parts are weighted to, the animation lookup and animation set that drive
-//! the gun's own moving parts, and the first-person attachment that reaches the hands. Every
-//! gameplay component the player feels lives in a different owner, so promoting those four
-//! leaves trigger, barrel, magazine, reload timing and stats exactly as the gameplay donor
-//! wrote them.
+//! A weapon family's runtime entity keeps its presentation in six component owners: the
+//! skeleton the gear parts are weighted to, the rig controls its clips address, the animation
+//! lookup and animation set that drive the gun's own moving parts, the marker set that places
+//! the grip, support hand, sight and muzzle, and the first-person attachment that reaches the
+//! hands. Every gameplay component the player feels lives in a different owner, so promoting
+//! those six leaves trigger, barrel, magazine, reload timing and stats exactly as the gameplay
+//! donor wrote them.
 //!
 //! Families do not agree about all of this, so it is attempted rather than assumed. Auto
 //! rifles, hand cannons and pulse rifles interchange; a shotgun places its skeleton's event
@@ -26,13 +27,22 @@ const SKELETON: u32 = 0x1C80_DD4A;
 const ANIMATION_LOOKUP: u32 = 0x681C_2C0D;
 const ANIMATION_SET: u32 = 0x8983_4B2B;
 const FIRST_PERSON_ATTACHMENT: u32 = 0xD3A5_500E;
+/// Header class 80808F96. Clip slots index its control rows, so another family's clips drive
+/// the wrong bones through it and parts drift off the model.
+const RIG_CONTROLS: u32 = 0x1DBD_2776;
+/// Header class 80808506: grip, support, iron_sight, primary_fire and ejection points in the
+/// model's space. Another family's set puts the support hand where that family's foregrip is.
+const MARKER_SET: u32 = 0x04CE_0B42;
 
 /// Promoted together. A rig without its clips, or clips without the hands that hold them,
-/// would leave the weapon half-converted and is worse than not trying.
-pub(crate) const PRESENTATION_BINDINGS: [u32; 4] = [
+/// would leave the weapon half-converted and is worse than not trying. Every stock skeleton
+/// has exactly one rig controls owner and one marker set, so they belong to the rig.
+pub(crate) const PRESENTATION_BINDINGS: [u32; 6] = [
     SKELETON,
+    RIG_CONTROLS,
     ANIMATION_LOOKUP,
     ANIMATION_SET,
+    MARKER_SET,
     FIRST_PERSON_ATTACHMENT,
 ];
 
@@ -57,8 +67,138 @@ pub(crate) fn presentation_graft_applies(target: &[u8], donor: &[u8]) -> bool {
     graft_presentation(&mut target.to_vec(), donor).is_ok()
 }
 
-/// The stat translator's per-type keys: the translation group hash at +0x10, then three values
-/// of that type's own.
+/// The marker set's data struct holds its row array descriptor here. Rows are 64 bytes of class
+/// 80808513: rotation at +0x10, position at +0x20 and the FNV-1 name at +0x30.
+const MARKER_DESCRIPTOR: usize = 0xB0;
+const MARKER_ROW_CLASS: u32 = 0x8080_8513;
+const MARKER_ROW_SIZE: usize = 64;
+const MARKER_POSITION: usize = 0x20;
+const MARKER_NAME: usize = 0x30;
+
+/// The moved marker set, given every marker only the base's own set names.
+///
+/// The base's firing effects find their anchors by name in the weapon's marker set, so a set
+/// that lacks one draws nothing there. Laser Lumina, Prometheus Lens wearing Lumina, hit enemies
+/// with an invisible beam: the trace rifle's four muzzle rows (`76BCE859`), `iron_sight` and
+/// `fx_ejection` are not in the hand cannon's set. Each missing row keeps its rotation and moves
+/// with the nearest marker both sets name, so a muzzle point lands on the appearance's muzzle.
+/// The appearance's rows are kept first and unchanged, and the old array stays in place for any
+/// reference into it.
+pub(crate) fn marker_set_appends(
+    manager: &PackageManager,
+    base: &[u8],
+    moved: &[u8],
+) -> AuthoringResult<Vec<crate::item::WeaponRuntimeResourceAppend>> {
+    let single = |entity: &[u8]| -> AuthoringResult<Option<(u32, usize)>> {
+        let bindings = weapon_component_bindings(entity, MARKER_SET).map_err(invalid)?;
+        Ok(match bindings.as_slice() {
+            [binding] => Some((
+                binding.owner_tag,
+                usize::try_from(binding.resource_offset)
+                    .map_err(|_| invalid("Marker set offset overflow"))?,
+            )),
+            _ => None,
+        })
+    };
+    let (Some((base_tag, _)), Some((moved_tag, resource))) = (single(base)?, single(moved)?) else {
+        return Ok(Vec::new());
+    };
+    if base_tag == moved_tag {
+        return Ok(Vec::new());
+    }
+    let read = |tag: u32| {
+        manager
+            .read_tag(TagHash(tag))
+            .map_err(|error| invalid(error.to_string()))
+    };
+    let (base_owner, moved_owner) = (read(base_tag)?, read(moved_tag)?);
+    let rows = |owner: &[u8]| -> AuthoringResult<(usize, usize, Vec<Vec<u8>>)> {
+        let data = crate::tag_payload::relative_target(owner, 0x18)?;
+        let descriptor = data + MARKER_DESCRIPTOR;
+        let (count, header, first, class) = array_at(owner, descriptor)?;
+        if count != 0 && class != MARKER_ROW_CLASS {
+            return Err(invalid(format!("Marker rows have class {class:08X}")));
+        }
+        let rows = (0..count)
+            .map(|index| {
+                let at = first + index * MARKER_ROW_SIZE;
+                owner
+                    .get(at..at + MARKER_ROW_SIZE)
+                    .map(<[u8]>::to_vec)
+                    .ok_or_else(|| invalid("Marker row is truncated"))
+            })
+            .collect::<AuthoringResult<Vec<_>>>()?;
+        Ok((descriptor, header, rows))
+    };
+    let (_, _, base_rows) = rows(&base_owner)?;
+    let (descriptor, header, moved_rows) = rows(&moved_owner)?;
+    let name =
+        |row: &[u8]| u32::from_le_bytes(row[MARKER_NAME..MARKER_NAME + 4].try_into().unwrap());
+    let position = |row: &[u8]| -> [f32; 3] {
+        std::array::from_fn(|axis| {
+            let at = MARKER_POSITION + axis * 4;
+            f32::from_le_bytes(row[at..at + 4].try_into().unwrap())
+        })
+    };
+    fn find(rows: &[Vec<u8>], hash: u32) -> Option<&Vec<u8>> {
+        rows.iter().find(|row| {
+            u32::from_le_bytes(row[MARKER_NAME..MARKER_NAME + 4].try_into().unwrap()) == hash
+        })
+    }
+    let shared = base_rows
+        .iter()
+        .filter_map(|row| Some((position(row), position(find(&moved_rows, name(row))?))))
+        .collect::<Vec<_>>();
+    let distance =
+        |a: [f32; 3], b: [f32; 3]| (0..3).map(|axis| (a[axis] - b[axis]).powi(2)).sum::<f32>();
+    let mut extra = Vec::new();
+    for row in &base_rows {
+        if find(&moved_rows, name(row)).is_some() {
+            continue;
+        }
+        let at = position(row);
+        let Some((from, to)) = shared
+            .iter()
+            .min_by(|a, b| distance(a.0, at).total_cmp(&distance(b.0, at)))
+        else {
+            continue;
+        };
+        let mut row = row.clone();
+        for axis in 0..3 {
+            let value = at[axis] + to[axis] - from[axis];
+            let offset = MARKER_POSITION + axis * 4;
+            row[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        extra.push(row);
+    }
+    if extra.is_empty() {
+        return Ok(Vec::new());
+    }
+    let count = moved_rows.len() + extra.len();
+    let mut bytes = moved_owner
+        .get(header..header + 16)
+        .map_or_else(|| vec![0; 16], <[u8]>::to_vec);
+    bytes[..8].copy_from_slice(&(count as u64).to_le_bytes());
+    bytes[8..12].copy_from_slice(&MARKER_ROW_CLASS.to_le_bytes());
+    for row in moved_rows.iter().chain(&extra) {
+        bytes.extend_from_slice(row);
+    }
+    let relative = descriptor
+        .checked_sub(resource)
+        .and_then(|offset| u32::try_from(offset).ok())
+        .ok_or_else(|| invalid("Marker descriptor lies before its resource"))?;
+    Ok(vec![crate::item::WeaponRuntimeResourceAppend {
+        binding_hash: MARKER_SET,
+        resource_index: 0,
+        bytes,
+        slots: Vec::new(),
+        arrays: vec![(relative, 0, count as u64)],
+    }])
+}
+
+/// The stat translator's per-type keys: at +0x10 the FNV-1 of a type name matched against the
+/// row's translation group (hand_cannon, sidearm, or the rifle translator's auto, pulse, scout and
+/// smg), then three values of that type's own.
 const TRANSLATOR_KEY_CLASS: u32 = 0x8080_38C7;
 const TRANSLATOR_KEY_SIZE: usize = 0x28;
 const TRANSLATOR_KEY_HASH: usize = 0x10;
@@ -72,7 +212,8 @@ const TRANSLATOR_TABLE_SIZE: usize = 0x30;
 ///
 /// The translator keeps one table per weapon type, and the authored pattern row names the
 /// appearance's type once its rig moves, so a hand cannon wearing a sidearm's rig fired at sidearm
-/// rates. The appearance type's table entry is pointed at the base type's arrays and takes the
+/// rates and a pulse rifle wearing a hand cannon lost its burst, since Rounds per Burst converts
+/// through the same table. The appearance type's table entry is pointed at the base type's arrays and takes the
 /// base type's values. Every key keeps its hash and place, so however the client finds a key, it
 /// still finds it. The patched translator is a private copy.
 pub(crate) fn stat_table_patches(
@@ -111,16 +252,16 @@ pub(crate) fn stat_table_patches(
         }
         Ok(None)
     };
-    // A type the translator has no table for was never converted by it, so there is nothing to
-    // redirect.
-    let Some(row) = find(row_group)? else {
+    // A group the translator has no table for falls back to its first table, which each
+    // translator lists as its family's main type. Lumina's own group beside hand_cannon and
+    // auto_rifle beside the rifle translator's auto fire as their type that way. Gospel Spire, a
+    // pulse rifle wearing a hand cannon, fired as an auto rifle because its row's hand_cannon has
+    // no table in the rifle translator, so the first entry is the one redirected there.
+    let row = find(row_group)?.unwrap_or(0);
+    let own = find(own_group)?.unwrap_or(0);
+    if own == row {
         return Ok(Vec::new());
-    };
-    let own = find(own_group)?.ok_or_else(|| {
-        invalid(format!(
-            "The stat translator has no table for the base weapon's type 0x{own_group:08X}"
-        ))
-    })?;
+    }
     let relative = |at: usize| {
         at.checked_sub(resource)
             .and_then(|offset| u32::try_from(offset).ok())

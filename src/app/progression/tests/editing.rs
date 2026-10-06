@@ -62,15 +62,7 @@ fn progression_read_only_closes_add_dialog_and_blocks_undo_until_enabled() {
                 &ctx,
                 &mut state,
                 &mut document,
-                vec![
-                    egui::Event::PointerMoved(pos),
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
+                crate::test_support::primary_press(pos, pressed),
             );
         }
         if read_only {

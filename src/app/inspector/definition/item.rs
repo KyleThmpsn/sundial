@@ -99,45 +99,18 @@ pub(super) fn draw_page_tabs(
     page: &mut ItemPage,
     related_count: usize,
 ) {
-    egui::Frame::NONE
-        .fill(ui.visuals().extreme_bg_color)
-        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-        .corner_radius(egui::CornerRadius::same(4))
-        .inner_margin(egui::Margin::same(3))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 3.0;
-                ui.spacing_mut().button_padding = egui::vec2(12.0, 4.0);
-                for candidate in pages {
-                    let text = page_tab_text(ui, *candidate, related_count);
-                    if ui
-                        .add(egui::SelectableLabel::new(*page == *candidate, text))
-                        .clicked()
-                    {
-                        *page = *candidate;
-                    }
-                }
-            });
-        });
-}
-
-fn page_tab_text(ui: &egui::Ui, page: ItemPage, related_count: usize) -> egui::WidgetText {
-    if page != ItemPage::Related {
-        return page.label().into();
-    }
-    let font = egui::TextStyle::Button.resolve(ui.style());
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        page.label(),
-        0.0,
-        egui::TextFormat::simple(font.clone(), egui::Color32::PLACEHOLDER),
-    );
-    job.append(
-        &related_count.to_string(),
-        6.0,
-        egui::TextFormat::simple(font, crate::app::inspector::look::muted(ui)),
-    );
-    job.into()
+    crate::app::inspector::look::tab_bar(ui, |ui| {
+        for candidate in pages {
+            let count = (*candidate == ItemPage::Related).then_some(related_count);
+            let text = crate::app::inspector::look::tab_text(ui, candidate.label(), count);
+            if ui
+                .add(egui::SelectableLabel::new(*page == *candidate, text))
+                .clicked()
+            {
+                *page = *candidate;
+            }
+        }
+    });
 }
 
 pub(super) fn draw_hash_item_matches(

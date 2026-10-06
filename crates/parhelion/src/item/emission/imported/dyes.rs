@@ -20,7 +20,7 @@ pub(super) fn apply(
         )
         .map_err(|e| invalid(e.to_string()))?;
     let tag = TagHash(read_u32(&globals, 16 + 67 * 16)?);
-    if tag.pkg_id() != emission.item_string_table_tag.pkg_id() {
+    if tag.pkg_id() != emission.table_tags.item_string_table_tag.pkg_id() {
         return Err(invalid("Dye table moved to another package"));
     }
     let mut table = match previous.get(&tag.0) {

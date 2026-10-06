@@ -216,6 +216,7 @@ pub(crate) fn expand(document: &mut Value) -> Result<(), String> {
                 directory: temporary.path().to_owned(),
                 sha256: reference.sha256.clone(),
                 attachments: Vec::new(),
+                converter_revision: 0,
             }
             .validate_reusable(&kind)
             .map_err(|e| format!("Embedded item assets are invalid: {e}"))?;
@@ -227,10 +228,12 @@ pub(crate) fn expand(document: &mut Value) -> Result<(), String> {
     if directory.parent() != Some(root.canonicalize().map_err(|e| e.to_string())?.as_path()) {
         return Err("Cached item assets must stay inside their cache folder".into());
     }
+    let converter_revision = parhelion_import::manifest_converter_revision(&directory);
     let restored = GraphReference {
         directory,
         sha256: reference.sha256,
         attachments: Vec::new(),
+        converter_revision,
     };
     restored
         .validate_reusable(&kind)

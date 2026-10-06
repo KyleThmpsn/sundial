@@ -1,9 +1,11 @@
 //! What an ability or node changes about the abilities of its subclass while it is selected, as
-//! chips: the keys its stock pool applies, each removable, then its own, then Add Modifier, which
-//! puts one together in a form under them: the ability, what to change, and the value.
+//! the Ability Changes chips: the keys its stock pool applies, each removable, then its own, then
+//! Add Change, which puts one together in a form under them: the ability, what to change, and the
+//! value.
 use super::*;
 use crate::subclass::{
-    AbilityModifier, MOST_CHARGES, ModifierEffect, StockModifier, holds_ability, place_entry,
+    AbilityModifier, MOST_CHARGES, ModifierEffect, RECHARGE_RANGE, StockModifier, holds_ability,
+    place_entry,
 };
 use sundial::investment::{AbilityParameter, AbilityRowSummary};
 use sundial::package_authoring::ability_bank::{
@@ -16,7 +18,7 @@ pub(super) fn parameter_name(parameter: u32) -> String {
     parameter_label(parameter).map_or_else(|| format!("Parameter 0x{parameter:08X}"), str::to_owned)
 }
 
-/// A parameter's value as the Parameters table's fields show it, two to four decimals.
+/// A parameter's value as the parameter tiles show it, two to four decimals.
 pub(super) fn parameter_value(value: f32) -> String {
     egui::emath::format_with_decimals_in_range(f64::from(value), 2..=4)
 }
@@ -31,7 +33,7 @@ fn stock_hover(parameter: &AbilityParameter) -> String {
 }
 
 /// A value as the workbench's tunings write it: set, or added. A switch set reads On or Off and a
-/// multiplier set reads with ×, as the Parameters table shows them.
+/// multiplier set reads with ×, as the parameter tiles show them.
 fn set_or_add(parameter: u32, value: f32, add: bool) -> String {
     if !add {
         let kind = super::tuning::shown_kind(parameter, value, value);
@@ -120,7 +122,28 @@ fn effect_label(
             parameter_name(parameter),
             set_or_add(parameter, f32::from_bits(value_bits), add)
         ),
+        ModifierEffect::Recharge { multiplier_bits } => {
+            recharge_label(f32::from_bits(multiplier_bits))
+        }
     }
+}
+
+/// A recharge multiplier as chips read it.
+pub(super) fn recharge_label(multiplier: f32) -> String {
+    format!("Recharge ×{}", parameter_value(multiplier))
+}
+
+/// A recharge multiplier's field: ×1 is stock, higher recharges faster.
+pub(super) fn recharge_field(ui: &mut egui::Ui, multiplier: &mut f32) -> egui::Response {
+    ui.add(
+        egui::DragValue::new(multiplier)
+            .speed(0.01)
+            .range(RECHARGE_RANGE)
+            .clamp_existing_to_range(false)
+            .max_decimals(2)
+            .prefix("×"),
+    )
+    .on_hover_text("Higher recharges faster")
 }
 
 /// An ability of this subclass a modifier can change: the entry holding it, how the Ability
@@ -132,10 +155,11 @@ pub(super) struct Target {
     pub(super) row: u8,
 }
 
-/// What Add Modifier changes about its ability.
+/// What Add Change changes about its ability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Kind {
     Charges,
+    Recharge,
     Parameter,
     Key,
 }
@@ -144,6 +168,7 @@ impl Kind {
     const fn label(self) -> &'static str {
         match self {
             Self::Charges => "Extra Charges",
+            Self::Recharge => "Recharge",
             Self::Parameter => "Parameter",
             Self::Key => "Stock Key",
         }
@@ -153,18 +178,20 @@ impl Kind {
     fn fits(self, row: &AbilityRowSummary) -> bool {
         match self {
             Self::Charges => row.charges,
+            Self::Recharge => row.recharge,
             Self::Parameter => !row.parameters.is_empty(),
             Self::Key => !row.keys.is_empty(),
         }
     }
 }
 
-/// The modifier Add Modifier is putting together.
+/// The modifier Add Change is putting together.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Draft {
     target: u8,
     kind: Kind,
     count: u8,
+    multiplier: f32,
     parameter: u32,
     value_bits: u32,
     add: bool,
@@ -177,6 +204,7 @@ impl Draft {
             target,
             kind: Kind::Charges,
             count: 1,
+            multiplier: 1.5,
             parameter: 0,
             value_bits: 0,
             add: false,
@@ -188,7 +216,7 @@ impl Draft {
     /// and keys.
     fn fit(&mut self, row: &AbilityRowSummary) {
         if !self.kind.fits(row) {
-            self.kind = [Kind::Charges, Kind::Parameter, Kind::Key]
+            self.kind = [Kind::Charges, Kind::Recharge, Kind::Parameter, Kind::Key]
                 .into_iter()
                 .find(|kind| kind.fits(row))
                 .unwrap_or(Kind::Key);
@@ -212,6 +240,9 @@ impl Draft {
     fn effect(self) -> ModifierEffect {
         match self.kind {
             Kind::Charges => ModifierEffect::Charges { count: self.count },
+            Kind::Recharge => ModifierEffect::Recharge {
+                multiplier_bits: self.multiplier.to_bits(),
+            },
             Kind::Parameter => ModifierEffect::Parameter {
                 parameter: self.parameter,
                 value_bits: self.value_bits,
@@ -293,7 +324,7 @@ impl PackageAuthoringApp {
         self.catalog.as_ref()?.ability_row(row)
     }
 
-    /// The entry's modifiers as chips, then Add Modifier. Returns its edits once they change.
+    /// The entry's modifiers as chips, then Add Change. Returns its edits once they change.
     pub(super) fn draw_entry_modifiers(
         &self,
         ui: &mut egui::Ui,
@@ -303,6 +334,16 @@ impl PackageAuthoringApp {
         page: &mut PageState,
     ) -> Option<EntryEdits> {
         let targets = self.ability_targets(abilities, base);
+        let own = place_entry(place);
+        // An ability's own charges, recharge and values sit on its Ability card, so here it
+        // changes only the other abilities. A node changes any.
+        let ability = holds_ability(own);
+        let own_row = summary.and_then(|summary| summary.entry_rows.get(&entry).copied());
+        let others = targets
+            .iter()
+            .filter(|target| !ability || target.entry != own)
+            .cloned()
+            .collect::<Vec<_>>();
         let stock = summary
             .and_then(|summary| summary.entry_modifiers.get(&entry))
             .cloned()
@@ -310,6 +351,9 @@ impl PackageAuthoringApp {
         let mut changed = None;
         ui.horizontal_wrapped(|ui| {
             for (key, row) in stock {
+                if ability && Some(row) == own_row {
+                    continue;
+                }
                 let removed = StockModifier { key, row };
                 if edits.removed_modifiers.contains(&removed) {
                     continue;
@@ -353,13 +397,12 @@ impl PackageAuthoringApp {
                     changed = Some(edited);
                 }
             }
-            let own = place_entry(place);
             // The button stays selected while its form is open below, and closes it again.
             let open = page.modifier_draft.is_some();
             if ui
                 .add_enabled(
-                    !targets.is_empty(),
-                    egui::Button::new("Add Modifier").selected(open),
+                    !others.is_empty(),
+                    egui::Button::new("Add Change").selected(open),
                 )
                 .clicked()
             {
@@ -367,15 +410,15 @@ impl PackageAuthoringApp {
                     page.modifier_draft = None;
                     return;
                 }
-                let first = targets
+                let first = others
                     .iter()
                     .find(|target| target.entry == own)
-                    .or(targets.first())
+                    .or(others.first())
                     .map_or(own, |target| target.entry);
                 page.modifier_draft = Some(Draft::new(first));
             }
         });
-        if let Some(modifier) = self.draw_modifier_form(ui, &targets, page) {
+        if let Some(modifier) = self.draw_modifier_form(ui, &others, page) {
             let mut edited = changed.unwrap_or_else(|| edits.clone());
             if !edited.modifiers.contains(&modifier) {
                 edited.modifiers.push(modifier);
@@ -385,7 +428,7 @@ impl PackageAuthoringApp {
         changed
     }
 
-    /// The Add Modifier form under the chips while a draft is open, so the page stays in view.
+    /// The Add Change form under the chips while a draft is open, so the page stays in view.
     /// Returns the modifier once it is added.
     fn draw_modifier_form(
         &self,
@@ -428,19 +471,20 @@ impl PackageAuthoringApp {
                         });
                     crate::app::pickers::name_combo(ui, "subclass-modifier-ability", "Ability");
                     ui.end_row();
-                    ui.label("Modifier");
+                    ui.label("Change");
                     egui::ComboBox::from_id_salt("subclass-modifier-kind")
                         .width(width)
                         .selected_text(draft.kind.label())
                         .show_ui(ui, |ui| {
-                            for kind in [Kind::Charges, Kind::Parameter, Kind::Key] {
+                            for kind in [Kind::Charges, Kind::Recharge, Kind::Parameter, Kind::Key]
+                            {
                                 let fits = row.is_some_and(|row| kind.fits(row));
                                 ui.add_enabled_ui(fits, |ui| {
                                     ui.selectable_value(&mut draft.kind, kind, kind.label());
                                 });
                             }
                         });
-                    crate::app::pickers::name_combo(ui, "subclass-modifier-kind", "Modifier");
+                    crate::app::pickers::name_combo(ui, "subclass-modifier-kind", "Change");
                     ui.end_row();
                     match draft.kind {
                         Kind::Charges => {
@@ -462,6 +506,12 @@ impl PackageAuthoringApp {
                                 "subclass-modifier-count",
                                 "Charges",
                             );
+                            ui.end_row();
+                        }
+                        Kind::Recharge => {
+                            ui.label("Recharge");
+                            let field = recharge_field(ui, &mut draft.multiplier);
+                            style::named_control(field, "Recharge");
                             ui.end_row();
                         }
                         Kind::Parameter => {
@@ -509,7 +559,7 @@ impl PackageAuthoringApp {
                             ui.horizontal(|ui| {
                                 let mut value = f32::from_bits(draft.value_bits);
                                 // An added amount is a plain number. A set one is shown as
-                                // its kind, as the Parameters table shows it.
+                                // its kind, as the parameter tiles show it.
                                 let kind = if draft.add {
                                     ParameterKind::Number
                                 } else {

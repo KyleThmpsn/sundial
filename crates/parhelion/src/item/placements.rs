@@ -372,12 +372,36 @@ fn automatic_destination(
         .ammo_type
         .or(item_string_ammo_type(&strings)?)
         .unwrap_or(WeaponAmmoType::Primary);
-    let family_hash = read_u32(&strings, ITEM_TYPE_REFERENCE_OFFSET + 4)?;
-    let family = family_hashes.get(&family_hash).copied().ok_or_else(|| {
-        invalid(
-            "This weapon family has no non-Exotic Collections page template in this game version",
-        )
-    })?;
+    // The weapon files under the type it shows: its appearance's, unless it keeps the base's.
+    // An appearance type with no page of its own, such as a Glaive, files under the base's.
+    let family_of = |strings: &[u8]| -> AuthoringResult<Option<Family>> {
+        Ok(family_hashes
+            .get(&read_u32(strings, ITEM_TYPE_REFERENCE_OFFSET + 4)?)
+            .copied())
+    };
+    let shown = match &weapon.presentation_donor {
+        Some(presentation) if !weapon.overrides.base_type => {
+            let item = item_index(sources, presentation.item_hash)?;
+            let string_tag = TagHash(read_u32(
+                &sources.stock_item_strings,
+                sources.string_rows + item * ITEM_ROW_SIZE + 16,
+            )?);
+            family_of(&read_tag(
+                &sources.manager,
+                string_tag,
+                "Collections appearance classification",
+            )?)?
+        }
+        _ => None,
+    };
+    let family = match shown {
+        Some(family) => family,
+        None => family_of(&strings)?.ok_or_else(|| {
+            invalid(
+                "This weapon family has no non-Exotic Collections page template in this game version",
+            )
+        })?,
+    };
     Ok(Destination {
         ammo: match ammo {
             WeaponAmmoType::Primary => Ammo::Primary,

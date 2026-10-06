@@ -196,12 +196,12 @@ impl SundialApp {
             return source_matches && lock_matches;
         }
         let hash = entry.definition_hash();
-        let definition_matches =
-            hash.and_then(|hash| self.manifest.item(hash))
-                .is_some_and(|item| {
-                    item.name.to_ascii_lowercase().contains(query)
-                        || item.type_name.to_ascii_lowercase().contains(query)
-                });
+        let definition_matches = hash
+            .and_then(|hash| self.manifest.inventory_definition(hash))
+            .is_some_and(|definition| {
+                definition.name.to_ascii_lowercase().contains(query)
+                    || definition.type_name.to_ascii_lowercase().contains(query)
+            });
         let hash_matches = hash.is_some_and(|hash| {
             hash.to_string().contains(query)
                 || format_hash_hex(hash).to_ascii_lowercase().contains(query)
@@ -413,8 +413,10 @@ impl SundialApp {
                     CharacterInventorySort::Name => group.items.sort_by_cached_key(|entry| {
                         entry
                             .definition_hash()
-                            .and_then(|hash| self.manifest.item(hash))
-                            .map_or_else(String::new, |item| item.name.to_ascii_lowercase())
+                            .and_then(|hash| self.manifest.inventory_definition(hash))
+                            .map_or_else(String::new, |definition| {
+                                definition.name.to_ascii_lowercase()
+                            })
                     }),
                     CharacterInventorySort::PowerDescending => {
                         group

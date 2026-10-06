@@ -33,7 +33,7 @@ See Sundial's [Compatibility](../../README.md#compatibility) section for support
 
 ## Getting Started
 
-1. In Sundial, open **Preferences > Editing**. Under **Experimental**, turn on **Enable Parhelion Weapon Workbench**, then click **Open Parhelion**.
+1. In Sundial, open **Preferences > Editing**. Under **Experimental**, turn on **Enable Parhelion Package Authoring**, then click **Open Parhelion**.
 2. Click **New Weapon** or open the adjacent **New Item** menu to choose another item type. You can also open a library recipe and use **Recipe… > Duplicate**. Pick a stock base and edit the choices available for that item.
 3. Save your recipe. Open **Items in This Build**, select every item you want installed, then click **Apply Selection**.
 4. Click **Build & Stage**. When the build finishes, click **Review**.
@@ -135,7 +135,7 @@ An effect is a trigger plus what it does when that trigger fires. These are some
 - **Set a Weapon Firing Mode** changes how the weapon fires.
 - **Change Ability Energy** scales grenade, melee, or class ability energy, with an optional limit.
 - **Change Incoming Damage** raises or lowers the damage you take while the effect runs, the way Riven's Curse does.
-- **Change an Ability Stat** changes a named stat inside an ability itself.
+- **Change an Ability Property** sets or adds to an ability's own values, such as a grenade's blast radius. Use **Add Property…** to choose one.
 
 Pair one with a trigger such as **On a Kill**, **On Precision Weapon Kill**, **On Reloading**, **On Firing This Weapon**, **On Taking Damage**, or **On a Game Event** for something like an Orb of Light being picked up.
 
@@ -175,24 +175,24 @@ Use it to find behavior worth copying into a perk of your own, or to check what 
 
 ### Unique Weapon Behavior
 
-Some Exotics keep part of what makes them special in the weapon itself rather than in a perk. Hard Light's bouncing rounds, Malfeasance's embedded rounds, and Borealis's damage switching all work this way. **Unique Weapon Behavior** on **Weapon** copies that half onto the weapon you are building. It sits with the damage type and the other weapon-wide choices.
+Some Exotics keep part of what makes them special in the weapon itself rather than in a perk. Hard Light's bouncing rounds, Malfeasance's embedded rounds, and Borealis's damage switching all work this way. **Behavior** copies that half onto the weapon you are building. Choose it on **Weapon** beside the damage type, or under **Parts** on **Gameplay**, where its options appear.
 
-Pick a source the same way you pick an appearance donor. Most sources are Exotics, with a few Legendaries such as Drang and Warden's Law. Hover **Unique Weapon Behavior** for the full description of your current choice, and watch for a caution under the row when a combination has known limits. Choose **None** to go back to your weapon's own behavior.
+Pick a source the same way you pick an appearance donor. Most sources are Exotics, with a few Legendaries such as Drang and Warden's Law. Hover **Behavior** for the full description of your current choice, and watch for a caution under the row when a combination has known limits. Choose **None** to go back to your weapon's own behavior.
 
-**Include Its Perks** is on by default. It puts the source weapon's intrinsic in place of your weapon's own and adds its Exotic trait to a trait socket, because several Exotics keep the other half of the behavior there. The picker and its tooltip show which perks will land. These perks appear in **Perks & Sockets** while you edit. Check the choices and defaults after selecting a behavior, especially if you have already customized those sockets. Turn it off to borrow just the weapon's runtime behavior.
+**Include Its Perks**, under the **Behavior** row on **Gameplay**, is on by default. It puts the source weapon's intrinsic in place of your weapon's own and adds its Exotic trait to a trait socket, because several Exotics keep the other half of the behavior there. The picker and its tooltip show which perks will land. These perks appear in **Perks & Sockets** while you edit. Check the choices and defaults after selecting a behavior, especially if you have already customized those sockets. Turn it off to borrow just the weapon's runtime behavior.
 
 When the source's perks change how many rounds a burst fires, as Graviton Lance's and Bastion's do, your weapon takes the source's burst. Set **Firing Pattern** to **Base Weapon** to keep your weapon's own burst and rate of fire.
 
 You can try a behavior on a different weapon type than the Exotic it came from, but some combinations only partly work or do nothing. The picker warns about known dependencies, such as a frame that expects its own ammo or a perk that reads a scope the host weapon does not have.
 
-Damage switching is set by the damage type rather than here. Choose **Variable (Hold Reload)** and your weapon gets The Fundamentals and the behavior that drives it, while keeping its own appearance. Choosing Hard Light or Borealis as a Unique Weapon Behavior does the same and locks the damage type, since those two switch damage as well as fire differently.
+Damage switching is set by the damage type rather than here. Choose **Variable (Hold Reload)** and your weapon gets The Fundamentals and the behavior that drives it, while keeping its own appearance. Choosing Hard Light or Borealis as a **Behavior** does the same and locks the damage type, since those two switch damage as well as fire differently.
 
 If a borrowed behavior launches projectiles and your base weapon normally fires instantly, those projectiles may travel very slowly. **Projectile Speed Multiplier** raises their launch speed, with the increase capped at the value you choose. Sources already above that value keep their own speed. The default is a starting point, so adjust it a little at a time and test in-game.
 
 For example, to put Malfeasance's rounds on an ordinary Hand Cannon:
 
 1. Start a recipe with the Hand Cannon you want as the base weapon.
-2. On **Weapon**, open **Unique Weapon Behavior** and choose **Malfeasance**.
+2. On **Weapon**, open **Behavior** and choose **Malfeasance**.
 3. Leave **Include Its Perks** on. Malfeasance keeps the detonation in its perk, so the weapon half alone will not finish the job.
 4. Save, build, install, and get a copy from Collections.
 
@@ -228,9 +228,9 @@ Placement is presentation only. It does not change ammo, stats, or gameplay.
 
 The **New Item** menu beside **New Weapon** starts an armor piece, Sparrow, Ship, Ghost Shell, Emblem, Shader, or Subclass from a stock base. Save it as a recipe and select it in **Items in This Build** before building. This section covers gear. Shaders and Subclasses have their own sections below.
 
-Edit the name, description, icon, rarity, supported stats, and socket choices. Gear keeps the base item's slot, class, model, and runtime behavior. Armor also has **Energy Type** and **Energy Capacity** controls. Exotic gear requires an Exotic base. An Emblem's nameplate takes its banner, overlay, and background from another Emblem or your own image, and **Customize Colors** sets its colors.
+Edit the name, description, icon, rarity, supported stats, and sockets. Gear can add sockets, remove the base's sockets, or give a socket another role, as weapons can. Gear keeps the base item's slot, model, and runtime behavior, and its page shows a preview of the base item's model. Armor also has **Energy Type** and **Energy Capacity** controls, and a **Class** picker that follows the base or can use **Titan**, **Hunter**, **Warlock**, or **Any Class**. Exotic gear requires an Exotic base. An Emblem's nameplate takes its banner, overlay, and background from another Emblem or your own image, and **Customize Colors** sets its colors.
 
-In Collections, armor appears beside its base. Sparrows, Ships, Ghost Shells, Emblems, and Shaders appear on a **Project Sunrise** or **Dawn** page under their kind, and each of these pages uses one node from the [Collections budget](#collections-placement). Authored armor does not appear in the Project Sunrise or Dawn badge. Sparrow Speed, Boost, and Durability are tooltip stats. Changing the displayed Speed alone does not make a Sparrow travel faster, since its engine perk controls the speed tier.
+In Collections, authored armor appears on a **Project Sunrise** or **Dawn** page under **Armor** for each class it supports and joins that class's badge. Exotic armor also appears in **Exotics**. Sparrows, Ships, Ghost Shells, Emblems, and Shaders appear on a **Project Sunrise** or **Dawn** page under their kind. Each of these pages uses one node from the [Collections budget](#collections-placement). Sparrow Speed, Boost, and Durability are tooltip stats. Changing the displayed Speed alone does not make a Sparrow travel faster. Use **Driving Speed** instead, up to 10× the base's speed. **Summon Vehicle** makes a Sparrow summon another vehicle, such as a Pike or Interceptor.
 
 Armor authoring will gain more options in future releases.
 
@@ -256,11 +256,18 @@ For each ability, keep the base's or choose one from any stock Subclass, includi
 
 You can also build attunement paths node by node. Each node can come from any Subclass and take its own name, description, and perks, and each path takes its own name.
 
-Each ability and node can also take its own name, description, icon, and perks, including custom perks from the workbench. **Charges** adds extra charges, **Modifiers** changes what it affects, and **Tuning** adjusts the ability's own values, projectiles, and effects.
+Each ability and node has its own page, with tabs marked once you change something:
 
-**Effect Colors** changes the hue, saturation, and brightness of the color palettes an ability's effects use. The changes belong to that ability, so other abilities using the same stock palettes keep their colors.
+- **Ability** sets its name, description, and icon.
+- **Perks** sets the perks it grants, including custom perks from the workbench. Right-click a stock perk and choose **Edit as Custom Perk…** to change it for this ability alone.
+- **Gameplay** holds the ability's **Charges**, **Recharge**, and own values, such as **Blink Distance** or **Airborne Jumps**. A node's **Ability Changes** sets what selecting it changes about the Subclass's abilities, such as an extra grenade charge. Each part the ability creates has a card with its timers, projectile flight, and buff amounts, and **Fires** swaps a projectile for another ability's.
+- **Visuals** holds **Effect Colors**, which changes the hue, saturation, and brightness of each color the ability's effects use, or all of them with **Set All**. **Colors From** copies another ability's colors, **Colorize** sets a single hue, and **Overall** adjusts everything it draws.
 
-Installing adds each authored Subclass to every character of its base Subclass's class and equips the first one. **Every Class** adds it to every character, and any of them can equip it. Authored Subclasses have no Collections entry.
+Changes belong to that ability, so other abilities using the same stock data keep theirs. A Subclass's HUD colors can't currently be changed, since the game sets them from the damage type of its Super.
+
+The Subclass's **Appearance** tab sets its **Screen Art**, the full-screen character picture shown for each attunement.
+
+**Class** sets which characters receive the Subclass and can equip it. **Any Class** adds it to every character and labels it **Guardian Subclass**. Choosing one class limits it to that class, even on another class's base. Installing equips the first authored Subclass on each character it reaches. Authored Subclasses have no Collections entry.
 
 Subclass authoring will gain more options in future releases as more of how Subclasses work is understood.
 
@@ -273,7 +280,7 @@ Parhelion includes these examples to show a taste of what the workbench can do. 
 - **Hammer Time**: An Exotic Grenade Launcher that moves Wendigo GL3's Heavy frame into the Energy slot with Special ammo. Three custom trait choices switch between Solar hammers, massive Arc bolts, and Void Nova Bombs, each setting the damage type and rewarding final blows with ability energy or invisibility.
 - **SUROS Renaissance**: SUROS Regime with Hard Light's ricocheting rounds, **Variable (Hold Reload)** damage switching, and Scatter Matrix's SIVA swarms on final blows. It combines borrowed Exotic behavior with a custom perk.
 - **Ravenous Horizon**: A Special-ammo Auto Rifle that grafts Malfeasance's runtime behavior onto Gnawing Hunger, with Event Horizon creating a lingering Void anchor on precision final blows. It combines an Exotic's hidden behavior with a custom kill effect.
-- **Redacted**: An Arc Special-ammo Rocket Sidearm with Interregnum XVI's appearance and Micro-Missile Frame. It shows how a custom intrinsic and advanced gameplay donors can create an entirely new archetype.
+- **Redacted**: An Arc Special-ammo Rocket Sidearm with Interregnum XVI's appearance and Micro-Missile Frame. It shows how a custom intrinsic and borrowed gameplay parts can create an entirely new archetype.
 - **Reclamation Order**: An Exotic Void Sword in the Energy slot that uses Special ammo, combining Black Talon gameplay with Traitor's Fate appearance. It is the clearest example of moving a Heavy weapon family into an otherwise impossible loadout.
 - **Vaultbreaker**: A Legendary Arc Shotgun that combines Prophet of Doom, The Fourth Horseman, and Micro-Missile Frame. It is a useful reference for grafting custom projectile behavior onto a conventional weapon family.
 - **Second Sun**: A Legendary Solar Rocket Launcher that combines The Wardcliff Coil's salvo with Truth's appearance. It shows how Exotic gameplay and presentation donors can be separated and recast as a Legendary.
@@ -358,7 +365,6 @@ Generated only when your recipes need them. Ability property banks gain entries 
 | `w64_sandbox_01fd_6.pkg` | Extends an ability property bank. |
 | `w64_sandbox_0397_6.pkg` | Extends an ability property bank. |
 | `w64_shared_manifest_0374_7.pkg` | Makes additional gameplay resources available to the items and perks that need them. |
-| `w64_ui_01a3_7.pkg` | Adds crosshair definitions brought in by imported weapons. |
 | `w64_ui_02af_6.pkg` | Adds custom perk statuses shown on the HUD, with their names and icons. |
 | `w64_ui_037e_6.pkg` | Adds custom weapon icons shown beside the ammo count. |
 | `w64_globals_03ab_7.pkg` | Stores the localized text for custom HUD status names. |
@@ -425,7 +431,7 @@ Turning them off hides the controls without removing your saved changes.
 
 ### Why Doesn't the Borrowed Behavior Do Anything?
 
-Some behavior is split between the weapon and its perk. Check that **Include Its Perks** is on, then get a fresh copy from Collections so the new perks are selected. If the behavior still does nothing, that combination may simply not carry over. Hover **Unique Weapon Behavior** to see whether that source has been confirmed in-game.
+Some behavior is split between the weapon and its perk. Check that **Include Its Perks** is on, then get a fresh copy from Collections so the new perks are selected. If the behavior still does nothing, that combination may simply not carry over. Hover **Behavior** to see whether that source has been confirmed in-game.
 
 A weapon fires through one behavior at a time, so two sources that replace the projectile cannot both apply. Thorn's poison and Lumina's Noble Rounds are an example. Pick the one you want.
 

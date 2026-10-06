@@ -11,7 +11,7 @@ use super::{
     ProgressionDefinition, RecordDefinition, UnlockDefinition,
 };
 
-pub(super) const CACHE_SCHEMA: u32 = 132;
+pub(super) const CACHE_SCHEMA: u32 = 135;
 pub(super) const SUNDIAL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Serialize, Deserialize)]
@@ -37,6 +37,9 @@ pub(super) struct CatalogContents {
     pub(super) perk_descriptions: HashMap<u16, String>,
     #[serde(default)]
     pub(super) icon_containers: HashMap<u64, u32>,
+    /// The icon containers of the Primary, Special and Heavy ammunition marks.
+    #[serde(default)]
+    pub(super) ammo_icon_containers: [Option<u32>; 3],
     #[serde(default)]
     pub(super) item_package_metadata: HashMap<u64, ItemPackageMetadata>,
     #[serde(default)]

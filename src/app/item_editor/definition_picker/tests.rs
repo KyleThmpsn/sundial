@@ -131,15 +131,7 @@ fn large_picker_scrolls_and_filters_without_building_offscreen_widgets() {
             &mut query,
             &mut action,
             false,
-            vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
+            crate::test_support::primary_press(pos, pressed),
         );
     }
     assert_eq!(action, Some(ItemEditorAction::SetDefinition { hash: 4999 }));

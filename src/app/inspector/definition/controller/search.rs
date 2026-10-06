@@ -1,5 +1,7 @@
-//! Definition search: the toolbar field with its dropdown of hits, and the home page with the
-//! full list and recently opened definitions.
+//! Definition search: the toolbar field with its dropdown of hits, and the home page, which
+//! browses the catalog's items by shelf and lists recently opened definitions.
+
+mod browse;
 
 use std::{
     borrow::Cow,
@@ -10,11 +12,13 @@ use eframe::egui;
 
 use crate::{
     app::inspector::{look, metadata::parse_hash_text},
-    catalog::{Catalog, DefinitionSearchHit},
+    catalog::{Catalog, DefinitionSearchHit, Shelf},
     hash::format_hash_hex,
 };
 
-use super::super::state::{DefinitionSearch, HOME, HashInspectionState, SearchResults};
+use super::super::state::{
+    Browse, BrowseTab, DefinitionSearch, HOME, HashInspectionState, SearchResults,
+};
 use super::{
     HashInspectorAction, InspectorWindow, apply_navigation, definition_title, inspector_base_id,
     navigation_buttons, navigation_hashes, navigation_input, search_shortcut,
@@ -27,12 +31,12 @@ const DROPDOWN_LIMIT: usize = 12;
 const DROPDOWN_WIDTH: f32 = 560.0;
 const DROPDOWN_ROW_HEIGHT: f32 = 28.0;
 const TOOLBAR_FIELD_WIDTH: f32 = 280.0;
-const HOME_WIDTH: f32 = 760.0;
 const HOME_ROW_HEIGHT: f32 = 34.0;
 /// The widest kind chip, so names line up.
 const WIDEST_KIND: &str = "Presentation Node";
 const KIND_COLUMN_GAP: f32 = 4.0;
-const HINT: &str = "Search or Paste a Hash";
+/// The search hint. The field also opens a pasted hash.
+const HINT: &str = "Search…";
 
 /// Where a result row leads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,7 +88,12 @@ pub(super) fn toolbar_search(
     if std::mem::take(&mut search.focus) {
         response.request_focus();
     }
-    refresh(&mut search.results, catalog, &search.query);
+    refresh(
+        &mut search.results,
+        catalog,
+        &search.query,
+        Catalog::search_definitions,
+    );
     if search.query.trim().is_empty() {
         close_popup(ui, popup_id);
     } else if response.has_focus() && (response.changed() || response.gained_focus() || keys.moved)
@@ -118,7 +127,7 @@ pub(super) fn toolbar_search(
     }
 }
 
-/// The window with no definition open: a large search field, its hits, and recent definitions.
+/// The window with no definition open: the shelves of items and recent definitions.
 pub(super) fn draw_search_window(
     ctx: &egui::Context,
     catalog: &Catalog,
@@ -127,11 +136,11 @@ pub(super) fn draw_search_window(
 ) {
     let default_size = *state
         .default_size
-        .get_or_insert_with(|| egui::vec2(1_000.0, 720.0));
+        .get_or_insert_with(|| egui::vec2(1_280.0, 880.0));
     let history = navigation_hashes(&state.history);
     let forward = navigation_hashes(&state.forward);
     let window = InspectorWindow {
-        title: "Definition Inspector",
+        title: "Inspector",
         default_size,
         viewport_salt,
         focus: state.search.focus,
@@ -145,12 +154,14 @@ pub(super) fn draw_search_window(
             &history,
             &forward,
             &mut state.search,
+            &mut state.browse,
             action,
         );
     });
     apply_navigation(state, action, close_requested);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_home(
     ui: &mut egui::Ui,
     catalog: &Catalog,
@@ -158,6 +169,7 @@ fn draw_home(
     history: &[u64],
     forward: &[u64],
     search: &mut DefinitionSearch,
+    browse: &mut Browse,
     action: &mut HashInspectorAction,
 ) {
     navigation_input(ui, history, forward, action);
@@ -167,133 +179,188 @@ fn draw_home(
         navigation_buttons(ui, catalog, history, forward, action);
     });
     ui.separator();
-    let width = ui.available_width().min(HOME_WIDTH);
-    let margin = ((ui.available_width() - width) / 2.0).max(0.0);
-    ui.horizontal_top(|ui| {
-        ui.add_space(margin);
-        ui.vertical(|ui| {
-            ui.set_width(width);
-            ui.add_space(28.0);
-            match home_contents(ui, catalog, base_id, history, search) {
-                Some(Target::Hash(hash)) => action.open_hash = Some(hash),
-                Some(Target::History(index)) => action.history_index = Some(index),
-                None => {}
-            }
-        });
-    });
+    ui.add_space(6.0);
+    match home_contents(ui, catalog, base_id, history, search, browse) {
+        Some(Target::Hash(hash)) => action.open_hash = Some(hash),
+        Some(Target::History(index)) => action.history_index = Some(index),
+        None => {}
+    }
 }
 
-/// The home search field and, under it, its hits or the recent definitions.
+/// The shelf tabs, the filter row with its search, and the shelf's cards or the recent
+/// definitions.
 fn home_contents(
     ui: &mut egui::Ui,
     catalog: &Catalog,
     base_id: egui::Id,
     history: &[u64],
     search: &mut DefinitionSearch,
+    browse: &mut Browse,
 ) -> Option<Target> {
     let field_id = base_id.with("home_search");
     let focused = ui.memory(|memory| memory.has_focus(field_id));
-    let keys = if focused {
-        let rows = if search.home_query.trim().is_empty() {
-            recent_count(history)
-        } else {
-            row_count(&search.results, RESULT_LIMIT)
-        };
-        navigation_keys(ui, &mut search.results.highlighted, rows)
+    let index = browse::index(browse, catalog);
+    let searching = !search.home_query.trim().is_empty();
+    browse::tabs(ui, browse, searching, recent_count(history));
+    ui.add_space(6.0);
+    let recent_tab = browse.tab == BrowseTab::Recent;
+    let recent = if recent_tab {
+        let query = search.home_query.trim().to_lowercase();
+        let mut rows = recent_rows(catalog, history, &mut search.kinds);
+        rows.retain(|row| query.is_empty() || row.name.to_lowercase().contains(&query));
+        rows
+    } else {
+        Vec::new()
+    };
+    let keys = if focused && recent_tab {
+        navigation_keys(ui, &mut search.results.highlighted, recent.len())
+    } else if focused && searching && ui.is_enabled() {
+        Keys {
+            moved: false,
+            enter: ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)),
+        }
     } else {
         Keys::default()
     };
-    let response = home_field(ui, field_id, &mut search.home_query, focused);
+    let rebuilt = browse::refresh(browse, &index, &search.home_query);
+    if !recent_tab {
+        refresh(
+            &mut browse.definitions,
+            catalog,
+            &search.home_query,
+            Catalog::search_non_item_definitions,
+        );
+    }
+    let narrowed = browse.narrowed(&search.home_query);
+    let (response, reset) = browse::filter_row(ui, browse, narrowed, |ui, width, height| {
+        home_field(
+            ui,
+            field_id,
+            &mut search.home_query,
+            focused,
+            (width, height),
+        )
+    });
     if std::mem::take(&mut search.focus) {
         response.request_focus();
     }
-    refresh(&mut search.results, catalog, &search.home_query);
-    let recent = search.home_query.trim().is_empty();
-    let rows = if recent {
-        recent_rows(catalog, history, &mut search.kinds)
-    } else {
-        search_rows(
-            catalog,
-            &search.results.hits,
-            search.results.hash,
-            RESULT_LIMIT,
-        )
-    };
-    let highlighted = search.results.highlighted;
-    ui.add_space(16.0);
-    if rows.is_empty() {
-        ui.vertical_centered(|ui| {
-            look::empty_state(
-                ui,
-                if recent {
-                    "No Recent Definitions"
-                } else {
-                    "No Matching Definitions"
-                },
-            );
-        });
-        return None;
+    if response.changed() {
+        search.results.highlighted = 0;
+        ui.ctx().request_repaint();
     }
-    let heading = if recent {
-        "Recent".to_owned()
+    if reset {
+        search.home_query.clear();
+        browse.reset();
+    }
+    // A filter chosen in the row applies to this frame's cards.
+    let rebuilt = browse::refresh(browse, &index, &search.home_query) || rebuilt;
+    ui.add_space(8.0);
+
+    if recent_tab {
+        if recent.is_empty() {
+            look::empty_state(ui, "No Recent Definitions");
+            return None;
+        }
+        let highlighted = search.results.highlighted;
+        let clicked = result_list(
+            ui,
+            catalog,
+            base_id,
+            &recent,
+            highlighted,
+            keys.moved,
+            &mut search.list_view,
+        );
+        return clicked.or_else(|| {
+            keys.enter
+                .then(|| chosen_target(&recent, highlighted, &search.home_query))
+                .flatten()
+        });
+    }
+    // Set aside while the rows borrow it, since the cards take the rest of the state.
+    let found = std::mem::take(&mut browse.definitions);
+    // Words such as "ace" read as hex, so a typed hash that names nothing yields to cards.
+    let typed_hash = found.hash.filter(|hash| {
+        definition_title(catalog, *hash).is_some() || browse.results.cards.is_empty()
+    });
+    // Definitions that are not items have no shelf of their own, so they sit on Other. A typed
+    // hash leads every shelf.
+    let hits: &[DefinitionSearchHit] = if browse.tab == BrowseTab::Shelf(Shelf::Other) {
+        &found.hits
     } else {
-        result_count(rows.len(), search.results.hits.len() >= RESULT_LIMIT)
+        &[]
     };
-    look::subheading(ui, &heading);
-    let clicked = result_list(
-        ui,
-        catalog,
-        base_id,
-        &rows,
-        highlighted,
-        keys.moved,
-        &mut search.list_view,
-    );
-    clicked.or_else(|| {
-        keys.enter
-            .then(|| chosen_target(&rows, highlighted, &search.home_query))
+    let definitions = if searching {
+        search_rows(catalog, hits, typed_hash, RESULT_LIMIT)
+    } else {
+        Vec::new()
+    };
+    let clicked = browse::results(ui, catalog, base_id, browse, &index, &definitions, rebuilt);
+    let chosen = clicked.or_else(|| {
+        (keys.enter && searching)
+            .then(|| entered_target(typed_hash, browse, &index, &definitions))
             .flatten()
-    })
+    });
+    browse.definitions = found;
+    chosen
 }
 
-/// A large rounded field with a search glyph, outlined while it has focus.
+/// Enter opens a typed hash, else the first card, else the first other definition.
+fn entered_target(
+    hash: Option<u64>,
+    browse: &Browse,
+    index: &super::super::state::BrowseIndex,
+    definitions: &[Row<'_>],
+) -> Option<Target> {
+    hash.map(Target::Hash)
+        .or_else(|| {
+            browse
+                .results
+                .cards
+                .first()
+                .map(|position| Target::Hash(index.entries[*position].hash))
+        })
+        .or_else(|| definitions.first().map(|row| row.target))
+}
+
+/// A rounded field with a search glyph, outlined while it has focus.
 fn home_field(
     ui: &mut egui::Ui,
     id: egui::Id,
     query: &mut String,
     focused: bool,
+    (width, height): (f32, f32),
 ) -> egui::Response {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
     let visuals = ui.visuals();
     let stroke = if focused {
         visuals.selection.stroke
     } else {
         visuals.widgets.noninteractive.bg_stroke
     };
-    let fill = visuals.extreme_bg_color;
-    egui::Frame::NONE
-        .fill(fill)
-        .stroke(stroke)
-        .corner_radius(egui::CornerRadius::same(4))
-        .inner_margin(egui::Margin::symmetric(12, 9))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(egui_phosphor::regular::MAGNIFYING_GLASS)
-                        .size(18.0)
-                        .color(look::muted(ui)),
-                );
-                ui.add(
-                    egui::TextEdit::singleline(query)
-                        .id(id)
-                        .frame(false)
-                        .hint_text(HINT)
-                        .font(egui::FontId::proportional(17.0))
-                        .desired_width(f32::INFINITY),
-                )
-            })
-            .inner
-        })
-        .inner
+    ui.painter().rect(
+        rect,
+        egui::CornerRadius::same(4),
+        visuals.extreme_bg_color,
+        stroke,
+        egui::StrokeKind::Inside,
+    );
+    let mut field = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(egui::vec2(8.0, 0.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    field.spacing_mut().item_spacing.x = 6.0;
+    field.label(
+        egui::RichText::new(egui_phosphor::regular::MAGNIFYING_GLASS).color(look::muted(ui)),
+    );
+    field.add(
+        egui::TextEdit::singleline(query)
+            .id(id)
+            .frame(false)
+            .hint_text(HINT)
+            .desired_width(f32::INFINITY),
+    )
 }
 
 /// The home result rows. Only the rows in view are laid out, and the keyboard highlight is
@@ -483,7 +550,12 @@ fn chosen_target(rows: &[Row<'_>], highlighted: usize, query: &str) -> Option<Ta
 }
 
 /// Recomputes the hits only when the query or the catalog changed since they were found.
-fn refresh(results: &mut SearchResults, catalog: &Catalog, query: &str) {
+fn refresh(
+    results: &mut SearchResults,
+    catalog: &Catalog,
+    query: &str,
+    search: fn(&Catalog, &str, usize) -> Vec<DefinitionSearchHit>,
+) {
     let address = std::ptr::from_ref(catalog) as usize;
     let query = query.trim();
     if results
@@ -494,7 +566,7 @@ fn refresh(results: &mut SearchResults, catalog: &Catalog, query: &str) {
         return;
     }
     results.key = Some((address, query.to_owned()));
-    results.hits = catalog.search_definitions(query, RESULT_LIMIT);
+    results.hits = search(catalog, query, RESULT_LIMIT);
     results.hash = parse_hash_text(query)
         .filter(|hash| results.hits.is_empty() || definition_title(catalog, *hash).is_some());
     results.highlighted = 0;
@@ -645,16 +717,6 @@ fn quick_kind(catalog: &Catalog, hash: u64) -> &'static str {
     }
 }
 
-fn result_count(rows: usize, capped: bool) -> String {
-    if capped {
-        format!("First {rows} results")
-    } else if rows == 1 {
-        "1 result".to_owned()
-    } else {
-        format!("{rows} results")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -709,8 +771,18 @@ mod tests {
                                     toolbar_search(ui, &catalog, base, search, &mut action);
                                     chosen = action.open_hash.map(Target::Hash);
                                 } else {
-                                    chosen =
-                                        home_contents(ui, &catalog, base, &[10, 20, 30], search);
+                                    let mut browse = Browse {
+                                        tab: BrowseTab::Recent,
+                                        ..Default::default()
+                                    };
+                                    chosen = home_contents(
+                                        ui,
+                                        &catalog,
+                                        base,
+                                        &[10, 20, 30],
+                                        search,
+                                        &mut browse,
+                                    );
                                 }
                             });
                             retained = ui.input(|input| {
@@ -781,8 +853,6 @@ mod tests {
             assert!(keys.moved);
         }
         assert_eq!(highlighted, 2, "the highlight stops at the last row");
-        assert_eq!(result_count(1, false), "1 result");
-        assert_eq!(result_count(200, true), "First 200 results");
     }
 
     #[test]

@@ -69,6 +69,35 @@ pub fn settable_parameters(bank: &[u8]) -> Result<Vec<Parameter>, String> {
     Ok(settable)
 }
 
+/// The base ability input stock rows change to make an ability recharge faster or slower: a rate,
+/// so a larger value recharges faster. Improved Fusion Grenade Regeneration adds 0.2 to it, and
+/// the stock Class Ability Recharge Multiplier multiplies it by 0.5 to 0.8.
+pub const RECHARGE_INPUT: u8 = 0;
+
+/// The row that multiplies an ability's recharge rate by `multiplier`.
+#[must_use]
+pub const fn recharge_modifier(multiplier: f32) -> Modifier {
+    Modifier::Scalar {
+        input: RECHARGE_INPUT,
+        value: multiplier,
+        multiply: true,
+    }
+}
+
+/// Whether a bank takes a recharge row: its own rows show the handler of its numeric inputs,
+/// and it has inputs whose provider a new one copies.
+#[must_use]
+pub fn takes_recharge(bank: &[u8]) -> bool {
+    matches!(handler_slot(bank, recharge_modifier(1.0)), Ok(Some(_)))
+}
+
+/// The key a row multiplying the recharge rate by the float `multiplier_bits` is filed under.
+/// Equal rows in any bank do the same, so they share it.
+#[must_use]
+pub fn recharge_key(multiplier_bits: u32) -> u32 {
+    crate::hash::fnv1_name_hash(&format!("parhelion.ability.recharge.{multiplier_bits:08x}"))
+}
+
 /// The key a row of `count` extra charges is filed under.
 #[must_use]
 pub fn charge_key(count: u8) -> u32 {

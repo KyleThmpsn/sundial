@@ -31,6 +31,14 @@ pub(crate) fn texts(output: &egui::FullOutput) -> Vec<(String, egui::Rect)> {
     found
 }
 
+/// Every text a frame painted, in paint order, each followed by a newline.
+pub(crate) fn painted_text(output: &egui::FullOutput) -> String {
+    texts(output)
+        .into_iter()
+        .map(|(text, _)| text + "\n")
+        .collect()
+}
+
 fn collect(shape: &egui::Shape, found: &mut Vec<(String, egui::Rect)>) {
     match shape {
         egui::Shape::Text(text) => found.push((

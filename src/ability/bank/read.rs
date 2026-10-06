@@ -48,6 +48,11 @@ pub(super) fn rows(
     })
 }
 
+/// The tag a bank's blocks name as their owner: its own tag, which a private copy renames.
+pub fn bank_owner(payload: &[u8]) -> Result<u32, String> {
+    Ok(layout(payload)?.owner)
+}
+
 pub(super) fn layout(payload: &[u8]) -> Result<Layout, String> {
     let size = usize::try_from(u64_at(payload, SIZE)?)
         .map_err(|_| "Bank size does not fit this platform".to_owned())?;
@@ -196,6 +201,17 @@ pub(super) fn table_parameters(
         .collect()
 }
 
+/// Where each script parameter's 16-byte row starts in the bank, in `parameters` order: its name
+/// hash, reset value, applied value and add flag.
+pub fn parameter_rows(payload: &[u8]) -> Result<Vec<usize>, String> {
+    let layout = layout(payload)?;
+    Ok(layout.parameters.as_ref().map_or_else(Vec::new, |table| {
+        (0..table.count)
+            .map(|index| table.first + index * PARAMETER_ROW_SIZE)
+            .collect()
+    }))
+}
+
 /// The bank's script parameter table, in its order.
 pub fn parameters(payload: &[u8]) -> Result<Vec<Parameter>, String> {
     let layout = layout(payload)?;
@@ -207,13 +223,49 @@ pub fn parameters(payload: &[u8]) -> Result<Vec<Parameter>, String> {
 /// row. None when no stock row shows the slot, in which case no row can be added, since a
 /// modifier handed to the wrong slot faults the client at world load.
 pub fn handler_slot(payload: &[u8], modifier: Modifier) -> Result<Option<HandlerIndex>, String> {
-    handler_slot_in(&property_rows(payload)?, modifier)
+    handler_slot_in(&property_rows(payload)?, bank_class(payload)?, modifier)
+}
+
+/// Native bank classes whose stock banks hand charge modifiers to a handler: the grenade banks
+/// (two classes), the melee banks, Dodge, and the Barricade's, which the Rift, Phoenix Dive,
+/// Chaos Reach and Well of Radiance banks share.
+const CHARGE_BANK_CLASSES: [u32; 5] = [
+    0x8080_438B,
+    0x8080_4359,
+    0x8080_41B7,
+    0x8080_4132,
+    0x8080_44FD,
+];
+
+/// The native class of the bank's definition block, which says what kind of bank it is.
+pub(super) fn bank_class(payload: &[u8]) -> Result<u32, String> {
+    u32_at(payload, layout(payload)?.definition + BLOCK_CLASS)
 }
 
 pub(super) fn handler_slot_in(
     rows: &[PropertyRow],
+    bank_class: u32,
     modifier: Modifier,
 ) -> Result<Option<HandlerIndex>, String> {
+    // Every one of the 49 readable stock root banks numbers its handlers in the order their
+    // modifier classes first appear in its rows. A bank of a class that takes charges, but with
+    // no charge row of its own, therefore numbers a new charge handler after its others: the
+    // new row goes after every stock row, so its class appears last.
+    if matches!(modifier, Modifier::Charges(_))
+        && CHARGE_BANK_CLASSES.contains(&bank_class)
+        && !rows
+            .iter()
+            .any(|row| row.modifier_class == CHARGE_DEFINITION_CLASS)
+    {
+        let mut classes = Vec::new();
+        for row in rows {
+            if !classes.contains(&row.modifier_class) {
+                classes.push(row.modifier_class);
+            }
+        }
+        let next = u32::try_from(classes.len()).map_err(|_| "The bank has too many handlers")?;
+        return Ok(Some(HandlerIndex::new(next)));
+    }
     let (class, kind) = match modifier {
         Modifier::Charges(_) => (CHARGE_DEFINITION_CLASS, "charge"),
         Modifier::Parameter { .. } => (SCRIPT_DEFINITION_CLASS, "script parameter"),
@@ -284,6 +336,21 @@ pub fn property_rows(payload: &[u8]) -> Result<Vec<PropertyRow>, String> {
                 charge,
                 parameters,
             })
+        })
+        .collect()
+}
+
+/// Where each property row's modifier block starts, and whether an inner key gates the row, in
+/// `property_rows` order. A gated row applies only while its gate key applies too.
+pub fn row_modifiers(payload: &[u8]) -> Result<Vec<(usize, bool)>, String> {
+    let layout = layout(payload)?;
+    (0..layout.definition_rows.count)
+        .map(|index| {
+            let row = layout.definition_rows.first + index * DEFINITION_ROW_SIZE;
+            Ok((
+                pointer(payload, row + ROW_MODIFIER)?,
+                i64_at(payload, row + ROW_ATTACK_KEY)? != 0,
+            ))
         })
         .collect()
 }

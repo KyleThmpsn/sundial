@@ -92,18 +92,20 @@ pub(super) fn prepare(
         hud_statuses,
         stat_group_table,
     } = output;
-    if localization.donor_header_tag.pkg_id() != sources.localized_index_tag.pkg_id()
-        || localization
-            .locale_data
-            .iter()
-            .any(|locale| locale.donor_tag.pkg_id() != sources.localized_index_tag.pkg_id())
+    if localization.donor_header_tag.pkg_id() != sources.table_tags.localized_index_tag.pkg_id()
+        || localization.locale_data.iter().any(|locale| {
+            locale.donor_tag.pkg_id() != sources.table_tags.localized_index_tag.pkg_id()
+        })
     {
         return Err(invalid(
             "Project localization header and locale data unexpectedly have different package owners",
         ));
     }
-    let runtime_dependencies =
-        runtime.dependencies(&sources.manager, &assets, sources.entity_assignment_tag)?;
+    let runtime_dependencies = runtime.dependencies(
+        &sources.manager,
+        &assets,
+        sources.table_tags.entity_assignment_tag,
+    )?;
     let subclass_lists_added = tables.subclass.count()? != sources.subclass_tables.count()?;
 
     let mut host_new_tags = Vec::new();
@@ -128,31 +130,7 @@ pub(super) fn prepare(
         hud_table: assets.hud_table,
         ability_banks,
         hud_statuses,
-        item_table_tag: sources.item_table_tag,
-        item_hash_index_table_tag: sources.item_hash_index_table_tag,
-        item_string_table_tag: sources.item_string_table_tag,
-        item_metadata_table_tag: sources.item_metadata_table_tag,
-        sandbox_pattern_table_tag: sources.sandbox_pattern_table_tag,
-        finished_sandbox_perk_table_tag: sources.finished_sandbox_perk_table_tag,
-        sandbox_perk_index_table_tag: sources.sandbox_perk_index_table_tag,
-        item_icon_table_tag: sources.item_icon_table_tag,
-        item_dense_presentation_table_tag: sources.item_dense_presentation_table_tag,
-        item_metadata_index_table_tag: sources.item_metadata_index_table_tag,
-        sandbox_pattern_index_table_tag: sources.sandbox_pattern_index_table_tag,
-        collectible_table_tag: sources.collectible_table_tag,
-        collectible_display_table_tag: sources.collectible_display_table_tag,
-        objective_table_tag: sources.objective_table_tag,
-        objective_string_table_tag: sources.objective_string_table_tag,
-        record_table_tag: sources.record_table_tag,
-        record_string_table_tag: sources.record_string_table_tag,
-        presentation_node_table_tag: sources.presentation_node_table_tag,
-        presentation_node_string_table_tag: sources.presentation_node_string_table_tag,
-        shared_expression_pool_table_tag: sources.shared_expression_pool_table_tag,
-        localized_index_tag: sources.localized_index_tag,
-        unlock_flag_bank_table_tag: sources.unlock_flag_bank_table_tag,
-        unlock_table_tag: sources.unlock_table_tag,
-        unlock_display_tag: sources.unlock_display_tag,
-        entity_assignment_tag: sources.entity_assignment_tag,
+        table_tags: sources.table_tags,
         has_custom_plugs,
         watermark_layer_tag: assets.watermark.watermark_layer_tag,
         watermarked_icon_containers: assets.watermark.icon_container_tags,

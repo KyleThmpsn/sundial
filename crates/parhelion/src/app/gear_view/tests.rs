@@ -37,6 +37,7 @@ mod armor_class;
 mod armor_collections;
 mod emblem_trackers;
 mod shader_socket;
+mod vehicles;
 use crate::app::custom_perks::workbench::{Workbench, tests::capture};
 use crate::app::emblem_view;
 use crate::app::shader_view;
@@ -48,14 +49,16 @@ use crate::dye::{
 use crate::emblem::{NameplateImage, NameplatePart};
 use crate::image_import::EmbeddedImage;
 use crate::subclass::{
-    AbilityModifier, AttunementPath, EntryIcon, ModifierEffect, PaletteEdit, Place,
-    SubclassAbilities, SubclassPathNode, layout,
+    AbilityModifier, ArtImage, ArtPart, AttunementPath, EffectGrade, EntryIcon, ModifierEffect,
+    PaletteEdit, Place, ScreenArt, SpawnSwap, SubclassAbilities, SubclassPathNode, TintEdit,
+    layout,
 };
 use crate::test_support::driver::{accessible, texts};
 use std::fs;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use sundial::investment::SubclassSummary;
+use sundial::package_authoring::ability_materials::material_routes;
 use sundial::package_authoring::investment_schema::{
     GLOBALS_ITEM_DENSE_PRESENTATION_TABLE_SLOT, investment_globals_table_tag,
 };
@@ -65,8 +68,8 @@ use sundial::package_authoring::runtime::{
 };
 use sundial::package_authoring::sandbox_perk::load_sandbox_perk_runtime_action;
 use sundial::package_authoring::{
-    PackageManager, ability_modifier, ability_palette, ability_reference, ability_spawns,
-    open_shadowkeep_package_manager, resolve_live_named_tag,
+    PackageManager, ability_modifier, ability_movement, ability_palette, ability_reference,
+    ability_spawns, ability_tint, open_shadowkeep_package_manager, resolve_live_named_tag,
 };
 
 #[cfg(feature = "d2-model-importer")]
@@ -292,7 +295,12 @@ fn frame(
             });
             egui::CentralPanel::default().show(ctx, |ui| {
                 workbench_style(ui);
-                if !app.recipe.kind.is_weapon() {
+                // The page the app's dispatch draws: a subclass's Appearance, else the editor.
+                if app.recipe.kind == ItemKind::Subclass
+                    && app.workbench_page == WorkbenchPage::Appearance
+                {
+                    app.draw_subclass_appearance(ui);
+                } else if !app.recipe.kind.is_weapon() {
                     app.draw_gear_editor(ui);
                 }
             });
@@ -2489,6 +2497,21 @@ struct AuthoredSubclass {
     spawn_value: AbilityValue,
     /// The palette of its effects the authored grenade recolors, and how.
     palette: PaletteEdit,
+    /// The color its materials hold that the authored grenade recolors, and how.
+    tint: TintEdit,
+    /// The first grenade's stock entity and bank, and its value of a graph only that bank names,
+    /// which gives its copy a private copy of the bank.
+    bank_value: (u32, u32, AbilityValue),
+    /// The first grenade's palette that only graphs behind an impact table draw, and how it is
+    /// recolored, which gives its copy a private copy of the table.
+    table_palette: PaletteEdit,
+    /// The projectile the base's third grenade fires in place of the one it spawns.
+    swap: SpawnSwap,
+    /// The base's first movement ability's stock entity and its count of airborne jumps.
+    movement: (u32, ability_movement::MovementValue),
+    /// The base's third movement ability's stock entity and the airborne jumps row its key
+    /// applies in its bank.
+    jump_row: (u32, ability_movement::RowLane),
 }
 
 /// One value of a stock ability's entity, and the edit an ability authors to it.
@@ -2507,8 +2530,8 @@ fn ability_value(packages: &Path, entity: u32) -> AbilityValue {
         .unwrap_or_else(|| panic!("ability entity 0x{entity:08X} has a float outside its bank"))
 }
 
-/// The first graph `entity` spawns outside its bank with a float, and that float doubled, as the
-/// Spawns tab would write it.
+/// The first graph `entity` spawns with a float, and that float doubled, as the Spawns tab would
+/// write it.
 fn spawn_value(packages: &Path, entity: u32) -> AbilityValue {
     let manager = open_shadowkeep_package_manager(packages).unwrap();
     let payload = manager.read_tag(tiger_pkg::TagHash(entity)).unwrap();
@@ -2519,11 +2542,425 @@ fn spawn_value(packages: &Path, entity: u32) -> AbilityValue {
         .unwrap_or_else(|| panic!("ability entity 0x{entity:08X} spawns no graph with a float"))
 }
 
+/// Whether `graph` is a projectile, by the client's object type at `+0x96`.
+fn is_projectile(manager: &PackageManager, graph: u32) -> bool {
+    manager
+        .read_tag(tiger_pkg::TagHash(graph))
+        .is_ok_and(|payload| payload.get(0x96) == Some(&18))
+}
+
+/// `entity`'s bank, and a value of a graph that bank names and nothing else of `entity` does,
+/// doubled, as the Spawns tab would write it. None when the bank names no such graph with a
+/// float.
+fn bank_value(manager: &PackageManager, entity: u32) -> Option<(u32, AbilityValue)> {
+    let payload = manager.read_tag(tiger_pkg::TagHash(entity)).ok()?;
+    let bank = ability_modifier::entity_bank(&payload).ok()??;
+    let spawns = ability_spawns::spawns(manager, entity, &payload).ok()?;
+    let elsewhere = spawns
+        .iter()
+        .filter(|spawn| spawn.owner != bank)
+        .map(|spawn| spawn.graph)
+        .collect::<BTreeSet<_>>();
+    let value = spawns
+        .iter()
+        .filter(|spawn| spawn.owner == bank && !elsewhere.contains(&spawn.graph))
+        .find_map(|spawn| graph_value(manager, spawn.graph))?;
+    Some((bank, value))
+}
+
+/// The first projectile `entity` names, in place of which it fires the first projectile
+/// `donor`'s graphs name.
+fn projectile_swap(manager: &PackageManager, entity: u32, donor: u32) -> SpawnSwap {
+    let payload = manager.read_tag(tiger_pkg::TagHash(entity)).unwrap();
+    let replaced = ability_spawns::spawned_graphs(manager, entity, &payload)
+        .unwrap()
+        .into_iter()
+        .find(|graph| is_projectile(manager, *graph))
+        .unwrap_or_else(|| panic!("ability entity 0x{entity:08X} names a projectile to swap"));
+    let mut seen = BTreeSet::new();
+    let mut queue = std::collections::VecDeque::from([(donor, 0usize)]);
+    let replacement = loop {
+        let (graph, depth) = queue
+            .pop_front()
+            .unwrap_or_else(|| panic!("ability entity 0x{donor:08X} fires a projectile"));
+        if !seen.insert(graph) {
+            continue;
+        }
+        if graph != donor && graph != replaced && is_projectile(manager, graph) {
+            break graph;
+        }
+        if depth < 3 {
+            let payload = manager.read_tag(tiger_pkg::TagHash(graph)).unwrap();
+            for child in ability_spawns::spawned_graphs(manager, graph, &payload).unwrap() {
+                queue.push_back((child, depth + 1));
+            }
+        }
+    };
+    SpawnSwap {
+        graph: entity,
+        replaced,
+        replacement,
+    }
+}
+
+/// How much faster the authored class ability recharges.
+const RECHARGE: f32 = 1.5;
+
+/// The airborne jumps the base's first movement ability allows once authored.
+const AIRBORNE_JUMPS: u32 = 3;
+/// The airborne jumps the row the third movement ability's key applies sets once authored.
+const ROW_AIRBORNE_JUMPS: u32 = 4;
+
+/// The base's first movement ability's airborne jumps, and the airborne jumps row its third
+/// movement ability's key applies, put in through the recipe as the Properties tab writes them,
+/// then shown on that tab with the first one's bank rows. Returns each stock entity and value.
+fn author_movement(
+    ctx: &egui::Context,
+    app: &mut PackageAuthoringApp,
+    base: &SubclassSummary,
+) -> (
+    (u32, ability_movement::MovementValue),
+    (u32, ability_movement::RowLane),
+) {
+    let entry = layout::MOVEMENT[0];
+    let entity = *base
+        .entry_entities
+        .get(&entry)
+        .expect("the base's first movement ability has an entity");
+    let manager = open_shadowkeep_package_manager(&app.packages).unwrap();
+    let jumps = movement_value(&manager, entity, "Airborne Jumps")
+        .expect("the base's first movement ability holds its airborne jumps");
+    let mut abilities = app.recipe.overrides.subclass_abilities.clone().unwrap();
+    let mut edits = abilities.edits(base.hash, Place::Ability(entry));
+    jumps.write(&mut edits.ability_values, AIRBORNE_JUMPS);
+    abilities.set_edits(base.hash, Place::Ability(entry), edits);
+    let third = layout::MOVEMENT[2];
+    let third_entity = *base
+        .entry_entities
+        .get(&third)
+        .expect("the base's third movement ability has an entity");
+    let row = own_lanes(&manager, base, third)
+        .into_iter()
+        .find(|lane| lane.label == "Airborne Jumps")
+        .expect("the third movement ability's key applies an airborne jumps row");
+    let mut edits = abilities.edits(base.hash, Place::Ability(third));
+    edits.set_bank_value(row.key, row.row, row.lane, Some(ROW_AIRBORNE_JUMPS));
+    abilities.set_edits(base.hash, Place::Ability(third), edits);
+    app.recipe.overrides.subclass_abilities = Some(abilities);
+    // Its Properties tab, marked for the edit, shows the count as a tile of its own.
+    let name = base.entry_names[&entry].as_str();
+    let output = settle(ctx, app);
+    click(ctx, app, find(&output, name, |text, _| text == name));
+    assert_eq!(
+        app.subclass_page.selection,
+        SubclassSelection::Entry(Place::Ability(entry))
+    );
+    let output = settle(ctx, app);
+    click(
+        ctx,
+        app,
+        find(&output, "the Properties tab", |text, _| {
+            text == "Properties •"
+        }),
+    );
+    let output = settle_loaded(ctx, app, "the movement ability's properties");
+    // Its bank rows its key applies show beside it.
+    for text in ["Airborne Jumps", "Vertical Impulse", "Directional Impulse"] {
+        find(&output, text, |drawn, _| drawn == text);
+    }
+    capture::write(ctx, &output, "gear-subclass-movement-properties");
+    ((entity, jumps), (third_entity, row))
+}
+
+/// The traced lanes of the rows of `entry`'s bank its own pool's keys apply to its row, as the
+/// Properties tab finds them.
+fn own_lanes(
+    manager: &PackageManager,
+    subclass: &SubclassSummary,
+    entry: u8,
+) -> Vec<ability_movement::RowLane> {
+    let entity = subclass.entry_entities[&entry];
+    let row = subclass.entry_rows[&entry];
+    let keys = subclass.entry_modifiers[&entry]
+        .iter()
+        .filter(|(_, target)| *target == row)
+        .map(|(key, _)| *key)
+        .collect::<Vec<_>>();
+    let payload = manager.read_tag(tiger_pkg::TagHash(entity)).unwrap();
+    let bank = ability_modifier::entity_bank(&payload).unwrap().unwrap();
+    let bank = manager.read_tag(tiger_pkg::TagHash(bank)).unwrap();
+    ability_movement::row_lanes(&bank, &keys).unwrap()
+}
+
+/// The third movement ability's airborne jumps row read back: it names a copy of its entity,
+/// which binds a private copy of its bank holding the authored count in that row, and the stock
+/// bank keeps its own. Returns what `readback.json` records of it.
+fn read_back_jump_row(
+    manager: &PackageManager,
+    authored: &SubclassSummary,
+    (entity, row): &(u32, ability_movement::RowLane),
+    name: &str,
+) -> serde_json::Value {
+    let copied = *authored
+        .entry_entities
+        .get(&layout::MOVEMENT[2])
+        .unwrap_or_else(|| panic!("{name}'s third movement ability names an entity"));
+    assert_ne!(
+        copied, *entity,
+        "{name}'s third movement ability names a copy of its entity"
+    );
+    // The copy binds its bank where the stock entity binds the stock one.
+    use sundial::package_authoring::entity::{
+        weapon_component_binding_hashes, weapon_component_bindings,
+    };
+    let stock_entity = manager.read_tag(tiger_pkg::TagHash(*entity)).unwrap();
+    let copied_entity = manager.read_tag(tiger_pkg::TagHash(copied)).unwrap();
+    let stock_bank = ability_modifier::entity_bank(&stock_entity)
+        .unwrap()
+        .unwrap_or_else(|| panic!("0x{entity:08X} binds a bank"));
+    let mut banks = BTreeSet::new();
+    for binding in weapon_component_binding_hashes(&stock_entity).unwrap() {
+        let stock = weapon_component_bindings(&stock_entity, binding).unwrap();
+        let copy = weapon_component_bindings(&copied_entity, binding).unwrap();
+        for (stock, copy) in stock.iter().zip(&copy) {
+            if stock.owner_tag == stock_bank {
+                banks.insert(copy.owner_tag);
+            }
+        }
+    }
+    assert_eq!(
+        banks.len(),
+        1,
+        "{name}'s third movement ability binds one bank: {banks:X?}"
+    );
+    let private = *banks.first().unwrap();
+    assert_ne!(
+        private, stock_bank,
+        "{name}'s third movement ability binds a private copy of its bank"
+    );
+    let count = |bank: u32| {
+        let payload = manager.read_tag(tiger_pkg::TagHash(bank)).unwrap();
+        ability_movement::row_lane(&payload, (row.key, row.row, row.lane))
+            .unwrap_or_else(|error| panic!("bank 0x{bank:08X}: {error}"))
+            .stock
+    };
+    assert_eq!(
+        count(private),
+        ROW_AIRBORNE_JUMPS,
+        "{name}'s private bank's row sets the authored airborne jumps"
+    );
+    assert_eq!(
+        count(stock_bank),
+        row.stock,
+        "the stock bank's row keeps its airborne jumps"
+    );
+    serde_json::json!({
+        "stock_entity": format!("0x{entity:08X}"),
+        "copy_entity": format!("0x{copied:08X}"),
+        "stock_bank": format!("0x{stock_bank:08X}"),
+        "private_bank": format!("0x{private:08X}"),
+        "key": format!("0x{:08X}", row.key),
+        "row": row.row,
+        "stock": row.stock,
+        "authored": ROW_AIRBORNE_JUMPS,
+    })
+}
+
+/// The movement value `label` names in `entity`'s graph, as the Properties tab finds it.
+fn movement_value(
+    manager: &PackageManager,
+    entity: u32,
+    label: &str,
+) -> Option<ability_movement::MovementValue> {
+    let payload = manager.read_tag(tiger_pkg::TagHash(entity)).ok()?;
+    let mut graph = load_weapon_runtime_graph_for_entity(manager, 0, 0, entity, &payload).ok()?;
+    graph.scope_fields();
+    ability_movement::discover(&graph)
+        .into_iter()
+        .find(|value| value.label == label)
+}
+
+/// The first movement ability's airborne jumps read back: it names a copy of its entity, which
+/// holds the authored count, and the stock entity keeps its own. Returns what `readback.json`
+/// records of it.
+fn read_back_movement(
+    manager: &PackageManager,
+    authored: &SubclassSummary,
+    (entity, jumps): &(u32, ability_movement::MovementValue),
+    name: &str,
+) -> serde_json::Value {
+    let copied = *authored
+        .entry_entities
+        .get(&layout::MOVEMENT[0])
+        .unwrap_or_else(|| panic!("{name}'s first movement ability names an entity"));
+    assert_ne!(
+        copied, *entity,
+        "{name}'s first movement ability names a copy of its entity"
+    );
+    let count = |graph: u32| {
+        movement_value(manager, graph, jumps.label)
+            .unwrap_or_else(|| panic!("0x{graph:08X} holds its airborne jumps"))
+            .stock()
+    };
+    assert_eq!(
+        count(copied),
+        AIRBORNE_JUMPS,
+        "{name}'s copy allows the authored airborne jumps"
+    );
+    assert_eq!(
+        count(*entity),
+        jumps.stock(),
+        "the stock movement ability keeps its airborne jumps"
+    );
+    serde_json::json!({
+        "stock_entity": format!("0x{entity:08X}"),
+        "copy_entity": format!("0x{copied:08X}"),
+        "stock": jumps.stock(),
+        "authored": AIRBORNE_JUMPS,
+    })
+}
+
+/// The first palette of ability `entity`'s effects that only graphs behind an impact table draw:
+/// no graph its components name directly, at any level, draws it.
+fn table_palette(manager: &PackageManager, entity: u32) -> Option<u32> {
+    let mut direct = BTreeSet::from([entity]);
+    let mut level = vec![entity];
+    for _ in 0..crate::subclass::SPAWN_DEPTH {
+        let mut next = Vec::new();
+        for graph in level {
+            let payload = manager.read_tag(tiger_pkg::TagHash(graph)).ok()?;
+            for child in ability_spawns::spawned_graphs(manager, graph, &payload).ok()? {
+                if direct.insert(child) {
+                    next.push(child);
+                }
+            }
+        }
+        level = next;
+    }
+    ability_palette::ability_palettes(manager, entity, crate::subclass::SPAWN_DEPTH)
+        .ok()?
+        .into_iter()
+        .find(|palette| {
+            palette
+                .uses
+                .iter()
+                .all(|each| !direct.contains(&each.graph))
+        })
+        .map(|palette| palette.header)
+}
+
+/// The first grenade's value of a graph only its bank names, a turn of the hue of a palette only
+/// an impact table reaches and a green grade over every effect, the third grenade's swap of its projectile for one the first
+/// grenade fires, and the class ability's faster recharge, put in through the recipe as the
+/// Spawns, Effect Colors, Properties and Recharge fields write them. Returns the first grenade's
+/// entity, bank and value, the swap and the palette change.
+fn author_bank_and_swap(
+    app: &mut PackageAuthoringApp,
+    (base, grenade): (&SubclassSummary, &SubclassSummary),
+) -> ((u32, u32, AbilityValue), SpawnSwap, PaletteEdit) {
+    let manager = open_shadowkeep_package_manager(&app.packages).unwrap();
+    let first = layout::GRENADES[0];
+    let entity = *grenade
+        .entry_entities
+        .get(&first)
+        .expect("the taken grenade has an entity");
+    let (bank, value) =
+        bank_value(&manager, entity).expect("the taken grenade's bank names a graph of its own");
+    let palette = PaletteEdit {
+        hue: 120,
+        ..PaletteEdit::new(
+            table_palette(&manager, entity)
+                .expect("an impact table reaches the only graphs drawing a taken grenade palette"),
+        )
+    };
+    let third = layout::GRENADES[2];
+    let swapped = *base
+        .entry_entities
+        .get(&third)
+        .expect("the base's third grenade has an entity");
+    let swap = projectile_swap(&manager, swapped, entity);
+    let mut abilities = app.recipe.overrides.subclass_abilities.clone().unwrap();
+    let mut edits = abilities.edits(base.hash, Place::Ability(first));
+    edits.ability_values.push(value.edit.clone());
+    edits.set_palette(palette);
+    // And every effect's final color takes the palette's new hue, as Overall sets it.
+    edits.set_grade(GRADE);
+    abilities.set_edits(base.hash, Place::Ability(first), edits);
+    let place = Place::Ability(third);
+    let mut edits = abilities.edits(base.hash, place);
+    edits.set_swap(swap.graph, swap.replaced, Some(swap.replacement));
+    // The projectile it fires in place of its own takes the grade too.
+    edits.set_grade(GRADE);
+    abilities.set_edits(base.hash, place, edits);
+    let class = layout::CLASS_ABILITIES[0];
+    let row = *base
+        .entry_rows
+        .get(&class)
+        .expect("the base's class ability equips a row");
+    assert!(
+        app.catalog
+            .as_ref()
+            .unwrap()
+            .ability_row(row)
+            .is_some_and(|row| row.recharge),
+        "the base's class ability takes a recharge rate"
+    );
+    let mut edits = abilities.edits(base.hash, Place::Ability(class));
+    edits.set_recharge(Some(RECHARGE));
+    abilities.set_edits(base.hash, Place::Ability(class), edits);
+    app.recipe.overrides.subclass_abilities = Some(abilities);
+    ((entity, bank, value), swap, palette)
+}
+
+/// The class ability's recharge read back: its pool applies the recharge key to its row, and its
+/// bank has a numeric input row under that key. Returns what `readback.json` records of it.
+fn read_back_recharge(
+    manager: &PackageManager,
+    staged: &InvestmentCatalog,
+    authored: &SubclassSummary,
+    name: &str,
+) -> serde_json::Value {
+    let class = layout::CLASS_ABILITIES[0];
+    let row = *authored
+        .entry_rows
+        .get(&class)
+        .unwrap_or_else(|| panic!("{name}'s class ability equips a row"));
+    let key = ability_modifier::recharge_key(RECHARGE.to_bits());
+    assert!(
+        authored
+            .entry_modifiers
+            .get(&class)
+            .is_some_and(|applied| applied.contains(&(key, row))),
+        "{name}'s class ability applies its recharge key 0x{key:08X} to row {row}"
+    );
+    let bank = staged
+        .ability_row(row)
+        .and_then(|row| row.bank)
+        .unwrap_or_else(|| panic!("{name}'s class ability row {row} reads a bank"));
+    let payload = manager.read_tag(tiger_pkg::TagHash(bank)).unwrap();
+    let rows = sundial::package_authoring::ability_bank::property_rows(&payload).unwrap();
+    let found = rows
+        .iter()
+        .find(|each| each.key == key)
+        .unwrap_or_else(|| panic!("bank 0x{bank:08X} has a row for the recharge key"));
+    assert_eq!(
+        found.modifier_class, 0x8080_451B,
+        "the recharge row changes a numeric input"
+    );
+    serde_json::json!({
+        "row": row,
+        "bank": format!("0x{bank:08X}"),
+        "key": format!("0x{key:08X}"),
+        "multiplier": RECHARGE,
+    })
+}
+
 /// The palettes the effects of ability `entity` draw with, found the way the Effect Colors field
 /// and the build find them.
 fn stock_palettes(packages: &Path, entity: u32) -> Vec<ability_palette::Palette> {
     let manager = open_shadowkeep_package_manager(packages).unwrap();
-    let palettes = ability_palette::ability_palettes(&manager, entity, 3).unwrap();
+    let palettes =
+        ability_palette::ability_palettes(&manager, entity, crate::subclass::SPAWN_DEPTH).unwrap();
     assert!(
         !palettes.is_empty(),
         "ability entity 0x{entity:08X}'s effects draw with a palette"
@@ -2531,17 +2968,294 @@ fn stock_palettes(packages: &Path, entity: u32) -> Vec<ability_palette::Palette>
     palettes
 }
 
+/// Each graph of stock ability `stock`'s tree, with the graph at the same place of `copied`'s
+/// tree: a private copy, or the stock graph where the copy keeps it. Graphs pair by the places
+/// their parents name them, through impact tables too.
+fn twins(manager: &PackageManager, stock: u32, copied: u32) -> BTreeMap<u32, u32> {
+    type Place = (u32, u16, u32);
+    let place = |spawn: &ability_spawns::Spawn| -> Place {
+        (spawn.binding_hash, spawn.resource_index, spawn.offset)
+    };
+    let read = |tag: u32| manager.read_tag(tiger_pkg::TagHash(tag)).unwrap();
+    let mut twins = BTreeMap::from([(stock, copied)]);
+    let mut queue = std::collections::VecDeque::from([(stock, copied, 0)]);
+    while let Some((own, copy, depth)) = queue.pop_front() {
+        if depth >= crate::subclass::SPAWN_DEPTH {
+            continue;
+        }
+        let (own_payload, copy_payload) = (read(own), read(copy));
+        let mut pairs = Vec::new();
+        let named = ability_spawns::spawns(manager, copy, &copy_payload)
+            .unwrap()
+            .into_iter()
+            .map(|spawn| (place(&spawn), spawn.graph))
+            .collect::<BTreeMap<_, _>>();
+        for spawn in ability_spawns::spawns(manager, own, &own_payload).unwrap() {
+            if let Some(&graph) = named.get(&place(&spawn)) {
+                pairs.push((spawn.graph, graph));
+            }
+        }
+        let tables = ability_spawns::tables(manager, copy, &copy_payload)
+            .unwrap()
+            .into_iter()
+            .map(|table| (place(&table), table.graph))
+            .collect::<BTreeMap<_, _>>();
+        for table in ability_spawns::tables(manager, own, &own_payload).unwrap() {
+            if let Some(&copy_table) = tables.get(&place(&table)) {
+                table_twins(
+                    manager,
+                    (table.graph, copy_table),
+                    &mut BTreeSet::new(),
+                    &mut pairs,
+                );
+            }
+        }
+        for (own, copy) in pairs {
+            if twins.insert(own, copy).is_none() {
+                queue.push_back((own, copy, depth + 1));
+            }
+        }
+    }
+    twins
+}
+
+/// The graphs of a stock impact table paired with those of its twin, by the fields naming them,
+/// through the tables they name.
+fn table_twins(
+    manager: &PackageManager,
+    (own, copy): (u32, u32),
+    seen: &mut BTreeSet<u32>,
+    pairs: &mut Vec<(u32, u32)>,
+) {
+    if !seen.insert(own) {
+        return;
+    }
+    let named = ability_spawns::table_entries(manager, copy)
+        .unwrap()
+        .into_iter()
+        .map(|(tag, offsets)| (offsets, tag))
+        .collect::<BTreeMap<_, _>>();
+    for (tag, offsets) in ability_spawns::table_entries(manager, own).unwrap() {
+        let Some(&twin) = named.get(&offsets) else {
+            continue;
+        };
+        if ability_spawns::is_table(manager, tag) {
+            table_twins(manager, (tag, twin), seen, pairs);
+        } else {
+            pairs.push((tag, twin));
+        }
+    }
+}
+
+/// The authored grenade's tint read back: at every place the stock grenade's effects draw the
+/// stock color, the copy draws a private material whose constant holds the edited color, read
+/// from the material or the constant buffer it names. Returns what `readback.json` records of
+/// it.
+fn read_back_tint(
+    manager: &PackageManager,
+    (stock, copied): (u32, u32),
+    edit: TintEdit,
+    name: &str,
+) -> serde_json::Value {
+    let stock_tints =
+        ability_tint::ability_tints(manager, stock, crate::subclass::SPAWN_DEPTH).unwrap();
+    let original = stock_tints
+        .iter()
+        .find(|tint| edit.starts_from(tint.rgb))
+        .unwrap_or_else(|| panic!("the stock grenade still draws with its tint"));
+    let expected = edit.apply(original.rgb);
+    let twins = twins(manager, stock, copied);
+    let read = |tag: u32| manager.read_tag(tiger_pkg::TagHash(tag)).unwrap();
+    let float = |payload: &[u8], at: usize| {
+        f32::from_le_bytes(payload[at..at + 4].try_into().unwrap()).to_bits()
+    };
+    for tint_use in &original.uses {
+        let graph = *twins.get(&tint_use.graph).unwrap_or_else(|| {
+            panic!("{name}'s copy has a twin of graph 0x{:08X}", tint_use.graph)
+        });
+        let site = ability_palette::particle_sites(manager, &read(graph))
+            .unwrap()
+            .into_iter()
+            .find(|site| {
+                (site.binding_hash, site.resource_index, site.offset)
+                    == (
+                        tint_use.site.binding_hash,
+                        tint_use.site.resource_index,
+                        tint_use.site.offset,
+                    )
+            })
+            .unwrap_or_else(|| panic!("{name}'s graph 0x{graph:08X} keeps the tinted effect"));
+        let system = read(site.system);
+        let material = u32::from_le_bytes(system[0x14..0x18].try_into().unwrap());
+        assert_ne!(
+            material, tint_use.material,
+            "{name}'s copy draws the tinted effect with a private material"
+        );
+        let material = read(material);
+        let (payload, at) = match tint_use.store {
+            ability_tint::ConstantStore::Inline => (material, tint_use.constant.offset),
+            ability_tint::ConstantStore::External { .. } => {
+                let header = u32::from_le_bytes(material[0x34C..0x350].try_into().unwrap());
+                let data = manager
+                    .get_entry(tiger_pkg::TagHash(header))
+                    .unwrap_or_else(|| panic!("constant buffer 0x{header:08X} is live"))
+                    .reference;
+                (read(data), tint_use.constant.offset)
+            }
+        };
+        let found = [0, 4, 8].map(|lane| float(&payload, at + lane));
+        assert_eq!(
+            found,
+            expected.map(f32::to_bits),
+            "{name}'s copy holds the recolored tint where the stock one was"
+        );
+    }
+    serde_json::json!({
+        "stock": original.rgb,
+        "copy": expected,
+        "uses": original.uses.len(),
+        "hue": edit.hue,
+        "colorize": edit.colorize,
+    })
+}
+
+/// The grade the first grenade gives every effect: green, as Colorize sets it.
+const GRADE: EffectGrade = EffectGrade {
+    hue: 120,
+    colorize: true,
+    ..EffectGrade::STOCK
+};
+
+/// The pixel programs ability `entity`'s effects draw with, each once: those of its particle
+/// systems' materials and of the materials its models, lights and other resources name.
+fn effect_programs(manager: &PackageManager, entity: u32) -> BTreeSet<u32> {
+    let mut materials = BTreeSet::new();
+    for (graph, payload) in
+        ability_palette::ability_graphs(manager, entity, crate::subclass::SPAWN_DEPTH).unwrap()
+    {
+        for site in ability_palette::particle_sites(manager, &payload).unwrap() {
+            let system = manager.read_tag(tiger_pkg::TagHash(site.system)).unwrap();
+            materials.insert(u32::from_le_bytes(system[0x14..0x18].try_into().unwrap()));
+        }
+        for route in material_routes(manager, graph, &payload).unwrap() {
+            materials.insert(route.material());
+        }
+    }
+    materials
+        .into_iter()
+        .filter(|material| {
+            manager
+                .get_entry(tiger_pkg::TagHash(*material))
+                .is_some_and(|entry| entry.reference == ability_palette::MATERIAL_CLASS)
+        })
+        .map(|material| {
+            let material = manager.read_tag(tiger_pkg::TagHash(material)).unwrap();
+            u32::from_le_bytes(material[0x2C8..0x2CC].try_into().unwrap())
+        })
+        .collect()
+}
+
+/// A pixel program's bytecode, which its header names by package reference.
+fn program_code(manager: &PackageManager, program: u32) -> Option<Vec<u8>> {
+    let data = manager
+        .get_entry(tiger_pkg::TagHash(program))
+        .filter(|entry| entry.file_type == 33)?
+        .reference;
+    manager.read_tag(tiger_pkg::TagHash(data)).ok()
+}
+
+/// A grenade's grade read back: its copy's effects draw with none of the pixel programs the grade
+/// applies to among those of `stocks`, the stock grenade and any projectile its copy fires in
+/// place of a stock one, and with private ones that read as valid SM5 programs and write the
+/// grade's color. Returns what `readback.json` records of it.
+fn read_back_grade(
+    manager: &PackageManager,
+    (stocks, copied): (&[u32], u32),
+    name: &str,
+) -> serde_json::Value {
+    let program = GRADE.program();
+    let crate::dxbc::grade::Grade::Colorize(color) = program else {
+        unreachable!("the test grade colorizes");
+    };
+    let stock_programs = stocks
+        .iter()
+        .flat_map(|stock| effect_programs(manager, *stock))
+        .collect::<BTreeSet<_>>();
+    let gradable = stock_programs
+        .iter()
+        .copied()
+        .filter(|tag| {
+            program_code(manager, *tag)
+                .is_some_and(|code| crate::dxbc::grade::grade(&code, program).unwrap().is_some())
+        })
+        .collect::<BTreeSet<_>>();
+    assert!(
+        !gradable.is_empty(),
+        "{name}'s stock effects draw with a program the grade applies to"
+    );
+    let copy_programs = effect_programs(manager, copied);
+    assert!(
+        copy_programs.is_disjoint(&gradable),
+        "{name}'s copy draws with no stock program the grade applies to"
+    );
+    let private = copy_programs
+        .difference(&stock_programs)
+        .copied()
+        .collect::<Vec<_>>();
+    // A material that multiplies its color takes only the hue, written as one minus it.
+    let crate::dxbc::grade::Grade::Hue { hue, .. } = GRADE.neutral_program() else {
+        unreachable!("the test grade colorizes");
+    };
+    let literal = |channels: [f32; 3]| {
+        channels
+            .iter()
+            .map(|channel| channel.to_bits())
+            .chain([0])
+            .collect::<Vec<_>>()
+    };
+    let words = [literal(color), literal(hue.map(|channel| 1.0 - channel))];
+    for tag in &private {
+        let code = program_code(manager, *tag)
+            .unwrap_or_else(|| panic!("{name}'s private program 0x{tag:08X} names its bytecode"));
+        crate::dxbc::Program::read(&code)
+            .unwrap_or_else(|error| panic!("private program 0x{tag:08X}: {error}"));
+        let tokens = code
+            .chunks_exact(4)
+            .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        assert!(
+            words
+                .iter()
+                .any(|words| tokens.windows(words.len()).any(|window| window == words)),
+            "private program 0x{tag:08X} writes the grade's color"
+        );
+    }
+    assert!(
+        !private.is_empty(),
+        "{name}'s copy draws with private graded programs"
+    );
+    serde_json::json!({
+        "stock_programs": stock_programs.len(),
+        "gradable": gradable.len(),
+        "private_programs": private.len(),
+        "hue": GRADE.hue,
+        "colorize": GRADE.colorize,
+    })
+}
+
 /// The authored grenade's effect colors read back: its copy draws every use of the stock palette
-/// with a private palette of the taken palette's colors, edited, and the stock entity still draws the stock one.
-/// Returns what `readback.json` records of it.
+/// with a private palette of the taken palette's colors, edited, and the stock entity still draws
+/// the stock one. Returns what `readback.json` records of it.
 fn read_back_palette(
     manager: &PackageManager,
     (stock, copied): (u32, u32),
     edit: PaletteEdit,
     name: &str,
 ) -> serde_json::Value {
-    let stock_palettes = ability_palette::ability_palettes(manager, stock, 3).unwrap();
-    let copy_palettes = ability_palette::ability_palettes(manager, copied, 3).unwrap();
+    let stock_palettes =
+        ability_palette::ability_palettes(manager, stock, crate::subclass::SPAWN_DEPTH).unwrap();
+    let copy_palettes =
+        ability_palette::ability_palettes(manager, copied, crate::subclass::SPAWN_DEPTH).unwrap();
     let original = stock_palettes
         .iter()
         .find(|palette| palette.header == edit.palette)
@@ -2592,7 +3306,7 @@ fn read_back_palette(
 fn spawn_name(packages: &Path, entity: u32, graph: u32) -> String {
     let manager = open_shadowkeep_package_manager(packages).unwrap();
     let payload = manager.read_tag(tiger_pkg::TagHash(entity)).unwrap();
-    let graphs = ability_spawns::spawned_graphs(&manager, entity, &payload).unwrap();
+    let graphs = ability_spawns::reached_graphs(&manager, entity, &payload).unwrap();
     let objects = sundial::package_authoring::sandbox_perk::entity::catalog::cached_only(packages)
         .ok()
         .flatten();
@@ -2927,8 +3641,15 @@ const CUSTOM_PERK_NAME: &str = "Sundial Spark";
 /// The authored grenade takes the icon of this entry of the top attunement's source: its lead.
 const ABILITY_ICON_ENTRY: u8 = AttunementPath::Top.entries()[0];
 
+/// An ability's or node's section tab, marked or not.
+fn section_tab(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+    let marked = format!("{label} •");
+    find(output, label, |text, _| text == label || text == marked)
+}
+
 /// Clicks `choice` on the line of the detail panel's choices that `subclass` leads. An ability's or
-/// node's choices open from its Based On row and close on a pick. An attunement lists its own.
+/// node's choices open over the page from its Based On button and close on a pick. An attunement
+/// lists its own.
 fn choose(ctx: &egui::Context, app: &mut PackageAuthoringApp, subclass: &str, choice: &str) {
     let output = settle(ctx, app);
     if let Some(row) = accessible(&output, "Change Based On") {
@@ -2994,6 +3715,10 @@ fn frame_at(ctx: &egui::Context, app: &mut PackageAuthoringApp, width: f32) -> e
     output.unwrap()
 }
 
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "End-to-end verification keeps the ordered workflow and its independent assertions together"
+)]
 fn author_subclass(ctx: &egui::Context, app: &mut PackageAuthoringApp) -> AuthoredSubclass {
     new_from_menu(ctx, app, ItemKind::Subclass);
     app.recipe
@@ -3034,27 +3759,42 @@ fn author_subclass(ctx: &egui::Context, app: &mut PackageAuthoringApp) -> Author
         );
     }
     capture::write(ctx, &output, "gear-subclass");
-    // Every Class marks the subclass for every character, which the manifest carries to the
-    // install.
-    click(
-        ctx,
-        app,
-        find(&output, "Every Class", |text, _| text == "Every Class"),
-    );
+    // A new subclass is for every class, which its Class picker shows and the manifest carries
+    // to the install.
+    find(&output, "the Class picker", |text, _| text == "Any Class");
     assert!(
         app.recipe.overrides.subclass_every_class,
-        "Every Class marks the recipe"
+        "a new subclass is for every class"
     );
 
     // A grenade from another class: its row shows it beside the list, where its subclass's line
-    // offers it.
-    let grenade = app
-        .subclasses
-        .iter()
-        .find(|subclass| subclass.class_type != base.class_type)
-        .expect("a subclass of another class")
-        .clone();
+    // offers it. Its bank takes the authored node's charge and names a graph of its own, whose
+    // value gives the copy a private bank, and an impact table names the only graphs drawing one
+    // of its palettes, whose recolor gives the copy a private table.
     let entry = layout::GRENADES[0];
+    let grenade = {
+        let manager = open_shadowkeep_package_manager(&app.packages).unwrap();
+        let catalog = app.catalog.as_ref().unwrap();
+        app.subclasses
+            .iter()
+            .find(|subclass| {
+                subclass.class_type != base.class_type
+                    && subclass
+                        .entry_rows
+                        .get(&entry)
+                        .and_then(|row| catalog.ability_row(*row))
+                        .is_some_and(|row| row.charges)
+                    && subclass.entry_entities.get(&entry).is_some_and(|entity| {
+                        bank_value(&manager, *entity).is_some()
+                            && table_palette(&manager, *entity).is_some()
+                    })
+            })
+            .expect(
+                "a subclass of another class whose grenade's bank names a graph of its own and \
+                 whose impact tables name the only graphs drawing a palette",
+            )
+            .clone()
+    };
     let row = base.entry_names[&entry].as_str();
     let output = settle(ctx, app);
     click(ctx, app, find(&output, row, |text, _| text == row));
@@ -3134,11 +3874,19 @@ fn author_subclass(ctx: &egui::Context, app: &mut PackageAuthoringApp) -> Author
     }];
     abilities.set_path_node(AttunementPath::Middle, base.hash, node);
     app.recipe.overrides.subclass_abilities = Some(abilities);
+    // Restore sits in the header's menu, named for what the header shows.
+    let output = settle(ctx, app);
+    let shown = &attunement.attunement_names[AttunementPath::Bottom.index()];
+    let menu = accessible(&output, &format!("More {shown} Options"))
+        .expect("the top attunement's header has a menu");
+    click(ctx, app, menu.center());
     let output = settle(ctx, app);
     let restore = format!("Restore {top}");
     find(&output, "the top attunement's restore", |text, _| {
         text == restore
     });
+    click(ctx, app, menu.center());
+    let output = settle(ctx, app);
     // The Middle tab, marked for its edits, shows the middle attunement and its nodes.
     click(
         ctx,
@@ -3165,17 +3913,46 @@ fn author_subclass(ctx: &egui::Context, app: &mut PackageAuthoringApp) -> Author
         app.subclass_page.selection,
         SubclassSelection::Entry(Place::Node(AttunementPath::Middle, 1))
     );
+    // Its Ability section holds its text under a header naming what it is based on. Its Perks
+    // tab holds the added perk, and its Gameplay tab the added modifier among its Ability
+    // Changes.
     let output = settle_icons(ctx, app);
-    for text in [
-        "Middle Path · Node 2",
-        "Description",
-        "Perks",
-        "Add Perk",
-        "Based On",
-    ] {
+    for text in ["Middle Path · Node 2", "Description", "Based On"] {
+        find(&output, text, |drawn, _| drawn == text);
+    }
+    click(ctx, app, section_tab(&output, "Perks"));
+    let output = settle_icons(ctx, app);
+    for text in ["Perks", "Add Perk"] {
         find(&output, text, |drawn, _| drawn == text);
     }
     capture::write(ctx, &output, "gear-subclass-path");
+    click(ctx, app, section_tab(&output, "Gameplay"));
+    let output = settle_icons(ctx, app);
+    for text in ["Ability Changes", "Add Change"] {
+        find(&output, text, |drawn, _| drawn == text);
+    }
+    capture::write(ctx, &output, "gear-subclass-path-gameplay");
+    // Add Change opens its form under the node's Ability Changes chips, which Cancel closes.
+    click(
+        ctx,
+        app,
+        find(&output, "Add Change", |text, _| text == "Add Change"),
+    );
+    let output = settle(ctx, app);
+    for text in ["Add", "Ability", "Change", "Cancel"] {
+        find(&output, text, |drawn, _| drawn == text);
+    }
+    capture::write(ctx, &output, "gear-subclass-add-modifier");
+    click(
+        ctx,
+        app,
+        find(&output, "Cancel", |text, _| text == "Cancel"),
+    );
+    let output = settle_icons(ctx, app);
+    assert!(
+        !app.subclass_page.adding_modifier(),
+        "Cancel closes the Add Change form"
+    );
     // Hovering a row shows the house tooltip: the ability's icon, its slot and subclass, and its
     // node's own description.
     let grenade_name = grenade.entry_names[&entry].as_str();
@@ -3200,10 +3977,13 @@ fn author_subclass(ctx: &egui::Context, app: &mut PackageAuthoringApp) -> Author
     });
     capture::write(ctx, &output, "gear-subclass-tooltip");
     frame(ctx, app, vec![egui::Event::PointerGone]);
-    let (custom_effect, (ability_value, spawn_value), parameter, palette) =
+    let (custom_effect, (ability_value, spawn_value), parameter, (palette, tint)) =
         author_ability(ctx, app, (&base, &attunement), extra_perk);
+    let (bank_value, swap, table_palette) = author_bank_and_swap(app, (&base, &grenade));
+    let (movement, jump_row) = author_movement(ctx, app, &base);
     // A narrow window stacks the detail under the list.
     capture::write(ctx, &frame_at(ctx, app, 640.0), "gear-subclass-narrow");
+    author_screen_art(ctx, app, &attunement);
     app.recipe_baseline = app.recipe.clone();
     app.recipe_dirty = false;
     AuthoredSubclass {
@@ -3217,7 +3997,140 @@ fn author_subclass(ctx: &egui::Context, app: &mut PackageAuthoringApp) -> Author
         parameter,
         spawn_value,
         palette,
+        tint,
+        bank_value,
+        table_palette,
+        swap,
+        movement,
+        jump_row,
     }
+}
+
+/// The color the Screen Art test paints the top attunement's picture with.
+const SCREEN_ART_COLOR: [u8; 4] = [255, 0, 255, 255];
+
+/// Gives the subclass screen art of its own, as the Appearance tab writes it: a picture for the
+/// top attunement and the attunement subclass's top picture for the middle one, the bottom kept.
+/// The tab shows a tile for each attunement.
+fn author_screen_art(
+    ctx: &egui::Context,
+    app: &mut PackageAuthoringApp,
+    attunement: &SubclassSummary,
+) {
+    let picture = crate::image_import::EmbeddedImage::from_rgba(image::RgbaImage::from_pixel(
+        32,
+        32,
+        image::Rgba(SCREEN_ART_COLOR),
+    ))
+    .unwrap();
+    app.recipe.overrides.screen_art = Some(ScreenArt {
+        top: Some(ArtImage::Image { image: picture }),
+        bottom: None,
+        middle: Some(ArtImage::Subclass {
+            item_hash: attunement.hash.into(),
+            part: ArtPart::Top,
+        }),
+    });
+    // The subclass's pages include Appearance, which the tab bar opens.
+    assert!(WorkbenchPage::for_kind(ItemKind::Subclass).contains(&WorkbenchPage::Appearance));
+    app.workbench_page = WorkbenchPage::Appearance;
+    let start = Instant::now();
+    let output = loop {
+        let output = settle(ctx, app);
+        // The base's bottom picture loads on a worker.
+        if accessible(&output, "Bottom").is_some() && app.subclass_page_art_loaded() {
+            break output;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(120),
+            "the screen art pictures did not load: {:?}",
+            texts(&output)
+                .iter()
+                .map(|(text, _)| text)
+                .collect::<Vec<_>>()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    for text in ["Screen Art", "Top", "Bottom", "Middle", "Picture", "Base"] {
+        find(&output, text, |drawn, _| drawn == text);
+    }
+    capture::write(ctx, &output, "gear-subclass-screen-art");
+    app.workbench_page = WorkbenchPage::Weapon;
+}
+
+/// The authored subclass's screen art read back: its strings name a container of its own, whose
+/// top picture is the painted one, whose bottom is the base's own and whose middle is the
+/// attunement subclass's top picture. Returns what `readback.json` records of it.
+fn read_back_screen_art(
+    staged: &InvestmentCatalog,
+    (item, subclass): (u32, &AuthoredSubclass),
+    packages: &Path,
+) -> serde_json::Value {
+    let name = &subclass.recipe.name;
+    let manager = open_shadowkeep_package_manager(packages).unwrap();
+    let pictures = |container: u32| {
+        let payload =
+            crate::icon_edit::read_icon_container(&manager, tiger_pkg::TagHash(container)).unwrap();
+        let layer = tiger_pkg::TagHash(u32::from_le_bytes(payload[0x14..0x18].try_into().unwrap()));
+        let layer_payload = manager.read_tag(layer).unwrap();
+        crate::icon_edit::texture_reference_offsets(&layer_payload, layer)
+            .unwrap()
+            .into_iter()
+            .map(|(_, header)| header)
+            .collect::<Vec<_>>()
+    };
+    let container = staged
+        .nameplate_container(item)
+        .unwrap_or_else(|| panic!("{name} names screen art in its strings"));
+    let base_container = staged.nameplate_container(subclass.base.hash).unwrap();
+    assert_ne!(
+        container, base_container,
+        "{name} has screen art of its own"
+    );
+    let own = pictures(container);
+    let base = pictures(base_container);
+    let taken = pictures(
+        staged
+            .nameplate_container(subclass.attunement.hash)
+            .unwrap(),
+    );
+    assert_eq!(
+        own.len(),
+        3,
+        "{name}'s screen art keeps one picture per attunement"
+    );
+    assert_ne!(own[0], base[0], "{name}'s top picture is a painted copy");
+    let painted = crate::icon_edit::decode_texture(&manager, own[0]).unwrap();
+    assert_eq!(
+        painted
+            .get_pixel(painted.width() / 2, painted.height() / 2)
+            .0,
+        SCREEN_ART_COLOR,
+        "{name}'s top picture holds the picture"
+    );
+    assert_eq!(own[1], base[1], "{name} keeps its base's bottom picture");
+    assert_eq!(
+        own[2], taken[0],
+        "{name}'s middle picture is the attunement subclass's top one"
+    );
+    serde_json::json!({
+        "container": format!("0x{container:08X}"),
+        "base_container": format!("0x{base_container:08X}"),
+        "pictures": own.iter().map(|tag| format!("{tag}")).collect::<Vec<_>>(),
+    })
+}
+
+/// The colors of ability `entity`'s materials that Effect Colors lists, found the way the field
+/// and the build find them.
+fn stock_tints(packages: &Path, entity: u32) -> Vec<ability_tint::Tint> {
+    let manager = open_shadowkeep_package_manager(packages).unwrap();
+    let tints =
+        ability_tint::ability_tints(&manager, entity, crate::subclass::SPAWN_DEPTH).unwrap();
+    assert!(
+        !tints.is_empty(),
+        "ability entity 0x{entity:08X}'s materials hold a tint"
+    );
+    tints
 }
 
 /// Authors the second grenade as an ability of its own. Its text, icon, extra perk, two extra
@@ -3228,6 +4141,7 @@ fn author_subclass(ctx: &egui::Context, app: &mut PackageAuthoringApp) -> Author
 /// graph's values, the parameter with its value, and the palette change.
 #[allow(
     clippy::cognitive_complexity,
+    clippy::type_complexity,
     reason = "End-to-end verification keeps the ordered workflow and its independent assertions together"
 )]
 fn author_ability(
@@ -3235,7 +4149,12 @@ fn author_ability(
     app: &mut PackageAuthoringApp,
     (base, attunement): (&SubclassSummary, &SubclassSummary),
     extra_perk: u16,
-) -> (u16, (AbilityValue, AbilityValue), (u32, f32), PaletteEdit) {
+) -> (
+    u16,
+    (AbilityValue, AbilityValue),
+    (u32, f32),
+    (PaletteEdit, TintEdit),
+) {
     let place = Place::Ability(layout::GRENADES[1]);
     let entity = *base
         .entry_entities
@@ -3262,7 +4181,7 @@ fn author_ability(
         .values()
         .find_map(|other| {
             let manager = open_shadowkeep_package_manager(&app.packages).unwrap();
-            ability_palette::ability_palettes(&manager, *other, 3)
+            ability_palette::ability_palettes(&manager, *other, crate::subclass::SPAWN_DEPTH)
                 .ok()?
                 .into_iter()
                 .map(|palette| palette.header)
@@ -3273,6 +4192,12 @@ fn author_ability(
         from: Some(from),
         hue: 120,
         ..PaletteEdit::new(own)
+    };
+    // And its first tint takes that hue outright, as Colorize sets it.
+    let tint = TintEdit {
+        hue: 120,
+        colorize: true,
+        ..TintEdit::new(stock_tints(&app.packages, entity)[0].rgb).unwrap()
     };
     let mut abilities = app.recipe.overrides.subclass_abilities.clone().unwrap();
     let mut edits = abilities.edits(base.hash, place);
@@ -3287,6 +4212,10 @@ fn author_ability(
     edits.set_parameter(parameter.0, Some(parameter.1));
     edits.ability_values = vec![value.edit.clone(), spawned.edit.clone()];
     edits.set_palette(palette);
+    edits.set_tint(tint);
+    // And every effect's final color takes the same hue, after the palette and tint, as Every
+    // Effect sets it.
+    edits.set_grade(GRADE);
     abilities.set_edits(base.hash, place, edits);
     app.recipe.overrides.subclass_abilities = Some(abilities);
     let output = settle_icons(ctx, app);
@@ -3298,32 +4227,31 @@ fn author_ability(
         }),
     );
     assert_eq!(app.subclass_page.selection, SubclassSelection::Entry(place));
+    // Every section the grenade edits is marked. The Ability section holds its text and icon.
     let output = settle_icons(ctx, app);
-    for text in [
-        "Grenade 2",
-        "Icon",
-        "Ability Icon",
-        "Artwork…",
-        "Add Perk",
-        "New Custom Perk",
-        "Effect Colors",
-        "Charges",
-        "+2",
-        "Modifiers",
-        "Add Modifier",
-        "Tuning",
-        "Parameters •",
-        "Values •",
-        "Spawns •",
-        "Based On",
-    ] {
+    for text in ["Ability •", "Perks •", "Gameplay •", "Colors •"] {
         find(&output, text, |drawn, _| drawn == text);
     }
-    // Effect Colors loads the palettes the grenade's effects draw with and shows the turned hue,
-    // then every stock palette, which names the one the colors come from.
+    click(ctx, app, section_tab(&output, "Ability"));
+    let output = settle_icons(ctx, app);
+    for text in ["Grenade 2", "Icon", "Ability Icon", "Artwork…", "Based On"] {
+        find(&output, text, |drawn, _| drawn == text);
+    }
+    capture::write(ctx, &output, "gear-subclass-ability-text");
+    // Effect Colors, in the Visuals section, loads the palettes the grenade's effects draw with
+    // and shows the turned hue, then every stock palette, which names the one the colors come
+    // from.
+    click(ctx, app, section_tab(&output, "Visuals"));
     let output = settle_loaded(ctx, app, "the grenade's effect colors");
+    find(&output, "Effect Colors", |text, _| text == "Effect Colors");
     let hue = format!("{}°", palette.hue);
     find(&output, "the palette's turned hue", |text, _| text == hue);
+    find(&output, "the row that sets every color", |text, _| {
+        text == "Set All"
+    });
+    find(&output, "the row that grades every effect", |text, _| {
+        text == "Overall"
+    });
     let start = Instant::now();
     let output = loop {
         let output = settle(ctx, app);
@@ -3340,19 +4268,27 @@ fn author_ability(
         accessible(&output, "Colors From").is_some(),
         "the palette names where its colors come from"
     );
-    // The Parameters tab marks the one the grenade sets.
-    capture::write(ctx, &output, "gear-subclass-ability-parameters");
-    // The Values tab loads the grenade's entity and counts the edit among its fields.
+    capture::write(ctx, &output, "gear-subclass-ability-colors");
+    // The Gameplay section's Ability card holds the charges, the grenade's named parameters and
+    // its own entity's values as tiles. A card follows for each part the grenade spawns with
+    // values whose meaning is established: its projectiles, each with what it fires and how it
+    // flies.
     let tab = |output: &egui::FullOutput, label: &str| find(output, label, |text, _| text == label);
-    click(ctx, app, tab(&output, "Values •"));
+    click(ctx, app, section_tab(&output, "Gameplay"));
+    let output = settle_loaded(ctx, app, "the grenade's properties");
+    for text in ["Charges", "+2", "Fires", "Speed", "Gravity", "Travel Limit"] {
+        find(&output, text, |drawn, _| drawn == text);
+    }
+    capture::write(ctx, &output, "gear-subclass-ability-gameplay");
+    // Its Technical part, closed until opened and marked for the grenade's values, loads the
+    // grenade's entity, counts the edit among its fields, then lists the graphs the grenade
+    // spawns and opens the one it changes.
+    click(ctx, app, tab(&output, "Technical •"));
     let output = settle_loaded(ctx, app, "the grenade's entity");
     find(&output, "the customized value count", |text, _| {
         text.ends_with(" Values · 1 Changed")
     });
     capture::write(ctx, &output, "gear-subclass-ability-values");
-    // The Spawns tab lists the graphs the grenade spawns, and opens the one it changes.
-    click(ctx, app, tab(&output, "Spawns •"));
-    let output = settle_loaded(ctx, app, "the grenade's spawns");
     // The page names a spawned graph by its native name or its kind, as the loader does.
     let spawn_label = format!("{} •", spawn_name(&app.packages, entity, spawned.entity));
     let changed = find(&output, "the changed spawned graph", |text, _| {
@@ -3371,23 +4307,23 @@ fn author_ability(
         text.starts_with("Initial Speed")
     });
     capture::write(ctx, &output, "gear-subclass-ability-spawn-values");
-    click(ctx, app, tab(&output, "Ability"));
+    // The trail's root shares the Ability card's name and sits below the Technical header.
+    let below = find(&output, "Technical •", |text, _| text == "Technical •").y;
+    click(
+        ctx,
+        app,
+        find(&output, "the trail's root", |text, rect| {
+            text == "Ability" && rect.min.y > below
+        }),
+    );
     let output = settle_loaded(ctx, app, "the grenade's spawns");
-    click(ctx, app, tab(&output, "Parameters •"));
-    // Add Modifier opens its form under the chips on this grenade, which Cancel closes.
+    // The Perks section holds the grenade's perks.
+    click(ctx, app, section_tab(&output, "Perks"));
     let output = settle_icons(ctx, app);
-    click(ctx, app, tab(&output, "Add Modifier"));
-    let output = settle(ctx, app);
-    for text in ["Add", "Ability", "Modifier", "Extra Charges", "Cancel"] {
+    for text in ["Add Perk", "New Custom Perk"] {
         find(&output, text, |drawn, _| drawn == text);
     }
-    capture::write(ctx, &output, "gear-subclass-add-modifier");
-    click(ctx, app, tab(&output, "Cancel"));
-    let output = settle_icons(ctx, app);
-    assert!(
-        !app.subclass_page.adding_modifier(),
-        "Cancel closes the Add Modifier form"
-    );
+    capture::write(ctx, &output, "gear-subclass-ability-perks");
     click(
         ctx,
         app,
@@ -3544,7 +4480,7 @@ fn author_ability(
         find(&output, "a custom perk's chip", |text, _| text == chip);
     }
     capture::write(ctx, &output, "gear-subclass-ability");
-    (custom_effect, (value, spawned), parameter, palette)
+    (custom_effect, (value, spawned), parameter, (palette, tint))
 }
 
 /// A stock perk as the Subclass page labels its chip: the first stock entry that grants it,
@@ -3710,7 +4646,29 @@ fn read_back_ability(
         value.name
     );
     let spawn = read_back_spawn(&manager, copied, &subclass.spawn_value, name);
+    let swap = read_back_swap(&manager, authored, subclass.swap, name);
+    let recharge = read_back_recharge(&manager, staged, authored, name);
+    let movement = read_back_movement(&manager, authored, &subclass.movement, name);
+    let jump_row = read_back_jump_row(&manager, authored, &subclass.jump_row, name);
+    let bank = read_back_bank(&manager, authored, &subclass.bank_value, name);
+    let table = read_back_table_palette(&manager, authored, subclass, name);
     let palette = read_back_palette(&manager, (value.entity, copied), subclass.palette, name);
+    let tint = read_back_tint(&manager, (value.entity, copied), subclass.tint, name);
+    let first = *authored
+        .entry_entities
+        .get(&layout::GRENADES[0])
+        .unwrap_or_else(|| panic!("{name}'s first grenade names an entity"));
+    let grade = read_back_grade(&manager, (&[subclass.bank_value.0], first), name);
+    let authored_grade = read_back_grade(&manager, (&[value.entity], copied), name);
+    let third = *authored
+        .entry_entities
+        .get(&layout::GRENADES[2])
+        .unwrap_or_else(|| panic!("{name}'s third grenade names an entity"));
+    let swapped_grade = read_back_grade(
+        &manager,
+        (&[subclass.swap.graph, subclass.swap.replacement], third),
+        name,
+    );
     serde_json::json!({
         "name": ABILITY_NAME,
         "perks": granted,
@@ -3721,7 +4679,19 @@ fn read_back_ability(
         "modifiers": modifiers,
         "retargeted": retargeted,
         "spawn_value": spawn,
+        "swap": swap,
+        "bank": bank,
+        "table_palette": table,
+        "recharge": recharge,
+        "movement": movement,
+        "jump_row": jump_row,
         "palette": palette,
+        "tint": tint,
+        "grades": {
+            "first": grade,
+            "authored": authored_grade,
+            "swapped": swapped_grade,
+        },
         "ability_value": {
             "field": value.name,
             "stock_entity": format!("0x{:08X}", value.entity),
@@ -3745,7 +4715,7 @@ fn read_back_modifiers(
     let authored_node = AttunementPath::Middle.entries()[1];
     // Its extra charges and parameter value reach its own row, the copy's, as pool records whose
     // keys name bank rows the build added. The node's charge reaches the other grenade the same
-    // way, on that grenade's stock row.
+    // way, on that grenade's copy row.
     let row = *authored
         .entry_rows
         .get(&ability)
@@ -3797,12 +4767,22 @@ fn read_back_modifiers(
         .get(&layout::GRENADES[0])
         .expect("the taken grenade equips a row");
     let node_key = ability_modifier::charge_key(1);
+    // The taken grenade's value gives it an entity and a row of its own, which the node's charge
+    // reaches in place of the stock row, or the copy the subclass equips would go without it.
+    let copy_row = *authored
+        .entry_rows
+        .get(&layout::GRENADES[0])
+        .expect("the taken grenade's copy equips a row");
+    assert_ne!(
+        copy_row, other_row,
+        "the taken grenade equips a row of its own"
+    );
     assert!(
         authored
             .entry_modifiers
             .get(&authored_node)
-            .is_some_and(|applied| applied.contains(&(node_key, other_row))),
-        "{name}'s authored node gives the taken grenade a charge"
+            .is_some_and(|applied| applied.contains(&(node_key, copy_row))),
+        "{name}'s authored node gives the taken grenade's copy its charge on row {copy_row}"
     );
     assert!(
         staged.ability_row(other_row).is_some_and(|other| other
@@ -3818,6 +4798,253 @@ fn read_back_modifiers(
             "value": parameter_value,
             "key": format!("0x{parameter_key:08X}"),
         },
+    })
+}
+
+/// The third grenade's swap read back: it names a copy of its entity, which names no stock
+/// replaced projectile and names a private copy of the replacement, byte equal to it under a tag
+/// of its own. Returns what `readback.json` records of it.
+fn read_back_swap(
+    manager: &PackageManager,
+    authored: &SubclassSummary,
+    swap: SpawnSwap,
+    name: &str,
+) -> serde_json::Value {
+    let copied = *authored
+        .entry_entities
+        .get(&layout::GRENADES[2])
+        .unwrap_or_else(|| panic!("{name}'s third grenade names an entity"));
+    assert_ne!(
+        copied, swap.graph,
+        "{name}'s third grenade names a copy of its entity"
+    );
+    let payload = manager.read_tag(tiger_pkg::TagHash(copied)).unwrap();
+    let named = ability_spawns::spawned_graphs(manager, copied, &payload).unwrap();
+    assert!(
+        !named.contains(&swap.replaced),
+        "{name}'s copy no longer names projectile 0x{:08X}",
+        swap.replaced
+    );
+    // Every place the stock grenade named the replaced projectile names one private copy of the
+    // replacement, which the grade may have recolored below it.
+    let place =
+        |spawn: &ability_spawns::Spawn| (spawn.binding_hash, spawn.resource_index, spawn.offset);
+    let stock = manager.read_tag(tiger_pkg::TagHash(swap.graph)).unwrap();
+    let places = ability_spawns::spawns(manager, swap.graph, &stock)
+        .unwrap()
+        .iter()
+        .filter(|spawn| spawn.graph == swap.replaced)
+        .map(place)
+        .collect::<BTreeSet<_>>();
+    assert!(
+        !places.is_empty(),
+        "the stock grenade names the replaced projectile"
+    );
+    let named_there = ability_spawns::spawns(manager, copied, &payload)
+        .unwrap()
+        .iter()
+        .filter(|spawn| places.contains(&place(spawn)))
+        .map(|spawn| spawn.graph)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        named_there.len(),
+        1,
+        "{name}'s copy names one projectile where the stock one named 0x{:08X}",
+        swap.replaced
+    );
+    let private = *named_there.first().unwrap();
+    assert!(
+        private != swap.replacement && private != swap.replaced,
+        "{name}'s copy names a private copy of projectile 0x{:08X}",
+        swap.replacement
+    );
+    let replacement = manager
+        .read_tag(tiger_pkg::TagHash(swap.replacement))
+        .unwrap();
+    let copy = manager.read_tag(tiger_pkg::TagHash(private)).unwrap();
+    assert!(
+        copy.len() == replacement.len() && copy.get(0x96) == Some(&18),
+        "{name}'s private projectile 0x{private:08X} is a copy of 0x{:08X}",
+        swap.replacement
+    );
+    serde_json::json!({
+        "stock_entity": format!("0x{:08X}", swap.graph),
+        "copy_entity": format!("0x{copied:08X}"),
+        "replaced": format!("0x{:08X}", swap.replaced),
+        "replacement": format!("0x{:08X}", swap.replacement),
+        "private_copy": format!("0x{private:08X}"),
+    })
+}
+
+/// The first grenade's copy read back: it binds a private copy of its bank in place of the stock
+/// one. The copy validates as a bank under its own tag, holds every row the build gave the stock
+/// bank in the same order, the node's charge among them, lays out its blocks as the staged stock
+/// bank does for every offset the entity names, and names a private copy of the graph only the
+/// bank names, holding the edited value. Returns what `readback.json` records of it.
+/// The first grenade's palette that only an impact table reaches, read back: as
+/// `read_back_palette` checks, its copy draws a recolored palette everywhere the stock one was,
+/// through private materials and particle systems, and the copy's graphs name an impact table the
+/// stock grenade's do not, a private copy. Returns what `readback.json` records of it.
+fn read_back_table_palette(
+    manager: &PackageManager,
+    authored: &SubclassSummary,
+    subclass: &AuthoredSubclass,
+    name: &str,
+) -> serde_json::Value {
+    let stock = subclass.bank_value.0;
+    let copied = *authored
+        .entry_entities
+        .get(&layout::GRENADES[0])
+        .unwrap_or_else(|| panic!("{name}'s first grenade names an entity"));
+    let palette = read_back_palette(manager, (stock, copied), subclass.table_palette, name);
+    let tables = |entity: u32| {
+        ability_palette::ability_graphs(manager, entity, crate::subclass::SPAWN_DEPTH)
+            .unwrap()
+            .into_iter()
+            .flat_map(|(graph, payload)| ability_spawns::tables(manager, graph, &payload).unwrap())
+            .map(|place| place.graph)
+            .collect::<BTreeSet<_>>()
+    };
+    let stock_tables = tables(stock);
+    let private = tables(copied)
+        .difference(&stock_tables)
+        .copied()
+        .collect::<Vec<_>>();
+    assert!(
+        !private.is_empty(),
+        "{name}'s first grenade reaches its recolored graphs through a private impact table"
+    );
+    for table in &private {
+        assert!(
+            ability_spawns::is_table(manager, *table),
+            "0x{table:08X} is an impact table"
+        );
+    }
+    serde_json::json!({
+        "palette": palette,
+        "stock_tables": stock_tables.len(),
+        "private_tables": private.iter().map(|tag| format!("0x{tag:08X}")).collect::<Vec<_>>(),
+    })
+}
+
+fn read_back_bank(
+    manager: &PackageManager,
+    authored: &SubclassSummary,
+    (entity, bank, value): &(u32, u32, AbilityValue),
+    name: &str,
+) -> serde_json::Value {
+    use sundial::package_authoring::ability_bank::{bank_owner, property_rows, validate};
+    use sundial::package_authoring::entity::{
+        weapon_component_binding_hashes, weapon_component_bindings,
+    };
+    let copied = *authored
+        .entry_entities
+        .get(&layout::GRENADES[0])
+        .unwrap_or_else(|| panic!("{name}'s first grenade names an entity"));
+    assert_ne!(
+        copied, *entity,
+        "{name}'s first grenade names a copy of its entity"
+    );
+    let stock_entity = manager.read_tag(tiger_pkg::TagHash(*entity)).unwrap();
+    let copied_entity = manager.read_tag(tiger_pkg::TagHash(copied)).unwrap();
+    let mut private = BTreeSet::new();
+    for binding in weapon_component_binding_hashes(&stock_entity).unwrap() {
+        let stock = weapon_component_bindings(&stock_entity, binding).unwrap();
+        let copy = weapon_component_bindings(&copied_entity, binding).unwrap();
+        assert_eq!(
+            stock.len(),
+            copy.len(),
+            "binding 0x{binding:08X} keeps its resources"
+        );
+        for (stock, copy) in stock.iter().zip(&copy) {
+            if stock.owner_tag == *bank {
+                private.insert(copy.owner_tag);
+            }
+        }
+    }
+    assert_eq!(
+        private.len(),
+        1,
+        "{name}'s first grenade binds one bank: {private:X?}"
+    );
+    let private = *private.first().unwrap();
+    assert_ne!(
+        private, *bank,
+        "{name}'s first grenade binds a private copy of its bank"
+    );
+    let copy = manager.read_tag(tiger_pkg::TagHash(private)).unwrap();
+    validate(&copy).unwrap_or_else(|error| panic!("{name}'s private bank: {error}"));
+    assert_eq!(
+        bank_owner(&copy).unwrap(),
+        private,
+        "the private bank names itself"
+    );
+    let rows = |payload: &[u8]| {
+        property_rows(payload)
+            .unwrap()
+            .iter()
+            .map(|row| (row.key, row.handler.get(), row.modifier_class))
+            .collect::<Vec<_>>()
+    };
+    let staged = manager.read_tag(tiger_pkg::TagHash(*bank)).unwrap();
+    assert_eq!(
+        rows(&copy),
+        rows(&staged),
+        "{name}'s private bank holds every row the build gave the stock bank"
+    );
+    // An entity names a bank's blocks by tag, class and offset. The copy names its bank's blocks
+    // where the stock grenade names the stock bank's, both moved for the rows they took: the
+    // same places, classes and offsets, and the same words at each, the bank's own tag aside.
+    let word =
+        |payload: &[u8], at: usize| u32::from_le_bytes(payload[at..at + 4].try_into().unwrap());
+    let tuples = |payload: &[u8], owner: u32| {
+        (0..payload.len().saturating_sub(15))
+            .step_by(8)
+            .filter(|at| {
+                word(payload, *at) == owner
+                    && (0x8080_0000..=0x8080_FFFF).contains(&word(payload, at + 4))
+            })
+            .map(|at| {
+                let offset = u64::from_le_bytes(payload[at + 8..at + 16].try_into().unwrap());
+                (at, word(payload, at + 4), offset)
+            })
+            .collect::<Vec<_>>()
+    };
+    let named = tuples(&copied_entity, private);
+    assert!(
+        !named.is_empty(),
+        "{name}'s first grenade names its private bank's blocks"
+    );
+    assert_eq!(
+        named,
+        tuples(&stock_entity, *bank),
+        "{name}'s first grenade names its private bank's blocks where the stock grenade names the stock bank's"
+    );
+    let block = |payload: &[u8], owner: u32, offset: u64| {
+        usize::try_from(offset)
+            .ok()
+            .filter(|offset| offset + 8 <= payload.len())
+            .map(|offset| {
+                [word(payload, offset), word(payload, offset + 4)]
+                    .map(|each| if each == owner { 0 } else { each })
+            })
+    };
+    for (at, _, offset) in &named {
+        assert_eq!(
+            block(&copy, private, *offset),
+            block(&staged, *bank, *offset),
+            "{name}'s first grenade finds the stock block at 0x{offset:X}, named from +0x{at:X}"
+        );
+    }
+    let graph = read_back_spawn(manager, copied, value, name);
+    serde_json::json!({
+        "stock_entity": format!("0x{entity:08X}"),
+        "copy_entity": format!("0x{copied:08X}"),
+        "stock_bank": format!("0x{bank:08X}"),
+        "private_bank": format!("0x{private:08X}"),
+        "rows": rows(&copy).len(),
+        "named_blocks": named.len(),
+        "graph_value": graph,
     })
 }
 
@@ -3990,6 +5217,7 @@ fn read_back_subclass(
         ),
         "attunements": authored.attunement_names,
         "authored_grenade": read_back_ability((stock, staged), &authored, subclass, packages),
+        "screen_art": read_back_screen_art(staged, (report.item_hash, subclass), packages),
         "abilities": authored
             .entry_names
             .iter()

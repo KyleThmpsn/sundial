@@ -146,7 +146,7 @@ pub mod investment_schema {
         UNLOCK_FLAG_DISPLAY_ROW_SIZE, UNLOCK_FLAG_SORTED_INDEX_ROW_CLASS,
         UNLOCK_FLAG_SORTED_INDEX_ROW_SIZE, VOID_DAMAGE_PLUG_ITEM_HASH, VOID_DAMAGE_PLUG_ITEM_INDEX,
         investment_globals_table_tag, investment_root_table_tag, item_version_array,
-        subclass_equipment_class,
+        set_subclass_equipment_class, subclass_equipment_class,
     };
     pub use crate::investment_schema::{
         ITEM_METRIC_BLOCK_CLASS, ITEM_METRIC_BLOCK_POINTER_OFFSET, ITEM_METRIC_CATEGORY_ROW_CLASS,
@@ -171,7 +171,20 @@ pub mod ability_reference {
 /// A Subclass ability modifier's bank and the keys of its own property rows.
 pub mod ability_modifier {
     pub use crate::ability::modifier::{
-        bank_slot, charge_key, entity_bank, is_bank, parameter_key, settable_parameters,
+        RECHARGE_INPUT, bank_slot, charge_key, entity_bank, is_bank, parameter_key, recharge_key,
+        recharge_modifier, settable_parameters, takes_recharge,
+    };
+}
+
+/// Movement controller values with traced consumers, such as a Blink's distance.
+pub mod ability_materials {
+    pub use crate::ability::materials::{MaterialRoute, material_routes};
+}
+
+pub mod ability_movement {
+    pub use crate::ability::movement::{
+        MovementValue, PARAMETER_RESET, RowLane, Unit, discover, parameter_lane, row_lane,
+        row_lanes,
     };
 }
 
@@ -179,14 +192,23 @@ pub mod ability_modifier {
 pub mod ability_palette {
     pub use crate::ability::palette::{
         MATERIAL_BINDINGS, MATERIAL_CLASS, PALETTE_FORMAT, PALETTE_HEIGHT, PALETTE_WIDTH,
-        PARTICLE_SYSTEM_CLASS, Palette, PaletteUse, ParticleSite, SYSTEM_MATERIAL,
+        PARTICLE_SYSTEM_CLASS, Palette, PaletteUse, ParticleSite, SYSTEM_MATERIAL, ability_graphs,
         ability_palettes, binding_tag_offset, bindings, palette_data, palette_pixels, palettes,
         particle_sites,
     };
 }
 
+pub mod ability_tint {
+    pub use crate::ability::tint::{
+        ColorConstant, ConstantStore, Tint, TintUse, ability_tints, color_constants, is_tint,
+    };
+}
+
 pub mod ability_spawns {
-    pub use crate::ability::spawns::{Spawn, describe, names, spawned_graphs, spawns};
+    pub use crate::ability::spawns::{
+        Spawn, describe, is_table, names, reached_graphs, self_spawns, spawned_graphs, spawns,
+        table_entries, table_graphs, tables,
+    };
 }
 
 /// Ability bank property rows, and the charge row edit.
@@ -198,11 +220,11 @@ pub mod ability_bank {
         MELEE_DAMAGE_PROFILE, MELEE_SLOT, MOVEMENT_SLOT, Modifier, PARAMETER_NAMES,
         PARAMETER_ROW_CLASS, Parameter, ParameterKind, ParameterName, PropertyRow,
         SCRIPT_DEFINITION_CLASS, SCRIPT_INSTANCE_CLASS, SLOT_BANKS, SLOT_PARAMETERS, SUPER_SLOT,
-        StockParameter, UNPLACED_BANKS, bank_name, bank_names, block_count, handler_slot,
-        instance_shift, parameter_abilities, parameter_kind, parameter_label, parameter_meaning,
-        parameter_name, parameters, property_rows, register_bank_names, retarget_references,
-        slot_banks, slot_name, slot_parameters, tuning_key, validate, with_charge_row,
-        with_property_row,
+        StockParameter, UNPLACED_BANKS, bank_name, bank_names, bank_owner, block_count,
+        handler_slot, instance_shift, parameter_abilities, parameter_kind, parameter_label,
+        parameter_meaning, parameter_name, parameters, property_rows, register_bank_names,
+        retarget_references, row_modifiers, slot_banks, slot_name, slot_parameters, tuning_key,
+        validate, with_charge_row, with_property_row,
     };
 }
 
@@ -307,6 +329,15 @@ pub const FNV1_EMPTY_HASH: u32 = crate::hash::FNV1_EMPTY_HASH;
 /// Parses authored JSON with Sundial's duplicate-key and nesting checks.
 pub fn parse_json<T: DeserializeOwned>(encoded: &str) -> Result<T, serde_json::Error> {
     crate::strict_json::from_str(encoded)
+}
+
+/// Parses a document that may nest `envelope` containers deeper than [`parse_json`] allows, such
+/// as a bundle of recipes or a recipe holding custom perks, with the same checks.
+pub fn parse_json_envelope<T: DeserializeOwned>(
+    encoded: &str,
+    envelope: usize,
+) -> Result<T, serde_json::Error> {
+    crate::strict_json::from_str_within(encoded, envelope)
 }
 
 /// Reads authored JSON with Sundial's duplicate-key and nesting checks.
@@ -484,6 +515,38 @@ pub fn replace_file_from_path_atomically(source: &Path, destination: &Path) -> R
     crate::storage::replace_file_from_path(source, destination).map_err(|error| {
         format!(
             "Could not atomically replace {} from {}: {error}",
+            destination.display(),
+            source.display()
+        )
+    })
+}
+
+/// Replaces `destination` with the contents of `source` only while `unchanged` accepts the
+/// destination. It is checked after the copy beside the destination is flushed, immediately
+/// before the rename.
+pub fn replace_file_from_path_if_unchanged(
+    source: &Path,
+    destination: &Path,
+    unchanged: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    crate::storage::replace_file_from_path_if(source, destination, || {
+        unchanged().map_err(io::Error::other)
+    })
+    .map_err(|error| {
+        format!(
+            "Could not atomically replace {} from {}: {error}",
+            destination.display(),
+            source.display()
+        )
+    })
+}
+
+/// Publishes the contents of `source` at `destination` only when nothing is there yet, leaving
+/// a file that appeared meanwhile as it is.
+pub fn create_file_from_path(source: &Path, destination: &Path) -> Result<(), String> {
+    crate::storage::create_file_from_path(source, destination).map_err(|error| {
+        format!(
+            "Could not create {} from {}: {error}",
             destination.display(),
             source.display()
         )

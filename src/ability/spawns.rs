@@ -3,6 +3,11 @@
 //! bank and its throw component. Each is found as a live entity tag in an owner's payload and
 //! placed by the component binding resource it sits in, with its offset into that resource,
 //! which is how a runtime resource patch names a place.
+//!
+//! An owner can also name an impact table, which names the graphs its impacts spawn. Suppressor
+//! Grenade's projectile owner `81578A97` names table `80BFA1E2` at `+0xE10`, and the table names
+//! the detonation graph `80BFA4B6` that draws Suppressor's colors, so those graphs are reached
+//! only through the table.
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::entity::{
@@ -46,6 +51,120 @@ pub fn spawns(
     entity_tag: u32,
     entity: &[u8],
 ) -> Result<Vec<Spawn>, String> {
+    places(manager, entity, |value, class| {
+        value != entity_tag && class == WEAPON_ENTITY_CLASS
+    })
+}
+
+/// Every place `entity`'s component owners name the entity itself, as a chain that spawns itself
+/// again does: Arcbolt Grenade's chain graph `80B805AA` names itself. A private copy names itself
+/// there.
+pub fn self_spawns(
+    manager: &PackageManager,
+    entity_tag: u32,
+    entity: &[u8],
+) -> Result<Vec<Spawn>, String> {
+    places(manager, entity, |value, _| value == entity_tag)
+}
+
+/// The classes of impact tables. A `80808BCD` table names graphs in rows of up to three, and a
+/// `80808BCB` table names other tables. The 2026-10-05 census of the stock abilities' declared
+/// helper routes found 91 and 8 of the 174 resources between an ability's owners and the graphs
+/// they reach that way, with these two classes.
+const TABLES: [u32; 2] = [0x8080_8BCD, 0x8080_8BCB];
+
+/// Whether `tag` is an impact table.
+pub fn is_table(manager: &PackageManager, tag: u32) -> bool {
+    manager
+        .get_entry(tag)
+        .is_some_and(|entry| entry.file_type == 8 && TABLES.contains(&entry.reference))
+}
+
+/// Every place `entity`'s component owners name an impact table, by owner and offset, with the
+/// table's tag in `graph`.
+pub fn tables(
+    manager: &PackageManager,
+    entity_tag: u32,
+    entity: &[u8],
+) -> Result<Vec<Spawn>, String> {
+    let mut found = places(manager, entity, |value, class| {
+        value != entity_tag && TABLES.contains(&class)
+    })?;
+    found.retain(|place| is_table(manager, place.graph));
+    Ok(found)
+}
+
+/// The graphs and impact tables `table` names, each with the offset of every declared reference
+/// field naming it, in the order they first appear. A `80808BCB` table can name the table above
+/// it and itself, as `80C70C92` names `80C70C91` at `+0xC` and itself at `+0x10`, so the list can
+/// hold `table`.
+pub fn table_entries(
+    manager: &PackageManager,
+    table: u32,
+) -> Result<Vec<(u32, Vec<usize>)>, String> {
+    let mut entries = Vec::<(u32, Vec<usize>)>::new();
+    for (offset, tag) in crate::package_runtime::references::declared_fields(manager, table)? {
+        let Some(entry) = manager.get_entry(tag) else {
+            continue;
+        };
+        if entry.reference != WEAPON_ENTITY_CLASS && !is_table(manager, tag) {
+            continue;
+        }
+        match entries.iter_mut().find(|(each, _)| *each == tag) {
+            Some((_, offsets)) => offsets.push(offset),
+            None => entries.push((tag, vec![offset])),
+        }
+    }
+    Ok(entries)
+}
+
+/// The graphs `table` names, through any tables it names, each once, in the order found.
+pub fn table_graphs(manager: &PackageManager, table: u32) -> Result<Vec<u32>, String> {
+    let mut graphs = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut pending = vec![table];
+    while let Some(table) = pending.pop() {
+        if !seen.insert(table) {
+            continue;
+        }
+        let mut nested = Vec::new();
+        for (tag, _) in table_entries(manager, table)? {
+            if is_table(manager, tag) {
+                nested.push(tag);
+            } else if !graphs.contains(&tag) {
+                graphs.push(tag);
+            }
+        }
+        pending.extend(nested.into_iter().rev());
+    }
+    Ok(graphs)
+}
+
+/// The graphs `entity` names directly or through its impact tables, each once: those `spawns`
+/// finds, then those its tables name.
+pub fn reached_graphs(
+    manager: &PackageManager,
+    entity_tag: u32,
+    entity: &[u8],
+) -> Result<Vec<u32>, String> {
+    let mut graphs = spawned_graphs(manager, entity_tag, entity)?;
+    for place in tables(manager, entity_tag, entity)? {
+        for graph in table_graphs(manager, place.graph)? {
+            if graph != entity_tag && !graphs.contains(&graph) {
+                graphs.push(graph);
+            }
+        }
+    }
+    Ok(graphs)
+}
+
+/// Every place `entity`'s component owners name a live tag that `wanted` accepts, by the tag and its
+/// class.
+fn places(
+    manager: &PackageManager,
+    entity: &[u8],
+    wanted: impl Fn(u32, u32) -> bool,
+) -> Result<Vec<Spawn>, String> {
     // Each owner's resources, by where they start in its payload.
     let mut resources = BTreeMap::<u32, Vec<(u64, u32, u16)>>::new();
     for binding in weapon_component_binding_hashes(entity)? {
@@ -66,13 +185,12 @@ pub fn spawns(
         let payload = manager.read_tag(owner)?;
         for at in (0..payload.len().saturating_sub(3)).step_by(4) {
             let value = u32_at(&payload, at)?;
-            if value == entity_tag || value == owner || !(0x8080_0000..0x8200_0000).contains(&value)
-            {
+            if value == owner || !(0x8080_0000..0x8200_0000).contains(&value) {
                 continue;
             }
             if manager
                 .get_entry(value)
-                .is_none_or(|entry| entry.reference != WEAPON_ENTITY_CLASS)
+                .is_none_or(|entry| !wanted(value, entry.reference))
             {
                 continue;
             }
@@ -96,8 +214,8 @@ pub fn spawns(
     Ok(found)
 }
 
-/// The graphs `entity` spawns outside its ability bank, each once, in the order `spawns` finds
-/// them. The build keeps banks stock, so their graphs are not the ability's own to change.
+/// The graphs `entity` spawns, each once, in the order `spawns` finds them, those its ability bank
+/// names among them. A change below the bank gives the ability a private copy of its bank.
 pub fn spawned_graphs(
     manager: &PackageManager,
     entity_tag: u32,
@@ -105,7 +223,7 @@ pub fn spawned_graphs(
 ) -> Result<Vec<u32>, String> {
     let mut graphs = Vec::new();
     for spawn in spawns(manager, entity_tag, entity)? {
-        if !super::modifier::is_bank(spawn.owner) && !graphs.contains(&spawn.graph) {
+        if !graphs.contains(&spawn.graph) {
             graphs.push(spawn.graph);
         }
     }

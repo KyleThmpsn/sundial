@@ -81,15 +81,7 @@ fn consumable_triumph_claims_wait_for_confirmation_and_are_undoable() {
             frame(
                 &mut document,
                 &mut state,
-                vec![
-                    egui::Event::PointerMoved(pos),
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: Default::default(),
-                    },
-                ],
+                crate::test_support::primary_press(pos, pressed),
             );
         }
         if button == "Cancel" {

@@ -6,9 +6,25 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use eframe::egui;
+
 use crate::investment::InvestmentCatalog;
 
 static NEXT_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
+
+/// The pointer moving to `position`, then the primary button pressed or released there. A press
+/// and its release go in separate frames, as a real click does.
+pub(crate) fn primary_press(position: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
+    vec![
+        egui::Event::PointerMoved(position),
+        egui::Event::PointerButton {
+            pos: position,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        },
+    ]
+}
 
 pub(crate) fn artifact(name: &str, value: &serde_json::Value) {
     let Some(directory) = std::env::var_os("PARHELION_TEST_ARTIFACTS") else {

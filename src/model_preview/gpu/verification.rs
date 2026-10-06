@@ -14,6 +14,8 @@ struct Case {
 
 fn texture(tag: u32, colors: &[[u8; 4]]) -> Texture {
     Texture {
+        mips: None,
+        linear: None,
         tag,
         size: [colors.len(), 1],
         rgba: colors.iter().flatten().copied().collect(),
@@ -128,6 +130,8 @@ fn cases() -> Vec<Case> {
             expected,
         });
     };
+    packaged_cases(&mut add);
+    legacy_color_cases(&mut add);
     for exposure in [0.0, 0.25, 1.0, 2.0] {
         let mut model = Model::default();
         model
@@ -235,6 +239,8 @@ fn cases() -> Vec<Case> {
             [255, 0, 255, 255],
         ];
         model.iridescence = Some(Texture {
+            mips: None,
+            linear: None,
             tag: 5,
             size: [1, 4],
             rgba: colors.into_iter().flatten().collect(),
@@ -296,6 +302,13 @@ fn cases() -> Vec<Case> {
     {
         case.frame.seconds = seconds;
     }
+    gain_cases(&mut cases, camera);
+    paint_cases(&mut cases, camera);
+    native_normal_cases(&mut cases, camera);
+    normal_blue_cases(&mut cases, camera);
+    metal_cases(&mut cases, camera);
+    tangent_cases(&mut cases);
+    canvas_cases(&mut cases);
     skeletal_cases(&mut cases);
     for (name, model, expected) in
         crate::model_preview::compatibility_tests::effects::render_cases()
@@ -317,8 +330,407 @@ fn cases() -> Vec<Case> {
             expected: Some(expected),
         });
     }
+    cases.push(Case {
+        name: "packaged-particle-inspection-Solid".into(),
+        frame: Frame {
+            model: Arc::new(crate::model_preview::compatibility_tests::particles::case(
+                true,
+            )),
+            camera,
+            scene: Scene::default(),
+            style: Style::Solid,
+            seconds: 0.0,
+            pose: None,
+        },
+        expected: None,
+    });
     installed_gear_cases(&mut cases);
     cases
+}
+
+fn canvas_cases(cases: &mut Vec<Case>) {
+    for (name, model) in crate::model_preview::compatibility_tests::canvas_cases() {
+        cases.push(Case {
+            name,
+            frame: Frame {
+                model: Arc::new(model),
+                camera: Camera {
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    ..Default::default()
+                },
+                scene: Scene::default(),
+                style: Style::Textured,
+                seconds: 0.0,
+                pose: None,
+            },
+            expected: None,
+        });
+    }
+}
+
+fn gain_cases(cases: &mut Vec<Case>, camera: Camera) {
+    for painted in [false, true] {
+        let model = Arc::new(
+            crate::model_preview::compatibility_tests::effects::opaque::gain_case(painted, false)
+                .unwrap(),
+        );
+        for (step, seconds) in [0.0, 0.5, 1.0, 0.0].into_iter().enumerate() {
+            cases.push(Case {
+                name: format!("native-opaque-gain-{painted}-{step}"),
+                frame: Frame {
+                    model: model.clone(),
+                    camera,
+                    scene: Scene {
+                        key: 0.0,
+                        fill: 1.0,
+                        background: [0; 3],
+                        ..Default::default()
+                    },
+                    style: Style::Textured,
+                    seconds,
+                    pose: None,
+                },
+                expected: None,
+            });
+        }
+    }
+}
+
+fn tangent_cases(cases: &mut Vec<Case>) {
+    use crate::model_preview::compatibility_tests::tangents;
+    let mut add = |name: String, model: Arc<Model>, seconds| {
+        for (view, camera) in tangents::cameras().into_iter().enumerate() {
+            let camera = if model.animation.is_some() {
+                Camera {
+                    zoom: 0.55,
+                    ..camera
+                }
+            } else {
+                camera
+            };
+            cases.push(Case {
+                name: format!("{name}-{view}"),
+                frame: Frame {
+                    model: model.clone(),
+                    camera,
+                    scene: tangents::scene(),
+                    style: Style::Textured,
+                    seconds,
+                    pose: model.pose(seconds).map(Arc::new),
+                },
+                expected: None,
+            });
+        }
+    };
+    for kind in tangents::KINDS {
+        add(
+            format!("tangent-{kind}"),
+            Arc::new(tangents::case(kind)),
+            0.0,
+        );
+    }
+    for mirrored in [false, true] {
+        let model = Arc::new(tangents::animated(mirrored));
+        for (step, seconds) in tangents::TIMES.into_iter().enumerate() {
+            add(
+                format!("tangent-animated-{mirrored}-{step}"),
+                model.clone(),
+                seconds,
+            );
+        }
+    }
+}
+
+fn paint_cases(cases: &mut Vec<Case>, camera: Camera) {
+    for alpha in [0, 39, 40, 96, 180, 255] {
+        let model = Arc::new(
+            crate::model_preview::compatibility_tests::effects::paint::case(alpha, 0).unwrap(),
+        );
+        model
+            .surface_overrides
+            .lock()
+            .unwrap()
+            .push(crate::model_preview::SurfaceOverride {
+                slot: 0,
+                writes: vec![(9, 0, 0.05)],
+            });
+        for (step, seconds) in [0.0, 0.5, 1.0, 0.0].into_iter().enumerate() {
+            cases.push(Case {
+                name: format!("native-paint-{alpha}-{step}"),
+                frame: Frame {
+                    model: model.clone(),
+                    camera,
+                    scene: Scene {
+                        key: 0.0,
+                        fill: 1.0,
+                        background: [0; 3],
+                        ..Default::default()
+                    },
+                    style: Style::Textured,
+                    seconds,
+                    pose: None,
+                },
+                expected: None,
+            });
+        }
+    }
+}
+
+fn native_normal_cases(cases: &mut Vec<Case>, camera: Camera) {
+    for channel in 0..3 {
+        for alpha in [0, 39, 40, 96, 180, 255] {
+            for primary in [false, true] {
+                let model = crate::model_preview::compatibility_tests::effects::normals::case(
+                    alpha,
+                    channel,
+                    primary,
+                    [220, 80, 255, 255],
+                    [255, 0, 255, 255],
+                );
+                cases.push(Case {
+                    name: format!("native-normal-{channel}-{alpha}-{primary}"),
+                    frame: Frame {
+                        model: Arc::new(model),
+                        camera,
+                        scene: Scene {
+                            background: [0; 3],
+                            ..Default::default()
+                        },
+                        style: Style::Textured,
+                        seconds: 0.0,
+                        pose: None,
+                    },
+                    expected: None,
+                });
+            }
+        }
+    }
+}
+
+fn normal_blue_cases(cases: &mut Vec<Case>, camera: Camera) {
+    for channel in 0..3 {
+        cases.push(Case {
+            name: format!("native-normal-blue-spatial-{channel}"),
+            frame: Frame {
+                model: Arc::new(
+                    crate::model_preview::compatibility_tests::effects::normal_blue::spatial_case(
+                        channel,
+                    ),
+                ),
+                camera,
+                scene: Scene {
+                    background: [0; 3],
+                    ..Default::default()
+                },
+                style: Style::Textured,
+                seconds: 0.0,
+                pose: None,
+            },
+            expected: None,
+        });
+    }
+    for channel in 0..3 {
+        for alpha in [39, 40, 180, 255] {
+            for primary in [false, true] {
+                let model = crate::model_preview::compatibility_tests::effects::normal_blue::case(
+                    alpha, channel, primary, 0, true,
+                );
+                cases.push(Case {
+                    name: format!("native-normal-blue-{channel}-{alpha}-{primary}"),
+                    frame: Frame {
+                        model: Arc::new(model),
+                        camera,
+                        scene: Scene {
+                            background: [0; 3],
+                            ..Default::default()
+                        },
+                        style: Style::Textured,
+                        seconds: 0.0,
+                        pose: None,
+                    },
+                    expected: None,
+                });
+            }
+        }
+    }
+    for (step, seconds) in [0.0, 0.5, 1.0, 0.0].into_iter().enumerate() {
+        let model = crate::model_preview::compatibility_tests::effects::normal_blue::case(
+            180, 1, false, 0, false,
+        );
+        cases.push(Case {
+            name: format!("native-normal-blue-no-basis-{step}"),
+            frame: Frame {
+                model: Arc::new(model),
+                camera,
+                scene: Scene {
+                    background: [0; 3],
+                    ..Default::default()
+                },
+                style: Style::Textured,
+                seconds,
+                pose: None,
+            },
+            expected: None,
+        });
+    }
+}
+
+fn metal_cases(cases: &mut Vec<Case>, camera: Camera) {
+    for alpha in [0, 39, 40, 180, 255] {
+        let model = Arc::new(
+            crate::model_preview::compatibility_tests::effects::metal::case(alpha, 10).unwrap(),
+        );
+        for (step, seconds) in [0.0, 0.5, 5.0, 0.0].into_iter().enumerate() {
+            cases.push(Case {
+                name: format!("native-metal-{alpha}-{step}"),
+                frame: Frame {
+                    model: model.clone(),
+                    camera,
+                    scene: Scene {
+                        key: 0.0,
+                        fill: 1.0,
+                        background: [0; 3],
+                        ..Default::default()
+                    },
+                    style: Style::Textured,
+                    seconds,
+                    pose: None,
+                },
+                expected: None,
+            });
+        }
+    }
+    for alpha in [0, 39] {
+        for normal in [false, true] {
+            let model = Arc::new(
+                crate::model_preview::compatibility_tests::effects::metal::without_dye(
+                    alpha, normal,
+                ),
+            );
+            for (step, seconds) in [0.0, 0.5, 5.0, 0.0].into_iter().enumerate() {
+                cases.push(Case {
+                    name: format!("native-metal-without-dye-{alpha}-{normal}-{step}"),
+                    frame: Frame {
+                        model: model.clone(),
+                        camera,
+                        scene: Scene {
+                            key: 0.0,
+                            fill: 1.0,
+                            background: [0; 3],
+                            ..Default::default()
+                        },
+                        style: Style::Textured,
+                        seconds,
+                        pose: None,
+                    },
+                    expected: None,
+                });
+            }
+        }
+    }
+}
+
+fn legacy_color_cases(add: &mut impl FnMut(String, Model, Scene, Option<[u8; 3]>)) {
+    for (name, model) in crate::model_preview::compatibility_tests::legacy_color::cases()
+        .into_iter()
+        .chain(crate::model_preview::compatibility_tests::legacy_color::composition::cases())
+        .chain(crate::model_preview::compatibility_tests::legacy_normal::cases())
+        .chain(crate::model_preview::compatibility_tests::native_sampling::cases())
+    {
+        add(
+            name,
+            model,
+            Scene {
+                background: [0; 3],
+                ..Default::default()
+            },
+            None,
+        );
+    }
+}
+
+fn packaged_cases(add: &mut impl FnMut(String, Model, Scene, Option<[u8; 3]>)) {
+    add(
+        "native-opaque-color-and-depth".into(),
+        crate::model_preview::compatibility_tests::effects::opaque::case(false).unwrap(),
+        Scene {
+            key: 0.0,
+            fill: 1.0,
+            background: [0; 3],
+            ..Default::default()
+        },
+        None,
+    );
+    for mode in 0..3 {
+        add(
+            format!("native-unsigned-arithmetic-{mode}"),
+            crate::model_preview::compatibility_tests::effects::integer::case(mode),
+            Scene {
+                background: [0; 3],
+                ..Default::default()
+            },
+            Some([99, 137, 225]),
+        );
+    }
+    add(
+        "native-affine-derivative".into(),
+        crate::model_preview::compatibility_tests::effects::derivative::case(0).unwrap(),
+        Scene {
+            background: [0; 3],
+            ..Default::default()
+        },
+        None,
+    );
+    for composed in [false, true] {
+        add(
+            format!("packaged-particle-mesh-composed-{composed}"),
+            crate::model_preview::compatibility_tests::particles::case(composed),
+            Scene::default(),
+            None,
+        );
+    }
+    for (format, cube) in [10, 26]
+        .into_iter()
+        .flat_map(|f| [false, true].map(|c| (f, c)))
+        .chain([(29, false)])
+    {
+        use crate::model_preview::compatibility_tests::effects::hdr;
+        add(
+            format!("native-hdr-{format}-{cube}"),
+            hdr::case(format, cube),
+            Scene {
+                background: [0; 3],
+                ..Default::default()
+            },
+            Some(hdr::expected(format, cube)),
+        );
+    }
+    add(
+        "native-opaque-detail-pattern".into(),
+        crate::model_preview::compatibility_tests::effects::opaque_detail_case(),
+        Scene {
+            key: 0.0,
+            fill: 1.0,
+            ..Default::default()
+        },
+        None,
+    );
+    for (name, model) in crate::model_preview::compatibility_tests::native_detail::cases() {
+        add(name, model, Scene::default(), None);
+    }
+    for cutoff in [0.3f32, 0.5, 0.7] {
+        add(
+            format!("native-body-cutoff-{cutoff}"),
+            crate::model_preview::compatibility_tests::decals::case(cutoff),
+            Scene {
+                key: 0.0,
+                fill: 1.0,
+                ..Default::default()
+            },
+            (cutoff > 0.5).then_some([24, 28, 35]),
+        );
+    }
 }
 
 fn installed_gear_cases(cases: &mut Vec<Case>) {
@@ -351,7 +763,7 @@ fn installed_gear_cases(cases: &mut Vec<Case>) {
                 ),
                 frame: Frame {
                     model: model.clone(),
-                    camera: Camera::default(),
+                    camera: crate::model_preview::compatibility_tests::installed_camera(&case),
                     scene: Scene::default(),
                     style: Style::Textured,
                     seconds,
@@ -456,8 +868,7 @@ struct Check {
     started: std::time::Instant,
 }
 
-fn interior(image: &egui::ColorImage, x: usize, y: usize) -> bool {
-    let background = egui::Color32::from_rgb(24, 28, 35);
+fn interior(image: &egui::ColorImage, x: usize, y: usize, background: egui::Color32) -> bool {
     (-2isize..=2).all(|dy| {
         (-2isize..=2).all(|dx| {
             let index = (y as isize + dy) as usize * image.width() + (x as isize + dx) as usize;
@@ -496,20 +907,24 @@ impl eframe::App for Check {
                 self.timeline
                     .push((cpu.pixels[index].to_array(), gpu.pixels[index].to_array()));
             }
-            // Material cases use a central square. Skeletal cases also compare coverage
-            // throughout either renderer's interior, so missing geometry cannot hide.
+            // Material cases use a central square. Geometry cases compare coverage
+            // throughout either renderer's interior, so missing parts cannot hide.
             let mut error = 0_u8;
             let mut expectation = 0_u8;
-            let skeletal = case.name.starts_with("skeletal-");
+            let geometry = case.name.starts_with("skeletal-")
+                || case.name.starts_with("packaged-particle-")
+                || case.name.starts_with("tangent-")
+                || case.name.starts_with("native-canvas-");
             let mut compared = 0;
             let mut coverage_mismatches = 0;
-            let background = egui::Color32::from_rgb(24, 28, 35);
-            let x_range = if skeletal {
+            let [r, g, b] = case.frame.scene.background;
+            let background = egui::Color32::from_rgb(r, g, b);
+            let x_range = if geometry {
                 3..gpu.width() - 3
             } else {
                 gpu.width() / 2 - 8..gpu.width() / 2 + 8
             };
-            let y_range = if skeletal {
+            let y_range = if geometry {
                 3..gpu.height() - 3
             } else {
                 gpu.height() / 2 - 8..gpu.height() / 2 + 8
@@ -517,7 +932,10 @@ impl eframe::App for Check {
             for y in y_range {
                 for x in x_range.clone() {
                     let index = y * gpu.width() + x;
-                    if skeletal && !interior(&cpu, x, y) && !interior(&gpu, x, y) {
+                    if geometry
+                        && !interior(&cpu, x, y, background)
+                        && !interior(&gpu, x, y, background)
+                    {
                         continue;
                     }
                     if (cpu.pixels[index] == background) != (gpu.pixels[index] == background) {

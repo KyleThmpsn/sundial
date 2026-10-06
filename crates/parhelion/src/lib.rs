@@ -29,6 +29,7 @@ mod bundled_defaults;
 mod capabilities;
 mod chain;
 pub mod collection;
+mod dxbc;
 pub mod dye;
 pub mod emblem;
 mod error;
@@ -65,6 +66,7 @@ pub mod subclass;
 mod tag_payload;
 #[cfg(test)]
 mod test_support;
+pub mod vehicle;
 mod watermark;
 pub mod weapon;
 mod workflow;

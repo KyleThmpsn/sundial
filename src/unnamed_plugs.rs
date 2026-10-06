@@ -54,6 +54,11 @@ pub(crate) fn apply_to_catalog(
     }
 }
 
+/// Whether a plug's name came from this database rather than the game, because it has none.
+pub(crate) fn contains(hash: u64) -> bool {
+    definitions().any(|definition| definition.hash == hash)
+}
+
 fn definitions() -> impl Iterator<Item = PlugDefinition<'static>> {
     definition_database().plugs.iter().filter_map(|definition| {
         Some(PlugDefinition {

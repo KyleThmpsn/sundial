@@ -25,6 +25,12 @@ pub(crate) struct Animation {
     poses: Vec<Vec<Transform>>,
 }
 
+/// One composed owner keeps its own local bone numbering.
+pub(crate) struct Rig {
+    pub vertices: std::ops::Range<usize>,
+    pub animation: Animation,
+}
+
 /// One sampled skeleton, shared by the software renderer, GPU and posed export.
 pub(crate) struct Deformed {
     pub positions: Vec<[f32; 3]>,
@@ -86,6 +92,24 @@ impl Animation {
         seconds: f32,
         stored: Option<&Deformed>,
     ) -> Deformed {
+        let mut result = Deformed::stored(model);
+        if let Some(stored) = stored {
+            result.positions.clone_from(&stored.positions);
+            result.normals.clone_from(&stored.normals);
+            result.tangents.clone_from(&stored.tangents);
+        }
+        self.apply(model, seconds, 0..model.vertices.len(), &mut result, true);
+        result
+    }
+
+    pub(super) fn apply(
+        &self,
+        model: &Model,
+        seconds: f32,
+        vertices: std::ops::Range<usize>,
+        result: &mut Deformed,
+        follow_root: bool,
+    ) {
         let frame = if seconds.is_finite() {
             seconds.clamp(0.0, self.duration()) * self.fps
         } else {
@@ -104,110 +128,62 @@ impl Animation {
             .map(|(a, b)| a.compose(*b))
             .collect();
         let single_root = !self.parents.iter().skip(1).any(Option::is_none);
-        let root = if single_root {
+        let root = if single_root && follow_root {
             skin[0]
         } else {
             Transform::identity()
         };
         #[cfg(test)]
-        let root_translation = if !single_root {
+        let root_translation = if !single_root || !follow_root {
             [0.0; 3]
         } else {
             self.inverse[0].inverse().map_or([0.0; 3], |bind| {
                 std::array::from_fn(|axis| world[0].translation[axis] - bind.translation[axis])
             })
         };
-        let positions = stored
-            .map_or(model.vertices.as_slice(), |p| p.positions.as_slice())
-            .iter()
-            .enumerate()
-            .map(|(index, point)| {
-                let Some(weights) = model.weights.get(index).and_then(Option::as_ref) else {
-                    return *point;
-                };
-                let mut result = [0.0; 3];
-                let total: u32 = weights.values.iter().map(|v| *v as u32).sum();
-                if total == 0 {
-                    return *point;
-                }
+        for index in vertices {
+            let Some(weights) = model.weights.get(index).and_then(Option::as_ref) else {
+                continue;
+            };
+            let total: u32 = weights.values.iter().map(|v| u32::from(*v)).sum();
+            if total == 0 {
+                continue;
+            }
+            let blend = |transform: &dyn Fn(Transform) -> [f32; 3]| {
+                let mut value = [0.0; 3];
                 for (&bone, &weight) in weights.bones.iter().zip(&weights.values) {
                     if weight == 0 {
                         continue;
                     }
-                    let transformed = skin[bone as usize].point(*point);
+                    let point = transform(skin[bone as usize]);
                     for axis in 0..3 {
-                        result[axis] += transformed[axis] * weight as f32 / total as f32;
+                        value[axis] += point[axis] * f32::from(weight) / total as f32;
                     }
                 }
-                result
-            })
-            .collect();
-        let normals = stored
-            .map_or(model.normals.as_slice(), |p| p.normals.as_slice())
-            .iter()
-            .enumerate()
-            .map(|(index, normal)| {
-                let Some(weights) = model.weights.get(index).and_then(Option::as_ref) else {
-                    return *normal;
-                };
-                let total: u32 = weights.values.iter().map(|v| u32::from(*v)).sum();
-                if total == 0 {
-                    return *normal;
-                }
-                let mut result = [0.0; 3];
-                for (&bone, &weight) in weights.bones.iter().zip(&weights.values) {
-                    if weight == 0 {
-                        continue;
-                    }
-                    let transformed = skin[bone as usize].normal(*normal);
-                    for axis in 0..3 {
-                        result[axis] += transformed[axis] * f32::from(weight) / total as f32;
-                    }
-                }
-                let length = result.iter().map(|v| v * v).sum::<f32>().sqrt();
-                if length.is_finite() && length > 1e-8 {
-                    result.map(|v| v / length)
-                } else {
-                    [0.0; 3]
-                }
-            })
-            .collect();
-        let tangents = stored
-            .map_or(model.tangents.as_slice(), |p| p.tangents.as_slice())
-            .iter()
-            .enumerate()
-            .map(|(index, tangent)| {
-                let Some(weights) = model.weights.get(index).and_then(Option::as_ref) else {
-                    return *tangent;
-                };
-                let total: u32 = weights.values.iter().map(|v| u32::from(*v)).sum();
-                if total == 0 {
-                    return *tangent;
-                }
-                let mut direction = [0.0; 3];
-                for (&bone, &weight) in weights.bones.iter().zip(&weights.values) {
-                    if weight == 0 {
-                        continue;
-                    }
-                    let transform = skin[bone as usize];
-                    let rotated = transform.normal([tangent[0], tangent[1], tangent[2]]);
-                    for i in 0..3 {
-                        direction[i] +=
-                            rotated[i] * transform.scale * transform.scale * f32::from(weight)
-                                / total as f32;
-                    }
-                }
-                let direction = super::shader::normal::normalize(direction).unwrap_or([0.0; 3]);
-                [direction[0], direction[1], direction[2], tangent[3]]
-            })
-            .collect();
-        Deformed {
-            positions,
-            normals,
-            tangents,
-            root,
+                value
+            };
+            let point = result.positions[index];
+            result.positions[index] = blend(&|t| t.point(point));
+            if let Some(normal) = result.normals.get_mut(index) {
+                let original = *normal;
+                *normal =
+                    shader::normal::normalize(blend(&|t| t.normal(original))).unwrap_or([0.0; 3]);
+            }
+            if let Some(tangent) = result.tangents.get_mut(index) {
+                let original = [tangent[0], tangent[1], tangent[2]];
+                let direction = shader::normal::normalize(blend(&|t| {
+                    t.normal(original).map(|v| v * t.scale * t.scale)
+                }))
+                .unwrap_or([0.0; 3]);
+                tangent[..3].copy_from_slice(&direction);
+            }
+        }
+        if follow_root {
+            result.root = root;
             #[cfg(test)]
-            root_translation,
+            {
+                result.root_translation = root_translation;
+            }
         }
     }
 }

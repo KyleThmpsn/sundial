@@ -155,15 +155,7 @@ fn click(app: &mut SundialApp, ctx: &egui::Context, pos: egui::Pos2, progression
         frame(
             app,
             ctx,
-            vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
+            crate::test_support::primary_press(pos, pressed),
             progression,
         );
     }

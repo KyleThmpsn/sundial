@@ -10,7 +10,7 @@ pub use emblem::emblem_metric_categories;
 pub const ITEM_METRIC_BLOCK_POINTER_OFFSET: usize = 0x38;
 pub const ITEM_METRIC_BLOCK_CLASS: u32 = 0x8080_2C9A;
 pub const ITEM_METRIC_CATEGORY_ROW_CLASS: u32 = 0x8080_2CA9;
-pub use subclass::subclass_equipment_class;
+pub use subclass::{set_subclass_equipment_class, subclass_equipment_class};
 
 pub const NESTED_ARRAY_TRAILER: [u8; 8] = [0, 0, 0, 0, 0xBD, 0x9F, 0x80, 0x80];
 
@@ -119,6 +119,10 @@ pub const ITEM_STRING_AMMO_CLASS: u32 = 0x8080_5D1A;
 pub const ITEM_ICON_ROW_SIZE: usize = 0x18;
 pub const ITEM_ICON_ROW_CLASS: u32 = 0x8080_2957;
 pub const ITEM_ICON_CONTAINER_OFFSET: usize = 0x10;
+/// Icon table rows holding the game's ammunition marks for Primary, Special and Heavy: one round
+/// in white, two in green, three in violet. No investment record points at them, so Dawn found
+/// the rows by browsing the table of this build.
+pub const AMMO_ICON_ROWS: [usize; 3] = [8380, 8379, 8381];
 pub const ITEM_TRAITS_DESCRIPTOR_OFFSET: usize = 0xE0;
 pub const ITEM_TRAIT_ROW_CLASS: u32 = 0x8080_2C50;
 pub const ITEM_TRAIT_ROW_SIZE: usize = std::mem::size_of::<u16>();

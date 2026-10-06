@@ -115,6 +115,21 @@ pub(super) fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+/// Flushes the entries of `directory` and of the directory holding it, so files created there
+/// stay reachable after a power loss before anything they protect is replaced. Windows journals
+/// NTFS directory changes itself and offers no directory flush through the standard library.
+pub(super) fn sync_directory(directory: &Path) -> Result<(), String> {
+    if !cfg!(unix) {
+        return Ok(());
+    }
+    for directory in std::iter::once(directory).chain(directory.parent()) {
+        File::open(directory)
+            .and_then(|handle| handle.sync_all())
+            .map_err(|error| format!("Could not flush {}: {error}", directory.display()))?;
+    }
+    Ok(())
+}
+
 pub(super) fn copy_new(source: &Path, destination: &Path) -> Result<(), String> {
     plain_file(source)?;
     let mut source_file = File::open(source).map_err(|error| error.to_string())?;

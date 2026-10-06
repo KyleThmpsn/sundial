@@ -99,7 +99,7 @@ fn load(packages: &Path, graph_tag: u32, objects: Option<Arc<Catalog>>) -> Load 
         None => objects::cached_only(packages).ok().flatten(),
     };
     let graphs =
-        sundial::package_authoring::ability_spawns::spawned_graphs(&manager, graph_tag, &payload)?;
+        sundial::package_authoring::ability_spawns::reached_graphs(&manager, graph_tag, &payload)?;
     let names =
         sundial::package_authoring::ability_spawns::names(&manager, &graphs, objects.as_deref());
     let spawns = graphs.into_iter().zip(names).collect::<Vec<_>>();

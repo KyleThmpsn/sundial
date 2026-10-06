@@ -13,6 +13,63 @@ fn close(actual: [f32; 3], expected: [f32; 3]) {
     );
 }
 
+#[test]
+fn composed_owners_keep_independent_rigs_and_static_parts_through_pose_and_export() {
+    let fixture = build();
+    let manager = fixture.manager();
+    let temporary = tempfile::tempdir().unwrap();
+    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let output = configured
+        .as_deref()
+        .map(Path::new)
+        .unwrap_or(temporary.path());
+    std::fs::create_dir_all(output).unwrap();
+    let mut model = Model::default();
+    let tag = fixture
+        .clips
+        .iter()
+        .find(|(name, _)| name == "float")
+        .unwrap()
+        .1;
+    let moving = load_with_manager(&manager, fixture.entity, &Load::default(), Some(tag)).unwrap();
+    appearance::append(&mut model, moving, "Moving").unwrap();
+    let idle = load_with_manager(&manager, fixture.entity, &Load::default(), None).unwrap();
+    appearance::append(&mut model, idle, "Idle").unwrap();
+    let mut fixed = load_with_manager(&manager, fixture.entity, &Load::default(), None).unwrap();
+    fixed.animation = None;
+    fixed.clips.clear();
+    fixed.animation_notice = Some("Static companion".into());
+    let fixed_positions = fixed.vertices.clone();
+    appearance::append(&mut model, fixed, "Fixed").unwrap();
+    let seconds = 1.0 / 30.0;
+    let initial = model.pose(0.0).unwrap().positions;
+    let pose = model
+        .pose(seconds)
+        .expect("Composed appearances must retain their rigs");
+    for (offset, name) in [(0, "float"), (3, "static")] {
+        for (actual, expected) in pose.positions[offset..offset + 3]
+            .iter()
+            .zip(expectation(name, false).0)
+        {
+            close(*actual, expected);
+        }
+    }
+    assert_eq!(pose.positions[6..], fixed_positions);
+    assert!(model.notices.iter().any(|n| n.contains("Static companion")));
+    let glb = export::glb(&model, seconds).unwrap();
+    for (actual, expected) in glb_vectors(&glb, "POSITION")
+        .into_iter()
+        .zip(&pose.positions)
+    {
+        close(actual, [expected[0], expected[2], -expected[1]]);
+    }
+    std::fs::write(output.join("composed-rigs.glb"), glb).unwrap();
+    assert!(artifact(&model, output, "composed-rigs") > 100);
+    assert_eq!(model.pose(0.0).unwrap().positions, initial);
+    std::fs::write(output.join("composed-rigs-receipt.json"), serde_json::to_vec_pretty(
+        &json!({"positions":pose.positions,"clips":model.clips.iter().map(|c| (&c.name,c.tag)).collect::<Vec<_>>(),"notices":model.notices})).unwrap()).unwrap();
+}
+
 fn glb_vectors(bytes: &[u8], semantic: &str) -> Vec<[f32; 3]> {
     let json_length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
     let document: serde_json::Value = serde_json::from_slice(&bytes[20..20 + json_length]).unwrap();
@@ -55,8 +112,13 @@ fn native_clip_families_preserve_motion_normals_and_materials_through_export() {
     std::fs::create_dir_all(output).unwrap();
     let mut receipt = Vec::new();
     for (name, tag) in &fixture.clips {
-        let model =
+        let mut model =
             load_with_manager(&manager, fixture.entity, &Load::default(), Some(*tag)).unwrap();
+        if name == "root-turn" {
+            let mut composed = Model::default();
+            appearance::append(&mut composed, model, "Turning").unwrap();
+            model = composed;
+        }
         receipt.push(verify_clip(name, &model, fixture.clips.len(), output));
     }
     for (name, tag) in &fixture.invalid {
@@ -83,8 +145,7 @@ fn native_clip_families_preserve_motion_normals_and_materials_through_export() {
 fn verify_clip(name: &str, model: &Model, clip_count: usize, output: &Path) -> serde_json::Value {
     validate(model);
     let animation = model
-        .animation
-        .as_ref()
+        .active_clip()
         .unwrap_or_else(|| panic!("{name}: {:?}", model.animation_notice));
     assert_eq!(
         animation.fps, 30.0,

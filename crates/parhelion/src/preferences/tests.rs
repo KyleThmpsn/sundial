@@ -17,7 +17,7 @@ fn preference_edits_preserve_unknown_fields_across_reopening() {
     .unwrap();
     let mut preferences = ParhelionPreferences::load_from(&path).unwrap();
     preferences.package_backup_retention = 7;
-    preferences.show_technical_build = true;
+    preferences.backup_recipe_snapshots = false;
     preferences.save_to(&path).unwrap();
     assert_eq!(ParhelionPreferences::load_from(&path).unwrap(), preferences);
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -59,14 +59,14 @@ fn preference_write_contention_preserves_the_last_saved_document() {
     preferences.save_to(&path).unwrap();
     let before = fs::read(&path).unwrap();
     let lock = sundial::storage::try_lock_file(&path.with_extension("lock")).unwrap();
-    preferences.show_technical_build = true;
+    preferences.backup_recipe_snapshots = false;
     assert!(preferences.save_to(&path).is_err());
     assert_eq!(fs::read(&path).unwrap(), before);
     drop(lock);
     preferences.save_to(&path).unwrap();
     assert!(
-        ParhelionPreferences::load_from(&path)
+        !ParhelionPreferences::load_from(&path)
             .unwrap()
-            .show_technical_build
+            .backup_recipe_snapshots
     );
 }

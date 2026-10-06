@@ -72,6 +72,18 @@ fn capture_search(ctx: &egui::Context, catalog: &Catalog, hash: u64) {
     state.go_home();
     let output = frames(ctx, catalog, &mut state, Vec::new(), 4);
     crate::app::tests::capture::write(ctx, &output, "inspector-home");
+    for shelf in crate::catalog::Shelf::ALL {
+        state.browse.tab = super::state::BrowseTab::Shelf(shelf);
+        let output = with_icons(ctx, catalog, &mut state);
+        let slug = shelf
+            .label()
+            .to_ascii_lowercase()
+            .replace(" & ", "-")
+            .replace(' ', "-");
+        crate::app::tests::capture::write(ctx, &output, &format!("inspector-home-{slug}"));
+    }
+    state.browse.tab = super::state::BrowseTab::default();
+    capture_card_tooltip_and_menu(ctx, catalog, &mut state);
     frames(ctx, catalog, &mut state, typed(), 1);
     let output = with_icons(ctx, catalog, &mut state);
     crate::app::tests::capture::write(ctx, &output, "inspector-home-search");
@@ -86,6 +98,53 @@ fn capture_search(ctx: &egui::Context, catalog: &Catalog, hash: u64) {
     crate::app::tests::capture::write(ctx, &output, "inspector-toolbar-search");
     state.close();
     frames(ctx, catalog, &mut state, Vec::new(), 1);
+}
+
+/// The first card's tooltip, then its right-click menu. The first card row sits under the filter
+/// row, so it is found from the Type filter rather than from any item's name.
+fn capture_card_tooltip_and_menu(
+    ctx: &egui::Context,
+    catalog: &Catalog,
+    state: &mut HashInspectionState,
+) {
+    let output = with_icons(ctx, catalog, state);
+    let filter = text_center(&output, "All Types").expect("the home page draws its Type filter");
+    let card = egui::pos2(160.0, filter.y + 80.0);
+    frames(
+        ctx,
+        catalog,
+        state,
+        vec![egui::Event::PointerMoved(card)],
+        1,
+    );
+    let output = with_icons(ctx, catalog, state);
+    crate::app::tests::capture::write(ctx, &output, "inspector-home-tooltip");
+    let click = |pressed| egui::Event::PointerButton {
+        pos: card,
+        button: egui::PointerButton::Secondary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    frames(ctx, catalog, state, vec![click(true)], 1);
+    frames(ctx, catalog, state, vec![click(false)], 1);
+    let output = frames(ctx, catalog, state, Vec::new(), 4);
+    crate::app::tests::capture::write(ctx, &output, "inspector-home-menu");
+    // A click on the empty toolbar closes the menu. Escape would close the window.
+    let away = egui::pos2(900.0, filter.y - 70.0);
+    let press = |pressed| egui::Event::PointerButton {
+        pos: away,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    frames(
+        ctx,
+        catalog,
+        state,
+        vec![egui::Event::PointerMoved(away), press(true)],
+        1,
+    );
+    frames(ctx, catalog, state, vec![press(false)], 2);
 }
 
 fn frames(

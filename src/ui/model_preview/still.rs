@@ -163,7 +163,7 @@ impl Still {
                 {
                     self.camera = Camera::default();
                 }
-                self.bounds = Some(render::drawn_bounds(&model));
+                self.bounds = Some(render::drawn_bounds(&model, render::Style::Textured));
                 self.model = Some(Arc::new(model));
                 self.shown = Some(source);
                 self.error = None;
@@ -205,7 +205,9 @@ impl Still {
         self.load = Some(load.clone());
         let (packages, appearance, sources) = wanted.clone();
         let (repaint, viewport) = (ctx.clone(), ctx.viewport_id());
+        let read = model_preview::PackageRead::start();
         std::thread::spawn(move || {
+            let _read = read;
             let result = model_preview::appearance::load_reported(&packages, &appearance, &load)
                 .and_then(|mut model| {
                     if let Some(sources) = sources {
@@ -283,7 +285,7 @@ impl Still {
         paused: bool,
     ) {
         model.set_surface_overrides(overrides);
-        let animated = model.has_shader_animation();
+        let animated = model.has_shader_animation() || model.has_animation();
         let now = std::time::Instant::now();
         if animated && !paused {
             if let Some(last) = self.last_tick {
@@ -310,7 +312,7 @@ impl Still {
             zoom: self.camera.zoom * fit,
             ..self.camera
         };
-        if model_preview::gpu::available() {
+        if model_preview::gpu::available() && self.gpu.fallback(model).is_none() {
             self.gpu.paint(
                 ui,
                 rect,

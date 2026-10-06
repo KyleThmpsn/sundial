@@ -24,6 +24,7 @@ fn surface(c: &mut Effect, kind: &str) -> Result<String> {
     Ok(name)
 }
 
+#[derive(Clone)]
 struct Program {
     code: Vec<u8>,
     constants: Vec<u8>,
@@ -33,7 +34,15 @@ struct Program {
     textures: BTreeMap<u8, u8>,
 }
 
-fn texture_contract(material: &Payload, base: usize, bindings: &mut Bindings) -> Result<()> {
+/// `reticle_viewport` maps the source reticle viewport extern onto native extern `0x49`. Only the
+/// reticle stage may read it: the client leaves that extern null in other passes, and a read
+/// there faults in the material interpreter.
+fn texture_contract(
+    material: &Payload,
+    base: usize,
+    bindings: &mut Bindings,
+    reticle_viewport: bool,
+) -> Result<()> {
     // Verified Deferred and Atmosphere resources. The integer screen-space
     // texture moved from +0x78 to +0xB8, Deferred specular mips from +0x98
     // to +0xD8, and the Atmosphere sky lookup from +0x90 to +0x100.
@@ -66,7 +75,7 @@ fn texture_contract(material: &Payload, base: usize, bindings: &mut Bindings) ->
     // scalars. Keep their field offsets and the source shader's equations.
     for instruction in &instructions {
         let mapped = match (instruction.op, instruction.args) {
-            (0x4B, [0x4A, field @ 4..=5]) => Some([0x3D, 0x49, *field]),
+            (0x4B, [0x4A, field @ 4..=5]) if reticle_viewport => Some([0x3D, 0x49, *field]),
             (0x4C, [2, 8]) => Some([0x3E, 2, 6]),
             (0x4A, [0x5F, field @ 0..=4]) => Some([0x3C, 0x5C, *field]),
             _ => None,
@@ -131,7 +140,7 @@ pub(super) fn preflight(material: &Payload, base: usize) -> Result<()> {
             }
         }
     }
-    texture_contract(material, base, &mut bindings)?;
+    texture_contract(material, base, &mut bindings, true)?;
     program::lower(&code, &bindings).map_err(crate::d2_mot::source_limit)?;
     Ok(())
 }
@@ -146,6 +155,7 @@ fn program(
     dyes: Option<&dyemap::Dyes>,
     textures: BTreeMap<u8, u8>,
     resource_bindings: Option<&Value>,
+    reticle_viewport: bool,
 ) -> Result<Program> {
     let external = material.u32(base + 0x74)?;
     let mut values = if [0, u32::MAX, 0x811C9DC5].contains(&external) {
@@ -273,7 +283,7 @@ fn program(
         constants.extend(value);
     }
     bindings.constant_count = constants.len() / 16;
-    texture_contract(material, base, &mut bindings)?;
+    texture_contract(material, base, &mut bindings, reticle_viewport)?;
     // This lowers the source material's own TFX program, so a translation gap
     // here is a converter limit no native donor can satisfy.
     let mut lowered = program::lower(&code, &bindings).map_err(crate::d2_mot::source_limit)?;
@@ -282,10 +292,19 @@ fn program(
         if !global_fallbacks.is_empty() {
             row["source_global_defaults"] = json!(global_fallbacks);
         }
+        // Without the reticle viewport the output keeps its constant table value.
+        let viewport_only = !reticle_viewport
+            && row["unresolved"].as_array().is_some_and(|inputs| {
+                !inputs.is_empty()
+                    && inputs
+                        .iter()
+                        .all(|input| matches!(input.as_str(), Some("extern 4a04" | "extern 4a05")))
+            });
         row["required_by_shader"] = json!(
-            reads
-                .as_ref()
-                .is_none_or(|v| v.contains(&(row["output"].as_u64().unwrap() as usize)))
+            !viewport_only
+                && reads
+                    .as_ref()
+                    .is_none_or(|v| v.contains(&(row["output"].as_u64().unwrap() as usize)))
         );
     }
     if let Some(dyes) = dyes {
@@ -383,6 +402,7 @@ fn fixed(
     Ok(())
 }
 
+#[derive(Clone)]
 struct Resources {
     rows: Vec<u8>,
     patches: Vec<(usize, String)>,
@@ -447,6 +467,8 @@ fn samplers(c: &mut Effect, pool: &[Value], binding: &Value) -> Result<Resources
 
 struct VertexResources {
     program: Program,
+    /// For a stage-16 material, its program without the reticle viewport extern.
+    lens: Option<Program>,
     resources: Resources,
     textures: BTreeMap<u32, String>,
 }
@@ -475,6 +497,22 @@ fn vertex_resources(
         .filter(|(_, r)| r["direct_sampler"] != true)
         .map(|(i, _)| Ok((u8::try_from(i)?, u8::try_from(i)?)))
         .collect::<Result<BTreeMap<_, _>>>()?;
+    // A reticle's lens runs the same equations in a pass without the reticle viewport extern.
+    let lens = (stage == 16)
+        .then(|| {
+            program(
+                c,
+                model,
+                material,
+                0x70,
+                &vertex.source,
+                None,
+                map.clone(),
+                Some(binding),
+                false,
+            )
+        })
+        .transpose()?;
     let program = program(
         c,
         model,
@@ -484,6 +522,7 @@ fn vertex_resources(
         None,
         map,
         Some(binding),
+        true,
     )?;
     for (&slot, &index) in &program.samplers {
         ensure!(
@@ -530,6 +569,7 @@ fn vertex_resources(
     }
     Ok(VertexResources {
         program,
+        lens,
         resources: samplers(c, pool, binding)?,
         textures,
     })
@@ -677,6 +717,203 @@ pub(super) fn auxiliary(c: &mut Effect, prepared: &Path, stage: usize) -> Result
     Ok(())
 }
 
+/// A reticle material's vertex shader with its resources, so its lens can run the same vertex
+/// equations. `lens` is the program without the reticle viewport extern.
+struct VertexSide {
+    shader: String,
+    lens: Program,
+    textures: BTreeMap<u32, String>,
+    resources: Resources,
+    objects: usize,
+    flags: u8,
+}
+
+impl VertexSide {
+    fn apply_lens(&self, mat: &mut Vec<u8>, patches: &mut Vec<Value>) -> Result<()> {
+        put(mat, 0x48, &u32::MAX.to_le_bytes())?;
+        patches.push(json!({"offset":0x48,"symbol":self.shader}));
+        fixed(mat, 0x48, &self.textures, patches)?;
+        set_program(mat, 0x48, &self.lens, self.objects)?;
+        mat[0xBC] |= self.flags;
+        set_resources(mat, 0x48, self.resources.clone(), patches)
+    }
+}
+
+/// The native reticle vertex program. It loads the projection from extern 2 field 6 into
+/// `cb0[6..9]` and the viewport offset from extern `0x49` field 4 into `cb0[10]`, and the
+/// material keeps a z offset at `cb0[11].x`. Source reticle programs have the same equations.
+const RETICLE_VERTEX_PROGRAM: [u8; 10] = [0x3E, 2, 6, 0x44, 6, 0x3D, 0x49, 4, 0x43, 0x0A];
+/// Its projection alone. The client sets extern `0x49` only for the reticle stage, and the lens
+/// stage draws in passes without it, where its viewport row keeps the material's value.
+const RETICLE_LENS_PROGRAM: [u8; 5] = [0x3E, 2, 6, 0x44, 6];
+
+/// A reticle draw whose material the source game supplies at runtime takes the native
+/// reticle material: its pixel program, texture and vertex constants. Its vertex shader
+/// runs the native reticle equations on the converted geometry and returns the draw's own
+/// texture coordinates from the atlas.
+fn runtime_reticle(
+    c: &mut Effect,
+    draw: &SourceDraw,
+    shell: &Payload,
+    template: u64,
+) -> Result<(String, VertexSide, Value)> {
+    ensure!(
+        array_bytes(shell, 0x68, 1)? == RETICLE_VERTEX_PROGRAM
+            && array_bytes(shell, 0x50, 8)?.is_empty()
+            && array_bytes(shell, 0x88, 16)?.is_empty(),
+        "native reticle vertex program differs"
+    );
+    let values = array_bytes(shell, 0x98, 16)?;
+    ensure!(
+        values.len() == 12 * 16,
+        "native reticle vertex constants differ"
+    );
+    let name = format!("source-stage-16-{}-{}", draw.model, draw.material);
+    let vertex_name = format!("{name}-vertex");
+    let ([x, y, w, h], [aw, ah]) = c.atlas(draw.model)?;
+    let native_model = c.graph.read("model")?;
+    let uv = (0..4)
+        .map(|i| native_model.f32(0x70 + i * 4))
+        .collect::<Result<Vec<_>>>()?;
+    ensure!(
+        uv.iter().all(|v| v.is_finite()),
+        "nonfinite native UV transform"
+    );
+    let text = format!(
+        "cbuffer cb0 : register(b0)
+{{
+  float4 cb0[12];
+}}
+
+cbuffer cb11 : register(b11)
+{{
+  float4 cb11[6];
+}}
+
+cbuffer cb12 : register(b12)
+{{
+  float4 cb12[8];
+}}
+
+void main(
+  float4 nativePosition : POSITION0,
+  float2 nativeUv : TEXCOORD0,
+  float3 nativeNormal : NORMAL0,
+  float4 nativeTangent : TANGENT0,
+  out float4 o0 : TEXCOORD0,
+  out float4 o1 : TEXCOORD1,
+  out float3 o2 : TEXCOORD2,
+  out float4 o3 : TEXCOORD3,
+  out float3 o4 : TEXCOORD4,
+  out float4 o5 : SV_POSITION0)
+{{
+  float3x3 view = float3x3(cb12[4].xyz, cb12[5].xyz, cb12[6].xyz);
+  float3 normal = mul(nativeNormal, view);
+  float scale = rsqrt(dot(normal, normal));
+  normal *= scale;
+  float3 tangent = mul(nativeTangent.xyz, view) * scale;
+  o0 = float4(normal, 1);
+  o1 = float4(tangent, 0);
+  o2 = cross(normal, tangent) * nativeTangent.w;
+  float2 atlas = nativeUv * float2({:.9},{:.9}) + float2({:.9},{:.9});
+  float2 uv = (atlas * float2({aw},{ah}) - float2({x},{y})) / float2({w},{h});
+  o3 = uv.xyxy;
+  float3 position = nativePosition.xyz * cb11[5].www + cb11[5].xyz;
+  position.z -= cb0[11].x;
+  o4 = mul(position, view) + cb12[7].xyz;
+  float4 clip = position.x * cb0[6] + position.y * cb0[7] + position.z * cb0[8] + cb0[9];
+  float inverse = 1 / clip.w;
+  o5 = float4(clip.xy * inverse + cb0[10].xy, clip.zw * inverse);
+}}
+",
+        uv[0], uv[1], uv[2], uv[3]
+    );
+    c.graph.program(
+        &vertex_name,
+        &text,
+        &c.refs.join("shaders/vertex.hlsl"),
+        true,
+        &c.out,
+    )?;
+    let shader = format!("{vertex_name}-shader");
+    let mut mat = shell.0.clone();
+    put(&mut mat, 0x48, &u32::MAX.to_le_bytes())?;
+    c.graph.add(
+        &name,
+        template,
+        &mat,
+        None,
+        vec![json!({"offset":0x48,"symbol":shader})],
+    )?;
+    if let Some(rows) = c.graph.manifest["source_runtime_material_draws"].as_array_mut() {
+        rows.retain(|row| !(row["model"] == draw.model_tag && row["stage"] == 16));
+    }
+    let side = VertexSide {
+        shader,
+        lens: Program {
+            code: RETICLE_LENS_PROGRAM.to_vec(),
+            constants: array_bytes(shell, 0x78, 16)?,
+            values,
+            evidence: vec![],
+            samplers: BTreeMap::new(),
+            textures: BTreeMap::new(),
+        },
+        textures: BTreeMap::new(),
+        resources: Resources {
+            rows: vec![],
+            patches: vec![],
+        },
+        objects: usize::try_from(shell.u32(0xB8)?)?,
+        flags: shell.u8(0xBC)?,
+    };
+    let evidence = json!({"model":draw.model_tag,"material":draw.material,"runtime_material":"native reticle","native_reticle_equations":true,"source_vertex_equations_retained":false,"source_pixel_equations_retained":false});
+    Ok((name, side, evidence))
+}
+
+/// Native reticle pixel programs discard every pixel whose integer mask lacks bit 2, which
+/// a native sight gets from the stage-14 lens drawn in front of it. When the source has no
+/// stage-14 draw, each reticle gets a lens over its own faces from the native lens material
+/// running the reticle's vertex shader, so the lens covers exactly the reticle's pixels.
+fn lenses(
+    c: &mut Effect,
+    records: &[(SourceDraw, String)],
+    sides: &BTreeMap<String, VertexSide>,
+) -> Result<()> {
+    if records.is_empty() || !c.source.draws(14)?.is_empty() {
+        return Ok(());
+    }
+    let template = u64::from(c.contracts()?.carrier(Role::OpticStencil)?.material);
+    let shell = c.contracts()?.material(&c.refs, Role::OpticStencil)?;
+    let mut created = BTreeMap::new();
+    let mut evidence = vec![];
+    for (draw, reticle) in records {
+        if !created.contains_key(reticle) {
+            let side = sides
+                .get(reticle)
+                .context("reticle vertex shader for its lens")?;
+            let name = format!("{reticle}-lens");
+            let mut mat = shell.0.clone();
+            let mut patches = vec![];
+            side.apply_lens(&mut mat, &mut patches)?;
+            c.graph.add(&name, template, &mat, None, patches)?;
+            evidence.push(json!({"reticle":reticle,"lens":name,"native_lens_pixel_shader":format!("{:08X}",shell.u32(0x2C8)?)}));
+            created.insert(reticle.clone(), name);
+        }
+        for (channel, faces) in &draw.groups {
+            c.draws.add(14, draw, *channel, faces, &created[reticle])?;
+            // Reticle draws carry the translucent-stage bit 0x10, and no native stage-14 draw
+            // does (census of the stock packages, 2026-10-05).
+            c.draws.records[14]
+                .last_mut()
+                .context("lens draw record")?
+                .0[0x18] &= !0x10;
+        }
+    }
+    c.draws.layout(14)?;
+    c.graph.manifest["source_stage_14_adapter"]["reticle_lenses"] = json!(evidence);
+    Ok(())
+}
+
 #[expect(
     clippy::cognitive_complexity,
     reason = "Preserve the audited converter while integrating the legacy rendering pipeline."
@@ -704,10 +941,22 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
     let template = u64::from(c.contracts()?.carrier(role)?.material);
     let mut dyes = None;
     let mut created = BTreeMap::new();
+    let mut sides = BTreeMap::new();
     let mut evidence = vec![];
     let mut records = vec![];
     for draw in c.source.draws(stage)? {
         let plated = c.source.report["models"][draw.model]["has_texture_plates"] != false;
+        if draw.material == "FFFFFFFF" && stage == 16 {
+            let key = (draw.model, draw.material.clone());
+            if !created.contains_key(&key) {
+                let (name, side, row) = runtime_reticle(c, &draw, &shell, template)?;
+                evidence.push(row);
+                sides.insert(name.clone(), side);
+                created.insert(key.clone(), name);
+            }
+            records.push((draw, created[&key].clone()));
+            continue;
+        }
         if draw.material == "FFFFFFFF" {
             let omitted = &mut c.graph.manifest["source_runtime_material_draws"];
             if omitted.is_null() {
@@ -781,6 +1030,7 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
                 dyes.as_ref().filter(|_| has_dyes),
                 resource_map,
                 Some(&binding),
+                true,
             )
             .with_context(|| format!("stage {stage} material {} pixel program", draw.material))?;
             if runtime_dyes {
@@ -1047,6 +1297,22 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
             fixed(&mut mat, 0x2C8, &textures, &mut patches)?;
             set_program(&mut mat, 0x48, &vertex_program, c.objects.len())?;
             set_program(&mut mat, 0x2C8, &pixel_program, c.objects.len())?;
+            if stage == 16 {
+                sides.insert(
+                    name.clone(),
+                    VertexSide {
+                        shader: format!("{vertex_name}-shader"),
+                        lens: vertex_bindings
+                            .lens
+                            .clone()
+                            .context("reticle lens vertex program")?,
+                        textures: vertex_bindings.textures.clone(),
+                        resources: vertex_bindings.resources.clone(),
+                        objects: c.objects.len(),
+                        flags: 0,
+                    },
+                );
+            }
             set_resources(&mut mat, 0x48, vertex_bindings.resources, &mut patches)?;
             append_array(&mut mat, 0x308, 0x808073F3, &sampler_rows, 16)?;
             if !sampler_patches.is_empty() {
@@ -1067,14 +1333,17 @@ pub(super) fn build(c: &mut Effect, prepared: &Path, stage: usize) -> Result<()>
         records.push((draw, created[&key].clone()));
     }
     c.draws.records[stage].clear();
-    for (draw, symbol) in records {
+    for (draw, symbol) in &records {
         for (channel, faces) in &draw.groups {
-            c.draws.add(stage, &draw, *channel, faces, &symbol)?;
+            c.draws.add(stage, draw, *channel, faces, symbol)?;
         }
     }
     c.draws.layout(stage)?;
     c.graph.manifest[format!("source_stage_{stage}_adapter")] =
         json!({"materials":evidence,"implementation":"Rust","gameplay_verified":false});
+    if stage == 16 {
+        lenses(c, &records, &sides)?;
+    }
     Ok(())
 }
 
@@ -1090,7 +1359,7 @@ mod tests {
             material[48] = blend | 0x80;
             append_array(&mut material, 0x2D0, 0x80800009, &code, 1).unwrap();
             let mut bindings = Bindings::default();
-            texture_contract(&Payload(material), 0x2B0, &mut bindings).unwrap();
+            texture_contract(&Payload(material), 0x2B0, &mut bindings, true).unwrap();
             let result = program::lower(&code, &bindings).unwrap();
             assert_eq!(result.code, [0x3F, 0x2C, 1, 0x47, 0x25]);
             assert_eq!(result.textures, BTreeMap::from([(0x2A, 0x25)]));
@@ -1105,7 +1374,7 @@ mod tests {
             let mut material = vec![0; 0x400];
             append_array(&mut material, 0x2D0, 0x80800009, &code, 1).unwrap();
             let mut bindings = Bindings::default();
-            texture_contract(&Payload(material), 0x2B0, &mut bindings).unwrap();
+            texture_contract(&Payload(material), 0x2B0, &mut bindings, true).unwrap();
             let result = program::lower(&code, &bindings).unwrap();
             assert_eq!(result.code, [0x3F, 3, 0x13, 0x47, slot]);
             assert_eq!(result.textures, BTreeMap::from([(slot, slot)]));

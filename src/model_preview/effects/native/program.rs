@@ -50,6 +50,7 @@ pub(super) struct Program {
     pub resources: Vec<Resource>,
     pub samplers: Vec<usize>,
     pub temps: usize,
+    pub derivatives: Vec<Option<super::derivative::Derivative>>,
 }
 
 fn word(bytes: &[u8], at: usize) -> Result<u32, String> {
@@ -151,10 +152,10 @@ pub(super) fn arity(code: u16) -> Option<usize> {
     Some(match code {
         0 | 1 | 14..=17 | 29 | 30 | 41 | 49 | 51 | 52 | 56 | 57 => 3,
         13 | 31 => 1,
-        32 | 60 | 61 => 3,
+        32 | 60 | 61 | 80 => 3,
         18 | 21 | 62 => 0,
         25..=28 | 43 | 47 | 54 | 64..=68 | 75 | 86 | 122 | 124 => 2,
-        35 | 38 | 50 | 55 | 108 => 4,
+        35 | 38 | 50 | 55 | 78 | 108 => 4,
         45 | 77 => 3,
         69 | 72 => {
             if code == 69 {
@@ -202,6 +203,18 @@ fn signature(bytes: &[u8]) -> Result<Vec<Semantic>, String> {
 }
 
 impl Program {
+    pub(super) fn recover_derivatives(&mut self) {
+        self.derivatives = self
+            .instructions
+            .iter()
+            .enumerate()
+            .map(|(at, i)| {
+                matches!(i.code, 122 | 124)
+                    .then(|| super::derivative::Derivative::read(self, at))
+                    .flatten()
+            })
+            .collect();
+    }
     fn container_code<'a>(&mut self, bytes: &'a [u8], count: usize) -> Result<&'a [u8], String> {
         let mut code = None;
         for i in 0..count {
@@ -251,6 +264,7 @@ impl Program {
             resources: Vec::new(),
             samplers: Vec::new(),
             temps: 0,
+            derivatives: Vec::new(),
         };
         let code = program.container_code(bytes, count)?;
         if code.len() % 4 != 0
@@ -413,6 +427,16 @@ impl Program {
             return Err("Incomplete shader program".into());
         }
         program.validate()?;
+        program.derivatives = program
+            .instructions
+            .iter()
+            .enumerate()
+            .map(|(at, i)| {
+                matches!(i.code, 122 | 124)
+                    .then(|| super::derivative::Derivative::read(&program, at))
+                    .flatten()
+            })
+            .collect();
         Ok(program)
     }
 
@@ -451,7 +475,7 @@ impl Program {
             }
             let destinations = match instruction.code {
                 13 | 18 | 21 | 31 | 62 => 0,
-                38 | 77 => 2,
+                38 | 77 | 78 => 2,
                 _ => 1,
             };
             for value in instruction.operands.iter().take(destinations) {

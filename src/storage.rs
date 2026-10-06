@@ -65,12 +65,22 @@ pub fn create_file(path: &Path, contents: &[u8]) -> io::Result<()> {
 }
 
 /// Publishes an already prepared same-filesystem temporary, including SQLite-native backups.
+/// On Unix the folder's entry is flushed too, so a new backup is still reachable after a power
+/// loss once a caller goes on to replace what it protects.
 pub(crate) fn publish_new(temporary: tempfile::NamedTempFile, path: &Path) -> io::Result<()> {
     temporary.as_file().sync_all()?;
     temporary
         .persist_noclobber(path)
         .map(|_| ())
-        .map_err(|error| error.error)
+        .map_err(|error| error.error)?;
+    if cfg!(not(windows))
+        && let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        File::open(parent)?.sync_all()?;
+    }
+    Ok(())
 }
 
 /// Writes a complete file beside its destination, flushes it to disk, and then
@@ -112,6 +122,41 @@ pub(crate) fn replace_file_from_path(source: &Path, destination: &Path) -> io::R
         io::copy(&mut source, file)?;
         Ok(())
     })
+}
+
+/// Like [`replace_file_from_path`], but replaces the destination only while `before_replace`
+/// accepts it. The check runs after the copy is flushed, immediately before the rename, so an
+/// outside writer's window is the rename alone rather than the whole copy.
+pub(crate) fn replace_file_from_path_if(
+    source: &Path,
+    destination: &Path,
+    before_replace: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    let temporary = replacement_temporary_path(destination)?;
+    write_replacement_guarded(
+        destination,
+        &temporary,
+        |file| {
+            let mut source = File::open(source)?;
+            io::copy(&mut source, file)?;
+            Ok(())
+        },
+        before_replace,
+    )
+}
+
+/// Copies a complete source file to a destination that must not exist yet. A file that appears
+/// there meanwhile is kept, and the copy fails with `AlreadyExists`.
+pub(crate) fn create_file_from_path(source: &Path, destination: &Path) -> io::Result<()> {
+    let parent = destination.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "destination has no parent folder",
+        )
+    })?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    io::copy(&mut File::open(source)?, temporary.as_file_mut())?;
+    publish_new(temporary, destination)
 }
 
 /// Cleanup becomes our responsibility only after exclusive creation succeeds.

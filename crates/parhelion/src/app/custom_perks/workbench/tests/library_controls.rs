@@ -85,6 +85,7 @@ fn drafts_and_saved_perks_survive_a_restart_and_a_bad_draft_is_set_aside() {
     let mut third = a_bad_draft_is_set_aside(&root, &mut steps);
     export_and_import(&mut third, temporary.path(), &bravo_id, &mut steps);
     delete_by_id(&mut third, &root, &bravo_id, &mut steps);
+    two_windows_keep_both_drafts(&root, &mut steps);
     write_library_report(&steps);
 }
 
@@ -214,6 +215,44 @@ fn delete_by_id(workbench: &mut Workbench, root: &Path, bravo_id: &str, steps: &
     assert!(!has_entry(workbench, bravo_id));
     assert!(document_with_id(workbench, bravo_id).is_none());
     steps.push(format!("Deleted {bravo_id}, {:?} remain", names(workbench)));
+}
+
+/// Two windows open the library before either autosaves. However often the second one autosaves
+/// after losing the drafts file to the first, the first window's drafts stay, and the next start
+/// opens the drafts of both.
+fn two_windows_keep_both_drafts(root: &Path, steps: &mut Vec<String>) {
+    let mut first = open_workbench(root);
+    let mut second = open_workbench(root);
+    first.add_document(Document::new(named("Charlie"), None));
+    assert_eq!(first.drafts_error, None);
+    second.add_document(Document::new(named("Delta"), None));
+    assert!(
+        second.drafts_error.is_some(),
+        "the second window must see the conflict"
+    );
+    for text in ["second window", "second window, edited again"] {
+        second.documents[second.selected].recipe.description = text.into();
+        second.persist_drafts();
+    }
+    let on_disk =
+        String::from_utf8(std::fs::read(root.join("workbench-drafts.json")).unwrap()).unwrap();
+    assert!(
+        on_disk.contains("Charlie"),
+        "the first window's draft was replaced"
+    );
+    let next = open_workbench(root);
+    let opened = names(&next);
+    assert!(opened.contains(&"Charlie".to_owned()), "{opened:?}");
+    let delta = next
+        .documents
+        .iter()
+        .find(|document| document.recipe.name == "Delta")
+        .expect("the second window's draft");
+    assert_eq!(delta.recipe.description, "second window, edited again");
+    steps.push(format!(
+        "Two windows kept both drafts: {}. The next start opened {opened:?}",
+        second.drafts_error.unwrap_or_default()
+    ));
 }
 
 /// The report of each step, where `PARHELION_LIBRARY_OUT` asks for it.

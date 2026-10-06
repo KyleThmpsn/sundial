@@ -155,6 +155,8 @@ pub(crate) fn decode_strings(
     if hash_count != combo_count {
         return Err("Localized string table mismatch".into());
     }
+    crate::package_payload::rows_fit(&header, hash_data, hash_count, 4)?;
+    crate::package_payload::rows_fit(&data, combos, combo_count, 0x10)?;
     let mut result = Vec::with_capacity(hash_count);
     for index in 0..combo_count {
         let combo = combos + index * 0x10;

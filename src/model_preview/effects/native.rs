@@ -1,19 +1,26 @@
 //! Decode bounded native programs and bind their resources to the preview scene.
 use super::*;
+mod attributes;
+mod coverage;
 mod cube;
+mod derivative;
 mod evaluate;
 mod gear;
 mod glsl;
 mod gpu;
 mod motion;
+mod opaque;
 mod program;
 mod shade;
 mod vertex;
 
+pub(in crate::model_preview) use attributes::{Attributes, load as load_attributes};
+pub(in crate::model_preview) use coverage::load as load_cutoff;
 pub(in crate::model_preview) use gear::map_transform;
 pub(in crate::model_preview) use gpu::source;
 pub(crate) use motion::Motion;
 pub(in crate::model_preview) use motion::load as load_motion;
+pub(in crate::model_preview) use opaque::{LegacyNormal, load_normal, load_opaque};
 pub(in crate::model_preview) use shade::{Depth, Pixel, sample};
 pub(in crate::model_preview) use vertex::{Input, Varyings};
 
@@ -106,6 +113,9 @@ pub(in crate::model_preview) fn tangent(
 pub(crate) struct Native {
     pixel: program::Program,
     vertex: Option<Vertex>,
+    pub(in crate::model_preview) opaque_uv: Option<[f32; 4]>,
+    base_gain: Option<opaque::Gain>,
+    paint: Option<opaque::Paint>,
     pub(in crate::model_preview) bindings: Vec<Binding>,
 }
 
@@ -115,7 +125,6 @@ struct Vertex {
     expression: Option<Program>,
     quaternion: bool,
     stored_uv: Option<[f32; 4]>,
-    stored_color: Option<[f32; 4]>,
 }
 
 #[derive(Clone, Copy)]
@@ -142,6 +151,27 @@ pub(in crate::model_preview) struct Binding {
 }
 
 impl Native {
+    pub(in crate::model_preview) fn opaque(&self) -> bool {
+        self.opaque_uv.is_some()
+    }
+    pub(in crate::model_preview) fn base_gain(&self, frame: &Frame) -> Option<[f32; 3]> {
+        self.base_gain.as_ref()?.value(frame)
+    }
+    pub(in crate::model_preview) fn paint(&self, frame: &Frame) -> Option<[f32; 2]> {
+        self.paint.as_ref()?.value(frame)
+    }
+    pub(in crate::model_preview) fn base_metal(&self, frame: &Frame) -> Option<f32> {
+        self.paint.as_ref()?.metal(frame)
+    }
+    pub(in crate::model_preview) fn normal(&self, frame: &Frame) -> Option<[[f32; 2]; 4]> {
+        self.paint.as_ref()?.normal(frame)
+    }
+    pub(in crate::model_preview) fn grain(&self, frame: &Frame) -> Option<[f32; 3]> {
+        self.paint.as_ref()?.grain(frame)
+    }
+    pub(in crate::model_preview) fn texture_unit(&self, binding: usize) -> usize {
+        binding + if self.opaque() { 6 } else { 0 }
+    }
     pub(in crate::model_preview) fn animated(&self) -> bool {
         self.vertex
             .as_ref()
@@ -195,11 +225,6 @@ fn load_vertex(
         contract(&code, true)?;
         None
     };
-    let stored_color = if stored_uv.is_some() {
-        gear::stored_vertex_color(manager, bytes, &code)?
-    } else {
-        None
-    };
     let constants = super::read::stage_constants(manager, bytes, 0x48)?;
     check_constants(&code, &constants)?;
     let expression = Program::material(bytes, 0x48, globals, objects, surface, constants.len())?;
@@ -212,7 +237,6 @@ fn load_vertex(
         expression,
         quaternion,
         stored_uv,
-        stored_color,
     }))
 }
 
@@ -243,12 +267,28 @@ pub(super) fn load(
         &super::read::shader_bytes(manager, u32_at(bytes, 0x2C8)?, 0)?,
         0,
     )?;
+    load_program(manager, tag, bytes, objects, surface, model, (pixel, false))
+}
+
+fn load_program(
+    manager: &PackageManager,
+    tag: u32,
+    bytes: &[u8],
+    objects: &[[f32; 4]],
+    surface: u8,
+    model: &mut Model,
+    (pixel, opaque): (program::Program, bool),
+) -> Result<Material, String> {
     contract(&pixel, false)?;
     let globals = crate::dyes::material::global_channels(manager);
     let constants = super::read::stage_constants(manager, bytes, 0x2C8)?;
     check_constants(&pixel, &constants)?;
     let expression = Program::material(bytes, 0x2C8, &globals, objects, surface, constants.len())?;
-    let vertex = load_vertex(manager, bytes, &globals, objects, surface)?;
+    let vertex = if opaque {
+        None
+    } else {
+        load_vertex(manager, bytes, &globals, objects, surface)?
+    };
     let samplers = texture::material_samplers(manager, tag);
     let explicit = explicit_textures(bytes)?;
     let dye = pixel
@@ -269,6 +309,15 @@ pub(super) fn load(
             } else {
                 (None, texture::load(manager, tag)?)
             };
+            if cube.is_none() {
+                let source = [
+                    usize::from(u16_at(&header, 14)?),
+                    usize::from(u16_at(&header, 16)?),
+                ];
+                if image.size != source {
+                    model.notices.push(format!("Texture 0x{tag:08X} uses a {} × {} mip instead of {} × {} to fit the preview memory budget.", image.size[0], image.size[1], source[0], source[1]));
+                }
+            }
             if resource.integer {
                 return Err("Integer effect images are not supported".into());
             }
@@ -284,6 +333,7 @@ pub(super) fn load(
                     return Err("The preview texture budget is full".into());
                 }
                 pending.push(image);
+                texture::check_pending(model, &pending)?;
                 model.textures.len() + pending.len() - 1
             };
             (Role::Texture(index), color, cube)
@@ -341,6 +391,9 @@ pub(super) fn load(
         native: Some(Native {
             pixel,
             vertex,
+            opaque_uv: opaque.then_some([1.0, 1.0, 0.0, 0.0]),
+            base_gain: None,
+            paint: None,
             bindings,
         }),
         ..Default::default()
@@ -354,7 +407,7 @@ pub(super) fn load(
         .unwrap()
         .vertex_frame(0.0)
         .ok_or("The effect vertex expression cannot initialize")?;
-    model.textures.extend(pending);
+    texture::retain_all(model, pending)?;
     Ok(material)
 }
 
@@ -445,7 +498,7 @@ fn contract(program: &program::Program, vertex: bool) -> Result<(), String> {
     {
         return Err("The effect has no stored-space position output".into());
     }
-    for i in &program.instructions {
+    for (at, i) in program.instructions.iter().enumerate() {
         if i.code == 61 && (i.operands[1].kind != 4 || i.operands[1].literal != [0; 4]) {
             return Err("Only base-level effect texture dimensions are available".into());
         }
@@ -463,7 +516,9 @@ fn contract(program: &program::Program, vertex: bool) -> Result<(), String> {
         if i.code == 38 && i.operands[0].kind != 13 {
             return Err("The effect requires a high integer product".into());
         }
-        if matches!(i.code, 122 | 124) && (vertex || i.operands[1].kind != 1) {
+        if matches!(i.code, 122 | 124)
+            && (vertex || i.operands[1].kind != 1 && program.derivatives[at].is_none())
+        {
             return Err("The effect requires an unavailable derivative".into());
         }
         if vertex && i.code == 13 {

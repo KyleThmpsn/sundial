@@ -26,7 +26,9 @@ use crate::perk::{Icon, PerkRecipe};
 use crate::tag_payload::read_tag;
 use crate::{AuthoringResult, ItemKind};
 use sundial::package_authoring::ability_bank::Modifier;
-use sundial::package_authoring::ability_modifier::{charge_key, parameter_key};
+use sundial::package_authoring::ability_modifier::{
+    charge_key, parameter_key, recharge_key, recharge_modifier,
+};
 use sundial::package_authoring::runtime::WeaponRuntimeValueOverride;
 
 /// Sunrise keeps per-entry selection state for at most this many lists with a super lane.
@@ -59,6 +61,8 @@ pub(crate) struct Sources<'a> {
 pub(crate) struct AbilityBank {
     pub(crate) tag: u32,
     pub(crate) charges: bool,
+    /// Whether the bank takes a row that changes the ability's recharge rate.
+    pub(crate) recharge: bool,
     pub(crate) parameters: Vec<u32>,
     pub(crate) keys: Vec<u32>,
 }
@@ -146,6 +150,10 @@ pub(crate) struct AbilityEntity {
     pub(crate) source: TagHash,
     pub(crate) values: Vec<WeaponRuntimeValueOverride>,
     pub(crate) palettes: Vec<super::PaletteEdit>,
+    pub(crate) tints: Vec<super::TintEdit>,
+    pub(crate) grade: Option<super::EffectGrade>,
+    pub(crate) swaps: Vec<super::SpawnSwap>,
+    pub(crate) bank_values: Vec<super::BankValue>,
 }
 
 /// An entry's own artwork, and the stock icon row it replaces, whose container the authored
@@ -489,7 +497,7 @@ fn author_entry(
         }
         None => {}
     }
-    let entity = if edits.ability_values.is_empty() && edits.palettes.is_empty() {
+    let entity = if edits.keeps_entity() {
         None
     } else {
         // The page scopes each value to the graph it loaded: the ability's entity, or a graph it
@@ -500,6 +508,7 @@ fn author_entry(
             .ability_values
             .iter()
             .filter_map(|value| value.locator.graph_tag.map(|tag| tag.get()))
+            .chain(edits.spawn_swaps.iter().map(|swap| swap.graph))
             .collect::<BTreeSet<_>>();
         let mut first = None;
         let mut named = None;
@@ -520,6 +529,10 @@ fn author_entry(
             source,
             values: edits.ability_values.clone(),
             palettes: edits.palettes.clone(),
+            tints: edits.tints.clone(),
+            grade: edits.grade,
+            swaps: edits.spawn_swaps.clone(),
+            bank_values: edits.bank_values.clone(),
         })
     };
     let removed_modifiers = edits
@@ -546,6 +559,14 @@ fn author_entry(
             target,
             ModifierEffect::Charges {
                 count: edits.extra_charges,
+            },
+        ));
+    }
+    if edits.recharge().is_some() {
+        requested.push((
+            target,
+            ModifierEffect::Recharge {
+                multiplier_bits: edits.recharge_bits,
             },
         ));
     }
@@ -1008,6 +1029,17 @@ fn resolve_modifiers(
                         applied: f32::from_bits(value_bits),
                         add,
                     };
+                    (key, Some((key, modifier)))
+                }
+                ModifierEffect::Recharge { multiplier_bits } => {
+                    if !bank.recharge {
+                        return Err(invalid(format!(
+                            "{}: {target_label} takes no recharge change",
+                            entry.label
+                        )));
+                    }
+                    let key = recharge_key(multiplier_bits);
+                    let modifier = recharge_modifier(f32::from_bits(multiplier_bits));
                     (key, Some((key, modifier)))
                 }
             };

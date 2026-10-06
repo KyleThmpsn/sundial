@@ -59,6 +59,13 @@ pub(crate) fn allow_every_class(definition: &mut [u8]) -> AuthoringResult<()> {
     crate::tag_payload::set_array_count(definition, equipment, header, 0)
 }
 
+/// Points only the supported donor-class equip condition at `class`: 0 Titan, 1 Hunter,
+/// 2 Warlock. The ability grid still keeps its class-base pool.
+pub(crate) fn set_class(definition: &mut [u8], class: u8) -> AuthoringResult<()> {
+    sundial::package_authoring::investment_schema::set_subclass_equipment_class(definition, class)
+        .map_err(invalid)
+}
+
 const TALENT_GRID_HOLDER_CLASS: u32 = 0x8080_77B7;
 pub(super) const SOCKET_ENTRY_LIST_TABLE_CLASS: u32 = 0x8080_7A78;
 pub(super) const SOCKET_ENTRY_LIST_ROW_CLASS: u32 = 0x8080_7A7E;

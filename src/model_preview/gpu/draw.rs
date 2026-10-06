@@ -17,24 +17,31 @@ pub(super) unsafe fn groups(
             gl.uniform_1_i32(location.as_ref(), 6 + unit as i32);
         }
         let mut copied_depth = false;
+        let hide_emitter = frame.style == Style::Textured && uploaded.hide_emitter;
         for group in &uploaded.groups {
+            if hide_emitter && group.key.emitter {
+                continue;
+            }
             for unit in 0..10 {
                 gl.bind_sampler(unit, None);
             }
             gl.uniform_1_i32(uniforms.native_index.as_ref(), -1);
             bind_dye_map(gl, uniforms, uploaded, group.key.dye_map, group.key.slot);
+            gl.uniform_1_i32(
+                uniforms.native_detail.as_ref(),
+                i32::from(group.key.native_detail),
+            );
+            gl.uniform_1_f32(
+                uniforms.cutoff.as_ref(),
+                group.key.cutoff.map(f32::from_bits).unwrap_or(0.5),
+            );
             let effect = group.key.effect.filter(|_| frame.style == Style::Textured);
             if let Some(index) = effect {
-                copy_effect_depth(gl, target, &mut copied_depth);
                 let material = &frame.model.effects[index];
                 let Some(constants) = effect_frames[index].as_ref() else {
                     continue;
                 };
-                gl.enable(glow::BLEND);
-                gl.enable(glow::FRAMEBUFFER_SRGB);
-                gl.blend_func(glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
-                gl.depth_mask(false);
-                gl.uniform_1_i32(uniforms.effect.as_ref(), material.kind as i32);
+                effect_state(gl, uniforms, target, material, &mut copied_depth);
                 gl.uniform_4_f32_slice(
                     uniforms.effect_constants.as_ref(),
                     constants.as_flattened(),
@@ -50,7 +57,23 @@ pub(super) unsafe fn groups(
                 }
                 gl.active_texture(glow::TEXTURE9);
                 gl.bind_texture(glow::TEXTURE_2D, Some(target.scene_depth));
-                for (unit, sampler) in [(0, 1), (1, 2), (3, 0), (6, 0), (7, 0), (8, 3)] {
+                let bindings: Vec<_> = material.sampling().map_or_else(
+                    || {
+                        if material.normal.is_some() {
+                            Vec::new()
+                        } else {
+                            vec![(0, 1), (1, 2), (3, 0), (6, 0), (7, 0), (8, 3)]
+                        }
+                    },
+                    |units| {
+                        units
+                            .into_iter()
+                            .enumerate()
+                            .map(|(unit, sampler)| (unit as u32, sampler))
+                            .collect()
+                    },
+                );
+                for (unit, sampler) in bindings {
                     gl.bind_sampler(
                         unit,
                         uploaded
@@ -109,35 +132,18 @@ pub(super) unsafe fn groups(
             for (location, value) in uniforms.has.iter().zip(has) {
                 gl.uniform_1_i32(location.as_ref(), i32::from(value));
             }
-            if let Some(dye) = dye {
-                let s = &dye.surface;
-                gl.uniform_3_f32(
-                    uniforms.dye_albedo.as_ref(),
-                    s.albedo[0],
-                    s.albedo[1],
-                    s.albedo[2],
-                );
-                gl.uniform_3_f32(
-                    uniforms.dye_worn.as_ref(),
-                    s.worn_albedo[0],
-                    s.worn_albedo[1],
-                    s.worn_albedo[2],
-                );
-                gl.uniform_3_f32(
-                    uniforms.emissive.as_ref(),
-                    s.emissive[0],
-                    s.emissive[1],
-                    s.emissive[2],
-                );
-                gl.uniform_4_f32_slice(uniforms.params.as_ref(), &s.params);
-                gl.uniform_4_f32_slice(uniforms.worn_params.as_ref(), &s.worn_params);
-                gl.uniform_4_f32_slice(uniforms.rough.as_ref(), &s.roughness);
-                gl.uniform_4_f32_slice(uniforms.worn_rough.as_ref(), &s.worn_roughness);
-                gl.uniform_4_f32_slice(uniforms.wear.as_ref(), &s.wear);
-                gl.uniform_4_f32_slice(uniforms.detail_transform.as_ref(), &dye.transform);
-                gl.uniform_4_f32_slice(uniforms.normal_transform.as_ref(), &dye.normal_transform);
-                gl.uniform_1_f32(uniforms.iridescence_id.as_ref(), s.iridescence);
-            }
+            bind_dye(gl, uniforms, dye);
+            bind_legacy(
+                gl,
+                uniforms,
+                effect.and_then(|i| {
+                    frame.model.effects[i]
+                        .normal
+                        .as_ref()?
+                        .frame(effect_frames[i].as_ref()?)
+                }),
+                dye,
+            );
             if let Some(index) = effect {
                 if let Some(native) = &frame.model.effects[index].native {
                     let Some(constants) = native.vertex_frame(frame.seconds) else {
@@ -156,6 +162,7 @@ pub(super) unsafe fn groups(
                     gl.uniform_4_f32_slice(uniforms.native_dye.as_ref(), vectors.as_flattened());
                     let mut present = [0; 9];
                     for (unit, binding) in native.bindings.iter().enumerate() {
+                        let texture_unit = native.texture_unit(unit);
                         use crate::model_preview::effects::native::Role;
                         let texture = match binding.role {
                             Role::Texture(index) => Some(index),
@@ -170,10 +177,10 @@ pub(super) unsafe fn groups(
                             .and_then(|i| uploaded.textures.get(i))
                             .and_then(|roles| roles[usize::from(binding.color)]);
                         present[unit] = i32::from(texture.is_some());
-                        gl.active_texture(glow::TEXTURE0 + unit as u32);
+                        gl.active_texture(glow::TEXTURE0 + texture_unit as u32);
                         gl.bind_texture(glow::TEXTURE_2D, texture);
                         gl.bind_sampler(
-                            unit as u32,
+                            texture_unit as u32,
                             binding
                                 .sampler
                                 .and_then(|s| {
@@ -193,6 +200,94 @@ pub(super) unsafe fn groups(
     }
 }
 
+unsafe fn bind_legacy(
+    gl: &glow::Context,
+    uniforms: &Uniforms,
+    decode: Option<[f32; 3]>,
+    dye: Option<&shader::Dye>,
+) {
+    // SAFETY: the caller supplies the current draw context and this shader's locations.
+    unsafe {
+        gl.uniform_1_i32(
+            uniforms.has_legacy_normal.as_ref(),
+            i32::from(decode.is_some()),
+        );
+        if let Some([x, y, z]) = decode {
+            gl.uniform_3_f32(uniforms.legacy_normal.as_ref(), x, y, z);
+            let detail = dye.map_or([2.0, -1.0, 0.0, 0.0], |d| d.vectors[2]);
+            gl.uniform_3_f32(
+                uniforms.legacy_detail.as_ref(),
+                detail[0],
+                detail[1],
+                detail[2],
+            );
+        }
+    }
+}
+
+unsafe fn effect_state(
+    gl: &glow::Context,
+    uniforms: &Uniforms,
+    target: &Target,
+    material: &crate::model_preview::effects::Material,
+    copied_depth: &mut bool,
+) {
+    // SAFETY: called by groups with the current renderer context and target.
+    unsafe {
+        if material.opaque() {
+            gl.disable(glow::BLEND);
+        } else {
+            copy_effect_depth(gl, target, copied_depth);
+            gl.enable(glow::BLEND);
+        }
+        gl.disable(glow::FRAMEBUFFER_SRGB);
+        gl.blend_func(glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
+        gl.depth_mask(material.opaque());
+        gl.uniform_1_i32(
+            uniforms.effect.as_ref(),
+            if material.opaque() {
+                -1
+            } else {
+                material.kind as i32
+            },
+        );
+    }
+}
+
+unsafe fn bind_dye(gl: &glow::Context, uniforms: &Uniforms, dye: Option<&shader::Dye>) {
+    let Some(dye) = dye else { return };
+    // SAFETY: called by groups with the current painter context and program.
+    unsafe {
+        let s = &dye.surface;
+        gl.uniform_3_f32(
+            uniforms.dye_albedo.as_ref(),
+            s.albedo[0],
+            s.albedo[1],
+            s.albedo[2],
+        );
+        gl.uniform_3_f32(
+            uniforms.dye_worn.as_ref(),
+            s.worn_albedo[0],
+            s.worn_albedo[1],
+            s.worn_albedo[2],
+        );
+        gl.uniform_3_f32(
+            uniforms.emissive.as_ref(),
+            s.emissive[0],
+            s.emissive[1],
+            s.emissive[2],
+        );
+        gl.uniform_4_f32_slice(uniforms.params.as_ref(), &s.params);
+        gl.uniform_4_f32_slice(uniforms.worn_params.as_ref(), &s.worn_params);
+        gl.uniform_4_f32_slice(uniforms.rough.as_ref(), &s.roughness);
+        gl.uniform_4_f32_slice(uniforms.worn_rough.as_ref(), &s.worn_roughness);
+        gl.uniform_4_f32_slice(uniforms.wear.as_ref(), &s.wear);
+        gl.uniform_4_f32_slice(uniforms.detail_transform.as_ref(), &dye.transform);
+        gl.uniform_4_f32_slice(uniforms.normal_transform.as_ref(), &dye.normal_transform);
+        gl.uniform_1_f32(uniforms.iridescence_id.as_ref(), s.iridescence);
+    }
+}
+
 unsafe fn bind_dye_map(
     gl: &glow::Context,
     uniforms: &Uniforms,
@@ -204,6 +299,7 @@ unsafe fn bind_dye_map(
     unsafe {
         gl.uniform_1_i32(uniforms.dye_map.as_ref(), 10);
         gl.uniform_1_i32(uniforms.has_dye_map.as_ref(), i32::from(map.is_some()));
+        gl.uniform_1_i32(uniforms.map_slot.as_ref(), i32::from(slot));
         if let Some(map) = map {
             gl.active_texture(glow::TEXTURE10);
             gl.bind_sampler(10, None);
@@ -212,7 +308,6 @@ unsafe fn bind_dye_map(
                 uniforms.map_transform.as_ref(),
                 &map.transform.map(f32::from_bits),
             );
-            gl.uniform_1_i32(uniforms.map_slot.as_ref(), i32::from(slot));
         }
     }
 }

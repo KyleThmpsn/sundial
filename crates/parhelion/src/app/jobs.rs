@@ -2,6 +2,11 @@
 use super::*;
 use sundial::package_authoring::account::{AuthoredGrantReport, AuthoredProfileSyncReport};
 
+/// How long an install or uninstall waits for model previews to finish reading packages.
+pub(super) const PREVIEW_READ_WAIT: Duration = Duration::from_secs(60);
+pub(super) const PREVIEW_READ_BUSY: &str =
+    "A model preview is still reading packages. Close it and try again";
+
 #[cfg(test)]
 mod tests;
 
@@ -639,6 +644,12 @@ impl PackageAuthoringApp {
             ..Default::default()
         };
         thread::spawn(move || {
+            // Model previews pause once the install starts, but a read already running keeps
+            // package files open until it returns, so the install waits for it.
+            if !sundial::ui::model_preview::wait_for_package_reads(PREVIEW_READ_WAIT) {
+                let _ = sender.send(Err(PREVIEW_READ_BUSY.to_owned()));
+                return;
+            }
             let mut request =
                 InstallRequest::new(staged_run_directory, target_packages_directory, backup_root);
             request.limit_package_backups = limit_package_backups;

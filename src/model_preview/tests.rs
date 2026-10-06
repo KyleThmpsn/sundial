@@ -425,6 +425,8 @@ fn solid_and_wireframe_modes_ignore_texture_color() {
         uvs: vec![[0.0; 2]; 3],
         triangle_textures: vec![Some(0)],
         textures: vec![texture::Texture {
+            mips: None,
+            linear: None,
             tag: 0,
             size: [1, 1],
             rgba: vec![255, 0, 0, 255],
@@ -657,6 +659,8 @@ fn bc7_color_decoding_checks_block_size_and_crops_partial_blocks() {
 #[test]
 fn bilinear_texture_sampling_wraps_both_coordinates() {
     let texture = texture::Texture {
+        mips: None,
+        linear: None,
         tag: 0,
         size: [2, 2],
         rgba: vec![
@@ -684,11 +688,15 @@ fn each_triangle_uses_its_own_material_texture() {
         triangle_textures: vec![Some(0), Some(1)],
         textures: vec![
             texture::Texture {
+                mips: None,
+                linear: None,
                 tag: 1,
                 size: [1, 1],
                 rgba: vec![255, 0, 0, 255],
             },
             texture::Texture {
+                mips: None,
+                linear: None,
                 tag: 2,
                 size: [1, 1],
                 rgba: vec![0, 0, 255, 255],

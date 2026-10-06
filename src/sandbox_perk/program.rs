@@ -723,7 +723,8 @@ mod f32_bits {
 /// `parameter` a row under `key` that sets the parameter to `value`, added to the running
 /// value or written over it, so an Ability Property action applying `key` on that slot works
 /// on every Subclass. The key is a hash of the tuning (`ability::bank::tuning_key`), so equal
-/// tunings on any perk share one row and different ones never collide.
+/// tunings on any perk share one row. It is 32 bits, so different tunings can share a key, and
+/// the program and the build refuse that rather than let one take the other's row.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AbilityTuning {
@@ -841,17 +842,30 @@ fn ability_property_of(record: &[u8]) -> Option<(AbilityTarget, u32)> {
 
 /// The tunings a program defines for its Ability Property actions.
 impl Program {
-    /// This program's name and tunings around a native draft of it, for the editors that
-    /// adopt the draft as the program.
+    /// Why this program cannot become an editable native program without losing part of it.
+    /// The native form keeps component edits per referenced graph, so a guided program's
+    /// private resource edits to the graphs its actions reference have no place in it.
     #[must_use]
-    pub fn with_native(&self, native: NativeProgram) -> Self {
-        Self {
+    pub fn native_adoption_issue(&self) -> Option<&'static str> {
+        (self.native.is_none() && !self.native_asset_patches.is_empty()).then_some(
+            "This effect edits private copies of the objects it attaches, which editing it here would drop. It stays as it is.",
+        )
+    }
+
+    /// This program's name and tunings around a native draft of it, for the editors that
+    /// adopt the draft as the program. Refused while the program holds anything the native
+    /// form cannot keep, so an edit never silently drops part of an effect.
+    pub fn with_native(&self, native: NativeProgram) -> Result<Self, String> {
+        if let Some(issue) = self.native_adoption_issue() {
+            return Err(issue.into());
+        }
+        Ok(Self {
             name: self.name.clone(),
             native: Some(native),
             ability_tunings: self.ability_tunings.clone(),
             ability_inputs: self.ability_inputs.clone(),
             ..Self::default()
-        }
+        })
     }
 
     /// The slot and key of every Ability Property action, read from the native graph when
@@ -897,7 +911,15 @@ impl Program {
             .iter_mut()
             .find(|existing| existing.key == tuning.key)
         {
-            Some(existing) => *existing = tuning,
+            Some(existing) if *existing == tuning => {}
+            // The key is a 32-bit hash, so a different tuning can land on it. Replacing that one
+            // would change the value every action applying the key gets.
+            Some(_) => {
+                return Err(format!(
+                    "Another tuning of this effect already uses key {:08X}. Change this value slightly.",
+                    tuning.key
+                ));
+            }
             None => self.ability_tunings.push(tuning),
         }
         Ok(())
@@ -1905,7 +1927,14 @@ impl Program {
                 crate::ability::bank::slot_name(slot)
                     .map_or_else(|| format!("slot {slot}"), str::to_owned)
             };
+            let mut keys = BTreeSet::new();
             for tuning in &self.ability_tunings {
+                if !keys.insert(tuning.key) {
+                    return Err(format!(
+                        "Two ability tunings of this effect share key {:08X}.",
+                        tuning.key
+                    ));
+                }
                 if crate::ability::bank::slot_banks(tuning.slot).is_empty() {
                     return Err(format!("Ability tuning slot {} has no banks.", tuning.slot));
                 }

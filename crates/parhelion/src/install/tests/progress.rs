@@ -102,7 +102,7 @@ fn failed_install_reports_recovery_without_claiming_completion() {
         &fixture.request(),
         Some(1),
         DEFAULT_CACHE_INVALIDATION_OPS,
-        sundial::package_authoring::replace_file_from_path_atomically,
+        publish_package,
         &mut |event| events.push(event),
     )
     .unwrap_err();

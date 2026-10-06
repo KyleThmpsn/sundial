@@ -450,6 +450,7 @@ pub(in crate::catalog) fn scan_ability_rows(
                     .ok()
                     .flatten()
                     .is_some();
+                summary.recharge = crate::ability::modifier::takes_recharge(&payload);
                 summary.parameters = crate::ability::modifier::settable_parameters(&payload)
                     .unwrap_or_default()
                     .iter()

@@ -250,8 +250,11 @@ pub(super) fn event_owner_fields(entity: &[u8], owner_tag: u32) -> Result<BTreeS
 
 pub(super) fn self_reference_owner_fields(data: &[u8], owner_tag: u32) -> BTreeSet<usize> {
     let mut fields = BTreeSet::new();
-    // A tag-valued integer is insufficient. Require two complete, aligned, typed
-    // references in this payload that name the owner and point back to each other.
+    // A tag-valued integer is insufficient. Require a complete, aligned, typed reference: the
+    // owner, a native class and an aligned offset of another place in this payload. Most come in
+    // pairs that point back to each other, but not all. Every melee ability owner names its own
+    // zeroed class 80804544 block at +0x238 one way, and a copy that kept the stock tag there
+    // would use the stock owner's block.
     for offset in (0..data.len().saturating_sub(15)).step_by(8) {
         if read_u32(data, offset) != Ok(owner_tag)
             || !read_u32(data, offset + 4).is_ok_and(is_native_class)
@@ -263,17 +266,10 @@ pub(super) fn self_reference_owner_fields(data: &[u8], owner_tag: u32) -> BTreeS
         }) else {
             continue;
         };
-        if target == offset
-            || target % 8 != 0
-            || target.checked_add(16).is_none_or(|end| end > data.len())
-            || read_u32(data, target) != Ok(owner_tag)
-            || !read_u32(data, target + 4).is_ok_and(is_native_class)
-            || read_u64(data, target + 8) != Ok(offset as u64)
-        {
+        if target == offset || target % 8 != 0 || target >= data.len() {
             continue;
         }
         fields.insert(offset);
-        fields.insert(target);
     }
     fields
 }

@@ -27,6 +27,9 @@ fn build() -> BuildReport {
             item_string_hash: 0x8080_0002,
             icon_definition_hash: 0x8080_0003,
             item_index: 15_726,
+            details: None,
+            subclass: None,
+            recipe_fingerprint: String::new(),
             collection: Some(crate::NewCollectionPlan {
                 collectible_hash: 0x3333_4444,
                 collectible_index: 5_378,

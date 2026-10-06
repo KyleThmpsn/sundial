@@ -13,6 +13,9 @@ use super::{AbilitySlot, Place, layout};
 /// Most extra charges one modifier gives.
 pub const MOST_CHARGES: u8 = 4;
 
+/// The multipliers a recharge change takes, slowest to fastest.
+pub const RECHARGE_RANGE: std::ops::RangeInclusive<f32> = 0.1..=10.0;
+
 /// A change to the ability in entry `target` of this subclass, while both are selected.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +44,11 @@ pub enum ModifierEffect {
         value_bits: u32,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         add: bool,
+    },
+    /// A multiplier on its recharge rate, faster above 1.
+    Recharge {
+        #[serde(rename = "value", with = "super::f32_bits")]
+        multiplier_bits: u32,
     },
 }
 
@@ -75,7 +83,10 @@ impl ModifierEffect {
     #[must_use]
     pub fn value(self) -> Option<f32> {
         match self {
-            Self::Parameter { value_bits, .. } => Some(f32::from_bits(value_bits)),
+            Self::Parameter { value_bits, .. }
+            | Self::Recharge {
+                multiplier_bits: value_bits,
+            } => Some(f32::from_bits(value_bits)),
             Self::Key { .. } | Self::Charges { .. } => None,
         }
     }
@@ -88,6 +99,15 @@ impl ModifierEffect {
             )),
             Self::Parameter { value_bits, .. } if !f32::from_bits(value_bits).is_finite() => {
                 Err("A modifier's parameter value is not a number".to_owned())
+            }
+            Self::Recharge { multiplier_bits }
+                if !RECHARGE_RANGE.contains(&f32::from_bits(multiplier_bits)) =>
+            {
+                Err(format!(
+                    "A modifier multiplies recharge by {} to {}",
+                    RECHARGE_RANGE.start(),
+                    RECHARGE_RANGE.end()
+                ))
             }
             _ => Ok(()),
         }

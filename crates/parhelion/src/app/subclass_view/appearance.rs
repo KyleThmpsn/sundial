@@ -2,6 +2,7 @@
 //! screen shows for each attunement, top, bottom and middle. Each is the base's, another
 //! subclass's or a picture of the recipe's own, and exports as a PNG.
 use super::*;
+use crate::app::image_files::{self, ImageFiles, draw_contained};
 use crate::image_import::EmbeddedImage;
 use crate::subclass::{ArtImage, ArtPart, ScreenArt};
 use std::path::PathBuf;
@@ -18,13 +19,6 @@ const TILE_MIN_WIDTH: f32 = 180.0;
 /// A stock picture: the subclass's art container and which of its pictures.
 type Key = (u32, ArtPart);
 
-/// A file dialog and the work after it, running on another thread.
-enum Task {
-    Import(Receiver<Result<Option<EmbeddedImage>, String>>),
-    /// Whether a file was saved.
-    Export(Receiver<Result<bool, String>>),
-}
-
 /// The selected picture, the picker's search, stock pictures loaded or loading, and a running
 /// import or export with how the last one went.
 #[derive(Default)]
@@ -33,8 +27,7 @@ pub(super) struct ArtPage {
     query: String,
     pictures: BTreeMap<Key, Result<egui::TextureHandle, String>>,
     loading: Option<(Key, Receiver<Result<image::RgbaImage, String>>)>,
-    task: Option<(ArtPart, Task)>,
-    outcome: Option<Result<&'static str, String>>,
+    files: ImageFiles<ArtPart>,
 }
 
 impl ArtPage {
@@ -83,85 +76,11 @@ impl ArtPage {
         None
     }
 
-    fn busy(&self) -> bool {
-        self.task.is_some()
-    }
-
-    fn spawn(&mut self, part: ArtPart, task: Task, work: impl FnOnce() + Send + 'static) {
-        self.task = Some((part, task));
-        self.outcome = None;
-        if let Err(error) = std::thread::Builder::new()
-            .name("screen-art-file".to_owned())
-            .spawn(work)
-        {
-            self.task = None;
-            self.outcome = Some(Err(format!("Could not open the file dialog: {error}")));
-        }
-    }
-
-    /// Picks a picture for `part` and decodes it off the frame.
-    fn import(&mut self, part: ArtPart, context: egui::Context) {
-        let (sender, receiver) = mpsc::channel();
-        self.spawn(part, Task::Import(receiver), move || {
-            let picked = rfd::FileDialog::new()
-                .set_title(format!("Import {} Screen Art", part.label()))
-                .add_filter("PNG or JPEG Image", &["png", "jpg", "jpeg"])
-                .pick_file()
-                .map(|path| EmbeddedImage::from_path(&path))
-                .transpose();
-            let _ = sender.send(picked);
-            context.request_repaint();
-        });
-    }
-
-    /// Asks where to save `part` and writes `pixels` there as a PNG once they are ready.
-    fn export(
-        &mut self,
-        part: ArtPart,
-        file_name: String,
-        pixels: impl FnOnce() -> Result<image::RgbaImage, String> + Send + 'static,
-        context: egui::Context,
-    ) {
-        let (sender, receiver) = mpsc::channel();
-        self.spawn(part, Task::Export(receiver), move || {
-            let saved = rfd::FileDialog::new()
-                .set_title(format!("Export {} Screen Art", part.label()))
-                .add_filter("PNG Image", &["png"])
-                .set_file_name(file_name)
-                .save_file()
-                .map_or(Ok(false), |path| write_png(&path, pixels()?).map(|()| true));
-            let _ = sender.send(saved);
-            context.request_repaint();
-        });
-    }
-
-    /// Takes a finished import into the recipe and notes how an export went.
+    /// Takes a finished import into the recipe, for the picture it was started for.
     fn poll(&mut self, recipe: &mut WeaponRecipe) {
-        let Some((part, task)) = &self.task else {
-            return;
-        };
-        let part = *part;
-        let outcome = match task {
-            Task::Import(receiver) => match receiver.try_recv() {
-                Err(TryRecvError::Empty) => return,
-                Err(TryRecvError::Disconnected) => Some(Err("The import stopped.".to_owned())),
-                Ok(Ok(Some(image))) => {
-                    set_part(recipe, part, Some(ArtImage::Image { image }));
-                    None
-                }
-                Ok(Ok(None)) => None,
-                Ok(Err(error)) => Some(Err(error)),
-            },
-            Task::Export(receiver) => match receiver.try_recv() {
-                Err(TryRecvError::Empty) => return,
-                Err(TryRecvError::Disconnected) => Some(Err("The export stopped.".to_owned())),
-                Ok(Ok(true)) => Some(Ok("Image saved")),
-                Ok(Ok(false)) => None,
-                Ok(Err(error)) => Some(Err(error)),
-            },
-        };
-        self.task = None;
-        self.outcome = outcome;
+        if let Some((part, image)) = self.files.poll() {
+            set_part(recipe, part, Some(ArtImage::Image { image }));
+        }
     }
 }
 
@@ -169,15 +88,6 @@ fn load(packages: &Path, (container, part): Key) -> Result<image::RgbaImage, Str
     let manager = open_shadowkeep_package_manager(packages)?;
     crate::subclass::art::picture_pixels(&manager, TagHash(container), part)
         .map_err(|error| error.to_string())
-}
-
-fn write_png(path: &Path, pixels: image::RgbaImage) -> Result<(), String> {
-    let mut png = std::io::Cursor::new(Vec::new());
-    pixels
-        .write_to(&mut png, image::ImageFormat::Png)
-        .map_err(|error| format!("Could not encode the image: {error}"))?;
-    sundial::package_authoring::replace_authoring_file(path, png.get_ref())
-        .map_err(|error| format!("Could not save {}: {error}", path.display()))
 }
 
 /// Gives one picture a source, or the base's with `None`.
@@ -201,50 +111,6 @@ struct Shown {
     stock: Option<(u32, ArtPart)>,
     picture: Option<EmbeddedImage>,
     modified: bool,
-}
-
-/// A picture of the recipe's own at the size it builds at, kept while it stays the same.
-fn picture_texture(ctx: &egui::Context, image: &EmbeddedImage) -> egui::TextureHandle {
-    let (width, height) = ArtPart::SIZE;
-    let id = egui::Id::new(("screen-art-picture", image.fingerprint()));
-    if let Some(texture) = ctx.data(|data| data.get_temp::<egui::TextureHandle>(id)) {
-        return texture;
-    }
-    let covered = crate::image_import::cover(image.pixels(), width, height);
-    let texture = ctx.load_texture(
-        format!("screen-art-{:016x}", image.fingerprint()),
-        egui::ColorImage::from_rgba_unmultiplied(
-            [width as usize, height as usize],
-            covered.as_raw(),
-        ),
-        egui::TextureOptions::LINEAR,
-    );
-    ctx.data_mut(|data| data.insert_temp(id, texture.clone()));
-    texture
-}
-
-/// `texture` fitted inside `frame` over a checkerboard that shows where it is clear, or an
-/// outline while it loads.
-fn draw_contained(ui: &egui::Ui, frame: egui::Rect, texture: Option<&egui::TextureHandle>) {
-    let Some(texture) = texture else {
-        ui.painter().rect_stroke(
-            frame,
-            3.0,
-            ui.visuals().widgets.noninteractive.bg_stroke,
-            egui::StrokeKind::Inside,
-        );
-        return;
-    };
-    let size = texture.size_vec2();
-    let scale = (frame.width() / size.x.max(1.0)).min(frame.height() / size.y.max(1.0));
-    let rect = egui::Rect::from_center_size(frame.center(), size * scale);
-    style::transparency_backdrop(ui, rect);
-    ui.painter().image(
-        texture.id(),
-        rect,
-        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-        egui::Color32::WHITE,
-    );
 }
 
 /// One picture's tile: its thumbnail, the attunements it shows for, and where it comes from.
@@ -304,6 +170,13 @@ fn draw_tile(
 }
 
 impl PackageAuthoringApp {
+    /// Whether the Appearance tab's stock pictures, the base's and the taken one, have loaded.
+    #[cfg(test)]
+    pub(in crate::app) fn subclass_page_art_loaded(&self) -> bool {
+        let art = &self.subclass_page.art;
+        art.loading.is_none() && art.pictures.len() >= 2
+    }
+
     /// A subclass's own name, by item hash.
     fn subclass_name(&self, hash: u32) -> String {
         self.subclasses
@@ -355,7 +228,12 @@ impl PackageAuthoringApp {
                 }
             }
             Some(ArtImage::Image { image }) => Shown {
-                texture: Some(picture_texture(ctx, image)),
+                texture: Some(image_files::covered_texture(
+                    ctx,
+                    "screen-art-picture",
+                    image,
+                    ArtPart::SIZE,
+                )),
                 source: "Picture".to_owned(),
                 stock: None,
                 picture: Some(image.clone()),
@@ -405,7 +283,7 @@ impl PackageAuthoringApp {
         ui.add_space(TILE_GAP);
         let selected = page.selected;
         self.draw_art_editor(ui, selected, &shown[selected.index()], &mut page);
-        if page.loading.is_some() || page.busy() {
+        if page.loading.is_some() || page.files.busy() {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }
@@ -437,7 +315,7 @@ impl PackageAuthoringApp {
             draw_contained(ui, frame, shown.texture.as_ref());
             ui.add_space(4.0);
             self.draw_art_source(ui, part, shown, page);
-            match &page.outcome {
+            match &page.files.outcome {
                 Some(Ok(message)) => {
                     ui.weak(*message);
                 }
@@ -458,7 +336,7 @@ impl PackageAuthoringApp {
         page: &mut ArtPage,
     ) {
         let base = self.recipe.donor.item_hash.parse_u32().ok();
-        let busy = page.busy();
+        let busy = page.files.busy();
         let mut choice = None;
         let (mut import, mut export) = (false, false);
         let subclasses = self
@@ -529,7 +407,12 @@ impl PackageAuthoringApp {
             set_part(&mut self.recipe, part, choice);
         }
         if import {
-            page.import(part, ui.ctx().clone());
+            page.files.import(
+                part,
+                format!("Import {} Screen Art", part.label()),
+                "screen-art-file",
+                ui.ctx().clone(),
+            );
         }
         if export {
             self.export_art(ui.ctx(), part, shown, page);
@@ -539,16 +422,20 @@ impl PackageAuthoringApp {
     /// Exports the picture the build carries: a picture of its own at its built size, any other
     /// as its subclass has it.
     fn export_art(&self, ctx: &egui::Context, part: ArtPart, shown: &Shown, page: &mut ArtPage) {
-        let file_name = format!(
-            "{}-{}.png",
-            self.recipe.slug(),
-            part.label().to_lowercase().replace(' ', "-")
+        let names = (
+            format!("Export {} Screen Art", part.label()),
+            format!(
+                "{}-{}.png",
+                self.recipe.slug(),
+                part.label().to_lowercase().replace(' ', "-")
+            ),
         );
         if let Some(picture) = shown.picture.clone() {
             let (width, height) = ArtPart::SIZE;
-            page.export(
+            page.files.export(
                 part,
-                file_name,
+                names,
+                "screen-art-file",
                 move || Ok(crate::image_import::cover(picture.pixels(), width, height)),
                 ctx.clone(),
             );
@@ -556,9 +443,10 @@ impl PackageAuthoringApp {
             && let Some(container) = self.art_container(hash)
         {
             let packages: PathBuf = self.packages.clone();
-            page.export(
+            page.files.export(
                 part,
-                file_name,
+                names,
+                "screen-art-file",
                 move || load(&packages, (container, taken)),
                 ctx.clone(),
             );

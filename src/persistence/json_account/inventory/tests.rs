@@ -19,7 +19,7 @@ fn item(soid: u64, hash: u32) -> Value {
     })
 }
 
-fn document(version: u64) -> Value {
+pub(super) fn document(version: u64) -> Value {
     json!({
         "version": version,
         "state": {

@@ -49,6 +49,13 @@ pub(in crate::catalog) fn scan_activity_condition_contexts(
     if definition_count != string_count {
         return Err("The installed activity definition and string tables do not match".into());
     }
+    rows_fit(
+        &definitions,
+        definition_rows,
+        definition_count,
+        ACTIVITY_INDEX_ROW_SIZE,
+    )?;
+    rows_fit(&strings, string_rows, string_count, ACTIVITY_INDEX_ROW_SIZE)?;
 
     let mut activities = Vec::with_capacity(definition_count);
     for index in 0..definition_count {

@@ -1,13 +1,16 @@
-//! The main page for subclasses. A subclass keeps its base's class and element. Each ability
-//! and each attunement path node is based on a stock one of any class, and can be authored: a
-//! name, a description, an icon and perks of its own, including custom perks from the perk
-//! workbench. An attunement can come from another stock subclass and take its own name.
+//! The main page for subclasses. A subclass keeps its base's element, and is for every class, its
+//! base's or another. Each ability and each attunement path node is based on a stock one of any
+//! class, and can be authored: a name, a description, an icon and perks of its own, including
+//! custom perks from the perk workbench. An attunement can come from another stock subclass and
+//! take its own name.
 //!
 //! The page lists the subclass at the left in the game's order: its abilities by slot, then its
 //! attunements with their nodes. Clicking any of them shows it at the right: an ability or node
-//! leads with the stock one it is based on, a row whose choices open below it, a line to each
-//! stock subclass grouped by class. Its own name, description, icon, perks, charges, modifiers and
-//! tuning follow.
+//! heads with its icon, its name and the stock one it is based on, whose choices open over the
+//! page, then its sections as tabs: Ability (name, description, icon), Perks (the perks it
+//! grants), Gameplay (its Ability card of charges, recharge, parameters and its own values, a
+//! node's Ability Changes, what it spawns, and a closed Technical section with raw values) and
+//! Visuals.
 use super::*;
 use crate::app::style;
 use crate::subclass::{
@@ -24,6 +27,7 @@ mod icon;
 mod list;
 mod modifiers;
 mod perks;
+mod properties;
 mod tuning;
 mod values;
 
@@ -71,11 +75,14 @@ pub(super) struct PageState {
     artwork_query: String,
     /// The abilities' entities and the list of their values.
     values: values::Values,
-    /// The Tuning field's open tab, its parameter filter and the Spawns tab's trail.
-    tuning: tuning::Tab,
+    /// Each ability's tree of graphs and the properties they hold.
+    properties: properties::Properties,
+    /// The open section of an ability or node, kept as the selection moves.
+    section: detail::Section,
+    /// The Parameters card's filter and the Raw Values trail.
     parameter_query: String,
     trail: tuning::Trail,
-    /// The modifier Add Modifier is putting together.
+    /// The modifier Add Change is putting together.
     modifier_draft: Option<modifiers::Draft>,
     /// The palettes each ability's effects draw with, and their swatches.
     colors: colors::Colors,
@@ -95,7 +102,8 @@ impl Default for PageState {
             ),
             artwork_query: String::new(),
             values: values::Values::default(),
-            tuning: tuning::Tab::default(),
+            properties: properties::Properties::default(),
+            section: detail::Section::default(),
             parameter_query: String::new(),
             trail: tuning::Trail::default(),
             modifier_draft: None,
@@ -243,7 +251,6 @@ impl PackageAuthoringApp {
                     |ui| {
                         ui.set_width(base_width);
                         self.draw_gear_base(ui);
-                        self.draw_every_class(ui);
                         ui.add_space(8.0);
                         self.draw_icon_donor_picker(ui);
                     },
@@ -253,31 +260,16 @@ impl PackageAuthoringApp {
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
                         ui.set_width(definition_width);
-                        self.draw_item_text(
-                            ui,
-                            Some(if self.recipe.overrides.subclass_every_class {
-                                crate::subclass::EVERY_CLASS_TYPE_NAME
-                            } else {
-                                "Subclass"
-                            }),
-                        );
+                        self.draw_subclass_definition(ui);
                     },
                 );
             });
         } else {
             self.draw_gear_base(ui);
-            self.draw_every_class(ui);
             ui.add_space(8.0);
             self.draw_icon_donor_picker(ui);
             ui.separator();
-            self.draw_item_text(
-                ui,
-                Some(if self.recipe.overrides.subclass_every_class {
-                    crate::subclass::EVERY_CLASS_TYPE_NAME
-                } else {
-                    "Subclass"
-                }),
-            );
+            self.draw_subclass_definition(ui);
         }
         ui.add_space(4.0);
         ui.separator();
@@ -285,17 +277,72 @@ impl PackageAuthoringApp {
         self.draw_subclass_abilities(ui);
     }
 
-    /// Whether the subclass equips on and is granted to every character class.
-    fn draw_every_class(&mut self, ui: &mut egui::Ui) {
-        let mut every = self.recipe.overrides.subclass_every_class;
-        if ui
-            .checkbox(&mut every, "Every Class")
-            .on_hover_text(
-                "Allows every class to equip this subclass and installs it on every character.",
+    /// The subclass's text, then its Class picker under it, in the first column as gear pages
+    /// place theirs.
+    fn draw_subclass_definition(&mut self, ui: &mut egui::Ui) {
+        self.draw_item_text(ui, Some(self.subclass_type_name()));
+        ui.add_space(4.0);
+        let column_count = core_profile_column_count(ui.available_width());
+        ui.columns(column_count, |columns| {
+            self.draw_subclass_class(&mut columns[0]);
+        });
+    }
+
+    /// The type label the subclass's text defaults to, by the classes it is for.
+    fn subclass_type_name(&self) -> &'static str {
+        let overrides = &self.recipe.overrides;
+        crate::subclass::class_type_name(overrides.subclass_every_class, overrides.subclass_class)
+            .unwrap_or("Subclass")
+    }
+
+    /// Which classes the subclass is for, as armor's Class picker chooses: Any Class, which
+    /// every character receives and may equip, its base's class, or another class, whose
+    /// requirement then names that class and whose characters receive it.
+    fn draw_subclass_class(&mut self, ui: &mut egui::Ui) {
+        use crate::ArmorClass;
+        let base = self.subclass_base().map(|base| base.class_type);
+        let overrides = &mut self.recipe.overrides;
+        let current = if overrides.subclass_every_class {
+            Some(ArmorClass::Any)
+        } else {
+            overrides.subclass_class
+        };
+        let base_label = base.and_then(gear_view::class_label).map_or_else(
+            || "Base Class".to_owned(),
+            |class| format!("{class} (Base)"),
+        );
+        let label = ui
+            .horizontal(|ui| {
+                let label = ui.label("Class");
+                sundial::investment::draw_authoring_info_icon(
+                    ui,
+                    "Which characters receive and can equip it",
+                );
+                label
+            })
+            .inner;
+        let mut choice = current;
+        egui::ComboBox::from_id_salt("subclass_class")
+            .selected_text(
+                current.map_or_else(|| base_label.clone(), |class| class.label().to_owned()),
             )
-            .changed()
-        {
-            self.recipe.overrides.subclass_every_class = every;
+            .width(ui.available_width())
+            .truncate()
+            .show_ui(ui, |ui| {
+                workbench_style(ui);
+                ui.selectable_value(&mut choice, Some(ArmorClass::Any), ArmorClass::Any.label());
+                ui.selectable_value(&mut choice, None, base_label);
+                for class in [ArmorClass::Titan, ArmorClass::Hunter, ArmorClass::Warlock] {
+                    if class.native_class() != base {
+                        ui.selectable_value(&mut choice, Some(class), class.label());
+                    }
+                }
+            })
+            .response
+            .labelled_by(label.id);
+        if choice != current {
+            overrides.subclass_every_class = choice == Some(ArmorClass::Any);
+            overrides.subclass_class = choice.filter(|class| *class != ArmorClass::Any);
         }
     }
 

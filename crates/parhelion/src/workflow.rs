@@ -159,6 +159,10 @@ pub struct WeaponBuildReport {
     /// A subclass has no collectible or unlock.
     pub collection: Option<crate::NewCollectionPlan>,
     pub custom_plugs: Vec<CustomPlugBuildReport>,
+    pub(crate) details: Option<crate::item::WeaponBuildDetails>,
+    /// What the build wrote for a subclass.
+    pub(crate) subclass: Option<crate::item::SubclassBuildDetails>,
+    pub(crate) recipe_fingerprint: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -572,43 +576,50 @@ pub fn build_and_stage_snapshot_reporting(
                 .recipes
                 .iter()
                 .zip(&bundle.plan.weapons)
-                .map(|(recipe, plan)| WeaponBuildReport {
-                    name: recipe.name.clone(),
-                    kind: plan.kind,
-                    namespace: recipe.namespace.clone(),
-                    item_hash: plan.item_hash,
-                    item_definition_hash: u32::from(plan.definition_tag),
-                    item_string_hash: u32::from(plan.string_tag),
-                    icon_definition_hash: u32::from(plan.icon_definition_tag),
-                    item_index: plan.item_index,
-                    collection: plan.collection,
-                    custom_plugs: plan
-                        .custom_plugs
-                        .iter()
-                        .map(|plug| CustomPlugBuildReport {
-                            socket_index: plug.socket_index,
-                            choice_index: plug.choice_index,
-                            name: plug.name.clone(),
-                            item_hash: plug.item_hash,
-                            item_index: plug.item_index,
-                            definition_hash: u32::from(plug.definition_tag),
-                            string_hash: u32::from(plug.string_tag),
-                            icon_definition_hash: plug.icon_definition_tag.map(u32::from),
-                            name_hash: plug.name_hash,
-                            description_hash: plug.description_hash,
-                            perks: plug
-                                .perks
-                                .iter()
-                                .map(|perk| PrivatePerkBuildReport {
-                                    source_perk_index: perk.source_perk_index,
-                                    perk_hash: perk.perk_hash,
-                                    runtime_key: perk.runtime_key,
-                                })
-                                .collect(),
-                        })
-                        .collect(),
+                .map(|(recipe, plan)| {
+                    Ok(WeaponBuildReport {
+                        name: recipe.name.clone(),
+                        kind: plan.kind,
+                        namespace: recipe.namespace.clone(),
+                        item_hash: plan.item_hash,
+                        item_definition_hash: u32::from(plan.definition_tag),
+                        item_string_hash: u32::from(plan.string_tag),
+                        icon_definition_hash: u32::from(plan.icon_definition_tag),
+                        item_index: plan.item_index,
+                        collection: plan.collection,
+                        details: plan.details.clone(),
+                        subclass: plan.subclass.clone(),
+                        recipe_fingerprint: recipe_selection_fingerprint(std::slice::from_ref(
+                            recipe,
+                        ))?,
+                        custom_plugs: plan
+                            .custom_plugs
+                            .iter()
+                            .map(|plug| CustomPlugBuildReport {
+                                socket_index: plug.socket_index,
+                                choice_index: plug.choice_index,
+                                name: plug.name.clone(),
+                                item_hash: plug.item_hash,
+                                item_index: plug.item_index,
+                                definition_hash: u32::from(plug.definition_tag),
+                                string_hash: u32::from(plug.string_tag),
+                                icon_definition_hash: plug.icon_definition_tag.map(u32::from),
+                                name_hash: plug.name_hash,
+                                description_hash: plug.description_hash,
+                                perks: plug
+                                    .perks
+                                    .iter()
+                                    .map(|perk| PrivatePerkBuildReport {
+                                        source_perk_index: perk.source_perk_index,
+                                        perk_hash: perk.perk_hash,
+                                        runtime_key: perk.runtime_key,
+                                    })
+                                    .collect(),
+                            })
+                            .collect(),
+                    })
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, String>>()?,
             run_directory,
             manifest_path,
             artifacts,

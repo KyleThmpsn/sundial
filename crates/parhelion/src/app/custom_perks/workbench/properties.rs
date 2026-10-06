@@ -318,9 +318,9 @@ impl Properties {
         }
     }
 
-    /// Whether a property read is still going.
+    /// Whether a property or HUD status read is still going.
     pub fn busy(&self) -> bool {
-        self.pending.is_some()
+        self.pending.is_some() || self.hud.busy()
     }
 
     pub fn remember(&mut self, tag: u32, graph: Arc<PrivatePerkRuntimeGraph>) {

@@ -111,11 +111,12 @@ impl Program {
         (self.lifetime_ceiling == value + 0.05).then_some(value)
     }
 
-    /// The compiled state bridge maps two adjacent source vectors in bank 2 to adjacent output
-    /// vectors in bank 1. Section 3 contains the copy when one is encoded. The route table does
-    /// not name their lanes. Air Weak 2's native vertex shader appears to read the second
-    /// vector's xyz lanes as a particle center and the first vector's w lane as a visibility or
-    /// age control.
+    /// The captured native caller publishes position XYZ through route 8 and direction XYZ
+    /// through route 9 before section 3, preserving each vector's fourth component. This
+    /// bridge recognizes adjacent bank-2 inputs and bank-1 outputs in stored programs.
+    /// Air Weak 2's vertex shader appears to read the position vector as a particle center
+    /// and the direction vector's fourth component as a visibility or age control.
+    /// That final draw interpretation still requires its runtime bindings.
     pub fn state_routes(&self) -> Option<[(Route, Route); 2]> {
         let first = (self.routes[9]?, self.routes[7]?);
         let second = (self.routes[8]?, self.routes[6]?);

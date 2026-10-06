@@ -7,7 +7,7 @@ fn failed_preferences_persistence_is_visible_while_session_choices_remain_availa
         preferences_error: Some(
             "Unsupported Parhelion preferences schema 2. The saved file was preserved.".into(),
         ),
-        show_technical_build: true,
+        show_experimental_options: true,
         ..Default::default()
     };
     let ctx = egui::Context::default();
@@ -25,8 +25,8 @@ fn failed_preferences_persistence_is_visible_while_session_choices_remain_availa
         );
     }
     assert!(text(&output).contains("Unsupported Parhelion preferences schema 2"));
-    assert!(text(&output).contains("Show Technical Build"));
-    assert!(app.show_technical_build);
+    assert!(text(&output).contains("Enable Experimental Features"));
+    assert!(app.show_experimental_options);
     crate::app::custom_perks::workbench::tests::capture::write(
         &ctx,
         &output,

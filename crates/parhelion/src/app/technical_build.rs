@@ -6,6 +6,8 @@
 //! the staged manifest and the packages. This renders the whole of it, resolved against the
 //! loaded catalog, so a weapon can be checked field by field before it is built and against
 //! what a build produced before it reaches the game.
+//! Staged source rows come from the compiler, and damage carriers come from its finished
+//! definitions. The following recipe and runtime registry sections describe current inputs.
 //!
 //! The report is built as text rather than laid out as widgets. It is dense by intent, every
 //! line is selectable, and the whole thing copies in one action, which is what makes it useful
@@ -20,8 +22,9 @@ use sundial::package_authoring::runtime::{
     WeaponRuntimeValue, WeaponRuntimeValueKind,
 };
 
+use crate::ItemKind;
 use crate::recipe::{MarkerOffsetRecipe, WeaponRecipe};
-use crate::workflow::BuildReport;
+use crate::workflow::{BuildReport, WeaponBuildReport};
 
 /// The effective runtime entity behind the report, once the background scan has produced it.
 /// `None` while no scan has finished for the current recipe.
@@ -93,7 +96,7 @@ pub(super) struct ReportCache {
 /// Renders the report. Pure, so its content is tested without drawing a frame. Without a staged
 /// build it reports the identities the next build will assign. With a donor from the loaded
 /// catalog, inherited fields show the donor's value instead of "donor".
-pub(super) fn technical_build_report(
+pub(crate) fn technical_build_report(
     build: Option<&BuildReport>,
     recipe: &WeaponRecipe,
     donor: Option<&WeaponDonor>,
@@ -104,33 +107,93 @@ pub(super) fn technical_build_report(
     match build {
         Some(build) => {
             append_build(&mut out, build);
+            let current = build
+                .weapons
+                .iter()
+                .find(|weapon| weapon.namespace == recipe.namespace);
+            let matches = current.is_some_and(|weapon| {
+                crate::manifest::recipe_selection_fingerprint(std::slice::from_ref(recipe))
+                    .is_ok_and(|fingerprint| fingerprint == weapon.recipe_fingerprint)
+            });
+            let _ = writeln!(
+                out,
+                "\n{}",
+                match current {
+                    None => "Current recipe is not in this staged build.",
+                    Some(_) if matches => "Current recipe matches this staged build.",
+                    Some(_) =>
+                        "Current recipe differs from this staged build. Build again to check these edits.",
+                }
+            );
+            // Sunrise groups subclasses in item order, so each one's group depends on the others.
+            let mut subclasses = build
+                .weapons
+                .iter()
+                .filter(|weapon| weapon.kind == ItemKind::Subclass)
+                .collect::<Vec<_>>();
+            subclasses.sort_by_key(|weapon| weapon.item_index);
             for (index, weapon) in build.weapons.iter().enumerate() {
                 let _ = writeln!(
                     out,
-                    "\n{} {}/{}  {}",
-                    weapon.kind.label().to_uppercase(),
+                    "\nStaged {} {}/{}  {}",
+                    weapon.kind.label(),
                     index + 1,
                     build.weapons.len(),
                     weapon.name
                 );
-                append_weapon(&mut out, weapon);
+                append_weapon(&mut out, weapon, &subclasses);
             }
         }
         None => append_planned(&mut out, recipe),
     }
+    if build.is_some() {
+        let _ = writeln!(out, "\nCurrent Recipe");
+    }
+    let weapon = recipe.kind.is_weapon();
     append_donors(&mut out, recipe, donor);
     append_item(&mut out, recipe, donor);
-    append_stats(&mut out, recipe, donor);
-    append_perks(&mut out, recipe, donor);
+    append_install(&mut out, recipe);
+    append_kind(&mut out, recipe, donor);
+    // Other kinds show stats and perks only where they have some.
+    let stats = donor.is_some_and(|donor| !donor.investment_stats.is_empty())
+        || !recipe.overrides.investment_stats.is_empty()
+        || !recipe.overrides.removed_investment_stats.is_empty();
+    if weapon || stats {
+        append_stats(&mut out, recipe, donor);
+    }
+    let perks = donor.is_some_and(|donor| {
+        !donor.base_sandbox_perks.is_empty() || !donor.trait_indices.is_empty()
+    }) || recipe.overrides.base_sandbox_perks.is_some()
+        || recipe.overrides.trait_indices.is_some();
+    if weapon || perks {
+        append_perks(&mut out, recipe, donor);
+    }
     append_text(&mut out, recipe);
     append_appearance(&mut out, recipe, donor);
     out.push_str(art);
-    append_recipe(&mut out, recipe);
-    append_sockets(&mut out, recipe, donor);
-    append_runtime(&mut out, recipe);
-    out.push_str(registry);
+    if weapon {
+        append_recipe(&mut out, recipe);
+    }
+    let sockets = donor.is_some_and(|donor| !donor.sockets.is_empty())
+        || !recipe.overrides.socket_columns.is_empty()
+        || !recipe.overrides.socket_plug_variants.is_empty();
+    if weapon || sockets {
+        append_sockets(&mut out, recipe, donor);
+    }
+    if weapon {
+        append_runtime(&mut out, recipe);
+        out.push_str(registry);
+    }
     append_document(&mut out, recipe);
     out
+}
+
+/// Whether the kind wears gear art, which carries art arrangements, dye rows and markers.
+const fn wears_gear_art(kind: ItemKind) -> bool {
+    !matches!(
+        kind,
+        ItemKind::Subclass | ItemKind::Emblem | ItemKind::Shader
+    )
 }
 
 fn hex(value: u32) -> String {
@@ -231,6 +294,10 @@ fn resolved<T: std::fmt::Display>(
 
 fn append_build(out: &mut String, build: &BuildReport) {
     let _ = writeln!(out, "BUILD");
+    let _ = writeln!(
+        out,
+        "Package checks do not establish firing cadence or perk behavior."
+    );
     field(out, "selection fingerprint", &build.selection_fingerprint);
     field(out, "run directory", build.run_directory.display());
     field(out, "manifest", build.manifest_path.display());
@@ -258,13 +325,37 @@ fn append_build(out: &mut String, build: &BuildReport) {
     }
 }
 
-fn append_weapon(out: &mut String, weapon: &crate::workflow::WeaponBuildReport) {
+fn append_weapon(out: &mut String, weapon: &WeaponBuildReport, subclasses: &[&WeaponBuildReport]) {
     field(out, "namespace", &weapon.namespace);
     field(out, "item hash", hex(weapon.item_hash));
     field(out, "item definition", hex(weapon.item_definition_hash));
     field(out, "item string", hex(weapon.item_string_hash));
     field(out, "icon definition", hex(weapon.icon_definition_hash));
     field(out, "item index", weapon.item_index);
+    if let Some(details) = &weapon.details {
+        let _ = writeln!(out, "\n  Build Sources");
+        field(out, "Runtime Pattern", opt(details.runtime_source));
+        if let Some(donor) = details.rig_donor {
+            field(out, "Rig Moved From", hex(donor));
+        }
+        if let Some(pattern) = details.pinned_appearance {
+            field(out, "Pinned Appearance Pattern", pattern);
+        }
+        if let Some(pattern) = details.animation_donor {
+            field(out, "Animation Pattern", pattern);
+        }
+        use crate::item::WeaponDamageCarrier;
+        let carrier = match details.damage_carrier {
+            WeaponDamageCarrier::Empty => "No elemental carrier".into(),
+            WeaponDamageCarrier::Fixed { damage_type, .. } => {
+                format!("{damage_type:?} on the weapon")
+            }
+            WeaponDamageCarrier::PlugDriven { damage_type, lane } => {
+                format!("{damage_type:?} from Socket {} by default", lane + 1)
+            }
+        };
+        field(out, "Damage Carrier", carrier);
+    }
     if let Some(collection) = &weapon.collection {
         field(out, "collectible hash", hex(collection.collectible_hash));
         field(out, "collectible index", collection.collectible_index);
@@ -275,6 +366,9 @@ fn append_weapon(out: &mut String, weapon: &crate::workflow::WeaponBuildReport) 
             "unlock bank / slot",
             format!("{} / {}", collection.unlock_bank, collection.unlock_slot),
         );
+    }
+    if let Some(subclass) = &weapon.subclass {
+        append_staged_subclass(out, weapon, subclass, subclasses);
     }
     if weapon.custom_plugs.is_empty() {
         return;
@@ -315,6 +409,447 @@ fn append_weapon(out: &mut String, weapon: &crate::workflow::WeaponBuildReport) 
             );
         }
     }
+}
+
+/// The lists Sunrise keeps Super lane selection state for, which the build refuses to exceed.
+const SUPER_LANE_LISTS: usize = 32;
+
+/// What the build wrote for a subclass: the class its equip condition names, its list and
+/// records, who the install gives it to, the group of three Sunrise gives with it and the Super
+/// lane lists the build uses.
+fn append_staged_subclass(
+    out: &mut String,
+    weapon: &WeaponBuildReport,
+    subclass: &crate::item::SubclassBuildDetails,
+    subclasses: &[&WeaponBuildReport],
+) {
+    let class = |class: u8| super::gear_view::class_label(class).unwrap_or("Unknown");
+    let _ = writeln!(out, "\n  Subclass");
+    field(out, "Base Class", subclass.base_class.map_or("none", class));
+    let every_class = subclass.class_condition.is_none();
+    field(
+        out,
+        "Class Condition",
+        match subclass.class_condition {
+            None => "removed  (Any Class)".to_owned(),
+            Some(written) if Some(written) == subclass.base_class => {
+                format!("{}  (base)", class(written))
+            }
+            Some(written) => format!("{}  (recipe)", class(written)),
+        },
+    );
+    let receives = if every_class {
+        subclass.base_class
+    } else {
+        subclass.class_condition
+    };
+    field(
+        out,
+        "Goes To",
+        install_text(ItemKind::Subclass, receives, every_class),
+    );
+    field(out, "List Index", subclass.list_index);
+    field(
+        out,
+        "Own List",
+        subclass.own_list.map_or_else(
+            || "none  (base's list)".to_owned(),
+            |(list, display)| format!("list {}  display {}", hex(list), hex(display)),
+        ),
+    );
+    field(out, "Named Paths", subclass.path_names);
+    // Sunrise counts every subclass in item order, the stock nine forming three groups first.
+    if let Some(position) = subclasses
+        .iter()
+        .position(|each| each.namespace == weapon.namespace)
+    {
+        let start = position - position % 3;
+        field(
+            out,
+            "Sunrise Group",
+            match subclasses.get(start..start + 3) {
+                Some(group) => format!(
+                    "{} of {}, with {}",
+                    start / 3 + 1,
+                    subclasses.len().div_ceil(3),
+                    group
+                        .iter()
+                        .filter(|each| each.namespace != weapon.namespace)
+                        .map(|each| each.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" and ")
+                ),
+                None => format!(
+                    "none  (a last {} of {} subclasses groups nothing)",
+                    subclasses.len() - start,
+                    subclasses.len()
+                ),
+            },
+        );
+    }
+    let authored = subclasses
+        .iter()
+        .filter(|each| {
+            each.subclass
+                .as_ref()
+                .is_some_and(|details| details.own_list.is_some())
+        })
+        .count();
+    field(
+        out,
+        "Super Lane Lists",
+        format!(
+            "{} of {SUPER_LANE_LISTS}  ({} stock, {authored} authored)",
+            subclass.stock_super_lane_lists + authored,
+            subclass.stock_super_lane_lists
+        ),
+    );
+    let _ = writeln!(out, "  Authored Entries ({})", subclass.entries.len());
+    for entry in &subclass.entries {
+        let _ = writeln!(
+            out,
+            "    {}  pool {}  record {}",
+            entry.label,
+            hex(entry.pool_tag),
+            hex(entry.record_tag)
+        );
+        let mut parts = Vec::new();
+        for (name, count) in [
+            ("custom perks", entry.custom_perks),
+            ("retargeted perks", entry.retargeted_perks),
+            ("modifiers", entry.modifiers),
+            ("values", entry.values),
+            ("palettes", entry.palettes),
+            ("tints", entry.tints),
+            ("swaps", entry.swaps),
+            ("bank values", entry.bank_values),
+        ] {
+            if count > 0 {
+                parts.push(format!("{name} {count}"));
+            }
+        }
+        if entry.grade {
+            parts.push("grade".to_owned());
+        }
+        if let Some(row) = entry.icon_row {
+            parts.push(format!("icon row {row}"));
+        }
+        if let Some(row) = entry.ability_row {
+            parts.push(format!("ability row {row}"));
+        }
+        if !parts.is_empty() {
+            let _ = writeln!(out, "      {}", parts.join("  "));
+        }
+    }
+}
+
+/// Where an install puts the item. An item with a Collections entry is unlocked there. A
+/// subclass has none, so its class's characters receive it and each class's first is equipped.
+/// A shader also arrives in the profile as a stack.
+fn install_text(kind: ItemKind, class: Option<u8>, every_class: bool) -> String {
+    match kind {
+        ItemKind::Subclass => {
+            let whose = class.and_then(super::gear_view::class_label).map_or_else(
+                || "the base class's characters".to_owned(),
+                |class| format!("{class} characters"),
+            );
+            let equipped = "where it is the project's first subclass for the class";
+            if every_class {
+                format!("every character, equipped on {whose} {equipped}")
+            } else {
+                format!("{whose}, equipped {equipped}")
+            }
+        }
+        ItemKind::Shader => format!(
+            "Collections, unlocked, and the profile as a stack of up to {}",
+            crate::install::SHADER_STACK
+        ),
+        _ => "Collections, unlocked".to_owned(),
+    }
+}
+
+/// Where the recipe's item goes when installed.
+fn append_install(out: &mut String, recipe: &WeaponRecipe) {
+    let overrides = &recipe.overrides;
+    let _ = writeln!(out, "\nINSTALL");
+    let class = overrides
+        .subclass_class
+        .and_then(crate::ArmorClass::native_class);
+    field(
+        out,
+        "goes to",
+        install_text(recipe.kind, class, overrides.subclass_every_class),
+    );
+}
+
+/// What only one kind of item carries: a subclass's class and authored abilities, armor's class
+/// and Collections pages, an emblem's nameplate and trackers, a shader's dyes.
+fn append_kind(out: &mut String, recipe: &WeaponRecipe, donor: Option<&WeaponDonor>) {
+    let overrides = &recipe.overrides;
+    match recipe.kind {
+        ItemKind::Subclass => append_subclass(out, recipe),
+        ItemKind::Sparrow => {
+            let _ = writeln!(out, "\nSparrow");
+            let settings = overrides.sparrow.clone().unwrap_or_default();
+            field(out, "Summon Vehicle", settings.summon.label());
+            if let Ok(Some(entity)) = settings.summon.entity() {
+                field(out, "Vehicle Entity Tag", format!("0x{entity:08X}"));
+            }
+            field(
+                out,
+                "Driving Speed",
+                format!(
+                    "{}% of the complete forward and reverse motion programs",
+                    settings.speed_percent
+                ),
+            );
+            field(
+                out,
+                "Gameplay Verification",
+                "Speed, boost and alternate summoning require an in-game test",
+            );
+        }
+        ItemKind::Armor => {
+            use crate::ArmorClass;
+            let _ = writeln!(out, "\nARMOR");
+            field(
+                out,
+                "class",
+                overrides.armor_class.map_or_else(
+                    || "follows the base armor".to_owned(),
+                    |class| format!("{}  (recipe)", class.label()),
+                ),
+            );
+            let classes = match overrides.armor_class {
+                Some(ArmorClass::Any) => "Titan, Hunter and Warlock",
+                Some(class) => class.label(),
+                None => "the base armor's class",
+            };
+            let exotic = match overrides.rarity {
+                Some(rarity) => rarity == crate::recipe::RecipeRarity::Exotic,
+                None => donor.is_some_and(|donor| {
+                    donor.summary.rarity == sundial::investment::WeaponRarity::Exotic
+                }),
+            };
+            field(
+                out,
+                "Collections",
+                if exotic {
+                    format!("Items / Exotic / Armor / {classes}")
+                } else {
+                    format!("Items / Armor / {classes} / the project's category / a numbered set")
+                },
+            );
+        }
+        ItemKind::Emblem => {
+            use crate::emblem::NameplatePart;
+            let _ = writeln!(out, "\nEMBLEM");
+            let nameplate = overrides.nameplate.as_ref();
+            for part in NameplatePart::ALL {
+                field(
+                    out,
+                    &format!("nameplate {}", part.label().to_lowercase()),
+                    match nameplate.and_then(|nameplate| nameplate.part(part)) {
+                        None => "base emblem's".to_owned(),
+                        Some(crate::emblem::NameplateImage::Emblem { item_hash }) => {
+                            format!("emblem {item_hash}")
+                        }
+                        Some(image) => json_summary(image),
+                    },
+                );
+            }
+            field(
+                out,
+                "nameplate colors",
+                nameplate
+                    .and_then(|nameplate| nameplate.colors.as_ref())
+                    .map_or_else(|| "base emblem's".to_owned(), json),
+            );
+            field(
+                out,
+                "stat trackers",
+                match &overrides.stat_trackers {
+                    None => "base emblem's".to_owned(),
+                    Some(crate::emblem::StatTrackers::All) => "all".to_owned(),
+                    Some(crate::emblem::StatTrackers::Selected { categories }) => {
+                        list(categories.iter())
+                    }
+                },
+            );
+        }
+        ItemKind::Shader => {
+            let _ = writeln!(out, "\nSHADER");
+            field(out, "icon from dyes", overrides.icon_from_dyes);
+            let _ = writeln!(out, "  dye edits ({})", overrides.dye_edits.len());
+            for edit in &overrides.dye_edits {
+                let _ = writeln!(out, "    {}", json(edit));
+            }
+            let _ = writeln!(
+                out,
+                "  texture edits ({})",
+                overrides.dye_texture_edits.len()
+            );
+            for edit in &overrides.dye_texture_edits {
+                let _ = writeln!(out, "    {}", json(edit));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A subclass's class and what each of its abilities and attunement nodes authors.
+fn append_subclass(out: &mut String, recipe: &WeaponRecipe) {
+    use crate::subclass::Place;
+    let overrides = &recipe.overrides;
+    let _ = writeln!(out, "\nSUBCLASS");
+    field(
+        out,
+        "class",
+        if overrides.subclass_every_class {
+            "Any Class  (recipe, equip condition removed)".to_owned()
+        } else {
+            overrides.subclass_class.map_or_else(
+                || "base subclass's".to_owned(),
+                |class| format!("{}  (recipe)", class.label()),
+            )
+        },
+    );
+    field(
+        out,
+        "screen art",
+        overrides
+            .screen_art
+            .as_ref()
+            .map_or_else(|| "base subclass's".to_owned(), json_summary),
+    );
+    let Some(abilities) = overrides.subclass_abilities.as_ref() else {
+        field(out, "abilities", "base subclass's");
+        return;
+    };
+    let _ = writeln!(out, "  abilities ({})", abilities.choices.len());
+    for choice in &abilities.choices {
+        let _ = writeln!(
+            out,
+            "    {}  based on {} entry {}",
+            Place::Ability(choice.entry).label(),
+            hex(choice.source),
+            choice.source_entry
+        );
+        append_entry_edits(out, &choice.edits, "      ");
+    }
+    let _ = writeln!(out, "  attunements ({})", abilities.attunements.len());
+    for attunement in &abilities.attunements {
+        let _ = writeln!(
+            out,
+            "    {} Path  from {} {} path{}",
+            attunement.path.label(),
+            hex(attunement.source),
+            attunement.source_path.label().to_lowercase(),
+            attunement
+                .name
+                .as_ref()
+                .map_or_else(String::new, |name| format!("  named {name:?}"))
+        );
+        for node in &attunement.nodes {
+            let _ = writeln!(
+                out,
+                "      Node {}  based on {} {} path node {}",
+                node.position + 1,
+                hex(node.source),
+                node.source_path.label().to_lowercase(),
+                node.source_position + 1
+            );
+            append_entry_edits(out, &node.edits, "        ");
+        }
+    }
+}
+
+/// One line for each change an ability or node makes.
+fn append_entry_edits(out: &mut String, edits: &crate::subclass::EntryEdits, indent: &str) {
+    let mut lines = entry_text_lines(edits);
+    if edits.extra_charges > 0 {
+        lines.push(format!("extra charges +{}", edits.extra_charges));
+    }
+    if edits.recharge_bits != 0 {
+        lines.push(format!("recharge ×{}", f32::from_bits(edits.recharge_bits)));
+    }
+    for modifier in &edits.modifiers {
+        lines.push(format!("modifier {}", json(modifier)));
+    }
+    for modifier in &edits.removed_modifiers {
+        lines.push(format!(
+            "removed modifier key {} row {}",
+            hex(modifier.key),
+            modifier.row
+        ));
+    }
+    for swap in &edits.spawn_swaps {
+        lines.push(format!(
+            "swap in {}  {} -> {}",
+            hex(swap.graph),
+            hex(swap.replaced),
+            hex(swap.replacement)
+        ));
+    }
+    for (name, count) in [
+        ("parameters", edits.parameters.len()),
+        ("values", edits.ability_values.len()),
+        ("palettes", edits.palettes.len()),
+        ("tints", edits.tints.len()),
+        ("bank values", edits.bank_values.len()),
+    ] {
+        if count > 0 {
+            lines.push(format!("{name} {count}"));
+        }
+    }
+    if let Some(grade) = &edits.grade {
+        lines.push(format!("grade {}", json(grade)));
+    }
+    if lines.is_empty() {
+        lines.push("no edits".to_owned());
+    }
+    for line in lines {
+        let _ = writeln!(out, "{indent}{line}");
+    }
+}
+
+/// The lines for an ability's or node's text, icon and perks.
+fn entry_text_lines(edits: &crate::subclass::EntryEdits) -> Vec<String> {
+    use crate::subclass::EntryIcon;
+    let mut lines = Vec::new();
+    if let Some(name) = &edits.name {
+        lines.push(format!("name {name:?}"));
+    }
+    if let Some(description) = &edits.description {
+        lines.push(format!("description {} chars", description.chars().count()));
+    }
+    match &edits.icon {
+        Some(EntryIcon::Ability { subclass, entry }) => {
+            lines.push(format!("icon of {} entry {entry}", hex(*subclass)));
+        }
+        Some(EntryIcon::Artwork { .. }) => lines.push("icon artwork".to_owned()),
+        None => {}
+    }
+    for (name, perks) in [
+        ("added perks", &edits.added_perks),
+        ("removed perks", &edits.removed_perks),
+    ] {
+        if !perks.is_empty() {
+            lines.push(format!("{name} {}", list(perks.iter())));
+        }
+    }
+    if !edits.custom_perks.is_empty() {
+        lines.push(format!(
+            "custom perks {}",
+            list(
+                edits
+                    .custom_perks
+                    .iter()
+                    .map(|perk| format!("{:?}", perk.name))
+            )
+        ));
+    }
+    lines
 }
 
 /// The identities a build writes are fixed by the recipe; only table indices wait for the build.
@@ -373,8 +908,14 @@ fn donor_reference(out: &mut String, name: &str, reference: &crate::recipe::Weap
 }
 
 fn append_donors(out: &mut String, recipe: &WeaponRecipe, donor: Option<&WeaponDonor>) {
+    let weapon = recipe.kind.is_weapon();
+    let base = if weapon {
+        "gameplay donor"
+    } else {
+        "base item"
+    };
     let _ = writeln!(out, "\nDONORS");
-    donor_reference(out, "gameplay donor", &recipe.donor);
+    donor_reference(out, base, &recipe.donor);
     match donor {
         Some(donor) => {
             let summary = &donor.summary;
@@ -388,18 +929,20 @@ fn append_donors(out: &mut String, recipe: &WeaponRecipe, donor: Option<&WeaponD
                 format!("0x{:016X}", summary.bucket_hash),
             );
             field(out, "  collection backed", summary.collection_backed);
-            field(out, "  power cap", opt(summary.power_cap));
-            field(
-                out,
-                "  damage profile",
-                format!("{:?}", summary.damage_profile),
-            );
-            field(
-                out,
-                "  translation group",
-                opt(summary.weapon_translation_group),
-            );
-            field(out, "  equipment slot", opt_debug(donor.equipment_slot));
+            if weapon {
+                field(out, "  power cap", opt(summary.power_cap));
+                field(
+                    out,
+                    "  damage profile",
+                    format!("{:?}", summary.damage_profile),
+                );
+                field(
+                    out,
+                    "  translation group",
+                    opt(summary.weapon_translation_group),
+                );
+                field(out, "  equipment slot", opt_debug(donor.equipment_slot));
+            }
         }
         None => field(out, "  catalog", "not loaded"),
     }
@@ -410,8 +953,11 @@ fn append_donors(out: &mut String, recipe: &WeaponRecipe, donor: Option<&WeaponD
     ] {
         match reference {
             Some(reference) => donor_reference(out, name, reference),
-            None => field(out, name, "none  (gameplay donor)"),
+            None => field(out, name, format!("none  ({base})")),
         }
+    }
+    if !weapon {
+        return;
     }
     for (name, reference, follows) in [
         (
@@ -488,49 +1034,54 @@ fn opt_debug<T: std::fmt::Debug>(value: Option<T>) -> String {
 
 fn append_item(out: &mut String, recipe: &WeaponRecipe, donor: Option<&WeaponDonor>) {
     let overrides = &recipe.overrides;
+    let weapon = recipe.kind.is_weapon();
     let _ = writeln!(
         out,
         "\nITEM DEFINITION  (recipe override, else donor value)"
     );
-    resolved(
-        out,
-        "inventory slot",
-        overrides.inventory_slot.as_ref().map(json),
-        donor.map(|donor| donor.summary.inventory_slot.map(|slot| format!("{slot:?}"))),
-    );
-    resolved(
-        out,
-        "ammo type",
-        overrides.ammo_type.as_ref().map(json),
-        donor.map(|donor| donor.summary.ammo_type.map(|ammo| format!("{ammo:?}"))),
-    );
-    resolved(
-        out,
-        "damage type",
-        overrides.modern_damage_type.as_ref().map(json),
-        donor.map(|donor| {
-            donor
-                .summary
-                .damage_type
-                .map(|damage| format!("{damage:?}"))
-        }),
-    );
+    if weapon {
+        resolved(
+            out,
+            "inventory slot",
+            overrides.inventory_slot.as_ref().map(json),
+            donor.map(|donor| donor.summary.inventory_slot.map(|slot| format!("{slot:?}"))),
+        );
+        resolved(
+            out,
+            "ammo type",
+            overrides.ammo_type.as_ref().map(json),
+            donor.map(|donor| donor.summary.ammo_type.map(|ammo| format!("{ammo:?}"))),
+        );
+        resolved(
+            out,
+            "damage type",
+            overrides.modern_damage_type.as_ref().map(json),
+            donor.map(|donor| {
+                donor
+                    .summary
+                    .damage_type
+                    .map(|damage| format!("{damage:?}"))
+            }),
+        );
+    }
     resolved(
         out,
         "rarity",
         overrides.rarity.as_ref().map(json),
         donor.map(|donor| Some(format!("{:?}", donor.summary.rarity))),
     );
-    resolved(
-        out,
-        "power cap groups",
-        overrides
-            .power_cap_groups
-            .as_ref()
-            .map(|groups| list(groups.iter()))
-            .or_else(|| overrides.power_cap_group.map(|group| list([group]))),
-        donor.map(|donor| Some(list(donor.power_cap_groups.iter()))),
-    );
+    if weapon || recipe.kind == ItemKind::Armor {
+        resolved(
+            out,
+            "power cap groups",
+            overrides
+                .power_cap_groups
+                .as_ref()
+                .map(|groups| list(groups.iter()))
+                .or_else(|| overrides.power_cap_group.map(|group| list([group]))),
+            donor.map(|donor| Some(list(donor.power_cap_groups.iter()))),
+        );
+    }
     resolved(
         out,
         "max stack size",
@@ -552,6 +1103,36 @@ fn append_item(out: &mut String, recipe: &WeaponRecipe, donor: Option<&WeaponDon
             .map(ToString::to_string),
         donor.map(|donor| donor.plug_category_hash.map(hex)),
     );
+    if weapon {
+        append_weapon_item(out, recipe, donor);
+    }
+    // A subclass has no Collections entry.
+    if recipe.kind != ItemKind::Subclass {
+        field(
+            out,
+            "collection placement",
+            json(&recipe.collection_placement),
+        );
+        if weapon {
+            field(
+                out,
+                "collection destination",
+                overrides
+                    .collection_destination
+                    .map_or_else(|| "none".to_owned(), |destination| destination.label()),
+            );
+        }
+        field(
+            out,
+            "exclude from Sunrise badge",
+            overrides.exclude_from_sunrise_badge,
+        );
+    }
+}
+
+/// The item definition fields only a weapon carries.
+fn append_weapon_item(out: &mut String, recipe: &WeaponRecipe, donor: Option<&WeaponDonor>) {
+    let overrides = &recipe.overrides;
     resolved(
         out,
         "roll set index",
@@ -605,23 +1186,6 @@ fn append_item(out: &mut String, recipe: &WeaponRecipe, donor: Option<&WeaponDon
         overrides
             .behavior_firing
             .map_or_else(|| "behavior (default)".to_owned(), |firing| json(&firing)),
-    );
-    field(
-        out,
-        "collection placement",
-        json(&recipe.collection_placement),
-    );
-    field(
-        out,
-        "collection destination",
-        overrides
-            .collection_destination
-            .map_or_else(|| "none".to_owned(), |destination| destination.label()),
-    );
-    field(
-        out,
-        "exclude from Sunrise badge",
-        overrides.exclude_from_sunrise_badge,
     );
 }
 
@@ -797,24 +1361,28 @@ fn append_text(out: &mut String, recipe: &WeaponRecipe) {
 
 fn append_appearance(out: &mut String, recipe: &WeaponRecipe, donor: Option<&WeaponDonor>) {
     let overrides = &recipe.overrides;
+    let weapon = recipe.kind.is_weapon();
     let _ = writeln!(out, "\nAPPEARANCE");
-    #[cfg(feature = "d2-model-importer")]
-    field(
-        out,
-        "imported graph",
-        overrides
-            .imported_graph
-            .as_ref()
-            .map_or_else(|| "none".to_owned(), json),
-    );
-    field(
-        out,
-        "hud icon",
-        overrides
-            .hud_icon
-            .as_ref()
-            .map_or_else(|| "none".to_owned(), json_summary),
-    );
+    if weapon {
+        #[cfg(feature = "d2-model-importer")]
+        field(
+            out,
+            "imported graph",
+            overrides
+                .imported_graph
+                .as_ref()
+                .map_or_else(|| "none".to_owned(), json),
+        );
+        field(
+            out,
+            "hud icon",
+            overrides
+                .hud_icon
+                .as_ref()
+                .map_or_else(|| "none".to_owned(), json_summary),
+        );
+        field(out, "shader glow", overrides.shader_glow);
+    }
     field(
         out,
         "icon edit",
@@ -824,29 +1392,68 @@ fn append_appearance(out: &mut String, recipe: &WeaponRecipe, donor: Option<&Wea
             json_summary(&overrides.icon_edit)
         },
     );
+    if weapon || overrides.badge.is_some() {
+        field(
+            out,
+            "badge",
+            overrides.badge.as_ref().map_or_else(
+                || "none".to_owned(),
+                |badge| {
+                    format!(
+                        "{:?}  {:?}  icon {}",
+                        badge.name,
+                        badge.description,
+                        badge.icon.as_ref().map_or("none", |_| "set")
+                    )
+                },
+            ),
+        );
+    }
+    if weapon || overrides.corner_icon.is_some() {
+        field(
+            out,
+            "corner icon",
+            overrides
+                .corner_icon
+                .as_ref()
+                .map_or_else(|| "none".to_owned(), json_summary),
+        );
+    }
+    if wears_gear_art(recipe.kind) {
+        append_gear_art(out, recipe, donor);
+    }
+    if !weapon {
+        return;
+    }
+    let [forward, side, up] = overrides.held_offset_um.map(|um| f64::from(um) / 1000.0);
     field(
         out,
-        "badge",
-        overrides.badge.as_ref().map_or_else(
-            || "none".to_owned(),
-            |badge| {
-                format!(
-                    "{:?}  {:?}  icon {}",
-                    badge.name,
-                    badge.description,
-                    badge.icon.as_ref().map_or("none", |_| "set")
-                )
-            },
-        ),
+        "held offset",
+        if overrides.held_offset_um == [0; 3] {
+            "none".to_owned()
+        } else {
+            format!("forward {forward:+.3} mm  side {side:+.3} mm  up {up:+.3} mm")
+        },
     );
-    field(
-        out,
-        "corner icon",
-        overrides
-            .corner_icon
-            .as_ref()
-            .map_or_else(|| "none".to_owned(), json_summary),
-    );
+    let _ = writeln!(out, "  moved markers ({})", overrides.marker_offsets.len());
+    for offset in &overrides.marker_offsets {
+        let label = offset
+            .marker
+            .parse_u32()
+            .ok()
+            .and_then(marker_name)
+            .map_or_else(|| offset.marker.to_string(), ToOwned::to_owned);
+        let [forward, side, up] = offset.offset_um.map(|um| f64::from(um) / 1000.0);
+        let _ = writeln!(
+            out,
+            "    {label:<24}  forward {forward:+.3} mm  side {side:+.3} mm  up {up:+.3} mm"
+        );
+    }
+}
+
+/// The gear art an item wears: its arrangements and dye rows.
+fn append_gear_art(out: &mut String, recipe: &WeaponRecipe, donor: Option<&WeaponDonor>) {
+    let overrides = &recipe.overrides;
     resolved(
         out,
         "art arrangements",
@@ -883,30 +1490,6 @@ fn append_appearance(out: &mut String, recipe: &WeaponRecipe, donor: Option<&Wea
                     )
                 })))
             }),
-        );
-    }
-    let [forward, side, up] = overrides.held_offset_um.map(|um| f64::from(um) / 1000.0);
-    field(
-        out,
-        "held offset",
-        if overrides.held_offset_um == [0; 3] {
-            "none".to_owned()
-        } else {
-            format!("forward {forward:+.3} mm  side {side:+.3} mm  up {up:+.3} mm")
-        },
-    );
-    let _ = writeln!(out, "  moved markers ({})", overrides.marker_offsets.len());
-    for offset in &overrides.marker_offsets {
-        let label = offset
-            .marker
-            .parse_u32()
-            .ok()
-            .and_then(marker_name)
-            .map_or_else(|| offset.marker.to_string(), ToOwned::to_owned);
-        let [forward, side, up] = offset.offset_um.map(|um| f64::from(um) / 1000.0);
-        let _ = writeln!(
-            out,
-            "    {label:<24}  forward {forward:+.3} mm  side {side:+.3} mm  up {up:+.3} mm"
         );
     }
 }
@@ -1571,12 +2154,8 @@ impl super::PackageAuthoringApp {
         self.technical_marker_revision = self.technical_marker_revision.wrapping_add(1);
     }
 
-    /// Draws the window when the preference is on, with or without a staged build.
+    /// Draws the window while it is open, with or without a staged build.
     pub(super) fn draw_technical_build_window(&mut self, ctx: &egui::Context) {
-        if !self.show_technical_build {
-            self.technical_build_open = false;
-            return;
-        }
         if !self.technical_build_open {
             return;
         }
@@ -1601,8 +2180,12 @@ impl super::PackageAuthoringApp {
             None => {
                 let current = self.current_donor();
                 // Markers belong to the art the weapon wears, the appearance's when it has one.
-                let arrangements =
-                    self.technical_marker_arrangements(self.current_geometry_donor().as_ref());
+                // Subclasses, emblems and shaders wear none.
+                let arrangements = if wears_gear_art(self.recipe.kind) {
+                    self.technical_marker_arrangements(self.current_geometry_donor().as_ref())
+                } else {
+                    None
+                };
                 donor = Some(current);
                 arrangements
             }
@@ -1673,16 +2256,20 @@ impl super::PackageAuthoringApp {
                 .technical_registry
                 .as_ref()
                 .map_or("", |cache| cache.text.as_str());
-            let markers = marker_section(
-                arrangements.as_ref().and_then(|arrangements| {
-                    let (read, result) = self.technical_markers.as_ref()?;
-                    (read == arrangements).then_some(match result {
-                        Ok(sets) => Ok(sets.as_slice()),
-                        Err(error) => Err(error.as_str()),
-                    })
-                }),
-                &self.recipe.overrides.marker_offsets,
-            );
+            let markers = if wears_gear_art(self.recipe.kind) {
+                marker_section(
+                    arrangements.as_ref().and_then(|arrangements| {
+                        let (read, result) = self.technical_markers.as_ref()?;
+                        (read == arrangements).then_some(match result {
+                            Ok(sets) => Ok(sets.as_slice()),
+                            Err(error) => Err(error.as_str()),
+                        })
+                    }),
+                    &self.recipe.overrides.marker_offsets,
+                )
+            } else {
+                String::new()
+            };
             let art = format!("{}{markers}", key.parts);
             let text = technical_build_report(build, &self.recipe, donor.as_ref(), &art, section);
             let lines = text.lines().count();

@@ -2,10 +2,27 @@
 //! Failure model and native survey procedure are recorded before decoder changes.
 use super::*;
 use serde_json::json;
+pub(crate) mod decals;
 pub(crate) mod effects;
 pub(crate) mod fidelity;
 mod fixtures;
+pub(crate) mod legacy_color;
+pub(crate) mod legacy_normal;
+pub(crate) mod native_detail;
+pub(crate) mod native_sampling;
+pub(crate) mod particles;
 mod plates;
+pub(crate) mod tangents;
+#[cfg_attr(
+    not(windows),
+    allow(unused_imports, reason = "used by the Windows GPU verification")
+)]
+pub(in crate::model_preview) use plates::camera as installed_camera;
+#[cfg_attr(
+    not(windows),
+    allow(unused_imports, reason = "used by the Windows GPU verification")
+)]
+pub(in crate::model_preview) use plates::canvas_cases;
 
 fn artifact(model: &Model, output: &Path, name: &str) -> usize {
     let image = render::styled_image(

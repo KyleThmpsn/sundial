@@ -45,14 +45,29 @@ fn content(manager: &PackageManager, entity: &[u8]) -> AuthoringResult<Content> 
 
 /// Each native variant's +10 key selects the appearance pattern's content group.
 /// Select before copying the HUD key; shared sword owners also contain other swords' icons.
+///
+/// A block with no key of its own shows the icon its type markers name. HUD keys are type names
+/// (`shotgun`, `machinegun`, `hand_cannon`), and the HUD table holds Gunnora's Axe's +18
+/// `shotgun` but not its +30. That fallback is spelled out here, since the weapon's own block
+/// keeps the base's type markers and would otherwise show the base's icon.
 pub(crate) fn inherited_key(
     manager: &PackageManager,
     entity: &[u8],
     content_group: u32,
 ) -> AuthoringResult<u32> {
     let content = content(manager, entity)?;
-    let key = selected_key(&content.owner, &content.properties, content_group)?;
-    icon_layer(manager, key)?;
+    let property = selected_property(&content.owner, &content.properties, content_group)?;
+    let key = u32_at(&content.owner, property + 0xE0)?;
+    if key != 0x811C9DC5 {
+        icon_layer(manager, key)?;
+        return Ok(key);
+    }
+    for marker in [0x30, 0x18] {
+        let named = u32_at(&content.owner, property + marker)?;
+        if named != 0x811C9DC5 && matches!(icon_layer(manager, named), Ok(Some(_))) {
+            return Ok(named);
+        }
+    }
     Ok(key)
 }
 
@@ -80,7 +95,20 @@ pub(super) fn icon_layer(manager: &PackageManager, key: u32) -> AuthoringResult<
     u32_at(row, 4).map(TagHash).map(Some)
 }
 
+#[cfg(test)]
 fn selected_key(owner: &[u8], properties: &[usize], content_group: u32) -> AuthoringResult<u32> {
+    u32_at(
+        owner,
+        selected_property(owner, properties, content_group)? + 0xE0,
+    )
+}
+
+/// The variant block `content_group` selects, or the default block.
+fn selected_property(
+    owner: &[u8],
+    properties: &[usize],
+    content_group: u32,
+) -> AuthoringResult<usize> {
     let mut selected = None;
     for &property in &properties[1..] {
         if u32_at(owner, property + 0x10)? == content_group && selected.replace(property).is_some()
@@ -90,7 +118,22 @@ fn selected_key(owner: &[u8], properties: &[usize], content_group: u32) -> Autho
             ));
         }
     }
-    u32_at(owner, selected.unwrap_or(properties[0]) + 0xE0)
+    Ok(selected.unwrap_or(properties[0]))
+}
+
+/// The key at property offset `field` of the weapon content's default block and of every variant.
+#[cfg_attr(not(feature = "d2-model-importer"), allow(dead_code))]
+pub(crate) fn field_values(
+    manager: &PackageManager,
+    entity: &[u8],
+    field: usize,
+) -> AuthoringResult<Vec<u32>> {
+    let content = content(manager, entity)?;
+    content
+        .properties
+        .iter()
+        .map(|property| u32_at(&content.owner, property + field))
+        .collect()
 }
 
 pub(crate) fn patches(

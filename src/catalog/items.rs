@@ -6,7 +6,9 @@ mod ammo;
 mod damage;
 mod descriptions;
 mod inventory;
-pub(crate) use inventory::{inventory_bucket_capacity, weapon_bucket_capacities};
+pub(crate) use inventory::{
+    character_row_class, inventory_bucket_capacity, weapon_bucket_capacities,
+};
 mod investment;
 mod perks;
 mod quality;

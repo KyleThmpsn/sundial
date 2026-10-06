@@ -52,6 +52,7 @@ fn library_entry_type<'a>(
     entry
         .type_name
         .as_deref()
+        .or(entry.class_type_name)
         .or_else(|| donor.map(|donor| donor.type_name.as_str()))
         .unwrap_or(entry.kind.label())
 }

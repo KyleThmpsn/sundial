@@ -54,12 +54,7 @@ fn shrinking_a_generation_restores_spill_on_interruption_then_retires_it() {
     validate_install_transaction(&record, &validated.target_packages_directory).unwrap();
     write_install_transaction(&fixture.target.join(INSTALL_TRANSACTION_FILE_NAME), &record)
         .unwrap();
-    commit_prepared_files(
-        &prepared,
-        None,
-        sundial::package_authoring::replace_file_from_path_atomically,
-    )
-    .unwrap();
+    commit_prepared_files(&prepared, None, publish_package).unwrap();
     assert!(!fixture.target.join(SPILL_NAME).exists());
     recover_interrupted_install(&fixture.recovery_request()).unwrap();
     assert_eq!(

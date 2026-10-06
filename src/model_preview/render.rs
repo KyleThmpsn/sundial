@@ -171,24 +171,58 @@ struct Prepared {
     uvs: [[f32; 2]; 3],
     detail_uvs: [[f32; 2]; 3],
     normals: [[f32; 3]; 3],
+    basis: Option<[super::shader::normal::Basis; 3]>,
     native: Option<Box<super::effects::native::Triangle>>,
     min_y: usize,
     max_y: usize,
+}
+
+fn tangent_frames(
+    triangle: [u32; 3],
+    normals: &[[f32; 3]],
+    tangents: &[[f32; 4]],
+    native: Option<&super::effects::native::Triangle>,
+    rotate: impl Fn([f32; 3]) -> [f32; 3],
+) -> Option<[super::shader::normal::Basis; 3]> {
+    use super::shader::normal::Basis;
+    let [Some(a), Some(b), Some(c)] =
+        triangle.map(|v| Basis::stored(*normals.get(v as usize)?, *tangents.get(v as usize)?))
+    else {
+        return None;
+    };
+    let frames = if let Some(native) = native {
+        let [Some(a), Some(b), Some(c)] = native.values.map(|v| {
+            Basis::vectors(
+                [v[0][0], v[0][1], v[0][2]],
+                [v[1][0], v[1][1], v[1][2]],
+                [v[2][0], v[2][1], v[2][2]],
+            )
+        }) else {
+            return None;
+        };
+        [a, b, c]
+    } else {
+        [a, b, c]
+    };
+    Some(frames.map(|basis| basis.map(&rotate)))
 }
 
 /// The default framing draws the bounding sphere's radius at this share of the frame's shorter
 /// side, at zoom 1.
 pub(crate) const RADIUS_SCALE: f32 = 0.43;
 
-/// The box around what a frame draws, in the model's rest pose: its triangles, leaving out light
-/// volumes when it has a surface mesh, or its particle sources when it has no triangles. Empty
-/// when there is neither.
-pub(crate) fn drawn_bounds(model: &Model) -> ([f32; 3], [f32; 3]) {
+/// Rest-pose framing excludes light volumes when surfaces exist and uninstanced particle
+/// meshes in a composed textured view. Inspection modes retain particle meshes. Models
+/// without triangles use their particle sources. Empty when there is neither.
+pub(crate) fn drawn_bounds(model: &Model, style: Style) -> ([f32; 3], [f32; 3]) {
     let hide_light = model.has_surface_mesh();
+    let hide_emitter = style == Style::Textured && model.has_object_mesh();
     let mut low = [f32::INFINITY; 3];
     let mut high = [f32::NEG_INFINITY; 3];
     for (index, triangle) in model.triangles.iter().enumerate() {
-        if hide_light && model.triangle_light.get(index).copied().unwrap_or(false) {
+        if hide_light && model.triangle_light.get(index).copied().unwrap_or(false)
+            || hide_emitter && model.triangle_emitter.get(index).copied().unwrap_or(false)
+        {
             continue;
         }
         for &vertex in triangle {
@@ -332,7 +366,10 @@ fn frame(
         return image;
     }
     let hide_light = model.has_surface_mesh();
-    let bounds = drawn_bounds(model);
+    let material_study =
+        style == Style::Textured && scene.particle_study && model.has_particle_material_study();
+    let hide_emitter = style == Style::Textured && model.has_object_mesh() && !material_study;
+    let bounds = drawn_bounds(model, if material_study { Style::Solid } else { style });
     let (low, high) = bounds;
     let bind_center = std::array::from_fn(|axis| (low[axis] + high[axis]) * 0.5);
     let center = pose.map_or(bind_center, |p| p.framing_center(bind_center));
@@ -359,17 +396,15 @@ fn frame(
         || super::shader::dyes(model, seconds),
         |overrides| super::shader::dyes_with_overrides(model, seconds, overrides),
     );
-    let normals: Vec<[f32; 3]> = source_normals
-        .iter()
-        .map(|&[x, y, z]| {
-            let forward = sy * x + cy * y;
-            [
-                cy * x - sy * y,
-                -(sp * forward + cp * z),
-                cp * forward - sp * z,
-            ]
-        })
-        .collect();
+    let rotate = |[x, y, z]: [f32; 3]| {
+        let forward = sy * x + cy * y;
+        [
+            cy * x - sy * y,
+            -(sp * forward + cp * z),
+            cp * forward - sp * z,
+        ]
+    };
+    let normals: Vec<[f32; 3]> = source_normals.iter().copied().map(rotate).collect();
     let effect_frames = super::effects::frames(model, seconds);
     let vertex_frames: Vec<_> = model
         .effects
@@ -385,8 +420,7 @@ fn frame(
                 return None;
             }
             if style == Style::Textured
-                && scene.particle_study
-                && !model.particle_sources.is_empty()
+                && (hide_emitter || scene.particle_study && !model.particle_sources.is_empty())
                 && model.triangle_emitter.get(index).copied().unwrap_or(false)
             {
                 return None;
@@ -457,6 +491,13 @@ fn frame(
                         .unwrap_or_else(|| model.uvs.get(v as usize).copied().unwrap_or_default())
                 }),
                 normals: triangle.map(|v| normals.get(v as usize).copied().unwrap_or([0.0; 3])),
+                basis: tangent_frames(
+                    *triangle,
+                    source_normals,
+                    source_tangents,
+                    native_triangle.as_deref(),
+                    rotate,
+                ),
                 native: native_triangle,
                 min_y: min_y.floor().clamp(0.0, height as f32) as usize,
                 max_y: max_y.ceil().clamp(0.0, height as f32) as usize,
@@ -465,8 +506,8 @@ fn frame(
         .collect();
     if style == Style::Textured {
         prepared.sort_by(|a, b| {
-            let a_effect = super::effects::index(model, a.index).is_some();
-            let b_effect = super::effects::index(model, b.index).is_some();
+            let a_effect = super::effects::transparent(model, a.index);
+            let b_effect = super::effects::transparent(model, b.index);
             a_effect.cmp(&b_effect).then_with(|| {
                 if a_effect {
                     b.points
@@ -507,11 +548,15 @@ fn frame(
     let bands = std::thread::available_parallelism().map_or(1, |n| n.get().min(workers));
     let rows = (last - first).div_ceil(bands).max(1);
     let mut depth = vec![f32::INFINITY; width * (last - first)];
+    let background = scene
+        .background
+        .map(|v| super::shader::linear(f32::from(v) / 255.0));
+    let mut linear_pixels = vec![background; width * (last - first)];
     let particle_material = (style == Style::Textured && scene.particle_study)
         .then(|| super::particle_material::prepare(model, seconds))
         .flatten();
-    let has_effects =
-        style == Style::Textured && model.triangle_effects.iter().any(Option::is_some);
+    let has_effects = style == Style::Textured
+        && (0..model.triangles.len()).any(|i| super::effects::transparent(model, i));
     let mut opaque_depth = Vec::new();
     for transparent in [false, true] {
         if transparent && !has_effects {
@@ -524,7 +569,7 @@ fn frame(
             scale,
         });
         std::thread::scope(|scope| {
-            for (band, (pixels, depth)) in image.pixels[first * width..last * width]
+            for (band, (pixels, depth)) in linear_pixels
                 .chunks_mut(rows * width)
                 .zip(depth.chunks_mut(rows * width))
                 .enumerate()
@@ -536,7 +581,7 @@ fn frame(
                 scope.spawn(move || {
                     for triangle in prepared {
                         let is_effect = style == Style::Textured
-                            && super::effects::index(model, triangle.index).is_some();
+                            && super::effects::transparent(model, triangle.index);
                         if is_effect != transparent
                             || triangle.max_y <= top
                             || triangle.min_y >= bottom
@@ -580,6 +625,13 @@ fn frame(
         if !transparent && has_effects {
             opaque_depth.clone_from(&depth);
         }
+    }
+    for (pixel, linear) in image.pixels[first * width..last * width]
+        .iter_mut()
+        .zip(linear_pixels)
+    {
+        let rgb = linear.map(super::shader::encode);
+        *pixel = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
     }
     if style == Style::Textured && scene.particle_study {
         draw_particles(&mut image, model, camera, scene, seconds, center, scale);
@@ -663,7 +715,7 @@ fn draw_particles(
 
 /// The rows one thread draws.
 struct Band<'a> {
-    pixels: &'a mut [Color32],
+    pixels: &'a mut [[f32; 3]],
     depth: &'a mut [f32],
     width: usize,
     top: usize,
@@ -754,7 +806,20 @@ fn raster(
         Option<&super::effects::Frame>,
     )>,
 ) {
+    let material = effect
+        .and_then(|(_, effect, frame)| Some((effect, frame?)))
+        .map_or(material, |(effect, frame)| {
+            material.with_material(effect, frame)
+        });
     let p = triangle.points;
+    let material = if style == Style::Textured {
+        material.with_footprints(
+            [triangle.uvs, triangle.detail_uvs]
+                .map(|uv| super::texture::Footprint::triangle(p, uv)),
+        )
+    } else {
+        material
+    };
     let uvs = triangle.uvs;
     let normals = triangle.normals;
     let width = band.width;
@@ -828,7 +893,7 @@ fn raster(
             let uv: [f32; 2] = std::array::from_fn(|axis| {
                 uvs[0][axis] + b * (uvs[1][axis] - uvs[0][axis]) + c * (uvs[2][axis] - uvs[0][axis])
             });
-            if let Some(effect) = effect {
+            if let Some(effect) = effect.filter(|(_, material, _)| !material.opaque()) {
                 let gap = ((band.depth[index] - z) / band.scale).clamp(0.0, 1e6);
                 let color = effect_color(
                     triangle,
@@ -854,24 +919,14 @@ fn raster(
                         ),
                     },
                 );
-                let base = band.pixels[index].to_array();
-                let mixed = std::array::from_fn::<_, 3, _>(|i| {
-                    super::shader::encode(
-                        super::shader::linear(f32::from(base[i]) / 255.0) * (1.0 - color[3])
-                            + color[i],
-                    )
-                });
-                band.pixels[index] = Color32::from_rgb(mixed[0], mixed[1], mixed[2]);
+                let base = band.pixels[index];
+                band.pixels[index] = std::array::from_fn(|i| base[i] * (1.0 - color[3]) + color[i]);
                 continue;
             }
             if let Some(particle) = particle_material {
                 let color = particle.sample(uv, exposure);
                 let base = band.pixels[index];
-                band.pixels[index] = Color32::from_rgb(
-                    (f32::from(base.r()) + color[0]).clamp(0.0, 255.0) as u8,
-                    (f32::from(base.g()) + color[1]).clamp(0.0, 255.0) as u8,
-                    (f32::from(base.b()) + color[2]).clamp(0.0, 255.0) as u8,
-                );
+                band.pixels[index] = std::array::from_fn(|i| base[i] + color[i] / 255.0);
                 continue;
             }
             if !material.covers(uv) {
@@ -892,7 +947,10 @@ fn raster(
             });
             let geometric = super::shader::normal::normalize(smooth)
                 .unwrap_or_else(|| n.map(|v| if n[2] > 0.0 { -v / length } else { v / length }));
-            let basis = basis.map(|basis| basis.with_normal(geometric));
+            let basis = triangle
+                .basis
+                .and_then(|frames| super::shader::normal::Basis::at(frames, b, c))
+                .or_else(|| basis.map(|basis| basis.with_normal(geometric)));
             let normal = basis.map_or(geometric, |basis| basis.normal);
             let lighting = band.scene.fill
                 + band.scene.key * super::shader::normal::dot(geometric, key).abs().min(1.0);
@@ -904,16 +962,53 @@ fn raster(
                         .zip(edge_lengths)
                         .any(|(weight, length)| weight * area.abs() / length <= 0.8);
                     if near_edge {
-                        Color32::from_rgb(180, 215, 245)
+                        [180.0, 215.0, 245.0].map(|v| super::shader::linear(v / 255.0))
                     } else {
-                        Color32::from_rgb(
-                            band.scene.background[0],
-                            band.scene.background[1],
-                            band.scene.background[2],
-                        )
+                        band.scene
+                            .background
+                            .map(|v| super::shader::linear(f32::from(v) / 255.0))
                     }
                 } else {
-                    surface_color(&material, uv, normal, basis, band.scene, panel, lighting)
+                    let detail = std::array::from_fn(|i| {
+                        triangle.detail_uvs[0][i]
+                            + b * (triangle.detail_uvs[1][i] - triangle.detail_uvs[0][i])
+                            + c * (triangle.detail_uvs[2][i] - triangle.detail_uvs[0][i])
+                    });
+                    let mut material = material;
+                    if let Some((model, native, Some(constants))) =
+                        effect.filter(|(_, material, _)| material.opaque())
+                        && let Some(varying) = &triangle.native
+                    {
+                        let pixel = super::effects::native::Pixel {
+                            varyings: varying.at(b, c),
+                            dx: varying.dx,
+                            dy: varying.dy,
+                            screen: [px, py, z],
+                            direction: band.view_direction,
+                            distance: band.view_distance,
+                            front: area < 0.0,
+                            depth: super::effects::native::Depth {
+                                values: &[],
+                                size: [width, band.bottom],
+                                top: band.top,
+                                scale: band.scale,
+                            },
+                            exposure,
+                        };
+                        let color = super::effects::native::sample(
+                            model, native, constants, &material, pixel,
+                        );
+                        material.color_override = Some([color[0], color[1], color[2]]);
+                    }
+                    surface_color(
+                        &material,
+                        [uv, detail],
+                        normal,
+                        basis,
+                        band.scene,
+                        panel,
+                        lighting,
+                    )
                 };
             }
         }
@@ -922,76 +1017,32 @@ fn raster(
 
 fn surface_color(
     material: &super::shader::Bindings<'_>,
-    uv: [f32; 2],
+    coordinates: [[f32; 2]; 2],
     normal: [f32; 3],
     basis: Option<super::shader::normal::Basis>,
     scene: Scene,
     panel: Option<[f32; 4]>,
     lighting: f32,
-) -> Color32 {
+) -> [f32; 3] {
+    let [uv, detail] = coordinates;
     let exposure = scene.exposure;
     let tint = material.tint();
     if let Some(constant) = material.constant {
         // Panel art lives in the colour plate: alpha cuts the segments, colour
         // tints them, and the constant supplies the glow.
         let base = panel.unwrap_or([1.0; 4]);
-        let rgb: [u8; 3] =
-            std::array::from_fn(|i| super::shader::encode(constant[i] * base[i] * exposure));
-        Color32::from_rgb(rgb[0], rgb[1], rgb[2])
+        std::array::from_fn(|i| constant[i] * base[i] * exposure)
     } else if let Some(texture) = material.albedo {
-        let rgb = material.shade(uv, normal, basis, scene).unwrap_or_else(|| {
-            let base = texture.sample_color(uv);
-            std::array::from_fn(|i| {
-                (super::shader::encoded(base[i]) * 255.0 * lighting * exposure)
-                    .clamp(0.0, 255.0)
-                    .round() as u8
+        material
+            .shade_linear(uv, detail, normal, basis, scene)
+            .unwrap_or_else(|| {
+                let base = texture.sample_color(uv);
+                std::array::from_fn(|i| base[i] * lighting * exposure)
             })
-        });
-        Color32::from_rgb(rgb[0], rgb[1], rgb[2])
-    } else if tint.is_some() {
-        let rgb = shade([255.0; 3], tint, lighting, exposure);
-        Color32::from_rgb(rgb[0], rgb[1], rgb[2])
+    } else if let Some(tint) = tint {
+        tint.map(|v| v * lighting * exposure)
     } else {
-        Color32::from_rgb(
-            (205.0 * lighting * exposure).clamp(0.0, 255.0) as u8,
-            (216.0 * lighting * exposure).clamp(0.0, 255.0) as u8,
-            (230.0 * lighting * exposure).clamp(0.0, 255.0) as u8,
-        )
-    }
-}
-
-fn shade(rgb: [f32; 3], tint: Option<[f32; 3]>, lighting: f32, exposure: f32) -> [u8; 3] {
-    let lighting = lighting * exposure;
-    let Some(tint) = tint else {
-        return rgb.map(|v| (v * lighting).min(255.0) as u8);
-    };
-    std::array::from_fn(|i| {
-        let s = (rgb[i] / 255.0).clamp(0.0, 1.0);
-        let linear = if s <= 0.04045 {
-            s / 12.92
-        } else {
-            ((s + 0.055) / 1.055).powf(2.4)
-        };
-        let v = (linear * tint[i] * lighting).clamp(0.0, 1.0);
-        let s = if v <= 0.0031308 {
-            v * 12.92
-        } else {
-            1.055 * v.powf(1.0 / 2.4) - 0.055
-        };
-        (s * 255.0).round() as u8
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn dye_tints_are_linear_and_leave_untinted_textures_unchanged() {
-        assert_eq!(
-            shade([255.0; 3], Some([0.25, 0.5, 1.0]), 1.0, 1.0),
-            [137, 188, 255]
-        );
-        assert_eq!(shade([80.0, 120.0, 200.0], None, 0.5, 1.0), [40, 60, 100]);
-        assert_eq!(shade([255.0; 3], Some([0.0; 3]), 1.0, 1.0), [0; 3]);
+        [205.0, 216.0, 230.0]
+            .map(|v| super::shader::linear((v * lighting * exposure / 255.0).clamp(0.0, 1.0)))
     }
 }

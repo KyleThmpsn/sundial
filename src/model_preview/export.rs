@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, io::Write};
 
 mod bake;
+mod charts;
 
 const SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
 
@@ -131,13 +132,16 @@ pub(crate) fn glb(model: &Model, seconds: f32) -> Result<Vec<u8>, String> {
     let short = points.len() <= usize::from(u16::MAX);
 
     let dyes = shader::dyes(model, seconds);
+    let effect_frames = super::effects::frames(model, seconds);
     let mut plates: BTreeMap<bake::Plate, Vec<usize>> = BTreeMap::new();
     let mut flat = Vec::new();
     for triangle in 0..model.triangles.len() {
-        if super::effects::index(model, triangle).is_some() {
+        if super::effects::transparent(model, triangle) {
             continue;
         }
-        match bake::Plate::of(model, triangle) {
+        match bake::Plate::of(model, triangle, &effect_frames)
+            .map(|plate| plate.with_basis(charts::frames(model, posed.as_ref(), triangle).is_ok()))
+        {
             Some(plate) => plates.entry(plate).or_default().push(triangle),
             None => flat.push(triangle),
         }
@@ -146,8 +150,19 @@ pub(crate) fn glb(model: &Model, seconds: f32) -> Result<Vec<u8>, String> {
     if plates.is_empty() && flat.is_empty() {
         return Err("This model contains only transparent effects. Save an image to retain their appearance.".into());
     }
+    let mut remaining_charts = bake::Budget::new(bake::chart_count(
+        model,
+        &dyes,
+        plates.values().flatten().copied(),
+    )?);
     for (plate, triangles) in &plates {
-        layers.extend(bake::bake(model, &dyes, *plate, triangles)?);
+        layers.extend(bake::bake(
+            model,
+            &dyes,
+            *plate,
+            triangles,
+            &mut remaining_charts,
+        )?);
     }
     let encoded = encode_layers(&layers)?;
 
@@ -156,13 +171,24 @@ pub(crate) fn glb(model: &Model, seconds: f32) -> Result<Vec<u8>, String> {
     let mut materials = Vec::new();
     let mut strong = false;
     for (layer, images) in layers.iter().zip(encoded) {
-        let corners: Vec<u32> = layer
-            .triangles
-            .iter()
-            .flat_map(|&triangle| model.triangles[triangle])
-            .collect();
+        let primary = (layer.coordinates.is_none() && layer.normal.is_some())
+            .then(|| charts::primary(model, layer));
+        let (vertex_attributes, corners, short) =
+            if let Some(coordinates) = layer.coordinates.as_ref().or(primary.as_ref()) {
+                charts::vertices(&mut buffer, model, posed.as_ref(), layer, coordinates)?
+            } else {
+                (
+                    attributes(position, normal, texcoord),
+                    layer
+                        .triangles
+                        .iter()
+                        .flat_map(|&triangle| model.triangles[triangle])
+                        .collect(),
+                    short,
+                )
+            };
         primitives.push(json!({
-            "attributes": attributes(position, normal, texcoord),
+            "attributes": vertex_attributes,
             "indices": indices(&mut buffer, &corners, short),
             "material": materials.len(),
             "mode": TRIANGLES,
@@ -227,10 +253,50 @@ pub(crate) fn glb(model: &Model, seconds: f32) -> Result<Vec<u8>, String> {
         // only dimmer where the game drives emission past full scale.
         document["extensionsUsed"] = json!([EMISSIVE_STRENGTH]);
     }
-    if !model.effects.is_empty() {
-        document["asset"]["extras"] = json!({"omitted":"Native transparent effects need view, scene depth and runtime shader inputs. They are retained in image exports."});
-    }
+    metadata(&mut document, model, &plates, &layers);
     container(&document, &buffer.bin)
+}
+
+fn metadata(
+    document: &mut Value,
+    model: &Model,
+    plates: &BTreeMap<bake::Plate, Vec<usize>>,
+    layers: &[bake::Layer],
+) {
+    if model
+        .effects
+        .iter()
+        .any(|material| material.normal.is_none() || material.native.is_some())
+    {
+        document["asset"]["extras"] = json!({"omitted":"Native transparent effects and opaque extra color terms need view, scene depth or runtime shader inputs. They are retained in image exports. Opaque geometry and the base gear material remain in this file."});
+    }
+    let omitted_normals: Vec<_> = plates
+        .iter()
+        .filter(|(plate, _)| plate.omits_normal())
+        .flat_map(|(_, triangles)| triangles.iter().copied())
+        .collect();
+    if !omitted_normals.is_empty() {
+        if document["asset"]["extras"].is_null() {
+            document["asset"]["extras"] = json!({});
+        }
+        document["asset"]["extras"]["normal_maps"] = json!({"omitted_triangles":omitted_normals,
+            "reason":"These surfaces use geometric normals because neither their stored tangents nor their UVs provide a usable frame."});
+    }
+    let reduced: Vec<_> = layers
+        .iter()
+        .flat_map(|layer| &layer.detail_sampling)
+        .map(|&(triangle, source_pixels, stored_edge)| {
+            json!({"triangle":triangle,
+            "source_pixels":source_pixels,"stored_edge":stored_edge})
+        })
+        .collect();
+    if !reduced.is_empty() {
+        if document["asset"]["extras"].is_null() {
+            document["asset"]["extras"] = json!({});
+        }
+        document["asset"]["extras"]["detail_sampling"] = json!({"reduced_triangles":reduced,
+            "reason":"These detail patterns are sampled within the model export texture budget. Model previews and image exports retain the source coordinates."});
+    }
 }
 
 const EMISSIVE_STRENGTH: &str = "KHR_materials_emissive_strength";
@@ -742,6 +808,8 @@ mod tests {
             normals: vec![[0.0, -1.0, 0.0]; 4],
             triangle_textures: vec![Some(0), None],
             textures: vec![Texture {
+                mips: None,
+                linear: None,
                 tag: 0x1234_5678,
                 size: [1, 1],
                 rgba: vec![255, 0, 0, 255],
@@ -899,6 +967,8 @@ mod tests {
     /// One dyed, alpha-clipped quad with a gearstack and a normal map, the way gear arrives.
     fn dyed() -> Model {
         let flat = |rgba: [u8; 4]| Texture {
+            mips: None,
+            linear: None,
             tag: 0,
             size: [2, 2],
             rgba: rgba.repeat(4),

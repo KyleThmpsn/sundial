@@ -21,8 +21,8 @@ pub(in crate::app::custom_perks::workbench) fn insert_catalog_node(
     node: NativeNode,
 ) -> Result<(), String> {
     use super::super::catalog_insert::Placement;
-    if !program.native_asset_patches.is_empty() {
-        return Err("This effect has private resource patches. Finish its native conversion before inserting a catalog node.".into());
+    if let Some(issue) = program.native_adoption_issue() {
+        return Err(issue.into());
     }
     let mut native = sundial::package_authoring::sandbox_perk::program::native_draft(program)?;
     let decoded = sundial::package_authoring::sandbox_perk::action::decode(&native.graph.emit()?)?;
@@ -45,7 +45,7 @@ pub(in crate::app::custom_perks::workbench) fn insert_catalog_node(
     structure::List::group(group, part).edit(&mut native.graph, edit)?;
     native.sync_assets()?;
     native.validate()?;
-    let changed = program.with_native(native);
+    let changed = program.with_native(native)?;
     changed.validate_structure()?;
     *program = changed;
     Ok(())
@@ -275,7 +275,7 @@ pub(in crate::app::custom_perks::workbench) fn move_group(
     source.validate()?;
     let mut added = super::named_effect(index);
     // The moved behavior keeps the tunings its actions apply and drops the rest.
-    let mut moved_program = program.with_native(target);
+    let mut moved_program = program.with_native(target)?;
     moved_program.name = format!("{name} · Behavior {}", group + 1);
     moved_program.prune_ability_tunings();
     added.program = Some(moved_program);
@@ -293,9 +293,12 @@ pub(in crate::app::custom_perks::workbench) fn add_behavior_group(
         return structure::add_group(&mut native.graph);
     }
     program.validate()?;
+    if let Some(issue) = program.native_adoption_issue() {
+        return Err(issue.into());
+    }
     let mut native = sundial::package_authoring::sandbox_perk::program::native_draft(program)?;
     structure::add_group(&mut native.graph)?;
-    *program = program.with_native(native);
+    *program = program.with_native(native)?;
     Ok(())
 }
 

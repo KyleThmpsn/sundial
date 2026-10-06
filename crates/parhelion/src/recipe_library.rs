@@ -136,9 +136,13 @@ pub struct RecipeLibraryEntry {
     pub namespace: String,
     pub bundled: bool,
     pub donor_hash: u32,
+    /// The weapon whose type this recipe shows and files under in Collections.
+    pub type_donor_hash: u32,
     /// The weapon this recipe builds, so another recipe can be recognized as building on it.
     pub identity_hash: u32,
     pub type_name: Option<String>,
+    /// The type label a subclass's classes give it when it sets none, such as Guardian Subclass.
+    pub class_type_name: Option<&'static str>,
     pub ammo_type: Option<crate::RecipeAmmoType>,
     pub damage_type: Option<crate::recipe::RecipeDamageType>,
     pub rarity: Option<crate::RecipeRarity>,
@@ -253,8 +257,17 @@ impl RecipeLibrary {
                         }),
                     path,
                     donor_hash: recipe.donor.item_hash.parse_u32().unwrap_or_default(),
+                    type_donor_hash: recipe.type_donor_hash(),
                     identity_hash: recipe.identity.item_hash.parse_u32().unwrap_or_default(),
                     type_name: recipe.type_name,
+                    class_type_name: (recipe.kind == crate::ItemKind::Subclass)
+                        .then(|| {
+                            crate::subclass::class_type_name(
+                                recipe.overrides.subclass_every_class,
+                                recipe.overrides.subclass_class,
+                            )
+                        })
+                        .flatten(),
                     ammo_type: recipe.overrides.ammo_type,
                     damage_type: recipe.overrides.modern_damage_type,
                     rarity: recipe.overrides.rarity,

@@ -4,7 +4,7 @@ use program::{Operand, Program};
 
 type Affine = [f32; 3];
 
-fn value(
+pub(super) fn value(
     p: &Program,
     constants: &[[f32; 4]],
     operand: &Operand,
@@ -128,92 +128,6 @@ pub(super) fn stored_vertex_uv(p: &Program) -> Option<[f32; 4]> {
     let x = lane(0)?;
     let y = lane(1)?;
     (x[1] == 0.0 && y[0] == 0.0 && x[0] > 0.0 && y[1] > 0.0).then_some([x[0], y[1], x[2], y[2]])
-}
-
-/// A translated color buffer can feed one constant texel to TEXCOORD8. Recover
-/// that exact load without running the unrelated metadata and skeleton program.
-/// Variable color lookups remain unavailable rather than receiving a made-up color.
-pub(super) fn stored_vertex_color(
-    manager: &PackageManager,
-    bytes: &[u8],
-    p: &Program,
-) -> Result<Option<[f32; 4]>, String> {
-    let Some(output) = p
-        .outputs
-        .iter()
-        .find(|s| s.name == "TEXCOORD" && s.index == 8)
-    else {
-        return Ok(None);
-    };
-    let writes: Vec<_> = p
-        .instructions
-        .iter()
-        .filter(|i| {
-            i.operands
-                .first()
-                .is_some_and(|d| d.kind == 2 && d.indices[0].base as usize == output.register)
-        })
-        .collect();
-    let unavailable = "The stored vertex color lookup is unavailable";
-    if writes.len() != 1 {
-        return Err(unavailable.into());
-    }
-    let instruction = writes[0];
-    if instruction.code != 45 || instruction.saturate || instruction.offset != [0; 3] {
-        return Err(unavailable.into());
-    }
-    let [dest, coordinates, resource] = instruction.operands.as_slice() else {
-        return Err(unavailable.into());
-    };
-    if dest.mask != 15
-        || coordinates.kind != 4
-        || coordinates.literal != [0; 4]
-        || coordinates.modifier != 0
-        || resource.kind != 7
-        || resource.indices[0].base != 0
-        || resource.lanes != [0, 1, 2, 3]
-        || resource.modifier != 0
-        || !p
-            .resources
-            .iter()
-            .any(|r| r.slot == 0 && !r.integer && r.dimension == 3)
-    {
-        return Err(unavailable.into());
-    }
-    let mut nesting = 0usize;
-    for i in &p.instructions {
-        if std::ptr::eq(i, instruction) {
-            if nesting != 0 {
-                return Err(unavailable.into());
-            }
-            break;
-        }
-        if i.code == 62 {
-            return Err(unavailable.into());
-        }
-        match i.code {
-            31 => nesting += 1,
-            21 => nesting = nesting.saturating_sub(1),
-            _ => {}
-        }
-    }
-    let (count, rows) = super::super::vertex::table(bytes, 0x50, 0x8080_7211, 8, 32)?;
-    let mut tag = None;
-    for row in (0..count).map(|i| rows + i * 8) {
-        if u32_at(bytes, row)? == 0 && tag.replace(u32_at(bytes, row + 4)?).is_some() {
-            return Err("The vertex color texture slot is bound more than once".into());
-        }
-    }
-    let tag = tag.ok_or("The vertex color texture is missing")?;
-    let header = manager.read_tag(tag)?;
-    if u32_at(&header, 4)? != 28 || u16_at(&header, 0x0E)? > 2048 || u16_at(&header, 0x10)? > 2048 {
-        return Err("The vertex color texture format is unavailable".into());
-    }
-    let image = texture::load(manager, tag)?;
-    // This is numeric vertex data, so no color-space transform is applied.
-    Ok(Some(std::array::from_fn(|lane| {
-        image.rgba[lane] as f32 / 255.0
-    })))
 }
 
 fn add(a: Affine, b: Affine) -> Affine {

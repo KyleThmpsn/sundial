@@ -4,6 +4,7 @@
 use super::*;
 use std::collections::BTreeMap;
 mod formats;
+pub(super) use formats::half;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Element {
@@ -141,11 +142,13 @@ impl Layouts {
             count,
             &mut notices,
             "Secondary texture coordinates",
-        )
-        .unwrap_or_else(|| vec![[1.0; 4]; count])
-        .into_iter()
-        .map(|v| [v[0], v[1]])
-        .collect();
+        );
+        let has_detail_scales = detail_scales.is_some();
+        let detail_scales = detail_scales
+            .unwrap_or_else(|| vec![[1.0; 4]; count])
+            .into_iter()
+            .map(|v| [v[0], v[1]])
+            .collect();
         let normal = layout.iter().find(|e| e.semantic == 3 && e.index == 0);
         let normals = optional_attribute(&mut streams, normal, count, &mut notices, "Normals")
             .unwrap_or_else(|| vec![[0.0; 4]; count])
@@ -183,6 +186,7 @@ impl Layouts {
             uvs,
             detail_uvs: Vec::new(),
             detail_scales,
+            has_detail_scales,
             weights,
             tangents,
             colors,
@@ -200,12 +204,35 @@ pub(super) struct Vertices {
     pub uvs: Vec<[f32; 2]>,
     pub detail_uvs: Vec<[f32; 2]>,
     detail_scales: Vec<[f32; 2]>,
+    pub has_detail_scales: bool,
     pub weights: Vec<Option<animation::Weights>>,
     pub has_uv: bool,
     pub notices: Vec<String>,
 }
 
 impl Vertices {
+    pub fn select(&mut self, indices: &[u32]) {
+        fn take<T>(values: &mut Vec<T>, indices: &[u32]) {
+            let mut source: Vec<_> = std::mem::take(values).into_iter().map(Some).collect();
+            *values = indices
+                .iter()
+                .map(|&index| {
+                    source[index as usize]
+                        .take()
+                        .expect("unique selected vertex")
+                })
+                .collect();
+        }
+        take(&mut self.positions, indices);
+        take(&mut self.normals, indices);
+        take(&mut self.tangents, indices);
+        take(&mut self.colors, indices);
+        take(&mut self.uvs, indices);
+        take(&mut self.detail_scales, indices);
+        take(&mut self.weights, indices);
+        self.detail_uvs.clear();
+    }
+
     pub fn transform(
         &mut self,
         scale: [f32; 3],

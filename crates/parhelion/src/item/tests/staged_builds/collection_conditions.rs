@@ -116,13 +116,13 @@ fn verify_staged_collections(
     let manager = open_manager(&view.path().join("packages")).unwrap();
     let collectibles = read_tag(
         &manager,
-        sources.collectible_table_tag,
+        sources.table_tags.collectible_table_tag,
         "staged collectibles",
     )
     .unwrap();
     let nodes = read_tag(
         &manager,
-        sources.presentation_node_table_tag,
+        sources.table_tags.presentation_node_table_tag,
         "staged Collections nodes",
     )
     .unwrap();

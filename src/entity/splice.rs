@@ -339,7 +339,19 @@ fn array(
     let host_rows = rows(host, host_header, host_count).ok_or("array rows are out of bounds")?;
     let donor_rows =
         rows(donor, donor_header, donor_count).ok_or("array rows are out of bounds")?;
+    // A row that could be a pointer is safe to copy only over the same row, word for word: its
+    // offsets are relative to itself, so they stay valid, and only the values beside it change.
+    // Austringer's and Sweet Business's magazines hold such rows with different values beside them.
     if !PLAIN_ARRAYS.contains(&class)
+        && (host_count != donor_count
+            || host_rows
+                .clone()
+                .step_by(stride)
+                .zip(donor_rows.clone().step_by(stride))
+                .any(|(at, from)| {
+                    (host.pointer_like(at) || donor.pointer_like(from))
+                        && host.bytes[at..at + stride] != donor.bytes[from..from + stride]
+                }))
         && (host_rows
             .clone()
             .step_by(stride)

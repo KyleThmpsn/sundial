@@ -6,7 +6,9 @@ mod context_menu;
 mod definition_picker;
 mod filters;
 mod flags;
-pub(crate) use context_menu::{draw_context_menu, draw_header_lock, open_requested_preview};
+pub(crate) use context_menu::{
+    draw_context_menu, draw_header_lock, open_requested_preview, request_model_preview,
+};
 pub(crate) use flags::{draw_seen_flag, draw_state_flags};
 mod header;
 mod layout;

@@ -1,5 +1,5 @@
 use super::*;
-use sundial::investment::{InvestmentCatalog, WeaponAmmoType, WeaponDamageProfile, WeaponRarity};
+use sundial::investment::{InvestmentCatalog, WeaponAmmoType};
 use sundial::package_authoring::entity::{
     WEAPON_RELOAD_COMPONENT_KEY, WEAPON_TRIGGER_COMPONENT_KEY,
 };
@@ -7,20 +7,11 @@ use sundial::package_authoring::runtime::SchemaHandle;
 
 fn donor(hash: u32) -> WeaponDonorSummary {
     WeaponDonorSummary {
-        hash,
-        name: format!("Donor {hash}"),
-        type_name: "Sidearm".into(),
         bucket_hash: 1,
-        collection_backed: true,
-        power_cap: None,
-        damage_type: None,
-        inventory_slot: None,
         ammo_type: Some(WeaponAmmoType::Primary),
         weapon_pattern_index: Some(hash as u16),
         weapon_translation_group: Some(1),
-        stat_group_index: None,
-        damage_profile: WeaponDamageProfile::Unknown,
-        rarity: WeaponRarity::Legendary,
+        ..crate::test_support::donor_summary(hash, &format!("Donor {hash}"), "Sidearm")
     }
 }
 

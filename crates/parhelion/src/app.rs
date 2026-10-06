@@ -478,8 +478,6 @@ struct PackageAuthoringApp {
     build_status_open: bool,
     backup_root: String,
     limit_package_backups: bool,
-    /// Shows the Technical Build window for the staged build.
-    show_technical_build: bool,
     technical_build_open: bool,
     package_backup_retention: usize,
     backup_recipe_snapshots: bool,
@@ -660,7 +658,6 @@ impl Default for PackageAuthoringApp {
             build_status_open: false,
             backup_root: default_backup_root().display().to_string(),
             limit_package_backups: backup_preferences.limit_package_backups,
-            show_technical_build: backup_preferences.show_technical_build,
             technical_build_open: false,
             package_backup_retention: backup_preferences.package_backup_retention,
             backup_recipe_snapshots: backup_preferences.backup_recipe_snapshots,
@@ -1155,7 +1152,6 @@ impl PackageAuthoringApp {
     fn save_backup_preferences(&mut self) {
         let preferences = ParhelionPreferences {
             limit_package_backups: self.limit_package_backups,
-            show_technical_build: self.show_technical_build,
             package_backup_retention: self.package_backup_retention,
             backup_recipe_snapshots: self.backup_recipe_snapshots,
             ..ParhelionPreferences::default()
@@ -1313,15 +1309,9 @@ impl PackageAuthoringApp {
     }
 
     fn draw_tools_menu(&mut self, ui: &mut egui::Ui) {
-        #[cfg(feature = "d2-model-importer")]
-        let importer_enabled = self.importer.enabled;
-        #[cfg(not(feature = "d2-model-importer"))]
-        let importer_enabled = false;
-        let has_tools =
-            self.show_experimental_options || importer_enabled || self.show_technical_build;
         ui.menu_button("Tools", |ui| {
             #[cfg(feature = "d2-model-importer")]
-            if importer_enabled && ui.button("D2 Importer…").clicked() {
+            if self.importer.enabled && ui.button("D2 Importer…").clicked() {
                 self.importer.open = true;
                 ui.close_menu();
             }
@@ -1329,20 +1319,15 @@ impl PackageAuthoringApp {
                 self.perk_workbench.open_engine_catalog();
                 ui.close_menu();
             }
-            if self.show_technical_build
-                && ui
-                    .button("Technical Build…")
-                    .on_hover_text(
-                        "What the next build assigns, or what the staged build produced.",
-                    )
-                    .clicked()
+            if ui
+                .button("Technical Build…")
+                .on_hover_text("What the next build assigns, or what the staged build produced.")
+                .clicked()
             {
                 self.technical_build_open = true;
                 ui.close_menu();
             }
-            if has_tools {
-                ui.separator();
-            }
+            ui.separator();
             if ui
                 .add_enabled(
                     self.account_resync_receiver.is_none()
@@ -2195,6 +2180,7 @@ mod donor_view;
 mod editor_view;
 mod emblem_view;
 mod gear_view;
+mod image_files;
 mod installed;
 mod jobs;
 mod preferences_view;
@@ -2206,6 +2192,8 @@ mod socket_editor;
 mod subclass_view;
 mod technical_build;
 use custom_perks::*;
+#[cfg(test)]
+pub(crate) use technical_build::technical_build_report;
 mod uninstall_view;
 use socket_editor::*;
 mod stat_editor;

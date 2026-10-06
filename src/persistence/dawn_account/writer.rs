@@ -57,7 +57,17 @@ fn save_candidate(document: &mut DawnAccountDocument) -> Result<DawnSaveReceipt,
         });
     }
 
-    let before = snapshot::capture(&transaction).map_err(DawnAccountError::Unwritable)?;
+    let before_state = snapshot::snapshot(&transaction).map_err(DawnAccountError::Unwritable)?;
+    // Dawn advances the revision on its own commits, but another tool can change these rows
+    // without it. The save would then write the loaded rows back over that change.
+    if guarded_digest(&before_state) != document.loaded.guarded {
+        return Err(DawnAccountError::Unwritable(
+            "Dawn's account changed outside Sundial since it was loaded. Reload before saving"
+                .into(),
+        ));
+    }
+    let before = serde_json::to_vec(&before_state)
+        .map_err(|error| DawnAccountError::Unwritable(error.to_string()))?;
     document
         .progression
         .save(&transaction, &document.loaded.progression)?;
@@ -88,6 +98,20 @@ fn save_candidate(document: &mut DawnAccountDocument) -> Result<DawnSaveReceipt,
     write_allocators(&transaction, document)?;
     // The account graph has been replaced, so anything this build does not model goes back now.
     super::carried::restore(&transaction, &document.carried)?;
+    // A setting edited here that another writer changed since the load would be overwritten
+    // with no revision to show it, so each edited setting must still hold its loaded value.
+    let stored = match super::reader::settings(&transaction)? {
+        Ok((settings, _)) => settings,
+        Err(problem) => return Err(DawnAccountError::Unwritable(problem.to_string())),
+    };
+    for (key, value) in document.snapshot.settings.values() {
+        let loaded = document.loaded.settings.values().get(key);
+        if loaded != Some(value) && stored.values().get(key) != loaded {
+            return Err(DawnAccountError::Unwritable(format!(
+                "Dawn's setting {key:?} changed outside Sundial since it was loaded. Reload before saving"
+            )));
+        }
+    }
     // Settings live outside that graph: their tables are never deleted, so only what the user
     // changed is updated in place.
     super::settings::save(
@@ -109,7 +133,10 @@ fn save_candidate(document: &mut DawnAccountDocument) -> Result<DawnSaveReceipt,
     }
     // Capture the exact written bookkeeping before releasing the transaction lock.
     let committed_carried = super::carried::read(&transaction, document.profile())?;
-    let committed = snapshot::capture(&transaction).map_err(DawnAccountError::Unwritable)?;
+    let committed_state = snapshot::snapshot(&transaction).map_err(DawnAccountError::Unwritable)?;
+    super::schema_guard::extensions_unchanged(&before_state, &committed_state)?;
+    let committed = serde_json::to_vec(&committed_state)
+        .map_err(|error| DawnAccountError::Unwritable(error.to_string()))?;
     transaction.commit()?;
 
     document.metadata.account_revision = revision + 1;
@@ -121,6 +148,7 @@ fn save_candidate(document: &mut DawnAccountDocument) -> Result<DawnSaveReceipt,
     document.loaded.profile = document.snapshot.profile.clone();
     document.loaded.progression = document.progression.clone();
     document.loaded.dismantle = super::dismantle::rows(&document.snapshot.profile);
+    document.loaded.guarded = guarded_digest(&committed_state);
     for debt in &debts {
         if debt.delivered
             && debt.credited == 0
@@ -141,6 +169,33 @@ fn save_candidate(document: &mut DawnAccountDocument) -> Result<DawnSaveReceipt,
         before,
         committed,
     })
+}
+
+/// The tables a save rewrites whole. Settings are updated key by key and checked that way.
+const GUARDED: [&str; 6] = [
+    "account",
+    "characters",
+    "character_items",
+    "profile_items",
+    "item_sockets",
+    "item_rolls",
+];
+
+/// A digest of the rows a save rewrites whole, so a save can tell that they still hold what the
+/// document loaded or last saved.
+pub(super) fn guarded_digest(state: &snapshot::Snapshot) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    for name in GUARDED {
+        hash.update(name.as_bytes());
+        if let Some(table) = state.tables.get(name)
+            && let Ok(rows) = serde_json::to_vec(table)
+        {
+            hash.update(rows);
+        }
+        hash.update([0]);
+    }
+    hash.finalize().to_vec()
 }
 
 /// Takes a verified copy into Sundial's backup folder, the way the investment account does.

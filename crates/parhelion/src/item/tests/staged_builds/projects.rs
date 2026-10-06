@@ -99,30 +99,8 @@ fn real_two_weapon_project_is_permutation_identical_when_configured() {
     );
     assert_eq!(forward.plan.sunrise.watermarked_icon_containers.len(), 2);
 
-    let source_root = packages
-        .parent()
-        .expect("packages directory needs a parent");
-    let view = tempfile::Builder::new()
-        .prefix(".parhelion-project-test-")
-        .tempdir_in(source_root)
-        .expect("temporary package view should be created on the package volume");
-    let view_packages = view.path().join("packages");
-    fs::create_dir(&view_packages).unwrap();
-    for entry in fs::read_dir(&packages).unwrap() {
-        let entry = entry.unwrap();
-        if entry.path().extension().and_then(|value| value.to_str()) == Some("pkg") {
-            fs::hard_link(entry.path(), view_packages.join(entry.file_name())).unwrap();
-        }
-    }
-    let source_oodle = source_root
-        .join("bin")
-        .join("x64")
-        .join("oo2core_3_win64.dll");
-    if source_oodle.is_file() {
-        let target_bin = view.path().join("bin").join("x64");
-        fs::create_dir_all(&target_bin).unwrap();
-        fs::hard_link(&source_oodle, target_bin.join("oo2core_3_win64.dll")).unwrap();
-    }
+    let (_view, view_packages) =
+        stock_view(&packages, ".parhelion-project-test-", Oodle::IfPresent);
     assert_eq!(
         forward.write_new(&view_packages).unwrap().len(),
         forward.artifacts.len()

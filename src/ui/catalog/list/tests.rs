@@ -263,17 +263,8 @@ fn inspecting_filtering_and_confirming_are_separate_and_keep_stable_identity() {
         for _ in 0..2 {
             output = frame(&keys, vec![], false);
         }
-        let click = |position: egui::Pos2, pressed| {
-            vec![
-                egui::Event::PointerMoved(position),
-                egui::Event::PointerButton {
-                    pos: position,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ]
-        };
+        let click =
+            |position: egui::Pos2, pressed| crate::test_support::primary_press(position, pressed);
         let position = label(&output, "Choice 20").center();
         frame(&keys, click(position, true), false);
         output = frame(&keys, click(position, false), false);

@@ -1,28 +1,8 @@
 use super::*;
-use sundial::package_authoring::runtime::{BindingHash, SchemaHandle};
+use crate::test_support::driver::painted_text as text;
 
 fn field(kind: WeaponRuntimeValueKind, value: WeaponRuntimeValue) -> WeaponRuntimeField {
-    WeaponRuntimeField {
-        locator: WeaponRuntimeFieldLocator {
-            graph_tag: None,
-            binding_hash: BindingHash::new(0xB176_70ED),
-            resource_index: 0,
-            root: sundial::package_authoring::runtime::WeaponRuntimeRootKind::ComponentDefinition,
-            root_schema: SchemaHandle::new(0x8080_388F),
-            path: Vec::new(),
-            type_handle: SchemaHandle::new(0x8080_2F16),
-            value_offset: 0x48,
-            byte_size: kind.byte_size(),
-        },
-        owner_offset: 0x100,
-        name: "Runtime Field".into(),
-        path_label: "Component / Runtime Field".into(),
-        kind,
-        value,
-        source: WeaponRuntimeFieldSource::GeneratedSchema,
-        generated_kind: None,
-        name_inferred: false,
-    }
+    crate::test_support::runtime_field("Runtime Field", kind, value)
 }
 
 fn frame(
@@ -46,28 +26,6 @@ fn frame(
             });
         },
     )
-}
-
-fn text(output: &egui::FullOutput) -> String {
-    fn append(shape: &egui::Shape, result: &mut String) {
-        match shape {
-            egui::Shape::Text(value) => {
-                result.push_str(&value.galley.job.text);
-                result.push('\n');
-            }
-            egui::Shape::Vec(values) => {
-                for value in values {
-                    append(value, result);
-                }
-            }
-            _ => {}
-        }
-    }
-    let mut result = String::new();
-    for shape in &output.shapes {
-        append(&shape.shape, &mut result);
-    }
-    result
 }
 
 #[test]

@@ -1,22 +1,45 @@
 //! Package-to-render expectations prepared before native program support.
 use super::*;
+pub(crate) mod derivative;
+mod gain;
+pub(crate) mod hdr;
+pub(crate) mod integer;
+pub(crate) mod metal;
+pub(crate) mod normal_blue;
+pub(crate) mod normals;
+pub(crate) mod opaque;
+pub(crate) mod paint;
+pub(in crate::model_preview::compatibility_tests) mod repack;
+mod stored;
+pub(crate) use stored::opaque_detail_case;
 
-fn instruction(code: u32, operands: &[&[u32]]) -> Vec<u32> {
+pub(in crate::model_preview::compatibility_tests) fn instruction(
+    code: u32,
+    operands: &[&[u32]],
+) -> Vec<u32> {
     let length = 1 + operands.iter().map(|v| v.len()).sum::<usize>();
     std::iter::once(code | (length as u32) << 24)
         .chain(operands.iter().flat_map(|v| v.iter().copied()))
         .collect()
 }
 
-fn register(kind: u32, index: u32, mask: u32) -> [u32; 2] {
+pub(in crate::model_preview::compatibility_tests) fn register(
+    kind: u32,
+    index: u32,
+    mask: u32,
+) -> [u32; 2] {
     [0x0010_0002 | kind << 12 | mask << 4, index]
 }
 
-fn source(kind: u32, index: u32, swizzle: u32) -> [u32; 2] {
+pub(in crate::model_preview::compatibility_tests) fn source(
+    kind: u32,
+    index: u32,
+    swizzle: u32,
+) -> [u32; 2] {
     [0x0010_0006 | kind << 12 | swizzle << 4, index]
 }
 
-fn literal(v: f32) -> [u32; 2] {
+pub(in crate::model_preview::compatibility_tests) fn literal(v: f32) -> [u32; 2] {
     [0x4001, v.to_bits()]
 }
 
@@ -24,7 +47,7 @@ fn shader(package: &mut Package, code: &[u32]) -> u32 {
     shader_stage(package, code, 0, &[], &[])
 }
 
-fn shader_stage(
+pub(in crate::model_preview::compatibility_tests) fn shader_stage(
     package: &mut Package,
     code: &[u32],
     stage: u32,
@@ -42,8 +65,19 @@ fn shader_stage(
         for (i, &(name, register)) in rows.iter().enumerate() {
             let offset = bytes.len() as u32;
             put(&mut bytes, 8 + i * 24, &offset.to_le_bytes());
-            let semantic_index = if name == "TEXCOORD" { register } else { 0 };
+            let semantic_index = if name == "SV_TARGET"
+                || name == "TEXCOORD"
+                    && !(std::ptr::eq(rows, inputs)
+                        && inputs.iter().any(|(name, _)| *name == "SV_VERTEXID"))
+            {
+                register
+            } else {
+                0
+            };
             put(&mut bytes, 12 + i * 24, &semantic_index.to_le_bytes());
+            if name == "SV_VERTEXID" {
+                put(&mut bytes, 16 + i * 24, &6u32.to_le_bytes());
+            }
             put(&mut bytes, 20 + i * 24, &3u32.to_le_bytes());
             put(&mut bytes, 24 + i * 24, &register.to_le_bytes());
             bytes[28 + i * 24] = 15;

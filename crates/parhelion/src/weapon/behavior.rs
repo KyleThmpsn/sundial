@@ -70,9 +70,10 @@ const VALUE_RECORD_CLASS: u32 = 0x8080_3F26;
 /// The block fields that, with the label array's first row, are the weapon's type markers.
 /// +0x30 is the FNV-1 hash of the type's name (`scout_rifle`, `pulse_rifle`, `hand_cannon`).
 /// +0x18 is a frame key from the same space as the first-person attachment's animation keys:
-/// every pulse rifle names 7B4E9613, and hand cannons name their frame's. A scout rifle wearing a
-/// pulse rifle's moved rig still fired bursts with these restored. The burst came from the rig,
-/// so an appearance of another type keeps its own markers to match the rig it brings.
+/// every pulse rifle names 7B4E9613, and hand cannons name their frame's. They stay the base
+/// weapon's under any appearance. Thousand Vows, One Thousand Voices wearing Eriana's Vow, fired
+/// single shots without charging, and Laser Lumina, Prometheus Lens wearing Lumina, drew no beam,
+/// while their blocks named hand_cannon and their stat tables were their own.
 const TYPE_MARKER_OFFSETS: [usize; 2] = [0x18, 0x30];
 /// The type marker that names the weapon type.
 pub(crate) const TYPE_NAME_OFFSET: usize = 0x30;
@@ -437,16 +438,9 @@ pub(crate) fn patches(
         label_sources.push((content.owner.clone(), own));
         own_labels = Some(own);
     }
-    // Chosen type markers win over the base's own, which an appearance's block of the same type
-    // otherwise gets. An appearance of another type brings its rig, and its type markers have to
-    // name that rig's type. Scout Rifle HC, a scout base wearing Agamid's moved hand cannon rig,
-    // held the gun wrong in first person and floated parts in third person with the scout's
-    // markers. Firing stays the base's through its graph, values and records above.
-    let same_type = |own: usize| {
-        u32_at(&content.owner, own + TYPE_NAME_OFFSET).ok()
-            == u32_at(&content.owner, block + TYPE_NAME_OFFSET).ok()
-    };
-    let own_markers = own_labels.filter(|own| same_type(*own));
+    // Chosen type markers win over the base's own, which the block otherwise gets whatever the
+    // appearance. Firing stays the base's through its graph, values and records above.
+    let own_markers = own_labels;
     match (kind, own_markers) {
         (Some(source), _) => patches.extend(type_marker_patches(&content, block, source)?),
         (None, Some(own)) => {
@@ -503,6 +497,39 @@ fn type_marker_patches(
 pub(crate) fn type_name_key(content: &Content, group: u32) -> Option<u32> {
     exact_block(content, group)
         .and_then(|block| u32_at(&content.owner, block + TYPE_NAME_OFFSET).ok())
+}
+
+/// The type markers `group`'s own block carries in `entity`'s content owner: its frame key and
+/// type name, in `TYPE_MARKER_OFFSETS` order.
+#[cfg(test)]
+pub(crate) fn markers(
+    manager: &PackageManager,
+    entity: &[u8],
+    group: u32,
+) -> AuthoringResult<[u32; 2]> {
+    let content = content(manager, entity)?;
+    let block = exact_block(&content, group)
+        .ok_or_else(|| invalid("The appearance's own block is not in its content owner"))?;
+    Ok([
+        u32_at(&content.owner, block + TYPE_MARKER_OFFSETS[0])?,
+        u32_at(&content.owner, block + TYPE_MARKER_OFFSETS[1])?,
+    ])
+}
+
+/// The type markers of the block `group` resolves to in `entity`'s content owner, falling back
+/// to the first block as the game does.
+#[cfg(test)]
+pub(crate) fn resolved_markers(
+    manager: &PackageManager,
+    entity: &[u8],
+    group: u32,
+) -> AuthoringResult<[u32; 2]> {
+    let content = content(manager, entity)?;
+    let block = block_for_group(&content, group)?;
+    Ok([
+        u32_at(&content.owner, block + TYPE_MARKER_OFFSETS[0])?,
+        u32_at(&content.owner, block + TYPE_MARKER_OFFSETS[1])?,
+    ])
 }
 
 /// The frame key `group`'s own block carries beside its type name, the first type marker.

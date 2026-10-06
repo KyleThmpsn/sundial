@@ -13,6 +13,10 @@
 //! bake into. The preview's studio lighting is left to the application that opens the file.
 use crate::model_preview::{Model, shader};
 use std::collections::BTreeMap;
+mod atlas;
+pub(super) use atlas::Budget;
+mod coordinates;
+use coordinates::Coordinates;
 
 /// Texels a part claims beyond its own edges, so filtering and mipmaps at a texture seam read
 /// the part's own material instead of a neighbour's or the unclaimed background.
@@ -25,14 +29,33 @@ pub(super) struct Plate {
     albedo: usize,
     gearstack: Option<usize>,
     normal: Option<usize>,
+    no_basis: bool,
     dye_map: Option<super::super::texture::DyeMap>,
+    base_gain: Option<[u32; 3]>,
+    base_metal: Option<u32>,
+    paint: Option<[u32; 2]>,
+    normal_decode: Option<[[u32; 2]; 4]>,
+    grain: Option<[u32; 3]>,
+    legacy_normal: Option<[u32; 3]>,
 }
 
 impl Plate {
+    pub(super) fn with_basis(mut self, available: bool) -> Self {
+        self.no_basis = self.normal.is_some() && !available;
+        self
+    }
+
+    pub(super) fn omits_normal(self) -> bool {
+        self.no_basis
+    }
     /// The plate a triangle bakes from. Parts without texture coordinates or a colour plate
     /// have nothing to bake, and emissive panels take a constant colour instead of a
     /// material, so the export keeps all three flat.
-    pub(super) fn of(model: &Model, triangle: usize) -> Option<Self> {
+    pub(super) fn of(
+        model: &Model,
+        triangle: usize,
+        frames: &[Option<super::super::effects::Frame>],
+    ) -> Option<Self> {
         if model.uvs.is_empty()
             || model
                 .triangle_constant
@@ -44,12 +67,52 @@ impl Plate {
             return None;
         }
         let slot = |list: &[Option<usize>]| list.get(triangle).copied().flatten();
+        let native = super::super::effects::index(model, triangle).and_then(|index| {
+            Some((
+                model.effects[index].native.as_ref()?,
+                frames.get(index)?.as_ref()?,
+            ))
+        });
         Some(Self {
             albedo: slot(&model.triangle_textures)?,
             gearstack: slot(&model.triangle_gearstacks),
             normal: slot(&model.triangle_normals),
+            no_basis: false,
             dye_map: model.triangle_dye_maps.get(triangle).copied().flatten(),
+            base_gain: native
+                .and_then(|(native, frame)| native.base_gain(frame).map(|v| v.map(f32::to_bits))),
+            base_metal: native
+                .and_then(|(native, frame)| native.base_metal(frame).map(f32::to_bits)),
+            paint: native
+                .and_then(|(native, frame)| native.paint(frame).map(|v| v.map(f32::to_bits))),
+            normal_decode: native.and_then(|(native, frame)| {
+                native.normal(frame).map(|v| v.map(|v| v.map(f32::to_bits)))
+            }),
+            grain: native
+                .and_then(|(native, frame)| native.grain(frame).map(|v| v.map(f32::to_bits))),
+            legacy_normal: super::super::effects::index(model, triangle).and_then(|index| {
+                model.effects[index]
+                    .normal
+                    .as_ref()?
+                    .frame(frames.get(index)?.as_ref()?)
+                    .map(|v| v.map(f32::to_bits))
+            }),
         })
+    }
+    fn bindings<'a>(
+        self,
+        model: &'a Model,
+        triangle: usize,
+        dyes: &'a [Option<shader::Dye>; 6],
+    ) -> shader::Bindings<'a> {
+        shader::Bindings::new(model, triangle, dyes)
+            .with_normal_mapping(!self.no_basis)
+            .with_gain(self.base_gain.map(|v| v.map(f32::from_bits)))
+            .with_metal(self.base_metal.map(f32::from_bits))
+            .with_paint(self.paint.map(|v| v.map(f32::from_bits)))
+            .with_normal_decode(self.normal_decode.map(|v| v.map(|v| v.map(f32::from_bits))))
+            .with_grain(self.grain.map(|v| v.map(f32::from_bits)))
+            .with_legacy_normal(self.legacy_normal.map(|v| v.map(f32::from_bits)))
     }
 }
 
@@ -58,6 +121,7 @@ impl Plate {
 struct Finish {
     dye: u8,
     clip: bool,
+    cutoff: Option<u32>,
 }
 
 /// Occlusion, roughness and metal, either as a texture or, when every texel agrees and none
@@ -81,11 +145,70 @@ pub(super) struct Layer {
     /// RGB sRGB emission scaled into range, with the strength that scales it back.
     pub emission: Option<(Vec<u8>, f32)>,
     pub masked: bool,
+    /// Repacked charts have a separate UV and vertex for each triangle corner.
+    pub coordinates: Option<Vec<[[f32; 2]; 3]>>,
+    pub detail_sampling: Vec<(usize, f32, usize)>,
+}
+
+enum Mapping {
+    Ordinary,
+    Native(Coordinates),
+    Chart,
+}
+
+fn detail_scale(model: &Model, dye: Option<&shader::Dye>) -> f32 {
+    dye.map_or(1.0, |d| {
+        [(d.detail, d.transform), (d.normal, d.normal_transform)]
+            .into_iter()
+            .filter_map(|(index, transform)| Some((model.textures.get(index?)?, transform)))
+            .flat_map(|(texture, transform)| {
+                [
+                    texture.size[0] as f32 * transform[0].abs(),
+                    texture.size[1] as f32 * transform[1].abs(),
+                ]
+            })
+            .fold(1.0, f32::max)
+    })
+}
+
+fn mapping(model: &Model, triangle: usize, dye: Option<&shader::Dye>) -> Result<Mapping, String> {
+    if !model
+        .triangle_detail_uv
+        .get(triangle)
+        .copied()
+        .unwrap_or(false)
+        || !dye.is_some_and(|d| d.detail.is_some() || d.normal.is_some())
+    {
+        return Ok(Mapping::Ordinary);
+    }
+    Ok(match Coordinates::read(model, triangle)? {
+        Some(map) if map.agrees(&map, 0.125 / detail_scale(model, dye)) => Mapping::Native(map),
+        _ => Mapping::Chart,
+    })
+}
+
+pub(super) fn chart_count(
+    model: &Model,
+    dyes: &[Option<shader::Dye>; 6],
+    triangles: impl Iterator<Item = usize>,
+) -> Result<usize, String> {
+    let mut count = 0;
+    for triangle in triangles {
+        let slot = model.triangle_dyes.get(triangle).copied().unwrap_or(0) as usize;
+        if matches!(
+            mapping(model, triangle, dyes.get(slot).and_then(Option::as_ref))?,
+            Mapping::Chart
+        ) {
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
 /// One part finish's claim on the plate.
 struct Claim {
     finish: Finish,
+    detail: Option<Coordinates>,
     triangles: Vec<usize>,
     texels: Vec<u32>,
 }
@@ -95,6 +218,7 @@ pub(super) fn bake(
     dyes: &[Option<shader::Dye>; 6],
     plate: Plate,
     triangles: &[usize],
+    remaining_charts: &mut Budget,
 ) -> Result<Vec<Layer>, String> {
     let texture = model
         .textures
@@ -108,9 +232,16 @@ pub(super) fn bake(
             texture.tag
         ));
     }
-    let mut finishes: BTreeMap<Finish, Vec<usize>> = BTreeMap::new();
+    let mut finishes: BTreeMap<Finish, Vec<Claim>> = BTreeMap::new();
+    let mut repacked = Vec::new();
     for &triangle in triangles {
         let finish = Finish {
+            cutoff: model
+                .triangle_cutoff
+                .get(triangle)
+                .copied()
+                .flatten()
+                .map(f32::to_bits),
             dye: model.triangle_dyes.get(triangle).copied().unwrap_or(0),
             clip: model.triangle_clip.get(triangle).copied().unwrap_or(false)
                 || model
@@ -118,26 +249,56 @@ pub(super) fn bake(
                     .get(triangle)
                     .is_some_and(Option::is_some),
         };
-        finishes.entry(finish).or_default().push(triangle);
+        let dye = dyes.get(finish.dye as usize).and_then(Option::as_ref);
+        let detail = match mapping(model, triangle, dye)? {
+            Mapping::Ordinary => None,
+            Mapping::Native(map) => Some(map),
+            Mapping::Chart => {
+                repacked.push(triangle);
+                continue;
+            }
+        };
+        let scale = detail_scale(model, dye);
+        let claims = finishes.entry(finish).or_default();
+        let matching = claims
+            .iter_mut()
+            .find(|claim| match (&claim.detail, &detail) {
+                (None, None) => true,
+                (Some(a), Some(b)) => a.agrees(b, 0.125 / scale),
+                _ => false,
+            });
+        if let Some(claim) = matching {
+            claim.triangles.push(triangle);
+        } else {
+            claims.push(Claim {
+                finish,
+                detail,
+                triangles: vec![triangle],
+                texels: Vec::new(),
+            });
+        }
     }
     let mut claims: Vec<Claim> = finishes
         .into_iter()
-        .map(|(finish, triangles)| Claim {
-            texels: claim(model, &triangles, size),
-            finish,
-            triangles,
+        .flat_map(|(_, claims)| claims)
+        .map(|mut entry| {
+            entry.texels = claim(model, &entry.triangles, size);
+            entry.texels.sort_unstable();
+            entry.texels.dedup();
+            entry
         })
         .collect();
     // The largest claim anchors the first layer and fills whatever no part reaches.
     claims.sort_by_key(|claim| std::cmp::Reverse(claim.texels.len()));
     let bindings: Vec<shader::Bindings<'_>> = claims
         .iter()
-        .map(|claim| shader::Bindings::new(model, claim.triangles[0], dyes))
+        .map(|claim| plate.bindings(model, claim.triangles[0], dyes))
         .collect();
 
-    let mut layers: Vec<(Vec<u8>, Vec<usize>)> = Vec::new();
+    let mut layers: Vec<(Vec<u32>, Vec<usize>)> = Vec::new();
     for (index, claim) in claims.iter().enumerate() {
-        let mark = u8::try_from(index + 1).map_err(|_| "Too many dye slots share one plate")?;
+        let mark =
+            u32::try_from(index + 1).map_err(|_| "Too many material mappings share one plate")?;
         // Parts that merely touch at a seam overlap by a sliver, which is not a conflict.
         let tolerance = (claim.texels.len() / 100).max(8);
         let layer = layers.iter().position(|(owner, _)| {
@@ -145,7 +306,8 @@ pub(super) fn bake(
                 let other = owner[texel as usize];
                 other != 0 && other != mark
             };
-            claim.texels.iter().filter(taken).count() <= tolerance
+            let overlap = claim.texels.iter().filter(taken).count();
+            overlap <= tolerance && (overlap == 0 || overlap * 2 < claim.texels.len())
         });
         let layer = layer.unwrap_or_else(|| {
             layers.push((vec![0; width * height], Vec::new()));
@@ -162,15 +324,24 @@ pub(super) fn bake(
     }
 
     let finishes: Vec<Finish> = claims.iter().map(|claim| claim.finish).collect();
-    Ok(layers
+    let coordinates: Vec<_> = claims.iter().map(|claim| claim.detail.as_ref()).collect();
+    let mut result: Vec<_> = layers
         .into_iter()
         .map(|(mut owner, members)| {
-            // Marks were checked to fit a byte when they were handed out.
-            spread(&mut owner, size, members[0] as u8 + 1);
-            let painted = paint(&owner, &bindings, &finishes, size);
+            // Marks were checked when they were handed out.
+            spread(&mut owner, size, members[0] as u32 + 1);
+            let painted = paint(&owner, &bindings, &finishes, &coordinates, size);
             assemble(painted, plate, size, &members, &claims)
         })
-        .collect())
+        .collect();
+    result.extend(atlas::bake(
+        model,
+        dyes,
+        plate,
+        &repacked,
+        remaining_charts,
+    )?);
+    Ok(result)
 }
 
 /// The texels whose centres lie inside a finish's triangles, in the plate's own texel grid.
@@ -246,7 +417,7 @@ fn edge(a: [f32; 2], b: [f32; 2], p: [f32; 2]) -> f32 {
 
 /// Grows every claim outward by `MARGIN` texels, then gives whatever is still unclaimed to
 /// the layer's largest finish.
-fn spread(owner: &mut [u8], size: [usize; 2], fallback: u8) {
+fn spread(owner: &mut [u32], size: [usize; 2], fallback: u32) {
     let [width, height] = size;
     for _ in 0..MARGIN {
         if !owner.contains(&0) {
@@ -290,9 +461,10 @@ struct Painted {
 /// Evaluates the material at every texel centre with its owner's dye. Evaluation is per
 /// texel and CPU bound, so rows are split across every core as the rasterizer does.
 fn paint(
-    owner: &[u8],
+    owner: &[u32],
     bindings: &[shader::Bindings<'_>],
     finishes: &[Finish],
+    coordinates: &[Option<&Coordinates>],
     size: [usize; 2],
 ) -> Painted {
     let [width, height] = size;
@@ -319,7 +491,7 @@ fn paint(
                 for (local, glow) in emission.iter_mut().enumerate() {
                     let index = first + local;
                     let (x, y) = (index % width, index / width);
-                    let mark = usize::from(owner[index]).saturating_sub(1);
+                    let mark = (owner[index] as usize).saturating_sub(1);
                     let (Some(bindings), Some(finish)) = (bindings.get(mark), finishes.get(mark))
                     else {
                         continue;
@@ -328,7 +500,12 @@ fn paint(
                         (x as f32 + 0.5) / width as f32,
                         (y as f32 + 0.5) / height as f32,
                     ];
-                    let texel = material_at(bindings, uv);
+                    let detail = coordinates
+                        .get(mark)
+                        .copied()
+                        .flatten()
+                        .map(|map| map.sample(uv));
+                    let texel = material_at(bindings, uv, detail);
                     let alpha = if finish.clip {
                         bindings.coverage(uv).map_or(255, unorm)
                     } else {
@@ -359,8 +536,8 @@ struct Baked {
     emission: [f32; 3],
 }
 
-fn material_at(bindings: &shader::Bindings<'_>, uv: [f32; 2]) -> Baked {
-    if let Some(shader::Texel { surface, normal }) = bindings.texel(uv) {
+fn material_at(bindings: &shader::Bindings<'_>, uv: [f32; 2], detail: Option<[f32; 2]>) -> Baked {
+    if let Some(shader::Texel { surface, normal }) = bindings.texel_at(uv, detail) {
         let mut ao = surface.ao;
         if let Some(map) = &normal {
             ao *= map.occlusion[0];
@@ -376,7 +553,8 @@ fn material_at(bindings: &shader::Bindings<'_>, uv: [f32; 2]) -> Baked {
     // No gear material: the plate under the part's dye tint, as the rasterizer draws it, on
     // the shader's own fallback surface.
     let base = bindings.albedo.map_or([1.0; 3], |texture| {
-        texture.sample(uv).map(|v| shader::linear(v / 255.0))
+        let [r, g, b, _] = texture.sample_color(uv);
+        [r, g, b]
     });
     let tint = bindings.tint().unwrap_or([1.0; 3]);
     Baked {
@@ -449,9 +627,11 @@ fn assemble(
         size,
         color,
         channels,
-        normal: plate.normal.map(|_| normal),
+        normal: plate.normal.filter(|_| !plate.no_basis).map(|_| normal),
         emission,
         masked: plate.gearstack.is_some() && members.iter().any(|&m| claims[m].finish.clip),
+        coordinates: None,
+        detail_sampling: Vec::new(),
     }
 }
 

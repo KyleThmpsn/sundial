@@ -1233,6 +1233,16 @@ impl PackageAuthoringApp {
         };
         let misfit = owner.is_some()
             && chosen.is_some_and(|hash| lender(hash).and_then(|l| l.attachment_owner) != owner);
+        // The base weapon's own animations under another type's appearance keep the base rig and
+        // pin the model to it, as Slab Shotgun and Long Sphere showed in game.
+        let base_rig = self.runtime_base().and_then(attachment);
+        let pins = rig
+            .and_then(|rig| rig.other_family)
+            .and_then(attachment)
+            .is_some_and(|appearance| {
+                chosen_key
+                    .is_some_and(|(chosen, _)| Some(chosen) == base_rig && chosen != appearance)
+            });
         let mut query = std::mem::take(&mut self.animation_query);
         let picked = draw_choice_part(
             ui,
@@ -1259,6 +1269,14 @@ impl PackageAuthoringApp {
             ui.horizontal(|ui| {
                 ui.add_space(label_width(ui, &APPEARANCE_COLUMN));
                 ui.colored_label(ui.visuals().error_fg_color, "Does not fit this model.");
+            });
+        } else if pins {
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(label_width(ui, &APPEARANCE_COLUMN));
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    "Plays the base rig. The model holds still and can sit or aim wrong.",
+                );
             });
         }
         // Single actions mix within the rig the weapon plays now: the chosen animations' or the

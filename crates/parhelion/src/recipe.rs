@@ -28,6 +28,11 @@ use sundial::package_authoring::{
 pub const RECIPE_SCHEMA: u32 = 1;
 pub const PARHELION_NAMESPACE_PREFIX: &str = "parhelion.";
 
+/// How many containers deeper than other authored documents a recipe may nest. A subclass's
+/// attunement node holds a custom perk eight containers down, the deepest a recipe holds one,
+/// so a perk that loads on its own loads in any recipe, with four to spare.
+pub(crate) const RECIPE_NESTING: usize = 8 + 4;
+
 pub(crate) fn validate_parhelion_namespace(namespace: &str) -> Result<(), String> {
     let suffix = namespace
         .strip_prefix(PARHELION_NAMESPACE_PREFIX)
@@ -955,6 +960,9 @@ fn parse_raw_patch_bytes(value: &str, index: usize) -> Result<Vec<u8>, RecipeErr
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WeaponRecipeOverrides {
+    /// Private driving motion and the complete vehicle graph an authored Sparrow summons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sparrow: Option<crate::vehicle::Sparrow>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub remove_lore: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1111,12 +1119,21 @@ pub struct WeaponRecipeOverrides {
     /// donor-class equip requirement and defaults to the Guardian Subclass type label.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub subclass_every_class: bool,
+    /// A subclass for another class than its base's: Titan, Hunter or Warlock. Its class
+    /// requirement names that class, the class's characters receive it, and its type label
+    /// defaults to that class's. None keeps the base's class.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subclass_class: Option<crate::ArmorClass>,
     /// A shader's custom surface values, by gear type, channel and surface.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dye_edits: Vec<crate::dye::DyeEdit>,
     /// Allow the weapon's private materials to consume shader glow on existing glow masks.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub shader_glow: bool,
+    /// Keeps the base weapon's type name and Collections page when the appearance is another
+    /// weapon type. Otherwise the weapon takes its appearance's type.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub base_type: bool,
     /// A shader's custom detail textures and tiling, by gear type and channel.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dye_texture_edits: Vec<crate::dye::DyeTextureEdit>,
@@ -1387,8 +1404,11 @@ impl WeaponRecipeOverrides {
                 })
                 .transpose()?,
             subclass_every_class: self.subclass_every_class,
+            subclass_class: self.subclass_class,
             armor_class: self.armor_class,
+            sparrow: self.sparrow.clone(),
             shader_glow: self.shader_glow,
+            base_type: self.base_type,
             dye_edits: {
                 crate::dye::validate_edits(&self.dye_edits).map_err(RecipeError::Validation)?;
                 self.dye_edits.clone()
@@ -1532,6 +1552,16 @@ pub struct WeaponRecipe {
 }
 
 impl WeaponRecipe {
+    /// The weapon whose type this one shows and files under in Collections: its appearance,
+    /// unless it keeps the base weapon's type.
+    pub(crate) fn type_donor_hash(&self) -> u32 {
+        self.presentation_donor
+            .as_ref()
+            .filter(|_| !self.overrides.base_type)
+            .and_then(|donor| donor.item_hash.parse_u32().ok())
+            .unwrap_or_else(|| self.donor.item_hash.parse_u32().unwrap_or_default())
+    }
+
     #[cfg(test)]
     #[must_use]
     pub fn every_end() -> Self {
@@ -1678,8 +1708,9 @@ impl WeaponRecipe {
         Ok(recipe)
     }
 
-    /// A new recipe of `kind` with no base item yet. A new weapon starts with shader glow on.
-    /// Saved recipes without the field keep it off, so they build as they did.
+    /// A new recipe of `kind` with no base item yet. A new weapon starts with shader glow on, and
+    /// a new subclass for every class. Saved recipes without those fields keep them off, so they
+    /// build as they did.
     pub(crate) fn new_unbound_kind(kind: ItemKind) -> Result<Self, RecipeError> {
         if kind.is_weapon() {
             let mut recipe = Self::new_unbound("New Recipe")?;
@@ -1690,6 +1721,7 @@ impl WeaponRecipe {
         recipe.kind = kind;
         recipe.flavor = kind.default_flavor().to_owned();
         recipe.overrides.icon_from_dyes = kind == ItemKind::Shader;
+        recipe.overrides.subclass_every_class = kind == ItemKind::Subclass;
         Ok(recipe)
     }
 
@@ -1719,6 +1751,10 @@ impl WeaponRecipe {
             screen_art: previous.screen_art,
             stat_trackers: previous.stat_trackers,
             shader_glow: previous.shader_glow,
+            sparrow: previous.sparrow,
+            // Which classes a subclass is for holds whatever its base.
+            subclass_every_class: previous.subclass_every_class,
+            subclass_class: previous.subclass_class,
             ..Default::default()
         };
     }
@@ -1845,6 +1881,11 @@ impl WeaponRecipe {
                 "Only a subclass can be given to every class".to_owned(),
             ));
         }
+        if self.overrides.subclass_class.is_some() && self.kind != ItemKind::Subclass {
+            return Err(RecipeError::Validation(
+                "Only a subclass can be given another class".to_owned(),
+            ));
+        }
         if self.overrides.armor_class.is_some() && self.kind != ItemKind::Armor {
             return Err(RecipeError::Validation(
                 "Only armor can select an armor class".into(),
@@ -1959,14 +2000,15 @@ impl WeaponRecipe {
     }
 
     pub fn from_json_str(encoded: &str) -> Result<Self, RecipeError> {
+        use sundial::package_authoring::parse_json_envelope;
         #[cfg(feature = "d2-model-importer")]
         let mut recipe: Self = {
-            let mut document = sundial::package_authoring::parse_json(encoded)?;
+            let mut document = parse_json_envelope(encoded, RECIPE_NESTING)?;
             crate::imported::archive::expand(&mut document).map_err(RecipeError::Validation)?;
             serde_json::from_value(document)?
         };
         #[cfg(not(feature = "d2-model-importer"))]
-        let mut recipe: Self = sundial::package_authoring::parse_json(encoded)?;
+        let mut recipe: Self = parse_json_envelope(encoded, RECIPE_NESTING)?;
         if recipe.schema != RECIPE_SCHEMA {
             return Err(RecipeError::Validation(format!(
                 "Unsupported recipe schema {}; expected {RECIPE_SCHEMA}",

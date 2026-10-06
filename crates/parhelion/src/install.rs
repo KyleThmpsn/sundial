@@ -27,6 +27,7 @@ use progress::Observer;
 pub use progress::{InstallPhase, InstallProgress};
 mod account;
 mod identities;
+pub(crate) use identities::SHADER_STACK;
 mod preparation;
 use preparation::*;
 mod replacement;
@@ -533,7 +534,7 @@ pub fn install_staged_packages_with_progress(
         request,
         None,
         DEFAULT_CACHE_INVALIDATION_OPS,
-        sundial::package_authoring::replace_file_from_path_atomically,
+        publish_package,
         &mut progress,
     )
 }
@@ -544,15 +545,45 @@ fn install_staged_packages_inner(
     fail_after_commits: Option<usize>,
     cache_ops: CacheInvalidationOps,
 ) -> Result<InstallReport, InstallError> {
-    install_with_replacer(
-        request,
-        fail_after_commits,
-        cache_ops,
-        sundial::package_authoring::replace_file_from_path_atomically,
-    )
+    install_with_replacer(request, fail_after_commits, cache_ops, publish_package)
 }
 
-type PackageReplace = fn(&Path, &Path) -> Result<(), String>;
+/// Publishes a prepared package over its target, which must still hold `original`, the bytes
+/// backed up before the install, or still have no file when `original` is `None`.
+type PackageReplace = fn(&Path, &Path, Option<&FileDigest>) -> Result<(), String>;
+
+/// Publishes one prepared package. Its target is checked after the copy beside it is flushed,
+/// immediately before the rename, so a change an outside tool made after preflight is kept and
+/// refused rather than overwritten. A target that had no file is created without replacing
+/// one that appeared meanwhile.
+fn publish_package(
+    source: &Path,
+    target: &Path,
+    original: Option<&FileDigest>,
+) -> Result<(), String> {
+    let Some(expected) = original else {
+        return sundial::package_authoring::create_file_from_path(source, target);
+    };
+    sundial::package_authoring::replace_file_from_path_if_unchanged(source, target, || {
+        let metadata = fs::symlink_metadata(target)
+            .map_err(|error| format!("Could not recheck {}: {error}", target.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!(
+                "Target package {} changed type after backup",
+                target.display()
+            ));
+        }
+        let current = digest_file(target)
+            .map_err(|error| format!("Could not recheck {}: {error}", target.display()))?;
+        if &current != expected {
+            return Err(format!(
+                "Target package {} changed after backup and was kept as it is",
+                target.display()
+            ));
+        }
+        Ok(())
+    })
+}
 
 #[cfg(test)]
 fn install_with_replacer(
@@ -726,6 +757,11 @@ fn install_with_progress(
             }
         }
     }
+    // The journal sends recovery to the backup, so the backup is on disk before the journal is.
+    if let Err(message) = sync_backup_directories(&backup_directory, &validated.backup_root) {
+        cleanup_prepared_files(&prepared);
+        return Err(InstallError::after_backup(message, &backup_directory));
+    }
     if let Err(error) = write_install_transaction(&journal_path, &transaction) {
         cleanup_prepared_files(&prepared);
         return Err(InstallError::after_backup(error.message, &backup_directory));
@@ -896,6 +932,7 @@ fn commit_and_verify(
         }
         commit_prepared_files_with_progress(
             &prepared,
+            context.originals,
             context.fail_after_commits,
             context.replace,
             progress,
@@ -1011,17 +1048,35 @@ fn create_private_directory(path: &Path) -> io::Result<()> {
     fs::create_dir(path)
 }
 
+/// Commits prepared files over their targets as they are now, for tests that start from
+/// prepared files rather than a backed-up install.
 #[cfg(test)]
 fn commit_prepared_files(
     prepared: &[PreparedArtifact],
     fail_after_commits: Option<usize>,
     replace: PackageReplace,
 ) -> Result<(), String> {
-    commit_prepared_files_with_progress(prepared, fail_after_commits, replace, &mut |_| {})
+    let originals = prepared
+        .iter()
+        .map(|artifact| OriginalArtifact {
+            file_name: artifact.manifest.file_name.clone(),
+            target_path: artifact.target_path.clone(),
+            backup_path: None,
+            digest: digest_file(&artifact.target_path).ok(),
+        })
+        .collect::<Vec<_>>();
+    commit_prepared_files_with_progress(
+        prepared,
+        &originals,
+        fail_after_commits,
+        replace,
+        &mut |_| {},
+    )
 }
 
 fn commit_prepared_files_with_progress(
     prepared: &[PreparedArtifact],
+    originals: &[OriginalArtifact],
     fail_after_commits: Option<usize>,
     replace: PackageReplace,
     progress: Observer<'_>,
@@ -1042,7 +1097,21 @@ fn commit_prepared_files_with_progress(
                 )
             })?;
         } else {
-            replace(&artifact.temporary_path, &artifact.target_path).map_err(|error| {
+            let original = originals
+                .iter()
+                .find(|original| original.file_name == artifact.manifest.file_name)
+                .ok_or_else(|| {
+                    format!(
+                        "Internal error: {} has no backed-up original",
+                        artifact.manifest.file_name
+                    )
+                })?;
+            replace(
+                &artifact.temporary_path,
+                &artifact.target_path,
+                original.digest.as_ref(),
+            )
+            .map_err(|error| {
                 format!(
                     "Could not atomically install {}: {error}",
                     artifact.manifest.file_name

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tiger_pkg::TagHash;
 
 use crate::package_payload::{
-    array_at, bool_at, i32_at, i64_at, relative_offset, u16_at, u32_at, u64_at,
+    array_at, bool_at, i32_at, i64_at, relative_offset, rows_fit, u16_at, u32_at, u64_at,
 };
 
 use super::{Catalog, resolve_string};

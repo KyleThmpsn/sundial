@@ -367,6 +367,38 @@ fn real_base_family_animations_keep_the_base_rig() {
     );
     // Every part rides the scout rig's root bone, the path a pinned appearance takes.
     super::donors::assert_parts_pinned(&bundle, &view, &packages);
+    let details = bundle.plan.weapons[0].details.as_ref().unwrap();
+    assert_eq!(details.runtime_source, Some(pattern(JADE_RABBIT)));
+    assert_eq!(details.rig_donor, None);
+    assert_eq!(details.pinned_appearance, Some(pattern(MACHINA_DEI_4)));
+    assert_eq!(details.animation_donor, Some(pattern(JADE_RABBIT)));
+    let artifacts = bundle
+        .artifacts
+        .iter()
+        .map(|artifact| {
+            let name = &artifact.plan.output_file_name;
+            let digest =
+                crate::artifact::digest_file(&view.path().join("packages").join(name)).unwrap();
+            crate::ArtifactMetadata {
+                file_name: name.clone(),
+                byte_length: digest.byte_length,
+                sha256: digest.sha256,
+            }
+        })
+        .collect::<Vec<_>>();
+    crate::test_support::artifact(
+        "kept-rig-build.json",
+        &serde_json::json!({
+            "runtime_source": details.runtime_source,
+            "pinned_appearance": details.pinned_appearance,
+            "animation_donor": details.animation_donor,
+            "entity": authored.entity_tag,
+            "rig_owners": rig(&authored.payload),
+            "packages": artifacts,
+            "client_build": sundial::package_authoring::sandbox_perk::nodes::CLIENT_BUILD,
+            "gameplay_verified": false,
+        }),
+    );
 }
 
 /// One component's values in its owner: the resource record and the concrete object its prefix
@@ -596,13 +628,17 @@ fn rate_curves_by_type(owner: &[u8]) -> BTreeMap<u32, Vec<Vec<f32>>> {
 }
 
 /// A hand cannon wearing a sidearm's look, with its damage socket given a Trait's role, as a
-/// user built it. The sidearm's rig moves across, so the row names the sidearm's type, yet the
+/// user built it. Both types share one rig and the row names the sidearm's type, yet the
 /// stat translator must still convert as a hand cannon, or Rounds Per Minute 40 fires about
 /// twice as fast. And with the Arc Damage Mod's socket gone, the weapon must carry Arc on itself
 /// rather than turning Kinetic. When `PARHELION_RATE_DAMAGE_REPORT` names a file, the read-back
 /// is written there as JSON.
 #[test]
 #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "End-to-end verification keeps the ordered workflow and its independent assertions together"
+)]
 fn real_sidearm_look_keeps_hand_cannon_rates_and_arc_damage() {
     use sundial::package_authoring::entity::{
         WEAPON_STAT_TRANSLATOR_COMPONENT_KEY, weapon_component_bindings,
@@ -620,47 +656,41 @@ fn real_sidearm_look_keeps_hand_cannon_rates_and_arc_damage() {
     let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     let base = catalog.weapon_donor(NATURE_OF_THE_BEAST).unwrap();
     let mut socket_columns = vec![None; base.sockets.len()];
-    socket_columns[DAMAGE_SOCKET] = Some(WeaponSocketColumnOverride {
-        choices: vec![MULLIGAN],
+    socket_columns[DAMAGE_SOCKET] = Some(crate::recipe::WeaponSocketColumnRecipe {
+        choices: vec![MULLIGAN.into()],
         socket_type: Some(92),
-        ..WeaponSocketColumnOverride::default()
+        ..crate::recipe::WeaponSocketColumnRecipe::default()
     });
     let namespace = "parhelion.sidearm-look-rates.integration";
-    let spec = WeaponCloneSpec {
-        kind: crate::ItemKind::Weapon,
-        namespace: namespace.to_owned(),
-        donor_item_hash: NATURE_OF_THE_BEAST,
-        expected_donor_name: Some("Nature of the Beast".to_owned()),
-        presentation_donor: Some(WeaponPresentationDonorReference {
-            item_hash: LAST_HOPE,
-            expected_name: Some("Last Hope".to_owned()),
-        }),
-        icon_donor: None,
-        render_gear_donor: None,
-        runtime_component_donors: Vec::new(),
-        identity: WeaponCloneIdentity::from_namespace(namespace)
-            .expect("test namespace should allocate"),
-        text: WeaponCloneText {
-            name: "Zeus-SI5".to_owned(),
-            flavor: "Rates and damage integration test.".to_owned(),
-            source: "Source: integration test".to_owned(),
-            ..WeaponCloneText::default()
-        },
-        overrides: WeaponCloneOverrides {
-            socket_columns,
-            ..WeaponCloneOverrides::default()
-        },
-    };
-    let bundle = build_weapon_project(
-        &packages,
-        &WeaponProjectSpec {
-            weapons: vec![spec],
-        },
+    let mut recipe = crate::WeaponRecipe::new_weapon_for_donor(
+        namespace,
+        NATURE_OF_THE_BEAST,
+        "Nature of the Beast",
     )
-    .expect("a sidearm look on a hand cannon with a retyped damage socket should build");
-    let plan = &bundle.plan.weapons[0];
-    let view = staged_view(&packages, ".parhelion-sidearm-rates-test-", &bundle);
-    let manager = open_manager(&view.path().join("packages")).unwrap();
+    .unwrap();
+    recipe.name = "Zeus-SI5".into();
+    recipe.set_presentation_donor(Some(crate::WeaponDonorReference {
+        item_hash: LAST_HOPE.into(),
+        expected_name: Some("Last Hope".into()),
+    }));
+    recipe.overrides.socket_columns = socket_columns;
+    let staging = tempfile::tempdir().unwrap();
+    let snapshot = crate::BatchBuildSnapshot::new(crate::BatchBuildRequest {
+        package_directory: packages.clone(),
+        staging_root: staging.path().into(),
+        ignore_installed_authored_overlays: true,
+        recipes: vec![recipe.clone()],
+    })
+    .unwrap();
+    let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |_| {})
+        .expect("a sidearm look on a hand cannon with a retyped damage socket should build");
+    let plan = &build.weapons[0];
+    let view = crate::workflow::FilteredPackageView::create(&packages, &[]).unwrap();
+    for artifact in &build.artifacts {
+        view.add_overlay(&build.run_directory.join(&artifact.file_name))
+            .unwrap();
+    }
+    let manager = open_manager(view.path()).unwrap();
     let stock = open_manager(&packages).unwrap();
 
     // The translator the authored weapon reads, against the stock one both weapons share.
@@ -676,6 +706,21 @@ fn real_sidearm_look_keeps_hand_cannon_rates_and_arc_damage() {
     let pattern = base.summary.weapon_pattern_index.unwrap();
     let stock_entity =
         load_weapon_runtime_entity_at_pattern_index_with_manager(&stock, pattern).unwrap();
+    let sidearm_pattern = catalog
+        .weapon_donor(LAST_HOPE)
+        .unwrap()
+        .summary
+        .weapon_pattern_index
+        .unwrap();
+    let sidearm =
+        load_weapon_runtime_entity_at_pattern_index_with_manager(&stock, sidearm_pattern).unwrap();
+    let rig = |entity: &[u8]| {
+        [0x1C80_DD4A_u32, 0x681C_2C0D, 0x8983_4B2B]
+            .map(|binding| weapon_component_bindings(entity, binding).unwrap()[0].owner_tag)
+    };
+    // Hand cannons and sidearms share one rig, so only the row's translation group tells the
+    // translator which type's table to read.
+    assert_eq!(rig(&stock_entity.payload), rig(&sidearm.payload));
     let built = translator(&manager, &authored.payload);
     let original = translator(&stock, &stock_entity.payload);
     // Stat 40, the fifth point: a hand cannon fires about 2.3 shots a second, a sidearm 5.
@@ -698,8 +743,23 @@ fn real_sidearm_look_keeps_hand_cannon_rates_and_arc_damage() {
         "the hand cannon's own conversion should be untouched"
     );
 
+    // It shows the appearance's type, as the inventory reads it, while firing as a hand cannon.
+    assert_eq!(
+        sundial::package_authoring::resolve_item_type_name(
+            &manager,
+            TagHash(plan.item_string_hash)
+        )
+        .unwrap(),
+        "Sidearm"
+    );
+
     // The Arc Damage Mod's socket is a Trait now, so Arc is the weapon's own marker.
-    let definition = read_tag(&manager, plan.definition_tag, "authored definition").unwrap();
+    let definition = read_tag(
+        &manager,
+        TagHash(plan.item_definition_hash),
+        "authored definition",
+    )
+    .unwrap();
     assert!(
         weapon_damage_socket_lanes(&definition).unwrap().is_empty(),
         "the retyped socket should no longer carry damage"
@@ -714,6 +774,39 @@ fn real_sidearm_look_keeps_hand_cannon_rates_and_arc_damage() {
         "the weapon should keep Arc without its damage socket"
     );
 
+    let details = plan.details.as_ref().unwrap();
+    assert_eq!(details.runtime_source, Some(pattern));
+    // Last Hope shares its pattern row, so the rig is named by the row's own item.
+    assert_eq!(details.rig_donor, Some(sidearm.item_hash));
+    let rig_donor = format!("0x{:08X}", sidearm.item_hash);
+    assert_eq!(details.pinned_appearance, None);
+    assert_eq!(details.damage_carrier, carrier);
+    let report = crate::app::technical_build_report(Some(&build), &recipe, None, "", "");
+    let field = |text: &str, label: &str| {
+        text.lines()
+            .find_map(|line| line.trim().strip_prefix(label))
+            .unwrap_or_else(|| panic!("missing {label}:\n{text}"))
+            .trim()
+            .to_owned()
+    };
+    assert_eq!(field(&report, "Rig Moved From"), rig_donor);
+    assert_eq!(field(&report, "Damage Carrier"), "Arc on the weapon");
+    assert!(
+        report.contains("Current recipe matches this staged build."),
+        "{report}"
+    );
+    let mut edited = recipe.clone();
+    edited.overrides.animation_donor = Some(crate::WeaponDonorReference {
+        item_hash: NATURE_OF_THE_BEAST.into(),
+        expected_name: Some("Nature of the Beast".into()),
+    });
+    let changed = crate::app::technical_build_report(Some(&build), &edited, None, "", "");
+    assert!(
+        changed.contains("Current recipe differs from this staged build."),
+        "{changed}"
+    );
+    assert_eq!(field(&changed, "Rig Moved From"), rig_donor);
+
     if let Some(path) = std::env::var_os("PARHELION_RATE_DAMAGE_REPORT") {
         let report = serde_json::json!({
             "item": format!("0x{:08X}", plan.item_hash),
@@ -725,7 +818,14 @@ fn real_sidearm_look_keeps_hand_cannon_rates_and_arc_damage() {
             },
             "damage_socket_lanes": weapon_damage_socket_lanes(&definition).unwrap().len(),
             "damage_carrier": format!("{carrier:?}"),
+            "recipe": recipe,
+            "packages": build.artifacts,
+            "rig_owners": rig(&authored.payload),
+            "client_build": sundial::package_authoring::sandbox_perk::nodes::CLIENT_BUILD,
+            "gameplay_verified": false,
         });
+        let path = PathBuf::from(path);
+        fs::write(path.with_extension("txt"), &changed).unwrap();
         fs::write(path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
     }
 }

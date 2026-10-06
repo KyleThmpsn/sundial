@@ -459,13 +459,18 @@ fn draw_program_rows(
     // guided card or recovered from a package. Keep the stored representation on a
     // read-only frame, and adopt the checked native draft only after an actual edit.
     if program.native.is_none() && editing.is_some() {
-        match sundial::package_authoring::sandbox_perk::program::native_draft(program) {
-            Ok(mut native) => {
+        // The adoption is checked: a program whose guided form holds what the native form
+        // cannot keep stays a reading rather than losing it on the first edit.
+        let adopted = sundial::package_authoring::sandbox_perk::program::native_draft(program)
+            .and_then(|mut native| {
                 native.graph.compact();
-                let before = native.clone();
-                let mut displayed = program.with_native(native);
+                program.with_native(native)
+            });
+        match adopted {
+            Ok(mut displayed) => {
+                let before = displayed.native.clone();
                 let output = draw_program_rows(ui, &mut displayed, labels, editing, structure);
-                if displayed.native.as_ref() != Some(&before) {
+                if displayed.native != before {
                     *program = displayed;
                 } else if let Some(asset) = output.and_then(|index| displayed.asset(index)) {
                     if let Some(index) = program

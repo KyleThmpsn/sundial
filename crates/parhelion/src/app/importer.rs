@@ -697,16 +697,6 @@ impl PackageAuthoringApp {
                 }
             });
         });
-        if self
-            .importer
-            .selected_weapons()
-            .any(|item| item.family().is_model_gear())
-        {
-            style::hint(
-                ui,
-                "Gear imports preserve supported source art, textures and material animation. Equipment behavior uses a compatible native runtime. Check rendering, attachments and movement in game.",
-            );
-        }
         if import {
             self.import_selected(ui.ctx());
         }

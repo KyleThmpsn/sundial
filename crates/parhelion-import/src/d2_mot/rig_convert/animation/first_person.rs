@@ -958,6 +958,7 @@ pub fn prepare_with_rig(
                 &descriptor_map,
                 &[profile.category, profile.after, profile.before],
                 Some(profile.after),
+                Some((profile.after, profile.before)),
             )?
         } else {
             states::convert(

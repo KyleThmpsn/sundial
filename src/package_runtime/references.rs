@@ -169,14 +169,68 @@ fn traverse(
     Ok(references.into_values().collect())
 }
 
+/// Every reference field `tag`'s payload declares, in payload order: the field's offset and the
+/// tag it names, each field once. Object class headers are not fields, and a resource without an
+/// object layout has none.
+pub(crate) fn declared_fields(
+    manager: &PackageManager,
+    tag: u32,
+) -> Result<Vec<(usize, u32)>, String> {
+    let resource = read_resource(manager, tag)?;
+    if !matches!(resource.kind, 8 | 16) || matches!(resource.class, 0x8080_0000 | 0x8080_9BBB) {
+        return Ok(Vec::new());
+    }
+    let mut registry = Registry::new()?;
+    let mut fields = Vec::new();
+    visit(
+        &resource.payload,
+        resource.class,
+        |handle| {
+            registry.record(handle, |schema_tag| {
+                let schema = read_resource(manager, schema_tag)?;
+                if schema.kind != 8 || schema.class != 0x8080_0000 {
+                    return Err(format!(
+                        "Generated schema 0x{schema_tag:08X} has an invalid class"
+                    ));
+                }
+                Ok(schema.payload)
+            })
+        },
+        |reference, offset, field| {
+            if field {
+                fields.push((offset, reference));
+            }
+        },
+    )
+    .map_err(|error| format!("Resource 0x{tag:08X}: {error}"))?;
+    fields.sort_unstable();
+    fields.dedup();
+    Ok(fields)
+}
+
 pub(crate) fn walk(
     data: &[u8],
     root: u32,
-    mut record: impl FnMut(u32) -> Result<Record, String>,
+    record: impl FnMut(u32) -> Result<Record, String>,
 ) -> Result<BTreeMap<u32, usize>, String> {
+    let mut references = BTreeMap::new();
+    visit(data, root, record, |tag, offset, _| {
+        references.entry(tag).or_insert(offset);
+    })?;
+    Ok(references)
+}
+
+/// Visits each object of the tree rooted at `root`, calling `found` with each reference: an
+/// object's class, at the object's offset, and each tag a reference field holds, at the field's
+/// offset, the last argument telling a field from a class.
+fn visit(
+    data: &[u8],
+    root: u32,
+    mut record: impl FnMut(u32) -> Result<Record, String>,
+    mut found: impl FnMut(u32, usize, bool),
+) -> Result<(), String> {
     let mut pending = vec![(0usize, root)];
     let mut visited = BTreeSet::new();
-    let mut references = BTreeMap::new();
     while let Some((offset, class)) = pending.pop() {
         if !visited.insert((offset, class)) {
             continue;
@@ -194,7 +248,7 @@ pub(crate) fn walk(
             ));
         }
         if is_reference(class) {
-            references.entry(class).or_insert(offset);
+            found(class, offset, false);
         }
         for (field, kind) in schema.fields.iter().copied() {
             let field = offset
@@ -204,7 +258,7 @@ pub(crate) fn walk(
                 4 | 9 => {
                     let tag = u32_at(data, field)?;
                     if is_reference(tag) {
-                        references.entry(tag).or_insert(field);
+                        found(tag, field, true);
                     }
                 }
                 3 => follow(data, field, &mut pending, &mut record)?,
@@ -212,7 +266,7 @@ pub(crate) fn walk(
             }
         }
     }
-    Ok(references)
+    Ok(())
 }
 
 fn follow(

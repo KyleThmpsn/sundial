@@ -62,7 +62,6 @@ impl PackageAuthoringApp {
         self.library_state.refresh_metadata(&self.recipe_entries);
         self.enabled_recipe_paths = enabled_recipe_paths;
         self.limit_package_backups = backup_preferences.limit_package_backups;
-        self.show_technical_build = backup_preferences.show_technical_build;
         self.package_backup_retention = backup_preferences.package_backup_retention;
         self.backup_recipe_snapshots = backup_preferences.backup_recipe_snapshots;
         self.log = log;

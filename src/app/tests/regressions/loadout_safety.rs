@@ -33,19 +33,7 @@ fn text_position(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
 
 fn click(app: &mut SundialApp, ctx: &egui::Context, pos: egui::Pos2) {
     for pressed in [true, false] {
-        frame(
-            app,
-            ctx,
-            vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
-        );
+        frame(app, ctx, crate::test_support::primary_press(pos, pressed));
     }
 }
 

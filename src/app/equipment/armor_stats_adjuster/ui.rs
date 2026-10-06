@@ -113,7 +113,7 @@ pub(in crate::app) fn draw_window(
                         state.source_key = None;
                         state.input = None;
                         state.preview = None;
-                        state.preview_task = None;
+                        state.retire_preview_task();
                         state.preview_due_at =
                             Some(context.input(|input| input.time) + PREVIEW_DEBOUNCE_SECONDS);
                     }
@@ -131,13 +131,13 @@ pub(in crate::app) fn draw_window(
     if clear_requested {
         state.targets = [0; 6];
         state.preview = None;
-        state.preview_task = None;
+        state.retire_preview_task();
         state.preview_due_at = None;
         state.feedback = None;
         state.preserve_feedback_once = false;
     } else if targets_changed {
         state.preview = None;
-        state.preview_task = None;
+        state.retire_preview_task();
         state.preview_due_at = Some(context.input(|input| input.time) + PREVIEW_DEBOUNCE_SECONDS);
         context.request_repaint_after(Duration::from_secs_f64(PREVIEW_DEBOUNCE_SECONDS));
         state.feedback = None;
@@ -155,7 +155,7 @@ pub(in crate::app) fn draw_window(
             state.source_key = None;
             state.input = None;
             state.preview = None;
-            state.preview_task = None;
+            state.retire_preview_task();
             state.preview_due_at =
                 Some(context.input(|input| input.time) + PREVIEW_DEBOUNCE_SECONDS);
             context.request_repaint_after(Duration::from_secs_f64(PREVIEW_DEBOUNCE_SECONDS));
