@@ -31,13 +31,13 @@ fn stock_companion_neighbor_is_accepted_with_checked_array_fields() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_DEFAULT_WEAPONS_PACKAGES and optionally PARHELION_PRIVATE_SPEED_RECIPE"]
+#[ignore = "requires SUNDIAL_INSTALL and optionally PARHELION_PRIVATE_SPEED_RECIPE"]
 #[expect(
     clippy::cognitive_complexity,
     reason = "Native generation audit keeps independent byte-level assertions beside each recipe under test"
 )]
 fn real_default_weapon_generation_preserves_native_chains() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_DEFAULT_WEAPONS_PACKAGES").unwrap());
+    let packages = crate::test_support::install().join("packages");
     let manager = open_manager(&packages).unwrap();
     let globals = read_tag(
         &manager,
@@ -252,13 +252,13 @@ fn real_default_weapon_generation_preserves_native_chains() {
                 !spec.overrides.exclude_from_sunrise_badge
             );
         }
-        if let Some(damage) = spec.overrides.modern_damage_type {
-            if damage != ModernDamageType::Kinetic {
-                assert_eq!(
-                    weapon_damage_descriptor(&definition).unwrap(),
-                    WeaponDamageDescriptor::Elemental(damage)
-                );
-            }
+        if let Some(damage) = spec.overrides.modern_damage_type
+            && damage != ModernDamageType::Kinetic
+        {
+            assert_eq!(
+                weapon_damage_descriptor(&definition).unwrap(),
+                WeaponDamageDescriptor::Elemental(damage)
+            );
         }
         let ammo = spec.overrides.ammo_type.unwrap();
         assert_eq!(item_string_ammo_type(&item_strings).unwrap(), Some(ammo));
@@ -594,9 +594,9 @@ fn real_default_weapon_generation_preserves_native_chains() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_DEFAULT_WEAPONS_PACKAGES; read-only native collection routing checks"]
+#[ignore = "requires SUNDIAL_INSTALL; read-only native collection routing checks"]
 fn real_collection_routing_uses_rarity_and_target_slot() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_DEFAULT_WEAPONS_PACKAGES").unwrap());
+    let packages = crate::test_support::install().join("packages");
     let manager = open_manager(&packages).unwrap();
     let globals = read_tag(
         &manager,
@@ -678,16 +678,18 @@ fn real_collection_routing_uses_rarity_and_target_slot() {
         let definition = load(item, &items, rows);
         let item_strings = load(item, &strings, string_rows);
         let selected = resolve_weapon_collection_donor(
-            &manager,
-            &items,
-            rows,
-            count,
-            &strings,
-            string_rows,
-            &collectibles,
-            collectible_rows,
-            collectible_count,
-            &sandbox_patterns,
+            ExemplarTables {
+                manager: &manager,
+                items: &items,
+                item_rows: rows,
+                item_count: count,
+                item_strings: &strings,
+                string_rows,
+                collectibles: &collectibles,
+                collectible_rows,
+                collectible_count,
+                sandbox_patterns: &sandbox_patterns,
+            },
             &mut CollectionExemplarCache::new(collectible_count),
             Some(donor),
             &definition,
@@ -720,9 +722,9 @@ fn real_collection_routing_uses_rarity_and_target_slot() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_COLLECTION_STOCK_PACKAGES; builds in memory, never installs"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES; builds in memory, never installs"]
 fn real_rarity_switch_builds_both_collection_directions() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_COLLECTION_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let mut exotic = crate::WeaponRecipe::from_json_str(include_str!(
         "../../../recipes/holdover.parhelion.json"
     ))
@@ -753,9 +755,9 @@ fn real_rarity_switch_builds_both_collection_directions() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_COLLECTION_STOCK_PACKAGES; builds in memory, never installs"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES; builds in memory, never installs"]
 fn real_sparse_metadata_donors_build() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_COLLECTION_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let bundle = build_weapon_project_after_catalog_validation(
         &packages,
         &WeaponProjectSpec {

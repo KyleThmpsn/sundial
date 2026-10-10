@@ -133,7 +133,9 @@ pub(crate) fn global_channels(manager: &PackageManager) -> Vec<[f32; 4]> {
 
 /// A dye's detail diffuse and detail normal textures. Armor dyes bind them at slots 3 and 4,
 /// cloth dyes at 5 and 6, and suit dyes at 7 and 8, so the pair the scope binds is the one.
-fn detail_textures(scope: &[u8]) -> (Result<Option<u32>, String>, Result<Option<u32>, String>) {
+pub(super) fn detail_textures(
+    scope: &[u8],
+) -> (Result<Option<u32>, String>, Result<Option<u32>, String>) {
     for (diffuse, normal) in [(3, 4), (5, 6), (7, 8)] {
         let pair = (
             detail_texture(scope, diffuse),

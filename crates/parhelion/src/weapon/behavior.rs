@@ -317,11 +317,9 @@ pub(crate) fn patches(
     let mut label_sources = Vec::new();
     for entry in behaviors {
         // Every source weapon's own labels come along, whichever half of it is borrowed, because
-        // its perk may key on them wherever the behavior itself lives. A source whose own block
-        // cannot be reached, because it has no sandbox-pattern runtime row of its own, carries no
-        // labels rather than failing the graft: that is what these sources did before labels
-        // travelled at all, and Arbalest, Legend of Acrius, Traveler's Chosen and Warden's Law
-        // are all in that position.
+        // its perk may key on them wherever the behavior itself lives. Shared patterns are
+        // resolved through the source item's selector. Sources without readable content still
+        // retain their existing graph or record graft without optional label transfer.
         if let Some(entry) = entry
             && let Ok(block) = source_block(manager, entry)
         {
@@ -384,6 +382,8 @@ pub(crate) fn patches(
                     bytes: record.bytes,
                     slots,
                     arrays: Vec::new(),
+                    pointers: Vec::new(),
+                    references: Vec::new(),
                 });
             } else {
                 let graft = resolve(&content, group, include_behavior)?;
@@ -416,7 +416,7 @@ pub(crate) fn patches(
                 bytes: tag.to_le_bytes().to_vec(),
                 graph_values: graph_values(manager, host_graph(&content, block), tag, speed_boost)?,
                 graph_removals: Vec::new(),
-                graph_trajectories: trajectory_need(manager, entity, tag)?,
+                graph_trajectories: None,
             });
         }
     }
@@ -538,13 +538,16 @@ pub(crate) fn frame_key(content: &Content, group: u32) -> Option<u32> {
         .and_then(|block| u32_at(&content.owner, block + TYPE_MARKER_OFFSETS[0]).ok())
 }
 
-/// A projectile the weapon fires as its own: a stock projectile graph cloned privately with
-/// checked owner patches and definition appends. Every variant block names the clone as its
-/// firing graph, so the weapon keeps its own pattern instead of a perk overriding it.
+/// A projectile the weapon fires as its own. A stock graph takes checked private edits.
+/// An imported graph names the root of the model's converted projectile asset group.
+/// Every content variant uses the selected private entity.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FiredGraph {
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub source_graph: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub patches: Vec<NativeAssetResourcePatch>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -552,6 +555,32 @@ pub struct FiredGraph {
     /// Particle events whose stock systems become the weapon's imported particle systems.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub particles: Vec<FiredParticle>,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+impl FiredGraph {
+    /// Imported payloads already contain their edits and symbolic dependencies.
+    /// Mixing both origins could silently select the wrong projectile.
+    pub(crate) fn validate(&self) -> AuthoringResult<()> {
+        match &self.imported {
+            Some(symbol)
+                if !symbol.trim().is_empty()
+                    && self.source_graph == 0
+                    && self.patches.is_empty()
+                    && self.appends.is_empty()
+                    && self.particles.is_empty() =>
+            {
+                Ok(())
+            }
+            None if self.source_graph != 0 && self.source_graph != u32::MAX => Ok(()),
+            _ => Err(invalid(
+                "A fired graph must name one stock projectile or one imported projectile root",
+            )),
+        }
+    }
 }
 
 /// One particle event's system in a fired graph's owner, named by the stock tag it holds and
@@ -591,6 +620,70 @@ pub(crate) fn fired_graph_patches(
             })
         })
         .collect()
+}
+
+/// One variant block's firing graph slot once a build's patches apply: the graph it names, and
+/// the patch that names it there, if one does.
+pub(crate) struct FiredSlot {
+    offset: u32,
+    pub(crate) graph: Option<u32>,
+    pub(crate) patch: Option<usize>,
+}
+
+impl FiredSlot {
+    /// The patch that names `graph` in this slot.
+    pub(crate) fn naming(&self, graph: u32) -> WeaponRuntimeResourcePatch {
+        WeaponRuntimeResourcePatch {
+            binding_hash: BINDING,
+            resource_index: 0,
+            offset: self.offset,
+            bytes: graph.to_le_bytes().to_vec(),
+            graph_values: Vec::new(),
+            graph_removals: Vec::new(),
+            graph_trajectories: None,
+        }
+    }
+}
+
+/// The firing graph slot of every variant block in the weapon's content owner, the ones a perk
+/// selects included, with `patches` applied.
+pub(crate) fn fired_slots(
+    manager: &PackageManager,
+    entity: &[u8],
+    patches: &[WeaponRuntimeResourcePatch],
+) -> AuthoringResult<Vec<FiredSlot>> {
+    let content = content(manager, entity)?;
+    content
+        .blocks
+        .iter()
+        .map(|&block| {
+            let offset = slot_offset(block + GRAPH_OFFSET, content.resource)?;
+            let patch = patches.iter().position(|patch| {
+                (patch.binding_hash, patch.resource_index, patch.offset) == (BINDING, 0, offset)
+            });
+            let graph = match patch {
+                Some(index) => u32_at(&patches[index].bytes, 0).ok(),
+                None => host_graph(&content, block),
+            }
+            .filter(|tag| *tag != 0 && *tag != u32::MAX);
+            Ok(FiredSlot {
+                offset,
+                graph,
+                patch,
+            })
+        })
+        .collect()
+}
+
+/// The graph that the block `group` selects fires, found as the build finds that block, if it
+/// names one.
+pub(crate) fn fired_graph(
+    manager: &PackageManager,
+    entity: &[u8],
+    group: u32,
+) -> AuthoringResult<Option<u32>> {
+    let content = content(manager, entity)?;
+    Ok(host_graph(&content, block_for_group(&content, group)?))
 }
 
 /// The block naming exactly this content group, with no fallback to the first block.

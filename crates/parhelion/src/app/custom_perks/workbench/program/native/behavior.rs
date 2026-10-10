@@ -76,7 +76,7 @@ pub(super) fn draw(
                         crate::app::style::more_menu(ui, "Behavior Group", |ui| {
                             if ui.button("Remove Behavior Group").clicked() {
                                 remove_group = Some(index);
-                                ui.close_menu();
+                                ui.close();
                             }
                         });
                     }
@@ -151,6 +151,9 @@ pub(super) fn draw(
                                 ui.push_id(&path, |ui| {
                                     let mut properties =
                                         super::super::super::properties::Panel::new(ui, "action");
+                                    if problem::contains(ui, &path) {
+                                        properties.reveal(ui);
+                                    }
                                     let title = super::super::native_action_label(
                                         effect.kind,
                                         &graph.blocks[block_index].bytes,
@@ -187,17 +190,10 @@ pub(super) fn draw(
                                             | 0x80803E45
                                             | 0x80803E47
                                             | 0x80803E12
-                                    ) {
-                                        if let Some(tag) = asset_action(
-                                            ui,
-                                            graph,
-                                            block_index,
-                                            effect,
-                                            assets,
-                                            pick,
-                                        )? {
-                                            edit_asset = Some(tag);
-                                        }
+                                    ) && let Some(tag) =
+                                        asset_action(ui, graph, block_index, effect, assets, pick)?
+                                    {
+                                        edit_asset = Some(tag);
                                     }
                                     // What a damage modifier does to damage leads, ahead of the filters that
                                     // choose which damage it applies to.
@@ -288,6 +284,11 @@ pub(super) fn draw(
                                                 "Repeats the Effect's Trigger",
                                             )
                                             .id_salt("extension-trigger")
+                                            .open(problem::open_header(
+                                                ui,
+                                                ui.make_persistent_id("extension-trigger"),
+                                                problem::contains(ui, &path),
+                                            ))
                                             .show(ui, |ui| {
                                                 condition_list(
                                                     ui,
@@ -365,6 +366,19 @@ pub(super) fn draw(
                     };
                     match pick(ui, NativeRequest::Action(&context)) {
                         Some(super::super::super::behaviors::Selection::Action(action)) => {
+                            // An action chosen with its asset's edits, as Change Weapon
+                            // Properties is, keeps them: the node holds only the asset.
+                            if let Some(asset) =
+                                action.asset().filter(|asset| !asset.values.is_empty())
+                            {
+                                match assets
+                                    .iter_mut()
+                                    .find(|existing| existing.graph == asset.graph)
+                                {
+                                    Some(existing) => *existing = asset.clone(),
+                                    None => assets.push(asset.clone()),
+                                }
+                            }
                             pending = Some((
                                 List::group(index, Part::Actions),
                                 Edit::Add(structure::action_node(action, group)?),
@@ -442,6 +456,16 @@ pub(super) fn draw(
                 if unset_repeat || removal.is_empty() || rearm.is_empty() {
                     egui::CollapsingHeader::new(egui::RichText::new("More Conditions").small())
                         .id_salt(("more-conditions", index))
+                        .open(problem::open_header(
+                            ui,
+                            ui.make_persistent_id(("more-conditions", index)),
+                            [Part::Ending, Part::Rearm].into_iter().any(|part| {
+                                let list = List::group(index, part);
+                                let mut path = list.owner;
+                                path.push(list.field);
+                                problem::contains(ui, &path)
+                            }),
+                        ))
                         .show_unindented(ui, |ui| {
                             lists(ui, unset_repeat, removal.is_empty(), rearm.is_empty())
                         })

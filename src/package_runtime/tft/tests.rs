@@ -140,10 +140,9 @@ fn native_paths_do_not_name_unpaired_or_unresolved_assets() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_PROJECTILE_TEST_PACKAGES and PARHELION_PROJECTILE_TEST_OUTPUT"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
 fn native_tft_map_and_effect_catalog_preserve_evidence() {
-    let packages =
-        std::path::PathBuf::from(std::env::var_os("PARHELION_PROJECTILE_TEST_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let manager = crate::package_authoring::open_shadowkeep_package_manager(&packages).unwrap();
     let names = cached(&packages, &manager, |current, total| {
         if current % 100_000 == 0 || current == total {
@@ -192,8 +191,7 @@ fn native_tft_map_and_effect_catalog_preserve_evidence() {
     assert!(catalog.entries.iter().any(|entry| entry.kind
         == crate::sandbox_perk::entity::Kind::Emitter
         && !entry.native_paths.is_empty()));
-    let output =
-        std::path::PathBuf::from(std::env::var_os("PARHELION_PROJECTILE_TEST_OUTPUT").unwrap());
+    let output = crate::test_support::artifact_dir("projectile-tft");
     std::fs::create_dir_all(&output).unwrap();
     std::fs::write(
         output.join("tft-index.json"),

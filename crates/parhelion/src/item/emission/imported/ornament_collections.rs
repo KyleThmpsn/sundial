@@ -62,7 +62,7 @@ pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringR
     validate_shared_expression_table(&emission.pools, false)?;
     let (parallel_count, parallel_header, parallel_rows, _) = array_at(&emission.pools, 0x18)?;
     let parallel = emission.pools[parallel_header..parallel_rows + parallel_count * 2].to_vec();
-    while emission.pools.len() % 16 != 0 {
+    while !emission.pools.len().is_multiple_of(16) {
         emission.pools.push(0);
     }
     let new_parallel = emission.pools.len();

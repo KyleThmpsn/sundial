@@ -1,28 +1,43 @@
 use super::*;
 
+mod ability_fields;
+mod ability_rebuild;
+mod ability_settings;
 mod activation;
 mod ammo;
 mod appearance_sweep;
 mod bank_overlays;
 mod behavior_firing;
+mod behavior_labels;
 mod collection_conditions;
 mod companions;
 mod component_rewire;
+mod component_shapes;
 mod donors;
 #[cfg(feature = "d2-model-importer")]
 mod eager_private_dependencies;
 mod effect_length;
 mod glow;
 mod hud;
+#[cfg(feature = "d2-model-importer")]
+mod imported_attachments;
+#[cfg(feature = "d2-model-importer")]
+mod kinetic_import;
 mod native_objectives;
+mod offered_mods;
 mod ornaments;
 mod parts;
+mod pellet_barrels;
 mod personalization;
 mod presentation;
 mod programs;
 mod projectiles;
 mod projects;
+mod rebuild;
 mod socket_expansion;
+mod stock;
+mod subclass_hud;
+mod weapon_properties;
 
 /// Whether a stock view must carry the Oodle runtime, or links it only when the install has one.
 #[derive(Clone, Copy, PartialEq, Eq)]

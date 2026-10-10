@@ -2,9 +2,9 @@ use super::*;
 use std::collections::BTreeMap;
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_INSTALL with the supported native packages"]
+#[ignore = "requires SUNDIAL_INSTALL with the supported native packages"]
 fn native_full_loadouts_fit_every_bucket_for_all_classes_and_supported_schemas() {
-    let install = std::path::PathBuf::from(std::env::var_os("SUNDIAL_TEST_INSTALL").unwrap());
+    let install = crate::test_support::install();
     let cache = crate::test_support::TestDirectory::new("inventory-native-sanity");
     let catalog =
         Catalog::load_or_scan_with_progress(&install, cache.0.join("catalog.json"), false, |_| {})

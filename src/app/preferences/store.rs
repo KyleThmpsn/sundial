@@ -1,6 +1,6 @@
 //! Preference loading distinguishes absence from corruption; writes preserve invalid originals.
 use super::Preferences;
-use crate::{paths, storage};
+use crate::{storage, system::paths};
 use std::{
     fs, io,
     path::{Path, PathBuf},

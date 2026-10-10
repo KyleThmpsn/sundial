@@ -1,6 +1,7 @@
 //! Add inspected native decal and reflection families to converted geometry.
 mod atmosphere;
 mod channels;
+mod cloth;
 pub mod constants;
 pub mod controller;
 mod decals;
@@ -17,6 +18,7 @@ pub(crate) use procedural::lower_program;
 mod reflection;
 pub mod resources;
 mod shader;
+mod skinning;
 mod source;
 mod variants;
 mod vertex;
@@ -185,7 +187,7 @@ fn build_family(
             source::auxiliary(context, prepared, stage)?;
         }
         context.graph.manifest["attachment_adapter"]["omitted_stages"] = json!([]);
-        context.graph.manifest["source_shader_adapter"] = json!({"stages":[0,1,3,7,9,12,14,16],"source_compute_skinning":"converted to native vertex skinning with validated bone indices","source_shader_equations_retained":context.graph.manifest["native_forward_lighting"].is_null(),"source_material_equations_retained":true,"implementation":"Rust","gameplay_verified":false});
+        context.graph.manifest["source_shader_adapter"] = json!({"stages":[0,1,3,7,9,12,14,16],"source_compute_skinning":"converted to native vertex skinning with validated bone indices","source_shader_equations_retained":context.graph.manifest["native_forward_lighting"].is_null(),"source_material_equations_retained":context.graph.manifest["material_base_fallbacks"].as_array().is_none_or(Vec::is_empty),"implementation":"Rust","gameplay_verified":false});
         context.graph.manifest["appearance"] =
             json!("Source geometry and shader equations using native rendering bindings");
     } else if family == "source-optics" {
@@ -271,6 +273,9 @@ fn apply_with_progress(
         },
     };
     build_family(&mut context, prepared, family, progress)?;
+    if family == "source-all" {
+        cloth::build(&mut context, prepared, progress)?;
+    }
     context.draws.write(&mut context.graph)?;
     layout::finish(&mut context.graph)?;
     if family == "source-all" {
@@ -282,6 +287,14 @@ fn apply_with_progress(
         )?;
     } else if family == "source-optics" {
         parts::refresh(&mut context.graph, &context.draws)?;
+    }
+    if matches!(family, "source-all" | "source-optics") {
+        skinning::write(&mut context)?;
+    }
+    for (symbol, bytes) in
+        super::vertex_input::repair(&context.graph.manifest, &context.graph.root)?
+    {
+        context.graph.write(&symbol, &bytes)?;
     }
     write_json(
         &context.graph.root.join("asset-graph.json"),
@@ -583,6 +596,9 @@ impl Source {
             .context("buffer reference")?;
         self.raw(&format!("{r:08X}"))
     }
+    fn model(&self, tag: &str) -> Result<Payload> {
+        geometry::model(&self.root, u32::from_str_radix(tag, 16)?)
+    }
     fn draws(&self, stage: usize) -> Result<Vec<SourceDraw>> {
         let mut result = vec![];
         let mut base = 0;
@@ -593,13 +609,10 @@ impl Source {
             .enumerate()
         {
             let model_tag = entry["model"].as_str().context("source model")?;
-            let h = self.raw(model_tag)?;
+            let h = self.model(model_tag)?;
             let mesh = geometry::selected_mesh(&h, entry)?;
-            let vertices = self.buffer(h.u32(mesh)?)?;
-            ensure!(
-                vertices.0.len().is_multiple_of(24),
-                "effect vertex stride differs"
-            );
+            let vertices =
+                Payload(geometry::streams(&self.root, &self.manifest, &h, mesh)?.positions);
             let index_tag = h.u32(mesh + 16)?;
             let (indices, restart) = geometry::indices(
                 &self.raw(&format!("{index_tag:08X}"))?,
@@ -615,7 +628,8 @@ impl Source {
                     .get(start..start.checked_add(count).context("source index overflow")?)
                     .context("Source draw exceeds index buffer")?;
                 let mut groups: Vec<(u8, Vec<[u32; 3]>)> = vec![];
-                for face in geometry::triangles(input, vertices.0.len() / 24, restart)? {
+                for face in geometry::faces(input, vertices.0.len() / 24, restart, h.u16(row + 6)?)?
+                {
                     let channel = (vertices.u16(face[0] as usize * 24 + 14)? & 7) as u8;
                     ensure!(
                         face.iter().all(|v| vertices
@@ -647,6 +661,7 @@ impl Source {
 #[derive(Clone)]
 struct Draws {
     header: Vec<u8>,
+    vertex_layout: i16,
     patches: Vec<Value>,
     indices: Vec<u8>,
     records: Vec<Vec<(Vec<u8>, String)>>,
@@ -677,6 +692,11 @@ impl Draws {
         }
         Ok(Self {
             header: h.0.get(..0x150).context("native model header")?.to_vec(),
+            vertex_layout: if (0..23).any(|stage| h.i16(0x108 + stage * 2).ok() == Some(28)) {
+                28
+            } else {
+                139
+            },
             patches: patches
                 .iter()
                 .filter(|p| p["offset"].as_u64().is_some_and(|n| n < 0x150))
@@ -706,6 +726,7 @@ impl Draws {
     ) -> Result<()> {
         ensure!(channel <= 5, "invalid native effect dye channel");
         let mut record = crate::d2_mot::mapping::draw_record(&draw.record)?;
+        put(&mut record, 6, &5u16.to_le_bytes())?;
         record[26] = channel;
         // Each split dye draw is its own group, regardless of the source group size.
         record[29] = 1;
@@ -747,7 +768,7 @@ impl Draws {
             &(if self.records[stage].is_empty() {
                 -1i16
             } else {
-                139
+                self.vertex_layout
             })
             .to_le_bytes(),
         )
@@ -818,6 +839,7 @@ mod tests {
         source.record[31] = 4;
         let mut draws = Draws {
             header: vec![0; 0x150],
+            vertex_layout: 139,
             patches: Vec::new(),
             indices: Vec::new(),
             records: vec![Vec::new(); 23],

@@ -115,7 +115,7 @@ mod tests {
             offset: 24,
             path: "content/common/animation/thermal_hammer_disintegrate.death_forces.tft".into(),
         };
-        let names = index(&[path.clone()], &[]);
+        let names = index(std::slice::from_ref(&path), &[]);
         let evidence = &names[&0xC897E947];
         assert_eq!(evidence.name, "thermal_hammer");
         assert_eq!(evidence.source, path.path);

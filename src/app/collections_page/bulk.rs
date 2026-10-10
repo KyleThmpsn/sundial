@@ -276,8 +276,7 @@ fn draw_job(
                                             egui::Label::new(egui::RichText::new(name).strong())
                                                 .truncate(),
                                         );
-                                        ui.add(egui::Label::new(reason).truncate())
-                                            .on_hover_text(reason);
+                                        ui.add(egui::Label::new(reason).truncate());
                                     }
                                 },
                             );

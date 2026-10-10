@@ -1,6 +1,8 @@
 //! Saved image placement and background shared by previews and package output.
 use image::{Rgba, RgbaImage};
 use serde::{Deserialize, Serialize};
+mod adjustments;
+pub(crate) use adjustments::Adjustments;
 
 pub(crate) const UNITS: u16 = 10_000;
 
@@ -41,6 +43,8 @@ pub(crate) struct Composition {
     pub flip_horizontal: bool,
     pub flip_vertical: bool,
     pub background: Background,
+    #[serde(skip_serializing_if = "Adjustments::is_identity")]
+    pub adjustments: Adjustments,
 }
 
 impl Default for Composition {
@@ -54,6 +58,7 @@ impl Default for Composition {
             flip_horizontal: false,
             flip_vertical: false,
             background: Background::Transparent,
+            adjustments: Adjustments::default(),
         }
     }
 }
@@ -77,7 +82,7 @@ impl Composition {
         if matches!(self.background, Background::Gradient { angle, .. } if angle > 360) {
             return Err("Gradient direction must be between 0 and 360 degrees.".into());
         }
-        Ok(())
+        self.adjustments.validate()
     }
 
     pub(crate) fn source(&self, image: &RgbaImage) -> RgbaImage {
@@ -100,6 +105,7 @@ impl Composition {
         if self.flip_vertical {
             image::imageops::flip_vertical_in_place(&mut oriented);
         }
+        self.adjustments.apply(&mut oriented);
         oriented
     }
 

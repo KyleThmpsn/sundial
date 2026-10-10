@@ -21,14 +21,14 @@ fn array(data: &[u8], at: usize, stride: usize) -> Vec<usize> {
 }
 
 #[test]
-#[ignore = "Requires PARHELION_DEFAULT_WEAPONS_PACKAGES and a fresh PARHELION_GEAR_ARTIFACTS directory"]
+#[ignore = "Requires SUNDIAL_INSTALL and a fresh SUNDIAL_TEST_ARTIFACTS directory"]
 #[allow(
     clippy::cognitive_complexity,
     reason = "End-to-end verification keeps the ordered workflow and its independent readback together"
 )]
 fn armor_pages_and_badge_completion_follow_supported_classes() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_DEFAULT_WEAPONS_PACKAGES").unwrap());
-    let output = PathBuf::from(std::env::var_os("PARHELION_GEAR_ARTIFACTS").unwrap());
+    let packages = crate::test_support::install().join("packages");
+    let output = crate::test_support::artifact_dir("gear");
     assert!(!output.exists(), "Use a fresh artifact directory");
     fs::create_dir_all(output.join("recipes")).unwrap();
     let stock = crate::test_support::catalog(packages.parent().unwrap()).unwrap();

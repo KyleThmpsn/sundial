@@ -1,5 +1,7 @@
 use super::*;
 
+mod arithmetic;
+
 fn bindings() -> Bindings {
     Bindings {
         objects: BTreeMap::from([("A7A7FE43".into(), 5)]),

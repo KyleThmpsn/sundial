@@ -461,7 +461,7 @@ fn position_stride(header: &[u8], payload: &[u8]) -> Result<usize, String> {
     let stride = usize::from(u16_at(header, 4)?);
     if !matches!(stride, 8 | 12 | 28 | 32)
         || payload.is_empty()
-        || payload.len() % stride != 0
+        || !payload.len().is_multiple_of(stride)
         || u32_at(header, 0)? as usize != payload.len()
     {
         return Err("Unsupported static buffer layout".into());
@@ -678,7 +678,7 @@ mod tests {
     }
 
     fn manager() -> PackageManager {
-        let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
+        let packages = crate::test_support::preview_packages();
         crate::investment::discovery::open_packages(std::path::Path::new(&packages)).unwrap()
     }
 

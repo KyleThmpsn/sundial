@@ -569,6 +569,7 @@ pub(super) fn from_variant(
             .to_owned()
     });
     recipe.classification = variant.classification_donor_hash.clone();
+    recipe.offer_everywhere = variant.offer_everywhere;
     if !variant.replace_effects {
         recipe.effects = catalog
             .item_sandbox_perk_indices(hash)
@@ -802,9 +803,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+    #[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
     fn the_copy_existing_picker_filters_and_orders_the_stock_perks() {
-        let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+        let packages = crate::test_support::stock_packages();
         let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
         let mut workbench = Workbench {
             initialized: true,
@@ -815,17 +816,17 @@ mod tests {
         let ctx = egui::Context::default();
         let size = egui::vec2(1000.0, 720.0);
         let run = |workbench: &mut Workbench, events: Vec<egui::Event>| {
-            ctx.run(
+            ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
                     events,
                     ..Default::default()
                 },
-                |ctx| {
+                |ui| {
                     assert!(
                         workbench
                             .show(
-                                ctx,
+                                ui,
                                 Path::new(""),
                                 Some(&catalog),
                                 &[],
@@ -933,9 +934,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES and PARHELION_LIBRARY_ROOT"]
+    #[ignore = "requires SUNDIAL_STOCK_PACKAGES and PARHELION_LIBRARY_ROOT"]
     fn saved_weapon_perks_migrate_to_files_without_changing_weapons_or_importing_drafts() {
-        let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+        let packages = crate::test_support::stock_packages();
         let root = PathBuf::from(std::env::var_os("PARHELION_LIBRARY_ROOT").unwrap());
         let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
         let temp = tempfile::tempdir().unwrap();

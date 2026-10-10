@@ -100,7 +100,7 @@ fn delay_package_oracle() -> anyhow::Result<()> {
     let mut rows = Vec::new();
     for (key, payload) in cases {
         fs::write(output.join(format!("{key}.bin")), &payload)?;
-        rows.push(serde_json::json!({"key": key, "bytes": payload.len(), "sha256": format!("{:x}", Sha256::digest(&payload))}));
+        rows.push(serde_json::json!({"key": key, "bytes": payload.len(), "sha256": hex::encode(Sha256::digest(&payload))}));
     }
     fs::write(
         output.join("report.json"),
@@ -314,7 +314,7 @@ fn render_body_package_oracle() -> anyhow::Result<()> {
     for (key, bytes) in artifacts {
         fs::write(output.join(format!("{key}.bin")), &bytes)?;
         rows.push(serde_json::json!({"key": key, "bytes": bytes.len(),
-            "sha256": format!("{:x}", Sha256::digest(&bytes))}));
+            "sha256": hex::encode(Sha256::digest(&bytes))}));
     }
     fs::write(
         output.join("report.json"),
@@ -547,7 +547,7 @@ fn table_event_package_oracle() -> anyhow::Result<()> {
     for (key, bytes) in artifacts {
         fs::write(output.join(format!("{key}.bin")), &bytes)?;
         rows.push(serde_json::json!({"key": key, "bytes": bytes.len(),
-            "sha256": format!("{:x}", Sha256::digest(&bytes))}));
+            "sha256": hex::encode(Sha256::digest(&bytes))}));
     }
     fs::write(
         output.join("report.json"),

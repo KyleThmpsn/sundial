@@ -43,14 +43,14 @@ fn class_flag(program: &[[u32; 2]]) -> bool {
 }
 
 #[test]
-#[ignore = "Requires PARHELION_DEFAULT_WEAPONS_PACKAGES and a fresh PARHELION_GEAR_ARTIFACTS directory"]
+#[ignore = "Requires SUNDIAL_INSTALL and a fresh SUNDIAL_TEST_ARTIFACTS directory"]
 #[allow(
     clippy::cognitive_complexity,
     reason = "Keep the editor workflow and independent native readback together"
 )]
 fn armor_class_picker_controls_equip_collections_and_badges() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_DEFAULT_WEAPONS_PACKAGES").unwrap());
-    let output = PathBuf::from(std::env::var_os("PARHELION_GEAR_ARTIFACTS").unwrap());
+    let packages = crate::test_support::install().join("packages");
+    let output = crate::test_support::artifact_dir("gear");
     assert!(!output.exists(), "Use a fresh artifact directory");
     fs::create_dir_all(output.join("recipes")).unwrap();
     let stock = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
@@ -125,20 +125,22 @@ fn armor_class_picker_controls_equip_collections_and_badges() {
             app.edit_weapon_name(format!("Armor Class Picker {ordinal} {label}"));
             let page = settle(&ctx, &mut app);
             let inherited = stock.item_class_type(base.hash).unwrap();
-            let default_label = format!(
-                "{} (Base Armor)",
-                class_label(inherited).unwrap_or("Any Class")
-            );
+            // The field reads the base's class until a class is chosen.
+            let default_label = class_label(inherited).unwrap_or("Any Class");
             assert!(texts(&page).iter().any(|(text, _)| text == "Class"));
             assert!(app.recipe.overrides.armor_class.is_none());
             if choice.is_some() {
+                let field = find(&page, default_label, |text, _| text == default_label);
+                click(&ctx, &mut app, field);
+                let menu = settle(&ctx, &mut app);
+                // The list opens under the field, which can read the same class.
                 click(
                     &ctx,
                     &mut app,
-                    find(&page, &default_label, |text, _| text == default_label),
+                    find(&menu, label, |text, rect| {
+                        text == label && rect.top() > field.y + 4.0
+                    }),
                 );
-                let menu = settle(&ctx, &mut app);
-                click(&ctx, &mut app, find(&menu, label, |text, _| text == label));
             }
             assert_eq!(app.recipe.overrides.armor_class, choice);
             let page = settle(&ctx, &mut app);

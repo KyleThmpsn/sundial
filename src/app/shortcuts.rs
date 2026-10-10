@@ -1,11 +1,15 @@
 //! Workspace shortcuts run after focused controls have handled their input.
+
+#[cfg(test)]
+mod tests;
 use super::{SaveAction, SundialApp};
 use eframe::egui;
 
 impl SundialApp {
     pub(super) fn handle_workspace_shortcuts(&mut self, ctx: &egui::Context) {
         if self.confirmation.is_some()
-            || ctx.memory(|memory| memory.top_modal_layer().is_some() || memory.any_popup_open())
+            || ctx.memory(|memory| memory.top_modal_layer().is_some())
+            || egui::Popup::is_any_open(ctx)
         {
             return;
         }

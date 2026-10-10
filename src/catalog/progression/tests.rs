@@ -223,15 +223,15 @@ fn unlock_flag_displays_validate_aligned_hashes_and_relative_blocks() {
 
     let mut wrong_hash = table.clone();
     wrong_hash[64..68].copy_from_slice(&0x8765_4321_u32.to_le_bytes());
-    assert!(unlock_flag_display_blocks(&wrong_hash, &[definition.clone()]).is_err());
+    assert!(unlock_flag_display_blocks(&wrong_hash, std::slice::from_ref(&definition)).is_err());
 
     let mut wrong_class = table.clone();
     wrong_class[56..60].copy_from_slice(&0_u32.to_le_bytes());
-    assert!(unlock_flag_display_blocks(&wrong_class, &[definition.clone()]).is_err());
+    assert!(unlock_flag_display_blocks(&wrong_class, std::slice::from_ref(&definition)).is_err());
 
     let mut outside = table;
     outside[72..80].copy_from_slice(&i64::MAX.to_le_bytes());
-    assert!(unlock_flag_display_blocks(&outside, &[definition.clone()]).is_err());
+    assert!(unlock_flag_display_blocks(&outside, std::slice::from_ref(&definition)).is_err());
     assert!(
         unlock_flag_display_blocks(&unlock_flag_display_table(definition.hash as u32), &[])
             .is_err()

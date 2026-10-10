@@ -2,21 +2,24 @@
 use super::*;
 
 mod ability;
+mod mod_item;
 #[cfg(test)]
 mod tests;
 
 pub(super) use ability::Target as AbilityTarget;
 
-/// What an apply from the footer changes: a socket choice or a subclass ability or node. Both are
-/// boxed, since a socket target carries the socket's whole plug variant and an ability change
-/// its perk.
+/// What an apply from the footer changes: a socket choice, a subclass ability or node, or a mod,
+/// whose perk is the mod itself. Each is boxed, since a socket target carries the socket's whole
+/// plug variant and the others a perk.
 pub(super) enum Applied {
     Socket(Box<Change>),
     Ability(Box<ability::Change>),
+    Mod(Box<PerkRecipe>),
 }
 
 fn stock_variant(hash: u32) -> WeaponSocketPlugVariantRecipe {
     WeaponSocketPlugVariantRecipe {
+        offer_everywhere: false,
         socket_index: 0,
         choice_index: 0,
         source_plug_hash: hash.into(),
@@ -185,7 +188,7 @@ impl Change {
         let target = &self.target;
         if let Some(perk) = &self.perk {
             perk.validate()?;
-            if let Some(issue) = crate::perk::preflight::check(perk, weapon.kind)
+            if let Some(issue) = crate::perk::preflight::check(perk)
                 .into_iter()
                 .find(|issue| issue.blocking)
             {
@@ -594,6 +597,11 @@ impl PackageAuthoringApp {
                 };
                 workbench.open_ability(&self.recipe, (place, perk), copy);
             }
+            Some(Request::Mod) => {
+                if let Some(catalog) = &self.catalog {
+                    workbench.open_mod(&self.recipe, catalog);
+                }
+            }
             Some(
                 request @ (Request::EditChoice { socket, choice }
                 | Request::SelectChoice { socket, choice }),
@@ -679,6 +687,20 @@ impl PackageAuthoringApp {
                 }
                 Err(error) => workbench.error = Some(error),
             },
+            Some(Applied::Mod(perk)) => {
+                let applied = self.catalog.as_ref().map_or_else(
+                    || Err("The catalog is still loading.".to_owned()),
+                    |catalog| crate::app::mod_view::apply_perk(&mut self.recipe, &perk, catalog),
+                );
+                match applied {
+                    Ok(()) => {
+                        workbench.applied_to_mod(&self.recipe);
+                        self.plug_queries.clear();
+                        self.synchronize_recipe_dirty();
+                    }
+                    Err(error) => workbench.error = Some(error),
+                }
+            }
             None => {}
         }
         let save_recipe = std::mem::take(&mut workbench.save_recipe_requested);

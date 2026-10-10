@@ -269,7 +269,7 @@ pub(super) fn draw_field(
                 }
             }
         }
-        crate::ui_help::info(ui, field.help);
+        crate::ui::help::info(ui, field.help);
         if document.pointer(field.path).is_none() {
             ui.label(egui::RichText::new("Using Default").small().weak())
                 .on_hover_text("No value is saved for this setting, so Sunrise uses its built-in default. Change this control to save your own value.");
@@ -289,7 +289,9 @@ pub(super) fn draw_field(
                 ui.data_mut(|data| data.remove::<String>(error_id));
                 return changed;
             }
-            Err(error) => ui.data_mut(|data| data.insert_temp(error_id, error)),
+            Err(error) => ui.data_mut(|data| {
+                data.insert_temp(error_id, error);
+            }),
         }
     }
     if let Some(error) = ui.data_mut(|data| data.get_temp::<String>(error_id)) {

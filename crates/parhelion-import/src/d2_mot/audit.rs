@@ -145,10 +145,6 @@ pub fn audit_many(
         .collect()
 }
 
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "Preserve the audited converter while integrating the legacy rendering pipeline."
-)]
 fn audit_graph(
     base: &PackageManager,
     staged: &PackageManager,
@@ -261,57 +257,292 @@ fn audit_graph(
     let item = read(items.u32(row + 16)?)?;
     crate::d2_mot::arrays::validate(&item.0).map_err(anyhow::Error::msg)?;
     if let Some(dyes) = nodes["dyes"].as_array() {
-        let translation = item.pointer(0x88)?;
-        ensure!(
-            item.u64(translation + 0x28)? == 0 && item.u64(translation + 0x38)? == 0,
-            "donor dyes remain active"
-        );
-        let locked = item.array(translation + 0x48, 4, None)?;
-        ensure!(locked.len() == dyes.len(), "locked dye count mismatch");
-        let dye_table = read(0x81613D24)?;
-        let dye_rows = dye_table.array(8, 8, None)?;
-        let assignment = read(0x80EC3F60)?;
-        let assignment_rows = assignment.array(8, 8, None)?;
-        for dye in dyes {
-            let channel = dye["channel"].as_u64().context("dye channel")? as u8;
-            let key = dye["manifest"].as_u64().context("dye key")? as u32;
-            let row = *locked
-                .iter()
-                .find(|&&o| item.u8(o).ok() == Some(channel))
-                .context("private dye channel missing")?;
-            let entry = *dye_rows
-                .get(item.u16(row + 2)? as usize)
-                .context("dye table index")?;
-            ensure!(
-                dye_table.u32(entry + 4)? == key,
-                "private dye index resolves incorrectly"
-            );
-            let relation = *assignment_rows
-                .iter()
-                .find(|&&o| assignment.u32(o).ok() == Some(key))
-                .context("dye assignment missing")?;
-            ensure!(
-                assignment.u32(relation + 4)?
-                    == tag(dye["parent"].as_str().context("dye parent")?)?,
-                "dye parent mismatch"
-            );
-        }
-        for node in nodes["nodes"].as_array().context("nodes")? {
-            if let Some(owner) = node["shared_owner"].as_str() {
-                let c = read(tag(node["symbol"].as_str().context("companion")?)?)?;
-                ensure!(c.u32(12)? == tag(owner)?, "dye companion owner mismatch");
-                ensure!(
-                    dependencies(&c)?.contains(&tag(owner)?),
-                    "dye owner not enrolled"
-                );
-            }
-        }
+        audit_dyes(&item, dyes, &nodes, &read, &tag)?;
     }
     let art = item.array(item.pointer(0x88)?, 4, None)?;
     ensure!(
         art.len() == 1 && item.u8(art[0])? == 255,
         "class restriction returned"
     );
+    let kept = audit_artwork(
+        &GraphAudit {
+            base,
+            nodes: &nodes,
+            symbols: &symbols,
+            read: &read,
+            tag: &tag,
+            item_hash,
+            art_key,
+            donor_item,
+            donor_key,
+        },
+        &globals,
+        &items,
+        &rows,
+        &item,
+        &art,
+    )?;
+    let model = read(tag("model")?)?;
+    if nodes.get("material_adapter").is_some() {
+        let native_scale = model.f32(0x6C)?;
+        ensure!(
+            native_scale > 0.0
+                && [0x50, 0x54, 0x58]
+                    .into_iter()
+                    .all(|offset| model.f32(offset).ok() == Some(native_scale)),
+            "merged model disagrees with the native shader's uniform position scale"
+        );
+    }
+    let mesh = model.array(16, 136, Some(0x80807378))?[0];
+    ensure!(
+        model.u32(0x9C)? == 0x80809FBD && model.u32(0x13C)? == 0x80809FBD,
+        "native array markers missing"
+    );
+    let parts = model.array(mesh + 24, 32, Some(0x8080737E))?;
+    draws::validate(&model, mesh, &parts)?;
+    ensure!(
+        parts.len() == nodes["native_draw_parts"].as_u64().unwrap_or(24) as usize,
+        "draw parts mismatch"
+    );
+    if let Some(rig) = nodes.get("rig_mapping") {
+        audit_rig(rig, &nodes, &runtime_map, &model, &read, &tag)?;
+    }
+    for original in nodes["nodes"]
+        .as_array()
+        .context("nodes")?
+        .iter()
+        .map(|n| n["template"].as_u64().unwrap() as u32)
+    {
+        ensure!(
+            read(original)?.0 == base.read_tag(TagHash(original))?,
+            "stock donor changed"
+        )
+    }
+    Ok(
+        json!({"passed":true,"loading":loading,"kept_parts":kept.len(),"private_tags":symbols.as_object().unwrap().len(),"native_draw_parts":parts.len(),"private_art_index":item.u16(art[0]+2)?,"native_materials":"linked payloads and references verified","gameplay_verified":false,"runtime_map_rows":runtime_map.u64(8)?,"runtime_map_auxiliary_words":runtime_map.u64(24)?}),
+    )
+}
+
+/// The private item's locked dye channels resolve to the imported dyes, and each dye's companion
+/// names and enrolls its owner.
+fn audit_dyes(
+    item: &Payload,
+    dyes: &[Value],
+    nodes: &Value,
+    read: &dyn Fn(u32) -> Result<Payload>,
+    tag: &dyn Fn(&str) -> Result<u32>,
+) -> Result<()> {
+    let translation = item.pointer(0x88)?;
+    ensure!(
+        item.u64(translation + 0x28)? == 0 && item.u64(translation + 0x38)? == 0,
+        "donor dyes remain active"
+    );
+    let locked = item.array(translation + 0x48, 4, None)?;
+    ensure!(locked.len() == dyes.len(), "locked dye count mismatch");
+    let dye_table = read(0x81613D24)?;
+    let dye_rows = dye_table.array(8, 8, None)?;
+    let assignment = read(0x80EC3F60)?;
+    let assignment_rows = assignment.array(8, 8, None)?;
+    for dye in dyes {
+        let channel = dye["channel"].as_u64().context("dye channel")? as u8;
+        let key = dye["manifest"].as_u64().context("dye key")? as u32;
+        let row = *locked
+            .iter()
+            .find(|&&o| item.u8(o).ok() == Some(channel))
+            .context("private dye channel missing")?;
+        let entry = *dye_rows
+            .get(item.u16(row + 2)? as usize)
+            .context("dye table index")?;
+        ensure!(
+            dye_table.u32(entry + 4)? == key,
+            "private dye index resolves incorrectly"
+        );
+        let relation = *assignment_rows
+            .iter()
+            .find(|&&o| assignment.u32(o).ok() == Some(key))
+            .context("dye assignment missing")?;
+        ensure!(
+            assignment.u32(relation + 4)? == tag(dye["parent"].as_str().context("dye parent")?)?,
+            "dye parent mismatch"
+        );
+    }
+    for node in nodes["nodes"].as_array().context("nodes")? {
+        if let Some(owner) = node["shared_owner"].as_str() {
+            let c = read(tag(node["symbol"].as_str().context("companion")?)?)?;
+            ensure!(c.u32(12)? == tag(owner)?, "dye companion owner mismatch");
+            ensure!(
+                dependencies(&c)?.contains(&tag(owner)?),
+                "dye owner not enrolled"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The mapped skeleton is the native one or the source-owned runtime's, its bone names and count
+/// are unchanged, and every vertex selects a mapped bone inside the model's palette.
+fn audit_rig(
+    rig: &Value,
+    nodes: &Value,
+    runtime_map: &Payload,
+    model: &Payload,
+    read: &dyn Fn(u32) -> Result<Payload>,
+    tag: &dyn Fn(&str) -> Result<u32>,
+) -> Result<()> {
+    let owner_tag = u32::from_str_radix(
+        rig["native_owner"]
+            .as_str()
+            .context("native skeleton owner")?,
+        16,
+    )?;
+    let owner = if rig["source_owned"] == true {
+        let key = crate::d2_mot::profile::hash(nodes, "pattern_global_id_hash")?;
+        let entries = runtime_map
+            .array(8, 8, None)?
+            .into_iter()
+            .filter(|&row| runtime_map.u32(row).ok() == Some(key))
+            .collect::<Vec<_>>();
+        ensure!(
+            entries.len() == 1,
+            "source-owned rig runtime assignment missing or ambiguous"
+        );
+        let runtime = read(runtime_map.u32(entries[0] + 4)?)?;
+        let mut skeletons = Vec::new();
+        for row in runtime.array(16, 12, Some(0x80809C04))? {
+            let tag = runtime.u32(row)?;
+            let component = read(tag)?;
+            if component.u64(24)? != 0 && component.u32(component.pointer(24)? - 4)? == 0x80808546 {
+                ensure!(
+                    tag != owner_tag,
+                    "source-owned runtime still uses the native skeleton"
+                );
+                skeletons.push(component);
+            }
+        }
+        ensure!(
+            skeletons.len() == 1,
+            "source-owned runtime skeleton missing or ambiguous"
+        );
+        skeletons.remove(0)
+    } else {
+        read(owner_tag)?
+    };
+    let resource = owner.pointer(24)?;
+    ensure!(
+        owner.u32(resource - 4)? == 0x80808546,
+        "native FK skeleton class changed"
+    );
+    let bones = owner.array(resource + 0x80, 16, Some(0x80808A08))?;
+    ensure!(
+        Some(bones.len() as u64) == rig["native_bone_count"].as_u64(),
+        "native bone count changed"
+    );
+    let mapping = rig["bone_map"].as_array().context("bone map")?;
+    let source_bones = rig["source_bones"].as_array().context("source bones")?;
+    ensure!(
+        mapping.len() == source_bones.len(),
+        "bone map length mismatch"
+    );
+    let required: BTreeSet<usize> = match rig.get("required_source_bones") {
+        Some(value) => serde_json::from_value(value.clone())?,
+        None => (0..mapping.len()).collect(),
+    };
+    ensure!(
+        required.iter().all(|&index| index < mapping.len()),
+        "required source bone outside source skeleton"
+    );
+    let mut allowed = BTreeSet::new();
+    for (source_index, (target, source)) in mapping.iter().zip(source_bones).enumerate() {
+        let index = target.as_u64().context("target bone index")? as usize;
+        let Some(index) = mapped_bone_index(source_index, index, bones.len(), &required)? else {
+            continue;
+        };
+        let row = bones[index];
+        let name = u32::from_str_radix(
+            source["name_hash"].as_str().context("source bone name")?,
+            16,
+        )?;
+        ensure!(owner.u32(row)? == name, "mapped native bone name changed");
+        allowed.insert(u16::try_from(index)?);
+    }
+    let positions = read(tag("positions-data")?)?;
+    let position_header = read(tag("positions-header")?)?;
+    let stride = usize::from(position_header.u16(4)?);
+    ensure!(
+        matches!(stride, 8 | 16)
+            && positions.0.len().is_multiple_of(stride)
+            && position_header.u32(0)? as usize == positions.0.len(),
+        "position stream is truncated or has an unsupported declaration"
+    );
+    for row in (0..positions.0.len()).step_by(stride) {
+        ensure!(
+            u32::from(positions.u16(row + 6)?) < model.u32(0x40)?,
+            "model palette does not cover vertex bone selector"
+        );
+        ensure!(
+            allowed.contains(&positions.u16(row + 6)?),
+            "vertex references an unmapped bone"
+        );
+        if stride == 16 {
+            ensure!(
+                positions.0[row + 8..row + 12]
+                    .iter()
+                    .map(|w| u16::from(*w))
+                    .sum::<u16>()
+                    == 255,
+                "native skin weights do not sum to 255"
+            );
+            for &bone in &positions.0[row + 12..row + 16] {
+                ensure!(
+                    allowed.contains(&u16::from(bone)) && u32::from(bone) < model.u32(0x40)?,
+                    "native skin weight references an unmapped bone"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The handles an audit of one staged graph reads by: the stock packages, the graph's nodes and
+/// allocated symbols, and the identities the private item was authored under.
+struct GraphAudit<'a> {
+    base: &'a PackageManager,
+    nodes: &'a Value,
+    symbols: &'a Value,
+    read: &'a dyn Fn(u32) -> Result<Payload>,
+    tag: &'a dyn Fn(&str) -> Result<u32>,
+    item_hash: u32,
+    art_key: u32,
+    donor_item: u32,
+    donor_key: u32,
+}
+
+/// The private item's artwork row selects the imported parts, source regions and kept native
+/// markers in the slots the donor's metadata laid out, no other item's slots moved, and the art
+/// assignment table still carries every stock row beside the private one. Returns the kept parts.
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "Preserve the audited converter while integrating the legacy rendering pipeline."
+)]
+fn audit_artwork(
+    audit: &GraphAudit<'_>,
+    globals: &Payload,
+    items: &Payload,
+    rows: &[usize],
+    item: &Payload,
+    art: &[usize],
+) -> Result<BTreeMap<u32, u32>> {
+    let GraphAudit {
+        base,
+        nodes,
+        symbols,
+        read,
+        tag,
+        item_hash,
+        art_key,
+        donor_item,
+        donor_key,
+    } = *audit;
     let metadata = read(globals.u32(16 + 66 * 16)?)?;
     let metadata_rows = metadata.array(8, 32, None)?;
     let m = *metadata_rows
@@ -358,8 +589,8 @@ fn audit_graph(
     // Check placement independently of the staging adapter. Marker-bearing parts keep
     // their native slots, but must resolve to private parents with collapsed geometry.
     let assignments = read(0x80EC3F61)?;
-    let mut kept = kept::audit(&nodes, &symbols, &assignments, base, &read)?;
-    let source_parts = parts::audit(&nodes, &symbols, &assignments, &expected_slots, &read)?;
+    let mut kept = kept::audit(nodes, symbols, &assignments, base, &read)?;
+    let source_parts = parts::audit(nodes, symbols, &assignments, &expected_slots, &read)?;
     for (assignment, key) in &source_parts {
         ensure!(
             kept.insert(*assignment, *key).is_none(),
@@ -483,135 +714,7 @@ fn audit_graph(
         assignments.u32(a + 4)? == tag("parent")?,
         "private artwork parent mismatch"
     );
-    let model = read(tag("model")?)?;
-    if nodes.get("material_adapter").is_some() {
-        let native_scale = model.f32(0x6C)?;
-        ensure!(
-            native_scale > 0.0
-                && [0x50, 0x54, 0x58]
-                    .into_iter()
-                    .all(|offset| model.f32(offset).ok() == Some(native_scale)),
-            "merged model disagrees with the native shader's uniform position scale"
-        );
-    }
-    let mesh = model.array(16, 136, Some(0x80807378))?[0];
-    ensure!(
-        model.u32(0x9C)? == 0x80809FBD && model.u32(0x13C)? == 0x80809FBD,
-        "native array markers missing"
-    );
-    let parts = model.array(mesh + 24, 32, Some(0x8080737E))?;
-    draws::validate(&model, mesh, &parts)?;
-    ensure!(
-        parts.len() == nodes["native_draw_parts"].as_u64().unwrap_or(24) as usize,
-        "draw parts mismatch"
-    );
-    if let Some(rig) = nodes.get("rig_mapping") {
-        let owner_tag = u32::from_str_radix(
-            rig["native_owner"]
-                .as_str()
-                .context("native skeleton owner")?,
-            16,
-        )?;
-        let owner = if rig["source_owned"] == true {
-            let key = crate::d2_mot::profile::hash(&nodes, "pattern_global_id_hash")?;
-            let entries = runtime_map
-                .array(8, 8, None)?
-                .into_iter()
-                .filter(|&row| runtime_map.u32(row).ok() == Some(key))
-                .collect::<Vec<_>>();
-            ensure!(
-                entries.len() == 1,
-                "source-owned rig runtime assignment missing or ambiguous"
-            );
-            let runtime = read(runtime_map.u32(entries[0] + 4)?)?;
-            let mut skeletons = Vec::new();
-            for row in runtime.array(16, 12, Some(0x80809C04))? {
-                let tag = runtime.u32(row)?;
-                let component = read(tag)?;
-                if component.u64(24)? != 0
-                    && component.u32(component.pointer(24)? - 4)? == 0x80808546
-                {
-                    ensure!(
-                        tag != owner_tag,
-                        "source-owned runtime still uses the native skeleton"
-                    );
-                    skeletons.push(component);
-                }
-            }
-            ensure!(
-                skeletons.len() == 1,
-                "source-owned runtime skeleton missing or ambiguous"
-            );
-            skeletons.remove(0)
-        } else {
-            read(owner_tag)?
-        };
-        let resource = owner.pointer(24)?;
-        ensure!(
-            owner.u32(resource - 4)? == 0x80808546,
-            "native FK skeleton class changed"
-        );
-        let bones = owner.array(resource + 0x80, 16, Some(0x80808A08))?;
-        ensure!(
-            Some(bones.len() as u64) == rig["native_bone_count"].as_u64(),
-            "native bone count changed"
-        );
-        let mapping = rig["bone_map"].as_array().context("bone map")?;
-        let source_bones = rig["source_bones"].as_array().context("source bones")?;
-        ensure!(
-            mapping.len() == source_bones.len(),
-            "bone map length mismatch"
-        );
-        let required: BTreeSet<usize> = match rig.get("required_source_bones") {
-            Some(value) => serde_json::from_value(value.clone())?,
-            None => (0..mapping.len()).collect(),
-        };
-        ensure!(
-            required.iter().all(|&index| index < mapping.len()),
-            "required source bone outside source skeleton"
-        );
-        let mut allowed = BTreeSet::new();
-        for (source_index, (target, source)) in mapping.iter().zip(source_bones).enumerate() {
-            let index = target.as_u64().context("target bone index")? as usize;
-            let Some(index) = mapped_bone_index(source_index, index, bones.len(), &required)?
-            else {
-                continue;
-            };
-            let row = bones[index];
-            let name = u32::from_str_radix(
-                source["name_hash"].as_str().context("source bone name")?,
-                16,
-            )?;
-            ensure!(owner.u32(row)? == name, "mapped native bone name changed");
-            allowed.insert(u16::try_from(index)?);
-        }
-        let positions = read(tag("positions-data")?)?;
-        ensure!(positions.0.len() % 8 == 0, "position stream is truncated");
-        for row in (0..positions.0.len()).step_by(8) {
-            ensure!(
-                u32::from(positions.u16(row + 6)?) < model.u32(0x40)?,
-                "model palette does not cover vertex bone selector"
-            );
-            ensure!(
-                allowed.contains(&positions.u16(row + 6)?),
-                "vertex references an unmapped bone"
-            );
-        }
-    }
-    for original in nodes["nodes"]
-        .as_array()
-        .context("nodes")?
-        .iter()
-        .map(|n| n["template"].as_u64().unwrap() as u32)
-    {
-        ensure!(
-            read(original)?.0 == base.read_tag(TagHash(original))?,
-            "stock donor changed"
-        )
-    }
-    Ok(
-        json!({"passed":true,"loading":loading,"kept_parts":kept.len(),"private_tags":symbols.as_object().unwrap().len(),"native_draw_parts":parts.len(),"private_art_index":item.u16(art[0]+2)?,"native_materials":"linked payloads and references verified","gameplay_verified":false,"runtime_map_rows":runtime_map.u64(8)?,"runtime_map_auxiliary_words":runtime_map.u64(24)?}),
-    )
+    Ok(kept)
 }
 
 #[cfg(test)]

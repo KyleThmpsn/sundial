@@ -292,16 +292,16 @@ fn lower_inner(
     header.u32(0);
     let mut out = Write::default();
     out.chunk(b"BKHD", header)?;
-    if let Some((source, native)) = settings {
-        if let Some(payload) = source.supplement(native, &convert.dependencies)? {
-            out.chunk(
-                b"STMG",
-                Write {
-                    bytes: payload,
-                    refs: Vec::new(),
-                },
-            )?;
-        }
+    if let Some((source, native)) = settings
+        && let Some(payload) = source.supplement(native, &convert.dependencies)?
+    {
+        out.chunk(
+            b"STMG",
+            Write {
+                bytes: payload,
+                refs: Vec::new(),
+            },
+        )?;
     }
     out.chunk(b"HIRC", hirc)?;
     Ok(Bank {
@@ -313,6 +313,16 @@ fn lower_inner(
 }
 
 impl Bank {
+    /// Native media reference fields recorded by the parser, including unaligned fields.
+    /// Their values are package-allocated media IDs, separate from Wwise object identities.
+    pub fn media_fields(&self) -> Vec<(usize, u32)> {
+        self.refs
+            .iter()
+            .filter(|reference| matches!(reference.kind, Kind::Media))
+            .map(|reference| (reference.offset, reference.value))
+            .collect()
+    }
+
     /// Allocate identities from a private namespace. Event and bank IDs are independent.
     pub fn instantiate(
         &self,

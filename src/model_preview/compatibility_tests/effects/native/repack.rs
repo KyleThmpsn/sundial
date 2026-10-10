@@ -106,7 +106,8 @@ fn normal_basis(glb: &[u8], doc: &serde_json::Value, uv: &[[f32; 2]]) -> serde_j
 #[test]
 fn varying_detail_survives_degenerate_and_repeated_primary_uvs_in_glb() {
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_deref()
         .map(Path::new)

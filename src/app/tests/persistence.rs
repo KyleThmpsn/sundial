@@ -22,7 +22,7 @@ fn settings_saves_are_verified_and_each_keeps_its_own_backup() {
     let second_result = save_json_with_backup_root(&settings, &second_document, &backups).unwrap();
 
     assert_ne!(first_result.backup, second_result.backup);
-    let backup_directory = crate::paths::resolve_path_for_comparison(&backups).unwrap();
+    let backup_directory = crate::system::paths::resolve_path_for_comparison(&backups).unwrap();
     assert_eq!(
         first_result.backup.parent(),
         Some(backup_directory.as_path())

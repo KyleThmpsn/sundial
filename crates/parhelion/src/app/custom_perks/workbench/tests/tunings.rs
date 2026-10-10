@@ -1,5 +1,5 @@
 //! An Ability Property's key picker defines a tuning, the program carries it and rekeys its
-//! actions when the tuning changes. The captures, when `PARHELION_UI_CAPTURE_DIR` is set, are
+//! actions when the tuning changes. The captures, when `SUNDIAL_TEST_ARTIFACTS` is set, are
 //! the modal as a reader meets it and the action once its key is the tuning.
 use super::*;
 use sundial::package_authoring::sandbox_perk::program::PropertyOperation;

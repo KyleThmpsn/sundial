@@ -5,12 +5,17 @@ use crate::model_preview::effects::{Kind, Material};
 use fixtures::{Package, array, floats, put};
 mod glow;
 pub(super) mod native;
+pub(crate) mod transparency;
+pub(in crate::model_preview) use native::motion_case;
 pub(crate) use native::opaque_detail_case;
 #[cfg_attr(
     not(windows),
     allow(unused_imports, reason = "used by the Windows GPU verification")
 )]
-pub(crate) use native::{derivative, hdr, integer, metal, normal_blue, normals, opaque, paint};
+pub(crate) use native::{
+    derivative, hdr, immediate, integer, layered, metal, normal_blue, normals, opaque, paint,
+    vertex_image,
+};
 
 fn gradient() -> Material {
     Material {
@@ -210,7 +215,7 @@ fn form_cases(cases: &mut Vec<(String, Model, [u8; 3])>) {
 #[test]
 fn effects_blend_light_without_opaque_cards_or_depth_writes() {
     let temporary = tempfile::tempdir().unwrap();
-    let output = std::env::var_os("SUNDIAL_EFFECT_OUTPUT").map(std::path::PathBuf::from);
+    let output = crate::test_support::artifacts("effects");
     let output = output.as_deref().unwrap_or(temporary.path());
     std::fs::create_dir_all(output).unwrap();
     let mut receipt = Vec::new();
@@ -222,7 +227,7 @@ fn effects_blend_light_without_opaque_cards_or_depth_writes() {
                 pitch: 0.0,
                 ..Default::default()
             },
-            render::Scene::default(),
+            render::Scene::unprocessed(),
             [160, 160],
             0.0,
             render::Style::Textured,
@@ -399,8 +404,10 @@ fn material_program_and_render_stage_survive_package_loading() {
             ..Default::default()
         },
         render::Scene {
+            filmic: false,
+            bloom: false,
             background: [0; 3],
-            ..Default::default()
+            ..render::Scene::unit_exposure()
         },
         [160, 160],
         0.0,
@@ -415,7 +422,9 @@ fn material_program_and_render_stage_survive_package_loading() {
             .all(|(a, b)| a.abs_diff(b) <= 2),
         "{actual:?}"
     );
-    if let Some(output) = std::env::var_os("SUNDIAL_EFFECT_OUTPUT") {
+    if let Some(output) =
+        crate::test_support::artifacts("effects").map(std::path::PathBuf::into_os_string)
+    {
         let output = std::path::PathBuf::from(output);
         std::fs::create_dir_all(&output).unwrap();
         let rgba = image
@@ -440,10 +449,10 @@ fn material_program_and_render_stage_survive_package_loading() {
 }
 
 #[test]
-#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_EFFECT_OUTPUT"]
+#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
 fn red_dwarf_materials_render_from_installed_appearance() {
-    let packages = std::path::PathBuf::from(std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").unwrap());
-    let output = std::path::PathBuf::from(std::env::var_os("SUNDIAL_EFFECT_OUTPUT").unwrap());
+    let packages = crate::test_support::preview_packages();
+    let output = crate::test_support::artifact_dir("effects");
     std::fs::create_dir_all(&output).unwrap();
     let appearance = appearance::Appearance {
         arrangement: 900,
@@ -475,7 +484,7 @@ fn red_dwarf_materials_render_from_installed_appearance() {
         let image = render::styled_image(
             &model,
             camera,
-            render::Scene::default(),
+            render::Scene::unprocessed(),
             [1280, 960],
             seconds,
             render::Style::Textured,

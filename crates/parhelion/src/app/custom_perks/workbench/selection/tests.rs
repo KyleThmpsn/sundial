@@ -33,7 +33,7 @@ fn frame(
     width: f32,
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
-    ctx.run(
+    ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -42,13 +42,13 @@ fn frame(
             events,
             ..Default::default()
         },
-        |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 crate::app::style::perk_workbench_style(ui);
                 let donor = app.current_donor().unwrap();
                 app.draw_socket_columns_panel(ui, Some(&donor));
             });
-            app.draw_perk_workbench(ctx);
+            app.draw_perk_workbench(ui);
         },
     )
 }
@@ -82,31 +82,35 @@ fn open_from_plug(
     ctx: &egui::Context,
     app: &mut PackageAuthoringApp,
     trigger: &str,
-    expect_native_reset: bool,
+    expect_native_default: bool,
 ) {
     let output = settle(ctx, app, 900.0);
     click(ctx, app, 900.0, label(&output, trigger, false).center());
     let output = settle(ctx, app, 900.0);
     let action = label(&output, "Use Custom Perk…", true);
+    let none = label(&output, "None", true);
     assert!(
-        action.bottom() < label(&output, "None", true).top(),
+        action.bottom() < none.top(),
         "Custom perks lead the picker, above the plug list"
     );
-    if expect_native_reset {
+    if expect_native_default {
         let donor = app.current_donor().unwrap();
         let native_default = donor.sockets[0].native_default.unwrap();
         let native_label = app
             .catalog
             .as_ref()
             .unwrap()
-            .plug_label(native_default, true);
-        let reset = label(&output, &format!("Reset to Default: {native_label}"), false);
-        assert!(action.bottom() < reset.top());
+            .plug_label(native_default, false);
+        let default = label(&output, &native_label, true);
+        assert!(
+            action.bottom() < default.top() && default.bottom() < none.top(),
+            "The socket's default follows its choice, above the plug list"
+        );
     }
     click(ctx, app, 900.0, action.center());
     let output = settle(ctx, app, 900.0);
     label(&output, "Select Custom Perk", false);
-    assert!(!ctx.memory(|memory| memory.any_popup_open()));
+    assert!(!egui::Popup::is_any_open(ctx));
 }
 
 fn open_context_workbench(
@@ -158,9 +162,9 @@ fn open_context_workbench(
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES for the native plug picker"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES for the native plug picker"]
 fn native_custom_picker_uses_uninstalled_perks_for_exact_choices_and_supports_creation() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let temporary = tempfile::tempdir().unwrap();
     let catalog = InvestmentCatalog::load_with_cache_path(
         packages.parent().unwrap(),
@@ -309,8 +313,8 @@ fn selected_icon(
     perk: &PerkRecipe,
 ) -> egui::TextureId {
     let mut icon = None;
-    let _ = ctx.run(Default::default(), |ctx| {
-        egui::CentralPanel::default().show(ctx, |ui| {
+    let _ = ctx.run_ui(Default::default(), |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             icon = crate::artwork_browser::preview::icon(ui, catalog, perk.icon.as_ref());
         });
     });

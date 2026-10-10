@@ -102,6 +102,27 @@ fn is_full_level(value: &u8) -> bool {
     *value == u8::MAX
 }
 
+impl WeaponIconEdit {
+    /// The edit with `art` as its image, as an imported image takes the icon's place, such as a
+    /// vehicle's silhouette. As it is without art.
+    pub(crate) fn with_art(&self, art: Option<&ImportedIcon>) -> Self {
+        let mut edit = self.clone();
+        if let Some(art) = art {
+            edit.imported_image = Some(art.clone());
+        }
+        edit
+    }
+
+    /// An icon that is `drawn` and nothing else, such as a subclass's generated icon, whose
+    /// subclass color and symbol set it whole. The icon's own edits would only recolor it.
+    pub(crate) fn drawn(drawn: &ImportedIcon) -> Self {
+        Self {
+            imported_image: Some(drawn.clone()),
+            ..Self::default()
+        }
+    }
+}
+
 impl Default for WeaponIconEdit {
     fn default() -> Self {
         Self {

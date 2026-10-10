@@ -285,8 +285,10 @@ fn capture(
         ..Default::default()
     };
     let scene = render::Scene {
+        filmic: false,
+        bloom: false,
         background: [0; 3],
-        ..Default::default()
+        ..render::Scene::unit_exposure()
     };
     let image = render::animated_image(&model, camera, scene, [320, 240], 0.0);
     let mut reference = case(alpha, channel, primary, base, detail);
@@ -330,7 +332,8 @@ fn capture(
 #[test]
 fn matched_native_normals_preserve_signed_direction_and_export() {
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let out = configured
         .as_deref()
         .map(Path::new)

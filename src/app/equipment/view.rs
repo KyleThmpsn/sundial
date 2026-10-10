@@ -318,15 +318,12 @@ impl SundialApp {
                     {
                         self.select_equipment_flags(character_index, slot, flags);
                     }
-                    if let Some(snapshot) = snapshot {
-                        if !snapshot.issues.is_empty() {
-                            ui.colored_label(
-                                ui.visuals().error_fg_color,
-                                snapshot.issues.join(" · "),
-                            )
+                    if let Some(snapshot) = snapshot
+                        && !snapshot.issues.is_empty()
+                    {
+                        ui.colored_label(ui.visuals().error_fg_color, snapshot.issues.join(" · "))
                             .on_hover_text(format!("Authored item: {}", snapshot.raw_item_text));
-                            ui.weak("Guided edits are disabled for this malformed equipped item.");
-                        }
+                        ui.weak("Guided edits are disabled for this malformed equipped item.");
                     }
 
                     let mut plugs = current.as_ref().and_then(|item| {

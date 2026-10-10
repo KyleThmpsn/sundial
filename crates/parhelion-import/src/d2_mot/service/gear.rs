@@ -219,6 +219,16 @@ fn convert(
         })
         .sum::<usize>();
     let fallbacks = mapping["fallbacks"].as_array().map_or(0, Vec::len);
+    let base_glow = graph["rendering"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|part| {
+            part["material_base_fallbacks"]
+                .as_array()
+                .map_or(0, Vec::len)
+        })
+        .sum::<usize>();
     let deferred = graph["rendering"]
         .as_array()
         .into_iter()
@@ -239,6 +249,11 @@ fn convert(
     if fallbacks > 0 {
         limitations.push(json!(format!(
             "{fallbacks} source gameplay settings use native defaults or lack a native equivalent. The import report lists each setting.")));
+    }
+    if base_glow > 0 {
+        limitations.push(json!(format!(
+            "{base_glow} source materials use their authored base glow because a multiplier has no source binding. Bound glow adjustments remain active. The missing multiplier's behavior is unavailable."
+        )));
     }
     if deferred > 0 {
         limitations.push(json!(format!("{deferred} source model parts retain static values for unsupported procedural controls. Texture animation supported by the material program remains active.")));

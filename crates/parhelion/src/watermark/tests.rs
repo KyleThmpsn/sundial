@@ -17,10 +17,10 @@ const MISFIT_PRIMARY_HEADER: TagHash = TagHash(0x8132_5793);
 const MISFIT_PRIMARY_DATA: TagHash = TagHash(0x8132_5794);
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn cross_rarity_icons_keep_art_and_rebuild_exact_resource_dependencies() {
     use AuthoredWeaponRarity as R;
-    let packages = std::path::PathBuf::from(std::env::var_os("SUNDIAL_TEST_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let manager = sundial::package_authoring::open_shadowkeep_package_manager(&packages).unwrap();
     let exotic = TagHash(0x8132_36D9); // Cerberus+1
     let donor = manager.read_tag(exotic).unwrap();
@@ -131,7 +131,7 @@ fn higher_resolution_output_keeps_the_approved_design_in_all_six_lanes() {
             })
             .sum();
         assert!(error / f64::from(width * height * 4) < 3.0, "lane {index}");
-        if let Some(directory) = std::env::var_os("SUNDIAL_TEST_ICON_PREVIEW_DIR") {
+        if let Some(directory) = crate::test_support::artifacts("icon-previews") {
             output
                 .save(
                     std::path::Path::new(&directory).join(format!("watermark-output-{index}.png")),
@@ -398,10 +398,9 @@ fn assert_resized_texture_header(
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn real_stock_chain_authors_one_shared_resource_for_multiple_items_when_configured() {
-    let package_directory = std::env::var_os("SUNDIAL_TEST_PACKAGES")
-        .expect("SUNDIAL_TEST_PACKAGES must point to Shadowkeep packages");
+    let package_directory = crate::test_support::stock_packages();
     let manager = PackageManager::new(
         Path::new(&package_directory),
         GameVersion::Destiny(DestinyVersion::Destiny2Shadowkeep),
@@ -585,10 +584,9 @@ fn assert_private_container_graph(
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn real_misfit_edit_authors_a_private_primary_graph_when_configured() {
-    let package_directory = std::env::var_os("SUNDIAL_TEST_PACKAGES")
-        .expect("SUNDIAL_TEST_PACKAGES must point to Shadowkeep packages");
+    let package_directory = crate::test_support::stock_packages();
     let manager = PackageManager::new(
         Path::new(&package_directory),
         GameVersion::Destiny(DestinyVersion::Destiny2Shadowkeep),
@@ -631,10 +629,9 @@ fn real_misfit_edit_authors_a_private_primary_graph_when_configured() {
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn real_standalone_asset_package_round_trips_when_configured() {
-    let package_directory = std::env::var_os("SUNDIAL_TEST_PACKAGES")
-        .expect("SUNDIAL_TEST_PACKAGES must point to Shadowkeep packages");
+    let package_directory = crate::test_support::stock_packages();
     let package_directory = Path::new(&package_directory);
     let manager = PackageManager::new(
         package_directory,

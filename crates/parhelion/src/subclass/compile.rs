@@ -38,7 +38,10 @@ pub(crate) trait Planner {
 }
 
 /// What a copy of an ability entity changes: its values, its effects' colors, the projectiles it
-/// fires and values of its bank's rows.
+/// fires, values of its bank's rows, the damage type of its damage profiles and the glyph its HUD
+/// tile shows. With the stock entity, it is everything the copy is made from besides the native
+/// payloads the build reads, so the build keeps copies between builds by it.
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct EntityChanges<'a> {
     pub(crate) values: &'a [WeaponRuntimeValueOverride],
     pub(crate) palettes: &'a [PaletteEdit],
@@ -46,21 +49,37 @@ pub(crate) struct EntityChanges<'a> {
     pub(crate) grade: Option<EffectGrade>,
     pub(crate) swaps: &'a [SpawnSwap],
     pub(crate) bank_values: &'a [BankValue],
+    pub(crate) damage_type: Option<u8>,
+    pub(crate) hud_glyph: Option<u32>,
+    /// The keys whose bank rows name a glyph, which name `hud_glyph` too.
+    pub(crate) hud_keys: &'a [u32],
+    pub(crate) attached: &'a [AttachedGlyph],
+}
+
+/// An attached graph's controller glyph and each stock-to-private conditional glyph mapping.
+#[derive(Clone, Debug)]
+pub(crate) struct AttachedGlyph {
+    pub(crate) graph: u32,
+    pub(crate) glyph: u32,
+    pub(crate) variants: Vec<(u32, u32)>,
 }
 
 /// How the build compiles them, into the same tables as the private plugs.
 pub(crate) trait Compiler {
     type Perk;
+    /// Reports `operation` as build progress as it starts.
+    fn report(&mut self, operation: &str);
     /// Compiles `perk` with each ability key that `moves` names moved from the stock entity to
     /// its copy. Returns its finished sandbox-perk row.
     fn perk(&mut self, perk: &Self::Perk, moves: &[(u32, u32)]) -> AuthoringResult<u16>;
     /// Compiles `perk`, a private copy of a stock perk that names a moved ability, as `perk`
     /// does. Refuses one that names none.
     fn retargeted(&mut self, perk: &Self::Perk, moves: &[(u32, u32)]) -> AuthoringResult<u16>;
-    /// Copies `source` with `changes`, assigns the copy to `pattern`, and returns the copy.
+    /// Copies the entity of `entry`, its label and stock entity, with `changes`, assigns the copy
+    /// to `pattern`, and returns the copy.
     fn entity(
         &mut self,
-        source: TagHash,
+        entry: (&str, TagHash),
         changes: EntityChanges<'_>,
         pattern: u32,
     ) -> AuthoringResult<TagHash>;
@@ -92,6 +111,10 @@ struct EntityPlan {
     grade: Option<EffectGrade>,
     swaps: Vec<SpawnSwap>,
     bank_values: Vec<BankValue>,
+    damage_type: Option<u8>,
+    hud_glyph: Option<u32>,
+    hud_keys: Vec<u32>,
+    attached: Vec<AttachedGlyph>,
     identity: u32,
     pattern: u32,
 }
@@ -172,6 +195,22 @@ fn plan_entry<L: Planner>(
                 grade: own.grade,
                 swaps: own.swaps.clone(),
                 bank_values: own.bank_values.clone(),
+                damage_type: own.damage_type,
+                hud_glyph: own.hud_glyph,
+                hud_keys: own.hud_keys.clone(),
+                attached: own
+                    .attached
+                    .iter()
+                    .map(|attached| AttachedGlyph {
+                        graph: attached.graph,
+                        glyph: attached.rows[0].key,
+                        variants: attached
+                            .rows
+                            .iter()
+                            .map(|row| (row.source, row.key))
+                            .collect(),
+                    })
+                    .collect(),
                 identity,
                 pattern,
             })
@@ -215,7 +254,7 @@ pub(crate) fn compile<C: Compiler>(
         let (label, entry) = slot(list, &mut compiled, plan.entry)?;
         (|| -> AuthoringResult<()> {
             let copy = compiler.entity(
-                entity.source,
+                (label, entity.source),
                 EntityChanges {
                     values: &entity.values,
                     palettes: &entity.palettes,
@@ -223,6 +262,10 @@ pub(crate) fn compile<C: Compiler>(
                     grade: entity.grade,
                     swaps: &entity.swaps,
                     bank_values: &entity.bank_values,
+                    damage_type: entity.damage_type,
+                    hud_glyph: entity.hud_glyph,
+                    hud_keys: &entity.hud_keys,
+                    attached: &entity.attached,
                 },
                 entity.pattern,
             )?;
@@ -234,6 +277,9 @@ pub(crate) fn compile<C: Compiler>(
     }
     for plan in plans {
         let (label, entry) = slot(list, &mut compiled, plan.entry)?;
+        if plan.private_perks().next().is_some() {
+            compiler.report(&format!("Compiling Perks of {label}"));
+        }
         (|| -> AuthoringResult<()> {
             for effect in &plan.effects {
                 entry.perks.push(match effect {

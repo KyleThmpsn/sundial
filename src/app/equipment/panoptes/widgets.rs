@@ -71,15 +71,18 @@ pub(super) fn draw_compact_item_header(
         let response = match texture {
             None => ui.add_sized([button_side, button_side], egui::Button::new("")),
             Some(icon) => ui.add(
-                egui::ImageButton::new((icon.id(), egui::vec2(GEAR_ICON, GEAR_ICON)))
-                    .corner_radius(3),
+                egui::Button::new(egui::Image::new((
+                    icon.id(),
+                    egui::vec2(GEAR_ICON, GEAR_ICON),
+                )))
+                .corner_radius(3),
             ),
         };
         icon_response = Some(if header.hash.is_some() {
             response
         } else {
             response.on_hover_ui(|ui| {
-                crate::ui_help::tooltip_title(ui, format!("{}: {}", header.heading, header.title));
+                crate::ui::help::tooltip_title(ui, format!("{}: {}", header.heading, header.title));
                 ui.label("Click to change");
             })
         });
@@ -93,7 +96,10 @@ pub(super) fn draw_compact_item_header(
                         let hash_response =
                             ui.label(egui::RichText::new(hash_text).monospace().weak());
                         hash_rect = Some(hash_response.rect);
-                        if header.hash.is_some_and(crate::dummy_items::contains) {
+                        if header
+                            .hash
+                            .is_some_and(crate::catalog::dummy_items::contains)
+                        {
                             item_editor::draw_item_badge(ui, "Dummy")
                                 .on_hover_text("Display-only dummy definition");
                         }
@@ -217,7 +223,7 @@ pub(super) fn draw_socket_button(
     let response = match texture {
         None => ui.add_sized([button_side, button_side], egui::Button::new("")),
         Some(texture) => ui.add(
-            egui::ImageButton::new(
+            egui::Button::new(
                 egui::Image::new((texture.id(), egui::vec2(SOCKET_ICON, SOCKET_ICON)))
                     .bg_fill(crate::app::ui::package_icon_backdrop(ui)),
             )
@@ -233,15 +239,15 @@ pub(super) fn draw_socket_button(
         response.context_menu(|ui| {
             if ui.button("Inspect Definition").clicked() {
                 request_definition(ui.ctx(), hash);
-                ui.close_menu();
+                ui.close();
             }
             if ui.button("Copy Hash (Hex)").clicked() {
                 ui.ctx().copy_text(format_hash_hex(hash));
-                ui.close_menu();
+                ui.close();
             }
             if ui.button("Copy Hash (Decimal)").clicked() {
                 ui.ctx().copy_text(hash.to_string());
-                ui.close_menu();
+                ui.close();
             }
         });
     }

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    investment_schema::{
+    investment::schema::{
         ITEM_STRING_AMMO_CLASS, ITEM_STRING_AMMO_CLASS_OFFSET, ITEM_STRING_AMMO_TYPE_OFFSET,
     },
     package_payload::{u16_at, u32_at},

@@ -218,9 +218,9 @@ fn missing_selected_binding_is_not_silently_assessed_as_compatible() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn native_candidate_scan_preserves_stock_and_rejects_structural_conflicts() {
-    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap();
+    let packages = crate::test_support::stock_packages();
     let packages = Path::new(&packages);
     let cache = tempfile::tempdir().unwrap();
     let catalog = InvestmentCatalog::load_with_cache_path(

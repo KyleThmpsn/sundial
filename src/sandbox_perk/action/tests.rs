@@ -324,9 +324,9 @@ struct Census {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES with a clean Shadowkeep package directory"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES with a clean Shadowkeep package directory"]
 fn every_installed_perk_action_decodes_and_summarizes_without_a_structural_error() {
-    use crate::investment_schema::{
+    use crate::investment::schema::{
         GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, investment_globals_table_tag,
     };
     use crate::sandbox_perk::{
@@ -336,8 +336,7 @@ fn every_installed_perk_action_decodes_and_summarizes_without_a_structural_error
     use std::collections::BTreeSet;
     use tiger_pkg::TagHash;
 
-    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-        .expect("PARHELION_CLEAN_STOCK_PACKAGES must name a clean package directory");
+    let packages = crate::test_support::stock_packages();
     let install = std::path::Path::new(&packages)
         .parent()
         .expect("clean packages need an install root");
@@ -609,9 +608,9 @@ fn general_predicate_player_and_weapon_states_read_from_the_perks_that_set_them(
 /// a comparison the game makes is one an author can make too. A game update that compares
 /// a new variable fails here rather than quietly becoming an unnamed General Predicate.
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES with a clean Shadowkeep package directory"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES with a clean Shadowkeep package directory"]
 fn every_variable_the_stock_perks_compare_has_a_named_comparison_row() {
-    use crate::investment_schema::{
+    use crate::investment::schema::{
         GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, investment_globals_table_tag,
     };
     use crate::sandbox_perk::action::native::{Graph, predicate};
@@ -622,8 +621,7 @@ fn every_variable_the_stock_perks_compare_has_a_named_comparison_row() {
     use std::collections::BTreeSet;
     use tiger_pkg::TagHash;
 
-    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-        .expect("PARHELION_CLEAN_STOCK_PACKAGES must name a clean package directory");
+    let packages = crate::test_support::stock_packages();
     let install = std::path::Path::new(&packages)
         .parent()
         .expect("clean packages need an install root");

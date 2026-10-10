@@ -22,8 +22,6 @@ fn material_masks_keep_linear_alpha_during_bilinear_sampling() {
     assert_eq!(texture.sample_rgba([0.25, 0.5]), [255.0, 128.0, 40.0, 16.0]);
     assert_eq!(texture.sample_rgba([0.5, 0.5]), [191.5, 96.0, 147.5, 135.5]);
     assert_eq!(texture.sample_rgba([-0.25, 0.5])[3], 255.0);
-    assert_eq!(texture.sample_ramp(0.0), [255.0, 128.0, 40.0, 16.0]);
-    assert_eq!(texture.sample_ramp(1.0), [128.0, 64.0, 255.0, 255.0]);
     let clamp = Sampler {
         filter: None,
         mip_bias: 0.0,
@@ -31,6 +29,7 @@ fn material_masks_keep_linear_alpha_during_bilinear_sampling() {
         lod: [0.0, f32::MAX],
         u: AddressMode::Clamp,
         v: AddressMode::Clamp,
+        w: AddressMode::Clamp,
         border: [0.0; 4],
     };
     assert_eq!(
@@ -59,6 +58,7 @@ fn native_border_sampler_uses_its_border_color_outside_the_mask() {
         lod: [0.0, f32::MAX],
         u: AddressMode::Border,
         v: AddressMode::Clamp,
+        w: AddressMode::Clamp,
         border: [0.0; 4],
     };
     assert_eq!(

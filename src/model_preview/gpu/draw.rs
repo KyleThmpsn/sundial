@@ -1,24 +1,43 @@
 //! Bind and draw the opaque and supported transparent material passes.
 use super::*;
 
+#[derive(Clone, Copy)]
+pub(super) enum Pass {
+    Color,
+    Depth(glow::Buffer),
+}
+
+#[allow(clippy::cognitive_complexity)]
 pub(super) unsafe fn groups(
     gl: &glow::Context,
     uniforms: &Uniforms,
     uploaded: &Uploaded,
     frame: &Frame,
     target: &Target,
-) {
+    groups: &[Group],
+    pass: Pass,
+) -> [usize; 2] {
+    let mut draws = [0; 2];
     // SAFETY: called by State::draw with the current painter context and uploaded resources.
     unsafe {
-        let dyes = shader::dyes(&frame.model, frame.seconds);
+        let dyes = frame
+            .dyes
+            .unwrap_or_else(|| shader::dyes(&frame.model, frame.seconds));
         let effect_frames = crate::model_preview::effects::frames(&frame.model, frame.seconds);
         gl.uniform_1_i32(uniforms.scene_depth.as_ref(), 9);
         for (unit, location) in uniforms.effect_textures.iter().enumerate() {
             gl.uniform_1_i32(location.as_ref(), 6 + unit as i32);
         }
         let mut copied_depth = false;
-        let hide_emitter = frame.style == Style::Textured && uploaded.hide_emitter;
-        for group in &uploaded.groups {
+        let hide_emitter = frame.style == Style::Textured
+            && (uploaded.hide_emitter
+                || frame.scene.particle_study
+                    && (frame.model.has_particle_material_study()
+                        || !frame.model.particle_sources.is_empty()));
+        let mut depth_offset = 0;
+        for group in groups {
+            let first_depth = depth_offset;
+            depth_offset += group.count;
             if hide_emitter && group.key.emitter {
                 continue;
             }
@@ -36,12 +55,29 @@ pub(super) unsafe fn groups(
                 group.key.cutoff.map(f32::from_bits).unwrap_or(0.5),
             );
             let effect = group.key.effect.filter(|_| frame.style == Style::Textured);
+            let sample_lod = effect
+                .and_then(|index| {
+                    let material = &frame.model.effects[index];
+                    Some(material.sampling()?.map(|unit| {
+                        let sampler = &material.samplers[unit];
+                        [
+                            sampler.mip_bias,
+                            sampler.lod[0],
+                            sampler.lod[1],
+                            if sampler.anisotropy <= 1 { 1.0 } else { 0.0 },
+                        ]
+                    }))
+                })
+                .unwrap_or([[0.0; 4]; 5]);
+            gl.uniform_4_f32_slice(uniforms.sample_lod.as_ref(), sample_lod.as_flattened());
             if let Some(index) = effect {
                 let material = &frame.model.effects[index];
                 let Some(constants) = effect_frames[index].as_ref() else {
                     continue;
                 };
-                effect_state(gl, uniforms, target, material, &mut copied_depth);
+                if matches!(pass, Pass::Color) {
+                    effect_state(gl, uniforms, target, material, &mut copied_depth);
+                }
                 gl.uniform_4_f32_slice(
                     uniforms.effect_constants.as_ref(),
                     constants.as_flattened(),
@@ -144,60 +180,87 @@ pub(super) unsafe fn groups(
                 }),
                 dye,
             );
-            if let Some(index) = effect {
-                if let Some(native) = &frame.model.effects[index].native {
-                    let Some(constants) = native.vertex_frame(frame.seconds) else {
-                        continue;
+            if let Some(index) = effect
+                && let Some(native) = &frame.model.effects[index].native
+            {
+                let Some(constants) = native.vertex_frame(frame.seconds) else {
+                    continue;
+                };
+                gl.uniform_1_i32(uniforms.native_index.as_ref(), index as i32);
+                gl.uniform_1_i32(
+                    uniforms.native_quaternion.as_ref(),
+                    i32::from(native.quaternion()),
+                );
+                gl.uniform_4_f32_slice(
+                    uniforms.native_vertex_constants.as_ref(),
+                    constants.as_flattened(),
+                );
+                let vectors = dye.map_or([[0.0; 4]; 27], |d| d.vectors);
+                gl.uniform_4_f32_slice(uniforms.native_dye.as_ref(), vectors.as_flattened());
+                let mut present = [0; 9];
+                for (unit, binding) in native.bindings.iter().enumerate() {
+                    let texture_unit = native.texture_unit(unit);
+                    use crate::model_preview::effects::native::Role;
+                    let texture = match binding.role {
+                        Role::Texture(index) => Some(index),
+                        Role::Albedo => group.key.albedo,
+                        Role::Normal => group.key.normal,
+                        Role::Gear => group.key.gearstack,
+                        Role::Detail => dye.and_then(|d| d.detail),
+                        Role::DetailNormal => dye.and_then(|d| d.normal),
+                        Role::Depth | Role::Mask | Role::Scene => None,
                     };
-                    gl.uniform_1_i32(uniforms.native_index.as_ref(), index as i32);
-                    gl.uniform_1_i32(
-                        uniforms.native_quaternion.as_ref(),
-                        i32::from(native.quaternion()),
+                    let levels = texture.map_or(0, |i| {
+                        1 + frame.model.textures[i].mips.as_ref().map_or(0, Vec::len)
+                    }) as i32;
+                    let texture = texture
+                        .and_then(|i| uploaded.textures.get(i))
+                        .and_then(|roles| roles[usize::from(binding.color)]);
+                    // A positive level count also marks this binding as present.
+                    present[unit] = levels * i32::from(texture.is_some());
+                    gl.active_texture(glow::TEXTURE0 + texture_unit as u32);
+                    gl.bind_texture(glow::TEXTURE_2D, texture);
+                    gl.bind_sampler(
+                        texture_unit as u32,
+                        binding
+                            .sampler
+                            .and_then(|s| {
+                                uploaded
+                                    .samplers
+                                    .get(index)
+                                    .and_then(|samplers| samplers.get(s))
+                            })
+                            .copied(),
                     );
-                    gl.uniform_4_f32_slice(
-                        uniforms.native_vertex_constants.as_ref(),
-                        constants.as_flattened(),
-                    );
-                    let vectors = dye.map_or([[0.0; 4]; 27], |d| d.vectors);
-                    gl.uniform_4_f32_slice(uniforms.native_dye.as_ref(), vectors.as_flattened());
-                    let mut present = [0; 9];
-                    for (unit, binding) in native.bindings.iter().enumerate() {
-                        let texture_unit = native.texture_unit(unit);
-                        use crate::model_preview::effects::native::Role;
-                        let texture = match binding.role {
-                            Role::Texture(index) => Some(index),
-                            Role::Albedo => group.key.albedo,
-                            Role::Normal => group.key.normal,
-                            Role::Gear => group.key.gearstack,
-                            Role::Detail => dye.and_then(|d| d.detail),
-                            Role::DetailNormal => dye.and_then(|d| d.normal),
-                            Role::Depth | Role::Mask | Role::Scene => None,
-                        };
-                        let texture = texture
-                            .and_then(|i| uploaded.textures.get(i))
-                            .and_then(|roles| roles[usize::from(binding.color)]);
-                        present[unit] = i32::from(texture.is_some());
-                        gl.active_texture(glow::TEXTURE0 + texture_unit as u32);
-                        gl.bind_texture(glow::TEXTURE_2D, texture);
-                        gl.bind_sampler(
-                            texture_unit as u32,
-                            binding
-                                .sampler
-                                .and_then(|s| {
-                                    uploaded
-                                        .samplers
-                                        .get(index)
-                                        .and_then(|samplers| samplers.get(s))
-                                })
-                                .copied(),
-                        );
-                    }
-                    gl.uniform_1_i32_slice(uniforms.native_present.as_ref(), &present);
                 }
+                gl.uniform_1_i32_slice(uniforms.native_present.as_ref(), &present);
             }
-            gl.draw_arrays(glow::TRIANGLES, group.first, group.count);
+            if let Pass::Depth(buffer) = pass {
+                gl.bind_buffer_range(
+                    glow::TRANSFORM_FEEDBACK_BUFFER,
+                    0,
+                    Some(buffer),
+                    first_depth * 4,
+                    group.count * 4,
+                );
+                gl.begin_transform_feedback(glow::POINTS);
+                gl.draw_arrays(glow::POINTS, group.first, group.count);
+                gl.end_transform_feedback();
+            } else if group.indexed {
+                gl.draw_elements(
+                    glow::TRIANGLES,
+                    group.count,
+                    glow::UNSIGNED_INT,
+                    group.first * std::mem::size_of::<u32>() as i32,
+                );
+                draws[1] += 1;
+            } else {
+                gl.draw_arrays(glow::TRIANGLES, group.first, group.count);
+            }
+            draws[0] += 1;
         }
     }
+    draws
 }
 
 unsafe fn bind_legacy(

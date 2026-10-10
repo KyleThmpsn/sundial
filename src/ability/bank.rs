@@ -8,10 +8,11 @@
 //! and its instance block at +0x18. The instance block's descriptor at +0x88, a count and a
 //! relative pointer, is what the client's lookup walks: it lands on an array header, a count
 //! and a class behind the `80809FBD` marker, followed by 56 byte definition rows with the key
-//! at +0x10, a handler index at +0x1C and a pointer to the row's modifier at +0x30. Attack
-//! rows keep a second pointer at +0x28 to the `8080454A` key reference twelve bytes before
-//! their modifier, which attack selection follows and checks by class, so a moved row carries
-//! it along or the client faults at world load with a sword equipped. The definition block's
+//! at +0x10, a handler index at +0x1C and a pointer to the row's modifier at +0x30. A gated
+//! row keeps a second pointer at +0x28 to an eight byte `8080454A` gate block holding a key.
+//! The bank's per-key row walk (exe+0xFC8360) applies such a row only while that key is
+//! applied too, and reads the gate block's class, so a moved row carries the pointer along or
+//! the client faults at world load with a sword equipped. The definition block's
 //! descriptor at +0x170 lands on the matching 64 byte instance rows, which point back at the
 //! bank and at the modifier's instance twin. The handler index is the slot
 //! of the ability's component that consumes the row's modifier, numbered per bank: charges go
@@ -30,12 +31,12 @@
 //! The client clones a bank in two regions, the definition block through to the instance block
 //! and the instance block through to the end, and the clone an equipped ability walks holds
 //! only the first, so every array a block's descriptor names must sit in that block's region.
-//! Arrays are contiguous, so a bank with one more row gets its arrays rebuilt: the instance
-//! rows and the new instance modifier go in at the end of the definition region, which shifts
-//! the instance region and every absolute twin offset, header pointer and header table entry
-//! that reaches across, and the definition rows, the parameter table and the new definition
-//! modifier go at the end. Every stock instance modifier is pointed back at its moved row. The
-//! old arrays stay as bytes nothing points at. The ability entity that owns the bank names its
+//! Arrays are contiguous, so a bank with more rows gets its arrays rebuilt: the instance rows
+//! and the new instance modifiers go in at the end of the definition region, which shifts the
+//! instance region and every absolute twin offset, header pointer and header table entry that
+//! reaches across, and the definition rows, the parameter table, the new definition modifiers
+//! and gate blocks go at the end. Every stock instance modifier is pointed back at its moved
+//! row. The old arrays stay as bytes nothing points at. The ability entity that owns the bank names its
 //! blocks and fields by absolute offset (the bank tag, the class it expects there and the
 //! offset, sixteen bytes), so every tag referencing the bank has those offsets moved too
 //! (`retarget_references`). Bungie put the +1 charge row in all 21 grenade banks but in only one melee bank and the
@@ -60,6 +61,7 @@ pub use names::{
     PARAMETER_NAMES, ParameterKind, ParameterName, parameter_kind, parameter_label,
     parameter_meaning, parameter_name,
 };
+pub(crate) use read::has_property_rows;
 pub use read::{
     bank_owner, block_count, handler_slot, instance_shift, parameter_rows, parameters,
     property_rows, retarget_references, row_modifiers, validate,
@@ -90,8 +92,17 @@ pub const SCRIPT_INSTANCE_CLASS: u32 = 0x8080_4517;
 pub const PARAMETER_ROW_CLASS: u32 = 0x8080_4519;
 pub const ATTACK_DEFINITION_CLASS: u32 = 0x8080_4427;
 const ATTACK_INSTANCE_CLASS: u32 = 0x8080_4428;
-/// The key reference block attack selection expects an attack row's +0x28 pointer to land on.
-const ATTACK_KEY_CLASS: u32 = 0x8080_454A;
+/// The gate block a gated row's +0x28 pointer lands on: the key that must apply with the row's.
+const GATE_CLASS: u32 = 0x8080_454A;
+/// The ranged melee window: two floats at definition +0x10 and +0x14. A melee press launches the
+/// ability's ranged attack (Celestial Fire, Ball Lightning, a thrown knife or hammer) instead of
+/// striking while the ability's reading at +0xAC8 lies in the window and no lunge target is
+/// found (exe+0xD1BDC0). The window starts from the ability definition (+0x880) and each row
+/// writes over it in the walk of applied keys (exe+0xD1DC40, `105CB00`). Stock rows write 1 to 2.
+const WINDOW_DEFINITION_CLASS: u32 = 0x8080_41BD;
+const WINDOW_INSTANCE_CLASS: u32 = 0x8080_41BE;
+const WINDOW_LOW: usize = 0x10;
+const WINDOW_HIGH: usize = 0x14;
 /// The native unpowered contact profile used by the direct melee attack template.
 pub const MELEE_DAMAGE_PROFILE: u32 = 0x81A6_B618;
 const DEFINITION_ROW_SIZE: usize = 56;
@@ -102,8 +113,8 @@ const ROW_NAME: usize = 0x14;
 const ROW_FLAGS: usize = 0x18;
 const ROW_HANDLER: usize = 0x1C;
 const ROW_MODE: usize = 0x20;
-/// Attack rows' pointer to their key reference, zero on every other row.
-const ROW_ATTACK_KEY: usize = 0x28;
+/// A gated row's pointer to its gate block, zero on an ungated row.
+const ROW_GATE: usize = 0x28;
 const ROW_MODIFIER: usize = 0x30;
 const INSTANCE_ROW_BANK: usize = 0x10;
 const INSTANCE_ROW_MODIFIER: usize = 0x30;
@@ -333,10 +344,13 @@ pub fn with_charge_row(payload: &[u8], key: u32) -> Result<Vec<u8>, String> {
 /// The bank with one more property row under `key`, doing what `modifier` says. A charge row
 /// takes the Dodge bank's shape (no name); a parameter row takes the stock parameter rows'
 /// shape and appends its parameter to the table with the bank's own reset value. Either
-/// goes to the handler slot the bank's own rows of that modifier class use. Refuses a bank
-/// that already has the key, that does not list the parameter, since only a listed
-/// parameter is known to be read by the bank's script, or that shows no slot for the
-/// modifier.
+/// goes to the handler slot the bank's own rows of that modifier class use. A melee attack
+/// takes priority over every melee the bank's keys give: it also goes under each of the bank's
+/// own attack keys, gated on `key` and ahead of that key's rows (`own_attack_keys`), and closes
+/// the ranged melee window, under `key` and, gated on `key`, after the rows of each key that
+/// opens it (`window_keys`). Refuses a bank that already has the key, that does not list the
+/// parameter, since only a listed parameter is known to be read by the bank's script, or that
+/// shows no slot for the modifier.
 pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result<Vec<u8>, String> {
     if let Modifier::Scalar {
         input,
@@ -365,65 +379,103 @@ pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result
     let count = layout.definition_rows.count;
     let links = blocks(payload, layout.owner);
     let classes = modifier_classes(modifier);
+    // Each new row's key, the stock row it goes before, the key gating it, and whether it closes
+    // the ranged melee window rather than doing what `modifier` says. Rows under `key` go last.
+    let mut new_rows: Vec<(u32, usize, Option<u32>, bool)> = Vec::new();
+    let mut window = None;
+    if let Modifier::Melee { .. } = modifier {
+        for (own, first) in own_attack_keys(payload, &layout)? {
+            new_rows.push((own, first, Some(key), false));
+        }
+        new_rows.push((key, count, None, false));
+        window = window_handler(&before)?;
+        if window.is_some() {
+            for (opener, last) in window_keys(payload, &layout)? {
+                new_rows.push((opener, last + 1, Some(key), true));
+            }
+            new_rows.push((key, count, None, true));
+        }
+    } else {
+        new_rows.push((key, count, None, false));
+    }
+    let rows = count + new_rows.len();
+    let row_classes = |closes: bool| if closes { WINDOW_CLASSES } else { classes };
 
-    let mut region = open_definition_region(payload, &layout, count, classes.definition);
+    let markers: Vec<u32> = new_rows
+        .iter()
+        .map(|&(_, _, _, closes)| row_classes(closes).definition)
+        .collect();
+    let mut region = open_definition_region(payload, &layout, rows, &markers);
     let shift = Shift {
         instance: layout.instance,
         delta: region.delta,
     };
     follow_shift(payload, &mut region.out, &links, shift)?;
 
-    // The definition rows array again at the end, one row longer, then the parameter table when
-    // the row needs one, then the new definition modifier.
+    // The definition rows array again at the end, with the new rows, then the parameter table
+    // when the row needs one, then each new definition modifier and gate block.
     let out = &mut region.out;
     let definition_header = open_block(out, ARRAY_MARKER);
-    out.resize(
-        definition_header + 16 + (count + 1) * DEFINITION_ROW_SIZE,
-        0,
-    );
-    put_u64(out, definition_header, count as u64 + 1);
+    out.resize(definition_header + 16 + rows * DEFINITION_ROW_SIZE, 0);
+    put_u64(out, definition_header, rows as u64);
     put_u32(out, definition_header + 8, INSTANCE_ROW_CLASS);
     let parameter_header =
         parameter.map(|parameter| append_parameter_table(out, &layout, &table, parameter, shift));
-    let modifier_definition = open_block(out, classes.instance);
-    out.resize(modifier_definition + classes.definition_size, 0);
     // A melee row carries two copies of its attack, at modifier +0x18 and +0x20, as every stock
-    // Warlock attack modifier does. Attack selection resolves applied keys through +0x20
-    // 105F870, so a row with only +0x18 left the airborne melee on the class's own attack.
-    // Both rank above every attack the bank holds, or a subclass melee key wins the tie.
-    let attack = if let Modifier::Melee { damage, responses } = modifier {
-        let priority = weapon_attack_priority(payload, &layout)?;
-        let first = append_melee(out, damage, responses, priority)?;
-        let second = append_melee(out, damage, responses, priority)?;
-        Some((first, second))
-    } else {
-        None
+    // Warlock attack modifier does, so it joins both the always walked and the airborne
+    // attack list. All rank above every attack the bank holds, or the first walked wins a tie.
+    let priority = match modifier {
+        Modifier::Melee { .. } => Some(weapon_attack_priority(payload, &layout)?),
+        Modifier::Charges(_) | Modifier::Parameter { .. } | Modifier::Scalar { .. } => None,
     };
+    let mut added = Vec::with_capacity(new_rows.len());
+    for (&(row_key, before_row, gate, closes), &modifier_instance) in
+        new_rows.iter().zip(&region.modifier_instances)
+    {
+        let row_class = row_classes(closes);
+        let modifier_definition = open_block(out, row_class.instance);
+        out.resize(modifier_definition + row_class.definition_size, 0);
+        let body = match (modifier, priority) {
+            _ if closes => Body::Window(CLOSED_WINDOW),
+            (Modifier::Melee { damage, responses }, Some(priority)) => Body::Attack(
+                append_melee(out, damage, responses, priority)?,
+                append_melee(out, damage, responses, priority)?,
+            ),
+            (Modifier::Charges(charges), _) => Body::Charges(charges),
+            (Modifier::Parameter { .. }, _) => Body::Parameter(table.len()),
+            _ => return Err("The bank row has no modifier body".into()),
+        };
+        let gate = gate.map(|gate| append_gate(out, gate));
+        added.push(Added {
+            key: row_key,
+            before: before_row,
+            gate,
+            handler: if closes {
+                window.ok_or("The bank hands no window modifier to any handler slot")?
+            } else {
+                handler
+            },
+            classes: row_class,
+            modifier_instance,
+            modifier_definition,
+            body,
+        });
+    }
     out.resize(out.len().next_multiple_of(16), 0);
 
     let placement = Placement {
         instance_first: region.instance_first,
         definition_first: definition_header + 16,
-        modifier_instance: region.modifier_instance,
-        modifier_definition,
     };
-    write_rows(
-        payload, out, &layout, count, &placement, shift, key, handler,
-    )?;
-    write_modifier_pair(
-        out,
-        layout.owner,
-        classes,
-        &placement,
-        modifier,
-        table.len(),
-        attack,
-    )?;
+    write_rows(payload, out, &layout, count, &placement, shift, &added)?;
+    for row in &added {
+        write_modifier_pair(out, layout.owner, row)?;
+    }
     write_descriptors(
         out,
         &layout,
         shift,
-        count,
+        rows,
         region.instance_header,
         definition_header,
         parameter_header.map(|header| (header, table.len() + 1)),
@@ -431,19 +483,11 @@ pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result
     let size = out.len() as u64;
     put_u64(out, SIZE, size);
 
-    // Every stock block still links to its twin, plus the rows and the modifier pair added.
-    if blocks(out, layout.owner).len() != links.len() + 2 * (count + 1) + 2 {
+    // Every stock block still links to its twin, plus the rows and the modifier pairs added.
+    if blocks(out, layout.owner).len() != links.len() + 2 * rows + 2 * added.len() {
         return Err("The edited bank lost a block's link to its twin".into());
     }
-    check_read_back(
-        out,
-        &before,
-        key,
-        handler,
-        classes.definition,
-        modifier,
-        parameter,
-    )?;
+    check_read_back(out, &before, &added, parameter)?;
     Ok(region.out)
 }
 
@@ -474,19 +518,45 @@ impl Shift {
 }
 
 /// The payload with the definition region grown by the new instance rows array and the new
-/// instance modifier, and the instance region after them.
+/// instance modifiers, and the instance region after them.
 struct Region {
     out: Vec<u8>,
     instance_header: usize,
     instance_first: usize,
-    modifier_instance: usize,
+    modifier_instances: Vec<usize>,
     delta: usize,
 }
 
-/// Where the new arrays and the new modifier pair sit in the edited payload.
+/// Where the new row arrays start in the edited payload.
 struct Placement {
     instance_first: usize,
     definition_first: usize,
+}
+
+/// A row an edit adds, and where its pieces sit in the edited payload.
+struct Added {
+    key: u32,
+    /// The stock row it goes before, or the stock row count to go last.
+    before: usize,
+    /// The gate block of a row that applies only while another key applies too.
+    gate: Option<usize>,
+    handler: HandlerIndex,
+    classes: ModifierClasses,
     modifier_instance: usize,
     modifier_definition: usize,
+    body: Body,
+}
+
+/// What an added row's definition modifier holds.
+#[derive(Clone, Copy)]
+enum Body {
+    Charges(i64),
+    /// The index of the row's parameter in the bank's parameter table.
+    Parameter(usize),
+    /// A melee modifier's two attack records, named at +0x18 and +0x20.
+    Attack(usize, usize),
+    /// The low and high ends of the ranged melee window.
+    Window((f32, f32)),
+    /// A modifier its writer fills in itself.
+    Own,
 }

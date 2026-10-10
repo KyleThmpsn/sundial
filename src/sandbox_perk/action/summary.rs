@@ -860,10 +860,6 @@ fn notes(action: &DecodedAction) -> Vec<String> {
         notes.push(format!("{}. {}", policy.name, policy.summary));
     }
     notes.extend(unmapped_note(action));
-    notes.push(
-        "This describes the compiled action. It does not prove the perk behaves this way on every weapon."
-            .to_owned(),
-    );
     notes
 }
 

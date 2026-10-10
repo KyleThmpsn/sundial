@@ -178,7 +178,7 @@ fn authored_unlock_sync_accepts_the_last_extended_account_flag_byte() {
         &settings,
         &[(
             200,
-            crate::account_contract::SHADOWKEEP_ACCOUNT_FLAG_BANK,
+            crate::account::contract::SHADOWKEEP_ACCOUNT_FLAG_BANK,
             slot,
         )],
         save_unlock_test_settings(&directory),
@@ -206,7 +206,7 @@ fn authored_unlock_sync_rejects_the_first_byte_of_the_next_account_region() {
         &settings,
         &[(
             200,
-            crate::account_contract::SHADOWKEEP_ACCOUNT_FLAG_BANK,
+            crate::account::contract::SHADOWKEEP_ACCOUNT_FLAG_BANK,
             slot,
         )],
         save_unlock_test_settings(&directory),

@@ -248,6 +248,13 @@ impl EffectGrade {
         !self.colorize && self.hue == 0 && self.saturation == FULL && self.brightness == FULL
     }
 
+    /// The color the build's graded program writes for `rgb`, a linear color an effect adds or
+    /// overlays.
+    #[must_use]
+    pub fn apply(&self, rgb: [f32; 3]) -> [f32; 3] {
+        self.program().apply(rgb)
+    }
+
     pub(super) fn validate(&self, context: &str) -> Result<(), String> {
         if self.hue.abs() > MOST_HUE
             || self.saturation > MOST_PERCENT

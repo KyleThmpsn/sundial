@@ -1,10 +1,10 @@
 use super::*;
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES and PARHELION_COMBINATION_ROOT"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
 fn native_reclamation_order_uses_special_ammo() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-    let output = PathBuf::from(std::env::var_os("PARHELION_COMBINATION_ROOT").unwrap());
+    let packages = crate::test_support::stock_packages();
+    let output = crate::test_support::artifact_dir("combinations");
     fs::create_dir_all(&output).unwrap();
     let recipe = WeaponRecipe::from_json_str(include_str!(
         "../../../../recipes/reclamation-order.parhelion.json"

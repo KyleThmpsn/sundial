@@ -6,7 +6,7 @@ use crate::d2_mot::{
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{fs, path::Path};
-pub(crate) mod item;
+pub mod item;
 mod model;
 pub(crate) mod shader;
 

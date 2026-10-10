@@ -43,7 +43,7 @@ impl UpdateCheck {
         let mut action = Action::None;
         // Wide enough that a note reads in a line or two, and tall enough for a screen of them,
         // while still fitting Sundial's smallest window.
-        let screen = ctx.screen_rect().size();
+        let screen = ctx.content_rect().size();
         let width = 720.0_f32.min(screen.x - 48.0);
         let notes_height = (screen.y - 300.0).clamp(200.0, 440.0);
         egui::Window::new("Update Sundial")
@@ -193,7 +193,7 @@ mod tests {
             let ctx = egui::Context::default();
             let mut text = String::new();
             for _ in 0..2 {
-                let output = ctx.run(
+                let output = ctx.run_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -201,8 +201,8 @@ mod tests {
                         )),
                         ..Default::default()
                     },
-                    |ctx| {
-                        assert!(matches!(check.draw(ctx, None, false), Action::None));
+                    |ui| {
+                        assert!(matches!(check.draw(ui, None, false), Action::None));
                     },
                 );
                 for shape in output.shapes {

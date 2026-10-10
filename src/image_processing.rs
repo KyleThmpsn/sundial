@@ -217,23 +217,22 @@ pub fn decode_bc1(data: &[u8], width: usize, height: usize) -> Result<Vec<u8>, S
             let mut colors = [[0_u8; 4]; 4];
             colors[0] = rgb565(color_0);
             colors[1] = rgb565(color_1);
+            let [first, second, third, fourth] = &mut colors;
+            let endpoints = first.iter().zip(second.iter()).take(3);
             if color_0 > color_1 {
-                for channel in 0..3 {
-                    colors[2][channel] = ((2 * u16::from(colors[0][channel])
-                        + u16::from(colors[1][channel]))
-                        / 3) as u8;
-                    colors[3][channel] = ((u16::from(colors[0][channel])
-                        + 2 * u16::from(colors[1][channel]))
-                        / 3) as u8;
+                for ((third, fourth), (first, second)) in
+                    third.iter_mut().zip(fourth.iter_mut()).zip(endpoints)
+                {
+                    *third = ((2 * u16::from(*first) + u16::from(*second)) / 3) as u8;
+                    *fourth = ((u16::from(*first) + 2 * u16::from(*second)) / 3) as u8;
                 }
-                colors[2][3] = 255;
-                colors[3][3] = 255;
+                third[3] = 255;
+                fourth[3] = 255;
             } else {
-                for channel in 0..3 {
-                    colors[2][channel] =
-                        ((u16::from(colors[0][channel]) + u16::from(colors[1][channel])) / 2) as u8;
+                for (third, (first, second)) in third.iter_mut().zip(endpoints) {
+                    *third = ((u16::from(*first) + u16::from(*second)) / 2) as u8;
                 }
-                colors[2][3] = 255;
+                third[3] = 255;
             }
             let indices = u32::from_le_bytes([
                 data[offset + 4],

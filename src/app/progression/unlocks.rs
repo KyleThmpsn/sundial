@@ -516,19 +516,19 @@ fn override_cell(
         |ui| {
             ui.add_enabled_ui(!context.read_only, |ui| {
                 ui.push_id(("add_content_override", value, row.index), |ui| {
-                    ui.menu_button("Add Override", |ui| {
+                    crate::ui::sticky_menu_button(ui, "Add Override", |ui| {
                         ui.label("No saved value. Choose an account override.");
                         if value {
                             ui.add(egui::DragValue::new(context.override_value));
                             if ui.button("Save Override").clicked() {
                                 requested = Some(Edit::Override(*context.override_value));
-                                ui.close_menu();
+                                ui.close();
                             }
                         } else {
                             for (number, label) in [(2, "Set"), (1, "Force Clear")] {
                                 if ui.button(label).clicked() {
                                     requested = Some(Edit::Override(number));
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             }
                         }

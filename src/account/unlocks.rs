@@ -89,8 +89,9 @@ fn authored_unlock_changes(
     let mut document = original;
     let mut changed = 0usize;
     for &(definition_index, bank, slot) in unlocks {
-        if bank == crate::account_contract::SHADOWKEEP_ACCOUNT_FLAG_BANK
-            && usize::from(slot) >= crate::account_contract::SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY
+        if bank == crate::account::contract::SHADOWKEEP_ACCOUNT_FLAG_BANK
+            && usize::from(slot)
+                >= crate::account::contract::SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY
         {
             return Err(format!(
                 "Authored unlock definition {definition_index} uses account slot {slot}, beyond the extended Shadowkeep account-flag region"

@@ -2,7 +2,8 @@ use super::*;
 
 /// Untinted lighting, which every case here uses.
 fn light(sample: Sample, n: [f32; 3], scene: super::super::render::Scene) -> [f32; 3] {
-    super::light(sample, n, scene, [1.0; 3])
+    let ambient = sample.ao;
+    super::light(sample, n, scene, [1.0; 3], ambient)
 }
 
 fn dye() -> Surface {
@@ -30,8 +31,16 @@ fn mask_preserves_undyed_color_and_metal_when_shader_changes() {
     assert_eq!(a.metal, 0.5);
     assert_eq!(a.metal, b.metal);
     assert_eq!(
-        light(a, [0.0, 0.0, -1.0], super::super::render::Scene::default()),
-        light(b, [0.0, 0.0, -1.0], super::super::render::Scene::default())
+        light(
+            a,
+            [0.0, 0.0, -1.0],
+            super::super::render::Scene::unit_exposure()
+        ),
+        light(
+            b,
+            [0.0, 0.0, -1.0],
+            super::super::render::Scene::unit_exposure()
+        )
     );
 }
 
@@ -84,12 +93,12 @@ fn emission_survives_occlusion_and_finish_changes_the_highlight() {
         light(
             lit,
             [0.0, 0.0, -1.0],
-            super::super::render::Scene::default(),
+            super::super::render::Scene::unit_exposure(),
         ),
         light(
             unlit,
             [0.0, 0.0, -1.0],
-            super::super::render::Scene::default(),
+            super::super::render::Scene::unit_exposure(),
         ),
     );
     for i in 0..3 {
@@ -104,12 +113,27 @@ fn emission_survives_occlusion_and_finish_changes_the_highlight() {
     };
     let n = [-0.187, -0.293, -0.937];
     assert!(
-        light(sample(0.1, 1.0), n, super::super::render::Scene::default())[0]
-            > light(sample(0.9, 1.0), n, super::super::render::Scene::default())[0]
+        light(
+            sample(0.1, 1.0),
+            n,
+            super::super::render::Scene::unit_exposure()
+        )[0] > light(
+            sample(0.9, 1.0),
+            n,
+            super::super::render::Scene::unit_exposure()
+        )[0]
     );
     assert_ne!(
-        light(sample(0.5, 0.0), n, super::super::render::Scene::default()),
-        light(sample(0.5, 1.0), n, super::super::render::Scene::default())
+        light(
+            sample(0.5, 0.0),
+            n,
+            super::super::render::Scene::unit_exposure()
+        ),
+        light(
+            sample(0.5, 1.0),
+            n,
+            super::super::render::Scene::unit_exposure()
+        )
     );
 }
 

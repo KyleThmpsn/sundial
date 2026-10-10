@@ -2,6 +2,8 @@
 pub(super) mod missions;
 mod postmaster;
 mod rolls;
+#[cfg(test)]
+mod tests;
 pub(super) mod vendors;
 
 use super::{ProgressionSection, SundialApp};

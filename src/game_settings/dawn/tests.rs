@@ -146,14 +146,14 @@ fn draw_page(
 ) -> (egui::FullOutput, bool) {
     let mut changed = false;
     let mut runtime = runtime;
-    let output = context.run(
+    let output = context.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
             events,
             ..Default::default()
         },
-        |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 let edits = crate::game_settings::draw_page(
                     ui,
                     crate::game_settings::PageContext {

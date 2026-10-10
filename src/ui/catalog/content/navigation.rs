@@ -131,7 +131,7 @@ impl Navigation {
                                 let title = destination_title(*item, names);
                                 if ui.button(title).clicked() {
                                     return_to = Some(index + 1);
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             }
                         });
@@ -143,8 +143,7 @@ impl Navigation {
                 }
                 let title = destination_title(*item, names);
                 if index + 1 == self.history.len() {
-                    ui.add(egui::Label::new(egui::RichText::new(&title).strong()).truncate())
-                        .on_hover_text(&title);
+                    ui.add(egui::Label::new(egui::RichText::new(&title).strong()).truncate());
                 } else if ui
                     .add(egui::Link::new(egui::RichText::new(&title).underline()))
                     .on_hover_text(&title)

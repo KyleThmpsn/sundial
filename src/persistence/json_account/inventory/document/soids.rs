@@ -136,7 +136,7 @@ pub(in crate::persistence::json_account::inventory) fn visit_equipment_soids(
             continue;
         }
         let item_path = format!("{path}/{slot}");
-        let known_slot = crate::account_contract::ALL_EQUIPMENT_SLOTS
+        let known_slot = crate::account::contract::ALL_EQUIPMENT_SLOTS
             .iter()
             .any(|(known_slot, _, _)| *known_slot == slot);
         if future_schema && !known_slot {

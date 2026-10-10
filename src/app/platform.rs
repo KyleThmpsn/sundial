@@ -125,16 +125,16 @@ fn linux_title_bar_button(ui: &mut egui::Ui, button: LinuxTitleBarButton) -> egu
 }
 
 #[cfg(target_os = "linux")]
-pub(super) fn draw_linux_title_bar(ctx: &egui::Context, logo: &egui::TextureHandle) -> bool {
+pub(super) fn draw_linux_title_bar(ui: &mut egui::Ui, logo: &egui::TextureHandle) -> bool {
     let mut close_clicked = false;
-    egui::TopBottomPanel::top("linux_title_bar")
-        .exact_height(36.0)
+    egui::Panel::top("linux_title_bar")
+        .exact_size(36.0)
         .frame(
             egui::Frame::new()
-                .fill(ctx.style().visuals.window_fill)
+                .fill(ui.ctx().global_style().visuals.window_fill)
                 .inner_margin(0.0),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             let rect = ui.max_rect();
             let response = ui.interact(
                 rect,
@@ -312,8 +312,9 @@ pub(super) fn set_windows_taskbar_icon(context: &eframe::CreationContext<'_>) {
     };
     let window = window_handle.hwnd.get() as HWND;
 
-    // build.rs embeds the ICO as resource 1. Shared resource handles remain valid
-    // for the process lifetime and do not need application-side destruction.
+    // sundial-suite's build.rs embeds the ICO as resource 1. The class icons also serve hosted
+    // windows that leave their own icons unset. Shared resource handles remain valid for the
+    // process lifetime and do not need application-side destruction.
     // SAFETY: A null module-name pointer requests the module for the current executable.
     let module = unsafe { GetModuleHandleW(std::ptr::null()) };
     for (kind, class_index, width_metric, height_metric) in [

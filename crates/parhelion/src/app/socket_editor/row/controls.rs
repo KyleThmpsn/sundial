@@ -89,7 +89,6 @@ pub(super) fn draw_active(
     let donor = context.donor;
     let socket_index = context.socket_index;
     let socket = &donor.sockets[socket_index];
-    let plug_selection_mode = context.plug_selection_mode;
     let RowChoices {
         socket_type_override,
         current_len,
@@ -159,8 +158,7 @@ pub(super) fn draw_active(
                                 egui::RichText::new(message).color(ui.visuals().warn_fg_color),
                             )
                             .truncate(),
-                        )
-                        .on_hover_text(message);
+                        );
                     });
                 }
                 if current_len == 0
@@ -179,33 +177,41 @@ pub(super) fn draw_active(
         );
         if can_add {
             let choice_index = current_len;
-            match catalog.draw_supported_plug_choice_picker(
-                ui,
-                context.queries.entry(choice_index).or_default(),
-                PlugChoicePickerOptions {
-                    preview: context.preview,
-                    donor_hash: donor.summary.hash,
-                    socket_index: socket.index,
-                    socket_type_override,
-                    choice_index,
-                    current_hash: None,
-                    mode: plug_selection_mode,
-                    button: PlugChoicePickerButton {
-                        text: add_label,
-                        icon_hash: None,
-                        icon_override: None,
-                        tooltip: None,
-                        width: add_width as u16,
-                    },
-                },
-                |ui| {
-                    let clicked = offer_custom_perk && draw_custom_perk_action(ui);
-                    if clicked {
-                        custom_choice = Some(choice_index);
-                    }
-                    clicked
-                },
-            ) {
+            // Quiet like the row's role and menu, so a row leads with its perks. It takes its
+            // frame on hover and focus.
+            let picked = ui
+                .scope(|ui| {
+                    crate::app::style::quiet(ui);
+                    catalog.draw_supported_plug_choice_picker(
+                        ui,
+                        context.queries.entry(choice_index).or_default(),
+                        PlugChoicePickerOptions {
+                            preview: context.preview,
+                            donor_hash: donor.summary.hash,
+                            socket_index: socket.index,
+                            socket_type_override,
+                            choice_index,
+                            current_hash: None,
+                            mode: &mut *context.plug_selection_mode,
+                            button: PlugChoicePickerButton {
+                                text: add_label,
+                                icon_hash: None,
+                                icon_override: None,
+                                tooltip: None,
+                                width: add_width as u16,
+                            },
+                        },
+                        |ui| {
+                            let clicked = offer_custom_perk && draw_custom_perk_action(ui);
+                            if clicked {
+                                custom_choice = Some(choice_index);
+                            }
+                            clicked
+                        },
+                    )
+                })
+                .inner;
+            match picked {
                 Ok(Some(chosen)) => {
                     selection = Some(RowCommand::EditChoice {
                         index: choice_index,
@@ -315,7 +321,6 @@ fn draw_choice(
     let donor = context.donor;
     let socket = &donor.sockets[context.socket_index];
     let socket_type_override = choices.socket_type_override;
-    let plug_selection_mode = context.plug_selection_mode;
     let mut selection = None;
     let variant = recipe
         .overrides
@@ -403,7 +408,7 @@ fn draw_choice(
                     socket_type_override,
                     choice_index,
                     current_hash: variant.is_none().then_some(hash),
-                    mode: plug_selection_mode,
+                    mode: &mut *context.plug_selection_mode,
                     button: PlugChoicePickerButton {
                         tooltip,
                         text: &button_label,
@@ -495,13 +500,11 @@ fn draw_choice(
     choice_menu(ui, &tile.response, choice_index).or(selection)
 }
 
+/// The plug browser's custom perk action, at the right of its controls.
 fn draw_custom_perk_action(ui: &mut egui::Ui) -> bool {
-    let clicked = ui
-        .button("Use Custom Perk…")
-        .on_hover_text("Choose or create a custom perk.")
-        .clicked();
-    ui.separator();
-    clicked
+    ui.button("Use Custom Perk…")
+        .on_hover_text("Choose or create a custom perk")
+        .clicked()
 }
 
 fn choice_menu(
@@ -513,46 +516,42 @@ fn choice_menu(
     let removable = choice_index > 0;
     // The picker button owns pointer clicks inside the tile. Use its bounds
     // to open the context menu over that child as well.
-    let menu_id = ui.id().with("socket-choice-context-menu");
-    let mut menu = ui.ctx().data_mut(|data| {
-        data.get_temp::<egui::menu::MenuRootManager>(menu_id)
-            .unwrap_or_default()
-    });
-    egui::menu::MenuRoot::context_click_interaction(response, &mut menu);
-    if ui.rect_contains_pointer(response.rect)
+    let menu_id = response.id.with("socket-choice-context-menu");
+    let open = if ui.rect_contains_pointer(response.rect)
         && ui.input(|input| input.pointer.secondary_clicked())
     {
-        if let Some(position) = ui.input(|input| input.pointer.interact_pos()) {
-            egui::menu::MenuRoot::handle_menu_response(
-                &mut menu,
-                egui::menu::MenuResponse::Create(position, response.id),
-            );
-        }
-    }
-    menu.show(response, |ui| {
-        if ui.button("Edit as Custom Perk…").clicked() {
-            selection = Some(RowCommand::EditPerk(choice_index));
-            ui.close_menu();
-        }
-        if removable {
-            ui.separator();
-        }
-        if removable && ui.button("Make Default").clicked() {
-            selection = Some(RowCommand::MakeDefault(choice_index));
-            ui.close_menu();
-        }
-        if removable && ui.button("Remove Choice").clicked() {
-            selection = Some(RowCommand::EditChoice {
-                index: choice_index,
-                hash: None,
-            });
-            ui.close_menu();
-        }
-        if !removable {
-            ui.weak("Default Choice");
-        }
-    });
-    ui.ctx().data_mut(|data| data.insert_temp(menu_id, menu));
+        Some(egui::SetOpenCommand::Bool(true))
+    } else if response.clicked() {
+        Some(egui::SetOpenCommand::Bool(false))
+    } else {
+        None
+    };
+    egui::Popup::context_menu(response)
+        .id(menu_id)
+        .open_memory(open)
+        .show(|ui| {
+            if ui.button("Edit as Custom Perk…").clicked() {
+                selection = Some(RowCommand::EditPerk(choice_index));
+                ui.close();
+            }
+            if removable {
+                ui.separator();
+            }
+            if removable && ui.button("Make Default").clicked() {
+                selection = Some(RowCommand::MakeDefault(choice_index));
+                ui.close();
+            }
+            if removable && ui.button("Remove Choice").clicked() {
+                selection = Some(RowCommand::EditChoice {
+                    index: choice_index,
+                    hash: None,
+                });
+                ui.close();
+            }
+            if !removable {
+                ui.weak("Default Choice");
+            }
+        });
     selection
 }
 
@@ -623,7 +622,7 @@ fn draw_options(
                         .clicked()
                     {
                         command = Some(RowCommand::Remove);
-                        ui.close_menu();
+                        ui.close();
                     }
                 } else {
                     if ui
@@ -634,7 +633,7 @@ fn draw_options(
                         .clicked()
                     {
                         command = Some(RowCommand::Remove);
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui
                         .add_enabled(is_overridden, egui::Button::new(reset))
@@ -642,7 +641,7 @@ fn draw_options(
                         .clicked()
                     {
                         command = Some(RowCommand::Reset);
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
             })

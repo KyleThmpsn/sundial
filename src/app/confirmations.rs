@@ -1,10 +1,12 @@
 //! Confirmation dialogs for explicit user actions.
 mod parhelion;
 mod recovery;
+#[cfg(test)]
+mod tests;
 use super::account_workspace::AccountSourceKind;
 use super::change_review::collect_change_summaries;
 use super::preferences::{PlugSelectionMode, SettingsLayout};
-use super::save_support::SaveAction;
+use super::saving::SaveAction;
 use super::settings::settings_path_for_install;
 use super::{
     CHANGE_REVIEW_LIMIT, ConfirmationDialog, SundialApp, draw_future_schema_warning, equipment,
@@ -260,8 +262,8 @@ impl SundialApp {
             let mut confirm = false;
             let mut cancel = false;
             let action = self.pending_save_action.unwrap_or(SaveAction::Save);
-            let review_width = (ctx.screen_rect().width() - 40.0).clamp(280.0, 760.0);
-            let review_height = (ctx.screen_rect().height() - 180.0).clamp(120.0, 430.0);
+            let review_width = (ctx.content_rect().width() - 40.0).clamp(280.0, 760.0);
+            let review_height = (ctx.content_rect().height() - 180.0).clamp(120.0, 430.0);
             let response = egui::Modal::new("review_settings_changes".into()).show(ctx, |ui| {
                 ui.set_width(review_width);
                 ui.heading(if action == SaveAction::SaveAndExit {

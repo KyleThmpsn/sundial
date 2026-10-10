@@ -306,7 +306,7 @@ pub(super) fn replace_array(
     bytes: Vec<u8>,
 ) -> Result<(), String> {
     let stride = schema::record(class)?.size;
-    if stride == 0 || bytes.len() % stride != 0 {
+    if stride == 0 || !bytes.len().is_multiple_of(stride) {
         return Err("Invalid native array stride.".into());
     }
     let count = bytes.len() / stride;

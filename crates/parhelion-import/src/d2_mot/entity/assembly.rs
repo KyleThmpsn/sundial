@@ -301,7 +301,7 @@ pub struct Report {
 }
 
 pub(crate) fn digest(payload: &Payload) -> String {
-    format!("{:x}", Sha256::digest(&payload.0))
+    hex::encode(Sha256::digest(&payload.0))
 }
 
 fn blocker(blockers: &mut Vec<Blocker>, kind: &str, detail: impl Into<String>) {

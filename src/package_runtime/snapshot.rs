@@ -42,7 +42,7 @@ impl Snapshot {
 
     pub(crate) fn key(&self) -> Result<String, String> {
         let bytes = serde_json::to_vec(self).map_err(|error| error.to_string())?;
-        Ok(format!("{:x}", Sha256::digest(bytes)))
+        Ok(hex::encode(Sha256::digest(bytes)))
     }
 
     /// A key for these files alone, not the directory they were read from. A build's stock
@@ -50,7 +50,7 @@ impl Snapshot {
     /// keep each file's size and modified time.
     pub(crate) fn files_key(&self) -> Result<String, String> {
         let bytes = serde_json::to_vec(&self.files).map_err(|error| error.to_string())?;
-        Ok(format!("{:x}", Sha256::digest(bytes)))
+        Ok(hex::encode(Sha256::digest(bytes)))
     }
 
     /// Include every patch and language variant of this package ID. Unknown

@@ -22,7 +22,7 @@ fn frame(
     events: Vec<egui::Event>,
 ) -> (egui::FullOutput, Option<Action>) {
     let mut action = None;
-    let output = context.run(
+    let output = context.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -31,8 +31,8 @@ fn frame(
             events,
             ..Default::default()
         },
-        |context| {
-            egui::CentralPanel::default().show(context, |ui| {
+        |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 action = draw(ui, "form", source, FIELDS, true, |_| Ok(()));
             });
         },

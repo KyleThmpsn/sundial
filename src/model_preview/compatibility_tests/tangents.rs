@@ -12,9 +12,11 @@ pub(crate) fn cameras() -> [render::Camera; 3] {
 
 pub(crate) fn scene() -> render::Scene {
     render::Scene {
+        filmic: false,
+        bloom: false,
         light: [-0.6, 0.3, -0.74],
         background: [0; 3],
-        ..Default::default()
+        ..render::Scene::unit_exposure()
     }
 }
 
@@ -223,7 +225,8 @@ fn compare(actual: &ColorImage, witness: &ColorImage) -> (usize, u8) {
 #[test]
 fn authored_tangents_and_handedness_match_independent_world_normals() {
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let out = configured
         .as_deref()
         .map(Path::new)

@@ -64,7 +64,8 @@ fn bounded(base: [f32; 3], extra: [f32; 3]) -> [f32; 3] {
 #[test]
 fn bright_bases_are_normalized_once_after_native_extra_rgb() {
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_deref()
         .map(Path::new)

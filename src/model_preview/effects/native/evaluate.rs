@@ -2,8 +2,15 @@
 use super::program::{Operand, Program};
 type Bits = [u32; 4];
 
+#[derive(Clone, Copy)]
+pub(super) enum Sampling {
+    Implicit,
+    Level(f32),
+    Gradients { dx: [f32; 4], dy: [f32; 4] },
+}
+
 pub(super) trait Context {
-    fn size(&self, _resource: usize) -> [u32; 4] {
+    fn size(&self, _resource: usize, _mip: u32) -> [u32; 4] {
         [0; 4]
     }
     fn input(&self, register: usize) -> Bits;
@@ -13,7 +20,7 @@ pub(super) trait Context {
         resource: usize,
         sampler: usize,
         uv: [f32; 4],
-        lod: Option<f32>,
+        sampling: Sampling,
         offset: [i32; 3],
     ) -> Bits;
     fn load(&self, resource: usize, position: [i32; 4], offset: [i32; 3]) -> Bits;
@@ -23,6 +30,7 @@ pub(super) trait Context {
 
 struct Registers<'a, C> {
     context: &'a C,
+    immediate: &'a [[u32; 4]],
     temps: [Bits; 32],
     outputs: [Bits; 16],
 }
@@ -45,6 +53,11 @@ impl<C: Context> Registers<'_, C> {
                 .unwrap_or([0; 4]),
             4 => v.literal,
             8 => self.context.constant(self.index(v, 0), self.index(v, 1)),
+            9 => self
+                .immediate
+                .get(self.index(v, 0))
+                .copied()
+                .unwrap_or([0; 4]),
             _ => [0; 4],
         };
         std::array::from_fn(|i| {
@@ -95,6 +108,7 @@ impl Program {
     fn run(&self, context: &impl Context, coordinates: bool) -> Option<ResultValue> {
         let mut r = Registers {
             context,
+            immediate: &self.immediate,
             temps: [[0; 4]; 32],
             outputs: [[0; 4]; 16],
         };
@@ -244,10 +258,18 @@ impl Program {
                         r.index(&v[2], 0),
                         r.index(&v[3], 0),
                         float(1),
-                        if instruction.code == 72 {
-                            Some(float(4)[0])
-                        } else {
-                            None
+                        match instruction.code {
+                            72 => Sampling::Level(float(4)[0]),
+                            73 => Sampling::Gradients {
+                                dx: float(4),
+                                dy: float(5),
+                            },
+                            _ => self.derivatives[at]
+                                .as_ref()
+                                .map_or(Sampling::Implicit, |d| Sampling::Gradients {
+                                    dx: d.at(context, false),
+                                    dy: d.at(context, true),
+                                }),
                         },
                         instruction.offset,
                     );
@@ -275,7 +297,7 @@ impl Program {
                     std::array::from_fn(|i| if a[i] >= b[i] { u32::MAX } else { 0 })
                 }
                 61 => {
-                    let raw = context.size(r.index(&v[2], 0));
+                    let raw = context.size(r.index(&v[2], 0), source(1)[0]);
                     std::array::from_fn(|i| raw[v[2].lanes[i]])
                 }
                 75 => unary(f32::sqrt),

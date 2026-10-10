@@ -64,7 +64,7 @@ fn complete_native_program_resources() -> Result<()> {
             json!({
                 "source":source_name,"native":native_name,"programs":converted.programs,
                 "native_class":format!("{:08X}",converted.class),
-                "sha256":format!("{:x}",Sha256::digest(&converted.payload.0)),
+                "sha256":hex::encode(Sha256::digest(&converted.payload.0)),
                 "references":converted.references
             }),
         ));

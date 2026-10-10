@@ -31,7 +31,7 @@ impl<T> History<T> {
     pub(in crate::app::custom_perks) fn record(&mut self, before: T, ctx: &egui::Context) {
         let now = ctx.input(|input| input.time);
         let gesture = ctx.dragged_id().or_else(|| {
-            ctx.wants_keyboard_input()
+            ctx.egui_wants_keyboard_input()
                 .then(|| ctx.memory(|memory| memory.focused()))
                 .flatten()
         });
@@ -121,8 +121,9 @@ impl Workbench {
     }
 
     pub(in crate::app::custom_perks) fn history_shortcuts(&mut self, ctx: &egui::Context) {
-        if ctx.wants_keyboard_input()
-            || ctx.memory(|m| m.top_modal_layer().is_some() || m.any_popup_open())
+        if ctx.egui_wants_keyboard_input()
+            || ctx.memory(|m| m.top_modal_layer().is_some())
+            || egui::Popup::is_any_open(ctx)
         {
             return;
         }

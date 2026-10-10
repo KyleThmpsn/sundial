@@ -26,19 +26,19 @@ pub(crate) fn startup() -> Result<Option<Startup>, String> {
             .get(2)
             .ok_or("Missing update workspace.".to_owned())
             .and_then(|path| run(Path::new(path)));
-        if let Err(error) = &result {
-            if let Some(path) = args.get(2) {
-                let directory = Path::new(path);
-                // Only report into a workspace whose plan and helper identity validate.
-                if validate_helper(directory).is_ok() {
-                    let _ = files::write_new(&directory.join("error.txt"), error.as_bytes());
-                    if directory.join("proceed").is_file() {
-                        rfd::MessageDialog::new()
-                            .set_title("Sundial Update Failed")
-                            .set_description(error)
-                            .set_level(rfd::MessageLevel::Error)
-                            .show();
-                    }
+        if let Err(error) = &result
+            && let Some(path) = args.get(2)
+        {
+            let directory = Path::new(path);
+            // Only report into a workspace whose plan and helper identity validate.
+            if validate_helper(directory).is_ok() {
+                let _ = files::write_new(&directory.join("error.txt"), error.as_bytes());
+                if directory.join("proceed").is_file() {
+                    rfd::MessageDialog::new()
+                        .set_title("Sundial Update Failed")
+                        .set_description(error)
+                        .set_level(rfd::MessageLevel::Error)
+                        .show();
                 }
             }
         }

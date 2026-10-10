@@ -1,14 +1,67 @@
 use super::*;
 
+// Feedback failures: invisible progress or completion, a partial failure shown as success,
+// closing progress cancelling the busy guard, stale results on another run and lost refreshes.
+fn resync_frame(
+    ctx: &egui::Context,
+    app: &mut PackageAuthoringApp,
+    events: Vec<egui::Event>,
+) -> egui::FullOutput {
+    ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 600.0),
+            )),
+            events,
+            ..Default::default()
+        },
+        |ui| app.draw_account_resync_window(ui.ctx()),
+    )
+}
+
+fn resync_feedback(ctx: &egui::Context, app: &mut PackageAuthoringApp, name: &str) -> String {
+    for _ in 0..3 {
+        resync_frame(ctx, app, Vec::new());
+    }
+    let output = resync_frame(ctx, app, Vec::new());
+    sundial::test_support::capture::write(ctx, &output, name);
+    crate::test_support::driver::painted_text(&output)
+}
+
+fn close_resync(ctx: &egui::Context, app: &mut PackageAuthoringApp, button: &str) {
+    let output = resync_frame(ctx, app, Vec::new());
+    let at = crate::test_support::driver::accessible(&output, button)
+        .expect("resync dismissal button")
+        .center();
+    for events in crate::test_support::driver::tap(at) {
+        resync_frame(ctx, app, events);
+    }
+}
+
 #[test]
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "End-to-end verification keeps the ordered workflow and its independent assertions together"
+)]
 fn account_resync_owns_the_busy_lifetime_and_reports_account_changes() {
     let (sender, receiver) = mpsc::channel();
     let mut app = PackageAuthoringApp {
         account_resync_receiver: Some(receiver),
         ..Default::default()
     };
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    app.account_resync.begin();
     app.poll_account_resync();
     assert!(app.has_background_work());
+    let progress = resync_feedback(&ctx, &mut app, "account-resync-progress");
+    assert!(progress.contains("Resyncing Account"));
+    close_resync(&ctx, &mut app, "Hide");
+    assert!(
+        app.has_background_work(),
+        "hiding progress does not cancel the worker"
+    );
     app.start_uninstall_review(false);
     assert!(
         !app.uninstall.open,
@@ -29,6 +82,63 @@ fn account_resync_owns_the_busy_lifetime_and_reports_account_changes() {
         "the host must refresh even when an account step reports an error"
     );
     assert!(!app.packages_changed);
+    let partial = resync_feedback(&ctx, &mut app, "account-resync-partial");
+    assert!(partial.contains("Resync Needs Attention"));
+    assert!(partial.contains("A partial account operation requires attention"));
+    close_resync(&ctx, &mut app, "OK");
+    let dismissed = resync_feedback(&ctx, &mut app, "account-resync-dismissed");
+    assert!(!dismissed.contains("Resync Needs Attention"));
+
+    let mut outcomes = Vec::new();
+    for (name, added, full, heading) in [
+        ("updated", true, false, "Account Resynced"),
+        ("unchanged", false, false, "Account Is Up to Date"),
+        ("full", false, true, "Resync Needs Attention"),
+    ] {
+        let (sender, receiver) = mpsc::channel();
+        app.account_resync_receiver = Some(receiver);
+        app.account_resync.begin();
+        let item = sundial::package_authoring::account::AuthoredGrantOutcome {
+            item_hash: 0x1234ABCD,
+            character_index: Some(0),
+        };
+        sender
+            .send(Ok(AccountResyncReport {
+                authored_unlocks: 2,
+                profile_sync: Ok(AuthoredProfileSyncReport {
+                    settings_path: PathBuf::from("test-account.json"),
+                    backup_path: None,
+                    newly_set_unlocks: if added { 2 } else { 0 },
+                    total_unlocks: 2,
+                }),
+                item_grants: Some(Ok(AuthoredGrantReport {
+                    added: if added { vec![item] } else { Vec::new() },
+                    full: if full { vec![item] } else { Vec::new() },
+                    ..Default::default()
+                })),
+            }))
+            .unwrap();
+        app.poll_account_resync();
+        let visible = resync_feedback(&ctx, &mut app, &format!("account-resync-{name}"));
+        assert!(visible.contains(heading), "{visible}");
+        assert!(!visible.contains("A partial account operation requires attention"));
+        if added {
+            assert!(visible.contains("2 Collections unlocks"));
+            assert!(visible.contains("1 item"));
+        }
+        if full {
+            assert!(visible.contains("inventory is full"));
+        }
+        outcomes.push(serde_json::json!({"case":name,"visible":visible}));
+        close_resync(&ctx, &mut app, "OK");
+    }
+    crate::test_support::artifact(
+        "account-resync-feedback.json",
+        &serde_json::json!({
+            "progress":progress, "partial":partial, "dismissed":dismissed, "outcomes":outcomes,
+            "limits":"Rendered UI lifecycle from controlled worker reports. No account persistence is exercised."
+        }),
+    );
 }
 
 #[test]
@@ -48,6 +158,10 @@ fn a_disconnected_resync_releases_busy_and_keeps_the_failure_visible() {
             .unwrap()
             .contains("without a result")
     );
+    let ctx = egui::Context::default();
+    let visible = resync_feedback(&ctx, &mut app, "account-resync-disconnected");
+    assert!(visible.contains("Resync Failed"));
+    assert!(visible.contains("without a result"));
 }
 
 #[test]

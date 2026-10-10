@@ -1,3 +1,36 @@
+/// The clean Shadowkeep `packages` directory the opt-in tests read, from `SUNDIAL_STOCK_PACKAGES`.
+pub(crate) fn stock_packages() -> PathBuf {
+    PathBuf::from(
+        std::env::var_os("SUNDIAL_STOCK_PACKAGES")
+            .expect("SUNDIAL_STOCK_PACKAGES must point to clean Shadowkeep packages"),
+    )
+}
+
+/// A Destiny 2 install root whose `packages` may hold authored content, from `SUNDIAL_INSTALL`.
+pub(crate) fn install() -> PathBuf {
+    PathBuf::from(
+        std::env::var_os("SUNDIAL_INSTALL").expect("SUNDIAL_INSTALL names a Destiny 2 install"),
+    )
+}
+
+/// This test's own folder under `SUNDIAL_TEST_ARTIFACTS`, or `None` when no artifact root is set.
+pub(crate) fn artifacts(name: &str) -> Option<PathBuf> {
+    std::env::var_os("SUNDIAL_TEST_ARTIFACTS").map(|root| PathBuf::from(root).join(name))
+}
+
+/// This test's own folder under `SUNDIAL_TEST_ARTIFACTS`, for tests that cannot run without one.
+pub(crate) fn artifact_dir(name: &str) -> PathBuf {
+    artifacts(name).expect("SUNDIAL_TEST_ARTIFACTS names the artifact root")
+}
+
+/// The live install's `packages` the model preview suites read, from `SUNDIAL_PREVIEW_PACKAGES`.
+pub(crate) fn preview_packages() -> PathBuf {
+    PathBuf::from(
+        std::env::var_os("SUNDIAL_PREVIEW_PACKAGES")
+            .expect("SUNDIAL_PREVIEW_PACKAGES must point to a packages directory"),
+    )
+}
+
 use std::{
     fs,
     hash::{Hash, Hasher},
@@ -11,6 +44,20 @@ use eframe::egui;
 use crate::investment::InvestmentCatalog;
 
 static NEXT_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
+
+/// Headless frame captures the layout tests write as meshes and textures.
+pub mod capture;
+
+/// Native verification runs on Rust's test thread, with the desktop backend selected normally.
+#[cfg(all(test, any(windows, target_os = "linux")))]
+pub(crate) fn native_event_loop<T: 'static>(builder: &mut winit::event_loop::EventLoopBuilder<T>) {
+    #[cfg(windows)]
+    use winit::platform::windows::EventLoopBuilderExtWindows;
+    // Both Linux backends use this flag. The X11 extension does not force a backend.
+    #[cfg(target_os = "linux")]
+    use winit::platform::x11::EventLoopBuilderExtX11;
+    builder.with_any_thread(true);
+}
 
 /// The pointer moving to `position`, then the primary button pressed or released there. A press
 /// and its release go in separate frames, as a real click does.
@@ -27,7 +74,7 @@ pub(crate) fn primary_press(position: egui::Pos2, pressed: bool) -> Vec<egui::Ev
 }
 
 pub(crate) fn artifact(name: &str, value: &serde_json::Value) {
-    let Some(directory) = std::env::var_os("PARHELION_TEST_ARTIFACTS") else {
+    let Some(directory) = std::env::var_os("SUNDIAL_TEST_ARTIFACTS") else {
         return;
     };
     let directory = PathBuf::from(directory);

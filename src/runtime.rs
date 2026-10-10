@@ -14,7 +14,9 @@ use registry::*;
 mod address;
 mod health;
 mod identity;
+mod item;
 pub use address::{BindingHash, GraphTag, SchemaHandle};
+pub use item::load as load_weapon_runtime_entity_for_item_with_manager;
 mod invisibility;
 pub use identity::{
     NativeMember, native_holders, native_member_names, native_members, native_type_name,
@@ -62,7 +64,7 @@ use crate::{
         weapon_component_binding_hashes, weapon_component_bindings, weapon_entity_assignment,
     },
     hash::fnv1_name_hash,
-    investment_schema::{GLOBALS_SANDBOX_PATTERN_TABLE_SLOT, investment_globals_table_tag},
+    investment::schema::{GLOBALS_SANDBOX_PATTERN_TABLE_SLOT, investment_globals_table_tag},
     package_runtime::{open_shadowkeep_packages, resolve_live_named_tag},
 };
 
@@ -82,6 +84,24 @@ pub fn component_binding_label(binding: u32) -> String {
         |_| format!("Binding 0x{binding:08X}"),
         |registry| runtime_binding_label(binding, 0, registry),
     )
+}
+
+/// Native ancestry from the same registered Shadowkeep declarations used to resolve fields.
+pub(crate) fn native_type_inherits(mut class: u32, parent: u32) -> bool {
+    let Ok(registry) = runtime_registry() else {
+        return false;
+    };
+    let mut seen = BTreeSet::new();
+    while seen.insert(class) {
+        if class == parent {
+            return true;
+        }
+        let Some(record) = registry.records.get(&class) else {
+            return false;
+        };
+        class = record.base_type;
+    }
+    false
 }
 
 /// Which native root inside a component-owner payload contains a runtime value.
@@ -486,7 +506,8 @@ pub fn load_weapon_runtime_graph_with_manager(
     )
 }
 
-/// Resolves one stock item's sandbox pattern and complete runtime entity payload.
+/// Loads a sandbox pattern by the row's item identity. Investment item hashes can differ from
+/// that identity. Use [`load_weapon_runtime_entity_for_item_with_manager`] for an item donor.
 pub fn load_weapon_runtime_entity_with_manager(
     manager: &PackageManager,
     item_hash: u32,
@@ -735,7 +756,7 @@ pub fn load_weapon_runtime_graph_for_entity(
                 .clone();
         }
     }
-    native::append_fields(&mut resources, &mut owners, &owner_payloads)?;
+    native::append_fields(manager, &mut resources, &mut owners, &owner_payloads)?;
     Ok(WeaponRuntimeGraph {
         item_hash,
         pattern_global_id_hash,

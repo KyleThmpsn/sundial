@@ -324,14 +324,15 @@ impl ManifestWeapon {
                 self.namespace
             ));
         }
-        if subclass != (self.collectible.is_none() && self.unlock.is_none())
+        let collected = self.kind.has_collections();
+        if collected == (self.collectible.is_none() && self.unlock.is_none())
             || self.collectible.is_none() != self.unlock.is_none()
         {
             return Err(format!(
                 "Manifest {} {} has {} Collections entry",
                 self.kind.noun(),
                 self.namespace,
-                if subclass { "a" } else { "no complete" }
+                if collected { "no complete" } else { "a" }
             ));
         }
         for (label, hash) in [
@@ -493,7 +494,7 @@ pub(crate) fn recipe_selection_fingerprint(recipes: &[WeaponRecipe]) -> Result<S
         digest.update(encoded.len().to_le_bytes());
         digest.update(encoded.as_bytes());
     }
-    Ok(format!("{:X}", digest.finalize()))
+    Ok(hex::encode_upper(digest.finalize()))
 }
 
 fn parse_canonical_hash(encoded: &str) -> Result<u32, String> {

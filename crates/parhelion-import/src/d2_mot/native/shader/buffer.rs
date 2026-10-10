@@ -154,8 +154,8 @@ impl Buffer {
             data_type: 40,
             subtype: 7,
             vectors: self.vectors(),
-            header_sha256: format!("{:x}", Sha256::digest(&self.header)),
-            data_sha256: format!("{:x}", Sha256::digest(&self.data)),
+            header_sha256: hex::encode(Sha256::digest(&self.header)),
+            data_sha256: hex::encode(Sha256::digest(&self.data)),
         }
     }
 }

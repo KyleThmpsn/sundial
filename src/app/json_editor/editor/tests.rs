@@ -146,8 +146,8 @@ fn navigation_reveals_and_selects_an_escaped_pointer() {
     assert!(state.folded.is_empty());
     let edit = egui::text_edit::TextEditState::load(&ctx, state.text_edit_id.unwrap()).unwrap();
     let cursor = edit.cursor.char_range().unwrap();
-    let range = cursor.primary.index.min(cursor.secondary.index)
-        ..cursor.primary.index.max(cursor.secondary.index);
+    let range = cursor.primary.index.0.min(cursor.secondary.index.0)
+        ..cursor.primary.index.0.max(cursor.secondary.index.0);
     assert_eq!(
         text.chars()
             .skip(range.start)
@@ -194,7 +194,7 @@ fn frame(
     state: &mut JsonEditorState,
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
-    ctx.run(
+    ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -203,8 +203,8 @@ fn frame(
             events,
             ..Default::default()
         },
-        |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 draw(ui, text, state, false, true);
             });
         },

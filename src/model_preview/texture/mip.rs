@@ -29,7 +29,11 @@ impl Footprint {
         }
     }
 
-    fn taps(self, size: [usize; 2], anisotropy: u32) -> (f32, [f32; 2], usize) {
+    pub(in crate::model_preview) fn taps(
+        self,
+        size: [usize; 2],
+        anisotropy: u32,
+    ) -> (f32, [f32; 2], usize) {
         let dx = std::array::from_fn(|i| self.dx[i] * size[i] as f32);
         let dy = std::array::from_fn(|i| self.dy[i] * size[i] as f32);
         let length = |v: [f32; 2]| v[0].hypot(v[1]);
@@ -61,7 +65,10 @@ impl Footprint {
     }
 }
 
-fn length(format: u32, [width, height]: [usize; 2]) -> Result<usize, String> {
+pub(in crate::model_preview) fn length(
+    format: u32,
+    [width, height]: [usize; 2],
+) -> Result<usize, String> {
     Ok(match format {
         26 | 28 | 29 | 35 | 87 | 88 | 91 | 93 => width * height * 4,
         10 => width * height * 8,
@@ -131,15 +138,68 @@ impl Texture {
         footprint: Footprint,
         color: bool,
     ) -> [f32; 4] {
-        let Some(filter) = sampler.filter else {
-            return self.sample_filtered(uv, sampler, color);
-        };
+        self.sample_grad(uv, sampler, footprint, color, [0; 2])
+    }
+
+    pub(in crate::model_preview) fn sample_grad(
+        &self,
+        uv: [f32; 2],
+        sampler: &Sampler,
+        footprint: Footprint,
+        color: bool,
+        offset: [i32; 2],
+    ) -> [f32; 4] {
+        if sampler.filter.is_none() {
+            return self.sample_mips(uv, sampler, 0., color, offset);
+        }
         let (radius, direction, taps) = footprint.taps(self.size, sampler.anisotropy);
         if !radius.is_finite() || direction.iter().any(|v| !v.is_finite()) {
-            return self.sample_filtered(uv, sampler, color);
+            return self.sample_explicit(uv, sampler, 0., color, offset);
         }
         let requested = radius.max(1e-20).log2() + sampler.mip_bias;
         let lod = requested.clamp(sampler.lod[0], sampler.lod[1]);
+        let mut result = [0.; 4];
+        for tap in 0..taps {
+            let position = (tap as f32 + 0.5) / taps as f32 - 0.5;
+            let uv = std::array::from_fn(|i| uv[i] + direction[i] * position);
+            let value = self.sample_mips(uv, sampler, lod, color, offset);
+            for i in 0..4 {
+                result[i] += value[i] / taps as f32;
+            }
+        }
+        result
+    }
+
+    pub(in crate::model_preview) fn sample_explicit(
+        &self,
+        uv: [f32; 2],
+        sampler: &Sampler,
+        lod: f32,
+        color: bool,
+        offset: [i32; 2],
+    ) -> [f32; 4] {
+        if sampler.filter.is_none() {
+            return self.sample_mips(uv, sampler, 0., color, offset);
+        }
+        let lod = (lod.max(-1e20) + sampler.mip_bias).clamp(sampler.lod[0], sampler.lod[1]);
+        self.sample_mips(uv, sampler, lod, color, offset)
+    }
+
+    fn sample_mips(
+        &self,
+        uv: [f32; 2],
+        sampler: &Sampler,
+        lod: f32,
+        color: bool,
+        offset: [i32; 2],
+    ) -> [f32; 4] {
+        let Some(filter) = sampler.filter else {
+            return self.sample_filtered(
+                std::array::from_fn(|i| uv[i] + offset[i] as f32 / self.size[i] as f32),
+                sampler,
+                color,
+            );
+        };
         let bilinear = if lod <= 0.0 {
             filter & 4 != 0
         } else {
@@ -151,17 +211,13 @@ impl Texture {
         } else {
             (level.round() as usize, level.round() as usize, 0.0)
         };
-        let mut result = [0.0; 4];
-        for tap in 0..taps {
-            let position = (tap as f32 + 0.5) / taps as f32 - 0.5;
-            let uv = std::array::from_fn(|i| uv[i] + direction[i] * position);
-            let a = self.level(low).sample_level(uv, sampler, color, bilinear);
-            let b = self.level(high).sample_level(uv, sampler, color, bilinear);
-            for i in 0..4 {
-                result[i] += (a[i] * (1.0 - blend) + b[i] * blend) / taps as f32;
-            }
-        }
-        result
+        let sample = |level| {
+            let image = self.level(level);
+            let uv = std::array::from_fn(|i| uv[i] + offset[i] as f32 / image.size[i] as f32);
+            image.sample_level(uv, sampler, color, bilinear)
+        };
+        let (a, b) = (sample(low), sample(high));
+        std::array::from_fn(|i| a[i] * (1. - blend) + b[i] * blend)
     }
 
     /// Composed plates have no native payload for their complete canvas mip chain.

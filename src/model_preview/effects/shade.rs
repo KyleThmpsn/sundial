@@ -27,6 +27,7 @@ fn texture_sample(model: &Model, material: &Material, slot: usize, uv: [f32; 2])
         lod: [0.0, f32::MAX],
         u: texture::AddressMode::Wrap,
         v: texture::AddressMode::Wrap,
+        w: texture::AddressMode::Wrap,
         border: [0.0; 4],
     };
     let sampler = material

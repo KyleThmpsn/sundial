@@ -4,7 +4,10 @@ use crate::recipe::{HexHash, WeaponRecipe};
 use parhelion_import::d2_mot::{gameplay::perks, payload::Payload, reader::Reader};
 use sha2::{Digest, Sha256};
 use sundial::package_authoring::{
-    runtime::load_weapon_runtime_entity_with_manager,
+    runtime::{
+        load_weapon_runtime_entity_at_pattern_index_with_manager,
+        load_weapon_runtime_entity_with_manager,
+    },
     sandbox_perk::{action, program::Action},
 };
 
@@ -37,69 +40,30 @@ fn scalar(owner: &[u8], row: usize, program: usize) -> u32 {
     bits
 }
 
-fn stock_sword_plug(manager: &PackageManager) -> (usize, u32, u16, usize) {
-    let globals = manager
-        .read_tag(resolve_live_named_tag(manager, "investment_globals", None).unwrap())
-        .unwrap();
-    let root = manager
-        .read_tag(TagHash(read_u32(&globals, 16).unwrap()))
-        .unwrap();
-    let item_table = manager
-        .read_tag(root_child_tag(&root, ROOT_ITEM_DEFINITION_TABLE_SLOT).unwrap())
-        .unwrap();
-    let (item_count, _, rows, _) = array_at(&item_table, 8).unwrap();
-    let sword_row = find_u32_row_key(
-        &item_table,
-        rows,
-        item_count,
-        ITEM_ROW_SIZE,
+#[test]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES, PARHELION_IMPORT_MODERN_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
+fn keyed_sword_profiles_and_private_effect_stage_and_reopen() {
+    stage_sword_profiles(
         SWORD_ITEM_HASH,
-    )
-    .unwrap()
-    .unwrap();
-    let sword_definition = manager
-        .read_tag(TagHash(
-            read_u32(&item_table, rows + sword_row * ITEM_ROW_SIZE + 16).unwrap(),
-        ))
-        .unwrap();
-    let choices = weapon_default_plug_indices(&sword_definition).unwrap();
-    for (socket, choice) in choices.iter().enumerate().skip(4) {
-        let index = usize::from(*choice);
-        if index >= item_count {
-            continue;
-        }
-        let row = rows + index * ITEM_ROW_SIZE;
-        let plug_hash = read_u32(&item_table, row).unwrap();
-        let definition = manager
-            .read_tag(TagHash(read_u32(&item_table, row + 16).unwrap()))
-            .unwrap();
-        for perk in weapon_sandbox_perks(&definition).unwrap_or_default() {
-            if sundial::package_authoring::sandbox_perk::load_sandbox_perk_runtime_action(
-                manager,
-                &globals,
-                usize::from(perk),
-            )
-            .is_ok()
-            {
-                return (socket, plug_hash, perk, choices.len());
-            }
-        }
-    }
-    panic!("The clean sword donor has no trait plug with a runtime perk")
+        &PROFILE_DESCRIPTORS,
+        "private-dependencies",
+    );
+    // Abide the Return shares a native pattern whose identity differs from its item hash.
+    // These descriptor offsets were independently read from its stock sword owner.
+    stage_sword_profiles(
+        0x61FF_E61D,
+        &[0xFA0, 0x1018, 0x17F8, 0x2930, 0x29A8, 0x31F8, 0x39D8],
+        "shared-pattern-sword",
+    );
 }
 
-#[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES, PARHELION_IMPORT_MODERN_PACKAGES and PARHELION_EAGER_OUTPUT"]
 #[expect(
     clippy::cognitive_complexity,
     reason = "End-to-end verification keeps the ordered workflow and its independent assertions together"
 )]
-fn keyed_sword_profiles_and_private_effect_stage_and_reopen() {
-    let packages = PathBuf::from(
-        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").expect("clean stock packages"),
-    );
-    let output = PathBuf::from(std::env::var_os("PARHELION_EAGER_OUTPUT").expect("artifact root"))
-        .join("private-dependencies");
+fn stage_sword_profiles(item_hash: u32, profile_descriptors: &[usize], artifact_name: &str) {
+    let packages = crate::test_support::stock_packages();
+    let output = crate::test_support::artifact_dir(artifact_name);
     std::fs::create_dir_all(&output).unwrap();
     let mut source = Reader::new(
         &PathBuf::from(
@@ -112,6 +76,25 @@ fn keyed_sword_profiles_and_private_effect_stage_and_reopen() {
     let source_action = source.tag(0x80C3_0E09, Some(0x8080_B835)).unwrap();
     let source_lunge_owner = source.tag(0x80C3_78E0, Some(0x8080_9B06)).unwrap();
     let source_tracking_owner = source.tag(0x80C3_78E1, Some(0x8080_9B06)).unwrap();
+    let (source_index, _) =
+        parhelion_import::d2_mot::assets::item::find(&mut source, 2_077_819_806).unwrap();
+    let description = parhelion_import::d2_mot::localization::item_label(
+        &mut source,
+        2_077_819_806,
+        source_index,
+        0,
+        0x94,
+    )
+    .unwrap()["name"]
+        .as_str()
+        .expect("source description")
+        .to_owned();
+    assert!(!description.is_empty());
+    parhelion_import::d2_mot::icon::export(&mut source, 2_077_819_806, source_index).unwrap();
+    let source_icon = crate::icon_edit::ImportedIcon::from_bytes(
+        &std::fs::read(source.output.join("item-icon.png")).unwrap(),
+    )
+    .unwrap();
     let scales = perks::sword::angular_scales(&source_tracking_owner).unwrap();
     let (near_scale_bits, far_scale_bits) = (scales.near_bits, scales.far_bits);
     assert_eq!(
@@ -120,7 +103,18 @@ fn keyed_sword_profiles_and_private_effect_stage_and_reopen() {
     );
     source.finish().unwrap();
     let stock = open_manager(&packages).unwrap();
-    let source_entity = load_weapon_runtime_entity_with_manager(&stock, SWORD_ITEM_HASH).unwrap();
+    let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
+    let pattern_index = catalog
+        .weapon_donor(item_hash)
+        .unwrap()
+        .summary
+        .weapon_pattern_index
+        .unwrap();
+    let source_entity =
+        load_weapon_runtime_entity_at_pattern_index_with_manager(&stock, pattern_index).unwrap();
+    if item_hash != SWORD_ITEM_HASH {
+        assert_ne!(source_entity.item_hash, item_hash, "shared-pattern fixture");
+    }
     let source_binding =
         weapon_component_bindings(&source_entity.payload, SWORD_BINDING).unwrap()[0];
     assert_eq!(source_binding.concrete_class, 0x8080_43D2);
@@ -184,9 +178,9 @@ fn keyed_sword_profiles_and_private_effect_stage_and_reopen() {
     let cooldown_seconds = f32::from_le_bytes(cooldown.bytes[8..12].try_into().unwrap());
     let cooldown_ms = (cooldown_seconds * 1000.0).round() as u32;
     assert_eq!(cooldown_ms, 3000);
-    let (socket, plug, perk, _) = stock_sword_plug(&stock);
+    let (socket, plug, perk, _) = super::stock::runtime_plug(&stock, item_hash);
     let namespace = "parhelion.eager-private-dependencies.e2e";
-    let mut recipe = WeaponRecipe::new_weapon_for_donor(namespace, SWORD_ITEM_HASH, "").unwrap();
+    let mut recipe = WeaponRecipe::new_weapon_for_donor(namespace, item_hash, "").unwrap();
     recipe.name = "Private Sword Profile Fixture".into();
     recipe.flavor = "Offline package verification.".into();
     recipe.source = "Source: Eager Edge translation fixture".into();
@@ -265,6 +259,29 @@ fn keyed_sword_profiles_and_private_effect_stage_and_reopen() {
     prepared.apply(&mut recipe).unwrap();
     let encoded = recipe.to_json_pretty().unwrap();
     let recipe = WeaponRecipe::from_json_str(&encoded).unwrap();
+    let presentation = &recipe.overrides.socket_plug_variants[0];
+    assert_eq!(
+        presentation.name.as_deref(),
+        Some("Private Sword Profile Key")
+    );
+    assert_eq!(
+        presentation.description.as_deref(),
+        Some(description.as_str())
+    );
+    let Some(crate::perk::Icon::Image { image, .. }) = &presentation.icon else {
+        panic!("imported perk artwork must survive recipe reload")
+    };
+    assert_eq!(image, &source_icon);
+    std::fs::write(
+        output.join("presentation.json"),
+        serde_json::to_vec_pretty(
+            &serde_json::json!({"name":presentation.name,"description":presentation.description,
+            "icon":presentation.icon,"source_icon_sha256":digest(
+                &std::fs::read(source.output.join("item-icon.png")).unwrap())}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let spec = recipe.to_spec().unwrap();
     assert_eq!(spec.overrides.sword_profile.unwrap().key, PROFILE_KEY);
     let mut unbound = spec.clone();
@@ -327,11 +344,11 @@ fn keyed_sword_profiles_and_private_effect_stage_and_reopen() {
         .read_tag(TagHash(authored_binding.owner_tag))
         .unwrap();
     assert_eq!(
-        stock.read_tag(TagHash(source_binding.owner_tag)).unwrap(),
+        staged.read_tag(TagHash(source_binding.owner_tag)).unwrap(),
         source_owner
     );
     let mut profiles = 0;
-    for descriptor in PROFILE_DESCRIPTORS {
+    for &descriptor in profile_descriptors {
         let (old_count, _, old_rows, old_class) = array_at(&source_owner, descriptor).unwrap();
         let (new_count, _, new_rows, new_class) = array_at(&owner, descriptor).unwrap();
         assert_eq!((old_class, new_class), (0x8080_2D7B, 0x8080_2D7B));
@@ -455,10 +472,10 @@ fn keyed_sword_profiles_and_private_effect_stage_and_reopen() {
         &lowered_settings[4..],
     );
     assert_eq!(
-        stock.read_tag(TagHash(lunge_binding.owner_tag)).unwrap(),
+        staged.read_tag(TagHash(lunge_binding.owner_tag)).unwrap(),
         lunge_owner
     );
-    assert_eq!(stock.read_tag(TagHash(0x8162_C91A)).unwrap(), lunge_graph);
+    assert_eq!(staged.read_tag(TagHash(0x8162_C91A)).unwrap(), lunge_graph);
     assert!(action.effects().any(|node| node.kind == 36));
     let effect = action.effects().find(|node| node.kind == 41).unwrap();
     assert_eq!(action_bytes[effect.offset + 1], 1);
@@ -486,6 +503,9 @@ fn keyed_sword_profiles_and_private_effect_stage_and_reopen() {
     std::fs::write(
         output.join("verified-private-dependencies.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
+            "source_item": format!("{item_hash:08X}"),
+            "source_pattern_index": pattern_index,
+            "source_pattern_item": format!("{:08X}", source_entity.item_hash),
             "source_sword_owner": format!("{:08X}", source_binding.owner_tag),
             "recipe_sha256": digest(encoded.as_bytes()),
             "profile_conflict": {
@@ -505,7 +525,7 @@ fn keyed_sword_profiles_and_private_effect_stage_and_reopen() {
             "authored_lunge_owner_sha256": digest(&authored_lunge_owner),
             "private_action": format!("{:08X}", assignment.runtime_tag),
             "private_action_sha256": digest(&action_bytes),
-            "profile_banks": PROFILE_DESCRIPTORS.len(),
+            "profile_banks": profile_descriptors.len(),
             "original_profiles": profiles,
             "keyed_profiles": profiles,
             "profile_key": format!("{PROFILE_KEY:08X}"),

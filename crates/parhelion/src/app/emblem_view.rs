@@ -5,12 +5,13 @@ use super::image_files::{self, ImageFiles, draw_contained};
 use super::*;
 use crate::emblem::{Nameplate, NameplateImage, NameplatePart};
 use crate::image_import::EmbeddedImage;
-use std::path::Path;
+use crate::presentation::Artwork;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use sundial::investment::EmblemTrackerCategory;
 
 /// Thumbnail height inside a tile.
 const THUMBNAIL_HEIGHT: f32 = 48.0;
-/// Space around a tile's thumbnail and text.
-const TILE_PADDING: f32 = 8.0;
 /// Below this width the tiles stack.
 const TILE_MIN_WIDTH: f32 = 220.0;
 /// Space between tiles, and between the tiles and the editor.
@@ -25,6 +26,7 @@ const SOURCE_WIDTH: f32 = 420.0;
 pub(super) enum Export {
     Layer(u32),
     Picture(EmbeddedImage, (u32, u32)),
+    Artwork(Artwork, (u32, u32)),
 }
 
 /// The selected image, the picker's search, a running import or export and how the last one went.
@@ -33,10 +35,75 @@ pub(super) struct EmblemPage {
     pub(super) selected: NameplatePart,
     query: String,
     files: ImageFiles<NameplatePart>,
-    trackers: Option<Result<Vec<sundial::investment::EmblemTrackerCategory>, String>>,
+    trackers: Trackers,
+}
+
+type TrackerLoad = Result<Vec<EmblemTrackerCategory>, String>;
+
+/// The stat tracker categories, read once per packages folder on a worker and kept from recipe to
+/// recipe, since every emblem offers the same ones.
+#[derive(Default)]
+struct Trackers {
+    loaded: Option<(PathBuf, TrackerLoad)>,
+    loading: Option<(PathBuf, Receiver<TrackerLoad>)>,
+}
+
+impl Trackers {
+    /// The categories read from `packages`, starting the read when none has started.
+    fn poll(&mut self, ctx: &egui::Context, packages: &Path) -> Option<&TrackerLoad> {
+        if let Some((read, receiver)) = &self.loading {
+            let finished = match receiver.try_recv() {
+                Ok(load) => Some(load),
+                Err(TryRecvError::Disconnected) => Some(Err("The tracker loader stopped.".into())),
+                Err(TryRecvError::Empty) => None,
+            };
+            if let Some(load) = finished {
+                self.loaded = Some((read.clone(), load));
+                self.loading = None;
+            }
+        }
+        if self
+            .loaded
+            .as_ref()
+            .is_some_and(|(read, _)| read != packages)
+        {
+            self.loaded = None;
+        }
+        let reading = self
+            .loading
+            .as_ref()
+            .is_some_and(|(read, _)| read == packages);
+        if self.loaded.is_none() && !reading {
+            let (sender, receiver) = mpsc::channel();
+            let source = packages.to_owned();
+            // An install waits for the read, which keeps package files open until it returns.
+            let read = sundial::ui::model_preview::PackageRead::start();
+            std::thread::spawn(move || {
+                let _read = read;
+                let load = open_shadowkeep_package_manager(&source).and_then(|manager| {
+                    sundial::investment::load_emblem_tracker_categories(&manager)
+                });
+                let _ = sender.send(load);
+            });
+            self.loading = Some((packages.to_owned(), receiver));
+        }
+        if self.loading.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        self.loaded.as_ref().map(|(_, load)| load)
+    }
 }
 
 impl EmblemPage {
+    /// Starts over for another recipe, keeping the stat tracker categories already read.
+    pub(super) fn reset(&mut self) {
+        let trackers = std::mem::take(&mut self.trackers);
+        *self = Self {
+            trackers,
+            ..Self::default()
+        };
+    }
+
     /// Takes a finished import into the recipe, for the image it was started for.
     fn poll(&mut self, recipe: &mut WeaponRecipe) {
         if let Some((part, image)) = self.files.poll() {
@@ -60,6 +127,7 @@ fn export_pixels(
         Export::Picture(image, (width, height)) => {
             Ok(crate::image_import::cover(image.pixels(), width, height))
         }
+        Export::Artwork(artwork, (width, height)) => Ok(artwork.render(width, height)),
     }
 }
 
@@ -97,6 +165,8 @@ struct Shown {
     /// The emblem it comes from, the base included.
     emblem: Option<u32>,
     picture: Option<EmbeddedImage>,
+    artwork: Option<Artwork>,
+    source_emblem: Option<HexHash>,
     modified: bool,
 }
 
@@ -121,80 +191,41 @@ fn draw_tile(
     shown: &Shown,
     selected: bool,
 ) -> egui::Response {
-    let name_font = egui::FontId::proportional(13.0);
-    let detail_font = egui::FontId::proportional(11.0);
-    let (name_height, detail_height) =
-        ui.fonts(|fonts| (fonts.row_height(&name_font), fonts.row_height(&detail_font)));
-    let height = 2.0 * TILE_PADDING + THUMBNAIL_HEIGHT + 6.0 + name_height + 2.0 + detail_height;
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
-    if ui.is_rect_visible(rect) {
-        let visuals = ui.visuals();
-        let stroke = if selected {
-            visuals.selection.stroke
-        } else if response.hovered() {
-            visuals.widgets.hovered.bg_stroke
-        } else {
-            visuals.widgets.noninteractive.bg_stroke
-        };
-        let painter = ui.painter_at(rect);
-        painter.rect(
-            rect,
-            4.0,
-            visuals.faint_bg_color,
-            stroke,
-            egui::StrokeKind::Inside,
-        );
-        let inner = rect.shrink(TILE_PADDING);
-        let thumbnail =
-            egui::Rect::from_min_size(inner.min, egui::vec2(inner.width(), THUMBNAIL_HEIGHT));
-        draw_contained(ui, thumbnail, shown.texture.as_ref());
-        let name = painter.text(
-            egui::pos2(inner.left(), thumbnail.bottom() + 6.0),
-            egui::Align2::LEFT_TOP,
-            part.label(),
-            name_font,
-            if shown.modified {
-                visuals.text_color()
-            } else {
-                style::secondary(visuals)
-            },
-        );
-        if let Some(size) = shown.size {
-            painter.text(
-                egui::pos2(name.right() + 6.0, name.bottom()),
-                egui::Align2::LEFT_BOTTOM,
-                size_label(size),
-                detail_font.clone(),
-                style::secondary(visuals),
-            );
-        }
-        painter.text(
-            egui::pos2(inner.left(), name.bottom() + 2.0),
-            egui::Align2::LEFT_TOP,
-            &shown.source,
-            detail_font,
-            style::secondary(visuals),
-        );
-    }
-    named_control(response, part.label())
+    style::image_tile(
+        ui,
+        style::ImageTile {
+            width,
+            thumbnail_height: THUMBNAIL_HEIGHT,
+            label: part.label(),
+            detail: shown.size.map(size_label),
+            source: &shown.source,
+            texture: shown.texture.as_ref(),
+            modified: shown.modified,
+            selected,
+        },
+    )
 }
 
 impl PackageAuthoringApp {
     pub(super) fn draw_emblem_trackers(&mut self, ui: &mut egui::Ui) {
         use crate::emblem::StatTrackers;
-        ui.heading("Stat Trackers");
-        if self.emblem_page.trackers.is_none() {
-            self.emblem_page.trackers = Some(
-                open_shadowkeep_package_manager(&self.packages).and_then(|manager| {
-                    sundial::investment::load_emblem_tracker_categories(&manager)
-                }),
+        ui.horizontal(|ui| {
+            ui.heading("Stat Trackers");
+            sundial::investment::draw_authoring_info_icon(
+                ui,
+                "Each category offers its own trackers. The one shown is chosen in game.",
             );
-        }
-        let Some(Ok(options)) = &self.emblem_page.trackers else {
-            if let Some(Err(error)) = &self.emblem_page.trackers {
-                ui.colored_label(ui.visuals().error_fg_color, error);
+        });
+        let options = match self.emblem_page.trackers.poll(ui.ctx(), &self.packages) {
+            None => {
+                ui.weak("Loading…");
+                return;
             }
-            return;
+            Some(Err(error)) => {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+                return;
+            }
+            Some(Ok(options)) => options,
         };
         let choice = &mut self.recipe.overrides.stat_trackers;
         let mut mode = match choice {
@@ -217,9 +248,6 @@ impl PackageAuthoringApp {
                 }),
             };
         }
-        ui.weak(
-            "Each category allows its available trackers. Choose the displayed tracker in game.",
-        );
         if let Some(StatTrackers::Selected { categories }) = choice {
             ui.horizontal(|ui| {
                 if ui.small_button("Select All").clicked() {
@@ -277,6 +305,8 @@ impl PackageAuthoringApp {
                     source: "Base".to_owned(),
                     emblem: base,
                     picture: None,
+                    artwork: None,
+                    source_emblem: None,
                     modified: false,
                 }
             }
@@ -292,6 +322,8 @@ impl PackageAuthoringApp {
                     ),
                     emblem: hash,
                     picture: None,
+                    artwork: None,
+                    source_emblem: Some(item_hash.clone()),
                     modified: true,
                 }
             }
@@ -309,6 +341,50 @@ impl PackageAuthoringApp {
                     source: "Picture".to_owned(),
                     emblem: None,
                     picture: Some(image.clone()),
+                    artwork: None,
+                    source_emblem: None,
+                    modified: true,
+                }
+            }
+            Some(NameplateImage::Artwork {
+                artwork,
+                source_emblem,
+            }) => {
+                let size = base
+                    .and_then(layer)
+                    .or_else(|| {
+                        source_emblem
+                            .as_ref()
+                            .and_then(|hash| hash.parse_u32().ok())
+                            .and_then(layer)
+                    })
+                    .as_ref()
+                    .map(texture_size);
+                let canvas = size.unwrap_or_else(|| part.size());
+                let id = egui::Id::new(("nameplate-artwork", artwork.fingerprint(), canvas));
+                let texture = ctx
+                    .data_mut(|data| data.get_temp::<egui::TextureHandle>(id))
+                    .unwrap_or_else(|| {
+                        let pixels = artwork.render(canvas.0, canvas.1);
+                        let texture = ctx.load_texture(
+                            "nameplate-artwork",
+                            egui::ColorImage::from_rgba_unmultiplied(
+                                [canvas.0 as usize, canvas.1 as usize],
+                                pixels.as_raw(),
+                            ),
+                            egui::TextureOptions::LINEAR,
+                        );
+                        ctx.data_mut(|data| data.insert_temp(id, texture.clone()));
+                        texture
+                    });
+                Shown {
+                    texture: Some(texture),
+                    size,
+                    source: "Edited Artwork".to_owned(),
+                    emblem: None,
+                    picture: None,
+                    artwork: Some(artwork.clone()),
+                    source_emblem: source_emblem.clone(),
                     modified: true,
                 }
             }
@@ -430,11 +506,11 @@ impl PackageAuthoringApp {
         });
     }
 
-    /// The emblem the image comes from, as a picker, then Import Image… and Export PNG….
+    /// The source picker and artwork editing, import and export actions.
     fn draw_nameplate_source(&mut self, ui: &mut egui::Ui, part: NameplatePart, shown: &Shown) {
         let base = self.recipe.donor.item_hash.parse_u32().ok();
         let busy = self.emblem_page.files.busy();
-        let (mut import, mut export, mut selection) = (false, false, None);
+        let (mut edit, mut import, mut export, mut selection) = (false, false, false, None);
         let emblems = self
             .gear_donors
             .get(&ItemKind::Emblem)
@@ -470,6 +546,12 @@ impl PackageAuthoringApp {
                     })
                 })
                 .inner;
+            edit = ui
+                .add_enabled(
+                    !busy && shown.texture.is_some(),
+                    egui::Button::new("Edit Artwork…"),
+                )
+                .clicked();
             import = ui
                 .add_enabled(!busy, egui::Button::new("Import Image…"))
                 .clicked();
@@ -494,6 +576,9 @@ impl PackageAuthoringApp {
             ),
             Some(WeaponDonorPickerAction::Secondary) | None => {}
         }
+        if edit {
+            self.edit_nameplate_image(ui.ctx(), part, shown);
+        }
         if import {
             self.emblem_page.files.import(
                 part,
@@ -507,20 +592,71 @@ impl PackageAuthoringApp {
         }
     }
 
+    fn edit_nameplate_image(&mut self, ctx: &egui::Context, part: NameplatePart, shown: &Shown) {
+        let size = self
+            .recipe
+            .donor
+            .item_hash
+            .parse_u32()
+            .ok()
+            .and_then(|hash| {
+                self.catalog
+                    .as_ref()?
+                    .nameplate_texture(ctx, hash, part.layer_offset())
+            })
+            .as_ref()
+            .map(texture_size)
+            .or(shown.size)
+            .unwrap_or_else(|| part.size());
+        let artwork = if let Some(artwork) = &shown.artwork {
+            Ok(artwork.clone())
+        } else {
+            let pixels = shown.picture.as_ref().map_or_else(
+                || {
+                    let container = shown
+                        .emblem
+                        .and_then(|hash| self.catalog.as_ref()?.nameplate_container(hash))
+                        .ok_or_else(|| "This emblem has no readable nameplate image.".to_owned())?;
+                    export_pixels(&self.packages, part, Export::Layer(container))
+                },
+                |image| Ok(image.pixels().clone()),
+            );
+            pixels.and_then(Artwork::from_source).and_then(|artwork| {
+                artwork.with_composition(crate::presentation::composition::Composition {
+                    fit: crate::presentation::composition::Fit::Cover,
+                    ..Default::default()
+                })
+            })
+        };
+        match artwork {
+            Ok(artwork) => self.presentation_editor.edit_nameplate(
+                part,
+                size,
+                artwork,
+                shown.source_emblem.clone(),
+            ),
+            Err(error) => self.emblem_page.files.outcome = Some(Err(error)),
+        }
+    }
+
     /// Exports the image the build carries: a picture at its built size, any other image as its
     /// emblem has it.
     fn export_nameplate_image(&mut self, ctx: &egui::Context, part: NameplatePart, shown: &Shown) {
-        let source = match (&shown.picture, shown.size, shown.emblem) {
-            (Some(picture), Some(size), _) => Export::Picture(picture.clone(), size),
-            (None, _, Some(hash)) => match self
-                .catalog
-                .as_ref()
-                .and_then(|catalog| catalog.nameplate_container(hash))
-            {
-                Some(container) => Export::Layer(container),
-                None => return,
-            },
-            _ => return,
+        let source = if let (Some(artwork), Some(size)) = (&shown.artwork, shown.size) {
+            Export::Artwork(artwork.clone(), size)
+        } else {
+            match (&shown.picture, shown.size, shown.emblem) {
+                (Some(picture), Some(size), _) => Export::Picture(picture.clone(), size),
+                (None, _, Some(hash)) => match self
+                    .catalog
+                    .as_ref()
+                    .and_then(|catalog| catalog.nameplate_container(hash))
+                {
+                    Some(container) => Export::Layer(container),
+                    None => return,
+                },
+                _ => return,
+            }
         };
         let file_name = format!("{}-{}.png", self.recipe.slug(), part.label().to_lowercase());
         let packages = self.packages.clone();

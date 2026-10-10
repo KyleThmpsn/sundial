@@ -37,6 +37,19 @@ pub struct DyeSource {
     pub normal: Option<DyeTextureSource>,
 }
 
+/// Resolve a source dye through the same native parent and scope records as an installed dye.
+pub(crate) fn from_parent(manager: &PackageManager, parent: u32) -> Result<DyeSource, String> {
+    let relation = typed(manager, parent, 0x8080_744A)?;
+    let dye = typed(manager, word(&relation, 0x10)?, 0x8080_71CD)?;
+    let scope = typed(manager, word(&dye, 0x0C)?, 0x8080_71F3)?;
+    let (detail, normal) = material::detail_textures(&scope);
+    Ok(DyeSource {
+        scope: scope.into(),
+        detail: detail?.map(DyeTextureSource::Native),
+        normal: normal?.map(DyeTextureSource::Native),
+    })
+}
+
 fn runtime(source: &DyeSource, channels: &[[f32; 4]]) -> Result<material::Material, String> {
     let (count, _, rows, class) = native_array_at(&source.scope, 0x88)?;
     if count != 27 || class != 0x80800090 {
@@ -83,9 +96,18 @@ pub(crate) fn apply(
         return Err(crate::model_preview::CANCELLED.into());
     }
     let manager = open_shadowkeep_package_manager(packages)?;
-    let channels = material::global_channels(&manager);
+    apply_with_manager(&manager, sources, model, cancel)
+}
+
+pub(crate) fn apply_with_manager(
+    manager: &PackageManager,
+    sources: &BTreeMap<usize, DyeSource>,
+    model: &mut Model,
+    cancel: &crate::model_preview::Load,
+) -> Result<(), String> {
+    let channels = material::global_channels(manager);
     if !sources.is_empty() && model.iridescence.is_none() {
-        model.iridescence = texture::iridescence(&manager);
+        model.iridescence = texture::iridescence(manager);
     }
     model
         .dye_animations
@@ -108,7 +130,7 @@ pub(crate) fn apply(
             if let Some(index) = model.textures.iter().position(|t| t.tag == source.tag()) {
                 return Ok(Some(index));
             }
-            let texture = source.load(Some(&manager))?;
+            let texture = source.load(Some(manager))?;
             if model.textures.len() >= crate::model_preview::MAX_TEXTURES {
                 return Err("Source textures exceed the preview budget".into());
             }

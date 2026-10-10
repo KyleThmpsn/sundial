@@ -35,7 +35,7 @@ pub(super) fn verify(manager: &PackageManager, output: &Path) -> serde_json::Val
     }
     let report = serde_json::json!({
         "objective_tag": format!("{:08X}", tag.0),
-        "payload_sha256": format!("{:x}", Sha256::digest(&bytes)),
+        "payload_sha256": hex::encode(Sha256::digest(&bytes)),
         "objective_rows": count,
         "expression_instructions": expressions,
         "supplied_flags": flags,

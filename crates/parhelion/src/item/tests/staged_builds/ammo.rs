@@ -1,16 +1,14 @@
 use super::*;
 
 #[test]
-#[ignore = "requires PARHELION_AMMO_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 #[expect(
     clippy::cognitive_complexity,
     reason = "Byte-level integration audit checks every native variant without sharing production validation"
 )]
 fn real_native_ammo_clone_preserves_every_other_field() {
     use sundial::package_authoring::runtime::load_weapon_runtime_entity_with_manager;
-    let packages = PathBuf::from(
-        std::env::var_os("PARHELION_AMMO_TEST_PACKAGES").expect("set PARHELION_AMMO_TEST_PACKAGES"),
-    );
+    let packages = crate::test_support::stock_packages();
     let manager = open_manager(&packages).unwrap();
     let source = load_weapon_runtime_entity_with_manager(&manager, 0x4CE3_CE93).unwrap();
     let binding = weapon_component_bindings(&source.payload, 0x5F0D_D954).unwrap()[0];

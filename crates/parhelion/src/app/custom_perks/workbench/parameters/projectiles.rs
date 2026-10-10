@@ -1,4 +1,5 @@
 use super::*;
+use sundial::package_authoring::sandbox_perk::program::DamageMode;
 
 /// What the picker's cached rows were built from.
 #[derive(Clone, PartialEq)]
@@ -90,17 +91,52 @@ impl PerkEditor {
             self.draft.retain(|value| !belongs(&value.locator));
             self.value_text.retain(|(locator, _), _| !belongs(locator));
         }
+        // A damage type set on the slot stays with whichever projectile fires from it.
+        let damage_type = self.projectile_damage(source);
         self.projectile_draft
             .retain(|selection| selection.source_graph != source);
-        if let Some(selected) = selected {
+        if selected.is_some() || damage_type.is_some() {
             self.projectile_draft.push(ProjectileSelection {
                 source_graph: source,
-                donor_graph: selected,
+                donor_graph: selected.unwrap_or(source),
+                damage_type,
             });
         }
         self.projectile_draft
             .sort_by_key(|selection| selection.source_graph);
         self.parameter_error = None;
+    }
+
+    /// The damage type the projectile firing from slot `source` is given, if any.
+    fn projectile_damage(&self, source: u32) -> Option<DamageMode> {
+        self.projectile_draft
+            .iter()
+            .find(|selection| selection.source_graph == source)
+            .and_then(|selection| selection.damage_type)
+    }
+
+    /// Gives the projectile firing from slot `source` the damage type `damage`, or with `None`
+    /// its own again. A slot that keeps its original projectile with no damage type needs no
+    /// selection.
+    fn set_projectile_damage(&mut self, source: u32, damage: Option<DamageMode>) {
+        match self
+            .projectile_draft
+            .iter_mut()
+            .find(|selection| selection.source_graph == source)
+        {
+            Some(selection) => selection.damage_type = damage,
+            None if damage.is_some() => self.projectile_draft.push(ProjectileSelection {
+                source_graph: source,
+                donor_graph: source,
+                damage_type: damage,
+            }),
+            None => {}
+        }
+        self.projectile_draft.retain(|selection| {
+            selection.donor_graph != selection.source_graph || selection.damage_type.is_some()
+        });
+        self.projectile_draft
+            .sort_by_key(|selection| selection.source_graph);
     }
 
     /// Draws every projectile slot in one list. Returns whether a selection changed.
@@ -122,6 +158,7 @@ impl PerkEditor {
             if let Some(selected) = self.draw_projectile_slot(ui, loaded, source) {
                 change = Some((source, selected));
             }
+            self.draw_projectile_damage(ui, source);
         }
         if let Some((source, selected)) = change {
             self.select_projectile(loaded, source, selected);
@@ -129,6 +166,40 @@ impl PerkEditor {
         }
         ui.add_space(8.0);
         false
+    }
+
+    /// The damage type of the projectile firing from slot `source`: its own, or one set here,
+    /// which every damage profile its private copy's graphs name takes.
+    fn draw_projectile_damage(&mut self, ui: &mut egui::Ui, source: u32) {
+        const TYPES: [(DamageMode, &str); 4] = [
+            (DamageMode::Kinetic, "Kinetic"),
+            (DamageMode::Arc, "Arc"),
+            (DamageMode::Solar, "Solar"),
+            (DamageMode::Void, "Void"),
+        ];
+        let current = self.projectile_damage(source);
+        let mut choice = current;
+        let label = |choice: Option<DamageMode>| {
+            choice
+                .and_then(|choice| TYPES.iter().find(|(each, _)| *each == choice))
+                .map_or("Original", |(_, label)| label)
+        };
+        ui.horizontal(|ui| {
+            ui.label("Damage Type");
+            let response = egui::ComboBox::from_id_salt(("perk-projectile-damage", source))
+                .selected_text(label(current))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut choice, None, "Original");
+                    for (each, name) in TYPES {
+                        ui.selectable_value(&mut choice, Some(each), name);
+                    }
+                })
+                .response;
+            let _ = crate::app::style::named_control(response, "Projectile Damage Type");
+        });
+        if choice != current {
+            self.set_projectile_damage(source, choice);
+        }
     }
 
     /// The catalog notices shown once above the projectile pickers.

@@ -361,13 +361,13 @@ pub fn emit(
         );
     }
     for edge in graph.connections.iter().chain(&graph.named_connections) {
-        if let Some(object) = edge.provider.object {
-            if let Some(&count) = channels.get(&object) {
-                ensure!(
-                    edge.channel < count,
-                    "transform provider channel exceeds method count"
-                );
-            }
+        if let Some(object) = edge.provider.object
+            && let Some(&count) = channels.get(&object)
+        {
+            ensure!(
+                edge.channel < count,
+                "transform provider channel exceeds method count"
+            );
         }
     }
     let mut owner = Payload(template.0[..0x248].to_vec());
@@ -387,7 +387,7 @@ pub fn emit(
             owner.0.extend_from_slice(&source.bytes::<4>(at)?);
         }
     }
-    while (owner.0.len() + 8) % 16 != 0 {
+    while !(owner.0.len() + 8).is_multiple_of(16) {
         owner.0.push(0);
     }
     owner

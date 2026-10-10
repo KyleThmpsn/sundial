@@ -230,7 +230,7 @@ pub(crate) fn append_unlock_flag_bank_row(
     write_u64(&mut authored, 0, (count + 1) as u64)?;
     authored.extend_from_slice(&hash.to_le_bytes());
     authored.extend_from_slice(&u32::from(unlock_definition_index).to_le_bytes());
-    while (authored.len() + NESTED_ARRAY_TRAILER.len()) % 16 != 0 {
+    while !(authored.len() + NESTED_ARRAY_TRAILER.len()).is_multiple_of(16) {
         authored.push(0);
     }
     authored.extend_from_slice(&NESTED_ARRAY_TRAILER);

@@ -5,7 +5,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use sundial::package_authoring::{path_is_within, resolve_path_for_comparison};
@@ -114,11 +114,32 @@ impl BuildPhase {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BuildActivity {
+    Package {
+        id: u16,
+        step: u32,
+        status: OperationStatus,
+        duration: Duration,
+    },
+    Diagnostic(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperationStatus {
+    Started,
+    Finished,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BuildProgress {
     pub phase: BuildPhase,
     pub current_artifact: Option<String>,
     pub completed: usize,
     pub total: usize,
+    /// Captured where the operation happens, before coordinator and UI queues.
+    pub timestamp: Instant,
+    pub activity: Option<BuildActivity>,
 }
 
 impl BuildProgress {
@@ -128,6 +149,8 @@ impl BuildProgress {
             current_artifact: None,
             completed,
             total,
+            timestamp: Instant::now(),
+            activity: None,
         }
     }
 
@@ -142,6 +165,8 @@ impl BuildProgress {
             current_artifact: Some(current_artifact.into()),
             completed,
             total,
+            timestamp: Instant::now(),
+            activity: None,
         }
     }
 }
@@ -177,6 +202,8 @@ pub struct CustomPlugBuildReport {
     pub icon_definition_hash: Option<u32>,
     pub name_hash: Option<u32>,
     pub description_hash: Option<u32>,
+    /// The stock shared plug sets the plug joined when offered everywhere.
+    pub offered_sets: Vec<u16>,
     pub perks: Vec<PrivatePerkBuildReport>,
 }
 
@@ -348,16 +375,18 @@ fn plan_snapshot_naming(
             source.path(),
             &project,
             crate::branding::Branding::detect(install_directory),
-            &mut |phase, label, completed, total| {
-                progress(BuildProgress::artifact(
-                    match phase {
+            &mut |event| {
+                progress(BuildProgress {
+                    phase: match event.phase {
                         crate::item::CompilePhase::Authoring => BuildPhase::CompilingProject,
                         crate::item::CompilePhase::Payloads => BuildPhase::BuildingPayloads,
                     },
-                    label,
-                    completed,
-                    total,
-                ));
+                    current_artifact: Some(event.label.to_owned()),
+                    completed: event.completed,
+                    total: event.total,
+                    timestamp: event.timestamp,
+                    activity: event.activity,
+                });
             },
         )
         .map_err(|error| record("Project compilation failed.", error));
@@ -606,6 +635,7 @@ pub fn build_and_stage_snapshot_reporting(
                                 icon_definition_hash: plug.icon_definition_tag.map(u32::from),
                                 name_hash: plug.name_hash,
                                 description_hash: plug.description_hash,
+                                offered_sets: plug.offered_sets.clone(),
                                 perks: plug
                                     .perks
                                     .iter()

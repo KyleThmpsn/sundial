@@ -3,9 +3,9 @@ use sundial::package_authoring::sandbox_perk::activation::PerkActivation;
 use sundial::package_authoring::sandbox_perk::sandbox_perk_runtime_graph_sources;
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn native_activation_clone_keeps_stock_effects_and_residency() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(&packages).unwrap();
     let globals_tag = resolve_live_named_tag(&manager, "investment_globals", None).unwrap();
     let globals = manager.read_tag(globals_tag).unwrap();

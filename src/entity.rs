@@ -14,9 +14,11 @@ pub use compose::{
 pub mod owner;
 mod rewire;
 mod splice;
+pub mod spread;
 mod trajectories;
 pub use groups::coupled_weapon_component_bindings;
-pub use splice::{ComponentSplice, plan_component_splice};
+pub use splice::{ComponentSplice, ComponentSpliceRecord, plan_component_splice};
+pub use spread::barrel_pellets;
 pub use trajectories::{grow_projectile_trajectories, projectile_trajectory_capacity};
 
 pub const SANDBOX_PATTERN_ENTITY_ASSIGNMENT_TAG: u32 = 0x80EC_3F60;
@@ -644,23 +646,21 @@ fn graft_weapon_component_owner_in_place(
             .ok_or("Donor owner partition changed during graft planning")?;
         if let Some(previous) =
             descriptor_pairs.insert(target_alias.descriptor_index, donor_alias.descriptor_index)
+            && previous != donor_alias.descriptor_index
         {
-            if previous != donor_alias.descriptor_index {
-                return Err(format!(
-                    "Weapon component binding 0x{requested_binding_hash:08X} has incompatible alias topology: target descriptor {} maps to donor descriptors {previous} and {}",
-                    target_alias.descriptor_index, donor_alias.descriptor_index
-                ));
-            }
+            return Err(format!(
+                "Weapon component binding 0x{requested_binding_hash:08X} has incompatible alias topology: target descriptor {} maps to donor descriptors {previous} and {}",
+                target_alias.descriptor_index, donor_alias.descriptor_index
+            ));
         }
         if let Some(previous) =
             reverse_pairs.insert(donor_alias.descriptor_index, target_alias.descriptor_index)
+            && previous != target_alias.descriptor_index
         {
-            if previous != target_alias.descriptor_index {
-                return Err(format!(
-                    "Weapon component binding 0x{requested_binding_hash:08X} has incompatible alias topology: donor descriptor {} maps to target descriptors {previous} and {}",
-                    donor_alias.descriptor_index, target_alias.descriptor_index
-                ));
-            }
+            return Err(format!(
+                "Weapon component binding 0x{requested_binding_hash:08X} has incompatible alias topology: donor descriptor {} maps to target descriptors {previous} and {}",
+                donor_alias.descriptor_index, target_alias.descriptor_index
+            ));
         }
     }
 

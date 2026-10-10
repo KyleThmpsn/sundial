@@ -121,6 +121,15 @@ fn value(
             uniform: Some(Uniform::Operand(scalar)),
             terms: Vec::new(),
         },
+        9 => {
+            scalar.literal = *program.immediate.get(operand.indices[0].base as usize)?;
+            scalar.kind = 4;
+            scalar.indices.clear();
+            Affine {
+                uniform: Some(Uniform::Operand(scalar)),
+                terms: Vec::new(),
+            }
+        }
         0 => written(program, operand.indices[0].base, lane, before, budget)?,
         _ => return None,
     };
@@ -181,9 +190,24 @@ impl Derivative {
             return None;
         }
         let input = &program.instructions[at].operands[1];
+        let instruction = &program.instructions[at];
+        let mask = if matches!(instruction.code, 69 | 108) {
+            let slot = instruction.operands[2].indices[0].base as usize;
+            if program
+                .resources
+                .iter()
+                .any(|r| r.slot == slot && matches!(r.dimension, 5 | 6))
+            {
+                7
+            } else {
+                3
+            }
+        } else {
+            instruction.operands[0].mask
+        };
         let mut lanes = std::array::from_fn(|_| Vec::new());
         for (lane, terms) in lanes.iter_mut().enumerate() {
-            if program.instructions[at].operands[0].mask & (1 << lane) == 0 {
+            if mask & (1 << lane) == 0 {
                 continue;
             }
             *terms = value(program, input, lane, at, &mut 128)?.terms;

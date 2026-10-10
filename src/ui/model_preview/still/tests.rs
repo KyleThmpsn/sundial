@@ -2,16 +2,17 @@
 //! path. Failure boundaries are a missing program, a clock stuck at zero, stale image caching,
 //! unintended motion while paused and an unreadable frame artifact.
 use super::*;
+mod armor;
 
 #[test]
-#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_EFFECT_OUTPUT"]
+#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
 fn workbench_controls_respond_during_model_loading_and_rendering() {
     assert!(
         !model_preview::gpu::available(),
         "Run the software path in its own process"
     );
-    let packages = PathBuf::from(std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").unwrap());
-    let output = PathBuf::from(std::env::var_os("SUNDIAL_EFFECT_OUTPUT").unwrap());
+    let packages = crate::test_support::preview_packages();
+    let output = crate::test_support::artifact_dir("effects");
     std::fs::create_dir_all(&output).unwrap();
     let ctx = egui::Context::default();
     let id = egui::Id::new("responsive-native-preview");
@@ -30,7 +31,7 @@ fn workbench_controls_respond_during_model_loading_and_rendering() {
         ctx.memory_mut(|m| m.request_focus(edit));
         let inject = events < 24;
         let before = std::time::Instant::now();
-        let frame = ctx.run(
+        let frame = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -43,8 +44,8 @@ fn workbench_controls_respond_during_model_loading_and_rendering() {
                 },
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     ui.add(egui::TextEdit::singleline(&mut typed).id(edit));
                     show(
                         ui,
@@ -76,10 +77,14 @@ fn workbench_controls_respond_during_model_loading_and_rendering() {
             still.error.as_ref().map(|e| &e.1)
         );
         if let Some(texture) = still.texture.as_ref() {
-            for (id, delta) in &frame.textures_delta.set {
-                if *id == texture.id()
-                    && let egui::ImageData::Color(image) = &delta.image
-                {
+            for (id, delta) in frame
+                .textures_delta
+                .set
+                .iter()
+                .flat_map(|(id, deltas)| deltas.iter().map(move |delta| (id, delta)))
+            {
+                if *id == texture.id() {
+                    let egui::ImageData::Color(image) = &delta.image;
                     let rgba = image
                         .pixels
                         .iter()
@@ -112,10 +117,12 @@ fn workbench_controls_respond_during_model_loading_and_rendering() {
 
 #[test]
 fn abandoned_preview_results_do_not_replace_the_current_selection() {
-    let appearance = |arrangement| Appearance {
-        arrangement,
-        dyes: vec![],
-        dye_textures: vec![],
+    let appearance = |arrangement| {
+        Subject::Appearance(Appearance {
+            arrangement,
+            dyes: vec![],
+            dye_textures: vec![],
+        })
     };
     let old = (PathBuf::from("temporary-packages"), appearance(1), None);
     let current = (PathBuf::from("temporary-packages"), appearance(2), None);
@@ -129,18 +136,22 @@ fn abandoned_preview_results_do_not_replace_the_current_selection() {
     still.receive();
     assert!(still.model.is_none());
     assert!(still.shown.is_none());
-    assert_eq!(still.wanted.as_ref().map(|w| w.1.arrangement), Some(2));
+    assert!(matches!(
+        still.wanted.as_ref().map(|wanted| &wanted.1),
+        Some(Subject::Appearance(Appearance { arrangement: 2, .. }))
+    ));
 }
 
 #[test]
-#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_PREVIEW_ANIMATION_OUTPUT"]
+#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
+#[allow(clippy::cognitive_complexity)]
 fn shader_texture_motion_reaches_the_software_page_preview() {
     assert!(
         !model_preview::gpu::available(),
         "Run this headless workflow without a GPU renderer"
     );
-    let packages = PathBuf::from(std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").unwrap());
-    let output = PathBuf::from(std::env::var_os("SUNDIAL_PREVIEW_ANIMATION_OUTPUT").unwrap());
+    let packages = crate::test_support::preview_packages();
+    let output = crate::test_support::artifact_dir("preview-animation");
     std::fs::create_dir_all(&output).unwrap();
     let appearance = Appearance {
         arrangement: 930,
@@ -149,18 +160,21 @@ fn shader_texture_motion_reaches_the_software_page_preview() {
     };
     let ctx = egui::Context::default();
     let id = egui::Id::new("shader-texture-motion");
-    let draw = || {
-        ctx.run(
+    ctx.enable_accesskit();
+    let images = std::cell::RefCell::new(std::collections::HashMap::new());
+    let frame = |events| {
+        let output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
                     egui::vec2(400.0, 400.0),
                 )),
+                events,
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    show(
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let preview = show(
                         ui,
                         id,
                         &packages,
@@ -168,10 +182,31 @@ fn shader_texture_motion_reaches_the_software_page_preview() {
                         &[],
                         egui::vec2(320.0, 320.0),
                     );
+                    super::super::pop_out(
+                        ui,
+                        id,
+                        preview.rect,
+                        &packages,
+                        (appearance.clone(), "Shader Playback"),
+                    );
                 });
             },
-        )
+        );
+        for (id, delta) in output
+            .textures_delta
+            .set
+            .iter()
+            .flat_map(|(id, deltas)| deltas.iter().map(move |delta| (id, delta)))
+        {
+            if delta.pos.is_none() {
+                let egui::ImageData::Color(image) = &delta.image;
+                images.borrow_mut().insert(*id, image.clone());
+            }
+        }
+        crate::test_support::capture::record(&output);
+        output
     };
+    let draw = || frame(Vec::new());
     let started = std::time::Instant::now();
     let state = loop {
         let _ = draw();
@@ -185,8 +220,8 @@ fn shader_texture_motion_reaches_the_software_page_preview() {
                 "{:?}",
                 still.error.as_ref().map(|e| &e.1)
             );
-            if still.model.is_some() && still.texture.is_some() {
-                assert!(still.model.as_ref().unwrap().has_shader_animation());
+            if let (Some(model), Some(_)) = (&still.model, &still.texture) {
+                assert!(model.has_shader_animation());
                 break state.clone();
             }
         }
@@ -198,15 +233,20 @@ fn shader_texture_motion_reaches_the_software_page_preview() {
     };
     let image = |frame: &egui::FullOutput| {
         let texture = state.lock().unwrap().texture.as_ref().unwrap().id();
-        frame.textures_delta.set.iter().find_map(|(id, delta)| {
-            if *id != texture {
-                return None;
-            }
-            match &delta.image {
-                egui::ImageData::Color(image) => Some(image.clone()),
-                _ => None,
-            }
-        })
+        frame
+            .textures_delta
+            .set
+            .iter()
+            .find_map(|(id, deltas)| {
+                if *id != texture {
+                    return None;
+                }
+                deltas.first().map(|delta| {
+                    let egui::ImageData::Color(image) = &delta.image;
+                    image.clone()
+                })
+            })
+            .or_else(|| images.borrow().get(&texture).cloned())
     };
     // Rendering now runs in the background. Drive real UI frames until the requested
     // instant is published, ignoring an older animated frame that was already in flight.
@@ -270,9 +310,115 @@ fn shader_texture_motion_reaches_the_software_page_preview() {
     }
     let _ = draw();
     assert_eq!(state.lock().unwrap().seconds, paused_at);
+
+    // The preference and actual transport use the same clock for every animation channel.
+    set_options(
+        &ctx,
+        Options {
+            play_animations: false,
+            ..Default::default()
+        },
+    );
+    pause(&ctx, false);
+    let _ = frame(vec![egui::Event::PointerMoved(egui::pos2(160.0, 160.0))]);
+    let held_at = state.lock().unwrap().seconds;
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    let output_frame = draw();
+    assert_eq!(state.lock().unwrap().seconds, held_at);
+    let fps_labels = |output: &egui::FullOutput| {
+        output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text().ends_with(" FPS") => {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(fps_labels(&output_frame).is_empty());
+    crate::test_support::capture::write(&ctx, &output_frame, "inline-animation-default-off");
+    let click = |label: &str| {
+        let output = draw();
+        let tree = output.platform_output.accesskit_update.as_ref().unwrap();
+        let bounds = tree
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some(label))
+                    .then(|| node.bounds())
+                    .flatten()
+            })
+            .unwrap_or_else(|| panic!("missing {label} transport"));
+        let at = egui::pos2(
+            ((bounds.x0 + bounds.x1) * 0.5) as f32,
+            ((bounds.y0 + bounds.y1) * 0.5) as f32,
+        );
+        for pressed in [true, false] {
+            frame(crate::test_support::primary_press(at, pressed));
+        }
+    };
+    click("Play");
+    draw();
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    draw();
+    assert!(
+        state.lock().unwrap().seconds > held_at,
+        "Play did not advance the model"
+    );
+    click("Pause");
+    let held_at = state.lock().unwrap().seconds;
+    draw();
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    draw();
+    assert_eq!(
+        state.lock().unwrap().seconds,
+        held_at,
+        "Pause did not hold the model"
+    );
+    // A queued software image settles at the held instant and stays byte-for-byte still.
+    let frozen = capture(held_at);
+    save("shader-motion-paused.png", &frozen);
+    let rendered_at = state.lock().unwrap().rendered_seconds;
+    for _ in 0..5 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let output = draw();
+        if let Some(image) = image(&output) {
+            assert_eq!(image.pixels, frozen.pixels);
+        }
+    }
+    assert_eq!(state.lock().unwrap().rendered_seconds, rendered_at);
+    set_options(
+        &ctx,
+        Options {
+            show_fps: true,
+            play_animations: false,
+        },
+    );
+    let output_frame = draw();
+    let labels = fps_labels(&output_frame);
+    assert_eq!(labels.len(), 1, "the counter must be one small label");
+    assert!(labels[0].pos.x < 90.0 && labels[0].pos.y < 32.0);
+    assert!(labels[0].galley.size().y <= 16.0);
+    crate::test_support::capture::write(&ctx, &output_frame, "inline-animation-paused-fps");
+    click("Play");
+    draw();
+    let resumed_at = state.lock().unwrap().seconds;
+    assert!(
+        resumed_at - held_at < 0.15,
+        "resume included the paused interval"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    draw();
+    assert!(state.lock().unwrap().seconds > resumed_at);
+    set_options(&ctx, Options::default());
+    assert!(fps_labels(&draw()).is_empty());
     std::fs::write(output.join("shader-motion-readback.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
             "program_loaded": true, "visible_texture_motion": true, "pause_preserved_time": true,
+            "default_off_holds_time": true, "play_pause_resume_clicked": true, "fps_opt_in": true,
+            "paused": "shader-motion-paused.png",
             "first": "shader-motion-0.png", "later": "shader-motion-later.png",
             "different_pixels": first.pixels.iter().zip(&later.pixels).filter(|(a,b)| a != b).count(),
         })).unwrap()).unwrap();

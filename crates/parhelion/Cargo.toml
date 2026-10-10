@@ -20,25 +20,27 @@ workspace = true
 [dependencies]
 parhelion-import = { path = "../parhelion-import", optional = true }
 fs2 = "0.4.3"
+hex = "0.4.3"
 base64 = "0.23.1"
 bcdec_rs = "0.2.0"
-egui = { version = "0.31.1", features = ["accesskit"] }
-egui-phosphor = "0.9.0"
+egui = "0.36.2"
+egui-phosphor = "0.14.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
-rfd = "0.15.4"
+rfd = "0.17.2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1.0.140"
-sha1 = "0.10.6"
-sha2 = "0.10.9"
+serde_json = "1.0.151"
+sha1 = "0.11.0"
+sha2 = "0.11.0"
 sundial = { path = "../.." }
-tempfile = "3.20.0"
+tempfile = "3.27.0"
 tiger-pkg = { version = "0.21.0", features = ["ignore_caches"] }
-ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
-resvg = { version = "0.45.1", default-features = false }
+resvg = { version = "0.48.1", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
-libloading = "0.8.9"
+libloading = "0.9.0"
 
 [dev-dependencies]
-rusqlite = { version = "0.37.0", features = ["bundled"] }
+sundial = { path = "../..", features = ["test-support"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "fallible_uint"] }

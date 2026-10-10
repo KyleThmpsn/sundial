@@ -11,7 +11,9 @@ use super::{resource, table};
 use crate::d2_mot::{payload::Payload, reader::Reader};
 
 pub mod controller;
+pub mod kinetic;
 pub mod lower;
+pub mod presentation;
 pub mod sword;
 pub mod translate;
 
@@ -22,6 +24,54 @@ const SETTINGS: u32 = 0x80802D33;
 // sandbox reader, validate the root and row classes. Other 978C maps include unrelated,
 // encrypted content and are not candidates for this table.
 const ASSIGNMENTS: u32 = 0x80C0C0E3;
+
+pub struct Assignment {
+    pub item_tag: u32,
+    pub perk_hash: u32,
+    pub runtime_key: u32,
+    pub action_tag: u32,
+    pub controller: std::sync::Arc<Payload>,
+}
+
+/// Resolve every controller through the source investment tables, without an item allowlist.
+pub fn assigned(r: &mut Reader, plug_hash: u32) -> Result<Vec<Assignment>> {
+    let (item_tag, item) = item(r, plug_hash)?;
+    let block = resource(&item, 0x68, 0x80807381)?;
+    let identities = table(r, 0x808076AA)?;
+    let indices = identities.array(8, 12, Some(0x808076AE))?;
+    let finished = table(r, 0x8080542D)?;
+    let definitions = finished.array(8, 40, Some(0x80805433))?;
+    let mut seen = BTreeSet::new();
+    let mut result = Vec::new();
+    for row in rows(&item, block + 16, 32, 0x80807387)? {
+        let identity = *indices
+            .get(usize::try_from(item.u32(row)?)?)
+            .context("source perk index")?;
+        let perk_hash = identities.u32(identity)?;
+        let matching = definitions
+            .iter()
+            .copied()
+            .filter(|at| finished.u32(*at).ok() == Some(perk_hash))
+            .collect::<Vec<_>>();
+        ensure!(
+            matching.len() == 1,
+            "source perk identity is missing or ambiguous"
+        );
+        let runtime_key = finished.u32(matching[0] + 4)?;
+        let action_tag =
+            action(r, runtime_key)?.context("source perk has no standalone controller")?;
+        ensure!(seen.insert(action_tag), "source plug repeats a controller");
+        result.push(Assignment {
+            item_tag,
+            perk_hash,
+            runtime_key,
+            action_tag,
+            controller: r.tag(action_tag, Some(CONTROLLER))?,
+        });
+    }
+    ensure!(!result.is_empty(), "source plug has no runtime controllers");
+    Ok(result)
+}
 
 fn rows(p: &Payload, at: usize, stride: usize, class: u32) -> Result<Vec<usize>> {
     ensure!(p.u64(at)? <= 256, "perk list exceeds trace limit at {at:X}");
@@ -230,6 +280,8 @@ fn node(r: &mut Reader, p: &Payload, row: usize, condition: bool) -> Result<Valu
         } else if class == 0x80803061 {
             record_lowering(&mut value, lower::state_value_condition(p, at));
         }
+    } else if class == 0x808022E5 {
+        record_lowering(&mut value, lower::component_value(p, at));
     } else if class == 0x808030F3 {
         record_lowering(&mut value, lower::host_record(p, at));
     } else if [0x80803130, 0x8080B7C6].contains(&class) {

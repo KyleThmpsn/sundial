@@ -87,7 +87,7 @@ pub(crate) fn load_for(
 pub(crate) fn thumbnail(image: &egui::ColorImage) -> egui::ColorImage {
     let [w, h] = image.size;
     let size = [64 * w / w.max(h), 64 * h / w.max(h)];
-    let mut thumbnail = egui::ColorImage::new(size, egui::Color32::TRANSPARENT);
+    let mut thumbnail = egui::ColorImage::filled(size, egui::Color32::TRANSPARENT);
     for y in 0..size[1] {
         for x in 0..size[0] {
             thumbnail[(x, y)] = image[(x * w / size[0], y * h / size[1])];
@@ -295,15 +295,15 @@ mod tests {
         }
         header[16..18].copy_from_slice(&16u16.to_le_bytes());
         assert!(dimensions(&header, Purpose::Perk).is_err());
-        assert!(!visible_transparency(&egui::ColorImage::new(
+        assert!(!visible_transparency(&egui::ColorImage::filled(
             [2, 2],
             egui::Color32::TRANSPARENT
         )));
-        assert!(!visible_transparency(&egui::ColorImage::new(
+        assert!(!visible_transparency(&egui::ColorImage::filled(
             [2, 2],
             egui::Color32::WHITE
         )));
-        let mut icon = egui::ColorImage::new([2, 2], egui::Color32::TRANSPARENT);
+        let mut icon = egui::ColorImage::filled([2, 2], egui::Color32::TRANSPARENT);
         icon[(1, 1)] = egui::Color32::WHITE;
         assert!(visible_transparency(&icon));
     }

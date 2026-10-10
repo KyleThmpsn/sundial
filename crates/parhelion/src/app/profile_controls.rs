@@ -48,29 +48,23 @@ pub(super) fn draw_combat_profile_control(
             let kinetic_damage = profile.damage_type == WeaponDamageType::Kinetic;
             kinetic_damage != (profile.inventory_slot == WeaponInventorySlot::Kinetic)
         });
-    let label = ui
-        .horizontal(|ui| {
-            let label = ui.label(field_label);
-            draw_authoring_info_icon(
-                ui,
-                if select_slot {
-                    "Kinetic, Energy or Power Slot."
-                } else {
-                    "Variable switches it while Reload is held."
-                },
-            );
-            if experimental_pair {
-                draw_authoring_warning_icon(
-                    ui,
-                    "Experimental slot and damage type pair. Test in game.",
-                );
-            }
-            label
-        })
-        .inner;
+    // The base weapon's own slot or damage type, which Reset names.
+    let original = donor.and_then(|donor| {
+        if select_slot {
+            donor.summary.inventory_slot.map(WeaponInventorySlot::label)
+        } else {
+            donor.summary.damage_type.map(WeaponDamageType::label)
+        }
+    });
+    let (label, mut changed) = combat_profile_name(
+        ui,
+        overrides,
+        (field_label, select_slot, original),
+        experimental_pair,
+    );
     let Some(donor) = donor else {
         ui.add_enabled(false, egui::Button::new("Load a Base Weapon"));
-        return false;
+        return changed;
     };
     let capabilities = weapon_authoring_capabilities(donor);
     let action = recipe_combat_profile_action(overrides, &donor.summary);
@@ -95,18 +89,11 @@ pub(super) fn draw_combat_profile_control(
         profile.map(|p| p.damage_type.label())
     }
     .unwrap_or("Unknown");
-    let inherited = if select_slot {
-        overrides.inventory_slot.is_none()
-    } else {
-        overrides.modern_damage_type.is_none()
-    };
     let variable = !select_slot && overrides.variable_damage.is_some();
     let selected_text = if variable {
-        VARIABLE_DAMAGE_LABEL.to_owned()
-    } else if inherited {
-        format!("{selected} (base weapon)")
+        VARIABLE_DAMAGE_LABEL
     } else {
-        selected.to_owned()
+        selected
     };
     let slots = [
         WeaponInventorySlot::Kinetic,
@@ -119,7 +106,6 @@ pub(super) fn draw_combat_profile_control(
         WeaponDamageType::Solar,
         WeaponDamageType::Void,
     ];
-    let mut changed = false;
     let variable_offered = !select_slot && (variable_damage_available || variable);
     let locked = damage_locked && !select_slot;
     ui.add_enabled_ui(
@@ -159,7 +145,7 @@ pub(super) fn draw_combat_profile_control(
                 if ui
                     .add_enabled(
                         capabilities.supports(candidate_action),
-                        egui::SelectableLabel::new(!variable && profile == Some(candidate), text),
+                        egui::Button::selectable(!variable && profile == Some(candidate), text),
                     )
                     .on_disabled_hover_text(if select_slot {
                         "Slot unavailable for this weapon."
@@ -187,7 +173,7 @@ pub(super) fn draw_combat_profile_control(
                 && ui
                     .add_enabled(
                         variable_damage_available || variable,
-                        egui::SelectableLabel::new(variable, VARIABLE_DAMAGE_LABEL),
+                        egui::Button::selectable(variable, VARIABLE_DAMAGE_LABEL),
                     )
                     .on_hover_text("Hold Reload to switch between Void, Arc and Solar, like Hard Light. The Fundamentals takes the first trait socket.")
                     .on_disabled_hover_text("Only rifles and sniper rifles support this.")
@@ -247,6 +233,59 @@ pub(super) fn draw_combat_profile_control(
     changed
 }
 
+/// The slot or damage field's name, with the warning beside it for an experimental pair, and its
+/// way back to the base weapon's `original` value, which its entry in the list also gives.
+/// Returns the name and whether the way back changed the field.
+fn combat_profile_name(
+    ui: &mut egui::Ui,
+    overrides: &mut WeaponRecipeOverrides,
+    (label, select_slot, original): (&str, bool, Option<&str>),
+    experimental_pair: bool,
+) -> (egui::Response, bool) {
+    let (modified, hint) = if select_slot {
+        (
+            overrides.inventory_slot.is_some(),
+            "Kinetic, Energy or Power Slot",
+        )
+    } else {
+        (
+            overrides.modern_damage_type.is_some() || overrides.variable_damage.is_some(),
+            "Variable switches it while Reload is held",
+        )
+    };
+    let field_name = |ui: &mut egui::Ui| match original {
+        Some(original) => style::stock_field_name(ui, label, hint, modified.then_some(original)),
+        None => style::field_name(ui, label, hint, modified),
+    };
+    let (name, reset) = if experimental_pair {
+        // Top-aligned, so the name sits level with the other fields' names. A centered line
+        // places its zero-height allocation halfway down.
+        ui.horizontal_top(|ui| {
+            // The name leaves room for the warning beside it.
+            let width =
+                ui.available_width() - ui.spacing().interact_size.y - ui.spacing().item_spacing.x;
+            let named = ui.allocate_ui(egui::vec2(width, 0.0), field_name).inner;
+            draw_authoring_warning_icon(
+                ui,
+                "Experimental slot and damage type pair. Test in game.",
+            );
+            named
+        })
+        .inner
+    } else {
+        field_name(ui)
+    };
+    if reset {
+        if select_slot {
+            overrides.inventory_slot = None;
+        } else {
+            overrides.modern_damage_type = None;
+            overrides.variable_damage = None;
+        }
+    }
+    (name, reset)
+}
+
 pub(super) fn draw_optional_locale_text_field(
     ui: &mut egui::Ui,
     label: &str,
@@ -273,8 +312,7 @@ pub(super) fn draw_optional_locale_text_field(
             ui.add(egui::TextEdit::singleline(value).desired_width(f32::INFINITY));
         }
     } else {
-        ui.add(egui::Label::new(egui::RichText::new(fallback).weak()).truncate())
-            .on_hover_text(fallback);
+        ui.add(egui::Label::new(egui::RichText::new(fallback).weak()).truncate());
     }
     ui.add_space(4.0);
 }
@@ -371,20 +409,21 @@ pub(super) fn draw_ammo_type_control(
     overrides: &mut WeaponRecipeOverrides,
     gameplay_donor: Option<&WeaponDonor>,
 ) {
-    let label = ui
-        .horizontal(|ui| {
-            let label = ui.label("Ammo Type");
-            draw_authoring_info_icon(ui, "Also applies to its perk variants.");
-            label
-        })
-        .inner;
     let inherited = gameplay_donor
         .and_then(|donor| donor.summary.ammo_type)
-        .map_or("unknown", WeaponAmmoType::label);
-    let selected_text = overrides.ammo_type.map_or_else(
-        || format!("{inherited} (base weapon)"),
-        |ammo_type| recipe_ammo_type_label(ammo_type).to_owned(),
+        .map_or("Unknown", WeaponAmmoType::label);
+    let (label, reset) = style::stock_field_name(
+        ui,
+        "Ammo Type",
+        "Also applies to its perk variants",
+        overrides.ammo_type.map(|_| inherited),
     );
+    if reset {
+        overrides.ammo_type = None;
+    }
+    let selected_text = overrides
+        .ammo_type
+        .map_or(inherited, recipe_ammo_type_label);
     if gameplay_donor.is_none_or(|donor| donor.summary.weapon_pattern_index.is_none()) {
         ui.label(selected_text);
         ui.weak("Choose a base weapon with a runtime first.");
@@ -399,7 +438,7 @@ pub(super) fn draw_ammo_type_control(
             ui.selectable_value(
                 &mut overrides.ammo_type,
                 None,
-                format!("{inherited} (base weapon)"),
+                gear_view::follow_base(ItemKind::Weapon),
             );
             for ammo_type in [
                 RecipeAmmoType::Primary,
@@ -430,19 +469,20 @@ pub(super) fn draw_rarity_control(
     overrides: &mut WeaponRecipeOverrides,
     gameplay_donor: Option<&WeaponDonor>,
 ) {
-    let label = ui.horizontal(|ui| {
-        let label = ui.label("Rarity");
-        draw_authoring_info_icon(
-            ui,
-            "Exotics appear under Exotics in Collections, others on their weapon type page. Both appear on the badge. Trace rifles must be Exotic.",
-        );
-        label
-    }).inner;
-    let inherited = gameplay_donor.map_or(WeaponRarity::Unknown, |donor| donor.summary.rarity);
-    let selected_text = overrides.rarity.map_or_else(
-        || format!("{} (base weapon)", inherited.label()),
-        |rarity| recipe_rarity_label(rarity).to_owned(),
+    let inherited = gameplay_donor
+        .map_or(WeaponRarity::Unknown, |donor| donor.summary.rarity)
+        .label();
+    let (label, reset) = style::stock_field_name(
+        ui,
+        "Rarity",
+        "Exotics appear under Exotics in Collections, others on their weapon type page. Both \
+         appear on the badge. Trace rifles must be Exotic",
+        overrides.rarity.map(|_| inherited),
     );
+    if reset {
+        overrides.rarity = None;
+    }
+    let selected_text = overrides.rarity.map_or(inherited, recipe_rarity_label);
     egui::ComboBox::from_id_salt("recipe_rarity")
         .selected_text(selected_text)
         .truncate()
@@ -452,9 +492,9 @@ pub(super) fn draw_rarity_control(
             if ui
                 .add_enabled(
                     rarity_is_supported(gameplay_donor, None),
-                    egui::SelectableLabel::new(
+                    egui::Button::selectable(
                         overrides.rarity.is_none(),
-                        format!("{} (base weapon)", inherited.label()),
+                        gear_view::follow_base(ItemKind::Weapon),
                     ),
                 )
                 .clicked()
@@ -471,7 +511,7 @@ pub(super) fn draw_rarity_control(
                 if ui
                     .add_enabled(
                         rarity_is_supported(gameplay_donor, Some(rarity)),
-                        egui::SelectableLabel::new(
+                        egui::Button::selectable(
                             overrides.rarity == Some(rarity),
                             recipe_rarity_label(rarity),
                         ),
@@ -518,34 +558,51 @@ pub(super) const fn recipe_rarity_label(rarity: RecipeRarity) -> &'static str {
     }
 }
 
+/// Caps from here up stand for no cap. Each is far above any Power an item reaches in this
+/// version, so the table's several of them read alike.
+const NO_CAP: u32 = 999_900;
+
+/// A power cap as its field reads it.
+fn power_cap_label(cap: u32) -> String {
+    if cap >= NO_CAP {
+        "No Cap".to_owned()
+    } else {
+        format!("{cap} Power")
+    }
+}
+
 pub(super) fn draw_power_cap_control(
     ui: &mut egui::Ui,
     overrides: &mut WeaponRecipeOverrides,
     donor: Option<&WeaponDonor>,
     catalog: Option<&InvestmentCatalog>,
 ) {
-    let label = ui
-        .horizontal(|ui| {
-            let label = ui.label("Power Cap");
-            draw_authoring_info_icon(ui, "Infusion limit. Current Power is set in Sundial.");
-            label
-        })
-        .inner;
-    let inherited_cap = donor
+    let inherited = donor
         .and_then(|donor| donor.summary.power_cap)
-        .map_or_else(|| "unresolved".to_owned(), |cap| cap.to_string());
+        .map_or_else(|| "Unknown".to_owned(), power_cap_label);
+    let modified = overrides.power_cap_group.is_some() || overrides.power_cap_groups.is_some();
+    let (label, reset) = style::stock_field_name(
+        ui,
+        "Power Cap",
+        "Infusion limit. Current Power is set in Sundial",
+        modified.then_some(inherited.as_str()),
+    );
+    if reset {
+        overrides.power_cap_group = None;
+        overrides.power_cap_groups = None;
+    }
     let choices = catalog.map_or_else(Vec::new, InvestmentCatalog::power_cap_choices);
     let selected_cap = overrides.power_cap_groups.as_ref().map_or_else(
         || {
             overrides.power_cap_group.map_or_else(
-                || format!("{inherited_cap} (base weapon)"),
+                || inherited.clone(),
                 |group| {
                     choices
                         .iter()
                         .find(|choice| choice.authoring_version_group == group)
                         .map_or_else(
                             || format!("Version group {group}"),
-                            |choice| format!("{} Power", choice.power_cap),
+                            |choice| power_cap_label(choice.power_cap),
                         )
                 },
             )
@@ -561,31 +618,31 @@ pub(super) fn draw_power_cap_control(
             if ui
                 .selectable_label(
                     overrides.power_cap_group.is_none() && overrides.power_cap_groups.is_none(),
-                    format!("{inherited_cap} (base weapon)"),
+                    gear_view::follow_base(ItemKind::Weapon),
                 )
                 .clicked()
             {
                 overrides.power_cap_group = None;
                 overrides.power_cap_groups = None;
             }
-            // Equal caps can have different native identities. The everyday picker
-            // offers each value once; the advanced editor retains every table row.
+            // Equal caps can have different native identities. The everyday picker offers each
+            // value once, and every cap that stands for none as No Cap. The advanced editor
+            // retains every table row.
             let selected_power = overrides.power_cap_group.and_then(|index| {
                 choices
                     .iter()
                     .find(|choice| choice.authoring_version_group == index)
-                    .map(|choice| choice.power_cap)
+                    .map(|choice| choice.power_cap.min(NO_CAP))
             });
             let by_power = choices
                 .iter()
-                .map(|choice| (choice.power_cap, choice))
+                .map(|choice| (choice.power_cap.min(NO_CAP), choice))
                 .collect::<std::collections::BTreeMap<_, _>>();
-            for choice in by_power.values() {
+            for (&power, choice) in &by_power {
                 if ui
                     .selectable_label(
-                        overrides.power_cap_groups.is_none()
-                            && selected_power == Some(choice.power_cap),
-                        format!("{} Power", choice.power_cap),
+                        overrides.power_cap_groups.is_none() && selected_power == Some(power),
+                        power_cap_label(power),
                     )
                     .clicked()
                 {

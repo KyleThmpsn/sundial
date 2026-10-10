@@ -106,24 +106,31 @@ pub(super) fn listed_parameter(
     }
 }
 
-/// The definition region, then the instance rows array and the instance modifier the new row
-/// needs, then the instance region moved down by a multiple of 16 so every offset keeps its
-/// alignment. The instance block's marker sits in the four bytes before it.
+/// The definition region, then the instance rows array of `rows` rows and an instance modifier
+/// for each new row, behind its definition's class in `markers`, then the instance region moved
+/// down by a multiple of 16 so every offset keeps its alignment. The instance block's marker
+/// sits in the four bytes before it.
 pub(super) fn open_definition_region(
     payload: &[u8],
     layout: &Layout,
-    count: usize,
-    definition_class: u32,
+    rows: usize,
+    markers: &[u32],
 ) -> Region {
     let instance = layout.instance;
     let marker = instance - 4;
     let mut out = payload[..marker].to_vec();
     let instance_header = open_block(&mut out, ARRAY_MARKER);
-    out.resize(instance_header + 16 + (count + 1) * INSTANCE_ROW_SIZE, 0);
-    put_u64(&mut out, instance_header, count as u64 + 1);
+    out.resize(instance_header + 16 + rows * INSTANCE_ROW_SIZE, 0);
+    put_u64(&mut out, instance_header, rows as u64);
     put_u32(&mut out, instance_header + 8, DEFINITION_ROW_CLASS);
-    let modifier_instance = open_block(&mut out, definition_class);
-    out.resize(modifier_instance + INSTANCE_MODIFIER_SIZE, 0);
+    let modifier_instances = markers
+        .iter()
+        .map(|&definition_class| {
+            let at = open_block(&mut out, definition_class);
+            out.resize(at + INSTANCE_MODIFIER_SIZE, 0);
+            at
+        })
+        .collect();
     while (out.len() + 4) % 16 != instance % 16 {
         out.push(0);
     }
@@ -133,7 +140,7 @@ pub(super) fn open_definition_region(
         out,
         instance_header,
         instance_first: instance_header + 16,
-        modifier_instance,
+        modifier_instances,
         delta,
     }
 }
@@ -198,10 +205,34 @@ pub(super) fn append_parameter_table(
     header
 }
 
-/// Every stock row copied into the new arrays, then the new row, each pair twinned, pointed at
-/// the bank and at its modifiers, each attack row's key reference pointed at its moved block,
+/// What one place in the rebuilt row arrays holds: a stock row by its old index, or an added
+/// row by its index among the added ones.
+#[derive(Clone, Copy)]
+pub(super) enum Slot {
+    Stock(usize),
+    Added(usize),
+}
+
+/// The rebuilt row order: the stock rows in order, each added row just before the stock row it
+/// names, in the order given, and those naming the stock row count last.
+pub(super) fn arrangement(count: usize, added: &[Added]) -> Vec<Slot> {
+    let mut slots = Vec::with_capacity(count + added.len());
+    for old in 0..=count {
+        for (new, row) in added.iter().enumerate() {
+            if row.before.min(count) == old {
+                slots.push(Slot::Added(new));
+            }
+        }
+        if old < count {
+            slots.push(Slot::Stock(old));
+        }
+    }
+    slots
+}
+
+/// Every stock row copied into the new arrays with the added rows among them, each pair
+/// twinned, pointed at the bank and at its modifiers, each gated row pointed at its gate block
 /// and each instance modifier pointed back at its moved row.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn write_rows(
     payload: &[u8],
     out: &mut [u8],
@@ -209,54 +240,54 @@ pub(super) fn write_rows(
     count: usize,
     placement: &Placement,
     shift: Shift,
-    key: u32,
-    handler: HandlerIndex,
+    added: &[Added],
 ) -> Result<(), String> {
-    for index in 0..=count {
+    for (index, slot) in arrangement(count, added).into_iter().enumerate() {
         let instance_row = placement.instance_first + index * INSTANCE_ROW_SIZE;
         let definition_row = placement.definition_first + index * DEFINITION_ROW_SIZE;
-        let (instance_target, definition_target, attack_key) = if index < count {
-            let old_instance = layout.instance_rows.first + index * INSTANCE_ROW_SIZE;
-            let old_definition = layout.definition_rows.first + index * DEFINITION_ROW_SIZE;
-            out[instance_row..instance_row + INSTANCE_ROW_SIZE]
-                .copy_from_slice(&payload[old_instance..old_instance + INSTANCE_ROW_SIZE]);
-            out[definition_row..definition_row + DEFINITION_ROW_SIZE]
-                .copy_from_slice(&payload[old_definition..old_definition + DEFINITION_ROW_SIZE]);
-            // The copied pointer is relative to the old row, and its block moved with the
-            // instance region.
-            let attack_key = if i64_at(payload, old_definition + ROW_ATTACK_KEY)? != 0 {
-                Some(shift.at(pointer(payload, old_definition + ROW_ATTACK_KEY)?))
-            } else {
-                None
-            };
-            (
-                pointer(payload, old_instance + INSTANCE_ROW_MODIFIER)?,
-                shift.at(pointer(payload, old_definition + ROW_MODIFIER)?),
-                attack_key,
-            )
-        } else {
-            put_u32(out, instance_row, layout.owner);
-            put_u32(out, instance_row + BLOCK_CLASS, INSTANCE_ROW_CLASS);
-            put_u32(out, definition_row, layout.owner);
-            put_u32(out, definition_row + BLOCK_CLASS, DEFINITION_ROW_CLASS);
-            put_u32(out, definition_row + ROW_KEY, key);
-            put_u32(out, definition_row + ROW_NAME, NO_NAME);
-            put_u32(out, definition_row + ROW_FLAGS, 0xFF);
-            put_u32(out, definition_row + ROW_HANDLER, handler.get());
-            put_u32(out, definition_row + ROW_MODE, 0xFF);
-            (
-                placement.modifier_instance,
-                placement.modifier_definition,
-                None,
-            )
+        let (instance_target, definition_target, gate) = match slot {
+            Slot::Stock(old) => {
+                let old_instance = layout.instance_rows.first + old * INSTANCE_ROW_SIZE;
+                let old_definition = layout.definition_rows.first + old * DEFINITION_ROW_SIZE;
+                out[instance_row..instance_row + INSTANCE_ROW_SIZE]
+                    .copy_from_slice(&payload[old_instance..old_instance + INSTANCE_ROW_SIZE]);
+                out[definition_row..definition_row + DEFINITION_ROW_SIZE].copy_from_slice(
+                    &payload[old_definition..old_definition + DEFINITION_ROW_SIZE],
+                );
+                // The copied pointer is relative to the old row, and its block moved with the
+                // instance region.
+                let gate = if i64_at(payload, old_definition + ROW_GATE)? != 0 {
+                    Some(shift.at(pointer(payload, old_definition + ROW_GATE)?))
+                } else {
+                    None
+                };
+                (
+                    pointer(payload, old_instance + INSTANCE_ROW_MODIFIER)?,
+                    shift.at(pointer(payload, old_definition + ROW_MODIFIER)?),
+                    gate,
+                )
+            }
+            Slot::Added(new) => {
+                let row = &added[new];
+                put_u32(out, instance_row, layout.owner);
+                put_u32(out, instance_row + BLOCK_CLASS, INSTANCE_ROW_CLASS);
+                put_u32(out, definition_row, layout.owner);
+                put_u32(out, definition_row + BLOCK_CLASS, DEFINITION_ROW_CLASS);
+                put_u32(out, definition_row + ROW_KEY, row.key);
+                put_u32(out, definition_row + ROW_NAME, NO_NAME);
+                put_u32(out, definition_row + ROW_FLAGS, 0xFF);
+                put_u32(out, definition_row + ROW_HANDLER, row.handler.get());
+                put_u32(out, definition_row + ROW_MODE, 0xFF);
+                (row.modifier_instance, row.modifier_definition, row.gate)
+            }
         };
         put_u64(out, instance_row + BLOCK_TWIN, definition_row as u64);
         put_u64(out, definition_row + BLOCK_TWIN, instance_row as u64);
         put_pointer(out, instance_row + INSTANCE_ROW_BANK, layout.definition)?;
         put_pointer(out, instance_row + INSTANCE_ROW_MODIFIER, instance_target)?;
         put_pointer(out, definition_row + ROW_MODIFIER, definition_target)?;
-        if let Some(reference) = attack_key {
-            put_pointer(out, definition_row + ROW_ATTACK_KEY, reference)?;
+        if let Some(gate) = gate {
+            put_pointer(out, definition_row + ROW_GATE, gate)?;
         }
         // The modifier's own pointer back at its row follows the row to the new array.
         put_pointer(out, instance_target + INSTANCE_MODIFIER_ROW, instance_row)?;
@@ -264,66 +295,121 @@ pub(super) fn write_rows(
     Ok(())
 }
 
-/// The new modifier pair: headers, twins, and the definition's body for its class.
-pub(super) fn write_modifier_pair(
-    out: &mut [u8],
-    owner: u32,
-    classes: ModifierClasses,
-    placement: &Placement,
-    modifier: Modifier,
-    parameter_index: usize,
-    attack: Option<(usize, usize)>,
-) -> Result<(), String> {
-    let (modifier_instance, modifier_definition) =
-        (placement.modifier_instance, placement.modifier_definition);
+/// The ranged melee window modifier's classes. Its definition holds the window's two floats
+/// after the header, the instance only the header and the pointer back at its row.
+pub(super) const WINDOW_CLASSES: ModifierClasses = ModifierClasses {
+    definition: WINDOW_DEFINITION_CLASS,
+    instance: WINDOW_INSTANCE_CLASS,
+    definition_size: 0x18,
+};
+
+/// A window no reading lies in, so a melee press always strikes.
+pub(super) const CLOSED_WINDOW: (f32, f32) = (f32::INFINITY, f32::NEG_INFINITY);
+
+/// The handler slot the bank's own window rows use, or `None` for a bank without them.
+pub(super) fn window_handler(rows: &[PropertyRow]) -> Result<Option<HandlerIndex>, String> {
+    let slots: BTreeSet<HandlerIndex> = rows
+        .iter()
+        .filter(|row| row.modifier_class == WINDOW_DEFINITION_CLASS)
+        .map(|row| row.handler)
+        .collect();
+    match slots.len() {
+        0 | 1 => Ok(slots.into_iter().next()),
+        _ => Err(format!(
+            "The bank hands window modifiers to several handler slots {slots:?}"
+        )),
+    }
+}
+
+/// The keys whose rows open the ranged melee window, each with the index of the key's last row,
+/// in row order. A weapon melee's closed window gated on its key after those rows is written
+/// over the opened one whenever both keys apply, whichever was applied first.
+pub(super) fn window_keys(payload: &[u8], layout: &Layout) -> Result<Vec<(u32, usize)>, String> {
+    let mut last = BTreeMap::new();
+    let mut openers = BTreeSet::new();
+    for index in 0..layout.definition_rows.count {
+        let row = layout.definition_rows.first + index * DEFINITION_ROW_SIZE;
+        let key = u32_at(payload, row + ROW_KEY)?;
+        last.insert(key, index);
+        let modifier = pointer(payload, row + ROW_MODIFIER)?;
+        if u32_at(payload, modifier + BLOCK_CLASS)? == WINDOW_DEFINITION_CLASS {
+            let low = f32::from_bits(u32_at(payload, modifier + WINDOW_LOW)?);
+            let high = f32::from_bits(u32_at(payload, modifier + WINDOW_HIGH)?);
+            if low <= high {
+                openers.insert(key);
+            }
+        }
+    }
+    let mut keys: Vec<(u32, usize)> = last
+        .into_iter()
+        .filter(|(key, _)| openers.contains(key))
+        .collect();
+    keys.sort_by_key(|&(_, index)| index);
+    Ok(keys)
+}
+
+/// A gate block naming `key`, which a row pointing at it needs applied with its own.
+pub(super) fn append_gate(out: &mut Vec<u8>, key: u32) -> usize {
+    let at = open_block(out, GATE_CLASS);
+    out.extend_from_slice(&key.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    at
+}
+
+/// An added row's modifier pair: headers, twins, and the definition's body for its class.
+pub(super) fn write_modifier_pair(out: &mut [u8], owner: u32, row: &Added) -> Result<(), String> {
+    let (modifier_instance, modifier_definition) = (row.modifier_instance, row.modifier_definition);
     put_u32(out, modifier_instance, owner);
-    put_u32(out, modifier_instance + BLOCK_CLASS, classes.instance);
+    put_u32(out, modifier_instance + BLOCK_CLASS, row.classes.instance);
     put_u64(
         out,
         modifier_instance + BLOCK_TWIN,
         modifier_definition as u64,
     );
     put_u32(out, modifier_definition, owner);
-    put_u32(out, modifier_definition + BLOCK_CLASS, classes.definition);
+    put_u32(
+        out,
+        modifier_definition + BLOCK_CLASS,
+        row.classes.definition,
+    );
     put_u64(
         out,
         modifier_definition + BLOCK_TWIN,
         modifier_instance as u64,
     );
-    match modifier {
-        Modifier::Charges(charges) => {
+    match row.body {
+        Body::Charges(charges) => {
             put_u64(out, modifier_definition + CHARGE_VALUE, charges as u64);
         }
-        Modifier::Parameter { .. } => {
-            put_u32(
-                out,
-                modifier_definition + SCRIPT_FIRST,
-                parameter_index as u32,
-            );
+        Body::Parameter(index) => {
+            put_u32(out, modifier_definition + SCRIPT_FIRST, index as u32);
             put_u32(out, modifier_definition + SCRIPT_COUNT, 1);
         }
-        Modifier::Melee { .. } => {
+        Body::Attack(first, second) => {
             // The unpowered native override's selector values, retained verbatim.
             put_u32(out, modifier_definition + 0x10, 0);
             put_u32(out, modifier_definition + 0x14, 2.0f32.to_bits());
-            let (first, second) = attack.ok_or("The melee attack was not appended")?;
             put_pointer(out, modifier_definition + 0x18, first)?;
             put_pointer(out, modifier_definition + 0x20, second)?;
         }
-        Modifier::Scalar { .. } => {
+        Body::Window((low, high)) => {
+            put_u32(out, modifier_definition + WINDOW_LOW, low.to_bits());
+            put_u32(out, modifier_definition + WINDOW_HIGH, high.to_bits());
+        }
+        Body::Own => {
             return Err("Numeric modifiers require their paired input arrays".into());
         }
     }
     Ok(())
 }
 
-/// Both blocks' descriptors name the new arrays, and the instance block's parameter table when
-/// one was appended.
+/// Both blocks' descriptors name the new arrays of `rows` rows, and the instance block's
+/// parameter table when one was appended.
 pub(super) fn write_descriptors(
     out: &mut [u8],
     layout: &Layout,
     shift: Shift,
-    count: usize,
+    rows: usize,
     instance_header: usize,
     definition_header: usize,
     parameters: Option<(usize, usize)>,
@@ -332,7 +418,7 @@ pub(super) fn write_descriptors(
     put_u64(
         out,
         layout.definition + INSTANCE_ROWS_DESCRIPTOR,
-        count as u64 + 1,
+        rows as u64,
     );
     put_pointer(
         out,
@@ -342,7 +428,7 @@ pub(super) fn write_descriptors(
     put_u64(
         out,
         moved_instance + DEFINITION_ROWS_DESCRIPTOR,
-        count as u64 + 1,
+        rows as u64,
     );
     put_pointer(
         out,
@@ -356,33 +442,40 @@ pub(super) fn write_descriptors(
     Ok(())
 }
 
-/// The result reads back as the same rows plus the new one, through the client's path.
+/// The result reads back, through the client's path, as the same rows with the new ones where
+/// they were placed.
 pub(super) fn check_read_back(
     out: &[u8],
     before: &[PropertyRow],
-    key: u32,
-    handler: HandlerIndex,
-    definition_class: u32,
-    modifier: Modifier,
+    added: &[Added],
     parameter: Option<Parameter>,
 ) -> Result<(), String> {
     let after = property_rows(out)?;
-    let expected = PropertyRow {
-        key,
-        name: NO_NAME,
-        handler,
-        modifier_class: definition_class,
-        charge: match modifier {
-            Modifier::Charges(charges) => Some(charges),
-            Modifier::Parameter { .. } | Modifier::Melee { .. } | Modifier::Scalar { .. } => None,
-        },
-        parameters: parameter.into_iter().collect(),
-    };
-    if after.len() != before.len() + 1
-        || after[..before.len()] != before[..]
-        || after[before.len()] != expected
-    {
-        return Err("The edited bank does not read back as its rows plus the new row".into());
+    let expected: Vec<PropertyRow> = arrangement(before.len(), added)
+        .into_iter()
+        .map(|slot| match slot {
+            Slot::Stock(old) => before[old].clone(),
+            Slot::Added(new) => {
+                let row = &added[new];
+                PropertyRow {
+                    key: row.key,
+                    name: NO_NAME,
+                    handler: row.handler,
+                    modifier_class: row.classes.definition,
+                    charge: match row.body {
+                        Body::Charges(charges) => Some(charges),
+                        _ => None,
+                    },
+                    parameters: match row.body {
+                        Body::Parameter(_) => parameter.into_iter().collect(),
+                        _ => Vec::new(),
+                    },
+                }
+            }
+        })
+        .collect();
+    if after != expected {
+        return Err("The edited bank does not read back as its rows with the new ones".into());
     }
     Ok(())
 }
@@ -394,10 +487,39 @@ const ATTACK_RECORD_MARKER: u32 = 0x8080_4464;
 /// The attack records an attack modifier names, at +0x18 and, on most Warlock rows, +0x20.
 const ATTACK_RECORDS: [usize; 2] = [0x18, 0x20];
 /// The attack record's selection priority. Attack selection (`D17850`) keeps the candidate
-/// whose record holds the larger float here and, on a tie, the key applied first. Every stock
+/// whose record holds the larger float here and, on a tie, the one walked first. Every stock
 /// attack record leaves it at zero, so a subclass melee key applied before the weapon's own won
 /// every tie and the class attack played.
 const ATTACK_PRIORITY: usize = 4;
+
+/// The priorities of the attack records a bank row's modifier names, or `None` for a row
+/// whose modifier is not an attack.
+fn attack_priorities(payload: &[u8], index: usize, row: usize) -> Result<Option<Vec<f32>>, String> {
+    let modifier = pointer(payload, row + ROW_MODIFIER)?;
+    if u32_at(payload, modifier + BLOCK_CLASS)? != ATTACK_DEFINITION_CLASS {
+        return Ok(None);
+    }
+    let mut priorities = Vec::new();
+    for field in ATTACK_RECORDS {
+        if i64_at(payload, modifier + field)? == 0 {
+            continue;
+        }
+        let record = pointer(payload, modifier + field)?;
+        if record < 4 || u32_at(payload, record - 4)? != ATTACK_RECORD_MARKER {
+            return Err(format!(
+                "Bank row {index}'s attack record is not behind its marker"
+            ));
+        }
+        let priority = f32::from_bits(u32_at(payload, record + ATTACK_PRIORITY)?);
+        if !priority.is_finite() {
+            return Err(format!(
+                "Bank row {index}'s attack priority is not a number"
+            ));
+        }
+        priorities.push(priority);
+    }
+    Ok(Some(priorities))
+}
 
 /// One above the highest priority of any attack the bank already holds, so a weapon's own
 /// melee outranks the class and subclass attacks applied with it.
@@ -405,30 +527,46 @@ pub(super) fn weapon_attack_priority(payload: &[u8], layout: &Layout) -> Result<
     let mut highest = 0.0f32;
     for index in 0..layout.definition_rows.count {
         let row = layout.definition_rows.first + index * DEFINITION_ROW_SIZE;
-        let modifier = pointer(payload, row + ROW_MODIFIER)?;
-        if u32_at(payload, modifier + BLOCK_CLASS)? != ATTACK_DEFINITION_CLASS {
-            continue;
-        }
-        for field in ATTACK_RECORDS {
-            if i64_at(payload, modifier + field)? == 0 {
-                continue;
-            }
-            let record = pointer(payload, modifier + field)?;
-            if record < 4 || u32_at(payload, record - 4)? != ATTACK_RECORD_MARKER {
-                return Err(format!(
-                    "Bank row {index}'s attack record is not behind its marker"
-                ));
-            }
-            let priority = f32::from_bits(u32_at(payload, record + ATTACK_PRIORITY)?);
-            if !priority.is_finite() {
-                return Err(format!(
-                    "Bank row {index}'s attack priority is not a number"
-                ));
-            }
+        for priority in attack_priorities(payload, index, row)?.unwrap_or_default() {
             highest = highest.max(priority);
         }
     }
     Ok(highest + 1.0)
+}
+
+/// The keys of the bank's own attacks, each with the index of its first row, in row order:
+/// the keys of attack rows whose records all rank zero, as every stock attack does, unlike the
+/// weapon attacks ranked above them.
+///
+/// Attack selection reads three lists of attack rows on the melee (ability +0xCB0, +0xCBC and
+/// +0xCC8), each holding at most two rows. `105C580` adds a row to every list whose record its
+/// modifier names while the list has room, walking the applied keys in the order they were
+/// applied and each key's rows in bank order. A subclass key applied before a weapon's, with
+/// two attack rows of its own, so filled the always walked list that the weapon's attack never
+/// reached it on the ground. A weapon attack's copy under each of these keys, gated on the
+/// weapon's key and ahead of the key's rows, reaches the lists first.
+pub(super) fn own_attack_keys(
+    payload: &[u8],
+    layout: &Layout,
+) -> Result<Vec<(u32, usize)>, String> {
+    let mut first = BTreeMap::new();
+    let mut own = BTreeSet::new();
+    for index in 0..layout.definition_rows.count {
+        let row = layout.definition_rows.first + index * DEFINITION_ROW_SIZE;
+        let key = u32_at(payload, row + ROW_KEY)?;
+        first.entry(key).or_insert(index);
+        if let Some(priorities) = attack_priorities(payload, index, row)?
+            && priorities.iter().all(|priority| *priority == 0.0)
+        {
+            own.insert(key);
+        }
+    }
+    let mut keys: Vec<(u32, usize)> = first
+        .into_iter()
+        .filter(|(key, _)| own.contains(key))
+        .collect();
+    keys.sort_by_key(|&(_, index)| index);
+    Ok(keys)
 }
 
 pub(super) fn append_melee(

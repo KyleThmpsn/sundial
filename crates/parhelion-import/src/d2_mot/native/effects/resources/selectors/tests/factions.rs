@@ -104,7 +104,7 @@ fn faction_arrays_match_native_package_fragments() -> Result<()> {
             "source_element":"80809446", "native_element":"80806829",
             "source_owner":"80C30CBA", "native_owner":"80BBCAB7",
             "native_fragment_exact":true, "refusals":refusals,
-            "sha256":format!("{:x}",Sha256::digest(&converted.payload.0)),
+            "sha256":hex::encode(Sha256::digest(&converted.payload.0)),
             "group_aliases":converted.group_aliases,
             "scope":"Actual source and native package predicate fragment with preserved numeric value and checked narrowing",
             "world_input_equivalence_verified":false, "installable":false, "gameplay_verified":false

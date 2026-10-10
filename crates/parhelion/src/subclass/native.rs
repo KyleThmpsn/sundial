@@ -66,6 +66,37 @@ pub(crate) fn set_class(definition: &mut [u8], class: u8) -> AuthoringResult<()>
         .map_err(invalid)
 }
 
+/// Gives a subclass's item strings `damage`, whose icon it shows beside its name. Its strings
+/// hold the type in the resource their stat group pointer names, as the native damage enum.
+pub(crate) fn set_damage_type(
+    strings: &mut [u8],
+    damage: crate::recipe::RecipeDamageType,
+) -> AuthoringResult<()> {
+    use crate::recipe::RecipeDamageType;
+    use sundial::package_authoring::ability_damage::{ARC, KINETIC, SOLAR, VOID};
+    use sundial::package_authoring::investment_schema::{
+        ITEM_STRING_DAMAGE_TYPE_OFFSET, ITEM_STRING_STAT_GROUP_POINTER_OFFSET,
+        ITEM_STRING_STAT_GROUP_RESOURCE_CLASS,
+    };
+    let resource = relative_target(strings, ITEM_STRING_STAT_GROUP_POINTER_OFFSET)?;
+    if resource < 4 || read_u32(strings, resource - 4)? != ITEM_STRING_STAT_GROUP_RESOURCE_CLASS {
+        return Err(invalid("The subclass's strings hold no damage type"));
+    }
+    let field = resource + ITEM_STRING_DAMAGE_TYPE_OFFSET;
+    if read_u32(strings, field)? > u32::from(VOID) {
+        return Err(invalid(
+            "The subclass's strings hold an unknown damage type",
+        ));
+    }
+    let code = match damage {
+        RecipeDamageType::Kinetic => KINETIC,
+        RecipeDamageType::Solar => SOLAR,
+        RecipeDamageType::Arc => ARC,
+        RecipeDamageType::Void => VOID,
+    };
+    write_u32(strings, field, u32::from(code))
+}
+
 const TALENT_GRID_HOLDER_CLASS: u32 = 0x8080_77B7;
 pub(super) const SOCKET_ENTRY_LIST_TABLE_CLASS: u32 = 0x8080_7A78;
 pub(super) const SOCKET_ENTRY_LIST_ROW_CLASS: u32 = 0x8080_7A7E;

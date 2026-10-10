@@ -384,13 +384,9 @@ pub(super) fn separate(
             )))
             .collect::<BTreeMap<_, _>>();
         let mut selected = draws.clone();
-        for (stage, records) in selected.records.iter_mut().enumerate() {
-            records.retain(|(_, symbol)| models.contains(&draws.sources[symbol]));
-            put(
-                &mut selected.header,
-                0x108 + stage * 2,
-                &(if records.is_empty() { -1i16 } else { 139i16 }).to_le_bytes(),
-            )?;
+        for stage in 0..23 {
+            selected.records[stage].retain(|(_, symbol)| models.contains(&draws.sources[symbol]));
+            selected.layout(stage)?;
         }
         let (bytes, patches, count) = selected.model()?;
         ensure!(count > 0, "independent source attachment has no draws");
@@ -409,13 +405,9 @@ pub(super) fn separate(
         );
     }
     let mut main = draws.clone();
-    for (stage, records) in main.records.iter_mut().enumerate() {
-        records.retain(|(_, symbol)| !assigned.contains(&draws.sources[symbol]));
-        put(
-            &mut main.header,
-            0x108 + stage * 2,
-            &(if records.is_empty() { -1i16 } else { 139i16 }).to_le_bytes(),
-        )?;
+    for stage in 0..23 {
+        main.records[stage].retain(|(_, symbol)| !assigned.contains(&draws.sources[symbol]));
+        main.layout(stage)?;
     }
     let (bytes, patches, count) = main.model()?;
     ensure!(

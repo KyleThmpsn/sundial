@@ -18,20 +18,15 @@ struct Job {
     worker: JoinHandle<()>,
 }
 
+/// The inherited ammunition HUD icon, read on a worker. Switching appearances never waits for an
+/// earlier read: it finishes on its own, and an install waits for it through its [`PackageRead`].
+///
+/// [`PackageRead`]: sundial::ui::model_preview::PackageRead
 #[derive(Default)]
 pub(super) struct Preview {
     source: Option<Source>,
     result: Option<Result<Option<egui::TextureHandle>, String>>,
     job: Option<Job>,
-}
-
-impl Drop for Preview {
-    fn drop(&mut self) {
-        // Installation must not outlive a package reader from this preview.
-        if let Some(job) = self.job.take() {
-            let _ = job.worker.join();
-        }
-    }
 }
 
 impl Preview {
@@ -74,27 +69,30 @@ impl Preview {
                 }));
             }
         }
-        if self.job.is_none() && self.result.is_none() {
-            if let Some(source) = self.source.clone() {
-                let (sender, receiver) = mpsc::channel();
-                let worker_source = source.clone();
-                let ctx = ctx.clone();
-                let worker = thread::spawn(move || {
-                    let result = sundial::package_authoring::open_shadowkeep_package_manager(
-                        &worker_source.packages,
-                    )
-                    .and_then(|manager| {
-                        super::super::preview::load(&manager, worker_source.pattern_index)
-                    });
-                    let _ = sender.send(result);
-                    ctx.request_repaint();
+        if self.job.is_none()
+            && self.result.is_none()
+            && let Some(source) = self.source.clone()
+        {
+            let (sender, receiver) = mpsc::channel();
+            let worker_source = source.clone();
+            let ctx = ctx.clone();
+            let read = sundial::ui::model_preview::PackageRead::start();
+            let worker = thread::spawn(move || {
+                let _read = read;
+                let result = sundial::package_authoring::open_shadowkeep_package_manager(
+                    &worker_source.packages,
+                )
+                .and_then(|manager| {
+                    super::super::preview::load(&manager, worker_source.pattern_index)
                 });
-                self.job = Some(Job {
-                    source,
-                    receiver,
-                    worker,
-                });
-            }
+                let _ = sender.send(result);
+                ctx.request_repaint();
+            });
+            self.job = Some(Job {
+                source,
+                receiver,
+                worker,
+            });
         }
         if self.job.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));

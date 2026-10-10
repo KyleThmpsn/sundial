@@ -1,20 +1,51 @@
 //! Package-to-frame opaque RGB consumer acceptance, authored before implementation.
 use super::*;
+mod ambient;
 
 fn constant(row: u32, swizzle: u32) -> [u32; 3] {
     [0x0020_8006 | swizzle << 4, 0, row]
 }
 
 pub(crate) fn case(invalid: bool) -> Result<Model, String> {
-    build(invalid, None, None)
+    build(invalid, None, None, None, None)
 }
 
 pub(crate) fn gain_case(painted: bool, wrong_source: bool) -> Result<Model, String> {
-    build(false, Some((painted, wrong_source)), None)
+    build(false, Some((painted, wrong_source)), None, None, None)
 }
 
 pub(super) fn paint_case(alpha: u8, malformed: u8) -> Result<Model, String> {
-    build(false, Some((alpha >= 40, false)), Some((alpha, malformed)))
+    build(
+        false,
+        Some((alpha >= 40, false)),
+        Some((alpha, malformed)),
+        None,
+        None,
+    )
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+pub(crate) fn intensity_case(power: f32, visibility: f32, malformed: bool) -> Model {
+    build(
+        false,
+        None,
+        None,
+        Some((power, visibility, malformed)),
+        None,
+    )
+    .unwrap()
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+pub(crate) fn ambient_case(power: f32, visibility: f32, w: f32, exponent: f32, mode: u8) -> Model {
+    build(
+        false,
+        None,
+        None,
+        Some((power, visibility, false)),
+        Some((w, exponent, mode)),
+    )
+    .unwrap()
 }
 
 fn prefix(gain: Option<(bool, bool)>) -> Vec<u32> {
@@ -119,10 +150,55 @@ fn constants(material: &mut Vec<u8>, gain: bool, paint: bool) {
     }
 }
 
+fn intensity_output(code: &mut Vec<u32>, intensity: Option<(f32, f32, bool)>) {
+    let Some((_, visibility, malformed)) = intensity else {
+        return;
+    };
+    code.extend(instruction(
+        0,
+        &[&register(0, 10, 2), &constant(2, 0), &literal(1.0 / 128.0)],
+    ));
+    code.extend(instruction(
+        47,
+        &[&register(0, 10, 2), &source(0, 10, 0x55)],
+    ));
+    code.extend(instruction(
+        50 | 1 << 13,
+        &[
+            &register(0, 10, 2),
+            &source(0, 10, 0x55),
+            &literal(1.0 / if malformed { 12.0 } else { 13.0 }),
+            &literal(7.0 / 13.0),
+        ],
+    ));
+    code.extend(instruction(
+        54 | 1 << 13,
+        &[&register(0, 10, 1), &literal(visibility)],
+    ));
+    code.extend(instruction(
+        0,
+        &[&register(0, 10, 2), &source(0, 10, 0x55), &source(0, 10, 0)],
+    ));
+    code.extend(instruction(
+        56,
+        &[&register(2, 2, 2), &source(0, 10, 0x55), &literal(0.5)],
+    ));
+}
+
+fn intensity_constants(material: &mut [u8], intensity: Option<(f32, f32, bool)>) {
+    if let Some((power, _, _)) = intensity {
+        let pointer = i64::from_le_bytes(material[0x320..0x328].try_into().unwrap());
+        let start = (0x320_i64 + pointer) as usize + 16;
+        floats(material, start + 32, &[power, 0.0, 0.0, 0.0]);
+    }
+}
+
 fn build(
     invalid: bool,
     gain: Option<(bool, bool)>,
     paint: Option<(u8, u8)>,
+    intensity: Option<(f32, f32, bool)>,
+    ambient: Option<(f32, f32, u8)>,
 ) -> Result<Model, String> {
     let mut package = Package::default();
     let mut code = paint.map_or_else(
@@ -224,6 +300,8 @@ fn build(
     code.extend(instruction(54, &[&register(2, 2, 15), &literal(0.0)]));
     super::metal::output(&mut code, paint.map(|(_, mode)| mode));
     super::normals::output(&mut code, paint.map(|(_, mode)| mode));
+    intensity_output(&mut code, intensity);
+    ambient::output(&mut code, ambient);
     code.extend(instruction(62, &[]));
     let shader = shader_stage(
         &mut package,
@@ -240,6 +318,8 @@ fn build(
     let mut material = vec![0; 0x3A0];
     put(&mut material, 0x2C8, &shader.to_le_bytes());
     constants(&mut material, gain.is_some(), paint.is_some());
+    ambient::constants(&mut material, ambient);
+    intensity_constants(&mut material, intensity);
     super::normals::material(&mut material, paint.map(|(_, mode)| mode));
     // Opaque color samples must retain the explicit image's linear interpretation.
     let mut bindings = Vec::new();
@@ -271,6 +351,7 @@ fn build(
     put(&mut row, 0, &sampler.to_le_bytes());
     array(&mut material, 0x308, 0x8080_73F3, &row, 16);
     let material = package.add(0x8080_71E8, material);
+    ambient::channels(&mut package, ambient);
     let directory = tempfile::tempdir().unwrap();
     package.write(directory.path());
     let manager = PackageManager::new(
@@ -344,6 +425,17 @@ fn build(
     if let Some((alpha, _)) = paint {
         super::paint::finish(&mut model, alpha);
     }
+    if intensity.is_some() {
+        let index = model.textures.len();
+        model.textures.push(crate::model_preview::texture::Texture {
+            tag: 0x1234,
+            size: [1, 1],
+            rgba: vec![0, 128, 0, 0],
+            linear: None,
+            mips: None,
+        });
+        model.triangle_gearstacks = vec![Some(index); 2];
+    }
     Ok(model)
 }
 
@@ -355,7 +447,8 @@ fn opaque_native_rgb_keeps_color_depth_and_exported_geometry() {
         "A sampled temporary derivative must stay unavailable"
     );
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_deref()
         .map(Path::new)
@@ -369,10 +462,12 @@ fn opaque_native_rgb_keeps_color_depth_and_exported_geometry() {
             ..Default::default()
         },
         render::Scene {
+            filmic: false,
+            bloom: false,
             key: 0.0,
             fill: 1.0,
             background: [0; 3],
-            ..Default::default()
+            ..render::Scene::unit_exposure()
         },
         [320, 240],
         0.0,
@@ -393,8 +488,9 @@ fn opaque_native_rgb_keeps_color_depth_and_exported_geometry() {
         "The rear red draw leaked through: {actual:?}"
     );
     for (lane, value) in [(1, 64.0 / 255.0), (2, 0.5)] {
+        // Head-on dielectric reflection leaves 96 percent of the fill for diffuse color.
         assert!(
-            (linear[lane] - linear[0] - value).abs() < 0.02,
+            (linear[lane] - linear[0] - 0.96 * value).abs() < 0.02,
             "{actual:?} lost the independent additive color {value}"
         );
     }

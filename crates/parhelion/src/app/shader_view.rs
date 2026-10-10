@@ -718,10 +718,10 @@ impl PackageAuthoringApp {
                 },
                 "Open Imported Assets",
             );
-            if action.clicked() {
-                if let Err(error) = sundial::package_authoring::open_directory(&graph.directory) {
-                    self.log.push(LogEntry::error(error));
-                }
+            if action.clicked()
+                && let Err(error) = sundial::package_authoring::open_directory(&graph.directory)
+            {
+                self.log.push(LogEntry::error(error));
             }
             return;
         }
@@ -881,9 +881,10 @@ impl PackageAuthoringApp {
             appearance
         };
         let width = ui.available_width();
+        let preview = egui::Id::new("shader-preview");
         still::show_sources(
             ui,
-            egui::Id::new("shader-preview"),
+            preview,
             &self.packages,
             appearance,
             &surface_overrides(&self.recipe.overrides.dye_edits, textures, gear),
@@ -898,8 +899,8 @@ impl PackageAuthoringApp {
                     None
                 }
             },
-        )
-        .on_hover_text("Drag to rotate · Double-click to reset");
+        );
+        still::zoom_controls(ui, preview);
     }
 
     /// The inventory icon, and whether it is drawn from the dyes.
@@ -922,16 +923,17 @@ impl PackageAuthoringApp {
     fn draw_shader_definition(&mut self, ui: &mut egui::Ui, inherited: WeaponRarity) {
         self.draw_item_text(ui, Some("Shader"));
         ui.add_space(4.0);
-        let column_count = core_profile_column_count(ui.available_width());
         let branding = self.presentation_editor.branding();
-        ui.columns(column_count, |columns| {
-            draw_gear_rarity(
-                &mut columns[0],
-                &mut self.recipe.overrides,
-                inherited,
-                ItemKind::Shader,
-                branding,
-            );
+        style::tiles(ui, |ui, width| {
+            style::tile_column(ui, (width, "shader-rarity"), |ui| {
+                draw_gear_rarity(
+                    ui,
+                    &mut self.recipe.overrides,
+                    inherited,
+                    ItemKind::Shader,
+                    branding,
+                );
+            });
         });
     }
 
@@ -1048,15 +1050,12 @@ impl PackageAuthoringApp {
             || !overrides.dye_edits.is_empty()
             || !overrides.dye_texture_edits.is_empty();
         ui.horizontal_wrapped(|ui| {
-            ui.heading("Dyes");
-            draw_authoring_info_icon(
-                ui,
-                "Six surfaces for each gear type. All Gear sets them all.",
-            );
+            style::heading(ui, "Dyes", customized)
+                .on_hover_text("Six surfaces for each gear type. All Gear sets them all");
             ui.menu_button("Copy from Shader…", |ui| {
                 if let Some(hash) = shader_list(ui, shaders, &mut self.gear_plug_query, None) {
                     *take = Some((hash, None));
-                    ui.close_menu();
+                    ui.close();
                 }
             });
             if ui
@@ -1366,13 +1365,13 @@ impl PackageAuthoringApp {
             ui.menu_button("Copy from Shader…", |ui| {
                 if let Some(hash) = shader_list(ui, shaders, &mut self.gear_plug_query, None) {
                     actions.push(SlotAction::Copy(channel, surface, hash));
-                    ui.close_menu();
+                    ui.close();
                 }
             });
             ui.menu_button(format!("Use {channel_name} Dye from Shader…"), |ui| {
                 if let Some(hash) = shader_list(ui, shaders, &mut self.gear_plug_query, None) {
                     actions.push(SlotAction::UseDye(channel, hash));
-                    ui.close_menu();
+                    ui.close();
                 }
             });
             if ui
@@ -1380,7 +1379,7 @@ impl PackageAuthoringApp {
                 .clicked()
             {
                 actions.push(SlotAction::Reset(channel, surface));
-                ui.close_menu();
+                ui.close();
             }
         });
     }
@@ -1521,7 +1520,7 @@ impl PackageAuthoringApp {
                 }
                 if let Some(hash) = clicked {
                     actions.push(SlotAction::UseTextures(channel, hash));
-                    ui.close_menu();
+                    ui.close();
                 }
             });
             if menu.inner.is_none() {

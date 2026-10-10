@@ -153,7 +153,7 @@ pub(super) fn draw_key_bindings(
     let mut changed = CommandBatch::default();
     ui.horizontal(|ui| {
         ui.heading("Key Bindings");
-        crate::ui_help::info(
+        crate::ui::help::info(
             ui,
             if numeric || editable {
                 binding_help(show_presence_gated_preference(
@@ -296,17 +296,14 @@ pub(super) fn binding_picker(
                     binding_modifier(modifier)
                 }),
         };
-        ui.memory_mut(|memory| memory.toggle_popup(popup_id));
+        egui::Popup::toggle_id(ui, popup_id);
     }
 
     let picker = &mut state.picker;
     let mut selection = None::<Option<String>>;
-    egui::popup::popup_below_widget(
-        ui,
-        popup_id,
-        &button,
-        egui::PopupCloseBehavior::CloseOnClickOutside,
-        |ui| {
+    crate::ui::dropdown(&button, popup_id)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
             ui.set_min_width(400.0);
             ui.strong("Modifier");
             ui.horizontal_wrapped(|ui| {
@@ -366,8 +363,7 @@ pub(super) fn binding_picker(
                         ui.weak("No matching keys found");
                     }
                 });
-        },
-    );
+        });
 
     let selection = selection?;
     let replacement = match selection.as_deref() {
@@ -381,7 +377,7 @@ pub(super) fn binding_picker(
         AccountSettingValue::InputCode(code) => original.as_u64() == Some(u64::from(*code)),
         _ => false,
     };
-    ui.memory_mut(egui::Memory::close_popup);
+    egui::Popup::close_all(ui);
     (!unchanged).then(|| AccountSettingsCommand::Set {
         key: AccountSettingKey::key_binding(
             action,

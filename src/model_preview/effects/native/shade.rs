@@ -87,21 +87,23 @@ impl Context<'_, '_> {
 }
 
 impl evaluate::Context for Context<'_, '_> {
-    fn size(&self, resource: usize) -> [u32; 4] {
-        let Some(binding) = self.native.bindings.iter().find(|b| b.slot == resource) else {
+    fn size(&self, resource: usize, mip: u32) -> [u32; 4] {
+        let Some(binding) = self
+            .native
+            .bindings
+            .iter()
+            .find(|b| !b.vertex && b.slot == resource)
+        else {
             return [0; 4];
         };
         if matches!(binding.role, Role::Scene) {
             return if binding.slot == 15 { [0; 4] } else { [1; 4] };
         }
-        self.texture(binding.role).map_or([0; 4], |t| {
-            if let Some(cube) = binding.cube {
-                [cube.edge as u32, cube.edge as u32, 0, cube.levels as u32]
-            } else {
-                [t.size[0] as u32, t.size[1] as u32, 0, 1]
-            }
+        self.texture(binding.role).map_or([0; 4], |texture| {
+            image::Image { texture, binding }.size(mip)
         })
     }
+
     fn input(&self, register: usize) -> [u32; 4] {
         if register == 15
             && let Some(t) = self.native.opaque_uv
@@ -147,10 +149,15 @@ impl evaluate::Context for Context<'_, '_> {
         resource: usize,
         sampler: usize,
         uv: [f32; 4],
-        lod: Option<f32>,
+        sampling: evaluate::Sampling,
         offset: [i32; 3],
     ) -> [u32; 4] {
-        let Some(binding) = self.native.bindings.iter().find(|b| b.slot == resource) else {
+        let Some(binding) = self
+            .native
+            .bindings
+            .iter()
+            .find(|b| !b.vertex && b.slot == resource)
+        else {
             return [0; 4];
         };
         let Some(texture) = self.texture(binding.role) else {
@@ -161,33 +168,23 @@ impl evaluate::Context for Context<'_, '_> {
                 _ => [0; 4],
             };
         };
-        let value = if let Some(cube) = binding.cube {
-            cube.sample(
-                texture,
-                [uv[0], uv[1], uv[2]],
-                lod.unwrap_or(0.0),
-                binding.color,
-            )
-        } else {
-            let Some(sampler) = sampler
+        image::Image { texture, binding }.sample(
+            uv,
+            sampler
                 .checked_sub(1)
-                .and_then(|i| self.material.samplers.get(i))
-            else {
-                return [0; 4];
-            };
-            texture.sample_material(
-                [
-                    uv[0] + offset[0] as f32 / texture.size[0] as f32,
-                    uv[1] + offset[1] as f32 / texture.size[1] as f32,
-                ],
-                sampler,
-                binding.color,
-            )
-        };
-        value.map(f32::to_bits)
+                .and_then(|i| self.material.samplers.get(i)),
+            sampling,
+            offset,
+        )
     }
+
     fn load(&self, resource: usize, position: [i32; 4], offset: [i32; 3]) -> [u32; 4] {
-        let Some(binding) = self.native.bindings.iter().find(|b| b.slot == resource) else {
+        let Some(binding) = self
+            .native
+            .bindings
+            .iter()
+            .find(|b| !b.vertex && b.slot == resource)
+        else {
             return [0; 4];
         };
         let depth = self.pixel.depth.at(
@@ -200,15 +197,18 @@ impl evaluate::Context for Context<'_, '_> {
                 let gap = ((depth - self.pixel.screen[2]) / self.pixel.depth.scale).clamp(0.0, 1e6);
                 [(self.pixel.distance + gap).max(1e-6).recip().to_bits(); 4]
             }
-            _ => [0; 4],
+            _ => self.texture(binding.role).map_or([0; 4], |texture| {
+                image::Image { texture, binding }.load(position, offset)
+            }),
         }
     }
+
     fn lod(&self, resource: usize, coordinates: [f32; 4]) -> [f32; 4] {
         let Some(cube) = self
             .native
             .bindings
             .iter()
-            .find(|b| b.slot == resource)
+            .find(|b| !b.vertex && b.slot == resource)
             .and_then(|b| b.cube)
         else {
             return [0.0; 4];
@@ -275,34 +275,62 @@ pub(in crate::model_preview) fn sample(
     gear: &shader::Bindings<'_>,
     pixel: Pixel<'_>,
 ) -> [f32; 4] {
+    sample_with_ambient(model, material, constants, gear, pixel).0
+}
+
+pub(in crate::model_preview) fn sample_with_ambient(
+    model: &Model,
+    material: &Material,
+    constants: &Frame,
+    gear: &shader::Bindings<'_>,
+    pixel: Pixel<'_>,
+) -> ([f32; 4], Option<f32>) {
     let Some(native) = &material.native else {
-        return [0.0; 4];
+        return ([0.0; 4], None);
     };
     let exposure = if native.opaque() { 1.0 } else { pixel.exposure };
-    let gear = gear.with_native(native, constants);
-    let context = Context {
-        model,
-        material,
-        native,
-        constants,
-        gear: &gear,
-        pixel,
-    };
-    let Some(outputs) = native.pixel.evaluate(&context) else {
-        return [0.0; 4];
+    let Some(outputs) = outputs(model, material, constants, gear, pixel) else {
+        return ([0.0; 4], None);
     };
     let mut output = outputs[0];
     for value in &mut output[..3] {
         *value = (*value * exposure).max(0.0);
     }
     output[3] = if native.opaque() {
-        1.0
+        if native.intensity {
+            super::decode_intensity(outputs[2][1])
+        } else {
+            1.0
+        }
     } else {
         output[3].clamp(0.0, 1.0)
     };
     if output.iter().any(|v| !v.is_finite()) {
-        [0.0; 4]
+        ([0.0; 4], None)
     } else {
-        output
+        let ambient = native
+            .ambient_power
+            .filter(|_| outputs[2][1].is_finite() && outputs[2][3].is_finite())
+            .map(|power| super::ambient_visibility(outputs[2][1], outputs[2][3], power));
+        (output, ambient)
     }
+}
+
+pub(super) fn outputs(
+    model: &Model,
+    material: &Material,
+    constants: &Frame,
+    gear: &shader::Bindings<'_>,
+    pixel: Pixel<'_>,
+) -> Option<[[f32; 4]; 16]> {
+    let native = material.native.as_ref()?;
+    let gear = gear.with_native(native, constants);
+    native.pixel.evaluate(&Context {
+        model,
+        material,
+        native,
+        constants,
+        gear: &gear,
+        pixel,
+    })
 }

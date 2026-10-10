@@ -6,11 +6,11 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+use super::layout;
 use super::modifiers::{
     self, AbilityModifier, MOST_CHARGES, ParameterValue, RECHARGE_RANGE, StockModifier,
 };
 use super::palette::{EffectGrade, PaletteEdit, TintEdit};
-use super::{Place, layout};
 use crate::perk::{Icon, PerkRecipe};
 use sundial::package_authoring::runtime::WeaponRuntimeValueOverride;
 
@@ -30,6 +30,12 @@ pub struct EntryEdits {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<EntryIcon>,
+    /// The tree node and existing HUD tile's sRGB color. None inherits the subclass theme.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<[u8; 3]>,
+    /// Presentation of descendant abilities with their own HUD controller, scoped to this entry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attached_abilities: Vec<AttachedAbility>,
     /// Sandbox perks it grants beyond its source's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub added_perks: Vec<u16>,
@@ -81,6 +87,10 @@ pub struct EntryEdits {
     /// Values of property rows of the ability's bank, changed in a private copy of the bank.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bank_values: Vec<BankValue>,
+    /// The damage type every damage profile its graphs name deals, on private copies of the
+    /// profiles. `None` keeps each profile's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damage_type: Option<crate::recipe::RecipeDamageType>,
 }
 
 /// A traced lane of a property row of the ability's stock bank, by the row's key and place among
@@ -113,6 +123,23 @@ pub struct SpawnSwap {
     pub replaced: u32,
     #[serde(with = "super::hex_hash")]
     pub replacement: u32,
+    /// The damage type the replacement's copy deals through every damage profile its graphs
+    /// name. `None` gives it the ability's damage type, or leaves its profiles as they are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damage_type: Option<crate::recipe::RecipeDamageType>,
+}
+
+/// A recipe damage type as the client encodes it in a damage profile.
+#[must_use]
+pub fn damage_mode(damage: crate::recipe::RecipeDamageType) -> u8 {
+    use crate::recipe::RecipeDamageType;
+    use sundial::package_authoring::ability_damage::{ARC, KINETIC, SOLAR, VOID};
+    match damage {
+        RecipeDamageType::Kinetic => KINETIC,
+        RecipeDamageType::Arc => ARC,
+        RecipeDamageType::Solar => SOLAR,
+        RecipeDamageType::Void => VOID,
+    }
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -139,7 +166,56 @@ pub enum EntryIcon {
     Artwork { artwork: Icon },
 }
 
+/// A descendant ability's HUD presentation. Its graph identity survives recipe reloads and
+/// allocation changes. Missing values preserve the original icon and inherited HUD color.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AttachedAbility {
+    #[serde(with = "super::hex_hash")]
+    pub graph: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<EntryIcon>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<[u8; 3]>,
+}
+
+impl EntryIcon {
+    fn validate(&self, context: &str) -> Result<(), String> {
+        match self {
+            Self::Ability { entry, .. } if usize::from(*entry) >= layout::ENTRY_COUNT => Err(
+                format!("{context} takes the icon of entry {entry}, which no subclass has"),
+            ),
+            Self::Artwork { artwork } => artwork
+                .validate()
+                .map_err(|error| format!("{context}: {error}")),
+            _ => Ok(()),
+        }
+    }
+}
+
 impl EntryEdits {
+    /// The override for an attached graph, or its inherited presentation.
+    #[must_use]
+    pub fn attached(&self, graph: u32) -> AttachedAbility {
+        self.attached_abilities
+            .iter()
+            .find(|edit| edit.graph == graph)
+            .cloned()
+            .unwrap_or(AttachedAbility {
+                graph,
+                icon: None,
+                color: None,
+            })
+    }
+
+    /// Set one attached graph's presentation. Restoring both fields removes the saved override.
+    pub fn set_attached(&mut self, edit: AttachedAbility) {
+        self.attached_abilities
+            .retain(|each| each.graph != edit.graph);
+        if edit.icon.is_some() || edit.color.is_some() {
+            self.attached_abilities.push(edit);
+            self.attached_abilities.sort_by_key(|each| each.graph);
+        }
+    }
     /// Whether it leaves its source as it is.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -196,13 +272,53 @@ impl EntryEdits {
         }
     }
 
-    /// Whether it leaves the ability's entity as it is: no value, color or projectile changes.
+    /// Whether it leaves the ability's entity as it is: no value, color, projectile or damage
+    /// type changes.
     #[must_use]
     pub fn keeps_entity(&self) -> bool {
         self.ability_values.is_empty()
             && !self.recolors()
             && self.spawn_swaps.is_empty()
             && self.bank_values.is_empty()
+            && self.damage_type.is_none()
+            && self.attached_abilities.is_empty()
+    }
+
+    /// The damage type it sets, as the client encodes it in a damage profile.
+    #[must_use]
+    pub fn damage_mode(&self) -> Option<u8> {
+        self.damage_type.map(damage_mode)
+    }
+
+    /// The damage type the projectile spawned in place of `replaced` where `graph` names it
+    /// deals, when a swap there names one.
+    #[must_use]
+    pub fn swap_damage(
+        &self,
+        graph: u32,
+        replaced: u32,
+    ) -> Option<crate::recipe::RecipeDamageType> {
+        self.spawn_swaps
+            .iter()
+            .find(|swap| swap.graph == graph && swap.replaced == replaced)
+            .and_then(|swap| swap.damage_type)
+    }
+
+    /// Gives the projectile spawned in place of `replaced` where `graph` names it the damage type
+    /// `damage`, or with `None` the ability's. Nothing without a swap there.
+    pub fn set_swap_damage(
+        &mut self,
+        graph: u32,
+        replaced: u32,
+        damage: Option<crate::recipe::RecipeDamageType>,
+    ) {
+        if let Some(swap) = self
+            .spawn_swaps
+            .iter_mut()
+            .find(|swap| swap.graph == graph && swap.replaced == replaced)
+        {
+            swap.damage_type = damage;
+        }
     }
 
     /// The bits it gives a bank row's lane, if any.
@@ -255,8 +371,10 @@ impl EntryEdits {
     }
 
     /// Spawns `replacement` in place of `replaced` where `graph` names it, or with `None` the
-    /// stock one again. Values of the replaced graph go with it, since nothing spawns it now.
+    /// stock one again. Values of the replaced graph go with it, since nothing spawns it now,
+    /// and a damage type set on the place stays with the projectile now spawned there.
     pub fn set_swap(&mut self, graph: u32, replaced: u32, replacement: Option<u32>) {
+        let damage_type = self.swap_damage(graph, replaced);
         self.spawn_swaps
             .retain(|swap| !(swap.graph == graph && swap.replaced == replaced));
         if let Some(replacement) = replacement.filter(|replacement| *replacement != replaced) {
@@ -266,6 +384,7 @@ impl EntryEdits {
                 graph,
                 replaced,
                 replacement,
+                damage_type,
             });
         }
     }
@@ -350,7 +469,7 @@ impl EntryEdits {
             .unwrap_or(PaletteEdit::new(palette))
     }
 
-    pub(super) fn validate(&self, context: &str, place: Place) -> Result<(), String> {
+    pub(super) fn validate(&self, context: &str, source_entry: u8) -> Result<(), String> {
         if self.extra_charges > MOST_CHARGES {
             return Err(format!(
                 "{context} takes at most {MOST_CHARGES} extra charges"
@@ -368,12 +487,25 @@ impl EntryEdits {
         if (self.extra_charges > 0
             || self.recharge().is_some()
             || !self.parameters.is_empty()
-            || self.recolors()
-            || !self.spawn_swaps.is_empty()
-            || !self.bank_values.is_empty())
-            && !modifiers::holds_ability(modifiers::place_entry(place))
+            || !self.keeps_entity())
+            && !modifiers::holds_ability(source_entry)
         {
             return Err(format!("{context} holds no ability of its own"));
+        }
+        // A projectile two places spawn is copied once, so the places must agree on its type.
+        if let Some(swap) = self.spawn_swaps.iter().find(|swap| {
+            self.spawn_swaps.iter().any(|other| {
+                other.replacement == swap.replacement
+                    && other
+                        .damage_type
+                        .zip(swap.damage_type)
+                        .is_some_and(|(theirs, own)| theirs != own)
+            })
+        }) {
+            return Err(format!(
+                "{context} fires projectile 0x{:08X} with two damage types",
+                swap.replacement
+            ));
         }
         modifiers::validate(
             context,
@@ -401,20 +533,20 @@ impl EntryEdits {
         {
             return Err(format!("{context} repeats a perk"));
         }
-        match &self.icon {
-            Some(EntryIcon::Ability { entry, .. })
-                if usize::from(*entry) >= layout::ENTRY_COUNT =>
-            {
-                return Err(format!(
-                    "{context} takes the icon of entry {entry}, which no subclass has"
-                ));
+        if let Some(icon) = &self.icon {
+            icon.validate(context)?;
+        }
+        let mut attached = BTreeSet::new();
+        for edit in &self.attached_abilities {
+            if !attached.insert(edit.graph) {
+                return Err(format!("{context} changes one attached ability twice"));
             }
-            Some(EntryIcon::Artwork { artwork }) => {
-                artwork
-                    .validate()
-                    .map_err(|error| format!("{context}: {error}"))?;
+            if edit.icon.is_none() && edit.color.is_none() {
+                return Err(format!("{context} has an empty attached ability edit"));
             }
-            _ => {}
+            if let Some(icon) = &edit.icon {
+                icon.validate(context)?;
+            }
         }
         let palettes = self
             .palettes

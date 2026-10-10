@@ -2,6 +2,7 @@
 //! triples in addition to the top-level component rows. They must move together.
 use crate::d2_mot::payload::Payload;
 pub mod category;
+pub mod compiled;
 pub mod context;
 pub mod shared;
 pub mod spatial;

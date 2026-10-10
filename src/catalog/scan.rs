@@ -16,7 +16,8 @@ use super::{
     },
 };
 use crate::{
-    investment_localization::LocalizedStringCache, investment_schema::investment_globals_table_tag,
+    investment::localization::LocalizedStringCache,
+    investment::schema::investment_globals_table_tag,
 };
 use std::path::Path;
 use tiger_pkg::TagHash;
@@ -217,7 +218,7 @@ pub(super) fn scan_packages(
         descriptions: item_scan.descriptions,
         perk_descriptions,
         icon_containers: item_scan.icon_containers,
-        ammo_icon_containers: crate::investment_schema::AMMO_ICON_ROWS
+        ammo_icon_containers: crate::investment::schema::AMMO_ICON_ROWS
             .map(|row| icon_containers_by_index.get(row).copied().flatten()),
         item_package_metadata: item_scan.item_package_metadata,
         item_stat_definitions,
@@ -263,7 +264,7 @@ fn enrich_item_metadata(
     // multiple stock weapons legitimately share a runtime row.
     if let Some(patterns) = investment_globals_table_tag(
         globals_data,
-        crate::investment_schema::GLOBALS_SANDBOX_PATTERN_TABLE_SLOT,
+        crate::investment::schema::GLOBALS_SANDBOX_PATTERN_TABLE_SLOT,
     )
     .ok()
     .and_then(|tag| manager.read_tag(TagHash(tag)).ok())

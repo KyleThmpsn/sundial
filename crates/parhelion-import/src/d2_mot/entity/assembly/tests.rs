@@ -124,19 +124,18 @@ fn configured_entity_preflight() -> Result<()> {
         })
         .collect();
     for edge in graph.connections.iter().chain(&graph.named_connections) {
-        if let Some(provider) = edge.provider.object {
-            if !contracts
+        if let Some(provider) = edge.provider.object
+            && !contracts
                 .channels
                 .iter()
                 .any(|c| c.provider == provider && c.source == edge.channel)
-            {
-                contracts.channels.push(Channel {
-                    provider,
-                    source: edge.channel,
-                    target: edge.channel,
-                    methods: vec![],
-                });
-            }
+        {
+            contracts.channels.push(Channel {
+                provider,
+                source: edge.channel,
+                target: edge.channel,
+                methods: vec![],
+            });
         }
         for endpoint in [&edge.consumer, &edge.provider] {
             if endpoint.selector > 0xFFFF {

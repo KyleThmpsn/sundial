@@ -102,7 +102,7 @@ fn v13_ignored_ability_fields_are_preserved_without_repair() {
 
 #[test]
 fn emote_wheel_authoring_is_gated_and_preserves_four_socket_lanes() {
-    let hash = crate::account_contract::EMOTE_COLLECTION_DEFINITION_HASH;
+    let hash = crate::account::contract::EMOTE_COLLECTION_DEFINITION_HASH;
     for version in [6, 8, 13, 14] {
         let mut document = document(version);
         let original = document.clone();

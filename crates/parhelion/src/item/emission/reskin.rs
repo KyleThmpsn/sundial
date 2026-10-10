@@ -24,7 +24,7 @@ const MESH_ROW_CLASS: u32 = 0x8080_7378;
 const MODEL_SLOT: usize = 0x1DC;
 const BONE_PALETTE: usize = 0x40;
 /// The model's position offset. A stored position is its quantized value times the scale at
-/// `+0x50` plus this, so adding to it moves every vertex of the model.
+/// `+0x6C` plus this, so adding to it moves every vertex of the model.
 const POSITION_OFFSET: usize = 0x60;
 
 pub(super) fn apply(
@@ -147,11 +147,11 @@ pub(super) fn stock_definition(
     read(manager, read_u32(&emission.item_table, row + 16)?)
 }
 
-fn array(data: &[u8], at: usize) -> AuthoringResult<(usize, usize, usize, u32)> {
+pub(super) fn array(data: &[u8], at: usize) -> AuthoringResult<(usize, usize, usize, u32)> {
     sundial::package_authoring::native_payload::native_array_at(data, at).map_err(invalid)
 }
 
-fn read(
+pub(super) fn read(
     manager: &sundial::package_authoring::PackageManager,
     tag: u32,
 ) -> AuthoringResult<Vec<u8>> {
@@ -491,7 +491,7 @@ fn pin_to_root(positions: &[u8], stride: u16) -> AuthoringResult<Vec<u8>> {
             )));
         }
     };
-    if positions.is_empty() || positions.len() % stride != 0 {
+    if positions.is_empty() || !positions.len().is_multiple_of(stride) {
         return Err(invalid("Gear vertex buffer is not a whole number of rows"));
     }
     let mut pinned = positions.to_vec();
@@ -519,7 +519,11 @@ fn pin_to_root(positions: &[u8], stride: u16) -> AuthoringResult<Vec<u8>> {
 
 /// Every word in the entity that names the model owner: its component row plus the typed
 /// `(owner, class, offset)` resource pointers that must move with it.
-fn owner_slots(entity: &[u8], owner: &[u8], owner_tag: u32) -> AuthoringResult<Vec<usize>> {
+pub(super) fn owner_slots(
+    entity: &[u8],
+    owner: &[u8],
+    owner_tag: u32,
+) -> AuthoringResult<Vec<usize>> {
     let (count, _, rows, _) = array(entity, 0x10)?;
     let roots = (0..count)
         .map(|i| rows + i * 12)

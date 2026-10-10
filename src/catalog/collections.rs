@@ -4,7 +4,7 @@ use crate::package_runtime::reader::PackageManager;
 use serde::{Deserialize, Serialize};
 use tiger_pkg::TagHash;
 
-use crate::investment_schema::{
+use crate::investment::schema::{
     COLLECTIBLE_CONDITION_OFFSETS, COLLECTIBLE_DEFINITION_ROW_CLASS,
     COLLECTIBLE_DEFINITION_ROW_SIZE, COLLECTIBLE_HASH_OFFSET,
     COLLECTIBLE_INVENTORY_ITEM_INDEX_OFFSET, COLLECTIBLE_MATERIAL_REQUIREMENT_SET_INDEX_OFFSET,

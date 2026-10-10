@@ -265,7 +265,7 @@ fn the_review_action_row_stays_visible_above_a_long_impact_list() {
     let ctx = egui::Context::default();
     let mut output = egui::FullOutput::default();
     for _ in 0..8 {
-        output = ctx.run(
+        output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -273,14 +273,14 @@ fn the_review_action_row_stays_visible_above_a_long_impact_list() {
                 )),
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     jobs(ui, &mut document, &catalog, &mut state);
                 });
             },
         );
     }
-    crate::app::tests::capture::write(&ctx, &output, "collection-review-long");
+    crate::test_support::capture::write(&ctx, &output, "collection-review-long");
     let (pos, size, clip) = output
         .shapes
         .iter()

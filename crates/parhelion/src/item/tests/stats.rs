@@ -228,7 +228,7 @@ fn stats_with_programs() -> (Vec<u8>, [usize; 2]) {
     let row = array_at(&data, resource).unwrap().2 + ITEM_INVESTMENT_STAT_ROW_SIZE;
     let mut targets = [0; 2];
     for (lane, offset) in [8, 24].into_iter().enumerate() {
-        while data.len() % 16 != 0 {
+        while !data.len().is_multiple_of(16) {
             data.push(0);
         }
         data.extend_from_slice(&[0; 8]);
@@ -301,9 +301,9 @@ fn stat_companion_program_validation_rejects_dangling_targets_without_mutation()
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn stock_stat_companion_programs_survive_growth() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let sources = sources::load_project_sources(&packages).unwrap();
     let mut checked = 0;
     let mut programs = 0;

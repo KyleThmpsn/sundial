@@ -1,5 +1,6 @@
 //! Account proposals and synchronization accompanying authored package transactions.
 use std::path::{Path, PathBuf};
+pub(crate) mod contract;
 mod grants;
 pub use grants::{
     AuthoredGrantOutcome, AuthoredGrantReport, AuthoredGrantTarget, AuthoredItemGrant,
@@ -79,7 +80,7 @@ pub(crate) fn validate_socket_changes(
     removed: &std::collections::BTreeSet<u32>,
     changes: &[AuthoredSocketChange],
 ) -> Result<(), String> {
-    let capacity = crate::account_contract::MAX_ITEM_PLUGS;
+    let capacity = crate::account::contract::MAX_ITEM_PLUGS;
     let mut seen = std::collections::BTreeSet::new();
     for change in changes {
         let shared = change.previous_socket_count.min(change.default_plugs.len());

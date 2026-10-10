@@ -14,12 +14,12 @@ use crate::package_runtime::reader::PackageManager;
 use tiger_pkg::TagHash;
 
 use crate::{
-    icon_schema::{
+    catalog::icons::schema::{
         ICON_BACKGROUND_LAYER_OFFSET, ICON_FOREGROUND_LAYER_OFFSET, ICON_PRIMARY_LAYER_OFFSET,
         ICON_WATERMARK_LAYER_OFFSET,
     },
     image_processing::{blend_rgba_pixel, decode_bc1},
-    investment_schema::{
+    investment::schema::{
         GLOBALS_ITEM_ICON_TABLE_SLOT, ITEM_ICON_CONTAINER_OFFSET, ITEM_ICON_ROW_CLASS,
         ITEM_ICON_ROW_SIZE, ITEM_STRING_ICON_INDEX_OFFSET, ITEM_STRING_SECONDARY_ICON_INDEX_OFFSET,
         investment_globals_table_tag,
@@ -48,6 +48,7 @@ const AMMO_ICON_CACHE_PREFIX: u64 = 1_u64 << 58;
 
 #[cfg(test)]
 mod queue_tests;
+pub(crate) mod schema;
 
 #[derive(Default)]
 pub(super) struct IconRuntime {
@@ -949,8 +950,8 @@ mod tests {
     #[test]
     fn catalog_icon_layers_composite_in_package_display_order() {
         let background =
-            eframe::egui::ColorImage::new([1, 1], eframe::egui::Color32::from_rgb(255, 0, 0));
-        let overlay = eframe::egui::ColorImage::new(
+            eframe::egui::ColorImage::filled([1, 1], eframe::egui::Color32::from_rgb(255, 0, 0));
+        let overlay = eframe::egui::ColorImage::filled(
             [1, 1],
             eframe::egui::Color32::from_rgba_unmultiplied(0, 0, 255, 128),
         );

@@ -6,10 +6,10 @@ use crate::package_runtime::reader::PackageManager;
 use tiger_pkg::TagHash;
 
 use crate::{
-    class_items,
+    catalog::class_items,
     hash::{format_hash_hex, parse_hash_hex},
-    investment_localization::{LocalizedStringCache, resolve_string},
-    investment_schema::{
+    investment::localization::{LocalizedStringCache, resolve_string},
+    investment::schema::{
         ITEM_EQUIPMENT_BLOCK_POINTER_OFFSET as EQUIPMENT_BLOCK_OFFSET,
         ITEM_EQUIPMENT_SLOT_OFFSET as EQUIPMENT_SLOT_OFFSET, ITEM_LINKED_PLUG_BLOCK_CLASS,
         ITEM_LINKED_PLUG_INDEX_OFFSET, ITEM_ORDINARY_SOCKET_DEFAULT_PLUG_OFFSET,
@@ -41,7 +41,8 @@ use super::{
     descriptions::mod_description,
     inventory::{InventoryBucketDescriptor, item_inventory_metadata},
     investment::{
-        item_investment_stats, item_stat_group_index, masterwork_label, stat_allocation_labels,
+        item_display_damage_type, item_investment_stats, item_stat_group_index, masterwork_label,
+        stat_allocation_labels,
     },
     item_damage_profile, item_weapon_ammo_type,
     perks::item_sandbox_perks,
@@ -218,7 +219,7 @@ fn report_item_scan_progress(
     progress_stride: usize,
     report: &mut dyn FnMut(CatalogProgress),
 ) {
-    if index % progress_stride == 0 {
+    if index.is_multiple_of(progress_stride) {
         report(CatalogProgress {
             message: "Reading item definitions…",
             completed: index,
@@ -335,6 +336,7 @@ pub(in crate::catalog) fn scan_items(
                             definition_size: None,
                             string_definition_tag: None,
                             stat_group_index: None,
+                            display_damage_type: None,
                             icon_container_tag: None,
                             secondary_icon_container_tag: None,
                             plug_category_hash: None,
@@ -489,6 +491,7 @@ pub(in crate::catalog) fn scan_items(
         };
         if let Some(metadata) = item_package_metadata.get_mut(&hash) {
             metadata.stat_group_index = item_stat_group_index(&string_thing);
+            metadata.display_damage_type = item_display_damage_type(&string_thing);
             metadata.weapon_ammo_type = item_weapon_ammo_type(&string_thing);
         }
         let mut name = resolve_string(
@@ -599,7 +602,7 @@ pub(in crate::catalog) fn scan_items(
             .and_then(|metadata| metadata.socket_entry_list_index)
         {
             let equipment_class = (bucket_hash == super::SUBCLASS_BUCKET_HASH)
-                .then(|| crate::investment_schema::subclass_equipment_class(&item))
+                .then(|| crate::investment::schema::subclass_equipment_class(&item))
                 .and_then(Result::ok)
                 .map(|class| class.unwrap_or(3));
             item_socket_lists.push((items.len(), list_index, equipment_class));
@@ -622,9 +625,9 @@ pub(in crate::catalog) fn scan_items(
             type_name,
             bucket_hash,
             class_type: item
-                .get(crate::investment_schema::ITEM_INVENTORY_SLOT_OFFSET)
+                .get(crate::investment::schema::ITEM_INVENTORY_SLOT_OFFSET)
                 .filter(|slot| (3..=7).contains(*slot))
-                .and_then(|_| crate::investment_schema::armor_equipment_class(&item).ok())
+                .and_then(|_| crate::investment::schema::armor_equipment_class(&item).ok())
                 .map(|class| class.map_or(3, u64::from))
                 .or_else(|| class_items::class_type(hash))
                 .or_else(|| class_items::class_from_item_strings(&string_thing))

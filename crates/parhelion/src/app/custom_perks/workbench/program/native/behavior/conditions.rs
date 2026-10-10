@@ -115,6 +115,9 @@ pub(super) fn condition_list(
             // A condition's less used fields open from its menu rather than a fold under every
             // condition on the card.
             let details_id = ui.make_persistent_id("node-details");
+            if problem::contains(ui, &path) {
+                ui.data_mut(|data| data.insert_temp(details_id, true));
+            }
             let details_open = ui.data(|data| data.get_temp::<bool>(details_id).unwrap_or(false));
             frame
                 .show(ui, |ui| {
@@ -168,11 +171,11 @@ pub(super) fn condition_list(
                                 };
                                 if ui.button(label).clicked() {
                                     ui.data_mut(|data| data.insert_temp(details_id, !details_open));
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 if ui.button("Remove Condition").clicked() {
                                     *pending = Some((list.clone(), Edit::Remove(number)));
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             });
                             // The next condition joins from the end of the last one. Each command
@@ -271,10 +274,11 @@ pub(super) fn condition_list(
                                                     }
                                                 });
                                                 if condition.children.is_empty() {
-                                                    ui.colored_label(
+                                                    let response = ui.colored_label(
                                                         ui.visuals().warn_fg_color,
                                                         "No contributing conditions.",
                                                     );
+                                                    problem::node_response(ui, &path, &response);
                                                 }
                                             } else {
                                                 ui.label(
@@ -422,8 +426,8 @@ pub(super) fn group_hint(group: &action::DecodedGroup) -> Option<&'static str> {
         .then_some("Spawning at the triggering event needs a kill or damage trigger.")
 }
 
-/// The field a node still needs, beside the node, as an empty counter's note is. A zero key,
-/// tag or selection compiles, but the node never matches or never acts.
+/// Required choices and empty selections stay visible beside their node. An empty mask
+/// warns without blocking the perk, while known optional zeros need no choice.
 pub(super) fn unset_note(ui: &mut egui::Ui, block: &native::Block) {
     let Ok(described) = fields::describe(block.class) else {
         return;
@@ -432,15 +436,23 @@ pub(super) fn unset_note(ui: &mut egui::Ui, block: &native::Block) {
         block
             .bytes
             .get(field.offset..field.offset + field.width)
-            .is_some_and(|bytes| fields::unset(block.class, field, bytes))
+            .is_some_and(|bytes| {
+                fields::unset(block.class, field, bytes)
+                    || fields::empty_selection(block.class, field, bytes)
+            })
     });
     if let Some(field) = unset {
+        let label = super::super::plain_field_label(block.class, &field.label);
+        let empty = field
+            .bytes(block, 0)
+            .is_some_and(|bytes| fields::empty_selection(block.class, field, bytes));
         ui.colored_label(
             ui.visuals().warn_fg_color,
-            format!(
-                "Choose the {}.",
-                super::super::plain_field_label(block.class, &field.label)
-            ),
+            if empty {
+                format!("The {label} selection is empty.")
+            } else {
+                format!("Choose the {label}.")
+            },
         );
     }
 }

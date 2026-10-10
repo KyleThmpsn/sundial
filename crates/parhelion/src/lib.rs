@@ -36,6 +36,7 @@ mod error;
 mod extend;
 mod format;
 pub mod hud_icon;
+mod icon_art;
 mod icon_edit;
 mod image_import;
 #[cfg(feature = "d2-model-importer")]
@@ -111,11 +112,10 @@ pub(crate) use item::{
     WeaponCloneIdentity, WeaponCloneOverrides, WeaponCloneSpec, WeaponCloneText,
     WeaponDyeReferenceOverride, WeaponIconDonorReference, WeaponInventorySlot,
     WeaponLocaleTextOverride, WeaponNumericInstruction, WeaponPresentationDonorReference,
-    WeaponProjectSpec, WeaponRawPayloadPatch, WeaponRawPayloadTarget,
-    WeaponRenderGearDonorReference, WeaponRuntimeComponentDonorReference,
-    WeaponRuntimeResourcePatch, WeaponSandboxPerkActionFloatOverride,
-    WeaponSandboxPerkRuntimeOverride, WeaponSocketColumnOverride, WeaponSocketPlugVariantOverride,
-    WeaponVariableDamage,
+    WeaponProjectSpec, WeaponRawPayloadPatch, WeaponRenderGearDonorReference,
+    WeaponRuntimeComponentDonorReference, WeaponRuntimeResourcePatch,
+    WeaponSandboxPerkActionFloatOverride, WeaponSandboxPerkRuntimeOverride,
+    WeaponSocketColumnOverride, WeaponSocketPlugVariantOverride, WeaponVariableDamage,
 };
 pub use item_kind::ItemKind;
 #[cfg(test)]
@@ -133,6 +133,6 @@ pub use recipe::{
 pub(crate) use recipe_library::{RecipeLibrary, RecipeLibraryEntry};
 pub(crate) use watermark::{WeaponIconRequest, item_icon_row_with_container};
 pub use workflow::{
-    BatchBuildRequest, BatchBuildSnapshot, BuildFailure, BuildProgress, BuildReport,
-    build_and_stage_snapshot_reporting, build_and_stage_snapshot_with_progress,
+    BatchBuildRequest, BatchBuildSnapshot, BuildActivity, BuildFailure, BuildProgress, BuildReport,
+    OperationStatus, build_and_stage_snapshot_reporting, build_and_stage_snapshot_with_progress,
 };

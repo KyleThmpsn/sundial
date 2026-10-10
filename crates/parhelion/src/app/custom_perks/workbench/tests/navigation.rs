@@ -15,7 +15,7 @@ fn property_scroll_reaches_the_end_from_the_right_side_and_keeps_the_footer_clea
     let mut recipe = workbench.documents[0].recipe.clone();
     let ctx = egui::Context::default();
     let mut render = |events| {
-        ctx.run(
+        ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -24,9 +24,10 @@ fn property_scroll_reaches_the_end_from_the_right_side_and_keeps_the_footer_clea
                 events,
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    workbench.draw_effect_editor(ui, ctx, &mut recipe, false, 360.0);
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let ctx = ui.ctx().clone();
+                    workbench.draw_effect_editor(ui, &ctx, &mut recipe, false, 360.0);
                     ui.label("Destination Footer");
                 });
             },
@@ -54,6 +55,7 @@ fn property_scroll_reaches_the_end_from_the_right_side_and_keeps_the_footer_clea
             unit: egui::MouseWheelUnit::Point,
             delta: egui::vec2(0.0, -5000.0),
             modifiers: Default::default(),
+            phase: egui::TouchPhase::Move,
         },
     ]);
     for _ in 0..30 {
@@ -180,7 +182,7 @@ fn new_draft_clears_search_and_is_visible_above_a_long_library() {
     assert!(workbench.query.is_empty());
     let mut output = egui::FullOutput::default();
     for _ in 0..3 {
-        output = ctx.run(
+        output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -188,9 +190,8 @@ fn new_draft_clears_search_and_is_visible_above_a_long_library() {
                 )),
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default()
-                    .show(ctx, |ui| workbench.draw_library(ui, None, None));
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| workbench.draw_library(ui, None, None));
             },
         );
     }

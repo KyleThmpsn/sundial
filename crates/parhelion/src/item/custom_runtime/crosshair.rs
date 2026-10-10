@@ -1,7 +1,7 @@
 //! The crosshair type key an imported weapon's runtime content takes from its converted crosshair.
+use super::imports::Inputs;
 use super::*;
 use crate::tag_payload::{array_at, read_u32};
-use parhelion_import::GraphReference;
 
 /// The converted crosshair row's type key, with the weapon's converted first-person parameter
 /// dictionary when the import has one.
@@ -13,12 +13,8 @@ pub(in crate::item) struct Crosshair {
 /// The type key of the converted crosshair row for the item's own bucket. Only a converted
 /// crosshair has rows the build adds. A source key Shadowkeep already has keeps the base
 /// weapon's runtime keys.
-pub(in crate::item) fn load(graph: &GraphReference) -> AuthoringResult<Option<Crosshair>> {
-    let value: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(graph.directory.join("asset-graph.json"))
-            .map_err(|error| invalid(format!("Imported crosshair graph: {error}")))?,
-    )
-    .map_err(|error| invalid(format!("Imported crosshair graph: {error}")))?;
+pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<Crosshair>> {
+    let value = graph.value();
     let record = &value["crosshair"];
     if record["status"] != "converted" {
         return Ok(None);
@@ -52,7 +48,8 @@ pub(in crate::item) fn load(graph: &GraphReference) -> AuthoringResult<Option<Cr
     let parameters = value["animation"]["first_person"]["files"]["parameters"]
         .as_str()
         .map(|path| {
-            std::fs::read(graph.directory.join(path))
+            graph
+                .read(path)
                 .map_err(|error| invalid(format!("Imported first-person parameters: {error}")))
         })
         .transpose()?;

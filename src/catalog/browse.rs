@@ -211,8 +211,9 @@ impl Catalog {
             .or_else(|| self.package_item_name(hash).map(str::trim))
             .unwrap_or_default();
         let gear = matches!(kind, Kind::Weapon | Kind::Armor);
-        let internal =
-            name.is_empty() || (gear && type_name.is_empty()) || crate::dummy_items::contains(hash);
+        let internal = name.is_empty()
+            || (gear && type_name.is_empty())
+            || crate::catalog::dummy_items::contains(hash);
         BrowseEntry {
             hash,
             name: if name.is_empty() {

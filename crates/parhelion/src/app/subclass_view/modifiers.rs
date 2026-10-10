@@ -4,8 +4,7 @@
 //! value.
 use super::*;
 use crate::subclass::{
-    AbilityModifier, MOST_CHARGES, ModifierEffect, RECHARGE_RANGE, StockModifier, holds_ability,
-    place_entry,
+    AbilityModifier, MOST_CHARGES, ModifierEffect, RECHARGE_RANGE, StockModifier, place_entry,
 };
 use sundial::investment::{AbilityParameter, AbilityRowSummary};
 use sundial::package_authoring::ability_bank::{
@@ -272,8 +271,7 @@ impl PackageAuthoringApp {
         abilities: &SubclassAbilities,
         base: &SubclassSummary,
     ) -> Vec<Target> {
-        Place::all()
-            .filter(|place| holds_ability(place_entry(*place)))
+        Place::editable()
             .filter_map(|place| {
                 let (source, entry) = source_of(abilities, base.hash, place);
                 let row = *find_subclass(&self.subclasses, source)?
@@ -335,15 +333,8 @@ impl PackageAuthoringApp {
     ) -> Option<EntryEdits> {
         let targets = self.ability_targets(abilities, base);
         let own = place_entry(place);
-        // An ability's own charges, recharge and values sit on its Ability card, so here it
-        // changes only the other abilities. A node changes any.
-        let ability = holds_ability(own);
-        let own_row = summary.and_then(|summary| summary.entry_rows.get(&entry).copied());
-        let others = targets
-            .iter()
-            .filter(|target| !ability || target.entry != own)
-            .cloned()
-            .collect::<Vec<_>>();
+        // Extra keys and additive parameter changes can target this ability as well as another.
+        let others = targets.clone();
         let stock = summary
             .and_then(|summary| summary.entry_modifiers.get(&entry))
             .cloned()
@@ -351,9 +342,6 @@ impl PackageAuthoringApp {
         let mut changed = None;
         ui.horizontal_wrapped(|ui| {
             for (key, row) in stock {
-                if ability && Some(row) == own_row {
-                    continue;
-                }
                 let removed = StockModifier { key, row };
                 if edits.removed_modifiers.contains(&removed) {
                     continue;
@@ -418,6 +406,22 @@ impl PackageAuthoringApp {
                 page.modifier_draft = Some(Draft::new(first));
             }
         });
+        if !edits.removed_modifiers.is_empty() {
+            egui::CollapsingHeader::new("Removed Stock Changes").show(ui, |ui| {
+                for removed in &edits.removed_modifiers {
+                    let label = format!(
+                        "Restore {} · {}",
+                        self.row_name(&targets, removed.row),
+                        key_effect(&self.subclasses, self.ability_row(removed.row), removed.key)
+                    );
+                    if ui.button(label).clicked() {
+                        let mut edited = changed.take().unwrap_or_else(|| edits.clone());
+                        edited.toggle_stock_modifier(*removed);
+                        changed = Some(edited);
+                    }
+                }
+            });
+        }
         if let Some(modifier) = self.draw_modifier_form(ui, &others, page) {
             let mut edited = changed.unwrap_or_else(|| edits.clone());
             if !edited.modifiers.contains(&modifier) {

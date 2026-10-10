@@ -1,7 +1,7 @@
 //! The workbench's pickers open in a window of their own, Sundial's rows beside a detail pane.
 mod browser;
 pub(crate) use browser::{
-    BrowserList, CLEAR_WIDTH, browser, browser_with_toolbar, search, show_all,
+    BrowserList, CLEAR_WIDTH, browser, browser_window, browser_with_toolbar, search, show_all,
 };
 
 /// Whether a list of `rows` is long enough to take a filter. Twelve or fewer read at a glance.
@@ -18,10 +18,11 @@ pub(crate) const fn wants_filter(rows: usize) -> bool {
 /// Name the combo box built from `salt` in this `ui`. Call it after the combo draws: egui
 /// writes an empty name for an unlabelled combo, and the last writer of the frame wins.
 /// A wrong salt produces no name, which the accessibility tests fail on.
-pub(crate) fn name_combo(ui: &egui::Ui, salt: impl std::hash::Hash, name: &str) {
-    // A combo box hashes its salt into an `Id` first, so hashing the bare salt here would
-    // address a different node and silently name nothing.
-    let id = ui.make_persistent_id(egui::Id::new(salt));
+pub(crate) fn name_combo(ui: &egui::Ui, salt: impl std::hash::Hash + std::fmt::Debug, name: &str) {
+    // A combo box turns its salt into an `IdSalt` before joining it to the parent's id. Joining
+    // the bare salt, or an `Id` made from it, hashes with other seeds, so it would address a
+    // different node and silently name nothing.
+    let id = ui.make_persistent_id(egui::IdSalt::new(salt));
     ui.ctx().accesskit_node_builder(id, |node| {
         node.set_label(name.to_owned());
     });

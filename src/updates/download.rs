@@ -133,7 +133,7 @@ fn transfer(
         hash.update(&buffer[..count]);
         progress.received.store(received, Ordering::Relaxed);
     }
-    if received != asset.size || format!("{:x}", hash.finalize()) != asset.digest {
+    if received != asset.size || hex::encode(hash.finalize()) != asset.digest {
         return Err("The update failed size or checksum verification. The installed executable was not changed.".into());
     }
     Ok(())
@@ -150,7 +150,7 @@ mod tests {
             size: expected.len() as u64,
             kind: super::super::release::ArchiveKind::Zip,
             member: String::new(),
-            digest: format!("{:x}", Sha256::digest(expected)),
+            digest: hex::encode(Sha256::digest(expected)),
         };
         for (bytes, cancel, valid) in [
             (expected.as_slice(), false, true),

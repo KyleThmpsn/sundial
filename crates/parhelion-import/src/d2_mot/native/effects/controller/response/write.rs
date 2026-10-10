@@ -150,7 +150,7 @@ impl Write {
             _ => bail!("unsupported response record class {class:08X}"),
         };
         ensure!(
-            source % alignment == 0,
+            source.is_multiple_of(alignment),
             "response source record alignment differs"
         );
         read.claim(marker, size + 4)?;

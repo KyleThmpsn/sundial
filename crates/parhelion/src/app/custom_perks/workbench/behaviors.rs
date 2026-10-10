@@ -10,6 +10,7 @@ use sundial::{
 
 mod lead;
 mod recipes;
+pub(super) use recipes::WEAPON_PROPERTIES_GRAPH;
 mod rows;
 #[cfg(test)]
 mod tests;
@@ -124,6 +125,10 @@ pub(super) struct Picker {
     /// ability carries, so one only a Ship's transmat effect or other vehicle socket holds does
     /// not lead.
     carried: Option<std::sync::Arc<sundial::investment::IngredientCatalog>>,
+    /// Change Weapon Properties' attachment with its rows read, or why it is not ready, set
+    /// by the canvas before the Add Action picker draws. None while no card has asked.
+    pub(super) weapon_properties:
+        Option<Result<sundial::package_authoring::sandbox_perk::program::Asset, &'static str>>,
 }
 
 impl Picker {
@@ -210,7 +215,7 @@ impl Picker {
     }
 
     /// The Add Action picker. It returns one action, or the several a stock behavior adds
-    /// together.
+    /// together. Change Weapon Properties' row takes `weapon_properties` as the canvas left it.
     pub fn draw_action_selection(
         &mut self,
         ui: &mut egui::Ui,
@@ -220,6 +225,10 @@ impl Picker {
         program: &Program,
         keys: &sundial::package_authoring::sandbox_perk::program::properties::KeyCatalog,
     ) -> Option<Selection> {
+        let weapon_properties = self
+            .weapon_properties
+            .clone()
+            .unwrap_or(Err("Its rows are read on the effect's card."));
         // At the cap every action row is refused, including the native kinds the picker
         // builds itself, so the limit is visible before a build rather than after one.
         let blocked = if program.actions.len() >= ACTION_LIMIT {
@@ -249,6 +258,7 @@ impl Picker {
                 };
                 recipe_row(recipe, reason)
             }));
+            rows.push(weapon_properties_row(program, weapon_properties.clone()));
             rows
         };
         self.draw_picker(
@@ -656,8 +666,7 @@ impl Picker {
                                     egui::RichText::new(error).color(ui.visuals().error_fg_color),
                                 )
                                 .truncate(),
-                            )
-                            .on_hover_text(error);
+                            );
                             if ui.button("Retry").clicked() {
                                 retry = true;
                             }
@@ -731,6 +740,11 @@ impl Picker {
                             .on_disabled_hover_text(row.reason)
                             .clicked()
                             || (activated && row.enabled);
+                        // A refused row says why where the button is, since a tooltip never
+                        // opens inside the picker's own popup.
+                        if !row.enabled {
+                            ui.add(egui::Label::new(egui::RichText::new(row.reason).weak()).wrap());
+                        }
                         let catalog = self.loaded.as_ref().and_then(|result| result.as_ref().ok());
                         let mut selected = None;
                         match &row.choice {

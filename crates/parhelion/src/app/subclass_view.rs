@@ -1,5 +1,5 @@
-//! The main page for subclasses. A subclass keeps its base's element, and is for every class, its
-//! base's or another. Each ability and each attunement path node is based on a stock one of any
+//! The main page for subclasses. A subclass keeps its base's element or shows another damage type
+//! icon, and is for every class, its base's or another. Each ability and each attunement path node is based on a stock one of any
 //! class, and can be authored: a name, a description, an icon and perks of its own, including
 //! custom perks from the perk workbench. An attunement can come from another stock subclass and
 //! take its own name.
@@ -20,9 +20,12 @@ use crate::subclass::{
 use sundial::investment::{DisplayTooltip, SubclassSummary, draw_display_tooltip};
 
 mod appearance;
+mod attached;
 mod choices;
 mod colors;
 mod detail;
+mod generated_icon;
+mod hud;
 mod icon;
 mod list;
 mod modifiers;
@@ -30,6 +33,8 @@ mod perks;
 mod properties;
 mod tuning;
 mod values;
+
+pub(in crate::app) use properties::GraphCards;
 
 /// The list's width beside the detail panel, and the narrowest pane that keeps the two side by
 /// side.
@@ -70,9 +75,14 @@ pub(super) struct PageState {
     pub(super) choosing: Option<SubclassSelection>,
     /// The attunement the list shows.
     path_tab: AttunementPath,
-    /// Artwork for an ability's or node's own icon.
+    /// Each node's icon browser is independent of the generated inventory icon's symbol.
+    icons: icon::Picker,
+    attached: attached::Abilities,
+    /// The generated inventory icon's symbol.
     artwork: crate::artwork_browser::Picker,
     artwork_query: String,
+    /// The generated icon's symbol from a stock perk, until its texture is read.
+    symbol: Option<Receiver<Result<crate::perk::Icon, String>>>,
     /// The abilities' entities and the list of their values.
     values: values::Values,
     /// Each ability's tree of graphs and the properties they hold.
@@ -81,6 +91,7 @@ pub(super) struct PageState {
     section: detail::Section,
     /// The Parameters card's filter and the Raw Values trail.
     parameter_query: String,
+    property_query: String,
     trail: tuning::Trail,
     /// The modifier Add Change is putting together.
     modifier_draft: Option<modifiers::Draft>,
@@ -97,14 +108,18 @@ impl Default for PageState {
             search: String::new(),
             choosing: None,
             path_tab: AttunementPath::Top,
+            icons: icon::Picker::default(),
+            attached: attached::Abilities::default(),
             artwork: crate::artwork_browser::Picker::for_purpose(
                 crate::artwork_browser::Purpose::Perk,
             ),
             artwork_query: String::new(),
+            symbol: None,
             values: values::Values::default(),
             properties: properties::Properties::default(),
             section: detail::Section::default(),
             parameter_query: String::new(),
+            property_query: String::new(),
             trail: tuning::Trail::default(),
             modifier_draft: None,
             colors: colors::Colors::default(),
@@ -179,6 +194,12 @@ fn find_subclass(subclasses: &[SubclassSummary], hash: u32) -> Option<&SubclassS
 }
 
 fn entry_name(subclass: &SubclassSummary, entry: u8) -> &str {
+    if entry == layout::BASE_MOVEMENT {
+        return "Base Movement";
+    }
+    if entry == layout::STAT_PASSIVES {
+        return "Stat Passives";
+    }
     subclass
         .entry_names
         .get(&entry)
@@ -219,7 +240,7 @@ fn one_line(
 ) -> std::sync::Arc<egui::Galley> {
     let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
     job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(0.0));
-    ui.fonts(|fonts| fonts.layout_job(job))
+    ui.fonts_mut(|fonts| fonts.layout_job(job))
 }
 
 /// Small, quiet text: a section's name, a field's label, a subclass beside its choices.
@@ -277,15 +298,75 @@ impl PackageAuthoringApp {
         self.draw_subclass_abilities(ui);
     }
 
-    /// The subclass's text, then its Class picker under it, in the first column as gear pages
-    /// place theirs.
+    /// The subclass's text, then its Class and Damage Type Icon pickers under it, in the first
+    /// column as gear pages place theirs.
     fn draw_subclass_definition(&mut self, ui: &mut egui::Ui) {
         self.draw_item_text(ui, Some(self.subclass_type_name()));
         ui.add_space(4.0);
-        let column_count = core_profile_column_count(ui.available_width());
-        ui.columns(column_count, |columns| {
-            self.draw_subclass_class(&mut columns[0]);
+        style::tiles(ui, |ui, width| {
+            style::tile_column(ui, (width, "subclass-class"), |ui| {
+                self.draw_subclass_class(ui)
+            });
+            style::tile_column(ui, (width, "subclass-damage-type"), |ui| {
+                self.draw_subclass_damage_type(ui)
+            });
+            style::tile_column(ui, (width, "subclass-hud"), |ui| self.draw_subclass_hud(ui));
         });
+    }
+
+    /// The damage type whose icon the subclass shows beside its name: its base's, or another.
+    /// It changes no ability's damage.
+    fn draw_subclass_damage_type(&mut self, ui: &mut egui::Ui) {
+        use crate::recipe::RecipeDamageType;
+        use sundial::investment::WeaponDamageType;
+        const TYPES: [(RecipeDamageType, &str); 4] = [
+            (RecipeDamageType::Arc, "Arc"),
+            (RecipeDamageType::Solar, "Solar"),
+            (RecipeDamageType::Void, "Void"),
+            (RecipeDamageType::Kinetic, "Kinetic"),
+        ];
+        let base =
+            self.subclass_base()
+                .and_then(|base| base.damage_type)
+                .map(|damage| match damage {
+                    WeaponDamageType::Kinetic => RecipeDamageType::Kinetic,
+                    WeaponDamageType::Arc => RecipeDamageType::Arc,
+                    WeaponDamageType::Solar => RecipeDamageType::Solar,
+                    WeaponDamageType::Void => RecipeDamageType::Void,
+                });
+        let label = |damage: RecipeDamageType| {
+            TYPES
+                .iter()
+                .find(|(each, _)| *each == damage)
+                .map_or("", |(_, label)| *label)
+        };
+        let base_label = base.map_or("Base Damage Type", label);
+        let current = self.recipe.overrides.subclass_damage_type;
+        let (name, reset) = style::stock_field_name(
+            ui,
+            "Damage Type Icon",
+            "The icon beside its name, not its damage",
+            current.map(|_| base_label),
+        );
+        let mut choice = if reset { None } else { current };
+        egui::ComboBox::from_id_salt("subclass_damage_type")
+            .selected_text(current.map_or(base_label, label))
+            .width(ui.available_width())
+            .truncate()
+            .show_ui(ui, |ui| {
+                workbench_style(ui);
+                ui.selectable_value(&mut choice, None, base_label);
+                for (damage, label) in TYPES {
+                    if Some(damage) != base {
+                        ui.selectable_value(&mut choice, Some(damage), label);
+                    }
+                }
+            })
+            .response
+            .labelled_by(name.id);
+        if choice != current {
+            self.recipe.overrides.subclass_damage_type = choice;
+        }
     }
 
     /// The type label the subclass's text defaults to, by the classes it is for.
@@ -307,25 +388,18 @@ impl PackageAuthoringApp {
         } else {
             overrides.subclass_class
         };
-        let base_label = base.and_then(gear_view::class_label).map_or_else(
-            || "Base Class".to_owned(),
-            |class| format!("{class} (Base)"),
+        let base_label = base
+            .and_then(gear_view::class_label)
+            .unwrap_or("Base Class");
+        let (label, reset) = style::stock_field_name(
+            ui,
+            "Class",
+            "Which characters receive and can equip it",
+            current.map(|_| base_label),
         );
-        let label = ui
-            .horizontal(|ui| {
-                let label = ui.label("Class");
-                sundial::investment::draw_authoring_info_icon(
-                    ui,
-                    "Which characters receive and can equip it",
-                );
-                label
-            })
-            .inner;
-        let mut choice = current;
+        let mut choice = if reset { None } else { current };
         egui::ComboBox::from_id_salt("subclass_class")
-            .selected_text(
-                current.map_or_else(|| base_label.clone(), |class| class.label().to_owned()),
-            )
+            .selected_text(current.map_or(base_label, ArmorClass::label))
             .width(ui.available_width())
             .truncate()
             .show_ui(ui, |ui| {
@@ -365,12 +439,30 @@ impl PackageAuthoringApp {
             );
             return;
         };
+        sundial::ui::notice(
+            ui,
+            "Ability Authoring Is Experimental",
+            "Some changes may not behave as expected in game, and some values are not fully \
+             understood yet. Ability authoring will improve in future releases.",
+        );
+        self.subclass_page
+            .icons
+            .poll(&mut self.recipe, base.hash, ui.ctx());
         let abilities = self
             .recipe
             .overrides
             .subclass_abilities
             .clone()
             .unwrap_or_default();
+        // The Projectile browser's All Projectiles list, and a swap to a projectile no stock ability
+        // fires, read the engine catalog the perk workbench loads.
+        if self.subclass_page.properties.wants_catalog
+            && self.build_receiver.is_none()
+            && self.install_receiver.is_none()
+        {
+            self.perk_workbench
+                .prepare_assets(ui.ctx(), &self.packages, self.catalog.as_ref());
+        }
         let mut page = std::mem::take(&mut self.subclass_page);
         page.artwork.poll();
         if page.artwork.busy() {
@@ -419,6 +511,8 @@ impl PackageAuthoringApp {
         {
             page.selection = selection;
             page.search.clear();
+            page.parameter_query.clear();
+            page.property_query.clear();
             // An open form belongs to the row it was opened on.
             page.modifier_draft = None;
         }
@@ -434,19 +528,39 @@ impl PackageAuthoringApp {
         }
     }
 
-    /// Values belong to the entity they were edited on, and stock modifier removals and parameters
-    /// to the pool and bank of the ability they changed. An entry based on another stock ability
-    /// keeps only the values its new source's entity has.
-    fn keep_own_values(&self, edits: &mut EntryEdits, (source, entry): (u32, u8)) {
-        let entity = find_subclass(&self.subclasses, source)
-            .and_then(|subclass| subclass.entry_entities.get(&entry).copied());
-        edits.ability_values.retain(|value| {
-            value.locator.graph_tag.is_some()
-                && value.locator.graph_tag.map(|tag| tag.get()) == entity
-        });
-        // A stock modifier and a parameter belong to the pool and bank of the ability it was.
-        edits.removed_modifiers.clear();
-        edits.parameters.clear();
+    /// Keep graph and bank edits when two choices share an entity. Pool removals belong to the
+    /// source choice. Controls without a compatible new ability must lose their hidden edits.
+    fn keep_own_values(&self, edits: &mut EntryEdits, from: (u32, u8), to: (u32, u8)) {
+        let entity_of = |(source, entry): (u32, u8)| {
+            find_subclass(&self.subclasses, source)
+                .and_then(|subclass| subclass.entry_entities.get(&entry).copied())
+        };
+        let entity = entity_of(to);
+        if from != to {
+            edits.removed_modifiers.clear();
+        }
+        if entity_of(from) != entity {
+            edits.ability_values.clear();
+            edits.parameters.clear();
+            edits.bank_values.clear();
+            edits.palettes.clear();
+            edits.tints.clear();
+            edits.spawn_swaps.clear();
+            edits.attached_abilities.clear();
+        }
+        let row = find_subclass(&self.subclasses, to.0)
+            .and_then(|summary| summary.entry_rows.get(&to.1))
+            .and_then(|row| self.catalog.as_ref()?.ability_row(*row));
+        if !row.is_some_and(|row| row.charges) {
+            edits.extra_charges = 0;
+        }
+        if !row.is_some_and(|row| row.recharge) {
+            edits.set_recharge(None);
+        }
+        if entity.is_none() {
+            edits.grade = None;
+            edits.damage_type = None;
+        }
     }
 
     fn apply_ability_edit(
@@ -455,14 +569,25 @@ impl PackageAuthoringApp {
         mut abilities: SubclassAbilities,
         edit: AbilityEdit,
     ) {
+        if matches!(
+            edit,
+            AbilityEdit::ResetAbility(_)
+                | AbilityEdit::ResetAttunement(_)
+                | AbilityEdit::ResetNode(..)
+                | AbilityEdit::Restore
+        ) {
+            self.subclass_page.icons.cancel();
+        }
         match edit {
             AbilityEdit::AbilitySource(entry, (source, source_entry)) => {
+                let old = abilities.ability(base, entry);
+                let from = (old.source, old.source_entry);
                 let mut choice = crate::subclass::SubclassChoice {
                     source,
                     source_entry,
-                    ..abilities.ability(base, entry)
+                    ..old
                 };
-                self.keep_own_values(&mut choice.edits, (source, source_entry));
+                self.keep_own_values(&mut choice.edits, from, (source, source_entry));
                 abilities.set_ability(base, choice);
             }
             AbilityEdit::ResetAbility(entry) => abilities.reset_ability(entry),
@@ -470,14 +595,16 @@ impl PackageAuthoringApp {
             AbilityEdit::PathSource(path, source) => abilities.set_path_source(path, base, source),
             AbilityEdit::PathName(path, name) => abilities.set_path_name(path, base, name),
             AbilityEdit::NodeSource(path, position, (source, source_path, source_position)) => {
+                let old = abilities.node(base, path, position);
+                let from = (old.source, old.source_entry());
                 let mut node = SubclassPathNode {
                     source,
                     source_path,
                     source_position,
-                    ..abilities.node(base, path, position)
+                    ..old
                 };
                 let source_entry = node.source_entry();
-                self.keep_own_values(&mut node.edits, (source, source_entry));
+                self.keep_own_values(&mut node.edits, from, (source, source_entry));
                 abilities.set_path_node(path, base, node);
             }
             AbilityEdit::ResetNode(path, position) => {
@@ -510,7 +637,7 @@ impl PackageAuthoringApp {
             .subclass_abilities
             .clone()
             .unwrap_or_default();
-        Place::all()
+        Place::editable()
             .map(|place| {
                 let name = self.entry_title(&abilities, base.hash, place);
                 (place, format!("{} · {name}", place.label()))

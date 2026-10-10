@@ -5,13 +5,24 @@ impl Editor {
         if self.source_texture.is_none() {
             self.source_texture = Some(load_texture(ctx, "artwork-source", self.source.pixels()));
         }
-        let Ok(current) = self.current() else {
+        let Ok(current) = (if self.show_original {
+            Ok(self.original.clone())
+        } else {
+            self.current()
+        }) else {
             return;
         };
         if self.rendered.as_ref() == Some(&current) {
             return;
         }
         let image = match (&mut self.context, self.kind) {
+            (
+                _,
+                Kind::Nameplate {
+                    size: (width, height),
+                    ..
+                },
+            ) => Ok(color_image(&current.render(width, height))),
             (Some(ContextPreview::Watermark(preview)), Kind::Watermark) => preview.render(&current),
             (context, Kind::Badge) => {
                 let mask = match context {
@@ -44,14 +55,36 @@ impl Editor {
     }
 
     pub(super) fn draw_preview(&mut self, ui: &mut egui::Ui) {
-        ui.strong(if self.kind == Kind::Badge {
-            "Badge Preview"
-        } else {
-            "Weapon Icon Preview"
+        ui.strong(match self.kind {
+            Kind::Badge => "Badge Preview",
+            Kind::Watermark => "Weapon Icon Preview",
+            Kind::Nameplate { part, .. } => part.label(),
+        });
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.show_original, true, "Before");
+            ui.selectable_value(&mut self.show_original, false, "After");
         });
         ui.add_space(6.0);
         if let Some(texture) = self.preview_texture.clone() {
-            if self.kind == Kind::Badge {
+            if let Kind::Nameplate {
+                size: (width, height),
+                ..
+            } = self.kind
+            {
+                let scale = (ui.available_width() / width as f32).min(260.0 / height as f32);
+                let size = egui::vec2(width as f32, height as f32) * scale;
+                crate::app::transparency_backdrop(
+                    ui,
+                    egui::Rect::from_min_size(ui.cursor().min, size),
+                );
+                let response = ui.add(
+                    egui::Image::new(&texture)
+                        .fit_to_exact_size(size)
+                        .sense(egui::Sense::drag()),
+                );
+                self.pan(&response, size);
+                ui.weak(format!("Output {width} × {height} px"));
+            } else if self.kind == Kind::Badge {
                 let width = ui.available_width().min(440.0);
                 let size = egui::vec2(width, width * 268.0 / 440.0);
                 crate::app::transparency_backdrop(
@@ -107,7 +140,11 @@ impl Editor {
         if let Some(error) = &self.context_error {
             ui.weak("Game preview unavailable").on_hover_text(error);
         }
-        ui.weak("Drag the preview to move the artwork.");
+        ui.weak(if self.show_original {
+            "Before shows the artwork when you opened the editor."
+        } else {
+            "Drag the preview to move the artwork."
+        });
         if self.tab == Tab::Crop {
             ui.add_space(10.0);
             ui.strong("Source Image");
@@ -119,6 +156,10 @@ impl Editor {
     }
 
     fn pan(&mut self, response: &egui::Response, size: egui::Vec2) {
+        if self.show_original {
+            self.pan_offset = None;
+            return;
+        }
         if response.drag_started() {
             self.pan_offset = Some(self.composition.offset.map(f32::from));
         }

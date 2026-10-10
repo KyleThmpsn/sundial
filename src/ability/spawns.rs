@@ -94,6 +94,36 @@ pub fn tables(
     Ok(found)
 }
 
+/// The outgoing graphs, impact tables and self references found in one owner scan.
+#[derive(Default)]
+pub struct Links {
+    pub spawns: Vec<Spawn>,
+    pub tables: Vec<Spawn>,
+    pub selves: Vec<Spawn>,
+}
+
+/// Collects all three kinds together when traversing or copying a graph. Each list
+/// retains the owner and offset order of its individual collector.
+pub fn links(manager: &PackageManager, entity_tag: u32, entity: &[u8]) -> Result<Links, String> {
+    let places = places(manager, entity, |value, class| {
+        value == entity_tag || class == WEAPON_ENTITY_CLASS || TABLES.contains(&class)
+    })?;
+    let mut found = Links::default();
+    for place in places {
+        if place.graph == entity_tag {
+            found.selves.push(place);
+        } else if manager
+            .get_entry(place.graph)
+            .is_some_and(|entry| entry.reference == WEAPON_ENTITY_CLASS)
+        {
+            found.spawns.push(place);
+        } else if is_table(manager, place.graph) {
+            found.tables.push(place);
+        }
+    }
+    Ok(found)
+}
+
 /// The graphs and impact tables `table` names, each with the offset of every declared reference
 /// field naming it, in the order they first appear. A `80808BCB` table can name the table above
 /// it and itself, as `80C70C92` names `80C70C91` at `+0xC` and itself at `+0x10`, so the list can
@@ -147,8 +177,14 @@ pub fn reached_graphs(
     entity_tag: u32,
     entity: &[u8],
 ) -> Result<Vec<u32>, String> {
-    let mut graphs = spawned_graphs(manager, entity_tag, entity)?;
-    for place in tables(manager, entity_tag, entity)? {
+    let links = links(manager, entity_tag, entity)?;
+    let mut graphs = Vec::new();
+    for spawn in links.spawns {
+        if !graphs.contains(&spawn.graph) {
+            graphs.push(spawn.graph);
+        }
+    }
+    for place in links.tables {
         for graph in table_graphs(manager, place.graph)? {
             if graph != entity_tag && !graphs.contains(&graph) {
                 graphs.push(graph);
@@ -160,7 +196,7 @@ pub fn reached_graphs(
 
 /// Every place `entity`'s component owners name a live tag that `wanted` accepts, by the tag and its
 /// class.
-fn places(
+pub(super) fn places(
     manager: &PackageManager,
     entity: &[u8],
     wanted: impl Fn(u32, u32) -> bool,

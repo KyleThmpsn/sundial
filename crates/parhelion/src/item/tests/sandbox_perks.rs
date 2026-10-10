@@ -139,9 +139,9 @@ fn malformed_companion_conditions_are_rejected_before_mutation() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn stock_companion_layouts_preserve_conditions_when_extended() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let sources = sources::load_project_sources(&packages).unwrap();
     let template =
         canonical_item_sandbox_perk_string_template(&sources.manager, &sources.stock_item_strings)
@@ -300,9 +300,9 @@ fn gameplay_conditions_survive_growth_reordering_and_removal() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn stock_gameplay_companion_conditions_survive_growth() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let sources = sources::load_project_sources(&packages).unwrap();
     let template =
         canonical_weapon_sandbox_perk_row_template(&sources.manager, &sources.stock_item_table)

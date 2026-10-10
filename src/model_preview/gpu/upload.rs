@@ -10,9 +10,12 @@ pub(super) struct Prepared {
     attributes: Vec<f32>,
     groups: Vec<Group>,
     order: Vec<u32>,
+    ordering: order::Cache,
     framing: [([f32; 3], f32); 2],
     hide_emitter: bool,
     roles: Vec<[bool; 2]>,
+    source_indices: Vec<u32>,
+    deformation: Option<deform::Prepared>,
 }
 
 impl Prepared {
@@ -75,6 +78,7 @@ impl Prepared {
                 Some(group) if group.key == key => group.count += 3,
                 _ => groups.push(Group {
                     key,
+                    indexed: false,
                     first: position as i32 * 3,
                     count: 3,
                 }),
@@ -91,6 +95,15 @@ impl Prepared {
         );
 
         let roles = texture_roles(model);
+        let ordering = order::Cache::new(model, &groups, &order, framing[0].0, hide_emitter);
+        let source_indices = order
+            .iter()
+            .flat_map(|&triangle| {
+                let [a, b, c] = model.triangles[triangle as usize];
+                [a, b, c, b, c, a, c, a, b]
+            })
+            .collect();
+        let deformation = deform::Prepared::new(model);
 
         Self {
             model: held,
@@ -98,9 +111,12 @@ impl Prepared {
             attributes,
             groups,
             order,
+            ordering,
             framing,
             hide_emitter,
             roles,
+            source_indices,
+            deformation,
         }
     }
 }
@@ -143,20 +159,26 @@ pub(super) struct Pending {
     level: usize,
 }
 
-pub(super) unsafe fn begin(gl: &glow::Context, prepared: Prepared) -> Uploaded {
+pub(super) unsafe fn begin(gl: &glow::Context, prepared: Prepared) -> Result<Uploaded, String> {
     let Prepared {
         model,
         positions,
         attributes,
         groups,
         order,
+        ordering,
         framing,
         hide_emitter,
         roles,
+        source_indices,
+        deformation,
     } = prepared;
     // SAFETY: the paint callback supplies its current context. These objects remain owned
     // by Uploaded and all buffers are allocated to the exact prepared slice lengths.
     unsafe {
+        let deformation = deformation
+            .map(|prepared| deform::Pipeline::new(gl, prepared, model.vertices.len()))
+            .transpose()?;
         let vao = gl.create_vertex_array().expect("vertex array");
         gl.bind_vertex_array(Some(vao));
         let position_buffer = gl.create_buffer().expect("buffer");
@@ -187,6 +209,17 @@ pub(super) unsafe fn begin(gl: &glow::Context, prepared: Prepared) -> Uploaded {
         gl.vertex_attrib_pointer_f32(5, 4, glow::FLOAT, false, 64, 44);
         gl.enable_vertex_attrib_array(6);
         gl.vertex_attrib_pointer_f32(6, 1, glow::FLOAT, false, 64, 60);
+        let source_buffer = gl.create_buffer().expect("source index buffer");
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(source_buffer));
+        let bytes = std::slice::from_raw_parts(
+            source_indices.as_ptr().cast::<u8>(),
+            std::mem::size_of_val(source_indices.as_slice()),
+        );
+        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STATIC_DRAW);
+        gl.enable_vertex_attrib_array(7);
+        gl.vertex_attrib_pointer_i32(7, 3, glow::UNSIGNED_INT, 12, 0);
+        let index_buffer = gl.create_buffer().expect("element buffer");
+        gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(index_buffer));
         gl.bind_vertex_array(None);
         let lookup = model.iridescence.as_ref().map(|texture| {
             let handle = gl.create_texture().expect("texture");
@@ -255,7 +288,12 @@ pub(super) unsafe fn begin(gl: &glow::Context, prepared: Prepared) -> Uploaded {
                         } as i32;
                         gl.sampler_parameter_i32(sampler, glow::TEXTURE_WRAP_S, mode(source.u));
                         gl.sampler_parameter_i32(sampler, glow::TEXTURE_WRAP_T, mode(source.v));
-                        configure_sampler(gl, sampler, source, effect.sampling().is_some());
+                        configure_sampler(
+                            gl,
+                            sampler,
+                            source,
+                            effect.sampling().is_some() || effect.native.is_some(),
+                        );
                         gl.sampler_parameter_f32_slice(
                             sampler,
                             glow::TEXTURE_BORDER_COLOR,
@@ -268,12 +306,17 @@ pub(super) unsafe fn begin(gl: &glow::Context, prepared: Prepared) -> Uploaded {
             .collect();
 
         let textures = vec![[None; 2]; model.textures.len()];
-        Uploaded {
+        Ok(Uploaded {
             model,
             vao,
             positions: position_buffer,
             attributes: attribute_buffer,
-            posed: false,
+            indices: index_buffer,
+            source_indices: source_buffer,
+            deformation,
+            particles: None,
+            pose: None,
+            ordering,
             textures,
             lookup,
             groups,
@@ -290,7 +333,7 @@ pub(super) unsafe fn begin(gl: &glow::Context, prepared: Prepared) -> Uploaded {
                 row: 0,
                 level: 0,
             }),
-        }
+        })
     }
 }
 
@@ -436,7 +479,9 @@ unsafe fn configure_sampler(
         gl.sampler_parameter_i32(handle, glow::TEXTURE_MIN_FILTER, min as i32);
         gl.sampler_parameter_i32(handle, glow::TEXTURE_MAG_FILTER, mag as i32);
         if native {
-            gl.sampler_parameter_f32(handle, glow::TEXTURE_LOD_BIAS, source.mip_bias);
+            // Isotropic native reads apply the bias explicitly in samplePlate. The sampler's
+            // bias must be zero because GL also adds it to an explicit textureLod lookup.
+            gl.sampler_parameter_f32(handle, glow::TEXTURE_LOD_BIAS, 0.0);
             gl.sampler_parameter_f32(handle, glow::TEXTURE_MIN_LOD, source.lod[0]);
             gl.sampler_parameter_f32(handle, glow::TEXTURE_MAX_LOD, source.lod[1]);
             if gl
@@ -513,16 +558,24 @@ unsafe fn transfer_image(
 fn texture_roles(model: &Model) -> Vec<[bool; 2]> {
     // Colour plates and dye detail colour are sRGB; masks and normals are linear.
     let mut roles = vec![[false; 2]; model.textures.len()];
+    for source in &model.particle_sources {
+        if let Some(role) = roles.get_mut(source.texture) {
+            *role = [true, true];
+        }
+        if let Some(index) = source.gradient
+            && let Some(role) = roles.get_mut(index)
+        {
+            role[1] = true;
+        }
+    }
     for map in model.triangle_dye_maps.iter().flatten() {
         roles[map.texture][0] = true;
     }
     for index in model.triangle_textures.iter().flatten() {
         roles[*index][1] = true;
     }
-    for dye in model.dyes.iter().flatten() {
-        if let Some(index) = dye.detail {
-            roles[index][1] = true;
-        }
+    for index in model.dyes.iter().flatten().filter_map(|dye| dye.detail) {
+        roles[index][1] = true;
     }
     for index in model
         .triangle_gearstacks
@@ -532,18 +585,16 @@ fn texture_roles(model: &Model) -> Vec<[bool; 2]> {
     {
         roles[*index][0] = true;
     }
-    for dye in model.dyes.iter().flatten() {
-        if let Some(index) = dye.normal {
-            roles[index][0] = true;
-        }
+    for index in model.dyes.iter().flatten().filter_map(|dye| dye.normal) {
+        roles[index][0] = true;
     }
     for effect in &model.effects {
         if let Some(native) = &effect.native {
             for binding in &native.bindings {
-                if let super::super::effects::native::Role::Texture(index) = binding.role {
-                    if let Some(roles) = roles.get_mut(index) {
-                        roles[usize::from(binding.color)] = true;
-                    }
+                if let super::super::effects::native::Role::Texture(index) = binding.role
+                    && let Some(roles) = roles.get_mut(index)
+                {
+                    roles[usize::from(binding.color)] = true;
                 }
             }
         }

@@ -4,7 +4,7 @@
 //! first-person animations, carries Dire Promise's type markers and has its trigger and muzzle markers
 //! moved. Every claim is read from the staged packages: the attachment row and content block the
 //! authored weapon's row selects, and the marker sets its appearance resolves to. When
-//! `PARHELION_PARTS_REPORT` names a file, the read-back is written there as JSON.
+//! `SUNDIAL_TEST_ARTIFACTS` is set, the read-back is written there as `parts-report.json`.
 use super::*;
 use sundial::package_authoring::gear_markers::{MarkerSet, read_appearance};
 use sundial::package_authoring::runtime::{
@@ -34,7 +34,7 @@ fn positions(sets: &[MarkerSet]) -> BTreeMap<u32, Vec<[u32; 3]>> {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 #[expect(
     clippy::cognitive_complexity,
     reason = "One staged build is read back part by part in sequence"
@@ -42,10 +42,7 @@ fn positions(sets: &[MarkerSet]) -> BTreeMap<u32, Vec<[u32; 3]>> {
 fn real_part_donors_and_moved_markers_reach_the_staged_packages() {
     use crate::weapon::animations::profile;
     use crate::weapon::behavior::{block_for_group, content, first_triple};
-    let packages = PathBuf::from(
-        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-            .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages"),
-    );
+    let packages = crate::test_support::stock_packages();
     let trigger = sundial::package_authoring::fnv1_name_hash("primary_trigger");
     let primary_fire = sundial::package_authoring::fnv1_name_hash("primary_fire");
     let raised = [0.0, 0.0, 0.005];
@@ -240,7 +237,7 @@ fn real_part_donors_and_moved_markers_reach_the_staged_packages() {
         "every part model should move by the held offset"
     );
 
-    if let Some(path) = std::env::var_os("PARHELION_PARTS_REPORT") {
+    if let Some(path) = crate::test_support::artifacts("parts-report.json") {
         let hex = |value: u32| format!("0x{value:08X}");
         let report = serde_json::json!({
             "item": hex(plan.item_hash),
@@ -268,14 +265,11 @@ fn real_part_donors_and_moved_markers_reach_the_staged_packages() {
 /// rifle's burst. Animations from the base weapon's own family keep the scout rig, so the build
 /// pins the pulse rifle's parts to it and the weapon resolves the scout's first-person rig.
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn real_base_family_animations_keep_the_base_rig() {
     const JADE_RABBIT: u32 = 0xE529_6126;
     const MACHINA_DEI_4: u32 = 0x09A0_DE64;
-    let packages = PathBuf::from(
-        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-            .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages"),
-    );
+    let packages = crate::test_support::stock_packages();
     let namespace = "parhelion.kept-rig.integration";
     let spec = WeaponCloneSpec {
         kind: crate::ItemKind::Weapon,
@@ -500,7 +494,7 @@ fn event_wiring(entity: &[u8]) -> Vec<[u8; 0x48]> {
 /// its donor's values while the hand cannon keeps its own trigger, its own objects and its own
 /// event wiring, so the three come from three weapons at once.
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn real_component_splices_take_one_component_each() {
     use sundial::package_authoring::entity::{
         WEAPON_BARREL_COMPONENT_KEY, WEAPON_MAGAZINE_COMPONENT_KEY, WEAPON_TRIGGER_COMPONENT_KEY,
@@ -508,10 +502,7 @@ fn real_component_splices_take_one_component_each() {
     };
     const JADE_RABBIT: u32 = 0xE529_6126;
     const SWEET_BUSINESS: u32 = 0x5038_4F32;
-    let packages = PathBuf::from(
-        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-            .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages"),
-    );
+    let packages = crate::test_support::stock_packages();
     let namespace = "parhelion.component-splices.integration";
     let spec = WeaponCloneSpec {
         kind: crate::ItemKind::Weapon,
@@ -631,10 +622,10 @@ fn rate_curves_by_type(owner: &[u8]) -> BTreeMap<u32, Vec<Vec<f32>>> {
 /// user built it. Both types share one rig and the row names the sidearm's type, yet the
 /// stat translator must still convert as a hand cannon, or Rounds Per Minute 40 fires about
 /// twice as fast. And with the Arc Damage Mod's socket gone, the weapon must carry Arc on itself
-/// rather than turning Kinetic. When `PARHELION_RATE_DAMAGE_REPORT` names a file, the read-back
-/// is written there as JSON.
+/// rather than turning Kinetic. When `SUNDIAL_TEST_ARTIFACTS` is set, the read-back
+/// is written there as `rate-damage-report.json`.
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 #[allow(
     clippy::cognitive_complexity,
     reason = "End-to-end verification keeps the ordered workflow and its independent assertions together"
@@ -649,10 +640,7 @@ fn real_sidearm_look_keeps_hand_cannon_rates_and_arc_damage() {
     const HAND_CANNON: u32 = 0xC8CC_993A;
     const SIDEARM: u32 = 0x3EB0_2F1A;
     const DAMAGE_SOCKET: usize = 4;
-    let packages = PathBuf::from(
-        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-            .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages"),
-    );
+    let packages = crate::test_support::stock_packages();
     let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     let base = catalog.weapon_donor(NATURE_OF_THE_BEAST).unwrap();
     let mut socket_columns = vec![None; base.sockets.len()];
@@ -807,7 +795,7 @@ fn real_sidearm_look_keeps_hand_cannon_rates_and_arc_damage() {
     );
     assert_eq!(field(&changed, "Rig Moved From"), rig_donor);
 
-    if let Some(path) = std::env::var_os("PARHELION_RATE_DAMAGE_REPORT") {
+    if let Some(path) = crate::test_support::artifacts("rate-damage-report.json") {
         let report = serde_json::json!({
             "item": format!("0x{:08X}", plan.item_hash),
             "sidearm_converts_as_hand_cannon": built[&SIDEARM] == original[&HAND_CANNON],
@@ -824,7 +812,6 @@ fn real_sidearm_look_keeps_hand_cannon_rates_and_arc_damage() {
             "client_build": sundial::package_authoring::sandbox_perk::nodes::CLIENT_BUILD,
             "gameplay_verified": false,
         });
-        let path = PathBuf::from(path);
         fs::write(path.with_extension("txt"), &changed).unwrap();
         fs::write(path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
     }
@@ -833,17 +820,14 @@ fn real_sidearm_look_keeps_hand_cannon_rates_and_arc_damage() {
 /// Luna's Howl, a Precision Frame hand cannon, takes its hip and aim fire from Ancient Gospel's
 /// Adaptive Frame animations and keeps every other action. The build gives it a private copy of
 /// the arms rig whose state table answers those two actions as Ancient Gospel's profile would,
-/// while every other hand cannon keeps the shared rig. When `PARHELION_ACTIONS_REPORT` names a
-/// file, the read-back is written there as JSON.
+/// while every other hand cannon keeps the shared rig. When `SUNDIAL_TEST_ARTIFACTS` is set,
+/// the read-back is written there as `actions-report.json`.
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn real_single_actions_play_another_frames_animations() {
     use crate::recipe::AnimationAction;
     use crate::weapon::animations::{actions::Machine, arms_rig, profile};
-    let packages = PathBuf::from(
-        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-            .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages"),
-    );
+    let packages = crate::test_support::stock_packages();
     let namespace = "parhelion.single-actions.integration";
     let spec = WeaponCloneSpec {
         kind: crate::ItemKind::Weapon,
@@ -966,7 +950,7 @@ fn real_single_actions_play_another_frames_animations() {
         stock_rig.entity_tag,
         "every other weapon should keep the stock arms rig"
     );
-    if let Some(path) = std::env::var_os("PARHELION_ACTIONS_REPORT") {
+    if let Some(path) = crate::test_support::artifacts("actions-report.json") {
         let report = serde_json::json!({
             "item": format!("0x{:08X}", bundle.plan.weapons[0].item_hash),
             "arms_rig": format!("0x{:08X}", authored_rig.entity_tag),
@@ -978,9 +962,9 @@ fn real_single_actions_play_another_frames_animations() {
 }
 
 /// Borrows a lightweight Reload on an exotic submachine gun and reads its packed private rig.
-/// PARHELION_TEST_ARTIFACTS retains the read-back and staged package hashes.
+/// SUNDIAL_TEST_ARTIFACTS retains the read-back and staged package hashes.
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 #[allow(
     clippy::cognitive_complexity,
     reason = "One staged build is read back part by part in sequence"
@@ -991,10 +975,7 @@ fn real_single_actions_reload_between_submachine_gun_profiles() {
 
     const DEATH_ADDER: u32 = 0x960F_8322;
     const HUCKLEBERRY: u32 = 0x8843_C72A;
-    let packages = PathBuf::from(
-        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-            .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages"),
-    );
+    let packages = crate::test_support::stock_packages();
     let cases = [(
         HUCKLEBERRY,
         "The Huckleberry",

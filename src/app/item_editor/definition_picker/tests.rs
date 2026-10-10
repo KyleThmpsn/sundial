@@ -16,7 +16,7 @@ fn large_picker_scrolls_and_filters_without_building_offscreen_widgets() {
     let mut query = String::new();
     let mut action = None;
     let frame = |query: &mut String, action: &mut Option<ItemEditorAction>, open, events| {
-        ctx.run(
+        ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -25,8 +25,8 @@ fn large_picker_scrolls_and_filters_without_building_offscreen_widgets() {
                 events,
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     let anchor = ui.button("Choose Reward");
                     *action = draw_definition_picker_with_open_request_and_item_filter(
                         ui,
@@ -95,6 +95,7 @@ fn large_picker_scrolls_and_filters_without_building_offscreen_widgets() {
             unit: egui::MouseWheelUnit::Point,
             delta: egui::vec2(0.0, -1200.0),
             modifiers: egui::Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
         },
     ];
     frame(&mut query, &mut action, false, events);
@@ -135,5 +136,5 @@ fn large_picker_scrolls_and_filters_without_building_offscreen_widgets() {
         );
     }
     assert_eq!(action, Some(ItemEditorAction::SetDefinition { hash: 4999 }));
-    crate::app::tests::capture::write(&ctx, &output, "reward-picker-filtered");
+    crate::test_support::capture::write(&ctx, &output, "reward-picker-filtered");
 }

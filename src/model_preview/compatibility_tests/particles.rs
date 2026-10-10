@@ -1,6 +1,14 @@
 //! Package-loaded particle meshes stay inspectable without becoming object surfaces.
 use super::*;
 use fixtures::{floats, put};
+mod lifecycle;
+mod material;
+mod sprites;
+
+pub(in crate::model_preview) fn lifecycle_case(rate: f32, missing_input: bool) -> Model {
+    let temporary = tempfile::tempdir().unwrap();
+    lifecycle::load(temporary.path(), rate, missing_input)
+}
 
 pub(crate) fn case(composed: bool) -> Model {
     let (mut package, _, models) = fixtures::cloth_entity();
@@ -53,11 +61,12 @@ fn composed_particle_meshes_remain_inspectable_without_changing_object_preview()
         pitch: 0.0,
         ..Default::default()
     };
-    let scene = render::Scene::default();
+    let scene = render::Scene::unprocessed();
     let draw =
         |model: &Model, style| render::styled_image(model, camera, scene, [192, 192], 0.0, style);
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_deref()
         .map(Path::new)

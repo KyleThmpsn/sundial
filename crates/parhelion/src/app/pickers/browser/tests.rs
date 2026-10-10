@@ -6,7 +6,7 @@ fn browser_opens_with_search_and_closes_on_escape_without_a_selection() {
         let ctx = egui::Context::default();
         let mut query = String::new();
         let mut frame = |events| {
-            ctx.run(
+            ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -15,8 +15,8 @@ fn browser_opens_with_search_and_closes_on_escape_without_a_selection() {
                     events,
                     ..Default::default()
                 },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         let result = browser(
                             ui,
                             "test-browser",
@@ -80,7 +80,7 @@ fn show_all_starts_off_and_large_lists_have_no_two_hundred_row_cutoff() {
     let mut indices = Vec::new();
     let mut previewed = false;
     for _ in 0..3 {
-        let _ = ctx.run(
+        let _ = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -88,8 +88,8 @@ fn show_all_starts_off_and_large_lists_have_no_two_hundred_row_cutoff() {
                 )),
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     assert!(!show_all(ui, "test").0);
                     // Keep a result after the old group cap selected and inspectable.
                     ui.data_mut(|state| {

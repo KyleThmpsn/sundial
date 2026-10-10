@@ -113,24 +113,25 @@ fn specialize(program: &mut Program, inputs: &BTreeMap<u32, f32>) -> Result<()> 
     Ok(())
 }
 
-/// The serialized native program. `identity` fills the compiled identity at +0xF8, which the
-/// native runtime copies to each emitter as its seed identity.
-pub(super) fn native(source: &[u8], inputs: &BTreeMap<u32, f32>, identity: u32) -> Result<Vec<u8>> {
-    let p = Payload(source.to_vec());
+/// Resolve the importing weapon's fixed inputs before planning workspace and material changes.
+pub(super) fn prepare(source: &[u8], inputs: &BTreeMap<u32, f32>) -> Result<Program> {
     let mut program = Program::read(source)?;
+    let p = Payload(source.to_vec());
     ensure!(
-        source
-            .get(0x28..0x38)
-            .is_some_and(|b| b.iter().all(|v| *v == 0)),
-        "particle program reserved header differs"
+        p.u64(0x28)? != 0 || p.u64(0x30)? == 0,
+        "empty particle transform table has a pointer"
     );
     specialize(&mut program, inputs)?;
+    Ok(program)
+}
+
+/// Serialize the planned program while retaining the source header's other contracts.
+/// `identity` fills +0xF8, which the native runtime copies to each emitter as its seed identity.
+pub(super) fn native(source: &[u8], program: &Program, identity: u32) -> Result<Vec<u8>> {
+    let p = Payload(source.to_vec());
     let lowered = program.lower(&BTreeMap::new())?;
     let workspace = lowered.native_workspace_bytes()?;
-    let source_routes = (0..56)
-        .map(|i| p.bytes::<2>(0x88 + i * 2))
-        .collect::<Result<Vec<_>>>()?;
-    let routes = routes(&source_routes)?;
+    let routes = routes(&program.routes)?;
     // The per-emitter byte array at +0x18 (two entries in every inspected program) is copied
     // as it stands. Its native array keeps the same element class.
     let bindings = p
@@ -155,6 +156,16 @@ pub(super) fn native(source: &[u8], inputs: &BTreeMap<u32, f32>, identity: u32) 
     let vectors = |rows: &[[u8; 16]]| rows.concat();
     array(&mut out, 0x08, 0x80800090, &vectors(&lowered.defaults), 16)?;
     array(&mut out, 0x18, 0x80800009, &bindings, 1)?;
+    // The source 6928 and native 6E2D records are two-byte transform bindings.
+    // Keep their indices and flags. Their count is not the runtime transform
+    // capacity, which also includes inputs supplied by the containing sequence.
+    array(
+        &mut out,
+        0x28,
+        0x80806E2D,
+        &lowered.transform_bindings.concat(),
+        2,
+    )?;
     array(&mut out, 0x50, 0x80800009, &code, 1)?;
     array(&mut out, 0x60, 0x80800090, &vectors(&lowered.constants), 16)?;
     let size = out.len() as u64;

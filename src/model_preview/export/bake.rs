@@ -25,18 +25,44 @@ const MARGIN: usize = 4;
 /// The three textures a part's material is evaluated from. Parts that share all three are
 /// baked together.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct Plate {
-    albedo: usize,
-    gearstack: Option<usize>,
-    normal: Option<usize>,
-    no_basis: bool,
-    dye_map: Option<super::super::texture::DyeMap>,
-    base_gain: Option<[u32; 3]>,
-    base_metal: Option<u32>,
-    paint: Option<[u32; 2]>,
-    normal_decode: Option<[[u32; 2]; 4]>,
-    grain: Option<[u32; 3]>,
-    legacy_normal: Option<[u32; 3]>,
+pub(crate) struct Plate {
+    pub albedo: usize,
+    pub gearstack: Option<usize>,
+    pub normal: Option<usize>,
+    pub no_basis: bool,
+    pub dye_map: Option<super::super::texture::DyeMap>,
+    pub base_gain: Option<[u32; 3]>,
+    pub base_metal: Option<u32>,
+    pub paint: Option<[u32; 2]>,
+    pub normal_decode: Option<[[u32; 2]; 4]>,
+    pub grain: Option<[u32; 3]>,
+    pub legacy_normal: Option<[u32; 3]>,
+}
+
+/// A planned material pass. The GPU consumes UV ownership, never CPU-shaded texels.
+pub(crate) struct Request {
+    pub size: [usize; 2],
+    pub plate: Plate,
+    pub dyes: [Option<shader::Dye>; 6],
+    pub surfaces: Vec<Surface>,
+    pub layout: Layout,
+}
+
+pub(crate) struct Surface {
+    pub triangle: usize,
+    pub dye: u8,
+    pub clip: bool,
+    pub cutoff: f32,
+    pub detail: Option<[[f32; 3]; 2]>,
+}
+
+pub(crate) enum Layout {
+    Plate(Vec<u32>),
+    Charts { cell: usize },
+}
+
+pub(crate) trait Baker {
+    fn paint(&mut self, request: Request) -> Result<Painted, String>;
 }
 
 impl Plate {
@@ -219,6 +245,7 @@ pub(super) fn bake(
     plate: Plate,
     triangles: &[usize],
     remaining_charts: &mut Budget,
+    backend: &mut Option<&mut dyn Baker>,
 ) -> Result<Vec<Layer>, String> {
     let texture = model
         .textures
@@ -279,8 +306,8 @@ pub(super) fn bake(
         }
     }
     let mut claims: Vec<Claim> = finishes
-        .into_iter()
-        .flat_map(|(_, claims)| claims)
+        .into_values()
+        .flatten()
         .map(|mut entry| {
             entry.texels = claim(model, &entry.triangles, size);
             entry.texels.sort_unstable();
@@ -330,16 +357,44 @@ pub(super) fn bake(
         .map(|(mut owner, members)| {
             // Marks were checked when they were handed out.
             spread(&mut owner, size, members[0] as u32 + 1);
-            let painted = paint(&owner, &bindings, &finishes, &coordinates, size);
-            assemble(painted, plate, size, &members, &claims)
+            let painted = if let Some(backend) = backend.as_deref_mut() {
+                backend.paint(Request {
+                    size,
+                    plate,
+                    dyes: *dyes,
+                    surfaces: claims
+                        .iter()
+                        .map(|claim| Surface {
+                            triangle: claim.triangles[0],
+                            dye: model
+                                .triangle_dyes
+                                .get(claim.triangles[0])
+                                .copied()
+                                .unwrap_or(u8::MAX),
+                            clip: model
+                                .triangle_clip
+                                .get(claim.triangles[0])
+                                .copied()
+                                .unwrap_or(false),
+                            cutoff: claim.finish.cutoff.map(f32::from_bits).unwrap_or(0.5),
+                            detail: claim.detail.as_ref().map(Coordinates::matrix),
+                        })
+                        .collect(),
+                    layout: Layout::Plate(owner),
+                })?
+            } else {
+                paint(&owner, &bindings, &finishes, &coordinates, size)
+            };
+            Ok(assemble(painted, plate, size, &members, &claims))
         })
-        .collect();
+        .collect::<Result<Vec<_>, String>>()?;
     result.extend(atlas::bake(
         model,
         dyes,
         plate,
         &repacked,
         remaining_charts,
+        backend,
     )?);
     Ok(result)
 }
@@ -451,11 +506,11 @@ fn spread(owner: &mut [u32], size: [usize; 2], fallback: u32) {
 }
 
 /// Raw per-texel output before the layer decides which maps it needs.
-struct Painted {
-    color: Vec<u8>,
-    channels: Vec<u8>,
-    normal: Vec<u8>,
-    emission: Vec<[f32; 3]>,
+pub(crate) struct Painted {
+    pub color: Vec<u8>,
+    pub channels: Vec<u8>,
+    pub normal: Vec<u8>,
+    pub emission: Vec<[f32; 3]>,
 }
 
 /// Evaluates the material at every texel centre with its owner's dye. Evaluation is per

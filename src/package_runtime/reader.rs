@@ -25,6 +25,7 @@ pub struct PackageManager {
     pub platform: PackagePlatform,
     identity: u64,
     trace: Mutex<Option<trace::Reads>>,
+    local: HashMap<u16, Vec<Arc<[u8]>>>,
 }
 impl PackageManager {
     pub fn new(
@@ -42,6 +43,7 @@ impl PackageManager {
             platform: metadata.platform,
             identity: NEXT_READER.fetch_add(1, Ordering::Relaxed),
             trace: Mutex::new(None),
+            local: HashMap::new(),
         })
     }
     pub fn read_tag(&self, tag: impl Into<TagHash>) -> Result<Vec<u8>, String> {
@@ -56,6 +58,12 @@ impl PackageManager {
     }
 
     fn read_payload(&self, tag: TagHash) -> Result<Vec<u8>, String> {
+        if let Some(entries) = self.local.get(&tag.pkg_id()) {
+            return entries
+                .get(usize::from(tag.entry_index()))
+                .map(|data| data.to_vec())
+                .ok_or_else(|| format!("Local preview entry 0x{:08X} is missing", tag.0));
+        }
         let path = self
             .package_paths
             .get(&tag.pkg_id())
@@ -89,6 +97,36 @@ impl Drop for PackageManager {
 }
 
 impl PackageManager {
+    /// Add read-only preview payloads under an unused package identity. Existing package
+    /// entries cannot be replaced, and no package files or shared readers are changed.
+    pub fn add_local_package(
+        &mut self,
+        package: u16,
+        entries: Vec<(tiger_pkg::package::UEntryHeader, Vec<u8>)>,
+    ) -> Result<(), String> {
+        if package > 0x3ff
+            || entries.is_empty()
+            || entries.len() > 8192
+            || self.package_paths.contains_key(&package)
+            || self.lookup.tag32_entries_by_pkg.contains_key(&package)
+        {
+            return Err("Local preview package identity is unavailable".into());
+        }
+        let mut headers = Vec::with_capacity(entries.len());
+        let mut payloads = Vec::with_capacity(entries.len());
+        for (mut header, payload) in entries {
+            header.file_size = u32::try_from(payload.len())
+                .map_err(|_| "Local preview payload exceeds the package size limit")?;
+            header.starting_block = 0;
+            header.starting_block_offset = 0;
+            headers.push(header);
+            payloads.push(Arc::from(payload));
+        }
+        self.lookup.tag32_entries_by_pkg.insert(package, headers);
+        self.local.insert(package, payloads);
+        Ok(())
+    }
+
     pub fn get_entry(&self, tag: impl Into<TagHash>) -> Option<tiger_pkg::package::UEntryHeader> {
         let tag = tag.into();
         self.lookup

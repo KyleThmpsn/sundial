@@ -17,6 +17,7 @@ const INDEX_CLASS: u64 = 0x8080_000A;
 const GROUP_START: usize = 0x50;
 const GROUP_SIZE: usize = 0x28;
 
+pub(crate) mod native;
 pub(crate) mod partition;
 pub(crate) mod scoped;
 
@@ -338,9 +339,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+    #[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
     fn real_investment_dependency_index_round_trips_and_enrolls_private_action() {
-        let dir = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").expect("stock packages");
+        let dir = crate::test_support::stock_packages();
         let manager =
             sundial::package_authoring::open_shadowkeep_package_manager(std::path::Path::new(&dir))
                 .unwrap();

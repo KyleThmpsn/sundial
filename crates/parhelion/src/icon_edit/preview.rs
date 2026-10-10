@@ -80,6 +80,12 @@ impl LoadedIconPreview {
         };
         Ok(())
     }
+    /// Takes `art` as the image an edit starts from, in place of the container's own.
+    pub(super) fn replace_primary(&mut self, art: &super::ImportedIcon) {
+        let [width, height] = self.primary.size.map(|side| side as u32);
+        self.primary.rgba = art.fit_to(width, height).into_raw();
+    }
+
     pub(super) fn source_primary(&self, edit: &WeaponIconEdit) -> DecodedIconImage {
         let mut primary = self.primary.clone();
         if let Some(imported) = &edit.imported_image {
@@ -175,25 +181,7 @@ pub(super) fn load_bundled_preview_watermark() -> Result<DecodedIconImage, Strin
 pub(crate) struct IconLayers(LoadedIconPreview);
 
 impl IconLayers {
-    pub(crate) fn load(
-        package_directory: &Path,
-        container_tag: TagHash,
-        rarity: crate::AuthoredWeaponRarity,
-        corner: Option<&crate::presentation::Artwork>,
-        plain: bool,
-    ) -> Result<Self, String> {
-        let manager = open_shadowkeep_package_manager(package_directory)?;
-        Self::from_manager(
-            &manager,
-            container_tag,
-            rarity,
-            corner,
-            crate::branding::Branding::for_packages(package_directory),
-            plain,
-        )
-    }
-
-    fn from_manager(
+    pub(crate) fn from_manager(
         manager: &PackageManager,
         container_tag: TagHash,
         rarity: crate::AuthoredWeaponRarity,

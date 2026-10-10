@@ -38,14 +38,14 @@ fn action_picker_reaches_a_technical_native_kind_near_viewport_edges() {
         let mut workbench = Workbench::default();
         let keys = Default::default();
         let mut draw = |events| {
-            ctx.run(
+            ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(screen),
                     events,
                     ..Default::default()
                 },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         crate::app::style::perk_workbench_style(ui);
                         ui.scope_builder(
                             egui::UiBuilder::new().max_rect(egui::Rect::from_min_max(
@@ -221,6 +221,8 @@ fn program_recipe() -> PerkRecipe {
                 graph: 0x80BC_5810,
                 path: "content/sandbox/effects/trail/trail.entity.tft".into(),
                 values: Vec::new(),
+                damage_type: None,
+                rows: Vec::new(),
                 hud_status: None,
             }),
             Action::Spawn {
@@ -228,6 +230,8 @@ fn program_recipe() -> PerkRecipe {
                     graph: 0x80BC_2F21,
                     path: "content/sandbox/effects/burst/burst.entity.tft".into(),
                     values: Vec::new(),
+                    damage_type: None,
+                    rows: Vec::new(),
                     hud_status: None,
                 },
                 position: Position::Event,
@@ -239,6 +243,7 @@ fn program_recipe() -> PerkRecipe {
             Action::property(0x5EE2_66FC),
         ],
         native_asset_patches: Vec::new(),
+        imported_assets: Vec::new(),
         removal_key: None,
         native_trigger: None,
         native_removal: None,
@@ -263,13 +268,13 @@ fn panel(width: f32, mut draw: impl FnMut(&mut egui::Ui)) -> (egui::FullOutput, 
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 1600.0));
     let mut output = egui::FullOutput::default();
     for _ in 0..3 {
-        output = ctx.run(
+        output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(screen),
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     crate::app::style::perk_workbench_style(ui);
                     egui::ScrollArea::vertical().show(ui, |ui| draw(ui));
                 });
@@ -412,14 +417,14 @@ fn the_behavior_stock_filter_keeps_its_choice_after_the_frame_that_set_it() {
     let mut workbench = Workbench::default();
     let keys = Default::default();
     let mut draw = |events| {
-        ctx.run(
+        ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(screen),
                 events,
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     crate::app::style::perk_workbench_style(ui);
                     workbench.behaviors.draw_action(
                         ui,

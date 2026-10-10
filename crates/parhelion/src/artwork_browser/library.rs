@@ -31,7 +31,7 @@ pub(crate) struct Entry {
 }
 
 fn png(bytes: &[u8], purpose: Purpose) -> Result<image::RgbaImage, String> {
-    let format = if purpose == Purpose::Badge {
+    let format = if matches!(purpose, Purpose::Badge | Purpose::Image) {
         image::guess_format(bytes).map_err(|e| e.to_string())?
     } else {
         image::ImageFormat::Png

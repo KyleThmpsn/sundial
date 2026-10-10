@@ -372,10 +372,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires SUNDIAL_TEST_INSTALL pointing to the supported Shadowkeep build"]
+    #[ignore = "requires SUNDIAL_INSTALL pointing to the supported Shadowkeep build"]
     fn native_weapon_dye_colors() {
-        let packages = std::path::PathBuf::from(std::env::var("SUNDIAL_TEST_INSTALL").unwrap())
-            .join("packages");
+        let packages =
+            std::path::PathBuf::from(std::env::var("SUNDIAL_INSTALL").unwrap()).join("packages");
         let colors =
             load_weapon_dye_colors(&packages, &[7656, 7657, 12464, 7098, u16::MAX]).unwrap();
         assert_eq!(

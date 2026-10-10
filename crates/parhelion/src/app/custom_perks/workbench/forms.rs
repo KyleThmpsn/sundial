@@ -1,6 +1,18 @@
 use super::*;
 use sundial::package_authoring::sandbox_perk::activation::PerkActivation;
 
+/// What a stock effect card is drawn from: the effect's names, and the document and packages it
+/// belongs to. The title is the effect's own name without the position the card shows it at,
+/// which an adopted program keeps, since the position is a property of the list.
+struct StockEffectCard<'a> {
+    packages: &'a Path,
+    document: &'a str,
+    name: &'a str,
+    title: &'a str,
+    description: Option<&'a str>,
+    experimental: bool,
+}
+
 impl Workbench {
     pub(super) fn stock_effect_name(
         &self,
@@ -55,6 +67,12 @@ impl Workbench {
                         crate::package_profile::is_stock_item_definition,
                     )
                 });
+                let counts = self
+                    .plug_set_counts
+                    .get_or_insert_with(|| catalog.reusable_set_counts());
+                let types = self
+                    .type_plugs
+                    .get_or_insert_with(|| type_plugs(choices, catalog, counts));
                 let hash = recipe
                     .classification
                     .as_ref()
@@ -74,17 +92,11 @@ impl Workbench {
                             crate::app::style::perk_workbench_style(ui);
                             // One choice per native type, retaining the current source when
                             // unchanged.
-                            let mut types = BTreeMap::new();
-                            for choice in choices.iter() {
-                                if !choice.representative_type_name.trim().is_empty() {
-                                    types
-                                        .entry(choice.representative_type_name.as_str())
-                                        .or_insert(choice.representative_hash);
-                                }
-                            }
-                            for (name, source) in types {
-                                if ui.selectable_label(name == type_name, name).clicked()
-                                    && name != type_name
+                            for (name, &source) in types.iter() {
+                                if ui
+                                    .selectable_label(*name == type_name, name.as_str())
+                                    .clicked()
+                                    && *name != type_name
                                 {
                                     recipe.classification = Some(source.into());
                                 }
@@ -94,6 +106,25 @@ impl Workbench {
                         .on_hover_text(&type_name);
                     pickers::name_combo(ui, "perk-type", "Perk Type");
                 });
+                // Shown where the type's plug is offered by a shared plug set, and while on, so
+                // it can be turned off after the type changes.
+                if counts.get(&hash).is_some_and(|&sets| sets > 0) || recipe.offer_everywhere {
+                    let offer = ui
+                        .checkbox(&mut recipe.offer_everywhere, "Offer Everywhere")
+                        .on_hover_text(format!(
+                            "Every socket that offers {}",
+                            catalog.plug_label(hash, false)
+                        ));
+                    // Turning it on takes the type's own plug when more sockets offer that, as
+                    // one saved with Anti-Barrier Rounds for Weapon Mod moves to Boss Spec.
+                    if offer.changed()
+                        && recipe.offer_everywhere
+                        && let Some(&plug) = types.get(&type_name)
+                        && counts.get(&plug) > counts.get(&hash)
+                    {
+                        recipe.classification = Some(plug.into());
+                    }
+                }
             }
             // A disclosure drawn as one control. It used to be a label padded with four
             // spaces and an arrow painted into a copied response rect, which left the caret
@@ -222,16 +253,11 @@ impl Workbench {
             .map(|lines| lines.join("\n\n"))
     }
 
-    pub(super) fn draw_effects(
+    fn refresh_effect_names(
         &mut self,
-        ui: &mut egui::Ui,
-        packages: &Path,
         catalog: Option<&InvestmentCatalog>,
         choices: &[WeaponSandboxPerkChoice],
-        recipe: &mut PerkRecipe,
-        experimental: bool,
     ) {
-        let ctx = ui.ctx().clone();
         if self.perk_names.len() != choices.len() {
             self.perk_names = choices
                 .iter()
@@ -241,6 +267,15 @@ impl Workbench {
         }
         self.refresh_item_names(catalog);
         self.refresh_asset_labels();
+    }
+
+    fn draw_effects_header(
+        &mut self,
+        ui: &mut egui::Ui,
+        catalog: Option<&InvestmentCatalog>,
+        choices: &[WeaponSandboxPerkChoice],
+        recipe: &mut PerkRecipe,
+    ) {
         ui.horizontal_wrapped(|ui| {
             // The Basics header sizes its controls the same way, so moving between the two
             // pages does not change the height of the row under the heading.
@@ -264,13 +299,13 @@ impl Workbench {
                             )
                             .set_expanded(ui.ctx(), expanded);
                         }
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
                 ui.separator();
                 if ui.button("Engine Catalog…").clicked() {
                     self.engine.open = true;
-                    ui.close_menu();
+                    ui.close();
                 }
             });
         });
@@ -280,6 +315,20 @@ impl Workbench {
                 ui.weak("Copying effect…");
             });
         }
+    }
+
+    pub(super) fn draw_effects(
+        &mut self,
+        ui: &mut egui::Ui,
+        packages: &Path,
+        catalog: Option<&InvestmentCatalog>,
+        choices: &[WeaponSandboxPerkChoice],
+        recipe: &mut PerkRecipe,
+        experimental: bool,
+    ) {
+        let ctx = ui.ctx().clone();
+        self.refresh_effect_names(catalog, choices);
+        self.draw_effects_header(ui, catalog, choices, recipe);
         ui.add_space(4.0);
         if recipe.effects.is_empty() {
             crate::app::style::block(ui.style()).show(ui, |ui| {
@@ -313,11 +362,18 @@ impl Workbench {
                 card.set_expanded(&ctx, true);
                 self.reveal_action = target.action;
             }
+            let mut retry_reveal = false;
             let response = ui
                 .push_id((&recipe.id, index), |ui| {
                     if let Some(target) = reveal.as_ref().and_then(|target| target.native.as_ref())
                     {
                         program::native::reveal(ui.ctx(), target.clone());
+                    }
+                    if let Some(target) = reveal
+                        .as_ref()
+                        .and_then(|target| target.native_field.as_ref())
+                    {
+                        program::native::problem::reveal(ui.ctx(), target.clone());
                     }
                     if effect.program.is_some() {
                         self.draw_program_effect(ui, effect, card, &mut events);
@@ -335,16 +391,31 @@ impl Workbench {
                             });
                         self.draw_stock_effect(
                             ui,
-                            packages,
-                            &recipe.id,
-                            &name,
-                            &title,
-                            description,
+                            StockEffectCard {
+                                packages,
+                                document: &recipe.id,
+                                name: &name,
+                                title: &title,
+                                description,
+                                experimental,
+                            },
                             effect,
-                            experimental,
                             card,
                             &mut events,
                         );
+                    }
+                    let shown = program::native::problem::finish(ui.ctx());
+                    if !shown
+                        && reveal
+                            .as_ref()
+                            .is_some_and(|target| target.native_field.is_some())
+                        && !card.structure(ui.ctx())
+                    {
+                        // Some required fields have no normal card control. Retry once in
+                        // the complete editor, keeping the same document and field target.
+                        card.set_structure(ui.ctx(), true);
+                        retry_reveal = true;
+                        ui.ctx().request_repaint();
                     }
                 })
                 .response;
@@ -358,7 +429,9 @@ impl Workbench {
             {
                 events.move_group = Some((index, group));
             }
-            self.finish_reveal(reveal, &response);
+            if !retry_reveal {
+                self.finish_reveal(reveal, &response);
+            }
             if let Some(movement) = card.drop_target(ui, response.rect) {
                 events.movement = Some(movement);
             }
@@ -538,16 +611,16 @@ impl Workbench {
                     .clicked()
                 {
                     events.duplicate = Some(index);
-                    ui.close_menu();
+                    ui.close();
                 }
                 if behavior_group_command(ui) {
                     add_group = true;
-                    ui.close_menu();
+                    ui.close();
                 }
                 card.structure_menu(ui);
                 if ui.button("Remove Effect").clicked() {
                     remove = true;
-                    ui.close_menu();
+                    ui.close();
                 }
             });
         };
@@ -588,22 +661,22 @@ impl Workbench {
     /// A stock effect card. It reads in the rows an authored program is edited in, and the
     /// first edit makes the effect its own program. A card carrying overrides waits for the
     /// checked conversion to fold them in, and stays a reading when no exact program does.
-    #[allow(clippy::too_many_arguments)]
     fn draw_stock_effect(
         &mut self,
         ui: &mut egui::Ui,
-        packages: &Path,
-        document: &str,
-        name: &str,
-        // The effect's own name, without the position this card shows it at. An adopted
-        // program keeps this, since the position is a property of the list, not the effect.
-        title: &str,
-        description: Option<&str>,
+        stock: StockEffectCard<'_>,
         effect: &mut WeaponSandboxPerkRuntimeRecipe,
-        experimental: bool,
         card: cards::Card,
         events: &mut EffectEvents,
     ) {
+        let StockEffectCard {
+            packages,
+            document,
+            name,
+            title,
+            description,
+            experimental,
+        } = stock;
         let index = effect.source_perk_index;
         let issue = self.discovery.perk_issue(index).map(str::to_owned);
         let activation_summary = effect.activation.map(|activation| {
@@ -665,27 +738,27 @@ impl Workbench {
                     .clicked()
                 {
                     events.duplicate = Some(index);
-                    ui.close_menu();
+                    ui.close();
                 }
                 // A live card edits in place, so the editor is a detail behind the menu.
                 if live && ui.button("Edit Behavior…").clicked() {
                     edit = true;
-                    ui.close_menu();
+                    ui.close();
                 }
                 if live && behavior_group_command(ui) {
                     add_group = true;
-                    ui.close_menu();
+                    ui.close();
                 }
                 if live {
                     card.structure_menu(ui);
                 }
                 if experimental && ui.button("Inspect Pattern Dependencies…").clicked() {
                     crate::app::runtime_dependencies::request(ui.ctx(), Some(usize::from(index)));
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.button("Remove Effect").clicked() {
                     remove = true;
-                    ui.close_menu();
+                    ui.close();
                 }
             });
             if !live
@@ -1613,6 +1686,40 @@ pub(super) fn effect_name(choices: &[WeaponSandboxPerkChoice], index: u16) -> St
                 }
             },
         )
+}
+
+/// Each native perk type with the stock plug that stands for it: the plug the most shared plug
+/// sets offer, one with effects before an empty one, then the first by name. A perk offered
+/// everywhere joins the sets that offer its type's plug, so Weapon Mod takes Boss Spec, which
+/// every weapon's mod socket offers, rather than Anti-Barrier Rounds, which four weapon types
+/// offer.
+fn type_plugs(
+    choices: &[WeaponSandboxPerkChoice],
+    catalog: &InvestmentCatalog,
+    counts: &std::collections::HashMap<u32, usize>,
+) -> BTreeMap<String, u32> {
+    let mut types = BTreeMap::<String, (u32, (usize, bool))>::new();
+    for choice in choices {
+        if choice.representative_type_name.trim().is_empty() {
+            continue;
+        }
+        let hash = choice.representative_hash;
+        let rank = (
+            counts.get(&hash).copied().unwrap_or_default(),
+            !catalog.item_sandbox_perk_indices(hash).is_empty(),
+        );
+        match types.get_mut(&choice.representative_type_name) {
+            Some(best) if best.1 >= rank => {}
+            Some(best) => *best = (hash, rank),
+            None => {
+                types.insert(choice.representative_type_name.clone(), (hash, rank));
+            }
+        }
+    }
+    types
+        .into_iter()
+        .map(|(name, (hash, _))| (name, hash))
+        .collect()
 }
 
 /// The effect menu's command for a separate trigger and its actions within the effect.

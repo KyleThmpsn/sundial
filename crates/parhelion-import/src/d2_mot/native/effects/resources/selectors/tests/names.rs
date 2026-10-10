@@ -78,9 +78,9 @@ fn named_condition_package_oracle() -> Result<()> {
         );
         fs::write(output.join(format!("{ordinal:02}.bin")), &emitted.payload.0)?;
         rows.push(
-            json!({"pair":pair,"source_sha256":format!("{:x}",Sha256::digest(&source.0)),
-            "native_owner_sha256":format!("{:x}",Sha256::digest(&native.0)),
-            "emitted_sha256":format!("{:x}",Sha256::digest(&emitted.payload.0)),
+            json!({"pair":pair,"source_sha256":hex::encode(Sha256::digest(&source.0)),
+            "native_owner_sha256":hex::encode(Sha256::digest(&native.0)),
+            "emitted_sha256":hex::encode(Sha256::digest(&emitted.payload.0)),
             "native_fragment_exact":true,"truncation_refused":true,"group_aliases":emitted.group_aliases}),
         );
     }

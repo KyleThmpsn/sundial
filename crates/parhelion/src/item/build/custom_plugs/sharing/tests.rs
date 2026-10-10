@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-#[ignore = "requires PARHELION_SOCKET_TEST_PACKAGES, uses an isolated package view"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES, uses an isolated package view"]
 fn native_identical_frames_share_one_plug_and_changed_speed_stays_private() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_SOCKET_TEST_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|name| (*name).to_owned())
@@ -40,7 +40,9 @@ fn native_identical_frames_share_one_plug_and_changed_speed_stays_private() {
     let sources = sources::load_project_sources(view.path()).unwrap();
     let resolved = resolve::resolve_project_weapons(&sources, &weapons).unwrap();
     let templates = PerkTemplates::read(&sources).unwrap();
-    let plugs = super::super::plan(&sources, &resolved, &templates.strings).unwrap();
+    let plugs = super::super::plan(&sources, &resolved, &templates.strings)
+        .unwrap()
+        .sockets;
     let redacted_ordinal = weapons
         .iter()
         .position(|weapon| weapon.namespace == redacted.namespace)

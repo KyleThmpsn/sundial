@@ -7,14 +7,11 @@ use super::{CANCELLED, read};
 use crate::package_runtime::references::closure;
 
 fn clean_packages() -> PathBuf {
-    PathBuf::from(
-        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-            .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages"),
-    )
+    crate::test_support::stock_packages()
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn real_packages_list_every_declared_use_and_reuse_their_shards() {
     let manager = crate::package_authoring::open_shadowkeep_package_manager(&clean_packages())
         .expect("clean-stock manager should open");

@@ -352,7 +352,7 @@ pub(super) fn row<R>(
 /// rather than a second outline of equal weight.
 pub(super) fn block<R>(
     ui: &mut egui::Ui,
-    salt: impl std::hash::Hash,
+    salt: impl std::hash::Hash + std::fmt::Debug,
     content: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<R> {
     ui.push_id(salt, |ui| {
@@ -392,12 +392,12 @@ pub(super) fn action_header(
                         .clicked()
                     {
                         event.swap_with = target;
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
                 if ui.button("Remove Action").clicked() {
                     event.remove = true;
-                    ui.close_menu();
+                    ui.close();
                 }
             });
             ui.allocate_ui_with_layout(
@@ -417,7 +417,7 @@ pub(super) fn action_header(
 /// own, so a single control does not sit inside two outlines.
 pub(super) fn plain<R>(
     ui: &mut egui::Ui,
-    salt: impl std::hash::Hash,
+    salt: impl std::hash::Hash + std::fmt::Debug,
     content: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
     ui.push_id(salt, |ui| {
@@ -505,6 +505,11 @@ fn draw_program_rows(
             program::draw_complete(ui, native, true, structure, &labels, &mut |ui, request| {
                 match request {
                     program::NativeRequest::Action(context) => {
+                        workbench.behaviors.weapon_properties = Some(
+                            workbench
+                                .properties
+                                .neutral_attachment(ui, super::behaviors::WEAPON_PROPERTIES_GRAPH),
+                        );
                         workbench.behaviors.draw_action_selection(
                             ui,
                             &workbench.discovery,
@@ -540,7 +545,9 @@ fn draw_program_rows(
                     }
                     program::NativeRequest::Asset(asset, scope) => {
                         let label = match scope {
-                            super::assets::AssetScope::Projectiles => "Projectile",
+                            super::assets::AssetScope::Projectiles
+                            | super::assets::AssetScope::VehicleProjectiles => "Projectile",
+                            super::assets::AssetScope::Vehicles => "Vehicle",
                             super::assets::AssetScope::Spawnable => "Object or Effect",
                             super::assets::AssetScope::DropEffect => "Drop Effect",
                             super::assets::AssetScope::Any => "Attachment",
@@ -605,6 +612,7 @@ fn draw_program_rows(
                         });
                         if scope == super::assets::AssetScope::Projectiles {
                             workbench.properties.movement(ui, asset);
+                            workbench.properties.damage_type(ui, asset);
                             return None;
                         }
                         workbench.properties.values(ui, asset);

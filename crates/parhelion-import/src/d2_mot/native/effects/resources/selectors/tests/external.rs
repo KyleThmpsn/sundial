@@ -161,8 +161,8 @@ fn external_selector_dependency_and_value_contract() -> Result<()> {
     fs::write(
         output.join("report.json"),
         serde_json::to_vec_pretty(&json!({
-            "source": "80C3572F", "source_sha256": format!("{:x}", Sha256::digest(&source.0)),
-            "native_sha256": format!("{:x}", Sha256::digest(&converted.payload.0)),
+            "source": "80C3572F", "source_sha256": hex::encode(Sha256::digest(&source.0)),
+            "native_sha256": hex::encode(Sha256::digest(&converted.payload.0)),
             "child_control": "80B9FBB3", "references": converted.references,
             "external_classes": converted.external_classes, "category_gates": converted.gates,
             "group_aliases":converted.group_aliases,

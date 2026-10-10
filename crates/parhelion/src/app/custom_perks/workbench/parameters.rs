@@ -10,6 +10,7 @@ mod fields;
 mod flags;
 mod guided;
 pub(super) mod history;
+pub(super) mod modifiers;
 pub(super) mod movement;
 mod native;
 mod projectiles;
@@ -22,7 +23,7 @@ mod validation;
 pub(super) use native::{draw_card_values, unlisted_changes};
 
 #[derive(Clone, Debug)]
-pub(super) struct PrivatePerkRuntimeGraph {
+pub(crate) struct PrivatePerkRuntimeGraph {
     pub(super) action_tag: u32,
     pub(super) action_payload: Vec<u8>,
     pub(super) graphs: Vec<(u32, WeaponRuntimeGraph)>,

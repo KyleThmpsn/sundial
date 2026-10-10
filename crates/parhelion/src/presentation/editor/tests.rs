@@ -7,6 +7,7 @@ fn empty_dawn_artwork_editors_use_dawn_sources_and_preserve_explicit_artwork() {
         let expected = match kind {
             Kind::Badge => Branding::Dawn.badge(),
             Kind::Watermark => Branding::Dawn.corner(),
+            Kind::Nameplate { .. } => unreachable!(),
         }
         .unwrap()
         .unwrap();
@@ -160,14 +161,14 @@ fn frame(
     events: Vec<egui::Event>,
 ) -> (egui::FullOutput, Option<Action>) {
     let mut action = None;
-    let output = ctx.run(
+    let output = ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
             events,
             ..Default::default()
         },
-        |ctx| {
-            action = editor.show(ctx);
+        |ui| {
+            action = editor.show(ui);
         },
     );
     (output, action)
@@ -198,7 +199,7 @@ fn artwork_dialog_keeps_actions_visible_at_small_and_large_sizes() {
         egui::vec2(1200.0, 860.0),
     ] {
         for kind in [Kind::Badge, Kind::Watermark] {
-            for tab in [Tab::Placement, Tab::Crop, Tab::Background] {
+            for tab in [Tab::Placement, Tab::Crop, Tab::Colors, Tab::Background] {
                 if kind == Kind::Watermark && tab == Tab::Background {
                     continue;
                 }
@@ -267,5 +268,145 @@ fn cancel_and_failed_import_keep_the_original_while_apply_returns_the_edit() {
             (false, Some(Action::Cancel)) => {}
             _ => panic!("The footer did not return the requested action"),
         }
+    }
+}
+
+fn color_control_point(output: &egui::FullOutput, kind: Kind, name: &str) -> egui::Pos2 {
+    if kind == Kind::Watermark && name == "Opacity" {
+        let bounds = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .and_then(|update| {
+                update.nodes.iter().find_map(|(_, node)| {
+                    (node.label() == Some("Opacity") && node.numeric_value().is_some())
+                        .then(|| node.bounds())
+                        .flatten()
+                })
+            });
+        if let Some(bounds) = bounds {
+            return egui::pos2(
+                bounds.x0 as f32 + 1.0,
+                ((bounds.y0 + bounds.y1) * 0.5) as f32,
+            );
+        }
+    }
+    text_rect(output, name).center()
+}
+
+fn color_control(
+    ctx: &egui::Context,
+    editor: &mut Editor,
+    size: egui::Vec2,
+    name: &str,
+) -> Option<Action> {
+    use crate::app::capture;
+    let mut output = egui::FullOutput::default();
+    for _ in 0..3 {
+        (output, _) = frame(ctx, editor, size, vec![]);
+        capture::record(&output);
+    }
+    let at = color_control_point(&output, editor.kind, name);
+    let mut action = None;
+    for events in crate::test_support::driver::tap(at) {
+        (output, action) = frame(ctx, editor, size, events);
+        capture::record(&output);
+    }
+    let adjusted = if editor.kind == Kind::Watermark {
+        "Opacity"
+    } else {
+        "Invert Colors"
+    };
+    if name == adjusted {
+        for _ in 0..3 {
+            (output, _) = frame(ctx, editor, size, vec![]);
+            capture::record(&output);
+        }
+        capture::write(
+            ctx,
+            &output,
+            if editor.kind == Kind::Badge {
+                "artwork-badge-colors"
+            } else {
+                "artwork-watermark-colors"
+            },
+        );
+    }
+    action
+}
+
+fn edit_colors(kind: Kind, original: &Artwork) -> Artwork {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let mut editor = Editor::new(kind, Some(original.clone()));
+    for name in [
+        if kind == Kind::Watermark {
+            "Opacity"
+        } else {
+            "Colors"
+        },
+        if kind == Kind::Watermark {
+            "Opacity"
+        } else {
+            "Invert Colors"
+        },
+        "Size and Position",
+        "Reset Size and Position",
+        "Before",
+        "After",
+        "Apply Artwork",
+    ] {
+        if let Some(Action::Apply(artwork)) =
+            color_control(&ctx, &mut editor, egui::vec2(1000.0, 800.0), name)
+        {
+            return artwork;
+        }
+    }
+    panic!("Apply did not return artwork");
+}
+
+fn read_back_colors(kind: Kind, original: &Artwork, artwork: &Artwork) {
+    let reopened: Artwork = serde_json::from_slice(&serde_json::to_vec(artwork).unwrap()).unwrap();
+    assert_eq!(reopened.pixels(), original.pixels());
+    let adjusted = reopened.composition().unwrap().source(reopened.pixels());
+    if kind == Kind::Watermark {
+        assert!(adjusted.pixels().all(|pixel| pixel[3] == 0));
+        let compiled = crate::watermark::render_custom_corner(&reopened, 2).unwrap();
+        assert!(
+            compiled.chunks_exact(4).all(|pixel| pixel[3] == 0),
+            "opacity reaches the native silhouette"
+        );
+    } else {
+        assert!(
+            adjusted
+                .pixels()
+                .all(|pixel| pixel.0 == [55, 205, 225, 128])
+        );
+    }
+    assert_ne!(reopened.render(440, 268), original.render(440, 268));
+    assert_eq!(
+        reopened.render(440, 268).get_pixel(10, 1),
+        original.render(440, 268).get_pixel(10, 1),
+        "color controls leave the canvas background alone"
+    );
+}
+
+#[test]
+fn shared_color_controls_apply_to_saved_badges_and_watermarks_without_baking_the_source() {
+    let original = Artwork::from_source(image::RgbaImage::from_pixel(
+        80,
+        40,
+        image::Rgba([200, 50, 30, 128]),
+    ))
+    .unwrap();
+    for kind in [Kind::Badge, Kind::Watermark] {
+        let original = original
+            .with_composition(Composition {
+                background: kind.background(),
+                ..Default::default()
+            })
+            .unwrap();
+        let saved = edit_colors(kind, &original);
+        read_back_colors(kind, &original, &saved);
     }
 }

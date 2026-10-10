@@ -424,26 +424,25 @@ impl Emitter<'_> {
         while field + 8 <= SETTINGS2_DEFINITION_SIZE {
             let template_field = template_s2 + field;
             let value = template.u64(template_field)?;
-            if value != 0 && value != u64::MAX {
-                if let Ok(target) = template.pointer(template_field) {
-                    if let Some(record) = template_records.iter().find(|record| record.at == target)
-                    {
-                        let role = match record.class {
-                            0x80803B73 => tree.root_d.at,
-                            0x8080388F => tree.root_i.at,
-                            0x80809BD8 => tree.s2_d.at,
-                            0x80809BD9 => s2_i.at,
-                            0x808037BA if target == template_state => tree.states[0].at,
-                            other => bail!(
-                                "movement settings point at a template object of class {other:08X}"
-                            ),
-                        };
-                        w.fixups.push(Fixup::Relative {
-                            at: at + field,
-                            target: role,
-                        });
+            if value != 0
+                && value != u64::MAX
+                && let Ok(target) = template.pointer(template_field)
+                && let Some(record) = template_records.iter().find(|record| record.at == target)
+            {
+                let role = match record.class {
+                    0x80803B73 => tree.root_d.at,
+                    0x8080388F => tree.root_i.at,
+                    0x80809BD8 => tree.s2_d.at,
+                    0x80809BD9 => s2_i.at,
+                    0x808037BA if target == template_state => tree.states[0].at,
+                    other => {
+                        bail!("movement settings point at a template object of class {other:08X}")
                     }
-                }
+                };
+                w.fixups.push(Fixup::Relative {
+                    at: at + field,
+                    target: role,
+                });
             }
             field += 8;
         }

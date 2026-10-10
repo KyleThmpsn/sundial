@@ -387,6 +387,8 @@ pub(super) fn edits(
             bytes,
             slots: Vec::new(),
             arrays: Vec::new(),
+            pointers: Vec::new(),
+            references: Vec::new(),
         });
     }
     let mut bytes = Vec::new();
@@ -408,6 +410,8 @@ pub(super) fn edits(
         bytes,
         slots: Vec::new(),
         arrays: Vec::new(),
+        pointers: Vec::new(),
+        references: Vec::new(),
     });
     Ok(Edits {
         appends: appended,

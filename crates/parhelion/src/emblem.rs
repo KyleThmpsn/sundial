@@ -73,6 +73,13 @@ pub enum NameplateImage {
     Emblem { item_hash: HexHash },
     /// A picture of the recipe's own, scaled to cover the image and cropped at its edges.
     Image { image: EmbeddedImage },
+    /// Source artwork with reusable crop, placement and color edits.
+    Artwork {
+        artwork: crate::presentation::Artwork,
+        /// The native source supplies missing layer layouts and its banner's nameplate colors.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_emblem: Option<HexHash>,
+    },
 }
 
 /// An emblem's nameplate images. Each one left out keeps the base emblem's.
@@ -119,7 +126,12 @@ impl Nameplate {
     /// Every emblem an image names must be a hash.
     pub(crate) fn validate(&self) -> Result<(), String> {
         for part in NameplatePart::ALL {
-            if let Some(NameplateImage::Emblem { item_hash }) = self.part(part) {
+            let hash = match self.part(part) {
+                Some(NameplateImage::Emblem { item_hash }) => Some(item_hash),
+                Some(NameplateImage::Artwork { source_emblem, .. }) => source_emblem.as_ref(),
+                _ => None,
+            };
+            if let Some(item_hash) = hash {
                 item_hash
                     .parse_u32()
                     .map_err(|error| format!("{} emblem: {error}", part.label()))?;
@@ -135,6 +147,9 @@ impl Nameplate {
             .filter_map(|part| match self.part(part)? {
                 NameplateImage::Emblem { item_hash } => Some((part, item_hash)),
                 NameplateImage::Image { .. } => None,
+                NameplateImage::Artwork { source_emblem, .. } => {
+                    source_emblem.as_ref().map(|hash| (part, hash))
+                }
             })
     }
 }

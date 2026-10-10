@@ -4,6 +4,8 @@ use sundial::package_authoring::sandbox_perk::program::{
     Action, Asset, NativeProgram, Position, Program, Trigger,
 };
 
+mod checker;
+
 fn setup() -> (egui::Context, Workbench) {
     let ctx = egui::Context::default();
     let mut fonts = egui::FontDefinitions::default();
@@ -416,8 +418,13 @@ fn dragging_scrolls_a_long_effect_list_and_reaches_later_cards() {
     collapsed(&ctx, &workbench);
     let output = render(&ctx, &mut workbench, size);
     let start = rects(&output, egui_phosphor::regular::DOTS_SIX_VERTICAL)[0].center();
+    // Just under the last header the list shows, inside its bottom edge, where a drag scrolls.
+    let last = rects(&output, egui_phosphor::regular::CARET_RIGHT)
+        .into_iter()
+        .map(|rect| rect.bottom())
+        .fold(f32::MIN, f32::max);
     pointer(&ctx, &mut workbench, size, start, true);
-    let edge = egui::pos2(start.x + 80.0, 370.0);
+    let edge = egui::pos2(start.x + 80.0, last + 12.0);
     for _ in 0..80 {
         frame(
             &ctx,

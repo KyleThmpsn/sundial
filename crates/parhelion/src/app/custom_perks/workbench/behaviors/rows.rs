@@ -1,5 +1,6 @@
 //! The rows the behavior pickers list, and how they are filtered, grouped and ordered.
 use super::*;
+use sundial::package_authoring::sandbox_perk::program::Asset;
 
 /// The family a standard trigger belongs to. A native trigger carries its own node and so
 /// has none of its own, which the picker shows by not offering it among the standard rows.
@@ -44,6 +45,64 @@ pub(super) fn recipe_row(recipe: recipes::Recipe, reason: &'static str) -> Row {
         search: format!("{} {}", recipe.title, recipe.detail),
         uses: 0,
         choice: Choice::Recipe(recipe.nodes),
+    }
+}
+
+/// Whether the effect already attaches `graph`, as a guided action or a native node.
+fn attaches(program: &Program, graph: u32) -> bool {
+    program.actions.iter().any(|action| match action {
+        Action::Attach { asset, .. } => asset.graph == graph,
+        Action::Native { node } => {
+            node.kind == 1
+                && node
+                    .bytes
+                    .get(16..20)
+                    .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+                    .map(u32::from_le_bytes)
+                    == Some(graph)
+        }
+        _ => false,
+    })
+}
+
+/// Change Weapon Properties' row in Add Action: modifier rows attached to the weapon itself,
+/// every one neutral until set. `asset` is that attachment once its rows are read, or why it
+/// is not ready. One effect holds one, since an effect keeps its edits of an asset by the
+/// asset.
+pub(super) fn weapon_properties_row(program: &Program, asset: Result<Asset, &'static str>) -> Row {
+    use sundial::package_authoring::sandbox_perk::program::AttachmentTarget;
+    let title = recipes::WEAPON_PROPERTIES;
+    let detail = "Changes burst length, firing speed, spread width, damage, magazine size and more. Rows start with no effect. Set simultaneous pellets with Pellets per Shot under Gameplay's Barrel Settings.";
+    let (reason, action) = if program.actions.len() >= ACTION_LIMIT {
+        (
+            "This effect already holds the most actions a program can run.",
+            None,
+        )
+    } else if attaches(program, recipes::WEAPON_PROPERTIES_GRAPH) {
+        ("This effect already changes weapon properties.", None)
+    } else {
+        match asset {
+            Ok(asset) => (
+                "",
+                Some(Action::Attach {
+                    asset,
+                    mode: AttachmentTarget::ThisItem,
+                    keys: [sundial::package_authoring::FNV1_EMPTY_HASH; 2],
+                    float_bits: [0; 4],
+                }),
+            ),
+            Err(reason) => (reason, None),
+        }
+    };
+    Row {
+        family: Family::Effect(1, Some(title.to_owned())),
+        enabled: reason.is_empty(),
+        reason,
+        title: title.to_owned(),
+        detail: detail.to_owned(),
+        search: format!("{title} {detail}"),
+        uses: 0,
+        choice: Choice::Action(action.unwrap_or_else(|| Action::attach(Asset::default()))),
     }
 }
 

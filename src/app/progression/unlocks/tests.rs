@@ -145,8 +145,8 @@ fn browsing_content_tables_preserves_documents_and_invalidates_saved_state() {
     for tab in [Tab::Entries, Tab::Ranks, Tab::Storage] {
         state.unlock_browser.tab = tab;
         state.reset_navigation();
-        let output = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let output = ctx.run_ui(Default::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 assert!(!draw(
                     ui,
                     &mut document,
@@ -185,7 +185,7 @@ fn large_unlock_tables_only_draw_the_viewport() {
     };
     let ctx = egui::Context::default();
     let mut render = |state: &mut UiState| {
-        ctx.run(
+        ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -193,8 +193,8 @@ fn large_unlock_tables_only_draw_the_viewport() {
                 )),
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     draw(ui, &mut document, &UnlockPolicy::default(), &catalog, state);
                 });
             },

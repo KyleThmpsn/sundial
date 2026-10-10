@@ -60,7 +60,7 @@ pub(super) fn cell_width(ui: &egui::Ui) -> f32 {
 /// around the cell would place it at the cursor without wrapping.
 pub(super) fn cell<R>(
     ui: &mut egui::Ui,
-    salt: impl std::hash::Hash,
+    salt: impl std::hash::Hash + std::fmt::Debug,
     label: &str,
     hint: &str,
     content: impl FnOnce(&mut egui::Ui) -> R,
@@ -85,7 +85,7 @@ pub(super) fn cell<R>(
                 egui::Layout::right_to_left(egui::Align::Center),
                 |ui| {
                     ui.set_min_width(CELL_LABEL_WIDTH);
-                    ui.add(egui::Label::new(label).halign(egui::Align::Max).truncate())
+                    ui.add(crate::app::style::cut_label(ui, label).halign(egui::Align::Max))
                         .on_hover_text(if hint.is_empty() {
                             label.to_owned()
                         } else {
@@ -135,7 +135,7 @@ pub(super) fn float_field_with(ui: &mut egui::Ui, bits: &mut u32, unit: &str) ->
 /// Returns the text field's response so the caller can give it an accessible name.
 pub(super) fn hex_key(
     ui: &mut egui::Ui,
-    salt: impl std::hash::Hash,
+    salt: impl std::hash::Hash + std::fmt::Debug,
     key: &mut u32,
 ) -> egui::Response {
     let id = ui.make_persistent_id(("hex-key", salt));

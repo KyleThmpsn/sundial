@@ -265,7 +265,7 @@ pub(super) fn value_copy_patches(
 }
 
 /// `program`'s asset edits with each HUD status's patches joined to its action's edit. An asset
-/// with component settings gets its HUD status in the copy those make instead
+/// with component settings or a damage type gets its HUD status in the copy those make instead
 /// ([`value_copy_patches`]), since an action's graph is copied once.
 pub(super) fn asset_edits(
     manager: &PackageManager,
@@ -285,7 +285,8 @@ pub(super) fn asset_edits(
         let Some(asset) = action.asset() else {
             continue;
         };
-        if !asset.values.is_empty() {
+        // A damage type makes a copy of the asset's tree the same way settings do.
+        if !asset.values.is_empty() || asset.damage_type.is_some() || !asset.rows.is_empty() {
             continue;
         }
         let patches = asset_patches(manager, &stock, asset)?;

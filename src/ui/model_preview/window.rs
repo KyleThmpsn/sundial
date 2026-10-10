@@ -90,6 +90,46 @@ pub(super) fn launcher(
 const CORNER_SIZE: f32 = 24.0;
 const CORNER_INSET: f32 = 6.0;
 
+pub(super) fn corner_rect(over: egui::Rect, index: usize) -> egui::Rect {
+    egui::Rect::from_min_size(
+        egui::pos2(
+            over.right() - CORNER_INSET - CORNER_SIZE - index as f32 * (CORNER_SIZE + 4.0),
+            over.top() + CORNER_INSET,
+        ),
+        egui::Vec2::splat(CORNER_SIZE),
+    )
+}
+
+pub(super) fn corner_button(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    id: egui::Id,
+    icon: &str,
+    label: &str,
+    active: bool,
+) -> egui::Response {
+    let response = ui.interact(rect, id, egui::Sense::click());
+    let visuals = ui.style().interact_selectable(&response, active);
+    ui.painter().rect(
+        rect,
+        3.0,
+        visuals.weak_bg_fill,
+        visuals.bg_stroke,
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        icon,
+        crate::ui::icon_font(ui, 14.0),
+        visuals.text_color(),
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
+    response.on_hover_text(label)
+}
+
 /// A small icon in the top-right corner of a preview at `over` that opens the viewer on
 /// `request`. It shows while the pointer is on the preview, and selected while the viewer is
 /// open on `owner`.
@@ -101,33 +141,14 @@ pub(super) fn corner_launcher(
 ) -> Option<egui::Response> {
     let active = owned_by(ui.ctx(), owner);
     let response = (active || ui.rect_contains_pointer(over)).then(|| {
-        let rect = egui::Rect::from_min_size(
-            egui::pos2(
-                over.right() - CORNER_INSET - CORNER_SIZE,
-                over.top() + CORNER_INSET,
-            ),
-            egui::Vec2::splat(CORNER_SIZE),
-        );
-        let response = ui.interact(rect, owner.with("corner-launcher"), egui::Sense::click());
-        let visuals = ui.style().interact_selectable(&response, active);
-        ui.painter().rect(
-            rect,
-            3.0,
-            visuals.weak_bg_fill,
-            visuals.bg_stroke,
-            egui::StrokeKind::Inside,
-        );
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
+        corner_button(
+            ui,
+            corner_rect(over, 0),
+            owner.with("corner-launcher"),
             egui_phosphor::regular::ARROW_SQUARE_OUT,
-            crate::ui::icon_font(ui, 14.0),
-            visuals.text_color(),
-        );
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Open in Window")
-        });
-        response.on_hover_text("Open in a separate window")
+            "Open in Window",
+            active,
+        )
     });
     let shared = shared(ui.ctx());
     let Ok(mut preview) = shared.lock() else {
@@ -281,7 +302,7 @@ pub fn show(ctx: &egui::Context) {
                 child.send_viewport_cmd(egui::ViewportCommand::Focus);
             }
             let mut open = true;
-            if class == egui::ViewportClass::Embedded {
+            if class == egui::ViewportClass::EmbeddedWindow {
                 egui::Window::new(&title)
                     .id(egui::Id::new("model-preview-fallback"))
                     .open(&mut open)
@@ -344,7 +365,7 @@ fn show_details(ctx: &egui::Context, shared: Arc<Mutex<Preview>>) {
                 .or_else(|| preview.request.as_ref().map(|request| request.name.clone()))
                 .unwrap_or_default();
             let mut open = true;
-            if class == egui::ViewportClass::Embedded {
+            if class == egui::ViewportClass::EmbeddedWindow {
                 egui::Window::new(TITLE)
                     .id(egui::Id::new("model-preview-details-fallback"))
                     .open(&mut open)
@@ -386,6 +407,7 @@ impl Preview {
             ui.heading(&request.name);
             ui.weak("Paused while packages are unavailable");
             self.last_tick = None;
+            self.rotation_tick = None;
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(200));
             return;
@@ -405,16 +427,18 @@ impl Preview {
             self.navigation.clear();
         }
         if let Some((tag, name)) = self.navigation.last() {
-            (
-                (request.selection.0.clone(), Target::Object(*tag)),
-                name.clone(),
-            )
+            let target = match &request.selection.1 {
+                Target::Local(appearance, _) => Target::Local(appearance.clone(), Some(*tag)),
+                _ => Target::Object(*tag),
+            };
+            ((request.selection.0.clone(), target), name.clone())
         } else {
             (request.selection.clone(), request.name.clone())
         }
     }
 
     fn close(&mut self) {
+        self.gpu.cancel_exports();
         self.open = false;
         self.request = None;
         self.source_selection = None;
@@ -433,6 +457,7 @@ impl Preview {
         self.error = None;
         self.rendered = None;
         self.last_tick = None;
+        self.rotation_tick = None;
         self.playing = false;
         self.status = None;
         self.load_started = None;

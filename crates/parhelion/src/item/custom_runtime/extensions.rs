@@ -1,6 +1,6 @@
 //! Explicit native component experiments carried by a prepared import graph.
+use super::imports::Inputs;
 use super::*;
-use parhelion_import::GraphReference;
 use serde::Deserialize;
 
 mod attachments;
@@ -91,12 +91,8 @@ pub(in crate::item) fn input_callbacks(
 
 /// No extension is inferred from an item hash or its display type. The prepared graph must
 /// request it explicitly, and incompatible native wiring rejects the entire compilation.
-pub(in crate::item) fn load(graph: &GraphReference) -> AuthoringResult<Vec<Extension>> {
-    let value: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(graph.directory.join("asset-graph.json"))
-            .map_err(|error| invalid(format!("Imported component graph: {error}")))?,
-    )
-    .map_err(|error| invalid(format!("Imported component graph: {error}")))?;
+pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Vec<Extension>> {
+    let value = graph.value();
     let Some(value) = value.get("experimental_component_extensions") else {
         return Ok(Vec::new());
     };

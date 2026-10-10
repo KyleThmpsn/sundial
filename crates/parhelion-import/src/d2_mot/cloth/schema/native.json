@@ -1,0 +1,2623 @@
+{
+  "hclBendStiffnessConstraintSet": {
+    "size": 72,
+    "version": 2,
+    "members": [
+      {
+        "name": "links",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 32,
+        "class": "hclBendStiffnessConstraintSetLink"
+      },
+      {
+        "name": "linksQuantizedWeights",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 48,
+        "class": "hclBendStiffnessConstraintSetLinkQuantizedWeights"
+      },
+      {
+        "name": "useRestPoseConfig",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 64
+      }
+    ],
+    "parent": "hclConstraintSet",
+    "signature": 1405801446
+  },
+  "hclConstraintSet": {
+    "size": 32,
+    "version": 0,
+    "members": [
+      {
+        "name": "name",
+        "kind": 33,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 16
+      },
+      {
+        "name": "type",
+        "kind": 24,
+        "subtype": 8,
+        "length": 0,
+        "flags": 1024,
+        "offset": 24
+      }
+    ],
+    "parent": "hkReferencedObject"
+  },
+  "hkReferencedObject": {
+    "size": 16,
+    "version": 0,
+    "members": [
+      {
+        "name": "memSizeAndFlags",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 1024,
+        "offset": 8
+      },
+      {
+        "name": "referenceCount",
+        "kind": 5,
+        "subtype": 0,
+        "length": 0,
+        "flags": 1024,
+        "offset": 10
+      }
+    ],
+    "parent": "hkBaseObject"
+  },
+  "hkBaseObject": {
+    "size": 8,
+    "version": 0,
+    "members": [],
+    "parent": null
+  },
+  "hclBendStiffnessConstraintSetLink": {
+    "size": 32,
+    "version": 1,
+    "members": [
+      {
+        "name": "weightA",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "weightB",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 4
+      },
+      {
+        "name": "weightC",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 8
+      },
+      {
+        "name": "weightD",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 12
+      },
+      {
+        "name": "bendStiffness",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 16
+      },
+      {
+        "name": "restCurvature",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 20
+      },
+      {
+        "name": "particleA",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 24
+      },
+      {
+        "name": "particleB",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 26
+      },
+      {
+        "name": "particleC",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 28
+      },
+      {
+        "name": "particleD",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 30
+      }
+    ],
+    "parent": null
+  },
+  "hclBendStiffnessConstraintSetLinkQuantizedWeights": {
+    "size": 16,
+    "version": 0,
+    "members": [
+      {
+        "name": "bendStiffness",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "particleA",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 4
+      },
+      {
+        "name": "particleB",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 6
+      },
+      {
+        "name": "particleC",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 8
+      },
+      {
+        "name": "particleD",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 10
+      },
+      {
+        "name": "weightA",
+        "kind": 4,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 12
+      },
+      {
+        "name": "weightB",
+        "kind": 4,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 13
+      },
+      {
+        "name": "weightC",
+        "kind": 4,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 14
+      },
+      {
+        "name": "weightD",
+        "kind": 4,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 15
+      }
+    ],
+    "parent": null
+  },
+  "hclBufferDefinition": {
+    "size": 72,
+    "version": 1,
+    "members": [
+      {
+        "name": "name",
+        "kind": 33,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 16
+      },
+      {
+        "name": "type",
+        "kind": 7,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 24
+      },
+      {
+        "name": "subType",
+        "kind": 7,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 28
+      },
+      {
+        "name": "numVertices",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 32
+      },
+      {
+        "name": "numTriangles",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 36
+      },
+      {
+        "name": "bufferLayout",
+        "kind": 25,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 40,
+        "class": "hclBufferLayout"
+      }
+    ],
+    "parent": "hkReferencedObject",
+    "signature": 154242281
+  },
+  "hclBufferLayout": {
+    "size": 26,
+    "version": 0,
+    "members": [
+      {
+        "name": "elementsLayout",
+        "kind": 25,
+        "subtype": 0,
+        "length": 4,
+        "flags": 0,
+        "offset": 0,
+        "class": "hclBufferLayoutBufferElement"
+      },
+      {
+        "name": "slots",
+        "kind": 25,
+        "subtype": 0,
+        "length": 4,
+        "flags": 0,
+        "offset": 16,
+        "class": "hclBufferLayoutSlot"
+      },
+      {
+        "name": "numSlots",
+        "kind": 4,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 24
+      },
+      {
+        "name": "triangleFormat",
+        "kind": 24,
+        "subtype": 4,
+        "length": 0,
+        "flags": 0,
+        "offset": 25
+      }
+    ],
+    "parent": null
+  },
+  "hclBufferLayoutBufferElement": {
+    "size": 4,
+    "version": 0,
+    "members": [
+      {
+        "name": "vectorConversion",
+        "kind": 24,
+        "subtype": 4,
+        "length": 0,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "vectorSize",
+        "kind": 4,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 1
+      },
+      {
+        "name": "slotId",
+        "kind": 4,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 2
+      },
+      {
+        "name": "slotStart",
+        "kind": 4,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 3
+      }
+    ],
+    "parent": null
+  },
+  "hclBufferLayoutSlot": {
+    "size": 2,
+    "version": 0,
+    "members": [
+      {
+        "name": "flags",
+        "kind": 24,
+        "subtype": 4,
+        "length": 0,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "stride",
+        "kind": 4,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 1
+      }
+    ],
+    "parent": null
+  },
+  "hclCapsuleShape": {
+    "size": 96,
+    "version": 1,
+    "members": [
+      {
+        "name": "start",
+        "kind": 12,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 32
+      },
+      {
+        "name": "end",
+        "kind": 12,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 48
+      },
+      {
+        "name": "dir",
+        "kind": 12,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 64
+      },
+      {
+        "name": "radius",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 80
+      },
+      {
+        "name": "capLenSqrdInv",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 84
+      }
+    ],
+    "parent": "hclShape",
+    "signature": 3730407653
+  },
+  "hclShape": {
+    "size": 24,
+    "version": 0,
+    "members": [
+      {
+        "name": "type",
+        "kind": 24,
+        "subtype": 7,
+        "length": 0,
+        "flags": 1024,
+        "offset": 16
+      }
+    ],
+    "parent": "hkReferencedObject"
+  },
+  "hclClothContainer": {
+    "size": 48,
+    "version": 1,
+    "members": [
+      {
+        "name": "collidables",
+        "kind": 22,
+        "subtype": 20,
+        "length": 0,
+        "flags": 0,
+        "offset": 16,
+        "class": "hclCollidable"
+      },
+      {
+        "name": "clothDatas",
+        "kind": 22,
+        "subtype": 20,
+        "length": 0,
+        "flags": 0,
+        "offset": 32,
+        "class": "hclClothData"
+      }
+    ],
+    "parent": "hkReferencedObject",
+    "signature": 4160595071
+  },
+  "hclCollidable": {
+    "size": 144,
+    "version": 3,
+    "members": [
+      {
+        "name": "name",
+        "kind": 33,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 16
+      },
+      {
+        "name": "transform",
+        "kind": 18,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 32
+      },
+      {
+        "name": "linearVelocity",
+        "kind": 12,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 96
+      },
+      {
+        "name": "angularVelocity",
+        "kind": 12,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 112
+      },
+      {
+        "name": "pinchDetectionEnabled",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 128
+      },
+      {
+        "name": "encouterredOOM",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 129
+      },
+      {
+        "name": "pinchDetectionPriority",
+        "kind": 3,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 130
+      },
+      {
+        "name": "pinchDetectionRadius",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 132
+      },
+      {
+        "name": "shape",
+        "kind": 20,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 136,
+        "class": "hclShape"
+      }
+    ],
+    "parent": "hkReferencedObject",
+    "signature": 2950268236
+  },
+  "hclClothData": {
+    "size": 128,
+    "version": 1,
+    "members": [
+      {
+        "name": "name",
+        "kind": 33,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 16
+      },
+      {
+        "name": "simClothDatas",
+        "kind": 22,
+        "subtype": 20,
+        "length": 0,
+        "flags": 0,
+        "offset": 24,
+        "class": "hclSimClothData"
+      },
+      {
+        "name": "bufferDefinitions",
+        "kind": 22,
+        "subtype": 20,
+        "length": 0,
+        "flags": 0,
+        "offset": 40,
+        "class": "hclBufferDefinition"
+      },
+      {
+        "name": "transformSetDefinitions",
+        "kind": 22,
+        "subtype": 20,
+        "length": 0,
+        "flags": 0,
+        "offset": 56,
+        "class": "hclTransformSetDefinition"
+      },
+      {
+        "name": "operators",
+        "kind": 22,
+        "subtype": 20,
+        "length": 0,
+        "flags": 0,
+        "offset": 72,
+        "class": "hclOperator"
+      },
+      {
+        "name": "clothStateDatas",
+        "kind": 22,
+        "subtype": 20,
+        "length": 0,
+        "flags": 0,
+        "offset": 88,
+        "class": "hclClothState"
+      },
+      {
+        "name": "actions",
+        "kind": 22,
+        "subtype": 20,
+        "length": 0,
+        "flags": 0,
+        "offset": 104,
+        "class": "hclAction"
+      },
+      {
+        "name": "targetPlatform",
+        "kind": 24,
+        "subtype": 8,
+        "length": 0,
+        "flags": 0,
+        "offset": 120
+      }
+    ],
+    "parent": "hkReferencedObject",
+    "signature": 1485819453
+  },
+  "hclSimClothData": {
+    "size": 384,
+    "version": 9,
+    "members": [
+      {
+        "name": "simulationInfo",
+        "kind": 25,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 16,
+        "class": "hclSimClothDataOverridableSimulationInfo"
+      },
+      {
+        "name": "name",
+        "kind": 33,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 64
+      },
+      {
+        "name": "particleDatas",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 72,
+        "class": "hclSimClothDataParticleData"
+      },
+      {
+        "name": "triangleIndices",
+        "kind": 22,
+        "subtype": 6,
+        "length": 0,
+        "flags": 0,
+        "offset": 88
+      },
+      {
+        "name": "triangleFlips",
+        "kind": 22,
+        "subtype": 8,
+        "length": 0,
+        "flags": 0,
+        "offset": 104
+      },
+      {
+        "name": "totalMass",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 120
+      },
+      {
+        "name": "collidableTransformMap",
+        "kind": 25,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 128,
+        "class": "hclSimClothDataCollidableTransformMap"
+      },
+      {
+        "name": "perInstanceCollidables",
+        "kind": 22,
+        "subtype": 20,
+        "length": 0,
+        "flags": 0,
+        "offset": 168,
+        "class": "hclCollidable"
+      },
+      {
+        "name": "staticConstraintSets",
+        "kind": 22,
+        "subtype": 20,
+        "length": 0,
+        "flags": 0,
+        "offset": 184,
+        "class": "hclConstraintSet"
+      },
+      {
+        "name": "antiPinchConstraintSets",
+        "kind": 22,
+        "subtype": 20,
+        "length": 0,
+        "flags": 0,
+        "offset": 200,
+        "class": "hclConstraintSet"
+      },
+      {
+        "name": "simClothPoses",
+        "kind": 22,
+        "subtype": 20,
+        "length": 0,
+        "flags": 0,
+        "offset": 216,
+        "class": "hclSimClothPose"
+      },
+      {
+        "name": "actions",
+        "kind": 22,
+        "subtype": 20,
+        "length": 0,
+        "flags": 0,
+        "offset": 232,
+        "class": "hclAction"
+      },
+      {
+        "name": "staticCollisionMasks",
+        "kind": 22,
+        "subtype": 8,
+        "length": 0,
+        "flags": 0,
+        "offset": 248
+      },
+      {
+        "name": "perParticlePinchDetectionEnabledFlags",
+        "kind": 22,
+        "subtype": 1,
+        "length": 0,
+        "flags": 0,
+        "offset": 264
+      },
+      {
+        "name": "collidablePinchingDatas",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 280,
+        "class": "hclSimClothDataCollidablePinchingData"
+      },
+      {
+        "name": "minPinchedParticleIndex",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 296
+      },
+      {
+        "name": "maxPinchedParticleIndex",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 298
+      },
+      {
+        "name": "maxCollisionPairs",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 300
+      },
+      {
+        "name": "maxParticleRadius",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 304
+      },
+      {
+        "name": "landscapeCollisionData",
+        "kind": 25,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 308,
+        "class": "hclSimClothDataLandscapeCollisionData"
+      },
+      {
+        "name": "numLandscapeCollidableParticles",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 328
+      },
+      {
+        "name": "doNormals",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 332
+      },
+      {
+        "name": "transferMotionData",
+        "kind": 25,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 336,
+        "class": "hclSimClothDataTransferMotionData"
+      }
+    ],
+    "parent": "hkReferencedObject",
+    "signature": 1441111399
+  },
+  "hclSimClothDataOverridableSimulationInfo": {
+    "size": 48,
+    "version": 1,
+    "members": [
+      {
+        "name": "gravity",
+        "kind": 12,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "globalDampingPerSecond",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 16
+      },
+      {
+        "name": "collisionTolerance",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 20
+      },
+      {
+        "name": "pinchDetectionEnabled",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 24
+      },
+      {
+        "name": "landscapeCollisionEnabled",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 25
+      },
+      {
+        "name": "transferMotionEnabled",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 26
+      },
+      {
+        "name": "computeVelocity",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 27
+      },
+      {
+        "name": "overrideUnstuckParticles",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 28
+      },
+      {
+        "name": "maxUnstuckParticlesLinkPerFrame",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 32
+      }
+    ],
+    "parent": null
+  },
+  "hclSimClothDataParticleData": {
+    "size": 16,
+    "version": 2,
+    "members": [
+      {
+        "name": "mass",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "invMass",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 4
+      },
+      {
+        "name": "radius",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 8
+      },
+      {
+        "name": "friction",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 12
+      }
+    ],
+    "parent": null
+  },
+  "hclSimClothDataCollidableTransformMap": {
+    "size": 40,
+    "version": 0,
+    "members": [
+      {
+        "name": "transformSetIndex",
+        "kind": 7,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "transformIndices",
+        "kind": 22,
+        "subtype": 8,
+        "length": 0,
+        "flags": 0,
+        "offset": 8
+      },
+      {
+        "name": "offsets",
+        "kind": 22,
+        "subtype": 17,
+        "length": 0,
+        "flags": 0,
+        "offset": 24
+      }
+    ],
+    "parent": null
+  },
+  "hclSimClothPose": {
+    "size": 40,
+    "version": 0,
+    "members": [
+      {
+        "name": "name",
+        "kind": 33,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 16
+      },
+      {
+        "name": "positions",
+        "kind": 22,
+        "subtype": 12,
+        "length": 0,
+        "flags": 0,
+        "offset": 24
+      }
+    ],
+    "parent": "hkReferencedObject",
+    "signature": 4157225043
+  },
+  "hclAction": {
+    "size": 16,
+    "version": 0,
+    "members": [],
+    "parent": "hkReferencedObject"
+  },
+  "hclSimClothDataCollidablePinchingData": {
+    "size": 8,
+    "version": 1,
+    "members": [
+      {
+        "name": "pinchDetectionEnabled",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "pinchDetectionPriority",
+        "kind": 3,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 1
+      },
+      {
+        "name": "pinchDetectionRadius",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 4
+      }
+    ],
+    "parent": null
+  },
+  "hclSimClothDataLandscapeCollisionData": {
+    "size": 20,
+    "version": 0,
+    "members": [
+      {
+        "name": "landscapeRadius",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "enableStuckParticleDetection",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 4
+      },
+      {
+        "name": "stuckParticlesStretchFactorSq",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 8
+      },
+      {
+        "name": "pinchDetectionEnabled",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 12
+      },
+      {
+        "name": "pinchDetectionPriority",
+        "kind": 3,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 13
+      },
+      {
+        "name": "pinchDetectionRadius",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 16
+      }
+    ],
+    "parent": null
+  },
+  "hclSimClothDataTransferMotionData": {
+    "size": 48,
+    "version": 0,
+    "members": [
+      {
+        "name": "transformSetIndex",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "transformIndex",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 4
+      },
+      {
+        "name": "transferTranslationMotion",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 8
+      },
+      {
+        "name": "minTranslationSpeed",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 12
+      },
+      {
+        "name": "maxTranslationSpeed",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 16
+      },
+      {
+        "name": "minTranslationBlend",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 20
+      },
+      {
+        "name": "maxTranslationBlend",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 24
+      },
+      {
+        "name": "transferRotationMotion",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 28
+      },
+      {
+        "name": "minRotationSpeed",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 32
+      },
+      {
+        "name": "maxRotationSpeed",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 36
+      },
+      {
+        "name": "minRotationBlend",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 40
+      },
+      {
+        "name": "maxRotationBlend",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 44
+      }
+    ],
+    "parent": null
+  },
+  "hclTransformSetDefinition": {
+    "size": 32,
+    "version": 0,
+    "members": [
+      {
+        "name": "name",
+        "kind": 33,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 16
+      },
+      {
+        "name": "type",
+        "kind": 7,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 24
+      },
+      {
+        "name": "numTransforms",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 28
+      }
+    ],
+    "parent": "hkReferencedObject",
+    "signature": 251385129
+  },
+  "hclOperator": {
+    "size": 32,
+    "version": 0,
+    "members": [
+      {
+        "name": "name",
+        "kind": 33,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 16
+      },
+      {
+        "name": "type",
+        "kind": 24,
+        "subtype": 8,
+        "length": 0,
+        "flags": 1024,
+        "offset": 24
+      }
+    ],
+    "parent": "hkReferencedObject"
+  },
+  "hclClothState": {
+    "size": 88,
+    "version": 1,
+    "members": [
+      {
+        "name": "name",
+        "kind": 33,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 16
+      },
+      {
+        "name": "operators",
+        "kind": 22,
+        "subtype": 8,
+        "length": 0,
+        "flags": 0,
+        "offset": 24
+      },
+      {
+        "name": "usedBuffers",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 40,
+        "class": "hclClothStateBufferAccess"
+      },
+      {
+        "name": "usedTransformSets",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 56,
+        "class": "hclClothStateTransformSetAccess"
+      },
+      {
+        "name": "usedSimCloths",
+        "kind": 22,
+        "subtype": 8,
+        "length": 0,
+        "flags": 0,
+        "offset": 72
+      }
+    ],
+    "parent": "hkReferencedObject",
+    "signature": 1654605277
+  },
+  "hclClothStateBufferAccess": {
+    "size": 16,
+    "version": 2,
+    "members": [
+      {
+        "name": "bufferIndex",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "bufferUsage",
+        "kind": 25,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 4,
+        "class": "hclBufferUsage"
+      },
+      {
+        "name": "shadowBufferIndex",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 12
+      }
+    ],
+    "parent": null
+  },
+  "hclBufferUsage": {
+    "size": 5,
+    "version": 0,
+    "members": [
+      {
+        "name": "perComponentFlags",
+        "kind": 4,
+        "subtype": 0,
+        "length": 4,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "trianglesRead",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 4
+      }
+    ],
+    "parent": null
+  },
+  "hclClothStateTransformSetAccess": {
+    "size": 8,
+    "version": 0,
+    "members": [
+      {
+        "name": "transformSetIndex",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "transformSetUsage",
+        "kind": 25,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 4,
+        "class": "hclTransformSetUsage"
+      }
+    ],
+    "parent": null
+  },
+  "hclTransformSetUsage": {
+    "size": 2,
+    "version": 0,
+    "members": [
+      {
+        "name": "perComponentFlags",
+        "kind": 4,
+        "subtype": 0,
+        "length": 2,
+        "flags": 0,
+        "offset": 0
+      }
+    ],
+    "parent": null
+  },
+  "hclCopyVerticesOperator": {
+    "size": 56,
+    "version": 0,
+    "members": [
+      {
+        "name": "inputBufferIdx",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 32
+      },
+      {
+        "name": "outputBufferIdx",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 36
+      },
+      {
+        "name": "numberOfVertices",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 40
+      },
+      {
+        "name": "startVertexIn",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 44
+      },
+      {
+        "name": "startVertexOut",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 48
+      },
+      {
+        "name": "copyNormals",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 52
+      }
+    ],
+    "parent": "hclOperator",
+    "signature": 1676347575
+  },
+  "hclGatherAllVerticesOperator": {
+    "size": 64,
+    "version": 1,
+    "members": [
+      {
+        "name": "vertexInputFromVertexOutput",
+        "kind": 22,
+        "subtype": 5,
+        "length": 0,
+        "flags": 0,
+        "offset": 32
+      },
+      {
+        "name": "inputBufferIdx",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 48
+      },
+      {
+        "name": "outputBufferIdx",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 52
+      },
+      {
+        "name": "gatherNormals",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 56
+      },
+      {
+        "name": "partialGather",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 57
+      }
+    ],
+    "parent": "hclOperator",
+    "signature": 3543321017
+  },
+  "hclMoveParticlesOperator": {
+    "size": 56,
+    "version": 0,
+    "members": [
+      {
+        "name": "vertexParticlePairs",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 32,
+        "class": "hclMoveParticlesOperatorVertexParticlePair"
+      },
+      {
+        "name": "simClothIndex",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 48
+      },
+      {
+        "name": "refBufferIdx",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 52
+      }
+    ],
+    "parent": "hclOperator",
+    "signature": 684540178
+  },
+  "hclMoveParticlesOperatorVertexParticlePair": {
+    "size": 4,
+    "version": 0,
+    "members": [
+      {
+        "name": "vertexIndex",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "particleIndex",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 2
+      }
+    ],
+    "parent": null
+  },
+  "hclObjectSpaceMeshMeshDeformPOperator": {
+    "size": 216,
+    "version": 2,
+    "members": [
+      {
+        "name": "localPs",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 168,
+        "class": "hclObjectSpaceDeformerLocalBlockP"
+      },
+      {
+        "name": "localUnpackedPs",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 184,
+        "class": "hclObjectSpaceDeformerLocalBlockUnpackedP"
+      },
+      {
+        "name": "transferSimulation",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 200
+      },
+      {
+        "name": "inputBufferPrevIdx",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 204
+      },
+      {
+        "name": "outputBufferPrevIdx",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 208
+      }
+    ],
+    "parent": "hclObjectSpaceMeshMeshDeformOperator",
+    "signature": 1332737536
+  },
+  "hclObjectSpaceMeshMeshDeformOperator": {
+    "size": 168,
+    "version": 0,
+    "members": [
+      {
+        "name": "inputBufferIdx",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 32
+      },
+      {
+        "name": "outputBufferIdx",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 36
+      },
+      {
+        "name": "scaleNormalBehaviour",
+        "kind": 24,
+        "subtype": 8,
+        "length": 0,
+        "flags": 0,
+        "offset": 40
+      },
+      {
+        "name": "inputTrianglesSubset",
+        "kind": 22,
+        "subtype": 6,
+        "length": 0,
+        "flags": 0,
+        "offset": 48
+      },
+      {
+        "name": "triangleFromMeshTransforms",
+        "kind": 22,
+        "subtype": 17,
+        "length": 0,
+        "flags": 0,
+        "offset": 64
+      },
+      {
+        "name": "objectSpaceDeformer",
+        "kind": 25,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 80,
+        "class": "hclObjectSpaceDeformer"
+      }
+    ],
+    "parent": "hclOperator"
+  },
+  "hclObjectSpaceDeformer": {
+    "size": 88,
+    "version": 0,
+    "members": [
+      {
+        "name": "fourBlendEntries",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 0,
+        "class": "hclObjectSpaceDeformerFourBlendEntryBlock"
+      },
+      {
+        "name": "threeBlendEntries",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 16,
+        "class": "hclObjectSpaceDeformerThreeBlendEntryBlock"
+      },
+      {
+        "name": "twoBlendEntries",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 32,
+        "class": "hclObjectSpaceDeformerTwoBlendEntryBlock"
+      },
+      {
+        "name": "oneBlendEntries",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 48,
+        "class": "hclObjectSpaceDeformerOneBlendEntryBlock"
+      },
+      {
+        "name": "controlBytes",
+        "kind": 22,
+        "subtype": 4,
+        "length": 0,
+        "flags": 0,
+        "offset": 64
+      },
+      {
+        "name": "startVertexIndex",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 80
+      },
+      {
+        "name": "endVertexIndex",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 82
+      },
+      {
+        "name": "batchSizeSpu",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 84
+      },
+      {
+        "name": "partialWrite",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 86
+      }
+    ],
+    "parent": null
+  },
+  "hclObjectSpaceDeformerFourBlendEntryBlock": {
+    "size": 224,
+    "version": 0,
+    "members": [
+      {
+        "name": "vertexIndices",
+        "kind": 6,
+        "subtype": 0,
+        "length": 16,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "boneIndices",
+        "kind": 6,
+        "subtype": 0,
+        "length": 64,
+        "flags": 0,
+        "offset": 32
+      },
+      {
+        "name": "boneWeights",
+        "kind": 4,
+        "subtype": 0,
+        "length": 64,
+        "flags": 0,
+        "offset": 160
+      }
+    ],
+    "parent": null
+  },
+  "hclObjectSpaceDeformerThreeBlendEntryBlock": {
+    "size": 176,
+    "version": 0,
+    "members": [
+      {
+        "name": "vertexIndices",
+        "kind": 6,
+        "subtype": 0,
+        "length": 16,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "boneIndices",
+        "kind": 6,
+        "subtype": 0,
+        "length": 48,
+        "flags": 0,
+        "offset": 32
+      },
+      {
+        "name": "boneWeights",
+        "kind": 4,
+        "subtype": 0,
+        "length": 48,
+        "flags": 0,
+        "offset": 128
+      }
+    ],
+    "parent": null
+  },
+  "hclObjectSpaceDeformerTwoBlendEntryBlock": {
+    "size": 128,
+    "version": 0,
+    "members": [
+      {
+        "name": "vertexIndices",
+        "kind": 6,
+        "subtype": 0,
+        "length": 16,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "boneIndices",
+        "kind": 6,
+        "subtype": 0,
+        "length": 32,
+        "flags": 0,
+        "offset": 32
+      },
+      {
+        "name": "boneWeights",
+        "kind": 4,
+        "subtype": 0,
+        "length": 32,
+        "flags": 0,
+        "offset": 96
+      }
+    ],
+    "parent": null
+  },
+  "hclObjectSpaceDeformerOneBlendEntryBlock": {
+    "size": 64,
+    "version": 0,
+    "members": [
+      {
+        "name": "vertexIndices",
+        "kind": 6,
+        "subtype": 0,
+        "length": 16,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "boneIndices",
+        "kind": 6,
+        "subtype": 0,
+        "length": 16,
+        "flags": 0,
+        "offset": 32
+      }
+    ],
+    "parent": null
+  },
+  "hclObjectSpaceDeformerLocalBlockP": {
+    "size": 128,
+    "version": 0,
+    "members": [
+      {
+        "name": "localPosition",
+        "kind": 5,
+        "subtype": 0,
+        "length": 64,
+        "flags": 0,
+        "offset": 0
+      }
+    ],
+    "parent": null
+  },
+  "hclObjectSpaceDeformerLocalBlockUnpackedP": {
+    "size": 256,
+    "version": 0,
+    "members": [
+      {
+        "name": "localPosition",
+        "kind": 12,
+        "subtype": 0,
+        "length": 16,
+        "flags": 0,
+        "offset": 0
+      }
+    ],
+    "parent": null
+  },
+  "hclObjectSpaceSkinPNTOperator": {
+    "size": 192,
+    "version": 1,
+    "members": [
+      {
+        "name": "localPNTs",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 160,
+        "class": "hclObjectSpaceDeformerLocalBlockPNT"
+      },
+      {
+        "name": "localUnpackedPNTs",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 176,
+        "class": "hclObjectSpaceDeformerLocalBlockUnpackedPNT"
+      }
+    ],
+    "parent": "hclObjectSpaceSkinOperator",
+    "signature": 742843038
+  },
+  "hclObjectSpaceSkinOperator": {
+    "size": 160,
+    "version": 1,
+    "members": [
+      {
+        "name": "boneFromSkinMeshTransforms",
+        "kind": 22,
+        "subtype": 17,
+        "length": 0,
+        "flags": 0,
+        "offset": 32
+      },
+      {
+        "name": "transformSubset",
+        "kind": 22,
+        "subtype": 6,
+        "length": 0,
+        "flags": 0,
+        "offset": 48
+      },
+      {
+        "name": "outputBufferIndex",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 64
+      },
+      {
+        "name": "transformSetIndex",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 68
+      },
+      {
+        "name": "objectSpaceDeformer",
+        "kind": 25,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 72,
+        "class": "hclObjectSpaceDeformer"
+      }
+    ],
+    "parent": "hclOperator"
+  },
+  "hclObjectSpaceDeformerLocalBlockPNT": {
+    "size": 384,
+    "version": 0,
+    "members": [
+      {
+        "name": "localPosition",
+        "kind": 5,
+        "subtype": 0,
+        "length": 64,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "localNormal",
+        "kind": 5,
+        "subtype": 0,
+        "length": 64,
+        "flags": 0,
+        "offset": 128
+      },
+      {
+        "name": "localTangent",
+        "kind": 5,
+        "subtype": 0,
+        "length": 64,
+        "flags": 0,
+        "offset": 256
+      }
+    ],
+    "parent": null
+  },
+  "hclObjectSpaceDeformerLocalBlockUnpackedPNT": {
+    "size": 768,
+    "version": 0,
+    "members": [
+      {
+        "name": "localPosition",
+        "kind": 12,
+        "subtype": 0,
+        "length": 16,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "localNormal",
+        "kind": 12,
+        "subtype": 0,
+        "length": 16,
+        "flags": 0,
+        "offset": 256
+      },
+      {
+        "name": "localTangent",
+        "kind": 12,
+        "subtype": 0,
+        "length": 16,
+        "flags": 0,
+        "offset": 512
+      }
+    ],
+    "parent": null
+  },
+  "hclPlaneShape": {
+    "size": 48,
+    "version": 0,
+    "members": [
+      {
+        "name": "planeEquation",
+        "kind": 12,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 32
+      }
+    ],
+    "parent": "hclShape",
+    "signature": 3324317310
+  },
+  "hclSimulateOperator": {
+    "size": 80,
+    "version": 2,
+    "members": [
+      {
+        "name": "simClothIndex",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 32
+      },
+      {
+        "name": "subSteps",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 36
+      },
+      {
+        "name": "numberOfSolveIterations",
+        "kind": 7,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 40
+      },
+      {
+        "name": "constraintExecution",
+        "kind": 22,
+        "subtype": 7,
+        "length": 0,
+        "flags": 0,
+        "offset": 48
+      },
+      {
+        "name": "computeVelocityParticles",
+        "kind": 22,
+        "subtype": 6,
+        "length": 0,
+        "flags": 0,
+        "offset": 64
+      }
+    ],
+    "parent": "hclOperator",
+    "signature": 1692804148
+  },
+  "hclStandardLinkConstraintSet": {
+    "size": 48,
+    "version": 0,
+    "members": [
+      {
+        "name": "links",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 32,
+        "class": "hclStandardLinkConstraintSetLink"
+      }
+    ],
+    "parent": "hclConstraintSet",
+    "signature": 499689335
+  },
+  "hclStandardLinkConstraintSetLink": {
+    "size": 12,
+    "version": 0,
+    "members": [
+      {
+        "name": "particleA",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "particleB",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 2
+      },
+      {
+        "name": "restLength",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 4
+      },
+      {
+        "name": "stiffness",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 8
+      }
+    ],
+    "parent": null
+  },
+  "hclStretchLinkConstraintSet": {
+    "size": 48,
+    "version": 0,
+    "members": [
+      {
+        "name": "links",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 32,
+        "class": "hclStretchLinkConstraintSetLink"
+      }
+    ],
+    "parent": "hclConstraintSet",
+    "signature": 499689335
+  },
+  "hclStretchLinkConstraintSetLink": {
+    "size": 12,
+    "version": 0,
+    "members": [
+      {
+        "name": "particleA",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "particleB",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 2
+      },
+      {
+        "name": "restLength",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 4
+      },
+      {
+        "name": "stiffness",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 8
+      }
+    ],
+    "parent": null
+  },
+  "hclTaperedCapsuleShape": {
+    "size": 176,
+    "version": 2,
+    "members": [
+      {
+        "name": "small",
+        "kind": 12,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 32
+      },
+      {
+        "name": "big",
+        "kind": 12,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 48
+      },
+      {
+        "name": "coneApex",
+        "kind": 12,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 64
+      },
+      {
+        "name": "coneAxis",
+        "kind": 12,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 80
+      },
+      {
+        "name": "lVec",
+        "kind": 12,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 96
+      },
+      {
+        "name": "dVec",
+        "kind": 12,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 112
+      },
+      {
+        "name": "tanThetaVecNeg",
+        "kind": 12,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 128
+      },
+      {
+        "name": "smallRadius",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 144
+      },
+      {
+        "name": "bigRadius",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 148
+      },
+      {
+        "name": "l",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 152
+      },
+      {
+        "name": "d",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 156
+      },
+      {
+        "name": "cosTheta",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 160
+      },
+      {
+        "name": "sinTheta",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 164
+      },
+      {
+        "name": "tanTheta",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 168
+      },
+      {
+        "name": "tanThetaSqr",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 172
+      }
+    ],
+    "parent": "hclShape",
+    "signature": 2407872481
+  },
+  "hclTransitionConstraintSet": {
+    "size": 88,
+    "version": 2,
+    "members": [
+      {
+        "name": "perParticleData",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 32,
+        "class": "hclTransitionConstraintSetPerParticleVertices"
+      },
+      {
+        "name": "perParticleParams",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 48,
+        "class": "hclTransitionConstraintSetPerParticleParams"
+      },
+      {
+        "name": "toAnimPeriod",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 64
+      },
+      {
+        "name": "toAnimPlusDelayPeriod",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 68
+      },
+      {
+        "name": "toSimPeriod",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 72
+      },
+      {
+        "name": "toSimPlusDelayPeriod",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 76
+      },
+      {
+        "name": "referenceMeshBufferIdx",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 80
+      }
+    ],
+    "parent": "hclConstraintSet",
+    "signature": 734631826
+  },
+  "hclTransitionConstraintSetPerParticleVertices": {
+    "size": 4,
+    "version": 1,
+    "members": [
+      {
+        "name": "particleIndex",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "referenceVertex",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 2
+      }
+    ],
+    "parent": null
+  },
+  "hclTransitionConstraintSetPerParticleParams": {
+    "size": 12,
+    "version": 1,
+    "members": [
+      {
+        "name": "toAnimDelay",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "toSimDelay",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 4
+      },
+      {
+        "name": "toSimMaxDistance",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 8
+      }
+    ],
+    "parent": null
+  },
+  "hclUpdateSomeVertexFramesOperator": {
+    "size": 192,
+    "version": 2,
+    "members": [
+      {
+        "name": "involvedTriangles",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 32,
+        "class": "hclUpdateSomeVertexFramesOperatorTriangle"
+      },
+      {
+        "name": "involvedVertices",
+        "kind": 22,
+        "subtype": 6,
+        "length": 0,
+        "flags": 0,
+        "offset": 48
+      },
+      {
+        "name": "selectionVertexToInvolvedVertex",
+        "kind": 22,
+        "subtype": 6,
+        "length": 0,
+        "flags": 0,
+        "offset": 64
+      },
+      {
+        "name": "involvedVertexToNormalID",
+        "kind": 22,
+        "subtype": 6,
+        "length": 0,
+        "flags": 0,
+        "offset": 80
+      },
+      {
+        "name": "triangleFlips",
+        "kind": 22,
+        "subtype": 8,
+        "length": 0,
+        "flags": 0,
+        "offset": 96
+      },
+      {
+        "name": "referenceVertices",
+        "kind": 22,
+        "subtype": 6,
+        "length": 0,
+        "flags": 0,
+        "offset": 112
+      },
+      {
+        "name": "tangentEdgeCosAngle",
+        "kind": 22,
+        "subtype": 11,
+        "length": 0,
+        "flags": 0,
+        "offset": 128
+      },
+      {
+        "name": "tangentEdgeSinAngle",
+        "kind": 22,
+        "subtype": 11,
+        "length": 0,
+        "flags": 0,
+        "offset": 144
+      },
+      {
+        "name": "biTangentFlip",
+        "kind": 22,
+        "subtype": 11,
+        "length": 0,
+        "flags": 0,
+        "offset": 160
+      },
+      {
+        "name": "bufferIdx",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 176
+      },
+      {
+        "name": "numUniqueNormalIDs",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 180
+      },
+      {
+        "name": "updateNormals",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 184
+      },
+      {
+        "name": "updateTangents",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 185
+      },
+      {
+        "name": "updateBiTangents",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 186
+      }
+    ],
+    "parent": "hclOperator",
+    "signature": 110074191
+  },
+  "hclUpdateSomeVertexFramesOperatorTriangle": {
+    "size": 6,
+    "version": 0,
+    "members": [
+      {
+        "name": "indices",
+        "kind": 6,
+        "subtype": 0,
+        "length": 3,
+        "flags": 0,
+        "offset": 0
+      }
+    ],
+    "parent": null
+  }
+}

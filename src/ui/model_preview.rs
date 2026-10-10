@@ -13,18 +13,24 @@ use std::{
 pub use crate::model_preview::{
     SurfaceOverride,
     appearance::{Appearance, DyeTextureOverride},
+    local::{LocalAppearance, LocalScene},
 };
 pub mod chooser;
 mod details;
+mod fps;
 mod image_job;
+mod options;
+pub use options::{Options, set_options};
+mod rotation;
 pub mod still;
 mod window;
+pub use crate::model_preview::PackageRead;
 pub use window::show;
 pub use window::{pause_source, stop_reads};
 
-/// Waits for the model previews' package reads to end, up to `limit`, for an operation about to
-/// replace or remove packages. Pause the previews first so they start no new read. Returns
-/// whether every read ended.
+/// Waits for background package reads to end, the model previews' and any other counted by
+/// [`PackageRead`], up to `limit`, for an operation about to replace or remove packages. Pause the
+/// previews first so they start no new read. Returns whether every read ended.
 pub fn wait_for_package_reads(limit: std::time::Duration) -> bool {
     let deadline = std::time::Instant::now() + limit;
     while model_preview::package_reads_running() {
@@ -51,8 +57,16 @@ const LOADING_BLOCK_HEIGHT: f32 = 84.0;
 enum Target {
     Object(u32),
     Weapon(Appearance, Option<u64>),
+    Local(LocalAppearance, Option<u32>),
 }
 type Selection = (PathBuf, Target);
+
+fn clip_bytes(selection: &Selection, tag: u32) -> Result<Vec<u8>, String> {
+    match &selection.1 {
+        Target::Local(appearance, _) => appearance.clip_bytes(&selection.0, tag),
+        _ => model_preview::assets::clip_bytes(&selection.0, tag),
+    }
+}
 
 /// Playback rate, defaulting to real time so the struct can still derive `Default`.
 #[derive(Clone, Copy, PartialEq)]
@@ -74,6 +88,8 @@ struct Preview {
     gpu: model_preview::gpu::Shared,
     error: Option<String>,
     camera: Camera,
+    auto_rotate: bool,
+    rotation_tick: Option<f64>,
     scene: Scene,
     texture: Option<egui::TextureHandle>,
     asset_textures: BTreeMap<u32, egui::TextureHandle>,
@@ -87,6 +103,8 @@ struct Preview {
     last_tick: Option<std::time::Instant>,
     rendered_seconds: Option<f32>,
     software: image_job::Job,
+    fps: fps::Counter,
+    software_frames: u64,
     preserve_camera: bool,
     request: Option<window::Request>,
     source_selection: Option<Selection>,
@@ -242,6 +260,7 @@ pub fn pop_out(
     packages: &Path,
     (appearance, name): (Appearance, &str),
 ) -> Option<egui::Response> {
+    still::playback_control(ui, id, over);
     let owner = pop_out_source(ui.ctx(), id);
     window::corner_launcher(
         ui,
@@ -254,6 +273,42 @@ pub fn pop_out(
             None,
             false,
         ),
+    )
+}
+
+/// The corner icon [`pop_out`] draws, for a preview of the object `tag` drawn with
+/// [`still::show_object`].
+pub fn pop_out_object(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    over: egui::Rect,
+    packages: &Path,
+    (tag, name): (u32, &str),
+) -> Option<egui::Response> {
+    still::playback_control(ui, id, over);
+    let owner = pop_out_source(ui.ctx(), id);
+    window::corner_launcher(
+        ui,
+        owner,
+        over,
+        window::Request::new(packages, Target::Object(tag), name, None, false),
+    )
+}
+
+/// Open an unbuilt appearance in the shared viewer, retaining its private asset reader.
+pub fn pop_out_local(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    over: egui::Rect,
+    packages: &Path,
+    (appearance, name): (LocalAppearance, &str),
+) -> Option<egui::Response> {
+    still::playback_control(ui, id, over);
+    window::corner_launcher(
+        ui,
+        pop_out_source(ui.ctx(), id),
+        over,
+        window::Request::new(packages, Target::Local(appearance, None), name, None, false),
     )
 }
 
@@ -327,8 +382,11 @@ impl Preview {
             self.error = None;
             self.texture = None;
             self.software = image_job::Job::default();
+            self.fps = fps::Counter::default();
+            self.software_frames = 0;
             self.asset_textures.clear();
             self.rendered = None;
+            self.rotation_tick = None;
             if !keep_camera {
                 self.camera = Camera::default();
             }
@@ -351,7 +409,9 @@ impl Preview {
                     self.load_time = self.load_started.take().map(|start| start.elapsed());
                     match result {
                         Ok(model) => {
-                            self.playing = model.has_animation() || model.has_shader_animation();
+                            self.playing = model.has_animation()
+                                || model.has_cloth()
+                                || model.has_shader_animation();
                             self.last_tick = None;
                             self.model = Some(Arc::new(model));
                         }
@@ -386,6 +446,9 @@ impl Preview {
                         &progress,
                         clip,
                     ),
+                    Target::Local(appearance, object) => {
+                        appearance.load(&selection.0, &progress, object, clip)
+                    }
                 };
                 let result = match access {
                     Some(access) => access.read(load),
@@ -450,7 +513,7 @@ impl Preview {
         }
     }
 
-    /// Exports render through the rasterizer, so a saved image matches a headless run.
+    /// Capture the requested frame on the preview GPU, with software export for fallback views.
     fn save_image(&mut self, ctx: &egui::Context, model: &Arc<Model>) {
         let Some(path) = rfd::FileDialog::new()
             .set_file_name("model-preview.png")
@@ -466,8 +529,28 @@ impl Preview {
             self.seconds,
             self.style,
         );
+        let captured = (model_preview::gpu::available() && self.gpu.fallback(&model).is_none())
+            .then(|| {
+                self.gpu.image(
+                    ctx.clone(),
+                    model_preview::gpu::Frame {
+                        model: model.clone(),
+                        camera,
+                        scene,
+                        seconds,
+                        style,
+                        pose: None,
+                        animate: true,
+                        dyes: None,
+                    },
+                    [1600, 1200],
+                )
+            });
         self.write_in_background(ctx, "Image saved", path, move || {
-            let image = render::styled_image(&model, camera, scene, [1600, 1200], seconds, style);
+            let image = match captured {
+                Some(captured) => captured.wait()?,
+                None => render::styled_image(&model, camera, scene, [1600, 1200], seconds, style),
+            };
             let pixels: Vec<u8> = image
                 .pixels
                 .iter()
@@ -486,18 +569,21 @@ impl Preview {
             return;
         };
         let (model, seconds) = (model.clone(), self.seconds);
+        let mut baker = (model_preview::gpu::available() && self.gpu.fallback(&model).is_none())
+            .then(|| self.gpu.baker(ctx.clone(), model.clone()));
         let message = if model.triangle_effects.iter().any(Option::is_some) {
             "Model saved. Transparent shader effects are omitted from GLB. Save an image to retain them."
         } else {
             "Model saved"
         };
-        self.write_in_background(ctx, message, path, move || {
-            model_preview::export::glb(&model, seconds)
+        self.write_in_background(ctx, message, path, move || match baker.as_mut() {
+            Some(baker) => model_preview::export::glb_using(&model, seconds, Some(baker)),
+            None => model_preview::export::glb(&model, seconds),
         });
     }
 
     fn save_audio(&mut self, ctx: &egui::Context, tag: u32, decoded: bool) {
-        let Some(packages) = self.selection.as_ref().map(|selection| selection.0.clone()) else {
+        let Some(selection) = self.selection.clone() else {
             return;
         };
         let Some(path) = rfd::FileDialog::new()
@@ -519,7 +605,7 @@ impl Preview {
             .and_then(|request| request.access.clone());
         self.write_in_background(ctx, "Audio saved", path, move || {
             let read = || {
-                let bytes = model_preview::assets::clip_bytes(&packages, tag)?;
+                let bytes = clip_bytes(&selection, tag)?;
                 if decoded {
                     model_preview::assets::decoded_wave(&bytes)
                 } else {
@@ -534,7 +620,7 @@ impl Preview {
     }
 
     fn play_audio(&mut self, ctx: &egui::Context, tag: u32) {
-        let Some(packages) = self.selection.as_ref().map(|selection| selection.0.clone()) else {
+        let Some(selection) = self.selection.clone() else {
             return;
         };
         self.stop_audio();
@@ -556,7 +642,7 @@ impl Preview {
                 if cancel.load(std::sync::atomic::Ordering::Relaxed) {
                     return Err("Audio decoding canceled".to_owned());
                 }
-                let bytes = model_preview::assets::clip_bytes(&packages, tag)?;
+                let bytes = clip_bytes(&selection, tag)?;
                 let wave = model_preview::assets::decoded_wave_cancelable(&bytes, &cancel)?;
                 let duration = model_preview::assets::wave_duration(&wave)
                     .ok_or("Decoded audio has no valid duration")?;
@@ -694,6 +780,9 @@ impl Preview {
     }
 
     fn draw(&mut self, ui: &mut egui::Ui, name: &str) {
+        if model_preview::gpu::available() {
+            self.gpu.service(ui);
+        }
         ui.horizontal(|ui| {
             if !self.navigation.is_empty() && ui.button("Back").clicked() {
                 self.navigation.pop();
@@ -705,13 +794,13 @@ impl Preview {
                     ui.weak(kind);
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.add(egui::Label::new(egui::RichText::new(name).heading()).truncate())
-                        .on_hover_text(name);
+                    ui.add(egui::Label::new(egui::RichText::new(name).heading()).truncate());
                 });
             });
         });
         ui.add_space(4.0);
         if let Some(error) = self.error.clone() {
+            self.rotation_tick = None;
             self.draw_centered(ui, |ui| {
                 ui.add(egui::Label::new(error).wrap());
                 ui.add_space(4.0);
@@ -721,10 +810,12 @@ impl Preview {
             return;
         }
         let Some(model) = self.model.clone() else {
+            self.rotation_tick = None;
             self.draw_loading(ui);
             return;
         };
         if model.triangles.is_empty() && model.particle_sources.is_empty() {
+            self.rotation_tick = None;
             self.draw_assets(ui, &model);
             return;
         }
@@ -738,7 +829,7 @@ impl Preview {
         self.draw_toolbar(ui, &model);
         // The transport sits under the canvas, so the canvas keeps its top edge whatever it
         // shows.
-        egui::TopBottomPanel::bottom(ui.id().with("model-preview-bottom"))
+        egui::Panel::bottom(ui.id().with("model-preview-bottom"))
             .frame(egui::Frame::NONE.inner_margin(egui::Margin {
                 left: 0,
                 right: 0,
@@ -747,7 +838,7 @@ impl Preview {
             }))
             .show_separator_line(false)
             .resizable(false)
-            .show_inside(ui, |ui| self.draw_playback(ui, &model));
+            .show(ui, |ui| self.draw_playback(ui, &model));
         self.draw_viewport(ui, &model);
     }
 
@@ -777,6 +868,7 @@ impl Preview {
             }
             if ui.button("Reset View").clicked() {
                 self.camera = Camera::default();
+                self.rotation_tick = None;
             }
             // The menus sit at the right, Details outermost.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -792,7 +884,7 @@ impl Preview {
                 ui.add_enabled_ui(self.saving.is_none(), |ui| {
                     ui.menu_button("Save", |ui| {
                         if ui.button("Image…").clicked() {
-                            ui.close_menu();
+                            ui.close();
                             self.save_image(ui.ctx(), model);
                         }
                         if !model.triangles.is_empty() {
@@ -804,22 +896,33 @@ impl Preview {
                                 "3D Model…"
                             };
                             if ui.button(model_label).clicked() {
-                                ui.close_menu();
+                                ui.close();
                                 self.save_model(ui.ctx(), model);
                             }
                         }
                     });
                 });
-                ui.menu_button("View", |ui| {
+                crate::ui::sticky_menu_button(ui, "View", |ui| {
                     ui.set_max_width(260.0);
+                    self.draw_rotation_option(ui);
                     if !model.particle_sources.is_empty() || model.has_particle_material_study() {
                         if ui.checkbox(&mut self.scene.particle_study, "Particle Study").changed() {
                             self.playing = self.scene.particle_study
                                 || model.has_animation()
+                                || model.has_cloth()
                                 || model.has_shader_animation();
                             self.last_tick = None;
                         }
-                        ui.small("Approximate material and sprite study. Native spawning, placement and motion are unavailable.");
+                        if model.particle_simulation().is_some() {
+                            ui.small("Stored particle programs drive count, placement, age and motion in a fixed studio scene. Live attachments and engine scheduling are unavailable.");
+                        } else {
+                            ui.small("Approximate material and sprite study. This system needs additional inputs or simulation rules for playback.");
+                            for particle in &model.assets.particles {
+                                if let Some(reason) = &particle.simulation_notice {
+                                    ui.small(reason);
+                                }
+                            }
+                        }
                         ui.separator();
                     }
                     // The picker sits in the menu itself: a color button's own popup lies
@@ -835,6 +938,8 @@ impl Preview {
                         self.scene.background = [background.r(), background.g(), background.b()];
                     }
                     ui.separator();
+                    ui.checkbox(&mut self.scene.bloom, "Bloom");
+                    ui.checkbox(&mut self.scene.filmic, "Filmic Output");
                     ui.add(egui::Slider::new(&mut self.scene.exposure, 0.2..=3.0).text("Exposure"));
                     ui.add(egui::Slider::new(&mut self.scene.key, 0.0..=1.5).text("Key"));
                     ui.add(egui::Slider::new(&mut self.scene.fill, 0.0..=1.0).text("Fill"));
@@ -888,37 +993,39 @@ impl Preview {
         // An object with clips but no idle clip has no animation until one is picked, so the
         // picker shows for it too.
         if model.has_animation()
+            || model.has_cloth()
             || !model.clips.is_empty()
             || model.has_shader_animation()
             || self.scene.particle_study
         {
-            let duration = model.animation_duration().map_or_else(
-                || {
-                    if !self.scene.particle_study || model.particle_sources.is_empty() {
-                        if self.scene.particle_study && model.has_particle_material_study() {
-                            model
-                                .assets
-                                .particles
-                                .iter()
-                                .filter_map(|particle| {
-                                    particle.program.as_ref()?.lifetime_default()
-                                })
-                                .fold(0.05, f32::max)
-                        } else {
-                            60.0
-                        }
-                    } else {
+            let duration = model.animation_duration().unwrap_or_else(|| {
+                if !self.scene.particle_study || model.particle_sources.is_empty() {
+                    if self.scene.particle_study
+                        && let Some(simulation) = model.particle_simulation()
+                    {
+                        simulation.duration
+                    } else if self.scene.particle_study && model.has_particle_material_study() {
                         model
-                            .particle_sources
+                            .assets
+                            .particles
                             .iter()
-                            .map(|source| source.period)
+                            .filter_map(|particle| particle.program.as_ref()?.lifetime_default())
                             .fold(0.05, f32::max)
+                    } else {
+                        60.0
                     }
-                },
-                |duration| duration,
-            );
+                } else {
+                    model
+                        .particle_sources
+                        .iter()
+                        .map(|source| source.period)
+                        .fold(0.05, f32::max)
+                }
+            });
             let now = std::time::Instant::now();
-            if self.playing {
+            // Playback holds while the viewer is in the background, as the orbit does.
+            let moving = self.playing && rotation::animating(ui.ctx());
+            if moving {
                 if let Some(last) = self.last_tick {
                     self.seconds += now.duration_since(last).as_secs_f32() * self.speed.0;
                     if !model.has_shader_animation() && model.rigs.len() <= 1 {
@@ -932,7 +1039,7 @@ impl Preview {
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(33));
             }
-            self.last_tick = Some(now);
+            self.last_tick = moving.then_some(now);
             let timeline_end = if model.has_shader_animation() || model.rigs.len() > 1 {
                 self.seconds.max(60.0)
             } else {
@@ -968,6 +1075,12 @@ impl Preview {
                                 animation.tag, animation.frames, animation.fps
                             ));
                         }
+                    } else if self.scene.particle_study && model.particle_simulation().is_some() {
+                        ui.label("Particle Simulation");
+                    } else if model.has_cloth() {
+                        ui.label("Cloth Simulation").on_hover_text(
+                            "Cloth motion in the studio with authored body colliders.",
+                        );
                     } else if self.scene.particle_study && !model.particle_sources.is_empty() {
                         ui.label("Particle Study");
                     } else if self.scene.particle_study && model.has_particle_material_study() {
@@ -1051,11 +1164,8 @@ impl Preview {
             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
             self.camera.zoom = (self.camera.zoom * (scroll * 0.002).exp()).clamp(0.25, 5.0);
         }
-        if model_preview::gpu::available()
-            && self.gpu.fallback(model).is_none()
-            && !(self.style == render::Style::Textured && self.scene.particle_study)
-        {
-            let pose = model.pose(self.seconds).map(Arc::new);
+        let orbit = self.advance_rotation(ui.ctx(), &response);
+        if model_preview::gpu::available() && self.gpu.fallback(model).is_none() {
             self.gpu.paint(
                 ui,
                 rect,
@@ -1065,9 +1175,12 @@ impl Preview {
                     scene: self.scene,
                     style: self.style,
                     seconds: self.seconds,
-                    pose,
+                    pose: None,
+                    animate: true,
+                    dyes: None,
                 },
             );
+            self.draw_fps(ui, rect);
             self.draw_overlays(ui, rect, model);
             return;
         }
@@ -1082,8 +1195,10 @@ impl Preview {
             seconds,
             style: self.style,
             overrides: Vec::new(),
+            orbit,
         };
         if let Some((rendered, image)) = self.software.update(ui.ctx(), model.clone(), request) {
+            self.software_frames = self.software_frames.saturating_add(1);
             if let Some(texture) = &mut self.texture {
                 texture.set(image, egui::TextureOptions::LINEAR);
             } else {
@@ -1093,7 +1208,12 @@ impl Preview {
                     egui::TextureOptions::LINEAR,
                 ));
             }
-            self.rendered = Some((self.camera, self.scene, pixels, self.style));
+            self.rendered = Some((
+                rendered.camera,
+                rendered.scene,
+                rendered.size,
+                rendered.style,
+            ));
             self.rendered_seconds = Some(rendered.seconds);
         }
         if let Some(texture) = &self.texture {
@@ -1104,7 +1224,27 @@ impl Preview {
                 egui::Color32::WHITE,
             );
         }
+        self.draw_fps(ui, rect);
         self.draw_overlays(ui, rect, model);
+    }
+
+    fn draw_fps(&mut self, ui: &egui::Ui, rect: egui::Rect) {
+        let source = self
+            .source_viewport
+            .unwrap_or_else(|| ui.ctx().viewport_id());
+        let enabled = options::get(ui.ctx(), source).show_fps;
+        self.fps.draw(
+            ui,
+            rect,
+            enabled,
+            if enabled {
+                self.gpu
+                    .completed_frames()
+                    .saturating_add(self.software_frames)
+            } else {
+                0
+            },
+        );
     }
 
     /// Short notes over the canvas, bottom left: a save or sound in progress, what the drawing
@@ -1125,7 +1265,9 @@ impl Preview {
         lines.extend(self.status.iter().chain(&self.audio_status).cloned());
         if self.scene.particle_study {
             lines.push(
-                if model.particle_sources.is_empty() {
+                if model.particle_simulation().is_some() {
+                    "Particle simulation · fixed studio scene"
+                } else if model.particle_sources.is_empty() {
                     "Material study · spawn and motion not shown"
                 } else {
                     "Sprite study · synthetic placement and motion"

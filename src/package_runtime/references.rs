@@ -177,14 +177,27 @@ pub(crate) fn declared_fields(
     tag: u32,
 ) -> Result<Vec<(usize, u32)>, String> {
     let resource = read_resource(manager, tag)?;
-    if !matches!(resource.kind, 8 | 16) || matches!(resource.class, 0x8080_0000 | 0x8080_9BBB) {
+    payload_fields(manager, tag, &resource.payload)
+}
+
+/// Declared fields in an authored payload using its stock template's native layout. Raw
+/// resource backing bytes have no fields. No source payload is read or substituted here.
+pub(crate) fn payload_fields(
+    manager: &PackageManager,
+    template: u32,
+    payload: &[u8],
+) -> Result<Vec<(usize, u32)>, String> {
+    let entry = manager
+        .get_entry(TagHash(template))
+        .ok_or_else(|| format!("Reference template 0x{template:08X} is missing"))?;
+    if !matches!(entry.file_type, 8 | 16) || matches!(entry.reference, 0x8080_0000 | 0x8080_9BBB) {
         return Ok(Vec::new());
     }
     let mut registry = Registry::new()?;
     let mut fields = Vec::new();
     visit(
-        &resource.payload,
-        resource.class,
+        payload,
+        entry.reference,
         |handle| {
             registry.record(handle, |schema_tag| {
                 let schema = read_resource(manager, schema_tag)?;
@@ -202,7 +215,7 @@ pub(crate) fn declared_fields(
             }
         },
     )
-    .map_err(|error| format!("Resource 0x{tag:08X}: {error}"))?;
+    .map_err(|error| format!("Reference template 0x{template:08X}: {error}"))?;
     fields.sort_unstable();
     fields.dedup();
     Ok(fields)

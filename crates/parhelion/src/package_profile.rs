@@ -132,7 +132,7 @@ pub(crate) const PARHELION_ASSET_PACKAGE: AuthoredPackage = AuthoredPackage {
     required_output: true,
 };
 
-pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 22] = [
+pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 23] = [
     // The private perk runtime package.
     CanonicalPackage {
         package_id: PRIVATE_PERK_RUNTIME_PACKAGE_ID,
@@ -217,8 +217,7 @@ pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 22] = [
         stock_generation: EARLIER_GENERATION,
         required_output: false,
     },
-    // The weapon crosshair table, extended when an imported weapon brings a crosshair type key
-    // Shadowkeep has no row for.
+    // The weapon crosshair table and one native subclass screen family.
     CanonicalPackage {
         package_id: 0x01A3,
         stock_file_stem: "w64_ui_01a3",
@@ -226,6 +225,16 @@ pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 22] = [
         authored_patch_id: 7,
         authored_file_name: "w64_ui_01a3_7.pkg",
         stock_generation: FINAL_GENERATION,
+        required_output: false,
+    },
+    // Private ability glyph rows and conditional tree/HUD color bindings.
+    CanonicalPackage {
+        package_id: 0x01E3,
+        stock_file_stem: "w64_ui_01e3",
+        stock_patch_id: 5,
+        authored_patch_id: 6,
+        authored_file_name: "w64_ui_01e3_6.pkg",
+        stock_generation: EARLIER_GENERATION,
         required_output: false,
     },
     // The HUD status table, extended when a private perk shows a HUD status of its own.
@@ -256,6 +265,7 @@ pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 22] = [
         stock_generation: FINAL_GENERATION,
         required_output: false,
     },
+    // The companion hierarchy for the other native subclass screen family.
     CanonicalPackage {
         package_id: 0x037E,
         stock_file_stem: "w64_ui_037e",

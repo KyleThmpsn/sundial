@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 pub(in crate::model_preview) fn inputs(
     owner: Option<&[u8]>,
     components: &[Vec<u8>],
-) -> Result<Vec<[f32; 4]>, String> {
+) -> Result<Vec<ObjectInput>, String> {
     let Some(owner) = owner else {
         return Ok(Vec::new());
     };
@@ -59,10 +59,10 @@ pub(in crate::model_preview) fn inputs(
                 return Err("The effect input has no supported vector property".into());
             }
             let name = u32_at(owner, link + 32)?;
-            defaults
+            Ok(defaults
                 .get(&name)
                 .copied()
-                .ok_or_else(|| format!("The initial effect channel {name:08X} is unavailable"))
+                .ok_or_else(|| format!("The initial effect channel {name:08X} is unavailable")))
         })
         .collect()
 }
@@ -70,7 +70,7 @@ pub(in crate::model_preview) fn inputs(
 pub(in crate::model_preview) fn load(
     manager: &PackageManager,
     tag: u32,
-    objects: Result<&[[f32; 4]], &str>,
+    objects: ObjectInputs<'_>,
     surface: u8,
     model: &mut Model,
 ) -> Result<Material, String> {
@@ -207,14 +207,7 @@ pub(in crate::model_preview) fn load(
             0x9f,
         ] => Kind::WaveGlow,
         _ => {
-            return native::load(
-                manager,
-                tag,
-                &bytes,
-                objects.map_err(str::to_owned)?,
-                surface,
-                model,
-            );
+            return native::load(manager, tag, &bytes, objects, surface, model);
         }
     };
     let vertex = u32_at(&bytes, 0x48)?;
@@ -253,7 +246,6 @@ pub(in crate::model_preview) fn load(
         return Err("The effect constants do not match its program".into());
     }
     let globals = crate::dyes::material::global_channels(manager);
-    let objects = objects.map_err(str::to_owned)?;
     let program = Program::material(&bytes, 0x2C8, &globals, objects, surface, constants.len())?;
     let mut material = Material {
         kind,

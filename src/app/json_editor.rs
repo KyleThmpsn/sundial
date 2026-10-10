@@ -2,6 +2,7 @@ mod editor;
 mod fold_projection;
 mod operations;
 mod syntax;
+mod workspace;
 
 pub(super) use editor::{JsonEditorResponse, JsonEditorState, draw};
 

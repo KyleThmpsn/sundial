@@ -55,9 +55,9 @@ fn collectible_indices(sources: &sources::ProjectSources, hash: u32) -> Vec<usiz
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn real_collectible_free_weapons_build_as_bases_and_geometry_donors() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let sources = sources::load_project_sources(&packages).unwrap();
     let mut weapons = regression_weapons("missing_collectible", false);
     assert!(!weapons.is_empty());
@@ -121,7 +121,7 @@ fn verify_native_base_requirements(
             weapons: vec![weapon.clone()],
         };
         let placement = placements::Plan::new(sources, &project.weapons).unwrap();
-        let mut report = |_: build::Phase, _: &str, _: usize, _: usize| {};
+        let mut report = |_: build::Event<'_>| {};
         let mut progress = build::Progress::new(1, &mut report);
         let result = resolve::resolve_project_weapons_with_progress(
             sources,
@@ -163,9 +163,9 @@ fn verify_native_base_requirements(
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn collectible_free_appearance_resolution_preserves_gameplay_structure_guards() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let sources = sources::load_project_sources(&packages).unwrap();
     let mut weapons = regression_weapons("missing_collectible", true);
     assert!(!weapons.is_empty());
@@ -295,9 +295,9 @@ fn compatible_geometry_project(
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn real_bases_with_unrelated_stock_conditions_build_independent_collections() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let sources = sources::load_project_sources(&packages).unwrap();
     let weapons = regression_weapons("unrelated_condition_flags", false);
     assert!(!weapons.is_empty());

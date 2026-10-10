@@ -21,7 +21,7 @@ impl Change {
         &self,
         recipe: &mut WeaponRecipe,
     ) -> Result<(), String> {
-        if let Some(issue) = crate::perk::preflight::check(&self.perk, crate::ItemKind::Subclass)
+        if let Some(issue) = crate::perk::preflight::check(&self.perk)
             .into_iter()
             .find(|issue| issue.blocking)
         {

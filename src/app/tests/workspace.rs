@@ -1,4 +1,5 @@
 use crate::app::change_review::collect_change_summaries;
+use crate::app::tests::driver::*;
 use crate::app::*;
 use crate::test_support::TestDirectory;
 use std::fs;
@@ -98,4 +99,62 @@ fn check_mode_accepts_compatible_sqlite_and_rejects_blocked_account_sources() {
             .unwrap_err()
             .contains("Account source is incompatible")
     );
+}
+
+#[test]
+fn accepting_a_loaded_source_cannot_record_or_restore_the_previous_source() {
+    let directory = TestDirectory::new("history-source-boundary");
+    let mut app = app(directory.0.clone());
+    let previous = app.document.clone();
+    let entry = DocumentHistoryEntry {
+        document: previous.clone(),
+        label: "Old Account".into(),
+    };
+    app.undo_history.push(entry.clone());
+    app.redo_history.push(entry);
+    let next = WorkspaceDocument::json_only(
+        serde_json::json!({"version": 8, "state": {"characters": [], "sentinel": "new account"}}),
+    );
+    app.replace_loaded_document(next.clone());
+    assert!(app.undo_history.is_empty());
+    assert!(app.redo_history.is_empty());
+    app.undo();
+    assert_eq!(app.document, next);
+    assert!(!app.dirty);
+    assert!(!app.settings_path.exists());
+}
+
+#[test]
+fn disconnected_catalog_worker_releases_the_authoring_pause() {
+    use crate::app::background_tasks::{CatalogTask, CatalogTaskKind};
+    let directory = TestDirectory::new("catalog-worker-disconnect");
+    let mut app = app(directory.0.clone());
+    app.manifest.suspend_package_access();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    app.catalog_task = Some(CatalogTask {
+        kind: CatalogTaskKind::Rebuild,
+        receiver,
+        progress: CatalogProgress {
+            message: "Testing",
+            completed: 0,
+            total: 1,
+        },
+    });
+    drop(sender);
+    app.poll_catalog_task();
+    assert!(app.catalog_task.is_none());
+    assert!(!app.manifest.inspection_access().is_suspended());
+    assert!(app.status_is_error);
+}
+
+#[test]
+fn applying_stale_json_preserves_the_current_document_and_the_draft() {
+    let directory = TestDirectory::new("json-draft-conflict");
+    let mut app = app(directory.0.clone());
+    let draft = app.raw_json.clone();
+    app.document.json_mut()["state"]["sentinel"] = serde_json::json!(true);
+    let current = app.document.clone();
+    assert!(!app.apply_raw_json());
+    assert_eq!(app.document, current);
+    assert_eq!(app.raw_json, draft);
 }

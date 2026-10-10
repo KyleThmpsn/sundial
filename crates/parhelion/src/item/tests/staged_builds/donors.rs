@@ -1,10 +1,9 @@
 use super::*;
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn real_cross_slot_sword_builds_without_presentation_override() {
-    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-        .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages");
+    let packages = crate::test_support::stock_packages();
     let namespace = "parhelion.cross-slot-without-presentation.integration";
     let spec = WeaponCloneSpec {
         kind: crate::ItemKind::Weapon,
@@ -40,12 +39,10 @@ fn real_cross_slot_sword_builds_without_presentation_override() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 #[allow(clippy::cognitive_complexity)]
 fn real_mountaintop_energy_solar_clone_preserves_socket_topology_when_configured() {
-    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-        .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages");
-    let packages = PathBuf::from(packages);
+    let packages = crate::test_support::stock_packages();
     let namespace = "parhelion.second-sun.integration";
     let spec = WeaponCloneSpec {
         kind: crate::ItemKind::Weapon,
@@ -263,15 +260,14 @@ fn real_mountaintop_energy_solar_clone_preserves_socket_topology_when_configured
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn real_donor_roles_use_first_indexed_rows_and_reject_invalid_inputs() {
     use crate::item::donors::{
         resolve_donor_item, resolve_icon_donor, resolve_presentation_donor,
         resolve_render_gear_donor, resolve_runtime_component_donor,
     };
 
-    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-        .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages");
+    let packages = crate::test_support::stock_packages();
     let mut sources = crate::item::sources::load_project_sources(Path::new(&packages))
         .expect("clean stock sources should load");
     let gameplay_hash = 0xEE06_B019;
@@ -375,10 +371,7 @@ fn staged_cross_family_build(
     tempfile::TempDir,
     PathBuf,
 ) {
-    let packages = PathBuf::from(
-        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-            .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages"),
-    );
+    let packages = crate::test_support::stock_packages();
     let spec = WeaponCloneSpec {
         kind: crate::ItemKind::Weapon,
         namespace: namespace.to_owned(),
@@ -444,7 +437,7 @@ const HAND_CANNON_GROUP: u32 = 0xC8CC_993A;
 /// runtime rather than pinning anything: the model keeps its own bones, and the authored row
 /// keeps naming the appearance's family so the client resolves that family's animations.
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn real_cross_family_appearance_moves_the_rig_when_the_families_interchange() {
     let (bundle, view, packages) = staged_cross_family_build(
         "parhelion.cross-family-rig.integration",
@@ -504,7 +497,7 @@ fn real_cross_family_appearance_moves_the_rig_when_the_families_interchange() {
 /// private gear parts pinned to the gameplay rig's root bone, and the authored row names the
 /// gameplay family because that is the rig those parts now ride.
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn real_cross_family_appearance_pins_the_parts_when_the_rig_cannot_move() {
     let (bundle, view, packages) = staged_cross_family_build(
         "parhelion.cross-family-pin.integration",
@@ -518,7 +511,7 @@ fn real_cross_family_appearance_pins_the_parts_when_the_rig_cannot_move() {
 /// A bow's model on a shotgun's gameplay. Bow limbs and strings blend several bones per vertex
 /// instead of naming one, so pinning has to rewrite their blend weights as well.
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn real_bow_appearance_pins_its_blended_parts() {
     let (bundle, view, packages) = staged_cross_family_build(
         "parhelion.cross-family-bow-pin.integration",
@@ -537,7 +530,7 @@ fn real_bow_appearance_pins_its_blended_parts() {
 /// appearance's row selects the legendary's content block, which keeps firing the exotic's own
 /// graph. Neither block carries a behavior record, so the graph is all that differs.
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn real_bow_appearance_builds_on_an_exotic_bow() {
     let (bundle, view, packages) = staged_cross_family_build(
         "parhelion.cross-family-bow.integration",
@@ -568,7 +561,7 @@ fn real_bow_appearance_builds_on_an_exotic_bow() {
 /// appearance's row selects Wish-Ender's block, which fires Le Monarque's own graph and reads its
 /// own state array and behavior record.
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn real_bow_appearance_keeps_the_base_behavior_record() {
     let (bundle, view, packages) = staged_cross_family_build(
         "parhelion.cross-family-bow-record.integration",

@@ -13,7 +13,7 @@ fn configured(key: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
 }
 
 fn digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 #[test]

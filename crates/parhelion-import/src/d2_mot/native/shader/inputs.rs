@@ -173,7 +173,7 @@ impl Inspection {
         ensure!(lines.next() == Some(expected), "disassembled stage differs");
         let mut inputs = Inputs {
             stage,
-            bytecode_sha256: format!("{:x}", Sha256::digest(code)),
+            bytecode_sha256: hex::encode(Sha256::digest(code)),
             constant_buffers: BTreeMap::new(),
             constant_indexing: BTreeMap::new(),
             constant_reads: BTreeMap::new(),

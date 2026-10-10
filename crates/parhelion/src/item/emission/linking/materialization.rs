@@ -4,7 +4,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 fn digest(data: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(data))
+    hex::encode(Sha256::digest(data))
 }
 
 fn read_i64(data: &[u8], offset: usize) -> AuthoringResult<i64> {
@@ -54,10 +54,7 @@ fn state(assets: &crate::asset_packages::AssetPackages) -> Vec<PackageState> {
     reason = "End-to-end verification keeps the ordered workflow and its independent assertions together"
 )]
 fn private_materialization_package_readback() {
-    let output = PathBuf::from(
-        std::env::var_os("PARHELION_LINK_OUTPUT")
-            .expect("configured fresh linker output directory"),
-    );
+    let output = crate::test_support::artifact_dir("linking");
     match fs::symlink_metadata(&output) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => panic!("Cannot inspect linker output directory: {error}"),

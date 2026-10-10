@@ -585,27 +585,27 @@ pub fn validate_stat_overrides(
             });
             continue;
         };
-        if let Some(minimum) = stat.minimum_value {
-            if value < minimum {
-                diagnostics.push(AuthoringDiagnostic {
+        if let Some(minimum) = stat.minimum_value
+            && value < minimum
+        {
+            diagnostics.push(AuthoringDiagnostic {
                     field,
                     code: AuthoringDiagnosticCode::StatValueBelowMinimum,
                     message: format!(
                         "Investment stat definition {definition_index} value {value} is below its decoded minimum {minimum}"
                     ),
                 });
-            }
         }
-        if let Some(maximum) = stat.maximum_value {
-            if value > maximum {
-                diagnostics.push(AuthoringDiagnostic {
+        if let Some(maximum) = stat.maximum_value
+            && value > maximum
+        {
+            diagnostics.push(AuthoringDiagnostic {
                     field,
                     code: AuthoringDiagnosticCode::StatValueAboveMaximum,
                     message: format!(
                         "Investment stat definition {definition_index} value {value} exceeds the donor stat-group maximumValue {maximum}"
                     ),
                 });
-            }
         }
     }
     diagnostics

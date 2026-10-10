@@ -1,7 +1,7 @@
 pub(super) const OBJECTIVE_DEFINITION_TABLE_SLOT: usize =
-    crate::investment_schema::ROOT_OBJECTIVE_DEFINITION_TABLE_SLOT;
+    crate::investment::schema::ROOT_OBJECTIVE_DEFINITION_TABLE_SLOT;
 pub(super) const OBJECTIVE_STRING_TABLE_SLOT: usize =
-    crate::investment_schema::GLOBALS_OBJECTIVE_STRING_TABLE_SLOT;
+    crate::investment::schema::GLOBALS_OBJECTIVE_STRING_TABLE_SLOT;
 pub(super) const OBJECTIVE_CONDITIONS_OFFSET: usize = 0x08;
 pub(super) const OBJECTIVE_SECONDARY_CONDITIONS_OFFSET: usize = 0x38;
 pub(super) const OBJECTIVE_INTRINSIC_PERK_FLAGS_OFFSET: usize = 0x48;
@@ -30,7 +30,7 @@ pub(super) const ITEM_OBJECTIVE_RESOURCE_POINTER_OFFSET: usize = 0x30;
 pub(super) const ITEM_OBJECTIVE_RESOURCE_CLASS: u32 = 0x8080_77EB;
 pub(super) const ITEM_OBJECTIVE_INDEX_ROW_CLASS: u32 = 0x8080_87B1;
 pub(super) const COLLECTIBLE_DEFINITION_TABLE_SLOT: usize =
-    crate::investment_schema::ROOT_COLLECTIBLE_DEFINITION_TABLE_SLOT;
+    crate::investment::schema::ROOT_COLLECTIBLE_DEFINITION_TABLE_SLOT;
 pub(super) const METRIC_DEFINITION_TABLE_SLOT: usize = 55;
 pub(super) const METRIC_STRING_TABLE_SLOT: usize = 37;
 pub(super) const METRIC_DEFINITION_ROW_SIZE: usize = 0x48;
@@ -77,9 +77,9 @@ pub(super) const LOCATION_RELEASE_LOCATION_INDEX_OFFSET: usize = 0;
 pub(super) const LOCATION_RELEASE_CONDITIONS_OFFSET: usize = 0x08;
 pub(super) const LOCATION_RELEASE_CONDITION_ACTIVITY_INDEX_OFFSET: usize = 0x20;
 pub(super) const RECORD_DEFINITION_TABLE_SLOT: usize =
-    crate::investment_schema::ROOT_RECORD_DEFINITION_TABLE_SLOT;
+    crate::investment::schema::ROOT_RECORD_DEFINITION_TABLE_SLOT;
 pub(super) const RECORD_STRING_TABLE_SLOT: usize =
-    crate::investment_schema::GLOBALS_RECORD_STRING_TABLE_SLOT;
+    crate::investment::schema::GLOBALS_RECORD_STRING_TABLE_SLOT;
 pub(super) const RECORD_OBJECTIVE_LIST_OFFSET: usize = 0x30;
 pub(super) const RECORD_INTERVAL_OBJECTIVE_LIST_OFFSET: usize = 0x40;
 pub(super) const RECORD_INTERVAL_OBJECTIVE_ROW_CLASS: u32 = 0x8080_2C0F;
@@ -87,14 +87,14 @@ pub(super) const RECORD_INTERVAL_OBJECTIVE_ROW_SIZE: usize = 0x0C;
 pub(super) const RECORD_INTERVAL_OBJECTIVE_INDEX_OFFSET: usize = 0;
 pub(super) const RECORD_CONDITION_OFFSETS: [usize; 6] = [0x68, 0x78, 0x88, 0x98, 0xA8, 0xC0];
 pub(super) const PRESENTATION_NODE_DEFINITION_TABLE_SLOT: usize =
-    crate::investment_schema::ROOT_PRESENTATION_NODE_DEFINITION_TABLE_SLOT;
+    crate::investment::schema::ROOT_PRESENTATION_NODE_DEFINITION_TABLE_SLOT;
 pub(super) const PRESENTATION_NODE_STRING_TABLE_SLOT: usize =
-    crate::investment_schema::GLOBALS_PRESENTATION_NODE_STRING_TABLE_SLOT;
+    crate::investment::schema::GLOBALS_PRESENTATION_NODE_STRING_TABLE_SLOT;
 pub(super) const PRESENTATION_NODE_CONDITION_OFFSETS: [usize; 2] = [0x30, 0x40];
 pub(super) const UNLOCK_FLAG_DEFINITION_TABLE_SLOT: usize =
-    crate::investment_schema::ROOT_UNLOCK_FLAG_DEFINITION_TABLE_SLOT;
+    crate::investment::schema::ROOT_UNLOCK_FLAG_DEFINITION_TABLE_SLOT;
 pub(super) const UNLOCK_FLAG_DISPLAY_TABLE_SLOT: usize =
-    crate::investment_schema::GLOBALS_UNLOCK_FLAG_DISPLAY_TABLE_SLOT;
+    crate::investment::schema::GLOBALS_UNLOCK_FLAG_DISPLAY_TABLE_SLOT;
 pub(super) const UNLOCK_FLAG_DISPLAY_POINTER_OFFSET: usize = 8;
 pub(super) const UNLOCK_FLAG_DISPLAY_NAME_OFFSET: usize = 0;
 pub(super) const UNLOCK_FLAG_DISPLAY_DESCRIPTION_OFFSET: usize = 8;
@@ -147,7 +147,7 @@ pub(super) const FACTION_HASH_OFFSET: usize = 0;
 pub(super) const FACTION_PROGRESSION_INDEX_OFFSET: usize = 4;
 pub(super) const FACTION_NAME_OFFSET: usize = 4;
 pub(super) const FACTION_DESCRIPTION_OFFSET: usize = 12;
-pub(super) use crate::investment_schema::{
+pub(super) use crate::investment::schema::{
     COLLECTIBLE_CONDITION_OFFSETS, COLLECTIBLE_DEFINITION_ROW_CLASS,
     COLLECTIBLE_DEFINITION_ROW_SIZE, COLLECTIBLE_HASH_OFFSET,
     COLLECTIBLE_INVENTORY_ITEM_INDEX_OFFSET, COLLECTIBLE_PRESENTATION_NODE_PARENTS_OFFSET,

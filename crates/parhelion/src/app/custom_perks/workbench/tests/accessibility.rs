@@ -98,13 +98,13 @@ fn editor_names(condition: bool, node: NativeNode) -> Vec<String> {
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
     let mut output = None;
     for _ in 0..6 {
-        output = Some(ctx.run(
+        output = Some(ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(screen),
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     crate::app::style::perk_workbench_style(ui);
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         program::read_native(ui, condition, &node);
@@ -198,14 +198,14 @@ fn the_behavior_picker_controls_announce_themselves_by_name() {
     let mut workbench = Workbench::default();
     let keys = Default::default();
     let mut draw = |events| {
-        ctx.run(
+        ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(screen),
                 events,
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     crate::app::style::perk_workbench_style(ui);
                     workbench.behaviors.draw_action(
                         ui,

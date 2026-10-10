@@ -97,15 +97,14 @@ fn replace(
             .map_err(|error| invalid(error.to_string()))?;
         let mut regions = BTreeMap::<u64, BTreeMap<usize, u32>>::new();
         for part in kept {
-            if let Some((selector, position)) = part.source_region {
-                if regions
+            if let Some((selector, position)) = part.source_region
+                && regions
                     .entry(selector)
                     .or_default()
                     .insert(position, part.key)
                     .is_some()
-                {
-                    return Err(invalid("Duplicate source art position"));
-                }
+            {
+                return Err(invalid("Duplicate source art position"));
             }
         }
         for (selector, positions) in regions {
@@ -256,6 +255,7 @@ fn graph_node(
     folder: &Path,
     n: &Value,
     spec: Option<&WeaponCloneSpec>,
+    repaired: &mut BTreeMap<String, Vec<u8>>,
 ) -> AuthoringResult<linking::Node> {
     let name = n["symbol"]
         .as_str()
@@ -266,6 +266,8 @@ fn graph_node(
     let is_companion = name == "parent-companion" || n["shared_owner"].is_string();
     let mut payload = if is_companion {
         Vec::new()
+    } else if let Some(bytes) = repaired.remove(name) {
+        bytes
     } else {
         fs::read(
             folder.join(
@@ -351,8 +353,10 @@ fn apply_one(
         .as_array()
         .ok_or_else(|| invalid("Asset nodes missing"))?;
     let mut nodes = Vec::with_capacity(json_nodes.len());
+    let mut repaired = parhelion_import::d2_mot::native::vertex_input::repair(&graph, folder)
+        .map_err(|e| invalid(format!("Imported vertex inputs: {e:#}")))?;
     for n in json_nodes {
-        nodes.push(graph_node(folder, n, spec)?);
+        nodes.push(graph_node(folder, n, spec, &mut repaired)?);
     }
     let extra_bounds = if graph["ornament_icon_png"].is_string() {
         8

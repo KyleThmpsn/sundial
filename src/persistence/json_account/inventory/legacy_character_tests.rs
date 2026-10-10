@@ -124,7 +124,7 @@ pub(super) fn swap_inventory_item_with_equipment(
     slot: &str,
 ) -> InventoryResult<bool> {
     require_inventory_mutation(document)?;
-    if !crate::account_contract::EQUIPMENT_SLOTS
+    if !crate::account::contract::EQUIPMENT_SLOTS
         .iter()
         .any(|(known_slot, _, _)| *known_slot == slot)
     {
@@ -271,7 +271,7 @@ pub(super) fn move_equipment_item_to_inventory(
     slot: &str,
 ) -> InventoryResult<()> {
     require_inventory_mutation(document)?;
-    if !crate::account_contract::EQUIPMENT_SLOTS
+    if !crate::account::contract::EQUIPMENT_SLOTS
         .iter()
         .any(|(known_slot, _, _)| *known_slot == slot)
     {

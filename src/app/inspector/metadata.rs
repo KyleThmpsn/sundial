@@ -194,7 +194,7 @@ pub(in crate::app) fn definition_context_menu(response: &egui::Response, label: 
 pub(in crate::app) fn inspect_menu_button(ui: &mut egui::Ui, label: &str, hash: u64) {
     if ui.button(label).clicked() {
         request_definition(ui.ctx(), hash);
-        ui.close_menu();
+        ui.close();
     }
 }
 
@@ -202,17 +202,17 @@ pub(in crate::app) fn inspect_menu_button(ui: &mut egui::Ui, label: &str, hash: 
 pub(in crate::app) fn copy_menu_buttons(ui: &mut egui::Ui, hash: u64, name: Option<&str>) {
     if ui.button("Copy Hash").clicked() {
         ui.ctx().copy_text(format_hash_hex(hash));
-        ui.close_menu();
+        ui.close();
     }
     if ui.button("Copy Decimal").clicked() {
         ui.ctx().copy_text(format_hash_decimal(hash));
-        ui.close_menu();
+        ui.close();
     }
     if let Some(name) = name
         && ui.button("Copy Name").clicked()
     {
         ui.ctx().copy_text(name.to_owned());
-        ui.close_menu();
+        ui.close();
     }
 }
 

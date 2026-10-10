@@ -62,9 +62,9 @@ fn assert_preserved_companions(source: &[u8], authored: &[u8]) {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn private_companion_variants_pack_and_preserve_stock_data() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let manager = open_manager(&packages).unwrap();
     let globals = manager
         .read_tag(resolve_live_named_tag(&manager, "investment_globals", None).unwrap())
@@ -114,6 +114,7 @@ fn private_companion_variants_pack_and_preserve_stock_data() {
                 Vec::new()
             };
             spec.overrides.socket_plug_variants = vec![WeaponSocketPlugVariantOverride {
+                offer_everywhere: false,
                 replace_effects: mode == 2,
                 investment_stats: stat_edits(&definition, mode),
                 socket_index: 4,

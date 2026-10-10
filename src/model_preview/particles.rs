@@ -1,6 +1,7 @@
 //! A visual study for point emitters that have no native draw mesh.
 //! The compiled spawn and motion program is not evaluated here.
 use super::Model;
+pub(crate) mod simulation;
 
 pub(crate) struct Source {
     pub position: [f32; 3],

@@ -3,7 +3,7 @@ use super::*;
 #[test]
 #[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and installed Shadowkeep packages"]
 fn model_less_emitter_reaches_sound_bank_events() {
-    let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
+    let packages = crate::test_support::preview_packages();
     let manager = crate::investment::discovery::open_packages(Path::new(&packages)).unwrap();
     let mut inventory = Inventory::default();
     inventory.scan_sound_bank(&manager, 0x80BD_0809);
@@ -23,7 +23,7 @@ fn model_less_emitter_reaches_sound_bank_events() {
 #[test]
 #[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and installed Shadowkeep packages"]
 fn model_less_emitter_reaches_shadowing_light() {
-    let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
+    let packages = crate::test_support::preview_packages();
     let packages = Path::new(&packages);
     let emitter = load(packages, 0x80FD_E2FB).unwrap();
     assert!(
@@ -39,7 +39,7 @@ fn model_less_emitter_reaches_shadowing_light() {
     let image = render::styled_image(
         &light,
         render::Camera::default(),
-        render::Scene::default(),
+        render::Scene::unprocessed(),
         [480, 360],
         0.0,
         render::Style::Textured,
@@ -53,7 +53,9 @@ fn model_less_emitter_reaches_shadowing_light() {
             .count()
             > 100
     );
-    if let Some(output) = std::env::var_os("SUNDIAL_PROBE_OUT") {
+    if let Some(output) =
+        crate::test_support::artifacts("probes").map(std::path::PathBuf::into_os_string)
+    {
         let rgba = image
             .pixels
             .iter()
@@ -71,7 +73,7 @@ fn model_less_emitter_reaches_shadowing_light() {
     reason = "One installed effect sequence is checked node by node against the packages"
 )]
 fn air_weak_fx_sequence_opens_particles_and_sounds() {
-    let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
+    let packages = crate::test_support::preview_packages();
     let packages = Path::new(&packages);
     let model = load(packages, 0x80BC_12EB).unwrap();
     assert_eq!(model.assets.particles.len(), 1);
@@ -237,13 +239,15 @@ fn air_weak_fx_sequence_opens_particles_and_sounds() {
     assert_eq!(&wave[..4], b"RIFF");
     assert_eq!(&wave[8..12], b"WAVE");
     assert!(wave.len() > bytes.len());
-    if let Some(output) = std::env::var_os("SUNDIAL_PROBE_OUT") {
+    if let Some(output) =
+        crate::test_support::artifacts("probes").map(std::path::PathBuf::into_os_string)
+    {
         std::fs::write(Path::new(&output).join("air-weak-sample.wav"), wave).unwrap();
         if !model.triangles.is_empty() {
             let image = render::styled_image(
                 &model,
                 render::Camera::default(),
-                render::Scene::default(),
+                render::Scene::unprocessed(),
                 [512, 512],
                 0.0,
                 render::Style::Textured,
@@ -263,6 +267,8 @@ fn air_weak_fx_sequence_opens_particles_and_sounds() {
                     &model,
                     render::Camera::default(),
                     render::Scene {
+                        filmic: false,
+                        bloom: false,
                         particle_study: true,
                         ..Default::default()
                     },
@@ -296,7 +302,7 @@ fn air_weak_fx_sequence_opens_particles_and_sounds() {
                 let image = render::styled_image(
                     &model,
                     render::Camera::default(),
-                    render::Scene::default(),
+                    render::Scene::unprocessed(),
                     [512, 512],
                     0.0,
                     style,
@@ -326,10 +332,10 @@ fn air_weak_fx_sequence_opens_particles_and_sounds() {
 
 /// Compare several installed effects against the Air Weak particle preview.
 #[test]
-#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_PROBE_OUT"]
+#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
 fn sample_other_effects_render() {
-    let packages = std::path::PathBuf::from(std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").unwrap());
-    let out = std::path::PathBuf::from(std::env::var_os("SUNDIAL_PROBE_OUT").unwrap());
+    let packages = crate::test_support::preview_packages();
+    let out = crate::test_support::artifact_dir("probes");
     std::fs::create_dir_all(&out).unwrap();
     let mut report = String::new();
     let mut failures = Vec::new();
@@ -340,6 +346,8 @@ fn sample_other_effects_render() {
                     &model,
                     render::Camera::default(),
                     render::Scene {
+                        filmic: false,
+                        bloom: false,
                         particle_study: true,
                         ..Default::default()
                     },
@@ -442,7 +450,7 @@ fn solid_and_wireframe_modes_ignore_texture_color() {
     let solid = render::styled_image(
         &model,
         camera,
-        render::Scene::default(),
+        render::Scene::unprocessed(),
         [128, 128],
         0.0,
         render::Style::Solid,
@@ -450,7 +458,7 @@ fn solid_and_wireframe_modes_ignore_texture_color() {
     let wire = render::styled_image(
         &model,
         camera,
-        render::Scene::default(),
+        render::Scene::unprocessed(),
         [128, 128],
         0.0,
         render::Style::Wireframe,
@@ -488,14 +496,14 @@ fn linked_light_volume_does_not_shrink_a_mesh_preview() {
     let light = render::image(&model, camera, [128, 128]);
     assert_ne!(
         light,
-        eframe::egui::ColorImage::new([128, 128], eframe::egui::Color32::from_rgb(24, 28, 35))
+        eframe::egui::ColorImage::filled([128, 128], eframe::egui::Color32::from_rgb(24, 28, 35))
     );
 }
 
 #[test]
 #[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and installed Shadowkeep packages"]
 fn expanded_preview_reads_component_and_rocket_color_texture() {
-    let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
+    let packages = crate::test_support::preview_packages();
     let packages = Path::new(&packages);
     let component = load(packages, 0x80EFB8CB).unwrap();
     assert_eq!(component.tags, vec![0x80EFB8CA]);
@@ -505,7 +513,9 @@ fn expanded_preview_reads_component_and_rocket_color_texture() {
     assert!(!rocket.textures.iter().any(|t| t.tag == 0x80C1B794));
     let snowball = load(packages, 0x80F4BF98).unwrap();
     assert!(!snowball.textures.is_empty());
-    if let Some(output) = std::env::var_os("SUNDIAL_PROJECTILE_OUTPUT") {
+    if let Some(output) =
+        crate::test_support::artifacts("projectiles").map(std::path::PathBuf::into_os_string)
+    {
         let output = Path::new(&output);
         std::fs::create_dir_all(output).unwrap();
         for (name, model, style) in [
@@ -516,7 +526,7 @@ fn expanded_preview_reads_component_and_rocket_color_texture() {
             let image = render::styled_image(
                 model,
                 render::Camera::default(),
-                render::Scene::default(),
+                render::Scene::unprocessed(),
                 [400, 400],
                 0.0,
                 style,
@@ -569,7 +579,7 @@ fn preview_depth_is_independent_of_triangle_submission_order() {
     let wireframe = render::styled_image(
         &model,
         camera,
-        render::Scene::default(),
+        render::Scene::unprocessed(),
         [128, 128],
         0.0,
         render::Style::Wireframe,
@@ -581,7 +591,7 @@ fn preview_depth_is_independent_of_triangle_submission_order() {
         render::styled_image(
             &model,
             camera,
-            render::Scene::default(),
+            render::Scene::unprocessed(),
             [128, 128],
             0.0,
             render::Style::Wireframe
@@ -604,7 +614,7 @@ fn preview_depth_is_independent_of_triangle_submission_order() {
 #[test]
 #[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and installed Shadowkeep packages"]
 fn chicken_preview_from_installed_packages() {
-    let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
+    let packages = crate::test_support::preview_packages();
     let model = load(Path::new(&packages), 0x80BC_90E3).unwrap();
     assert_eq!(model.tags, vec![0x80EF_B8CA]);
     assert_eq!(model.textures.len(), 1);
@@ -620,7 +630,9 @@ fn chicken_preview_from_installed_packages() {
         model.triangles.len(),
         model.tags[0]
     );
-    if let Some(output) = std::env::var_os("SUNDIAL_PREVIEW_OUTPUT") {
+    if let Some(output) =
+        crate::test_support::artifacts("preview").map(std::path::PathBuf::into_os_string)
+    {
         let image = render::image(&model, render::Camera::default(), [640, 640]);
         let mut bytes = b"P6\n640 640\n255\n".to_vec();
         bytes.extend(
@@ -734,10 +746,10 @@ fn each_triangle_uses_its_own_material_texture() {
 
 /// Loads a random sample of installed weapons through the preview and reports any failure.
 #[test]
-#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_PROBE_OUT"]
+#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
 fn sample_weapons_load_in_the_preview() {
-    let packages = std::path::PathBuf::from(std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").unwrap());
-    let out = std::path::PathBuf::from(std::env::var_os("SUNDIAL_PROBE_OUT").unwrap());
+    let packages = crate::test_support::preview_packages();
+    let out = crate::test_support::artifact_dir("probes");
     std::fs::create_dir_all(&out).unwrap();
     let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     let donors = catalog.weapon_donors();

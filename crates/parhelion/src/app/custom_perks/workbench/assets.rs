@@ -1,5 +1,4 @@
-//! The asset picker shared by spawn, attach and pattern actions, and the native fields an
-//! attach node carries beside its asset.
+//! The asset picker shared by native actions, vehicle summons and vehicle projectiles.
 use super::*;
 use sundial::package_authoring::sandbox_perk::program::Asset;
 
@@ -8,7 +7,7 @@ pub(super) mod variants;
 
 /// Which catalog entries an action may reference.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum AssetScope {
+pub(in crate::app) enum AssetScope {
     /// A pattern override needs a projectile.
     Projectiles,
     /// A spawn accepts a projectile, emitter, pickup or physical world object.
@@ -17,6 +16,10 @@ pub(super) enum AssetScope {
     Any,
     /// An ammo drop's optional effect, shown on the drop. Stock drops use emitters.
     DropEffect,
+    /// A summon needs native entry markers and supported vehicle motion.
+    Vehicles,
+    /// Vehicle barrels require a native moving projectile graph.
+    VehicleProjectiles,
 }
 
 /// A technical name without the tag it ends in, for a list row.
@@ -32,7 +35,10 @@ fn without_tag(name: &str) -> &str {
 impl AssetScope {
     fn placement_hint(self, kind: entity::Kind) -> &'static str {
         match self {
-            Self::Projectiles => "Fired by the weapon in place of its current projectile.",
+            Self::Projectiles | Self::VehicleProjectiles => {
+                "Fired in place of the current projectile."
+            }
+            Self::Vehicles => "Summoned in place of the base Sparrow's vehicle.",
             Self::Spawnable if kind == entity::Kind::Projectile => {
                 "Starts at Spawn Location and uses the asset's native motion."
             }
@@ -66,15 +72,29 @@ impl AssetScope {
                 "Choose a Drop Effect",
                 "Use Drop Effect",
             ),
+            Self::Vehicles => ("Choose Other Vehicle…", "Choose a Vehicle", "Use Vehicle"),
+            Self::VehicleProjectiles => (
+                "Choose Other Projectile…",
+                "Choose a Projectile",
+                "Use Projectile",
+            ),
         }
     }
 
     fn allows(self, kind: entity::Kind, object_type: u8) -> bool {
         match self {
-            Self::Projectiles => kind == entity::Kind::Projectile,
+            Self::Projectiles | Self::VehicleProjectiles => kind == entity::Kind::Projectile,
+            Self::Vehicles => object_type == 15,
             Self::Spawnable => entity::spawnable_object(kind, object_type),
-            Self::Any | Self::DropEffect => true,
+            Self::Any | Self::DropEffect => object_type != 15,
         }
+    }
+
+    fn fixed_kind(self) -> bool {
+        matches!(
+            self,
+            Self::Projectiles | Self::VehicleProjectiles | Self::Vehicles
+        )
     }
 }
 
@@ -176,6 +196,71 @@ fn asset_usage(
 }
 
 impl Workbench {
+    pub(in crate::app) fn prepare_assets(
+        &mut self,
+        ctx: &egui::Context,
+        packages: &Path,
+        catalog: Option<&InvestmentCatalog>,
+    ) {
+        if packages.is_dir() {
+            self.discovery.start(packages, ctx);
+        }
+        self.discovery.poll();
+        self.refresh_item_names(catalog);
+        self.refresh_asset_labels();
+    }
+
+    pub(in crate::app) fn asset_catalog(&self) -> Option<&entity::catalog::Catalog> {
+        self.discovery
+            .data
+            .as_ref()
+            .map(|data| data.effects.as_ref())
+    }
+
+    pub(in crate::app) fn asset_name(&self, graph: u32, fallback: &str) -> String {
+        self.asset_labels
+            .get(&graph)
+            .cloned()
+            .unwrap_or_else(|| fallback.to_owned())
+    }
+
+    /// Reuse the asset browser when a preset menu asks for another native asset.
+    pub(in crate::app) fn choose_asset(
+        &mut self,
+        ui: &mut egui::Ui,
+        packages: &Path,
+        catalog: Option<&InvestmentCatalog>,
+        scope: AssetScope,
+        opened: bool,
+        current: Option<u32>,
+    ) -> Option<Asset> {
+        let (_, title, use_label) = scope.picker_labels();
+        let mut query = String::new();
+        pickers::browser_window(
+            ui,
+            ("native-asset-choice", scope as u8),
+            title,
+            &mut query,
+            opened,
+            |ui, query, reset, _height| {
+                self.prepare_assets(ui.ctx(), packages, catalog);
+                Browser {
+                    catalog,
+                    discovery: &self.discovery,
+                    perk_names: &self.perk_names,
+                    item_names: &self.item_names,
+                    asset_labels: &self.asset_labels,
+                    markers: None,
+                    carried: self
+                        .ingredients
+                        .as_ref()
+                        .map(|(_, _, ingredients)| &ingredients.sources),
+                }
+                .draw(ui, scope, query, reset, Some(use_label), current)
+            },
+        )
+    }
+
     /// An attachment with no name of its own is named after this effect. When the picker's
     /// name already names this perk, as "Firefly Attachment" or "Attachment Shared by Ace of
     /// Spades Catalyst, Firefly" do, the list uses that same name, so what a user
@@ -509,11 +594,17 @@ struct Selection {
 }
 
 impl Selection {
-    fn allows(self, entry: &entity::catalog::Entry) -> bool {
+    fn allows(self, entry: &entity::catalog::Entry, catalog: &entity::catalog::Catalog) -> bool {
         if !self.scope.allows(entry.kind, entry.object_type) {
             return false;
         }
-        if self.scope == AssetScope::Projectiles {
+        if self.scope == AssetScope::Vehicles {
+            return crate::vehicle::catalog::capabilities(catalog, entry).is_some();
+        }
+        if self.scope == AssetScope::VehicleProjectiles {
+            return crate::vehicle::catalog::moving_projectile(catalog, entry);
+        }
+        if self.scope.fixed_kind() {
             return true;
         }
         match self.filter {
@@ -553,7 +644,7 @@ fn matching_assets(
         .enumerate()
         .filter(|(_, (row, search))| {
             let entry = &data.effects.entries[row.index];
-            selection.allows(entry)
+            selection.allows(entry, &data.effects)
                 && (selection.show_all || exact_graph == Some(entry.graph) || search.identified)
                 && words.iter().all(|word| index.matches(search, word))
         })
@@ -605,6 +696,12 @@ impl Browser<'_> {
             }
             return None;
         };
+        // A first open can start discovery. Reveal the current asset and focus search when
+        // its catalog arrives, just as when the picker opens with an already loaded catalog.
+        let source_id = ui.make_persistent_id("asset-catalog-ready");
+        let source = std::sync::Arc::as_ptr(&data.effects) as usize;
+        let reset = reset || ui.data(|state| state.get_temp::<usize>(source_id)) != Some(source);
+        ui.data_mut(|state| state.insert_temp(source_id, source));
         let filter_id = ui.make_persistent_id("asset-kind");
         let mut filter = ui.data(|state| state.get_temp::<u8>(filter_id).unwrap_or(0));
         let order_id = ui.make_persistent_id("asset-order");
@@ -618,7 +715,10 @@ impl Browser<'_> {
         ui.horizontal(|ui| {
             let width = ui.available_width() - pickers::CLEAR_WIDTH;
             let hint = match scope {
-                AssetScope::Projectiles => "Search Projectiles or Weapons",
+                AssetScope::Projectiles | AssetScope::VehicleProjectiles => {
+                    "Search Projectiles or Weapons"
+                }
+                AssetScope::Vehicles => "Search Vehicles or Tags",
                 AssetScope::Spawnable => "Search Objects, Effects, or Perks",
                 AssetScope::Any | AssetScope::DropEffect if use_label.is_none() => {
                     "Search Objects, Effects, Perks, or Tags"
@@ -635,7 +735,7 @@ impl Browser<'_> {
                 const TYPE_WIDTH: f32 = 150.0;
                 const ORDER_WIDTH: f32 = 150.0;
                 const COUNT_WIDTH: f32 = 86.0;
-                if scope != AssetScope::Projectiles {
+                if !scope.fixed_kind() {
                     let types = [
                         (0, "All Types"),
                         (1, "Projectiles"),
@@ -783,7 +883,7 @@ impl Browser<'_> {
             });
         }
         // The names people try first are abilities and weapons, which are not objects here.
-        if choices.is_empty() && !normalized_query.is_empty() && scope != AssetScope::Projectiles {
+        if choices.is_empty() && !normalized_query.is_empty() && !scope.fixed_kind() {
             ui.weak("Abilities are on the ability triggers and actions. Weapons are on Behavior.");
         }
         ui.separator();
@@ -914,6 +1014,8 @@ impl Browser<'_> {
                         graph: entry.graph,
                         path: entry.native_paths.first().cloned().unwrap_or_default(),
                         values: Vec::new(),
+                        damage_type: None,
+                        rows: Vec::new(),
                         hud_status: None,
                     });
                 }
@@ -1326,10 +1428,9 @@ mod tests {
     /// could not be searched for it. The entity is attached by Firefly and the Ace of
     /// Spades Catalyst, so both names now say so, and the picker's search finds it.
     #[test]
-    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+    #[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
     fn a_stock_attachment_is_searchable_by_the_name_its_perk_gives_it() {
-        use std::path::PathBuf;
-        let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+        let packages = crate::test_support::stock_packages();
         let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
         let names = catalog
             .weapon_sandbox_perk_choices_from(crate::package_profile::is_stock_item_definition)

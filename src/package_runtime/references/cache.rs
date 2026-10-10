@@ -79,7 +79,7 @@ fn persist(shard: &Shard) -> Result<(), String> {
 /// known and otherwise read one package per worker, a wave at a time. Each answer depends
 /// only on its own resource, so the order they come back cannot change them.
 pub(super) fn prefetch(manager: &PackageManager, roots: &BTreeSet<u32>) -> HashMap<u32, Answer> {
-    let directory = crate::paths::cache_dir().map(|root| root.join("references"));
+    let directory = crate::system::paths::cache_dir().map(|root| root.join("references"));
     let snapshot = directory
         .as_ref()
         .and_then(|_| Snapshot::read(&manager.package_dir).ok());

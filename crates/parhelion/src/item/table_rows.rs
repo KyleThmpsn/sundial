@@ -1078,27 +1078,59 @@ pub(super) fn append_item_hash_index_row(
     Ok(data)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The authored tables a finished build reads back, as the writer produced them.
+#[derive(Clone, Copy)]
+pub(super) struct AuthoredTables<'a> {
+    pub items: &'a [u8],
+    pub strings: &'a [u8],
+    pub collectibles: &'a [u8],
+    pub collectible_displays: &'a [u8],
+    pub unlocks: &'a [u8],
+    pub displays: &'a [u8],
+}
+
+/// Where the authored rows are expected and what they must say.
+pub(super) struct AuthoredRows<'a> {
+    pub identity: WeaponCloneIdentity,
+    pub definition_tag: TagHash,
+    pub string_tag: TagHash,
+    pub item_index: u16,
+    pub collectible_index: u16,
+    pub unlock_index: u16,
+    pub unlock_slot: u16,
+    pub collectible_icon_index: u16,
+    pub localization_table_index: u32,
+    pub expected_material_set: u16,
+    pub expected_presentation_parents: &'a [u16],
+    pub collection_requirement_hash: Option<u32>,
+}
+
 pub(super) fn validate_authored_tables(
-    items: &[u8],
-    strings: &[u8],
-    collectibles: &[u8],
-    collectible_displays: &[u8],
-    unlocks: &[u8],
-    displays: &[u8],
-    identity: WeaponCloneIdentity,
-    definition_tag: TagHash,
-    string_tag: TagHash,
-    item_index: u16,
-    collectible_index: u16,
-    unlock_index: u16,
-    unlock_slot: u16,
-    collectible_icon_index: u16,
-    localization_table_index: u32,
-    expected_material_set: u16,
-    expected_presentation_parents: &[u16],
-    collection_requirement_hash: Option<u32>,
+    tables: AuthoredTables<'_>,
+    rows: AuthoredRows<'_>,
 ) -> AuthoringResult<()> {
+    let AuthoredTables {
+        items,
+        strings,
+        collectibles,
+        collectible_displays,
+        unlocks,
+        displays,
+    } = tables;
+    let AuthoredRows {
+        identity,
+        definition_tag,
+        string_tag,
+        item_index,
+        collectible_index,
+        unlock_index,
+        unlock_slot,
+        collectible_icon_index,
+        localization_table_index,
+        expected_material_set,
+        expected_presentation_parents,
+        collection_requirement_hash,
+    } = rows;
     let (item_count, _, item_rows) = terminal_index_table_layout(
         items,
         ITEM_DEFINITION_INDEX_ROW_CLASS,

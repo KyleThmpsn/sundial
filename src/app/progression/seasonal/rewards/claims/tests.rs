@@ -262,11 +262,9 @@ fn season_pass_claims_persist_with_pending_rewards_in_the_native_account() {
 }
 
 #[test]
-#[ignore = "Requires SUNDIAL_PROGRESSION_INSTALL and installed packages"]
+#[ignore = "Requires SUNDIAL_INSTALL and installed packages"]
 fn installed_pass_rewards_queue_for_each_class() {
-    let install = std::path::PathBuf::from(
-        std::env::var_os("SUNDIAL_PROGRESSION_INSTALL").expect("install path"),
-    );
+    let install = crate::test_support::install();
     let cache = crate::test_support::TestDirectory::new("installed-pass-rewards");
     let catalog = Catalog::load_or_scan_with_progress(
         &install,

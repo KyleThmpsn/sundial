@@ -21,7 +21,7 @@ impl SundialApp {
         let mut reset = false;
         let mut cancel = false;
         let response = egui::Modal::new("reset_account_defaults".into()).show(ctx, |ui| {
-            ui.set_width((ctx.screen_rect().width() - 60.0).clamp(260.0, 500.0));
+            ui.set_width((ctx.content_rect().width() - 60.0).clamp(260.0, 500.0));
             ui.heading("Reset Account Database?");
             ui.add_space(6.0);
             ui.label("Replaces characters, inventory, equipment, unlocks, progression and account preferences in investment.sqlite3 with Project Sunrise defaults.");

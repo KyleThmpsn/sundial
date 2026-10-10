@@ -177,10 +177,10 @@ fn private_group_alias_package_oracle() -> Result<()> {
     fs::write(
         output.join("report.json"),
         serde_json::to_vec_pretty(&json!({
-            "dictionary_sha256":format!("{:x}",Sha256::digest(&namespace.payload.0)),
-            "predicate_sha256":format!("{:x}",Sha256::digest(&owner.0)),
+            "dictionary_sha256":hex::encode(Sha256::digest(&namespace.payload.0)),
+            "predicate_sha256":hex::encode(Sha256::digest(&owner.0)),
             "aliases":namespace.group_aliases,"rewrites":fragment.group_aliases,"gates":fragment.gates,
-            "response_sha256":format!("{:x}",Sha256::digest(&complete.owner.0)),
+            "response_sha256":hex::encode(Sha256::digest(&complete.owner.0)),
             "response_rewrites":complete.group_aliases,"response_gates":complete.gates,
             "native_probe":native_receipt,"full_4D73_evaluator_proven":false,"gameplay_verified":false
         }))?,

@@ -15,7 +15,7 @@ use std::{
 use sundial::investment::InvestmentCatalog;
 
 #[test]
-#[ignore = "Requires PARHELION_IMPORT_MODERN_PACKAGES, PARHELION_CLEAN_STOCK_PACKAGES and PARHELION_SHADER_OUTPUT"]
+#[ignore = "Requires PARHELION_IMPORT_MODERN_PACKAGES, SUNDIAL_STOCK_PACKAGES and PARHELION_SHADER_OUTPUT"]
 fn source_shader_survives_import_and_native_package_staging()
 -> Result<(), Box<dyn std::error::Error>> {
     let configured = |key| {
@@ -24,7 +24,7 @@ fn source_shader_survives_import_and_native_package_staging()
             .ok_or_else(|| format!("Set {key}"))
     };
     let modern = configured("PARHELION_IMPORT_MODERN_PACKAGES")?;
-    let native = configured("PARHELION_CLEAN_STOCK_PACKAGES")?;
+    let native = configured("SUNDIAL_STOCK_PACKAGES")?;
     let output = parhelion_import::d2_mot::reader::outside(
         &configured("PARHELION_SHADER_OUTPUT")?,
         modern.parent().ok_or("Modern root")?,
@@ -103,7 +103,7 @@ fn verify_shader(hash: u32, matrix: bool) -> Result<(), Box<dyn std::error::Erro
             .ok_or_else(|| format!("Set {key}"))
     };
     let modern = configured("PARHELION_IMPORT_MODERN_PACKAGES")?;
-    let native = configured("PARHELION_CLEAN_STOCK_PACKAGES")?;
+    let native = configured("SUNDIAL_STOCK_PACKAGES")?;
     let output = configured("PARHELION_SHADER_OUTPUT")?;
     let output = if matrix {
         output.join(format!("{hash:08X}"))

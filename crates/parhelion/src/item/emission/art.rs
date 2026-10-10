@@ -190,7 +190,7 @@ fn rewrite_with_regions(
     policy: impl FnOnce(&mut [u32; 2], &mut Vec<(u64, Vec<u32>)>) -> AuthoringResult<()>,
 ) -> AuthoringResult<()> {
     let (count, _, rows, _) = array(data, 8)?;
-    if donor < rows || (donor - rows) % 32 != 0 || (donor - rows) / 32 >= count {
+    if donor < rows || !(donor - rows).is_multiple_of(32) || (donor - rows) / 32 >= count {
         return Err(invalid("Artwork donor row offset is not a metadata row"));
     }
     let (n, _, multi, multi_class) = array(data, donor + 16)?;

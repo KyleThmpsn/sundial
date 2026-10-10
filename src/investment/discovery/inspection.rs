@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::package_runtime::reader::PackageManager;
 use crate::{
-    investment_schema::{GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, investment_globals_table_tag},
+    investment::schema::{GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, investment_globals_table_tag},
     package_runtime::{open_shadowkeep_packages, resolve_live_named_tag},
     runtime::{
         WeaponRuntimeGraph, load_weapon_runtime_entity_at_pattern_index_with_manager,

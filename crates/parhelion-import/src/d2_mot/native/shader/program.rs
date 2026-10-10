@@ -164,8 +164,8 @@ impl Program {
             header_type: 33,
             bytecode_type: 41,
             subtype: self.stage.subtype(),
-            header_sha256: format!("{:x}", Sha256::digest(&self.header.0)),
-            bytecode_sha256: format!("{:x}", Sha256::digest(&self.bytecode)),
+            header_sha256: hex::encode(Sha256::digest(&self.header.0)),
+            bytecode_sha256: hex::encode(Sha256::digest(&self.bytecode)),
         }
     }
 }

@@ -325,8 +325,30 @@ fn check_recipe(
         },
     )
     .map_err(|error| error.to_string())?;
-    preflight_runtime_edits(manager, &entity.payload, &spec.overrides, hud_key, None)
-        .map_err(|error| error.to_string())
+    let splices = spec
+        .overrides
+        .component_splices
+        .iter()
+        .map(|&(binding, hash)| {
+            let pattern = donors
+                .iter()
+                .find(|donor| donor.hash == hash)
+                .and_then(|donor| donor.weapon_pattern_index)
+                .ok_or_else(|| format!("Component donor 0x{hash:08X} has no active runtime row"))?;
+            let source =
+                load_weapon_runtime_entity_at_pattern_index_with_manager(manager, pattern)?;
+            Ok((binding, source.payload))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    preflight_runtime_edits(
+        manager,
+        &entity.payload,
+        &spec.overrides,
+        hud_key,
+        Some(entity.weapon_content_group_hash),
+        &splices,
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

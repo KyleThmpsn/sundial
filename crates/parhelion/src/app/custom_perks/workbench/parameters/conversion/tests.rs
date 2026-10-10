@@ -50,6 +50,7 @@ fn conversion_preview_is_invalidated_by_each_kind_of_edit() {
     editor.projectile_draft.push(ProjectileSelection {
         source_graph: 1,
         donor_graph: 2,
+        damage_type: None,
     });
     assert_ne!(editor.conversion_input(), initial);
     editor.projectile_draft.clear();
@@ -379,9 +380,9 @@ fn endings_and_activation(program: &Program) -> (usize, Option<PerkActivation>) 
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn conversion_preserves_all_conditions_activation_and_component_values() {
-    let path = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let path = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(&path).unwrap();
     let key = PerkEditorKey {
         socket_index: 0,
@@ -441,14 +442,15 @@ fn an_exact_conversion_is_left_to_the_card() {
     ));
     let ctx = egui::Context::default();
     let run = |editor: &mut PerkEditor, events: Vec<egui::Event>| {
-        ctx.run(
+        ctx.run_ui(
             egui::RawInput {
                 events,
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    editor.draw_conversion(ui, ctx, &loaded);
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let ctx = ui.ctx().clone();
+                    editor.draw_conversion(ui, &ctx, &loaded);
                 });
             },
         )

@@ -66,7 +66,7 @@ impl AccountCleanupRecord {
 fn digest(bytes: &[u8]) -> TransactionDigest {
     TransactionDigest {
         byte_length: bytes.len() as u64,
-        sha256: format!("{:X}", Sha256::digest(bytes)),
+        sha256: hex::encode_upper(Sha256::digest(bytes)),
     }
 }
 

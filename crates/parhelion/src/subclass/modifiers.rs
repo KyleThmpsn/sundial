@@ -123,16 +123,19 @@ pub fn place_entry(place: Place) -> u8 {
     }
 }
 
-/// Whether list entry `entry` holds an ability, which a modifier can change.
+/// Whether stock list entry `entry` holds an ability. Authored destinations may hold a different
+/// source, so their equipped rows must be resolved before deciding what they can change.
 #[must_use]
 pub fn holds_ability(entry: u8) -> bool {
-    AbilitySlot::of_entry(entry).is_some() || layout::PATH_ABILITIES.contains(&entry)
+    entry == layout::BASE_MOVEMENT
+        || AbilitySlot::of_entry(entry).is_some()
+        || layout::PATH_ABILITIES.contains(&entry)
 }
 
 /// The place that fills list entry `entry`, when an ability or node does.
 #[must_use]
 pub fn entry_place(entry: u8) -> Option<Place> {
-    Place::all().find(|place| place_entry(*place) == entry)
+    Place::editable().find(|place| place_entry(*place) == entry)
 }
 
 /// Checks an entry's modifiers, stock removals and parameter values against each other.
@@ -141,9 +144,9 @@ pub(super) fn validate(
     (modifiers, removed, parameters): (&[AbilityModifier], &[StockModifier], &[ParameterValue]),
 ) -> Result<(), String> {
     for modifier in modifiers {
-        if !holds_ability(modifier.target) {
+        if entry_place(modifier.target).is_none() {
             return Err(format!(
-                "{context} changes entry {}, which holds no ability",
+                "{context} changes entry {}, which is not an editable subclass entry",
                 modifier.target
             ));
         }

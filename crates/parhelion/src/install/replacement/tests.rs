@@ -136,7 +136,7 @@ fn unchanged_definitions_need_no_account_and_unreferenced_removals_guard_concurr
 fn socket_layout_changes_use_each_generations_count_and_require_exact_review() {
     let old = BTreeMap::from([(100, vec![Some(300); 8]), (200, vec![None; 9])]);
     let incoming = BTreeMap::from([(100, vec![Some(400); 9]), (200, vec![Some(500); 9])]);
-    let changes = socket_changes(old, incoming).unwrap();
+    let changes = socket_changes(&old, &incoming, &BTreeSet::new(), &[]).unwrap();
     assert_eq!(
         changes,
         vec![AuthoredSocketChange {
@@ -175,9 +175,9 @@ fn socket_layout_changes_use_each_generations_count_and_require_exact_review() {
 }
 
 #[test]
-#[ignore = "read-only native comparison; requires PARHELION_LIFECYCLE_SOURCE_PACKAGES and PARHELION_TEST_STAGED_RUN"]
+#[ignore = "read-only native comparison; requires SUNDIAL_INSTALL and PARHELION_TEST_STAGED_RUN"]
 fn staged_identity_reader_matches_installed_generation() {
-    let target = PathBuf::from(std::env::var_os("PARHELION_LIFECYCLE_SOURCE_PACKAGES").unwrap());
+    let target = crate::test_support::install().join("packages");
     let staged = PathBuf::from(std::env::var_os("PARHELION_TEST_STAGED_RUN").unwrap());
     let (hashes, unlocks) = identities::generation_identities(&target, &staged).unwrap();
     let socket_defaults = identities::generation_socket_defaults(&target, &staged, &hashes)

@@ -5,7 +5,10 @@ use std::{
     path::Path,
 };
 
+pub(crate) mod localization;
 pub(crate) mod plug_selection;
+pub(crate) mod schema;
+pub(crate) mod weapon;
 pub use plug_selection::PlugSelectionMode;
 
 mod controls;
@@ -49,8 +52,7 @@ pub use controls::{
     draw_authoring_info_icon, draw_authoring_item_header, draw_authoring_socket_label,
     draw_authoring_socket_reset, draw_authoring_tile, draw_authoring_toolbar,
     draw_authoring_warning_icon, draw_catalog_loading_view, draw_display_tooltip,
-    draw_plug_safety_selector, draw_plug_safety_warning, progress_bar, show_plug_safety_warnings,
-    tooltip_title,
+    draw_plug_safety_warning, progress_bar, show_plug_safety_warnings, tooltip_title,
 };
 pub use definitions::{
     AbilityKey, AbilityParameter, AbilityRowSummary, PowerCapChoice, SubclassSummary,
@@ -65,7 +67,7 @@ pub use perk_patterns::PerkPatternUse;
 use crate::{
     catalog::{Catalog, ItemWeaponInventorySlot, is_authorable_weapon_item, is_weapon_bucket},
     hash::parse_hash_hex,
-    paths,
+    system::paths,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,6 +212,17 @@ impl InvestmentCatalog {
             .plug_type_name(hash)
             .or_else(|| self.catalog.package_item_type_name(hash))
             .map(str::to_owned)
+    }
+
+    /// How many shared reusable plug sets offer each plug. A custom perk offered everywhere
+    /// joins the sets that offer the plug its type comes from.
+    #[must_use]
+    pub fn reusable_set_counts(&self) -> std::collections::HashMap<u32, usize> {
+        self.catalog
+            .reusable_set_counts()
+            .into_iter()
+            .filter_map(|(plug, count)| Some((u32::try_from(plug).ok()?, count)))
+            .collect()
     }
 
     /// Returns the localized display name of any installed item, including plugs.
@@ -712,6 +725,11 @@ impl InvestmentCatalog {
                             Some((u8::try_from(*entry).ok()?, modifiers.clone()))
                         })
                         .collect(),
+                    damage_type: self
+                        .catalog
+                        .item_package_metadata(item.hash)
+                        .and_then(|metadata| metadata.display_damage_type)
+                        .and_then(WeaponDamageType::from_native),
                 })
             })
             .collect::<Vec<_>>();
@@ -981,6 +999,22 @@ impl InvestmentCatalog {
             .collect()
     }
 
+    /// The stats a stat group shows, by definition index, in the order the game's inspect screen
+    /// lists them: the group's own order with the barred stats before the numeric ones, as the
+    /// item tooltip draws them. Stats the group does not scale are not shown in game.
+    #[must_use]
+    pub fn stat_display_order(&self, stat_group_index: u16) -> Vec<u16> {
+        let Some(group) = self.catalog.item_stat_group_by_index(stat_group_index) else {
+            return Vec::new();
+        };
+        let mut stats = group.scaled_stats.iter().collect::<Vec<_>>();
+        stats.sort_by_key(|stat| stat.display_as_numeric);
+        stats
+            .into_iter()
+            .map(|stat| stat.definition_index)
+            .collect()
+    }
+
     #[must_use]
     pub fn is_plug(&self, hash: u32) -> bool {
         self.catalog.contains_plug(u64::from(hash))
@@ -1157,14 +1191,34 @@ impl InvestmentCatalog {
             .socket_and_gear_type_option_counts(item)
             .into_iter()
             .filter(|(socket_type, _)| *socket_type != u16::MAX)
-            .map(
-                |(socket_type, compatible_plug_count)| WeaponSocketTypeChoice {
+            .map(|(socket_type, compatible_plug_count)| {
+                let carriers = self.catalog.socket_type_carriers(item, socket_type);
+                WeaponSocketTypeChoice {
                     socket_type,
                     label: self.catalog.socket_type_label_for_item(item, socket_type),
                     compatible_plug_count,
-                },
-            )
+                    carriers: carriers.items,
+                    default_plug: carriers
+                        .default_plug
+                        .and_then(|plug| u32::try_from(plug).ok()),
+                }
+            })
             .collect())
+    }
+
+    /// The plugs installed items of the base's type offer in `socket_type`, in picker order.
+    #[must_use]
+    pub fn socket_type_plugs(&self, donor_hash: u32, socket_type: u16) -> Vec<u32> {
+        self.socket_base(donor_hash).map_or_else(
+            |_| Vec::new(),
+            |item| {
+                self.catalog
+                    .socket_and_gear_type_options_for_type(item, socket_type)
+                    .iter()
+                    .filter_map(|&plug| u32::try_from(plug).ok())
+                    .collect()
+            },
+        )
     }
 
     /// Whether a native socket category is one installed items of the base's type carry.
@@ -1265,9 +1319,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires SUNDIAL_TEST_INSTALL; native item and plug effect catalog"]
+    #[ignore = "requires SUNDIAL_INSTALL; native item and plug effect catalog"]
     fn sandbox_effect_choices_include_conditional_plug_effects() {
-        let install = std::path::PathBuf::from(std::env::var_os("SUNDIAL_TEST_INSTALL").unwrap());
+        let install = crate::test_support::install();
         let catalog = crate::test_support::catalog(&install).unwrap();
         let choices = catalog.weapon_sandbox_perk_choices_from(|_| true);
         for (index, name) in [

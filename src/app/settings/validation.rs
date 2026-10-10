@@ -2,7 +2,7 @@
 use crate::app::account_workspace as account;
 
 use crate::app::{inventory, progression};
-use crate::subclass;
+use crate::catalog::subclass;
 use crate::{game_settings, hash::parse_unsigned_value};
 use serde_json::Value;
 use sundial_account::NO_DEFINITION_HASH;
@@ -29,7 +29,7 @@ pub(in crate::app) fn validate_workspace_document(
 }
 
 pub(in crate::app) fn validate_characters(document: &Value) -> Result<(), String> {
-    use crate::account_contract::{
+    use crate::account::contract::{
         CHARACTER_CAPACITY as MAX_CHARACTERS, MAX_ITEM_PLUGS as MAX_PLUGS,
     };
     let no_definition_hash = u64::from(NO_DEFINITION_HASH.get());

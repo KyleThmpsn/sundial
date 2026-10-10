@@ -46,47 +46,69 @@ pub fn material_routes(
     entity_tag: u32,
     entity: &[u8],
 ) -> Result<Vec<MaterialRoute>, String> {
-    let mut resources = BTreeMap::<u32, Vec<(u64, u32, u16)>>::new();
-    for binding in weapon_component_binding_hashes(entity)? {
-        for resource in weapon_component_bindings(entity, binding)? {
-            let index = u16::try_from(resource.resource_index)
-                .map_err(|_| "A component binding selects too many resources".to_owned())?;
-            resources.entry(resource.owner_tag).or_default().push((
-                resource.resource_offset,
-                binding,
-                index,
-            ));
+    Routes::new(manager).get(entity_tag, entity)
+}
+
+/// Declared fields shared across source graphs. Routes still use each graph's own binding
+/// offsets and path-local cycle checks, so sharing an intermediate resource loses no paths.
+pub struct Routes<'a> {
+    manager: &'a PackageManager,
+    fields: BTreeMap<u32, Vec<(usize, u32)>>,
+}
+
+impl<'a> Routes<'a> {
+    #[must_use]
+    pub fn new(manager: &'a PackageManager) -> Self {
+        Self {
+            manager,
+            fields: BTreeMap::new(),
         }
     }
-    let mut fields = BTreeMap::<u32, Vec<(usize, u32)>>::new();
-    let mut routes = Vec::new();
-    for (owner, mut starts) in resources {
-        starts.sort_unstable();
-        starts.dedup_by_key(|(start, ..)| *start);
-        for (at, tag) in declared(manager, &mut fields, owner)? {
-            if tag == entity_tag || tag == owner {
-                continue;
+
+    pub fn get(&mut self, entity_tag: u32, entity: &[u8]) -> Result<Vec<MaterialRoute>, String> {
+        let manager = self.manager;
+        let fields = &mut self.fields;
+        let mut resources = BTreeMap::<u32, Vec<(u64, u32, u16)>>::new();
+        for binding in weapon_component_binding_hashes(entity)? {
+            for resource in weapon_component_bindings(entity, binding)? {
+                let index = u16::try_from(resource.resource_index)
+                    .map_err(|_| "A component binding selects too many resources".to_owned())?;
+                resources.entry(resource.owner_tag).or_default().push((
+                    resource.resource_offset,
+                    binding,
+                    index,
+                ));
             }
-            // A word before the owner's first resource belongs to no binding a patch can name.
-            let Some(&(start, binding_hash, resource_index)) =
-                starts.iter().rev().find(|(start, ..)| *start <= at as u64)
-            else {
-                continue;
-            };
-            let offset = u32::try_from(at as u64 - start)
-                .map_err(|_| "A material route starts too far into its resource".to_owned())?;
-            let mut found = Vec::new();
-            follow(manager, &mut fields, (tag, Vec::new()), &mut found)?;
-            routes.extend(found.into_iter().map(|chain| MaterialRoute {
-                owner,
-                binding_hash,
-                resource_index,
-                offset,
-                chain,
-            }));
         }
+        let mut routes = Vec::new();
+        for (owner, mut starts) in resources {
+            starts.sort_unstable();
+            starts.dedup_by_key(|(start, ..)| *start);
+            for (at, tag) in declared(manager, fields, owner)? {
+                if tag == entity_tag || tag == owner {
+                    continue;
+                }
+                // A word before the owner's first resource belongs to no binding a patch can name.
+                let Some(&(start, binding_hash, resource_index)) =
+                    starts.iter().rev().find(|(start, ..)| *start <= at as u64)
+                else {
+                    continue;
+                };
+                let offset = u32::try_from(at as u64 - start)
+                    .map_err(|_| "A material route starts too far into its resource".to_owned())?;
+                let mut found = Vec::new();
+                follow(manager, fields, (tag, Vec::new()), &mut found)?;
+                routes.extend(found.into_iter().map(|chain| MaterialRoute {
+                    owner,
+                    binding_hash,
+                    resource_index,
+                    offset,
+                    chain,
+                }));
+            }
+        }
+        Ok(routes)
     }
-    Ok(routes)
 }
 
 /// `tag`'s declared reference fields, read once.

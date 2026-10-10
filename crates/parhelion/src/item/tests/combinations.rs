@@ -123,21 +123,21 @@ fn recipes(catalog: &InvestmentCatalog, profile: usize) -> Vec<WeaponRecipe> {
                 }
                 let donor = catalog.weapon_donor(hash).expect("matrix donor must exist");
                 let stat_mode = (profile / 3 + index) % 3;
-                if stat_mode != 0 {
-                    if let Some(stat) = donor.investment_stats.iter().find(|stat| {
+                if stat_mode != 0
+                    && let Some(stat) = donor.investment_stats.iter().find(|stat| {
                         stat.minimum_value
                             .zip(stat.maximum_value)
                             .is_some_and(|(low, high)| low <= high)
-                    }) {
-                        recipe.overrides.investment_stats.push(WeaponStatOverride {
-                            definition_index: stat.definition_index,
-                            value: if stat_mode == 1 {
-                                stat.minimum_value.unwrap()
-                            } else {
-                                stat.maximum_value.unwrap()
-                            },
-                        });
-                    }
+                    })
+                {
+                    recipe.overrides.investment_stats.push(WeaponStatOverride {
+                        definition_index: stat.definition_index,
+                        value: if stat_mode == 1 {
+                            stat.minimum_value.unwrap()
+                        } else {
+                            stat.maximum_value.unwrap()
+                        },
+                    });
                 }
                 match (profile + index) % 3 {
                     1 => {
@@ -176,6 +176,7 @@ fn recipes(catalog: &InvestmentCatalog, profile: usize) -> Vec<WeaponRecipe> {
                             }));
                         recipe.overrides.socket_plug_variants.push(
                             crate::WeaponSocketPlugVariantRecipe {
+                                offer_everywhere: false,
                                 replace_effects: false,
                                 socket_index: donor.sockets.len() as u16,
                                 choice_index: 0,
@@ -510,10 +511,10 @@ fn verify_fields(
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES, PARHELION_COMBINATION_ROOT, and PARHELION_COMBINATION_PROFILE (0..35)"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES, SUNDIAL_TEST_ARTIFACTS, and PARHELION_COMBINATION_PROFILE (0..35)"]
 fn native_combat_combinations_round_trip() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-    let output = PathBuf::from(std::env::var_os("PARHELION_COMBINATION_ROOT").unwrap());
+    let packages = crate::test_support::stock_packages();
+    let output = crate::test_support::artifact_dir("combinations");
     let profile: usize = std::env::var("PARHELION_COMBINATION_PROFILE")
         .unwrap()
         .parse()

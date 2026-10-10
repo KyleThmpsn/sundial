@@ -104,7 +104,7 @@ pub(super) fn draw_page_tabs(
             let count = (*candidate == ItemPage::Related).then_some(related_count);
             let text = crate::app::inspector::look::tab_text(ui, candidate.label(), count);
             if ui
-                .add(egui::SelectableLabel::new(*page == *candidate, text))
+                .add(egui::Button::selectable(*page == *candidate, text))
                 .clicked()
             {
                 *page = *candidate;

@@ -1,10 +1,10 @@
 use super::*;
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES, PARHELION_COMBINATION_ROOT and PARHELION_STRESS_RECIPES with 128 recipes"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES, SUNDIAL_TEST_ARTIFACTS and PARHELION_STRESS_RECIPES with 128 recipes"]
 fn native_large_mixed_batch_is_permutation_identical() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-    let output = PathBuf::from(std::env::var_os("PARHELION_COMBINATION_ROOT").unwrap());
+    let packages = crate::test_support::stock_packages();
+    let output = crate::test_support::artifact_dir("combinations");
     fs::create_dir_all(&output).unwrap();
     let source = PathBuf::from(std::env::var_os("PARHELION_STRESS_RECIPES").unwrap());
     let recipes: Vec<WeaponRecipe> = serde_json::from_slice(&fs::read(source).unwrap()).unwrap();

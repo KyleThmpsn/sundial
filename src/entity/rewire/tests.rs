@@ -17,7 +17,7 @@ use crate::package_authoring::{
     PackageManager, open_shadowkeep_package_manager,
     runtime::load_weapon_runtime_entity_at_pattern_index_with_manager,
 };
-use std::{collections::HashMap, fmt::Write as _, path::PathBuf};
+use std::{collections::HashMap, fmt::Write as _};
 
 const BINDINGS: [(&str, u32); 8] = [
     ("Trigger", WEAPON_TRIGGER_COMPONENT_KEY),
@@ -283,9 +283,9 @@ fn columns(
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn every_stock_component_donor_rewires_consistently_with_stock_wiring() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(&packages).unwrap();
     let entities = stock_entities(packages.parent().unwrap(), &manager);
     let stock = Stock::new(&entities);
@@ -350,10 +350,8 @@ fn every_stock_component_donor_rewires_consistently_with_stock_wiring() {
         tally.missing,
         tally.failures.len()
     );
-    let out = std::env::var_os("SUNDIAL_REWIRE_OUT").map_or_else(
-        || std::env::temp_dir().join("sundial-component-rewire"),
-        PathBuf::from,
-    );
+    let out = crate::test_support::artifacts("component-rewire")
+        .unwrap_or_else(|| std::env::temp_dir().join("sundial-component-rewire"));
     std::fs::create_dir_all(&out).unwrap();
     std::fs::write(out.join("rewire.tsv"), &table).unwrap();
     std::fs::write(out.join("summary.md"), &summary).unwrap();

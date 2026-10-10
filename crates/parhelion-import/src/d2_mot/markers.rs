@@ -12,8 +12,8 @@ use crate::d2_mot::payload::Payload;
 use anyhow::{Result, ensure};
 use std::collections::BTreeMap;
 mod author;
-mod bindings;
-mod optics;
+pub(crate) mod bindings;
+pub(crate) mod optics;
 pub use author::author;
 pub use author::replace;
 

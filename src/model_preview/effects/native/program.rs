@@ -51,16 +51,65 @@ pub(super) struct Program {
     pub samplers: Vec<usize>,
     pub temps: usize,
     pub derivatives: Vec<Option<super::derivative::Derivative>>,
+    /// Read-only immediate constant rows retain their original integer bit patterns.
+    pub immediate: Vec<[u32; 4]>,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Execute,
+    Stored,
+    Affine,
+}
+
+const MAX_INSTRUCTIONS: usize = 1024;
 
 fn word(bytes: &[u8], at: usize) -> Result<u32, String> {
     Ok(u32::from_le_bytes(bytes_at(bytes, at)?))
+}
+
+fn chunk_count(bytes: &[u8]) -> Result<usize, String> {
+    if bytes.get(..4) != Some(b"DXBC") || word(bytes, 24)? as usize != bytes.len() {
+        return Err("Invalid shader container".into());
+    }
+    let count = word(bytes, 28)? as usize;
+    if count > 32 {
+        return Err("Shader chunk count exceeds limits".into());
+    }
+    Ok(count)
 }
 
 fn take(words: &[u32], at: &mut usize) -> Result<u32, String> {
     let value = *words.get(*at).ok_or("Truncated shader operand")?;
     *at += 1;
     Ok(value)
+}
+
+fn immediate(
+    words: &[u32],
+    at: &mut usize,
+    previous: &[[u32; 4]],
+) -> Result<Vec<[u32; 4]>, String> {
+    if !previous.is_empty() {
+        return Err("Duplicate immediate shader table".into());
+    }
+    let token = take(words, at)?;
+    let length = take(words, at)? as usize;
+    if token != (53 | (3 << 11)) || !(6..=1026).contains(&length) || !(length - 2).is_multiple_of(4)
+    {
+        return Err("Invalid immediate shader table".into());
+    }
+    let end = at
+        .checked_add(length - 2)
+        .ok_or("Immediate shader table overflow")?;
+    let rows = words
+        .get(*at..end)
+        .ok_or("Truncated immediate shader table")?
+        .chunks_exact(4)
+        .map(|row| row.try_into().unwrap())
+        .collect();
+    *at = end;
+    Ok(rows)
 }
 
 fn operand(words: &[u32], at: &mut usize, depth: usize) -> Result<Operand, String> {
@@ -96,7 +145,7 @@ fn operand(words: &[u32], at: &mut usize, depth: usize) -> Result<Operand, Strin
         modifier = ((extension >> 6) & 3) as u8;
     }
     let kind = ((token >> 12) & 255) as u8;
-    if !matches!(kind, 0 | 1 | 2 | 4 | 6 | 7 | 8 | 13) {
+    if !matches!(kind, 0 | 1 | 2 | 4 | 6 | 7 | 8 | 9 | 13) {
         return Err(format!("Unsupported shader operand kind {kind}"));
     }
     let dimensions = (token >> 20) & 3;
@@ -209,7 +258,7 @@ impl Program {
             .iter()
             .enumerate()
             .map(|(at, i)| {
-                matches!(i.code, 122 | 124)
+                matches!(i.code, 69 | 108 | 122 | 124)
                     .then(|| super::derivative::Derivative::read(self, at))
                     .flatten()
             })
@@ -228,10 +277,8 @@ impl Program {
             match bytes.get(at..at + 4) {
                 Some(b"ISGN") => self.inputs = signature(chunk)?,
                 Some(b"OSGN") => self.outputs = signature(chunk)?,
-                Some(b"SHEX" | b"SHDR") => {
-                    if code.replace(chunk).is_some() {
-                        return Err("Duplicate shader code".into());
-                    }
+                Some(b"SHEX" | b"SHDR") if code.replace(chunk).is_some() => {
+                    return Err("Duplicate shader code".into());
                 }
                 _ => {}
             }
@@ -239,23 +286,23 @@ impl Program {
         code.ok_or_else(|| "Shader instructions are missing".into())
     }
     pub(super) fn read(bytes: &[u8], stage: u32) -> Result<Self, String> {
-        Self::read_impl(bytes, stage, false)
+        Self::read_impl(bytes, stage, Mode::Execute)
     }
 
     /// Read the translated stored-vertex envelope for dependency slicing. Instructions
     /// outside the evaluated slice never reach the interpreter or GLSL backend.
     pub(super) fn read_stored(bytes: &[u8]) -> Result<Self, String> {
-        Self::read_impl(bytes, 1, true)
+        Self::read_impl(bytes, 1, Mode::Stored)
     }
 
-    fn read_impl(bytes: &[u8], stage: u32, stored: bool) -> Result<Self, String> {
-        if bytes.get(..4) != Some(b"DXBC") || word(bytes, 24)? as usize != bytes.len() {
-            return Err("Invalid shader container".into());
-        }
-        let count = word(bytes, 28)? as usize;
-        if count > 32 {
-            return Err("Shader chunk count exceeds limits".into());
-        }
+    /// Read for affine dependency recovery. The affine walker independently checks
+    /// every dependency before accepting a recovered transform.
+    pub(super) fn read_affine(bytes: &[u8], stage: u32) -> Result<Self, String> {
+        Self::read_impl(bytes, stage, Mode::Affine)
+    }
+
+    fn read_impl(bytes: &[u8], stage: u32, mode: Mode) -> Result<Self, String> {
+        let count = chunk_count(bytes)?;
         let mut program = Self {
             instructions: Vec::new(),
             inputs: Vec::new(),
@@ -265,6 +312,7 @@ impl Program {
             samplers: Vec::new(),
             temps: 0,
             derivatives: Vec::new(),
+            immediate: Vec::new(),
         };
         let code = program.container_code(bytes, count)?;
         if code.len() % 4 != 0
@@ -282,12 +330,13 @@ impl Program {
         let mut branches = Vec::new();
         while at < words.len() {
             let token = words[at];
+            if token & 0x7FF == 53 {
+                program.immediate = immediate(&words, &mut at, &program.immediate)?;
+                continue;
+            }
             let length = ((token >> 24) & 127) as usize;
             let end = at + length;
-            if length == 0
-                || end > words.len()
-                || program.instructions.len() >= if stored { 1024 } else { 512 }
-            {
+            if length == 0 || end > words.len() || program.instructions.len() >= MAX_INSTRUCTIONS {
                 return Err("Invalid shader instruction length".into());
             }
             let code = (token & 0x7FF) as u16;
@@ -335,7 +384,7 @@ impl Program {
                                 let dimension = (token >> 11) & 31;
                                 if value.kind != 7
                                     || slot > 31
-                                    || !matches!(dimension, 3 | 5 | 6)
+                                    || !matches!(dimension, 3 | 5 | 6 | 8)
                                     || !matches!(format, 0x4444 | 0x5555)
                                 {
                                     return Err("Unsupported shader resource declaration".into());
@@ -377,7 +426,7 @@ impl Program {
             } else {
                 let count = arity(code)
                     .or_else(|| {
-                        stored
+                        (mode != Mode::Execute)
                             .then_some(match code {
                                 32..=34 | 36 | 37 | 39 | 42 | 60 | 85 => Some(3),
                                 131 => Some(2),
@@ -426,26 +475,17 @@ impl Program {
         if !branches.is_empty() || program.instructions.last().is_none_or(|i| i.code != 62) {
             return Err("Incomplete shader program".into());
         }
-        program.validate()?;
-        program.derivatives = program
-            .instructions
-            .iter()
-            .enumerate()
-            .map(|(at, i)| {
-                matches!(i.code, 122 | 124)
-                    .then(|| super::derivative::Derivative::read(&program, at))
-                    .flatten()
-            })
-            .collect();
+        program.validate(program.immediate.len())?;
+        program.recover_derivatives();
         Ok(program)
     }
 
-    fn validate(&self) -> Result<(), String> {
-        fn check(p: &Program, v: &Operand) -> Result<(), String> {
+    fn validate(&self, immediate_count: usize) -> Result<(), String> {
+        fn check(p: &Program, v: &Operand, immediate_count: usize) -> Result<(), String> {
             for (axis, index) in v.indices.iter().enumerate() {
                 if let Some(relative) = &index.relative {
-                    check(p, relative)?;
-                    if relative.kind != 0 || v.kind != 8 || axis != 1 {
+                    check(p, relative, immediate_count)?;
+                    if relative.kind != 0 || !matches!((v.kind, axis), (8, 1) | (9, 0)) {
                         return Err("Unsupported relative shader index".into());
                     }
                 }
@@ -461,6 +501,10 @@ impl Program {
                     slot == index
                         && (v.indices[1].relative.is_some() || (v.indices[1].base as usize) < count)
                 }),
+                9 => {
+                    immediate_count > 0
+                        && (v.indices[0].relative.is_some() || index < immediate_count)
+                }
                 _ => false,
             };
             if valid {
@@ -471,7 +515,7 @@ impl Program {
         }
         for instruction in &self.instructions {
             for value in &instruction.operands {
-                check(self, value)?;
+                check(self, value, immediate_count)?;
             }
             let destinations = match instruction.code {
                 13 | 18 | 21 | 31 | 62 => 0,
@@ -495,7 +539,7 @@ impl Program {
                 let binding = (index == 2
                     && matches!(instruction.code, 45 | 61 | 69 | 72 | 73 | 108))
                     || (index == 3 && matches!(instruction.code, 69 | 72 | 73 | 108));
-                if !binding && !matches!(value.kind, 0 | 1 | 2 | 4 | 8) {
+                if !binding && !matches!(value.kind, 0 | 1 | 2 | 4 | 8 | 9) {
                     return Err("Invalid numeric shader operand".into());
                 }
             }

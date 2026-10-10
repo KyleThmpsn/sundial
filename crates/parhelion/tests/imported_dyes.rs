@@ -32,7 +32,7 @@ fn layers(definition: &Payload) -> Result<[BTreeMap<u16, u16>; 3]> {
 #[test]
 #[ignore = "Requires clean native packages, PARHELION_DYE_RECIPES (JSON path array) and PARHELION_DYE_OUTPUT"]
 fn imported_colors_remain_defaults_when_shaders_are_equipped() -> Result<()> {
-    let native = configured("PARHELION_CLEAN_STOCK_PACKAGES")?;
+    let native = configured("SUNDIAL_STOCK_PACKAGES")?;
     let output = configured("PARHELION_DYE_OUTPUT")?;
     assert!(!output.exists(), "Use a fresh artifact directory");
     fs::create_dir_all(&output)?;

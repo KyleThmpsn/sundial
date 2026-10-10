@@ -16,8 +16,24 @@ pub use selectors::{
 pub(crate) mod compiler;
 pub use compiler::draft as native_draft;
 pub use compiler::{Compiled, compile};
+mod assets;
 pub mod decompile;
 pub mod properties;
+pub use assets::AmmunitionStore;
+pub use assets::AmmunitionTarget;
+pub use assets::Asset;
+pub use assets::HudStatus;
+pub use assets::ImportedAsset;
+pub use assets::ModifierRow;
+pub use assets::NativeAssetPatch;
+pub use assets::NativeAssetResourceAppend;
+pub use assets::NativeAssetResourcePatch;
+mod ability;
+pub use ability::ABILITY_PROPERTY_KIND;
+pub use ability::AbilityInput;
+pub use ability::AbilityTuning;
+pub use ability::ability_properties_in;
+use ability::*;
 pub use properties::{KeyCatalog, KeyEvidence};
 
 /// The empty FNV-1 hash. A native key holds this value when nothing is named.
@@ -283,184 +299,6 @@ impl Position {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Asset {
-    pub graph: u32,
-    /// Original native spelling, used for display and the compiled debug reference.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub path: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub values: Vec<WeaponRuntimeValueOverride>,
-    /// What the graph's Status Icon shows on the HUD, in place of its stock status.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hud_status: Option<HudStatus>,
-}
-
-/// A HUD status of the project's own. The HUD finds a status's name and icon by its name hash,
-/// so the build gives this one a hash of its own, a string under it and a row in the HUD status
-/// table naming an icon.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HudStatus {
-    pub name: String,
-    /// The stock HUD status whose icon this one shows, by its name hash. `None` keeps the icon
-    /// of the status the graph shows.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        with = "hex_key_option"
-    )]
-    pub icon: Option<u32>,
-    /// An icon of the author's own, a base64 PNG, shown in place of any stock status's icon. The
-    /// build fits it to each texture the stock icon has.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image: Option<String>,
-}
-
-/// One checked byte replacement in a resource of a privately cloned native effect graph.
-/// The expected bytes prevent a different package version from receiving the patch.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NativeAssetResourcePatch {
-    pub binding_hash: u32,
-    pub resource_index: u16,
-    pub offset: u32,
-    #[serde(with = "hex_bytes")]
-    pub expected: Vec<u8>,
-    #[serde(with = "hex_bytes")]
-    pub bytes: Vec<u8>,
-    /// An imported particle node of the weapon whose plug carries the program. The build writes
-    /// that node's tag in place of `bytes`, which then only hold its four-byte width.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub imported_particle: Option<String>,
-}
-
-/// Private edits to the existing graph referenced by one native effect action.
-/// The action is compiled against the live source graph, then its new private copy is rebound.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NativeAssetPatch {
-    pub action_index: usize,
-    pub source_graph: u32,
-    pub patches: Vec<NativeAssetResourcePatch>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub appends: Vec<NativeAssetResourceAppend>,
-    /// Component owners the private copy leaves out, with the events they send. An owner that
-    /// another owner still sends events into is refused.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub remove_owners: Vec<u32>,
-}
-
-/// Serialized definition data appended to a private owner. Runtime allocation
-/// is unchanged. Checked patches separately retarget its existing descriptors.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NativeAssetResourceAppend {
-    pub binding_hash: u32,
-    pub resource_index: u16,
-    pub expected_owner_size: u32,
-    #[serde(with = "hex_bytes")]
-    pub bytes: Vec<u8>,
-}
-
-/// Which ammunition pool an ammunition action fills. The names come from how the stock
-/// perks use the byte: Triple Tap returns rounds through path 1, and the ammo pickup perks
-/// add to the ammo types through path 0.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AmmunitionStore {
-    #[default]
-    Magazine,
-    Reserves,
-}
-
-impl AmmunitionStore {
-    pub const ALL: [Self; 2] = [Self::Magazine, Self::Reserves];
-
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Magazine => "Magazine",
-            Self::Reserves => "Reserves",
-        }
-    }
-
-    /// The native selector byte.
-    #[must_use]
-    pub const fn byte(self) -> u8 {
-        match self {
-            Self::Reserves => 0,
-            Self::Magazine => 1,
-        }
-    }
-
-    #[must_use]
-    pub const fn from_byte(byte: u8) -> Option<Self> {
-        match byte {
-            0 => Some(Self::Reserves),
-            1 => Some(Self::Magazine),
-            _ => None,
-        }
-    }
-}
-
-/// Which of the seven amounts of an ammunition node carries the value: the owning weapon,
-/// one of three weapon slots or one of three ammunition types. The slot amounts follow
-/// the same Kinetic/Energy/Power bank as the magazine predicates. E8F780 selects the ammo
-/// category amounts, independently corroborated by Scavenger and Armaments records.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AmmunitionTarget {
-    #[default]
-    OwningWeapon,
-    Slot1,
-    Slot2,
-    Slot3,
-    Category1,
-    Category2,
-    Category3,
-}
-
-impl AmmunitionTarget {
-    pub const ALL: [Self; 7] = [
-        Self::OwningWeapon,
-        Self::Slot1,
-        Self::Slot2,
-        Self::Slot3,
-        Self::Category1,
-        Self::Category2,
-        Self::Category3,
-    ];
-
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::OwningWeapon => "This Weapon",
-            Self::Slot1 => "Kinetic Slot",
-            Self::Slot2 => "Energy Slot",
-            Self::Slot3 => "Power Slot",
-            Self::Category1 => "Primary Ammo",
-            Self::Category2 => "Special Ammo",
-            Self::Category3 => "Heavy Ammo",
-        }
-    }
-
-    /// The amount's position among the seven the node stores.
-    #[must_use]
-    pub const fn index(self) -> usize {
-        match self {
-            Self::OwningWeapon => 0,
-            Self::Slot1 => 1,
-            Self::Slot2 => 2,
-            Self::Slot3 => 3,
-            Self::Category1 => 4,
-            Self::Category2 => 5,
-            Self::Category3 => 6,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
@@ -719,127 +557,6 @@ mod f32_bits {
     }
 }
 
-/// A property a program defines for itself. The build gives every bank of `slot` that lists
-/// `parameter` a row under `key` that sets the parameter to `value`, added to the running
-/// value or written over it, so an Ability Property action applying `key` on that slot works
-/// on every Subclass. The key is a hash of the tuning (`ability::bank::tuning_key`), so equal
-/// tunings on any perk share one row. It is 32 bits, so different tunings can share a key, and
-/// the program and the build refuse that rather than let one take the other's row.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AbilityTuning {
-    #[serde(with = "hex_key")]
-    pub key: u32,
-    pub slot: AbilityTarget,
-    #[serde(with = "hex_key")]
-    pub parameter: u32,
-    #[serde(rename = "value", with = "f32_bits")]
-    pub value_bits: u32,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub add: bool,
-}
-
-/// A private adjustment to a native base ability input. The property lifetime controls
-/// its weight, so removing or holstering the item restores the unmodified ability.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AbilityInput {
-    #[serde(with = "hex_key")]
-    pub key: u32,
-    pub slot: AbilityTarget,
-    pub input: u8,
-    #[serde(rename = "value", with = "f32_bits")]
-    pub value_bits: u32,
-    pub multiply: bool,
-}
-
-impl AbilityInput {
-    #[must_use]
-    pub fn new(slot: AbilityTarget, input: u8, value: f32, multiply: bool) -> Self {
-        let value_bits = value.to_bits();
-        let key = crate::hash::fnv1_name_hash(&format!(
-            "parhelion.ability.input.{slot}.{input}.{value_bits:08x}.{}",
-            u8::from(multiply)
-        ));
-        Self {
-            key,
-            slot,
-            input,
-            value_bits,
-            multiply,
-        }
-    }
-
-    pub fn validate(&self) -> Result<(), String> {
-        let value = f32::from_bits(self.value_bits);
-        if self.input >= 7
-            || !value.is_finite()
-            || (self.multiply && value < 0.0)
-            || crate::ability::bank::slot_banks(self.slot).is_empty()
-            || self.key != Self::new(self.slot, self.input, value, self.multiply).key
-        {
-            return Err("Invalid private base ability input adjustment".into());
-        }
-        Ok(())
-    }
-}
-
-impl AbilityTuning {
-    /// A tuning with the key its definition hashes to.
-    #[must_use]
-    pub fn new(slot: AbilityTarget, parameter: u32, value: f32, add: bool) -> Self {
-        Self {
-            key: crate::ability::bank::tuning_key(slot, parameter, value.to_bits(), add),
-            slot,
-            parameter,
-            value_bits: value.to_bits(),
-            add,
-        }
-    }
-
-    /// The value the row writes or adds.
-    #[must_use]
-    pub fn value(&self) -> f32 {
-        f32::from_bits(self.value_bits)
-    }
-
-    /// Whether the key is the one this tuning's definition hashes to.
-    #[must_use]
-    pub fn keyed_by_definition(&self) -> bool {
-        self.key
-            == crate::ability::bank::tuning_key(
-                self.slot,
-                self.parameter,
-                self.value_bits,
-                self.add,
-            )
-    }
-}
-
-/// Effect kind 7, Ability Property, whose record holds the slot at +2 and the key at +4.
-pub const ABILITY_PROPERTY_KIND: u8 = 7;
-const ABILITY_PROPERTY_CLASS: u32 = 0x8080_3E1D;
-
-/// The slot and key of every Ability Property action in a compiled action payload. An empty
-/// payload, a declaration with no action of its own, applies nothing.
-pub fn ability_properties_in(payload: &[u8]) -> Result<BTreeSet<(AbilityTarget, u32)>, String> {
-    if payload.is_empty() {
-        return Ok(BTreeSet::new());
-    }
-    let decoded = crate::sandbox_perk::action::decode(payload)?;
-    Ok(decoded
-        .effects()
-        .filter(|effect| effect.kind == ABILITY_PROPERTY_KIND)
-        .filter_map(|effect| ability_property_of(&effect.native))
-        .collect())
-}
-
-fn ability_property_of(record: &[u8]) -> Option<(AbilityTarget, u32)> {
-    let slot = *record.get(2)?;
-    let key = u32::from_le_bytes(record.get(4..8)?.try_into().ok()?);
-    Some((AbilityTarget::from_byte(slot), key))
-}
-
 /// The tunings a program defines for its Ability Property actions.
 impl Program {
     /// Why this program cannot become an editable native program without losing part of it.
@@ -847,7 +564,8 @@ impl Program {
     /// private resource edits to the graphs its actions reference have no place in it.
     #[must_use]
     pub fn native_adoption_issue(&self) -> Option<&'static str> {
-        (self.native.is_none() && !self.native_asset_patches.is_empty()).then_some(
+        (self.native.is_none()
+            && (!self.native_asset_patches.is_empty() || !self.imported_assets.is_empty())).then_some(
             "This effect edits private copies of the objects it attaches, which editing it here would drop. It stays as it is.",
         )
     }
@@ -1041,6 +759,10 @@ mod hex_keys {
                 .ok_or_else(|| D::Error::custom(format!("key {text} must start with 0x")))?;
             *key = u32::from_str_radix(digits, 16)
                 .map_err(|_| D::Error::custom(format!("key {text} is not a 32-bit hash")))?;
+            // Older guided attachments used zero for their optional, unnamed keys.
+            if *key == 0 {
+                *key = super::EMPTY_KEY;
+            }
         }
         Ok(keys)
     }
@@ -1324,6 +1046,9 @@ pub struct Program {
     /// Checked resource edits for a graph referenced by a verbatim native effect.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub native_asset_patches: Vec<NativeAssetPatch>,
+    /// Complete privately allocated attachment groups, independent of a weapon's model.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imported_assets: Vec<ImportedAsset>,
     /// For an always-active program, the Event Key Match key that ends it. `None` keeps the
     /// actions until the perk is removed. Stock always-active perks that end early all use
     /// this one condition kind, with a key whose event is not named.
@@ -1518,6 +1243,7 @@ impl Default for Program {
             chance_permyriad: 10_000,
             actions: Vec::new(),
             native_asset_patches: Vec::new(),
+            imported_assets: Vec::new(),
             removal_key: None,
             native_trigger: None,
             native_removal: None,
@@ -1611,6 +1337,33 @@ impl Program {
 
     fn validate_asset_patches(&self) -> Result<(), String> {
         let mut patched_actions = BTreeSet::new();
+        for imported in &self.imported_assets {
+            if !patched_actions.insert(imported.action_index)
+                || !imported.directory.is_absolute()
+                || imported.sha256.len() != 64
+                || !imported.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || imported.symbol.trim().is_empty()
+                || imported.symbol.contains('\0')
+            {
+                return Err(
+                    "An imported attachment needs a directory, a root symbol and a unique action."
+                        .into(),
+                );
+            }
+            let asset = self
+                .actions
+                .get(imported.action_index)
+                .and_then(Action::asset)
+                .ok_or("An imported attachment must select an entity action.")?;
+            if asset.graph == 0
+                || asset.graph == u32::MAX
+                || !asset.values.is_empty()
+                || asset.hud_status.is_some()
+                || asset.damage_type.is_some()
+            {
+                return Err("Edit an imported attachment in its source group before binding it to an action.".into());
+            }
+        }
         for edit in &self.native_asset_patches {
             if !patched_actions.insert(edit.action_index) {
                 return Err("A native asset action has more than one patch set.".into());
@@ -1683,6 +1436,7 @@ impl Program {
             let defaults = Self::default();
             if !self.actions.is_empty()
                 || !self.native_asset_patches.is_empty()
+                || !self.imported_assets.is_empty()
                 || self.native_trigger.is_some()
                 || self.native_removal.is_some()
                 || self.removal_key.is_some()

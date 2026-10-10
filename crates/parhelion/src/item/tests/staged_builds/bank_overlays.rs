@@ -38,17 +38,14 @@ const ENTITY_REFERRERS: [(u32, u32); 3] = [
 /// manager over the staged install, and a project that applies nothing of the kind leaves
 /// those packages alone.
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn real_private_perk_applying_bank_keys_ships_the_banks() {
     const BREACHLIGHT_ITEM_HASH: u32 = 0x4CE3_CE93;
     const MICRO_MISSILE_PLUG_HASH: u32 = 0xDD5C_B37A;
     const MICRO_MISSILE_PERK_INDEX: u16 = 1178;
     const TRAIT_SOCKET_INDEX: usize = 4;
 
-    let packages = PathBuf::from(
-        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-            .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages"),
-    );
+    let packages = crate::test_support::stock_packages();
     let manager = open_manager(&packages).expect("clean-stock manager should open");
     let globals_tag = resolve_live_named_tag(&manager, "investment_globals", None).unwrap();
     let globals = read_tag(&manager, globals_tag, "investment globals").unwrap();
@@ -107,6 +104,7 @@ fn real_private_perk_applying_bank_keys_ships_the_banks() {
             overrides: WeaponCloneOverrides {
                 socket_columns,
                 socket_plug_variants: vec![WeaponSocketPlugVariantOverride {
+                    offer_everywhere: false,
                     replace_effects: false,
                     investment_stats: Vec::new(),
                     socket_index: TRAIT_SOCKET_INDEX as u16,
@@ -291,7 +289,7 @@ fn staged_banks_carry_their_rows(
             if read_u32(&stock_entity, at).unwrap() == bank
                 && (0x8080_0000..=0x8080_FFFF).contains(&class)
                 && (old_instance..stock_bank.len()).contains(&offset)
-                && offset % 8 == 0
+                && offset.is_multiple_of(8)
             {
                 assert_eq!(
                     read_u64(&staged_entity, at + 8).unwrap(),

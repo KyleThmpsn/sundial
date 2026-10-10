@@ -42,6 +42,19 @@ impl PlugSelectionMode {
         }
     }
 
+    /// What the scope offers for one socket, for its hover in a plug picker.
+    #[must_use]
+    pub const fn hint(self) -> &'static str {
+        match self {
+            Self::Supported => "Plugs this item allows in this socket",
+            Self::SocketAndGearType => "Plugs this socket takes on this kind of item",
+            Self::MatchingSocketType => "Plugs this socket type takes on any item",
+            Self::GearType => "Any plug this kind of item uses, in any socket",
+            Self::GearKind => "Any plug every weapon or every armor piece uses",
+            Self::AnyPlug => "Every plug. Some can stop the item from loading",
+        }
+    }
+
     /// The label in the words of what is being picked for, as Dawn names them: for Chroma
     /// Rush's barrel socket, Chroma Rush Barrels, Auto Rifle Barrels, All Barrels, Auto Rifles,
     /// All Weapons, All. `socket_label` is the socket's name, or empty.

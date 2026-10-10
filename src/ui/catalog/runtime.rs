@@ -285,20 +285,23 @@ fn draw_root(ui: &mut egui::Ui, root: &WeaponRuntimeRoot, fields: &[usize]) {
                                 };
                                 ui.add_sized(
                                     [width * 0.59, 24.0],
-                                    egui::Label::new(name).truncate(),
+                                    crate::ui::cut_label_within(ui, name, width * 0.59),
                                 )
                                 .on_hover_text(&tooltip);
                                 let text = value_text(field);
                                 ui.add_sized(
                                     [width * 0.35, 24.0],
-                                    egui::Label::new(egui::RichText::new(&text).monospace())
-                                        .truncate(),
+                                    crate::ui::cut_label_within(
+                                        ui,
+                                        egui::RichText::new(&text).monospace(),
+                                        width * 0.35,
+                                    ),
                                 )
                                 .on_hover_text(format!("{text}\n{tooltip}"))
                                 .context_menu(|ui| {
                                     if ui.button("Copy Exact Value").clicked() {
                                         ui.ctx().copy_text(exact_value_text(field));
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 });
                                 ui.end_row();

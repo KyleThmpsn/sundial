@@ -11,6 +11,39 @@ pub(crate) struct Motion {
 }
 
 impl Motion {
+    pub(in crate::model_preview) fn frame(&self, seconds: f32) -> Option<Frame> {
+        let mut frame = [[0.0; 4]; 128];
+        frame[..self.constants.len()].copy_from_slice(&self.constants);
+        if let Some(expression) = &self.expression {
+            expression
+                .run_shader_into(&mut frame[..self.constants.len()], seconds)
+                .ok()?;
+        }
+        Some(frame)
+    }
+
+    /// Emit the accepted geometry slice with the same input contract as `vertex::evaluate`.
+    pub(in crate::model_preview) fn gpu_source(&self, name: &str) -> String {
+        use std::fmt::Write;
+        let mut source = self.code.glsl(&format!("{name}Code"));
+        // Slicing deliberately omits the original return instruction. Capture the registers
+        // on fallthrough as well, as the CPU evaluator does for this straight-line program.
+        source.truncate(source.len() - 2);
+        source.push_str("for(int i=0;i<16;i++)result[i]=uintBitsToFloat(o[i]);}\n");
+        writeln!(source, "void {name}(inout vec3 p,inout vec3 n,inout vec4 t){{vec4 v[16],o[16];for(int i=0;i<16;i++)v[i]=vec4(0.0);").unwrap();
+        for semantic in &self.code.inputs {
+            let value = match semantic.name.as_str() {
+                "POSITION" => "vec4(p,0.0)",
+                "NORMAL" => "vec4(n,0.0)",
+                "TANGENT" => "t",
+                _ => "vec4(0.0)",
+            };
+            writeln!(source, "v[{}]={value};", semantic.register).unwrap();
+        }
+        writeln!(source, "{name}Code(v,o);for(int i=0;i<3;i++)if(any(isnan(o[i]))||any(isinf(o[i])))return;p=o[0].xyz;float len=length(o[1].xyz);if(len>1e-8&&!isinf(len))n=o[1].xyz/len;t.xyz=o[2].xyz;}}").unwrap();
+        source
+    }
+
     pub fn animated(&self) -> bool {
         self.expression.as_ref().is_some_and(Program::animated)
     }
@@ -316,7 +349,7 @@ fn slice(mut code: Code) -> Option<Code> {
 pub(in crate::model_preview) fn load(
     manager: &PackageManager,
     tag: u32,
-    objects: Result<&[[f32; 4]], &str>,
+    objects: ObjectInputs<'_>,
 ) -> Result<Option<Motion>, String> {
     let bytes = checked(manager, tag, 0x8080_71E8)?;
     let vertex = u32_at(&bytes, 0x48)?;
@@ -333,14 +366,7 @@ pub(in crate::model_preview) fn load(
     let constants = super::super::read::stage_constants(manager, &bytes, 0x48)?;
     check_constants(&code, &constants)?;
     let globals = crate::dyes::material::global_channels(manager);
-    let expression = Program::material(
-        &bytes,
-        0x48,
-        &globals,
-        objects.map_err(str::to_owned)?,
-        0,
-        constants.len(),
-    )?;
+    let expression = Program::material(&bytes, 0x48, &globals, objects, 0, constants.len())?;
     if let Some(program) = &expression {
         program.run_shader_into(&mut constants.clone(), 0.0)?;
     }

@@ -131,9 +131,9 @@ fn dictionary_package_oracle() -> Result<()> {
     fs::write(output.join("dictionary.bin"), &private.payload.0)?;
     fs::write(output.join("definition-mask.bin"), native_mask)?;
     let report = serde_json::json!({
-        "source_sha256": format!("{:x}", Sha256::digest(&source.0)),
-        "stock_sha256": format!("{:x}", Sha256::digest(&stock.0)),
-        "private_sha256": format!("{:x}", Sha256::digest(&private.payload.0)),
+        "source_sha256": hex::encode(Sha256::digest(&source.0)),
+        "stock_sha256": hex::encode(Sha256::digest(&stock.0)),
+        "private_sha256": hex::encode(Sha256::digest(&private.payload.0)),
         "names": private.names.len(), "added_static": private.added_static,
         "refusals": refusals, "stock_round_trip": true,
         "native_call_fixture_exact": true, "installable": false,

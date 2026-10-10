@@ -24,7 +24,12 @@ fn delay(source: &Payload, from: usize, output: &mut Payload, to: usize) -> Resu
     Ok(())
 }
 
-fn link(bindings: &Bindings, offset: usize, source_class: u32, target_class: u32) -> Result<u32> {
+pub(super) fn link(
+    bindings: &Bindings,
+    offset: usize,
+    source_class: u32,
+    target_class: u32,
+) -> Result<u32> {
     let dependency = bindings
         .resources
         .get(&offset)
@@ -198,16 +203,14 @@ fn particle(
             parameters.push(value);
         }
         array(output, target, 0x80800009, &parameters, 1)?;
-        put(
-            output,
-            target + 16,
-            &link(bindings, row + 16, 0x80806920, 0x80806E28)?.to_le_bytes(),
-        )?;
-        ensure!(
-            source.u32(row + 20)? == u32::MAX,
-            "particle event extension requires translation"
-        );
-        put(output, target + 20, &u32::MAX.to_le_bytes())?;
+        super::presentation::fields(source, row)?;
+        let tag = if source.u32(row + 16)? == u32::MAX {
+            u32::MAX
+        } else {
+            link(bindings, row + 16, 0x80806920, 0x80806E28)?
+        };
+        put(output, target + 16, &tag.to_le_bytes())?;
+        put(output, target + 20, &source.bytes::<4>(row + 20)?)?;
     }
     for delta in [0, 72, 144] {
         expression::write(source, from + 0x38 + delta, output, to + 0x50 + delta)?;

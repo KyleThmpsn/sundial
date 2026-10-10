@@ -58,11 +58,9 @@ fn ability_adjustments_default_to_no_limit_and_preserve_authored_gates() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn native_pickups_and_world_objects_spawn_without_becoming_weapon_patterns() {
-    let packages = std::path::PathBuf::from(
-        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").expect("clean packages"),
-    );
+    let packages = crate::test_support::stock_packages();
     let manager =
         crate::package_runtime::open_shadowkeep_packages(packages.parent().unwrap()).unwrap();
     for graph in [
@@ -72,6 +70,8 @@ fn native_pickups_and_world_objects_spawn_without_becoming_weapon_patterns() {
             graph,
             path: String::new(),
             values: Vec::new(),
+            damage_type: None,
+            rows: Vec::new(),
             hud_status: None,
         };
         let mut program = Program {
@@ -99,12 +99,10 @@ fn native_pickups_and_world_objects_spawn_without_becoming_weapon_patterns() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES with clean client resources"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES with clean client resources"]
 fn every_native_kind_compiles_against_clean_client_resources() {
     use crate::sandbox_perk::nodes;
-    let packages = std::path::PathBuf::from(
-        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").expect("clean packages"),
-    );
+    let packages = crate::test_support::stock_packages();
     let manager =
         crate::package_runtime::open_shadowkeep_packages(packages.parent().unwrap()).unwrap();
     let templates: Vec<(bool, u8, u32, usize, String)> =
@@ -188,6 +186,8 @@ fn every_authorable_catalog_kind_has_a_checked_compiler_path() {
         graph: 0x80BC_5810,
         path: String::new(),
         values: Vec::new(),
+        damage_type: None,
+        rows: Vec::new(),
         hud_status: None,
     };
     let mut conditions = BTreeSet::new();

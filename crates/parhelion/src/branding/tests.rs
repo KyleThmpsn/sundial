@@ -1,11 +1,11 @@
 use super::*;
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_PACKAGES in a Dawn installation"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES in a Dawn installation"]
 fn dawn_detection_and_native_artwork_plans_match_previews() {
     use crate::{AuthoredWeaponRarity, WeaponIconEdit, watermark::WeaponIconRequest};
     use tiger_pkg::TagHash;
-    let packages = std::path::PathBuf::from(std::env::var_os("SUNDIAL_TEST_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     assert_eq!(Branding::for_packages(&packages), Branding::Dawn);
     let install = packages.parent().unwrap();
     let dll = [

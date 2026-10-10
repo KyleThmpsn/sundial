@@ -24,7 +24,7 @@ use crate::{
         WEAPON_ENTITY_CLASS, sandbox_pattern_identity_at, validate_weapon_entity,
         weapon_component_binding_hashes, weapon_component_bindings, weapon_entity_assignment,
     },
-    investment_schema::{
+    investment::schema::{
         GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, GLOBALS_SANDBOX_PATTERN_TABLE_SLOT,
         investment_globals_table_tag,
     },

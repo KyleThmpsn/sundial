@@ -43,6 +43,8 @@ pub(super) fn action_of(
         graph: graph_of(tag),
         path: effect.referenced_path.clone().unwrap_or_default(),
         values: Vec::new(),
+        damage_type: None,
+        rows: Vec::new(),
         hud_status: None,
     };
     match effect.kind {

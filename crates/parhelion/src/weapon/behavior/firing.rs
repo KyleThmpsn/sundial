@@ -534,6 +534,7 @@ fn place_private_plug(
         overrides
             .socket_plug_variants
             .push(crate::item::WeaponSocketPlugVariantOverride {
+                offer_everywhere: false,
                 replace_effects: false,
                 investment_stats: Vec::new(),
                 socket_index,

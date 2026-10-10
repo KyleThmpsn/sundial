@@ -43,7 +43,7 @@ fn put(b: &mut [u8], o: usize, v: &[u8]) -> Result<()> {
 }
 fn append(b: &mut Vec<u8>, o: usize, class: u64, rows: &[u8], stride: usize) -> Result<()> {
     ensure!(
-        stride > 0 && rows.len() % stride == 0,
+        stride > 0 && rows.len().is_multiple_of(stride),
         "array stride mismatch"
     );
     if rows.is_empty() {

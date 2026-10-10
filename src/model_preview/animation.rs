@@ -9,7 +9,7 @@ use super::*;
 mod codec;
 mod pose;
 use codec::decode;
-use pose::Transform;
+pub(super) use pose::Transform;
 
 pub(crate) struct Weights {
     pub values: [u8; 4],
@@ -60,6 +60,40 @@ impl Deformed {
 }
 
 impl Animation {
+    /// Small per-frame palette for GPU skinning. Vertex weights remain resident on the GPU.
+    pub(super) fn palette(&self, seconds: f32) -> (Vec<[f32; 4]>, Transform) {
+        let skin: Vec<_> = self
+            .world(self.looped_seconds(seconds))
+            .iter()
+            .zip(&self.inverse)
+            .map(|(world, inverse)| world.compose(*inverse))
+            .collect();
+        let root = if !self.parents.iter().skip(1).any(Option::is_none) {
+            skin.first().copied().unwrap_or_else(Transform::identity)
+        } else {
+            Transform::identity()
+        };
+        let rows = skin
+            .into_iter()
+            .flat_map(|t| {
+                [
+                    t.rotation,
+                    [
+                        t.translation[0],
+                        t.translation[1],
+                        t.translation[2],
+                        t.scale,
+                    ],
+                ]
+            })
+            .collect();
+        (rows, root)
+    }
+
+    pub(super) fn bone_count(&self) -> usize {
+        self.parents.len()
+    }
+
     pub fn duration(&self) -> f32 {
         (self.frames - 1) as f32 / self.fps
     }
@@ -110,18 +144,7 @@ impl Animation {
         result: &mut Deformed,
         follow_root: bool,
     ) {
-        let frame = if seconds.is_finite() {
-            seconds.clamp(0.0, self.duration()) * self.fps
-        } else {
-            0.0
-        };
-        let first = (frame.floor() as usize).min(self.frames - 1);
-        let next = (first + 1).min(self.frames - 1);
-        let mut world = Vec::<Transform>::with_capacity(self.parents.len());
-        for (bone, parent) in self.parents.iter().enumerate() {
-            let local = self.poses[first][bone].lerp(self.poses[next][bone], frame.fract());
-            world.push(parent.map_or(local, |p| world[p].compose(local)));
-        }
+        let world = self.world(seconds);
         let skin: Vec<_> = world
             .iter()
             .zip(&self.inverse)
@@ -186,6 +209,42 @@ impl Animation {
             }
         }
     }
+
+    fn world(&self, seconds: f32) -> Vec<Transform> {
+        let frame = if seconds.is_finite() {
+            seconds.clamp(0.0, self.duration()) * self.fps
+        } else {
+            0.0
+        };
+        let first = (frame.floor() as usize).min(self.frames - 1);
+        let next = (first + 1).min(self.frames - 1);
+        let mut world = Vec::<Transform>::with_capacity(self.parents.len());
+        for (bone, parent) in self.parents.iter().enumerate() {
+            let local = self.poses[first][bone].lerp(self.poses[next][bone], frame.fract());
+            world.push(parent.map_or(local, |p| world[p].compose(local)));
+        }
+        world
+    }
+
+    pub(super) fn world_matrices(&self, seconds: f32) -> Vec<[f32; 16]> {
+        self.world(seconds)
+            .into_iter()
+            .map(|transform| {
+                let mut matrix = [0.; 16];
+                for column in 0..3 {
+                    let mut axis = [0.; 3];
+                    axis[column] = 1.;
+                    let direction = transform
+                        .normal(axis)
+                        .map(|v| v * transform.scale * transform.scale);
+                    matrix[column * 4..column * 4 + 3].copy_from_slice(&direction);
+                }
+                matrix[12..15].copy_from_slice(&transform.translation);
+                matrix[15] = 1.;
+                matrix
+            })
+            .collect()
+    }
 }
 
 /// One playable clip found on the object.
@@ -204,7 +263,7 @@ pub(super) fn load(
     resources: &[Vec<u8>],
     model: &Model,
 ) -> Result<Option<Animation>, String> {
-    let Some(bank) = bank(manager, resources, Some(model))? else {
+    let Some(bank) = bank(manager, resources)? else {
         return Ok(None);
     };
     let mut budget = Budget::default();
@@ -237,7 +296,7 @@ pub(super) fn load(
 /// rather than failing the walk, so one unsupported clip does not hide the others. An object
 /// with no skeleton, no bank or an unreadable one enumerates as nothing to choose from.
 pub(crate) fn clips(manager: &PackageManager, resources: &[Vec<u8>]) -> Vec<Clip> {
-    let Ok(Some(bank)) = bank(manager, resources, None) else {
+    let Ok(Some(bank)) = bank(manager, resources) else {
         return Vec::new();
     };
     let mut budget = Budget::default();
@@ -276,7 +335,7 @@ pub(crate) fn load_clip(
     model: &Model,
     tag: u32,
 ) -> Result<Animation, String> {
-    let Some(bank) = bank(manager, resources, Some(model))? else {
+    let Some(bank) = bank(manager, resources)? else {
         return Err("This object has no animation skeleton.".into());
     };
     if !bank.tags.contains(&tag) {
@@ -306,12 +365,10 @@ struct Bank<'a> {
     tags: Vec<u32>,
 }
 
-/// Locates the animation bank. `model` is checked only for a caller that means to play a clip
-/// on it, because enumerating what an object carries does not need one.
+/// Locates the animation bank within one entity owner's resources.
 fn bank<'a>(
     manager: &PackageManager,
     resources: &'a [Vec<u8>],
-    model: Option<&Model>,
 ) -> Result<Option<Bank<'a>>, String> {
     let Some((skeleton, data)) = component(resources, 0x8080_8546)? else {
         return Ok(None);
@@ -319,9 +376,6 @@ fn bank<'a>(
     let Some((definition, definition_data)) = component(resources, 0x8080_344B)? else {
         return Err("This skeleton has no supported animation bank.".into());
     };
-    if model.is_some_and(|model| model.tags.len() != 1) {
-        return Err("Animation for objects with multiple models is not supported yet.".into());
-    }
     let bytes = checked(
         manager,
         u32_at(definition, definition_data + 0x90)?,
@@ -338,15 +392,22 @@ fn bank<'a>(
     }))
 }
 
-/// The first resource carrying a component of `class`, with the offset of its data.
+/// One unambiguous component of `class`, with the offset of its data.
 fn component(resources: &[Vec<u8>], class: u32) -> Result<Option<(&[u8], usize)>, String> {
+    let mut found = None;
     for bytes in resources {
         let data = pointer(bytes, 0x18)?;
         if data >= 4 && u32_at(bytes, data - 4)? == class {
-            return Ok(Some((bytes.as_slice(), data)));
+            if found.is_some_and(|(previous, _)| previous != bytes.as_slice()) {
+                return Err(
+                    "This animation owner has multiple conflicting skeleton or bank definitions."
+                        .into(),
+                );
+            }
+            found = Some((bytes.as_slice(), data));
         }
     }
-    Ok(None)
+    Ok(found)
 }
 
 /// The read budget for one walk over a bank, so a large bank cannot stall the preview.

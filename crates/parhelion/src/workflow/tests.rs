@@ -44,7 +44,7 @@ fn snapshot_with_recipe(
 }
 
 fn configured_real_packages() -> Option<PathBuf> {
-    std::env::var_os("SUNDIAL_TEST_PACKAGES")
+    std::env::var_os("SUNDIAL_STOCK_PACKAGES")
         .map(PathBuf::from)
         .filter(|path| path.is_dir())
 }
@@ -79,10 +79,10 @@ fn source_inspection_recognizes_a_complete_installed_authored_set() {
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn semantic_preflight_accepts_a_valid_project_without_creating_a_staging_run() {
     let packages = configured_real_packages()
-        .expect("SUNDIAL_TEST_PACKAGES must point to Shadowkeep packages");
+        .expect("SUNDIAL_STOCK_PACKAGES must point to Shadowkeep packages");
     let directory = tempfile::tempdir().expect("temporary directory should be created");
     let staging = directory.path().join("staging");
     let request = snapshot(packages, staging.clone());
@@ -95,17 +95,16 @@ fn semantic_preflight_accepts_a_valid_project_without_creating_a_staging_run() {
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_PACKAGES, PARHELION_TEST_RECIPE_DIRECTORY, and PARHELION_TEST_STAGING_ROOT"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES, PARHELION_TEST_RECIPE_DIRECTORY, and SUNDIAL_TEST_ARTIFACTS"]
 fn configured_recipe_directory_builds_and_stages_the_normal_batch_workflow() {
     let packages = configured_real_packages()
-        .expect("SUNDIAL_TEST_PACKAGES must point to Shadowkeep packages");
+        .expect("SUNDIAL_STOCK_PACKAGES must point to Shadowkeep packages");
     let recipe_directory = std::env::var_os("PARHELION_TEST_RECIPE_DIRECTORY")
         .map(PathBuf::from)
         .filter(|path| path.is_dir())
         .expect("PARHELION_TEST_RECIPE_DIRECTORY must point to a recipe directory");
-    let staging_root = std::env::var_os("PARHELION_TEST_STAGING_ROOT")
-        .map(PathBuf::from)
-        .expect("PARHELION_TEST_STAGING_ROOT must be configured");
+    let staging_root = crate::test_support::artifacts("staging")
+        .expect("SUNDIAL_TEST_ARTIFACTS names the artifact root");
     let mut recipe_paths = fs::read_dir(&recipe_directory)
         .expect("configured recipe directory should be readable")
         .map(|entry| {
@@ -152,7 +151,7 @@ fn configured_recipe_directory_builds_and_stages_the_normal_batch_workflow() {
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_PACKAGES and PARHELION_TEST_STAGING_ROOT"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
 fn configured_additional_weapon_family_matrix_builds_and_stages() {
     use crate::recipe::{RecipeDamageType, RecipeInventorySlot};
     use crate::{
@@ -173,10 +172,9 @@ fn configured_additional_weapon_family_matrix_builds_and_stages() {
     }
 
     let packages = configured_real_packages()
-        .expect("SUNDIAL_TEST_PACKAGES must point to Shadowkeep packages");
-    let staging_root = std::env::var_os("PARHELION_TEST_STAGING_ROOT")
-        .map(PathBuf::from)
-        .expect("PARHELION_TEST_STAGING_ROOT must be configured");
+        .expect("SUNDIAL_STOCK_PACKAGES must point to Shadowkeep packages");
+    let staging_root = crate::test_support::artifacts("staging")
+        .expect("SUNDIAL_TEST_ARTIFACTS names the artifact root");
     let install = packages
         .parent()
         .expect("configured packages need an install root");
@@ -438,13 +436,13 @@ fn configured_additional_weapon_family_matrix_builds_and_stages() {
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_PACKAGES and PARHELION_TEST_STAGED_RUN"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES and PARHELION_TEST_STAGED_RUN"]
 fn configured_staged_run_reopens_with_complete_stock_shaped_icon_graphs() {
     use sundial::package_authoring::PackageManager;
     use tiger_pkg::{DestinyVersion, GameVersion, TagHash};
 
     let packages = configured_real_packages()
-        .expect("SUNDIAL_TEST_PACKAGES must point to Shadowkeep packages");
+        .expect("SUNDIAL_STOCK_PACKAGES must point to Shadowkeep packages");
     let staged_run = std::env::var_os("PARHELION_TEST_STAGED_RUN")
         .map(PathBuf::from)
         .filter(|path| path.is_dir())
@@ -502,10 +500,10 @@ fn configured_staged_run_reopens_with_complete_stock_shaped_icon_graphs() {
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn semantic_preflight_accepts_a_three_choice_donor_column() {
     let packages = configured_real_packages()
-        .expect("SUNDIAL_TEST_PACKAGES must point to Shadowkeep packages");
+        .expect("SUNDIAL_STOCK_PACKAGES must point to Shadowkeep packages");
     let install = packages
         .parent()
         .expect("configured package directory should have an install root");
@@ -543,10 +541,10 @@ fn semantic_preflight_accepts_a_three_choice_donor_column() {
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn semantic_preflight_rejects_an_invalid_stat_override() {
     let packages = configured_real_packages()
-        .expect("SUNDIAL_TEST_PACKAGES must point to Shadowkeep packages");
+        .expect("SUNDIAL_STOCK_PACKAGES must point to Shadowkeep packages");
     let directory = tempfile::tempdir().expect("temporary directory should be created");
     let staging = directory.path().join("staging");
     let mut recipe = WeaponRecipe::every_end();
@@ -568,10 +566,10 @@ fn semantic_preflight_rejects_an_invalid_stat_override() {
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn semantic_preflight_allows_a_forced_plug_outside_the_donor_socket_pool() {
     let packages = configured_real_packages()
-        .expect("SUNDIAL_TEST_PACKAGES must point to Shadowkeep packages");
+        .expect("SUNDIAL_STOCK_PACKAGES must point to Shadowkeep packages");
     let directory = tempfile::tempdir().expect("temporary directory should be created");
     let staging = directory.path().join("staging");
     let mut recipe = WeaponRecipe::every_end();

@@ -53,8 +53,6 @@ struct Picker {
     query: String,
     /// The status tab, chosen when the report arrives.
     status: Option<DonorCompatibility>,
-    /// Accept Crash Risk, which an experimental donor needs before it applies.
-    experimental: bool,
     selected: Option<u32>,
     /// Selects `selected` in the list and scrolls to it on the next draw.
     reveal: bool,
@@ -77,7 +75,6 @@ impl Picker {
             baseline_hash,
             query,
             status: None,
-            experimental: false,
             selected,
             reveal: true,
             error: None,
@@ -182,12 +179,10 @@ fn status_rank(status: DonorCompatibility) -> u8 {
     }
 }
 
-fn can_apply(status: DonorCompatibility, experimental: bool) -> bool {
-    match status {
-        DonorCompatibility::LowerRisk => true,
-        DonorCompatibility::Experimental => experimental,
-        DonorCompatibility::Incompatible => false,
-    }
+/// Whether a donor of `status` can apply. The status sorts donors, and only a rejected one is
+/// refused.
+fn can_apply(status: DonorCompatibility) -> bool {
+    status != DonorCompatibility::Incompatible
 }
 
 fn binding_label(binding_hash: u32) -> String {
@@ -237,6 +232,11 @@ struct ComponentState {
     requested: Option<String>,
 }
 
+/// Whether a saved choice has no baseline to return to, so it can only be removed.
+fn removable(row: &ComponentRow<'_>, state: &ComponentState) -> bool {
+    row.baseline_hash.is_none() && state.chosen.is_some()
+}
+
 /// Where a component's runtime comes from now.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ComponentSource {
@@ -268,42 +268,47 @@ pub(super) enum SourceRoute {
 }
 
 impl PackageAuthoringApp {
-    /// One component on a line: its name, where it comes from now, and Change…. A saved choice
-    /// the runtime does not follow shows under it.
+    /// One component as a part row: its name, and where it comes from now as a value that opens
+    /// the compatibility review. Off its baseline, the reset opens the review on the baseline. A
+    /// saved choice the runtime does not follow shows under it.
     pub(super) fn draw_runtime_component_row(&mut self, ui: &mut egui::Ui, row: &ComponentRow<'_>) {
+        use crate::app::donor_view::parts;
         let state = self.component_state(row);
-        // The same label column as the component rows above it, so every value lines up.
-        let name_width = Self::component_label_width(ui).min(ui.available_width() * 0.4);
-        ui.horizontal(|ui| {
-            ui.allocate_ui_with_layout(
-                egui::vec2(name_width, ui.spacing().interact_size.y),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.set_width(name_width);
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    ui.add(egui::Label::new(egui::RichText::new(row.label).weak()).truncate());
-                    draw_authoring_info_icon(ui, row.hover());
-                },
-            );
-            // The source, then its action beside it, as a part row's value and reset sit.
-            let action_width = sundial::investment::authoring_button_width(ui, "Change…")
-                + ui.spacing().item_spacing.x;
-            // Inset as a part row's value text is inside its field, so the values line up.
-            ui.add_space(ui.spacing().button_padding.x);
-            ui.scope(|ui| {
-                ui.set_max_width((ui.available_width() - action_width).max(80.0));
-                // A cut-off source shows its whole text on hover by itself.
-                ui.add(egui::Label::new(&state.source).truncate());
-            });
-            self.draw_component_actions(ui, row, &state, false);
-        });
+        let hover = row.hover();
+        let part = parts::Part {
+            column: &parts::GAMEPLAY_COLUMN,
+            label: row.label,
+            hint: hover.into(),
+            value: &state.source,
+            chosen: state.chosen,
+            follow: "Use Baseline",
+            blocked: None,
+            detail: None,
+        };
+        let resettable = row.baseline_hash.is_some() && state.off_baseline;
+        let (open, reset) = parts::draw_window_part(
+            ui,
+            self.catalog.as_ref(),
+            &part,
+            (state.off_baseline, resettable),
+        );
+        if open {
+            self.review_component(row, state.chosen, false);
+        } else if reset {
+            self.review_component(row, row.baseline_hash, true);
+        }
         if let Some(requested) = &state.requested {
+            let color = crate::app::style::secondary(ui.visuals());
+            parts::note(
+                ui,
+                &parts::GAMEPLAY_COLUMN,
+                egui::RichText::new(requested).color(color),
+            );
+        }
+        if removable(row, &state) {
             ui.horizontal(|ui| {
-                ui.add_space(name_width + ui.spacing().item_spacing.x);
-                ui.label(
-                    egui::RichText::new(requested)
-                        .color(crate::app::style::secondary(ui.visuals())),
-                );
+                ui.add_space(Self::component_label_width(ui) + ui.spacing().item_spacing.x);
+                self.draw_remove_saved_choice(ui, row);
             });
         }
     }
@@ -328,7 +333,7 @@ impl PackageAuthoringApp {
             ui.label(egui::RichText::new(requested).color(secondary));
         }
         ui.add_space(10.0);
-        ui.horizontal_wrapped(|ui| self.draw_component_actions(ui, row, &state, true));
+        ui.horizontal_wrapped(|ui| self.draw_component_actions(ui, row, &state));
     }
 
     /// Where a component comes from now, as its row says it.
@@ -370,34 +375,22 @@ impl PackageAuthoringApp {
         }
     }
 
-    /// Change…, and a way back to the baseline once the component is off it. `primary` draws
-    /// Change… as a detail pane's one action.
+    /// A detail pane's actions: Change…, and a way back to the baseline once the component is
+    /// off it.
     fn draw_component_actions(
         &mut self,
         ui: &mut egui::Ui,
         row: &ComponentRow<'_>,
         state: &ComponentState,
-        primary: bool,
     ) {
-        let change = if primary {
-            crate::app::style::primary(ui, "Change…")
-        } else {
-            egui::Button::new("Change…")
-        };
-        let change = ui.add_enabled(self.catalog.is_some(), change);
+        let change = ui.add_enabled(
+            self.catalog.is_some(),
+            crate::app::style::primary(ui, "Change…"),
+        );
         if named_control(change, format!("Change {} Donor", row.label)).clicked() {
-            self.runtime_donors.picker = Some(Picker::new(
-                row.binding_hash,
-                row.current_key.cloned(),
-                row.baseline_hash,
-                self.runtime_component_queries
-                    .get(&row.binding_hash)
-                    .cloned()
-                    .unwrap_or_default(),
-                state.chosen,
-            ));
+            self.review_component(row, state.chosen, false);
         }
-        if let Some(baseline) = row.baseline_hash
+        if row.baseline_hash.is_some()
             && state.off_baseline
             && named_control(
                 ui.small_button("Use Baseline…"),
@@ -405,21 +398,40 @@ impl PackageAuthoringApp {
             )
             .clicked()
         {
-            self.runtime_donors.picker = Some(Picker::new(
-                row.binding_hash,
-                row.current_key.cloned(),
-                row.baseline_hash,
-                String::new(),
-                Some(baseline),
-            ));
+            self.review_component(row, row.baseline_hash, true);
         }
-        if row.baseline_hash.is_none()
-            && state.chosen.is_some()
-            && named_control(
-                ui.small_button("Remove Saved Choice"),
-                format!("Remove Saved Choice for {}", row.label),
-            )
-            .clicked()
+        if removable(row, state) {
+            self.draw_remove_saved_choice(ui, row);
+        }
+    }
+
+    /// Opens the compatibility review for `row` on `selected`: the saved choice with the row's
+    /// last search, or the baseline it offers to restore.
+    fn review_component(&mut self, row: &ComponentRow<'_>, selected: Option<u32>, baseline: bool) {
+        let query = if baseline {
+            String::new()
+        } else {
+            self.runtime_component_queries
+                .get(&row.binding_hash)
+                .cloned()
+                .unwrap_or_default()
+        };
+        self.runtime_donors.picker = Some(Picker::new(
+            row.binding_hash,
+            row.current_key.cloned(),
+            row.baseline_hash,
+            query,
+            selected,
+        ));
+    }
+
+    /// Remove Saved Choice, which drops a saved choice that has no baseline to return to.
+    fn draw_remove_saved_choice(&mut self, ui: &mut egui::Ui, row: &ComponentRow<'_>) {
+        if named_control(
+            ui.small_button("Remove Saved Choice"),
+            format!("Remove Saved Choice for {}", row.label),
+        )
+        .clicked()
         {
             self.recipe
                 .set_runtime_component_donor(row.binding_hash, None);
@@ -807,7 +819,7 @@ impl PackageAuthoringApp {
         let mut open = true;
         let mut apply = false;
         let mut retry = false;
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         let width = (screen.width() - 40.0).clamp(280.0, 900.0);
         let height = (screen.height() - 64.0).clamp(240.0, 780.0);
         egui::Window::new(format!("{} Donors", binding_label(picker.binding_hash)))
@@ -845,17 +857,11 @@ impl PackageAuthoringApp {
                     .and_then(|hash| report.as_ref()?.candidates.get(&hash));
                 let apply_enabled = picker.error.is_none()
                     && selected_assessment.is_some_and(|assessment| {
-                        can_apply(assessment.status, picker.experimental)
+                        can_apply(assessment.status)
                             && preview::can_apply(review.as_deref(), &self.recipe, &picker)
                     });
                 ui.separator();
-                // The consent comes before the action it unlocks, on screen and in the Tab order.
                 ui.horizontal_wrapped(|ui| {
-                    if selected_assessment.is_some_and(|assessment| {
-                        assessment.status == DonorCompatibility::Experimental
-                    }) {
-                        ui.checkbox(&mut picker.experimental, "Accept Crash Risk");
-                    }
                     apply = ui
                         .add_enabled(apply_enabled, crate::app::style::primary(ui, "Apply Donor"))
                         .clicked();
@@ -885,7 +891,7 @@ impl PackageAuthoringApp {
             && let Some(assessment) = picker
                 .selected
                 .and_then(|hash| report.as_ref()?.candidates.get(&hash))
-            && can_apply(assessment.status, picker.experimental)
+            && can_apply(assessment.status)
             && preview::can_apply(review.as_deref(), &self.recipe, &picker)
             && let Some(Review {
                 result: Ok(plan), ..
@@ -1164,8 +1170,7 @@ fn draw_donor_detail(
 }
 
 /// Names what still blocks Apply Donor. Nothing while Apply is enabled, or while the blocker
-/// shows beside it already: a rejected status, the unticked Accept Crash Risk box, or a failed
-/// check shown with the review.
+/// shows beside it already: a rejected status or a failed check shown with the review.
 fn donor_apply_hint(
     picker: &Picker,
     has_report: bool,
@@ -1187,7 +1192,6 @@ fn donor_apply_hint(
     };
     match assessment.status {
         DonorCompatibility::Incompatible => None,
-        DonorCompatibility::Experimental if !picker.experimental => None,
         _ => settings_hint(picker, review),
     }
 }

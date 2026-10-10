@@ -241,7 +241,7 @@ fn insert(
 /// flags (48 nodes), the ability masks of both slot filters (25 and 62), Set Ability Enum's
 /// slot (1), and the selected bits of Event Mask (2) and Event Slot Mask (16). With no bit set
 /// the node matches no event or changes no slot.
-const NEVER_EMPTY_MASKS: [(u32, usize); 6] = [
+const SELECTION_MASKS: [(u32, usize); 6] = [
     (0x8080_3DFB, 8),
     (0x8080_3DFD, 8),
     (0x8080_3E01, 8),
@@ -250,16 +250,38 @@ const NEVER_EMPTY_MASKS: [(u32, usize); 6] = [
     (0x8080_3E00, 8),
 ];
 
-/// Whether an editable field still holds nothing chosen. No key or tag in any stock node is
-/// zero, since an empty key is the hash of an empty name and an empty tag is all ones, so a
-/// zero one was never picked. The masks above are never empty in stock either. The compiler
-/// accepts such a node, but it never matches or never acts in game.
+/// Canonical absent values for optional fields whose zero representation older authored
+/// recipes used. Other keys and required resource references are not optional by default.
+/// Attachment key consumers are documented in `values`, and weighted spawning accepts
+/// an absent attachment independently of its ammunition weights.
+#[must_use]
+pub fn optional_empty(class: u32, offset: usize) -> Option<u32> {
+    match (class, offset) {
+        (0x8080_3E45, 0x18 | 0x1C | 0x30) => Some(crate::sandbox_perk::program::EMPTY_KEY),
+        (0x8080_3E47, 0x10) => Some(u32::MAX),
+        _ => None,
+    }
+}
+
+/// An empty selection is valid native data. It selects no events or slots and can be
+/// intentional, so it warrants a warning rather than a required-choice failure.
+#[must_use]
+pub fn empty_selection(class: u32, field: &Field, bytes: &[u8]) -> bool {
+    field.editable
+        && bytes.len() == field.width
+        && bytes.iter().all(|byte| *byte == 0)
+        && SELECTION_MASKS.contains(&(class, field.offset))
+}
+
+/// An editable key or resource that still requires a choice. Optional legacy zeros and
+/// empty selection masks have their own contracts and do not make a program unready.
 #[must_use]
 pub fn unset(class: u32, field: &Field, bytes: &[u8]) -> bool {
     field.editable
+        && bytes.len() == field.width
         && bytes.iter().all(|byte| *byte == 0)
-        && (matches!(field.format, Format::Key | Format::Tag)
-            || NEVER_EMPTY_MASKS.contains(&(class, field.offset)))
+        && matches!(field.format, Format::Key | Format::Tag)
+        && optional_empty(class, field.offset).is_none()
 }
 
 /// The label of a class's compiler-derived event mask at +0x18.

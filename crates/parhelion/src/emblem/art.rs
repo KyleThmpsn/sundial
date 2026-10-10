@@ -32,6 +32,10 @@ enum Source {
         image: EmbeddedImage,
         layout: TagHash,
     },
+    Artwork {
+        artwork: crate::presentation::Artwork,
+        layout: TagHash,
+    },
 }
 
 /// A recipe's nameplate read against the packages: the base's container and its icon row, which
@@ -63,10 +67,20 @@ pub(crate) fn resolve(
     let mut colors = None;
     let mut sources = Vec::with_capacity(NameplatePart::ALL.len());
     for part in NameplatePart::ALL {
+        let picture_layout = || {
+            layer_in(&template_payload, part)?.ok_or_else(|| {
+            invalid(format!(
+                "The base emblem has no {} for a picture to take the place of. Take it from another emblem.",
+                part.label().to_lowercase()
+            ))
+        })
+        };
         let source = match nameplate.part(part) {
             None => Source::Base,
             Some(NameplateImage::Emblem { item_hash }) => {
-                let hash = item_hash.parse_u32().map_err(|error| invalid(error.to_string()))?;
+                let hash = item_hash
+                    .parse_u32()
+                    .map_err(|error| invalid(error.to_string()))?;
                 let container = container_of(hash)?;
                 let payload = crate::icon_edit::read_icon_container(manager, container)?;
                 let layer = layer_in(&payload, part)?.ok_or_else(|| {
@@ -82,13 +96,50 @@ pub(crate) fn resolve(
             }
             Some(NameplateImage::Image { image }) => Source::Image {
                 image: image.clone(),
-                layout: layer_in(&template_payload, part)?.ok_or_else(|| {
-                    invalid(format!(
-                        "The base emblem has no {} for a picture to take the place of. Take it from another emblem.",
-                        part.label().to_lowercase()
-                    ))
-                })?,
+                layout: picture_layout()?,
             },
+            Some(NameplateImage::Artwork {
+                artwork,
+                source_emblem,
+            }) => {
+                let source = source_emblem
+                    .as_ref()
+                    .map(|hash| {
+                        container_of(
+                            hash.parse_u32()
+                                .map_err(|error| invalid(error.to_string()))?,
+                        )
+                    })
+                    .transpose()?;
+                if part == NameplatePart::Banner {
+                    colors = source;
+                }
+                let layout = match layer_in(&template_payload, part)? {
+                    Some(layer) => layer,
+                    None => {
+                        let payload = source
+                            .map(|container| {
+                                crate::icon_edit::read_icon_container(manager, container)
+                            })
+                            .transpose()?;
+                        payload
+                            .as_deref()
+                            .map(|payload| layer_in(payload, part))
+                            .transpose()?
+                            .flatten()
+                            .ok_or_else(|| {
+                                invalid(format!(
+                                    "No native {} layout is available for the artwork.",
+                                    part.label().to_lowercase()
+                                ))
+                            })?
+                    }
+                };
+                Source::Artwork {
+                    artwork: artwork.clone(),
+                    layout,
+                }
+            }
         };
         sources.push((part, source));
     }
@@ -124,14 +175,27 @@ pub(crate) fn author(
         let layer = match source {
             Source::Base => continue,
             Source::Layer(layer) => *layer,
-            Source::Image { image, layout } => {
+            Source::Image { layout, .. } | Source::Artwork { layout, .. } => {
                 let plan = crate::icon_edit::build_layer_repaint_plan(
                     manager,
                     package,
                     0,
                     nodes.len(),
                     (*layout, nameplate.template),
-                    &|pixels, width, height| paint(image, pixels, width, height),
+                    &|pixels, width, height| {
+                        let (Ok(width), Ok(height)) = (u32::try_from(width), u32::try_from(height))
+                        else {
+                            return Err(invalid("Nameplate texture size does not fit 32 bits"));
+                        };
+                        let image = match source {
+                            Source::Image { image, .. } => {
+                                crate::image_import::cover(image.pixels(), width, height)
+                            }
+                            Source::Artwork { artwork, .. } => artwork.render(width, height),
+                            _ => unreachable!(),
+                        };
+                        paint(&image, pixels)
+                    },
                 )?;
                 // The painted pixels, so a change in how a picture is sized refreshes the icon.
                 revision.extend(
@@ -225,22 +289,13 @@ pub(crate) fn layer_pixels(
     crate::icon_edit::decode_texture(manager, header).map_err(invalid)
 }
 
-/// Paints `image` into one texture's RGBA8 pixels, scaled to cover the texture.
-fn paint(
-    image: &EmbeddedImage,
-    pixels: &mut [u8],
-    width: usize,
-    height: usize,
-) -> AuthoringResult<()> {
-    let (Ok(width), Ok(height)) = (u32::try_from(width), u32::try_from(height)) else {
-        return Err(invalid("Nameplate texture size does not fit 32 bits"));
-    };
-    let covered = crate::image_import::cover(image.pixels(), width, height);
-    if covered.as_raw().len() != pixels.len() {
+/// Copies rendered artwork into one texture's checked RGBA8 pixels.
+fn paint(image: &image::RgbaImage, pixels: &mut [u8]) -> AuthoringResult<()> {
+    if image.as_raw().len() != pixels.len() {
         return Err(validation(
             "A nameplate picture does not match its texture's size",
         ));
     }
-    pixels.copy_from_slice(covered.as_raw());
+    pixels.copy_from_slice(image.as_raw());
     Ok(())
 }

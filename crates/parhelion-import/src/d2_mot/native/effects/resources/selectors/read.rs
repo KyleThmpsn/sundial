@@ -188,14 +188,14 @@ impl<'a> Read<'a> {
             _ => None,
         };
         if let Some((class, size)) = raw {
-            ensure!(at % 4 == 0, "selector predicate alignment differs");
+            ensure!(at.is_multiple_of(4), "selector predicate alignment differs");
             self.claim(prefix, 4 + size)?;
             return Ok(Node::Raw {
                 class,
                 data: self.p.0[at..at + size].to_vec(),
             });
         }
-        ensure!(at % 8 == 0, "selector predicate alignment differs");
+        ensure!(at.is_multiple_of(8), "selector predicate alignment differs");
         if class == 0x808091B0 {
             self.claim(prefix, 28)?;
             let resolver = self

@@ -134,7 +134,7 @@ pub(super) fn draw(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result
                         .response
                         .on_hover_text(hover);
                     if chose_listed {
-                        ui.memory_mut(egui::Memory::close_popup);
+                        egui::Popup::close_all(ui);
                     }
                     pickers::name_combo(ui, "behavior-script", "Game Script");
                 });

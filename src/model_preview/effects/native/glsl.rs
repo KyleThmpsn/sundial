@@ -1,5 +1,5 @@
 //! Emit the same decoded register operations used by the software evaluator.
-use super::program::{Operand, Program};
+use super::program::{Instruction, Operand, Program};
 use std::fmt::Write;
 
 fn index(value: &Operand, axis: usize) -> String {
@@ -24,6 +24,10 @@ fn bits(value: &Operand) -> String {
             index(value, 0),
             index(value, 1)
         ),
+        9 => {
+            let index = index(value, 0);
+            format!("(({index})>=0 && ({index})<icbCount ? icb[{index}] : uvec4(0u))")
+        }
         _ => "uvec4(0u)".into(),
     };
     let swizzle: String = value.lanes.iter().map(|&i| b"xyzw"[i] as char).collect();
@@ -58,12 +62,79 @@ fn write(output: &mut String, destination: &Operand, value: &str, saturated: boo
     .unwrap();
 }
 
+fn sample(instruction: &Instruction, derivatives: bool) -> String {
+    let v = &instruction.operands;
+    let f = |i: usize| format!("uintBitsToFloat({})", bits(&v[i]));
+    let implicit = instruction.code == 69 && derivatives;
+    let lod = if instruction.code == 72 {
+        format!("({}).x", f(4))
+    } else {
+        "0.0".into()
+    };
+    let swizzle: String = v[2].lanes.iter().map(|&i| b"xyzw"[i] as char).collect();
+    format!(
+        "nSample({},{},{},{},{},{},{},ivec3({},{},{})).{swizzle}",
+        index(&v[2], 0),
+        index(&v[3], 0),
+        f(1),
+        lod,
+        match instruction.code {
+            72 => 1,
+            73 => 2,
+            69 if implicit => 2,
+            _ => 0,
+        },
+        if instruction.code == 73 {
+            f(4)
+        } else if implicit {
+            format!("dFdx({})", f(1))
+        } else {
+            "vec4(0.0)".into()
+        },
+        if instruction.code == 73 {
+            f(5)
+        } else if implicit {
+            format!("-dFdy({})", f(1))
+        } else {
+            "vec4(0.0)".into()
+        },
+        instruction.offset[0],
+        instruction.offset[1],
+        instruction.offset[2]
+    )
+}
+
 impl Program {
+    fn write_immediate(&self, output: &mut String) {
+        if self.immediate.is_empty() {
+            return;
+        }
+        let count = self.immediate.len();
+        writeln!(
+            output,
+            "const int icbCount={count};const uvec4 icb[{count}]=uvec4[{count}]("
+        )
+        .unwrap();
+        for (index, row) in self.immediate.iter().enumerate() {
+            if index != 0 {
+                output.push(',');
+            }
+            write!(
+                output,
+                "uvec4({}u,{}u,{}u,{}u)",
+                row[0], row[1], row[2], row[3]
+            )
+            .unwrap();
+        }
+        output.push_str(");\n");
+    }
+
     pub(super) fn glsl(&self, name: &str) -> String {
         let mut output = format!(
             "void {name}(in vec4 v[16],out vec4 result[16]){{\nuvec4 r[32]; uvec4 o[16];\nfor(int i=0;i<32;i++)r[i]=uvec4(0u);\nfor(int i=0;i<16;i++)o[i]=uvec4(0u);\n"
         );
-        for instruction in &self.instructions {
+        self.write_immediate(&mut output);
+        for (at, instruction) in self.instructions.iter().enumerate() {
             let v = &instruction.operands;
             let b = |i| bits(&v[i]);
             let f = |i| format!("uintBitsToFloat({})", b(i));
@@ -166,32 +237,14 @@ impl Program {
                     f(1)
                 )),
                 60 => format!("({} | {})", b(1), b(2)),
-                69 | 72 | 73 => {
-                    let lod = if instruction.code == 72 {
-                        format!("({}).x", f(4))
-                    } else {
-                        "0.0".into()
-                    };
-                    let swizzle: String = v[2].lanes.iter().map(|&i| b"xyzw"[i] as char).collect();
-                    format!(
-                        "nSample({},{},{},{},{},ivec3({},{},{})).{swizzle}",
-                        index(&v[2], 0),
-                        index(&v[3], 0),
-                        f(1),
-                        lod,
-                        if instruction.code == 72 {
-                            "true"
-                        } else {
-                            "false"
-                        },
-                        instruction.offset[0],
-                        instruction.offset[1],
-                        instruction.offset[2]
-                    )
-                }
+                69 | 72 | 73 => sample(instruction, self.derivatives[at].is_some()),
                 61 => {
                     let swizzle: String = v[2].lanes.iter().map(|&i| b"xyzw"[i] as char).collect();
-                    format!("nSize({}).{swizzle}", index(&v[2], 0))
+                    format!(
+                        "nSize({},int(({}).x)).{swizzle}",
+                        index(&v[2], 0),
+                        bits(&v[1])
+                    )
                 }
                 75 => wrap(format!("sqrt({})", f(1))),
                 77 => {
@@ -251,7 +304,7 @@ impl Program {
     }
 }
 
-pub(super) const HELPERS: &str = r#"
+pub(in crate::model_preview) const HELPERS: &str = r#"
 vec4 nSaturate(vec4 v){
     for(int i=0;i<4;i++)v[i]=isnan(v[i])?0.0:clamp(v[i],0.0,1.0);
     return v;

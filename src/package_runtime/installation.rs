@@ -3,6 +3,7 @@ mod backup;
 mod defaults;
 mod movement;
 mod restore;
+pub(crate) mod runtime_state;
 mod workspace;
 pub(crate) use backup::archive_other_runtime;
 pub(crate) use defaults::SettingsResetPlan;
@@ -189,7 +190,7 @@ fn settings_document(bytes: &[u8]) -> Option<Value> {
 }
 
 fn hash(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn modified(path: &Path) -> String {

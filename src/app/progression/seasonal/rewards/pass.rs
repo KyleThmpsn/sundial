@@ -249,8 +249,7 @@ fn draw_job(
                                         egui::Label::new(crate::app::ui::destiny_text(ui, name))
                                             .truncate(),
                                     );
-                                    ui.add(egui::Label::new(reason).truncate())
-                                        .on_hover_text(reason);
+                                    ui.add(egui::Label::new(reason).truncate());
                                 }
                             });
                     });
@@ -295,7 +294,7 @@ fn draw_progress(ui: &mut egui::Ui, experience: Option<Experience>, claimed: usi
             || "Season Pass".into(), |experience| format!("Rank {}", experience.rank),
         )).size(22.0).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            crate::ui_help::info(ui, "Checkmarks show claimed rewards. Highlighted rewards have reached their rank. Claims go to the Reward Queue.");
+            crate::ui::help::info(ui, "Checkmarks show claimed rewards. Highlighted rewards have reached their rank. Claims go to the Reward Queue.");
             ui.weak(format!("{claimed} / {total} Claimed"));
         });
     });

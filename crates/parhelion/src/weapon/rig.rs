@@ -193,6 +193,8 @@ pub(crate) fn marker_set_appends(
         bytes,
         slots: Vec::new(),
         arrays: vec![(relative, 0, count as u64)],
+        pointers: Vec::new(),
+        references: Vec::new(),
     }])
 }
 

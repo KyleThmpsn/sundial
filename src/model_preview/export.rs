@@ -13,7 +13,7 @@ use super::{Model, shader};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, io::Write};
 
-mod bake;
+pub(in crate::model_preview) mod bake;
 mod charts;
 
 const SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
@@ -95,6 +95,14 @@ const TRIANGLES: u32 = 4;
 
 /// Encodes the model as a self-contained binary glTF (.glb).
 pub(crate) fn glb(model: &Model, seconds: f32) -> Result<Vec<u8>, String> {
+    glb_using(model, seconds, None)
+}
+
+pub(crate) fn glb_using(
+    model: &Model,
+    seconds: f32,
+    mut backend: Option<&mut dyn bake::Baker>,
+) -> Result<Vec<u8>, String> {
     if model.triangles.is_empty() || model.vertices.is_empty() {
         return Err("This model has no geometry to export".into());
     }
@@ -162,6 +170,7 @@ pub(crate) fn glb(model: &Model, seconds: f32) -> Result<Vec<u8>, String> {
             *plate,
             triangles,
             &mut remaining_charts,
+            &mut backend,
         )?);
     }
     let encoded = encode_layers(&layers)?;
@@ -461,7 +470,7 @@ impl Buffer {
     /// Every view starts on a four-byte boundary, which satisfies glTF's alignment rule for
     /// any component type without tracking each accessor's own stride.
     fn view(&mut self, bytes: &[u8], target: Option<u32>) -> usize {
-        while self.bin.len() % 4 != 0 {
+        while !self.bin.len().is_multiple_of(4) {
             self.bin.push(0);
         }
         let mut view = json!({
@@ -882,7 +891,7 @@ mod tests {
     }
 
     fn retain_glb(name: &str, bytes: &[u8]) {
-        if let Some(directory) = std::env::var_os("PARHELION_TEST_ARTIFACTS") {
+        if let Some(directory) = std::env::var_os("SUNDIAL_TEST_ARTIFACTS") {
             let directory = std::path::PathBuf::from(directory);
             std::fs::create_dir_all(&directory).unwrap();
             std::fs::write(directory.join(name), bytes).unwrap();
@@ -1108,13 +1117,13 @@ mod tests {
     /// reader can see the dyes arrive in the file. Age-Old Bond wears two dyed finishes and
     /// Better Devils carries emissive panels.
     #[test]
-    #[ignore = "requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_PROBE_OUT"]
+    #[ignore = "requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
     fn real_weapons_export_their_dyed_materials() {
         let setting = |name: &str| {
             std::path::PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("{name}")))
         };
         let packages = setting("SUNDIAL_PREVIEW_PACKAGES");
-        let out = setting("SUNDIAL_PROBE_OUT");
+        let out = setting("SUNDIAL_TEST_ARTIFACTS");
         std::fs::create_dir_all(&out).expect("output folder");
         let catalog = crate::test_support::catalog(packages.parent().expect("install folder"))
             .expect("catalog");

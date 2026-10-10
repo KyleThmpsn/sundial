@@ -2,10 +2,14 @@
 //! Failure model and native survey procedure are recorded before decoder changes.
 use super::*;
 use serde_json::json;
+mod cloth;
+pub(in crate::model_preview) use cloth::gpu_case as cloth_gpu_case;
 pub(crate) mod decals;
+pub(crate) mod deferred;
 pub(crate) mod effects;
 pub(crate) mod fidelity;
 mod fixtures;
+mod imported_cloth;
 pub(crate) mod legacy_color;
 pub(crate) mod legacy_normal;
 pub(crate) mod native_detail;
@@ -86,7 +90,8 @@ fn declared_meshes_and_terrain_load_and_render_from_packages() {
     let fixture = fixtures::build();
     let manager = fixture.manager();
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_COMPATIBILITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("compatibility").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_ref()
         .map(Path::new)
@@ -166,7 +171,8 @@ fn regular_and_cloth_components_render_together() {
     assert!(model.vertices.contains(&[10.0, 16.0, 30.0]));
     assert!(model.vertices.contains(&[10.0, 20.0, 30.0]));
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_COMPATIBILITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("compatibility").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_deref()
         .map(Path::new)
@@ -201,7 +207,8 @@ fn collapsed_marker_parts_do_not_draw_or_change_framing() {
     validate(&model);
     assert_eq!(model.triangles.len(), 1);
     assert!(model.vertices.iter().all(|v| v[1] >= 20.0));
-    let configured = std::env::var_os("SUNDIAL_COMPATIBILITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("compatibility").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_deref()
         .map(Path::new)
@@ -218,11 +225,13 @@ fn collapsed_marker_parts_do_not_draw_or_change_framing() {
 /// The supplied case list records the full census population and deterministic selection.
 /// Every failure is retained in the receipt before any required witness fails the test.
 #[test]
-#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES, SUNDIAL_COMPATIBILITY_CASES and SUNDIAL_COMPATIBILITY_OUTPUT"]
+#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES, SUNDIAL_COMPATIBILITY_CASES and SUNDIAL_TEST_ARTIFACTS"]
 fn native_model_compatibility_survey() {
-    let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
+    let packages = crate::test_support::preview_packages();
     let input = std::env::var_os("SUNDIAL_COMPATIBILITY_CASES").expect("case list");
-    let output = std::env::var_os("SUNDIAL_COMPATIBILITY_OUTPUT").expect("artifact directory");
+    let output = crate::test_support::artifacts("compatibility")
+        .map(std::path::PathBuf::into_os_string)
+        .expect("artifact directory");
     let output = Path::new(&output);
     std::fs::create_dir_all(output).unwrap();
     let manager = crate::investment::discovery::open_packages(Path::new(&packages)).unwrap();
@@ -237,13 +246,54 @@ fn native_model_compatibility_survey() {
         let result = match load_with_manager(&manager, tag, &Load::default(), None) {
             Ok(model) if !model.triangles.is_empty() => {
                 validate(&model);
-                let visible = artifact(&model, output, &name);
+                let surface = case["minimum_surface_fraction"].as_f64();
+                let visible = if surface.is_some() {
+                    deferred::artifact(&model, output, &name)
+                } else {
+                    artifact(&model, output, &name)
+                };
+                let opaque = model.triangles.len();
+                let decoded = model
+                    .triangle_effects
+                    .iter()
+                    .flatten()
+                    .filter(|&&e| model.effects[e].native.as_ref().is_some_and(|n| n.deferred))
+                    .count();
+                let decals = model
+                    .triangle_effects
+                    .iter()
+                    .flatten()
+                    .filter(|&&e| model.effects[e].decal())
+                    .count();
+                if case["require_complete_textures"] == true
+                    && model.notices.iter().any(|n| n.contains("texture budget"))
+                {
+                    failures.push(format!("{name}: incomplete texture set"));
+                }
+                if let Some(minimum) = case["minimum_decal_triangles"].as_u64()
+                    && decals < minimum as usize
+                {
+                    failures.push(format!("{name}: only {decals} decoded decal triangles"));
+                }
+                if let Some(minimum) = case["minimum_visible_pixels"].as_u64()
+                    && visible < minimum as usize
+                {
+                    failures.push(format!("{name}: only {visible} visible pixels"));
+                }
+                if let Some(minimum) = surface
+                    && (opaque == 0 || decoded as f64 / (opaque as f64) < minimum)
+                {
+                    failures.push(format!(
+                        "{name}: {decoded} of {opaque} triangles have decoded native surfaces"
+                    ));
+                }
                 if visible < 10 && case["required"] == true {
                     failures.push(format!("{name}: only {visible} pixels"));
                 }
                 json!({"case":case,"loaded":true,"vertices":model.vertices.len(),
                     "triangles":model.triangles.len(),"visible_pixels":visible,
-                    "textures":model.textures.len(),"notices":model.notices})
+                    "textures":model.textures.len(),"notices":model.notices,
+                    "surface_triangles":opaque,"native_surface_triangles":decoded,"decal_triangles":decals})
             }
             result => {
                 let error = result.err().unwrap_or_else(|| "No surface geometry".into());

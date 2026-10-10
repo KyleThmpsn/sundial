@@ -18,7 +18,7 @@ fn shader_selection_and_reimport_keep_authored_library_edits() {
         // The footer is laid out before the list handles its keyboard input.
         vec![],
     ] {
-        output = ctx.run(
+        output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -27,8 +27,8 @@ fn shader_selection_and_reimport_keep_authored_library_edits() {
                 events,
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| app.draw_importer_contents(ui));
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| app.draw_importer_contents(ui));
             },
         );
     }
@@ -229,7 +229,7 @@ fn filter_frame(
     width: f32,
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
-    let output = ctx.run(
+    let output = ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -238,8 +238,8 @@ fn filter_frame(
             events,
             ..Default::default()
         },
-        |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.draw_importer_contents(ui));
+        |ui| {
+            egui::CentralPanel::default().show(ui, |ui| app.draw_importer_contents(ui));
         },
     );
     capture::record(&output);
@@ -315,7 +315,7 @@ fn render(app: &mut PackageAuthoringApp, name: &str) -> egui::FullOutput {
     let ctx = egui::Context::default();
     let mut output = egui::FullOutput::default();
     for _ in 0..2 {
-        output = ctx.run(
+        output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -323,8 +323,8 @@ fn render(app: &mut PackageAuthoringApp, name: &str) -> egui::FullOutput {
                 )),
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| app.draw_importer_contents(ui));
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| app.draw_importer_contents(ui));
             },
         );
     }
@@ -370,7 +370,7 @@ fn arrow_keys_move_a_cursor_and_space_toggles_it() {
     let mut app = app_with_catalog();
     let ctx = egui::Context::default();
     let run = |app: &mut PackageAuthoringApp, events: Vec<egui::Event>| {
-        let _ = ctx.run(
+        let _ = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -379,8 +379,8 @@ fn arrow_keys_move_a_cursor_and_space_toggles_it() {
                 events,
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| app.draw_importer_contents(ui));
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| app.draw_importer_contents(ui));
             },
         );
     };

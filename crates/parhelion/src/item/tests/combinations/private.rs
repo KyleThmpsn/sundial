@@ -154,10 +154,10 @@ pub(super) fn verify_private(
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES and PARHELION_COMBINATION_ROOT"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
 fn native_bundled_variants_keep_private_identities_separate() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-    let output = PathBuf::from(std::env::var_os("PARHELION_COMBINATION_ROOT").unwrap());
+    let packages = crate::test_support::stock_packages();
+    let output = crate::test_support::artifact_dir("combinations");
     fs::create_dir_all(&output).unwrap();
     let catalog = InvestmentCatalog::load_with_cache_path(
         packages.parent().unwrap(),

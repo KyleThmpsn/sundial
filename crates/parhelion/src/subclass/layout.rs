@@ -4,6 +4,10 @@
 pub const ENTRY_COUNT: usize = 24;
 /// The base melee target that each attunement's melee links to. It differs by class.
 pub const CLASS_BASE: u8 = 0;
+/// The always-selected movement foundation and translated stat contributions.
+pub const BASE_MOVEMENT: u8 = 1;
+pub const STAT_PASSIVES: u8 = 19;
+pub const FOUNDATIONS: [u8; 2] = [BASE_MOVEMENT, STAT_PASSIVES];
 pub const CLASS_ABILITIES: [u8; 2] = [2, 3];
 pub const MOVEMENT: [u8; 3] = [4, 5, 6];
 pub const GRENADES: [u8; 3] = [7, 8, 9];

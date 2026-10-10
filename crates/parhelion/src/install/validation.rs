@@ -210,7 +210,7 @@ pub(super) fn validate_manifest_and_staged_files(
         })?;
     manifest.validate().map_err(InstallError::validation)?;
     validate_manifest_source(&manifest, target_packages_directory)?;
-    validate_staged_recipe_snapshots(staged_run_directory, &manifest)?;
+    let plug_variants = validate_staged_recipe_snapshots(staged_run_directory, &manifest)?;
     let authored_unlocks = validate_manifest_unlocks(&manifest.project)?;
     let authored_grants = manifest_grants(&manifest.project);
     let source_artifacts = validate_source_artifact_records(manifest.source_artifacts)?;
@@ -225,6 +225,7 @@ pub(super) fn validate_manifest_and_staged_files(
         selected_recipe_files,
         authored_unlocks,
         authored_grants,
+        plug_variants,
     })
 }
 
@@ -316,11 +317,14 @@ pub(super) fn validate_manifest_source(
     Ok(())
 }
 
+/// Checks each staged recipe against the manifest and returns the private copies of stock plugs
+/// the recipes put in their items' sockets.
 pub(super) fn validate_staged_recipe_snapshots(
     staged_run_directory: &Path,
     manifest: &ManifestDocument,
-) -> Result<(), InstallError> {
+) -> Result<Vec<replacement::StockPlugVariant>, InstallError> {
     let mut recipes = Vec::with_capacity(manifest.selected_recipe_files.len());
+    let mut variants = Vec::new();
     for (index, relative_path) in manifest.selected_recipe_files.iter().enumerate() {
         let path = staged_run_directory.join(relative_path);
         reject_symlink(&path, "staged recipe")?;
@@ -353,7 +357,7 @@ pub(super) fn validate_staged_recipe_snapshots(
         let matches_manifest = weapon.namespace == recipe.namespace
             && weapon.name == recipe.name
             && weapon.item.hash.get() == identity.item_hash
-            && weapon.collectible.is_none() == (spec.kind == crate::ItemKind::Subclass)
+            && weapon.collectible.is_none() == !spec.kind.has_collections()
             && weapon
                 .collectible
                 .as_ref()
@@ -370,6 +374,17 @@ pub(super) fn validate_staged_recipe_snapshots(
                 path.display()
             )));
         }
+        // A mod's perk is the mod itself, not a copy placed in one of its sockets.
+        let placed = if spec.kind == crate::ItemKind::Mod {
+            &[][..]
+        } else {
+            spec.overrides.socket_plug_variants.as_slice()
+        };
+        variants.extend(placed.iter().map(|variant| replacement::StockPlugVariant {
+            item_hash: identity.item_hash,
+            lane: usize::from(variant.socket_index),
+            source: variant.source_plug_hash,
+        }));
         recipes.push(recipe);
     }
 
@@ -383,7 +398,7 @@ pub(super) fn validate_staged_recipe_snapshots(
             "The staged recipe selection does not match the manifest fingerprint",
         ));
     }
-    Ok(())
+    Ok(variants)
 }
 
 pub(super) fn validate_artifact_records(

@@ -38,6 +38,31 @@ pub(crate) enum Grade {
     Matrix([[f32; 3]; 3]),
 }
 
+impl Grade {
+    /// The color a graded program writes for `rgb`, as the instructions `finish` writes compute it.
+    pub(crate) fn apply(self, rgb: [f32; 3]) -> [f32; 3] {
+        let max = rgb[0].max(rgb[1]).max(rgb[2]);
+        match self {
+            Self::Colorize(color) => color.map(|channel| max.max(0.0) * channel),
+            Self::Hue {
+                hue,
+                saturation,
+                brightness,
+            } => {
+                let range = (max - rgb[0].min(rgb[1]).min(rgb[2])) * saturation * brightness;
+                hue.map(|channel| (max * brightness - range * (1.0 - channel)).max(0.0))
+            }
+            Self::Matrix(rows) => rows.map(|row| {
+                row.iter()
+                    .zip(rgb)
+                    .map(|(weight, channel)| weight * channel)
+                    .sum::<f32>()
+                    .max(0.0)
+            }),
+        }
+    }
+}
+
 const ADD: u32 = 0x00;
 const DP3: u32 = 0x10;
 const MAD: u32 = 0x32;

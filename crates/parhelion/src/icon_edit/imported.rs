@@ -64,6 +64,18 @@ impl ImportedIcon {
         }
         Self::from_normalized(rgba)
     }
+
+    /// Artwork drawn at the size of the texture it fills, such as a subclass's 160-pixel generated
+    /// icon.
+    /// Only the build and the page's preview hold one. A recipe never saves it, since the images a
+    /// recipe holds are 96 pixels.
+    pub(crate) fn from_drawn_at_size(rgba: RgbaImage) -> Result<Self, String> {
+        let (width, height) = rgba.dimensions();
+        if width == 0 || height == 0 || width > 2048 || height > 2048 {
+            return Err("Drawn icons must be between 1 and 2048 pixels on a side".to_owned());
+        }
+        Self::from_normalized(rgba)
+    }
 }
 
 #[derive(Serialize, Deserialize)]

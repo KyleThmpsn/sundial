@@ -18,44 +18,36 @@ compile_error!("Sundial supports Windows and Linux");
 
 mod ability;
 pub mod account;
-mod account_contract;
 pub mod activity_log;
 mod app;
 mod backups;
 mod catalog;
-mod class_items;
-mod dummy_items;
 mod dyes;
 mod entity;
 mod expression;
-mod file_limit;
 mod game_settings;
 mod gear_markers;
 mod hash;
-mod http;
-mod icon_schema;
 pub mod image_processing;
 pub mod investment;
-mod investment_localization;
-mod investment_schema;
-mod memory;
 mod model_preview;
-mod native_weapon;
 pub mod package_authoring;
 mod package_payload;
 mod package_runtime;
-mod paths;
 mod persistence;
 mod runtime;
 mod sandbox_perk;
 pub mod storage;
 mod strict_json;
-mod subclass;
+mod system;
 #[cfg(test)]
 mod test_support;
+/// The headless capture helpers the dependent crates' tests share.
+#[cfg(all(not(test), feature = "test-support"))]
+pub mod test_support {
+    pub mod capture;
+}
 pub mod ui;
-mod ui_help;
-mod unnamed_plugs;
 mod updates;
 pub mod version;
 

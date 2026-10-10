@@ -368,14 +368,14 @@ pub(super) fn draw(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result
             ] {
                 if ui.button(label).clicked() {
                     change = Some(Change::Add(list, field));
-                    ui.close_menu();
+                    ui.close();
                 }
             }
             match &bonus {
                 None => {
                     if ui.button("Add Damage Bonus").clicked() {
                         change = Some(Change::AddBonus);
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
                 Some(Bonus::Literal(_)) => {}
@@ -384,7 +384,7 @@ pub(super) fn draw(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result
                 Some(Bonus::Formula(..) | Bonus::Unread) => {
                     if ui.button("Set Damage Bonus to a Number").clicked() {
                         change = Some(Change::LiteralBonus);
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
             }
@@ -401,7 +401,7 @@ pub(super) fn draw(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result
                     );
                     if ui.button(label).clicked() {
                         change = Some(Change::UseLiteral(row.list, row.number));
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
             }
@@ -411,12 +411,12 @@ pub(super) fn draw(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result
                     let label = format!("Remove {}", row_label(row.field, row.list == MULTIPLY));
                     if ui.button(label).clicked() {
                         change = Some(Change::Remove(row.list, row.number));
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
                 if bonus.is_some() && ui.button("Remove Damage Bonus").clicked() {
                     change = Some(Change::RemoveBonus);
-                    ui.close_menu();
+                    ui.close();
                 }
             }
         });

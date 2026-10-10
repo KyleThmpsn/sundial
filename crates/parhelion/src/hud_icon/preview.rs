@@ -18,6 +18,30 @@ pub(super) fn load(
         .transpose()
 }
 
+/// The silhouette the default block of `entity`'s weapon content names, as an armed vehicle's
+/// does. `None` for an entity without weapon content or with no key in that block.
+pub(crate) fn silhouette(
+    manager: &PackageManager,
+    entity: &[u8],
+) -> Result<Option<egui::ColorImage>, String> {
+    let bindings = sundial::package_authoring::entity::weapon_component_bindings(
+        entity,
+        super::runtime::BINDING,
+    )?;
+    if bindings.is_empty() {
+        return Ok(None);
+    }
+    let keys =
+        super::runtime::field_values(manager, entity, 0xE0).map_err(|error| error.to_string())?;
+    let Some(&key) = keys.first() else {
+        return Ok(None);
+    };
+    super::runtime::icon_layer(manager, key)
+        .map_err(|error| error.to_string())?
+        .map(|layer| load_layer(manager, layer))
+        .transpose()
+}
+
 fn load_layer(
     manager: &PackageManager,
     tag: tiger_pkg::TagHash,
@@ -55,10 +79,9 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires PARHELION_HUD_TEST_PACKAGES pointing to Shadowkeep packages"]
+    #[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
     fn native_preview_selects_the_appearance_variant_and_preserves_alpha() {
-        let packages =
-            std::path::PathBuf::from(std::env::var_os("PARHELION_HUD_TEST_PACKAGES").unwrap());
+        let packages = crate::test_support::stock_packages();
         let manager =
             sundial::package_authoring::open_shadowkeep_package_manager(&packages).unwrap();
         let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();

@@ -1,9 +1,14 @@
+mod standalone;
+pub(crate) use standalone::build_standalone_package_with_chains;
+#[cfg(test)]
+pub(crate) use standalone::build_standalone_package_with_references;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io::{Cursor, Read, Seek, SeekFrom, Write},
     mem::size_of,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use sha1::{Digest, Sha1};
@@ -90,6 +95,8 @@ pub struct AppendedTag {
 
 #[derive(Clone, Debug)]
 pub struct ExtendedOverlayPlan {
+    /// The source chain the overlay extends. The staged build tests read it back.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub chain: PatchChain,
     pub output_file_name: String,
     /// Entry count in the latest source generation copied by the overlay.
@@ -105,13 +112,24 @@ pub struct ExtendedOverlayPlan {
 #[derive(Clone, Debug)]
 pub struct ExtendedOverlayArtifact {
     pub plan: ExtendedOverlayPlan,
-    bytes: Vec<u8>,
+    bytes: Bytes,
+}
+
+/// Finalized bytes shared with the independent package reader. Each reader gets
+/// its own cursor without duplicating the complete encoded package.
+#[derive(Clone, Debug)]
+struct Bytes(Arc<Vec<u8>>);
+
+impl AsRef<[u8]> for Bytes {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_slice()
+    }
 }
 
 impl ExtendedOverlayArtifact {
     #[cfg(test)]
     pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+        self.bytes.as_ref()
     }
 
     pub fn write_new(&self, directory: &Path) -> AuthoringResult<PathBuf> {
@@ -123,7 +141,7 @@ impl ExtendedOverlayArtifact {
             .create_new(true)
             .open(&path)
             .map_err(|error| AuthoringError::io("create extended overlay", &path, error))?;
-        file.write_all(&self.bytes)
+        file.write_all(self.bytes.as_ref())
             .map_err(|error| AuthoringError::io("write extended overlay", &path, error))?;
         file.sync_all()
             .map_err(|error| AuthoringError::io("flush extended overlay", &path, error))?;
@@ -196,346 +214,6 @@ pub(crate) fn extended_overlay_append_start(
     package_id: u16,
 ) -> AuthoringResult<usize> {
     Ok(discover_patch_chain(package_directory, package_id)?.historical_entry_count_high_water())
-}
-
-/// Builds a newly registered patch-zero package containing only authored tags.
-///
-/// Unlike an overlay, this package owns its complete directory and every physical payload block.
-/// It is intended for resource graphs whose runtime handles must be allocated from a fresh package
-/// datum table rather than appended to a stock patch chain.
-#[cfg(test)]
-pub(crate) fn build_standalone_package_with_references(
-    package_directory: &Path,
-    package_id: u16,
-    output_file_name: &str,
-    new_tags: &[NewTagSpec],
-    reference_overrides: &[NewTagReferenceOverride],
-) -> AuthoringResult<ExtendedOverlayArtifact> {
-    build_standalone_package_with_progress(
-        package_directory,
-        package_id,
-        output_file_name,
-        new_tags,
-        reference_overrides,
-        &mut |_| {},
-    )
-}
-
-#[cfg(test)]
-pub(crate) fn build_standalone_package_with_progress(
-    package_directory: &Path,
-    package_id: u16,
-    output_file_name: &str,
-    new_tags: &[NewTagSpec],
-    reference_overrides: &[NewTagReferenceOverride],
-    progress: &mut dyn FnMut(&str),
-) -> AuthoringResult<ExtendedOverlayArtifact> {
-    build_standalone_package_from(
-        package_directory,
-        None,
-        package_id,
-        output_file_name,
-        new_tags,
-        reference_overrides,
-        progress,
-    )
-}
-
-/// The same standalone package, with the package directory already scanned.
-pub(crate) fn build_standalone_package_with_chains(
-    chains: &PatchChains,
-    package_id: u16,
-    output_file_name: &str,
-    new_tags: &[NewTagSpec],
-    reference_overrides: &[NewTagReferenceOverride],
-    progress: &mut dyn FnMut(&str),
-) -> AuthoringResult<ExtendedOverlayArtifact> {
-    build_standalone_package_from(
-        chains.directory(),
-        Some(chains),
-        package_id,
-        output_file_name,
-        new_tags,
-        reference_overrides,
-        progress,
-    )
-}
-
-fn build_standalone_package_from(
-    package_directory: &Path,
-    chains: Option<&PatchChains>,
-    package_id: u16,
-    output_file_name: &str,
-    new_tags: &[NewTagSpec],
-    reference_overrides: &[NewTagReferenceOverride],
-    progress: &mut dyn FnMut(&str),
-) -> AuthoringResult<ExtendedOverlayArtifact> {
-    progress("Checking Package Identity");
-    if new_tags.is_empty() {
-        return Err(AuthoringError::InvalidInput(
-            "A standalone package needs at least one authored tag".into(),
-        ));
-    }
-    validate_payloads(&[], new_tags)?;
-    if !is_authored_standalone_package_id(package_id) {
-        return Err(AuthoringError::InvalidInput(format!(
-            "Standalone authored package id {package_id:04X} is outside the untracked \
-             {MIN_AUTHORED_STANDALONE_PACKAGE_ID:03X}..={MAX_AUTHORED_STANDALONE_PACKAGE_ID:03X} window"
-        )));
-    }
-    ensure_package_id_unused(package_directory, package_id)?;
-    let output_stem = output_file_name
-        .strip_suffix("_0.pkg")
-        .ok_or_else(|| {
-            AuthoringError::InvalidInput(format!(
-                "Standalone package filename {output_file_name:?} must end in _0.pkg"
-            ))
-        })?
-        .to_owned();
-    if !output_stem.starts_with("w64_")
-        || !output_stem.ends_with(&format!("_{package_id:04x}"))
-        || output_stem
-            .bytes()
-            .any(|byte| !(byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'))
-    {
-        return Err(AuthoringError::InvalidInput(format!(
-            "Standalone package filename {output_file_name:?} does not match package {package_id:04X}"
-        )));
-    }
-    if new_tags.len() > MAX_PACKAGE_ENTRY_COUNT {
-        return Err(AuthoringError::InvalidInput(format!(
-            "Standalone package {package_id:04X} would exceed its {MAX_PACKAGE_ENTRY_COUNT}-entry limit"
-        )));
-    }
-
-    let reference_modes = resolve_reference_modes(new_tags.len(), reference_overrides)?;
-    progress("Preparing Entries");
-    let metadata = resolve_appended_metadata(
-        package_directory,
-        chains,
-        package_id,
-        0,
-        new_tags,
-        &reference_modes,
-    )?;
-    let shared_tag_enrollments =
-        resolve_shared_tag_enrollments(package_id, 0, new_tags, &metadata)?;
-    let packing = packed::plan(
-        new_tags
-            .iter()
-            .zip(&metadata)
-            .map(|(tag, entry)| (tag.payload.len(), entry.alignment())),
-    )?;
-    let block_count = packing.block_count;
-    if block_count == 0 || block_count > MAX_BLOCK_COUNT {
-        return Err(AuthoringError::InvalidInput(format!(
-            "Standalone package {package_id:04X} needs {block_count} blocks; the supported range is 1..={MAX_BLOCK_COUNT}"
-        )));
-    }
-    // Wwise bypasses package decompression. Every block touched by a medium,
-    // including blocks shared with other resources, must remain raw. Full raw
-    // blocks are written consecutively, so a spanning medium is contiguous.
-    let mut streamed_blocks = vec![false; block_count];
-    for ((tag, entry), location) in new_tags.iter().zip(&metadata).zip(&packing.locations) {
-        if entry.is_streamed_media() {
-            let span = location
-                .offset
-                .checked_add(tag.payload.len())
-                .ok_or_else(|| invalid("Streamed payload span overflow"))?;
-            let end = location
-                .block
-                .checked_add(span.div_ceil(BLOCK_SIZE))
-                .ok_or_else(|| invalid("Streamed block range overflow"))?;
-            streamed_blocks
-                .get_mut(location.block..end)
-                .ok_or_else(|| invalid("Streamed payload exceeds its block plan"))?
-                .fill(true);
-        }
-    }
-    let prefixes = metadata
-        .iter()
-        .map(|entry| entry.prefix)
-        .collect::<Vec<_>>();
-    let mut artifact = build_standalone_package_skeleton(
-        package_id,
-        &prefixes,
-        block_count,
-        &shared_tag_enrollments,
-    )?;
-    let layout = PackageLayout::parse(&artifact)?;
-    let opaque_trailer = layout.opaque_trailer(&artifact)?.to_vec();
-    artifact.truncate(layout.opaque_trailer_offset);
-
-    let block_encoder = PackageBlockEncoder::open_for_packages(package_directory)?;
-    let tag_allocator = AppendedTagAllocator::new(package_id, 0);
-    progress("Encoding Blocks");
-    let written_blocks = packed::visit_blocks(
-        new_tags
-            .iter()
-            .zip(&metadata)
-            .map(|(tag, entry)| (tag.payload.as_slice(), entry.alignment())),
-        |index, chunk| {
-            let encoded = if streamed_blocks[index] {
-                EncodedPackageBlock::raw(chunk)?
-            } else {
-                block_encoder.encode(package_id, chunk)?
-            };
-            let payload_offset = append_aligned(&mut artifact, &encoded.stored);
-            let block_row = layout.block_table_offset + index * BLOCK_HEADER_SIZE;
-            write_block_header(&mut artifact, block_row, payload_offset, &encoded, 0)
-        },
-    )?;
-    if written_blocks != block_count {
-        return Err(validation(
-            "Standalone package block allocation did not converge",
-        ));
-    }
-    let mut appended_tags = Vec::with_capacity(new_tags.len());
-    for (index, (spec, location)) in new_tags.iter().zip(&packing.locations).enumerate() {
-        write_entry_location(
-            &mut artifact,
-            layout.entry_table_offset + index * ENTRY_HEADER_SIZE,
-            location.block,
-            location.offset,
-            spec.payload.len(),
-        )?;
-        appended_tags.push(AppendedTag {
-            tag: tag_allocator.assigned_tag(
-                index,
-                "Standalone package entry",
-                "standalone appended tag",
-            )?,
-            template_tag: spec.template_tag,
-            file_size: spec.payload.len(),
-        });
-    }
-    progress("Finalizing Package Tables");
-    layout.update_package_tables_hash(&mut artifact)?;
-    append_opaque_trailer(&mut artifact, &opaque_trailer)?;
-    layout.set_file_size(&mut artifact)?;
-    let candidate_layout = PackageLayout::parse(&artifact).map_err(|error| {
-        validation(format!(
-            "The standalone package metadata could not be reopened: {error}"
-        ))
-    })?;
-    if candidate_layout.package_id != package_id
-        || candidate_layout.patch_id != 0
-        || candidate_layout.entry_count != new_tags.len()
-        || candidate_layout.block_count != block_count
-        || candidate_layout.shared_tag_enrollment_count() != shared_tag_enrollments.len()
-    {
-        return Err(validation(
-            "Standalone package identity, counts, or shared-tag enrollment changed",
-        ));
-    }
-
-    progress("Validating Payloads");
-    let virtual_path = package_directory.join(output_file_name);
-    let virtual_path_text = virtual_path.to_str().ok_or_else(|| {
-        AuthoringError::InvalidInput("The standalone package path is not valid Unicode".into())
-    })?;
-    let candidate = PackageD2PreBL::from_reader(virtual_path_text, Cursor::new(artifact.clone()))
-        .map_err(|error| {
-        validation(format!(
-            "The standalone package could not be reopened by tiger-pkg: {error}"
-        ))
-    })?;
-    for ((spec, appended), entry_metadata) in new_tags.iter().zip(&appended_tags).zip(&metadata) {
-        let entry = candidate
-            .entries()
-            .get(appended.tag.entry_index() as usize)
-            .ok_or_else(|| validation(format!("Standalone tag {} has no entry", appended.tag)))?;
-        if entry.reference != entry_metadata.reference
-            || entry.file_type != entry_metadata.file_type
-            || entry.file_subtype != entry_metadata.file_subtype
-            || entry.file_size as usize != spec.payload.len()
-        {
-            return Err(validation(format!(
-                "Standalone tag {} has incorrect entry metadata",
-                appended.tag
-            )));
-        }
-        let payload = candidate.read_tag(appended.tag).map_err(|error| {
-            validation(format!(
-                "Could not read standalone tag {}: {error}",
-                appended.tag
-            ))
-        })?;
-        if payload != spec.payload {
-            return Err(validation(format!(
-                "Standalone tag {} did not round-trip",
-                appended.tag
-            )));
-        }
-    }
-
-    let family = output_stem
-        .strip_prefix("w64_")
-        .and_then(|value| value.strip_suffix(&format!("_{package_id:04x}")))
-        .ok_or_else(|| validation("Standalone package family could not be derived"))?;
-    let chain = PatchChain {
-        directory: package_directory.to_path_buf(),
-        identity: PackageIdentity {
-            platform: "w64".to_owned(),
-            name: family.to_owned(),
-            language: None,
-            package_id,
-            stem: output_stem,
-        },
-        files: vec![PatchFile {
-            patch: 0,
-            path: virtual_path,
-            entry_count: new_tags.len(),
-        }],
-    };
-    Ok(ExtendedOverlayArtifact {
-        plan: ExtendedOverlayPlan {
-            chain,
-            output_file_name: output_file_name.to_owned(),
-            original_entry_count: 0,
-            append_start_entry_count: 0,
-            reserved_entry_count: 0,
-            final_entry_count: new_tags.len(),
-            appended_tags,
-        },
-        bytes: artifact,
-    })
-}
-
-fn ensure_package_id_unused(package_directory: &Path, package_id: u16) -> AuthoringResult<()> {
-    for entry in fs::read_dir(package_directory)
-        .map_err(|error| AuthoringError::io("list package directory", package_directory, error))?
-    {
-        let entry = entry.map_err(|error| {
-            AuthoringError::io("read package directory entry", package_directory, error)
-        })?;
-        let path = entry.path();
-        if !entry
-            .file_type()
-            .map_err(|error| AuthoringError::io("inspect package directory entry", &path, error))?
-            .is_file()
-            || !path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("pkg"))
-        {
-            continue;
-        }
-        let mut prefix = [0u8; 6];
-        let mut file = File::open(&path)
-            .map_err(|error| AuthoringError::io("open package header", &path, error))?;
-        if let Err(error) = file.read_exact(&mut prefix) {
-            return Err(AuthoringError::io("read package header", &path, error));
-        }
-        let candidate_id = u16::from_le_bytes([prefix[4], prefix[5]]);
-        if candidate_id == package_id {
-            return Err(AuthoringError::InvalidInput(format!(
-                "Package id {package_id:04X} is already present at {}",
-                path.display()
-            )));
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -829,6 +507,7 @@ fn build_extended_overlay_from(
     let output_path_text = output_path.to_str().ok_or_else(|| {
         AuthoringError::InvalidInput("The output package path is not valid Unicode".into())
     })?;
+    let artifact = Bytes(Arc::new(artifact));
     let candidate = PackageD2PreBL::from_reader(output_path_text, Cursor::new(artifact.clone()))
         .map_err(|error| {
             AuthoringError::Validation(format!(
@@ -1365,7 +1044,7 @@ fn write_entry_location(
 ) -> AuthoringResult<()> {
     if starting_block >= MAX_BLOCK_COUNT
         || starting_offset >= BLOCK_SIZE
-        || starting_offset % 16 != 0
+        || !starting_offset.is_multiple_of(16)
     {
         return Err(invalid("Entry block location exceeds its encoded field"));
     }
@@ -1528,7 +1207,7 @@ fn validate_candidate(
         return Err(validation("Candidate changed the named-tag table"));
     }
     validate_all_unchanged_entry_payloads(
-        source.entries().len(),
+        source.entries(),
         replacement_indices,
         |index| {
             source.read_entry(index).map_err(|error| {
@@ -1545,12 +1224,20 @@ fn validate_candidate(
 }
 
 fn validate_all_unchanged_entry_payloads(
-    original_entry_count: usize,
+    original_entries: &[tiger_pkg::package::UEntryHeader],
     replacement_indices: &BTreeSet<usize>,
     mut read_source: impl FnMut(usize) -> AuthoringResult<Vec<u8>>,
     mut read_candidate: impl FnMut(usize) -> AuthoringResult<Vec<u8>>,
 ) -> AuthoringResult<()> {
-    for index in 0..original_entry_count {
+    // Patches can leave adjacent entry indices far apart in storage. Visit every
+    // original identity in block order so neighboring payloads reuse decoded
+    // blocks, while the independent source and candidate reads stay unchanged.
+    let mut order = (0..original_entries.len()).collect::<Vec<_>>();
+    order.sort_unstable_by_key(|&index| {
+        let entry = &original_entries[index];
+        (entry.starting_block, entry.starting_block_offset, index)
+    });
+    for index in order {
         if replacement_indices.contains(&index) {
             continue;
         }
@@ -1584,345 +1271,4 @@ fn write_u64(bytes: &mut [u8], offset: usize, value: u64) -> AuthoringResult<()>
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn invalid_field_offsets_leave_package_bytes_unchanged() {
-        for offset in [7, 9, usize::MAX - 1, usize::MAX] {
-            let mut bytes = [42; 8];
-            assert!(super::read_u32(&bytes, offset).is_err());
-            assert!(super::write_u16(&mut bytes, offset, 0).is_err());
-            assert!(super::write_u32(&mut bytes, offset, 0).is_err());
-            assert!(super::write_u64(&mut bytes, offset, 0).is_err());
-            assert_eq!(bytes, [42; 8]);
-        }
-    }
-
-    #[test]
-    #[ignore = "requires PARHELION_DEFAULT_WEAPONS_PACKAGES; read-only donor layout regression"]
-    fn real_spare_shared_tag_capacity_is_valid_for_read_only_templates() {
-        let packages = std::path::PathBuf::from(
-            std::env::var_os("PARHELION_DEFAULT_WEAPONS_PACKAGES").unwrap(),
-        );
-        let chain = super::discover_patch_chain(&packages, 0x01DC).unwrap();
-        let path = &chain.latest().path;
-        let native = super::PackageD2PreBL::open(path.to_str().unwrap()).unwrap();
-        let before = std::fs::metadata(path).unwrap().modified().unwrap();
-        for index in [0, native.entries().len() - 1] {
-            let prefix = super::template_entry_prefix(
-                &packages,
-                tiger_pkg::TagHash::new(0x01DC, index as u16),
-            )
-            .unwrap();
-            assert_eq!(
-                u32::from_le_bytes(prefix[..4].try_into().unwrap()),
-                native.entries()[index].reference
-            );
-        }
-        if native.entries().len() < 0x2000 {
-            assert!(
-                super::template_entry_prefix(
-                    &packages,
-                    tiger_pkg::TagHash::new(0x01DC, native.entries().len() as u16)
-                )
-                .is_err()
-            );
-        }
-        assert_eq!(std::fs::metadata(path).unwrap().modified().unwrap(), before);
-    }
-    use super::*;
-
-    #[test]
-    fn retired_entry_gap_is_emitted_as_inert_tombstones() {
-        let table_offset = 16;
-        let mut bytes = vec![0xA5; table_offset + 4 * ENTRY_HEADER_SIZE];
-
-        write_reserved_entry_rows(&mut bytes, table_offset, 1, 3)
-            .expect("the reserved rows should fit");
-
-        assert!(
-            bytes[table_offset..table_offset + ENTRY_HEADER_SIZE]
-                .iter()
-                .all(|byte| *byte == 0xA5)
-        );
-        for index in 1..3 {
-            let row = table_offset + index * ENTRY_HEADER_SIZE;
-            assert_eq!(&bytes[row..row + 4], &u32::MAX.to_le_bytes());
-            assert!(
-                bytes[row + 4..row + ENTRY_HEADER_SIZE]
-                    .iter()
-                    .all(|byte| *byte == 0)
-            );
-        }
-        assert!(
-            bytes[table_offset + 3 * ENTRY_HEADER_SIZE..]
-                .iter()
-                .all(|byte| *byte == 0xA5)
-        );
-    }
-
-    #[test]
-    fn standalone_authoring_rejects_tracked_package_ids_before_package_discovery() {
-        let directory = tempfile::tempdir().expect("temporary directory should be created");
-        let error = build_standalone_package_with_references(
-            directory.path(),
-            0x058C,
-            "w64_parhelion_assets_058c_0.pkg",
-            &[NewTagSpec {
-                template_tag: TagHash(0x8132_5796),
-                payload: vec![1],
-                storage: NewTagStorageMode::InheritTemplate,
-            }],
-            &[],
-        )
-        .expect_err("tracked package ids must not be used for standalone authored packages");
-
-        assert!(
-            error
-                .to_string()
-                .contains("outside the untracked AA0..=CFF window")
-        );
-    }
-
-    #[test]
-    fn derives_shared_tag_enrollment_from_companion_payload_identity() {
-        let package_id = 0x0914;
-        let original_entry_count = 0x055F;
-        let owner = appended_tag(package_id, original_entry_count, 0).unwrap();
-        let companion = appended_tag(package_id, original_entry_count, 2).unwrap();
-        let mut companion_payload = vec![0u8; 0x10];
-        companion_payload[0x08..0x0C].copy_from_slice(&u32::from(companion).to_le_bytes());
-        companion_payload[0x0C..0x10].copy_from_slice(&u32::from(owner).to_le_bytes());
-        let specs = [
-            NewTagSpec {
-                template_tag: TagHash(0x8132_5796),
-                payload: vec![1],
-                storage: NewTagStorageMode::InheritTemplate,
-            },
-            NewTagSpec {
-                template_tag: TagHash(0x8132_5797),
-                payload: vec![2],
-                storage: NewTagStorageMode::InheritTemplate,
-            },
-            NewTagSpec {
-                template_tag: TagHash(0x8132_5798),
-                payload: companion_payload,
-                storage: NewTagStorageMode::InheritTemplate,
-            },
-        ];
-        let metadata = [
-            AppendedEntryMetadata {
-                prefix: [0; 8],
-                reference: 0x8080_4A53,
-                file_type: SHARED_TAG_OWNER_FILE_TYPE,
-                file_subtype: SHARED_TAG_FILE_SUBTYPE,
-            },
-            AppendedEntryMetadata {
-                prefix: [0; 8],
-                reference: 0x8080_4A69,
-                file_type: 0x08,
-                file_subtype: 0,
-            },
-            AppendedEntryMetadata {
-                prefix: [0; 8],
-                reference: SHARED_TAG_COMPANION_CLASS,
-                file_type: SHARED_TAG_COMPANION_FILE_TYPE,
-                file_subtype: SHARED_TAG_FILE_SUBTYPE,
-            },
-        ];
-
-        assert_eq!(
-            resolve_shared_tag_enrollments(package_id, original_entry_count, &specs, &metadata)
-                .unwrap(),
-            vec![(u32::from(owner), u32::from(companion))]
-        );
-
-        let mut malformed = metadata;
-        malformed[2].reference = 0x8080_4A53;
-        assert!(
-            resolve_shared_tag_enrollments(package_id, original_entry_count, &specs, &malformed)
-                .expect_err("a type-16 owner without its companion must fail")
-                .to_string()
-                .contains("missing its shared-tag companion")
-        );
-        assert!(
-            resolve_shared_tag_enrollments(
-                package_id,
-                original_entry_count + 2,
-                &specs[2..],
-                &metadata[2..]
-            )
-            .expect_err("an orphan shared-tag companion must fail")
-            .to_string()
-            .contains("appended local owner")
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_and_duplicate_reference_ordinals() {
-        let invalid_target =
-            resolve_new_tag_reference(NewTagReference::Appended(2), 0, 0x058C, 100, 2)
-                .expect_err("out-of-range appended target must fail");
-        assert!(
-            invalid_target
-                .to_string()
-                .contains("outside the 2 new tags")
-        );
-
-        let invalid_override = resolve_reference_modes(
-            2,
-            &[NewTagReferenceOverride {
-                new_tag_ordinal: 2,
-                reference: NewTagReference::Template,
-            }],
-        )
-        .expect_err("out-of-range override ordinal must fail");
-        assert!(
-            invalid_override
-                .to_string()
-                .contains("outside the 2 new tags")
-        );
-
-        let duplicate = resolve_reference_modes(
-            2,
-            &[
-                NewTagReferenceOverride {
-                    new_tag_ordinal: 1,
-                    reference: NewTagReference::Appended(0),
-                },
-                NewTagReferenceOverride {
-                    new_tag_ordinal: 1,
-                    reference: NewTagReference::Template,
-                },
-            ],
-        )
-        .expect_err("duplicate override ordinal must fail");
-        assert!(duplicate.to_string().contains("specified more than once"));
-    }
-
-    #[test]
-    fn unchanged_payload_validation_checks_every_original_entry() {
-        let source = (0u8..8).map(|value| vec![value]).collect::<Vec<_>>();
-        let mut candidate = source.clone();
-        candidate[6] = vec![0xFF];
-        let error = validate_all_unchanged_entry_payloads(
-            source.len(),
-            &BTreeSet::new(),
-            |index| Ok(source[index].clone()),
-            |index| Ok(candidate[index].clone()),
-        )
-        .expect_err("a non-sampled original entry mutation must fail");
-        assert!(error.to_string().contains("payload 6"));
-
-        let replacements = BTreeSet::from([6]);
-        validate_all_unchanged_entry_payloads(
-            source.len(),
-            &replacements,
-            |index| Ok(source[index].clone()),
-            |index| Ok(candidate[index].clone()),
-        )
-        .expect("declared replacement payloads are checked separately");
-    }
-
-    #[test]
-    #[ignore = "requires SUNDIAL_TEST_PACKAGES and SUNDIAL_TEST_PACKAGE_ID"]
-    fn real_overlay_round_trips_mutual_references() {
-        let package_directory = PathBuf::from(
-            std::env::var_os("SUNDIAL_TEST_PACKAGES")
-                .expect("SUNDIAL_TEST_PACKAGES must point to Shadowkeep packages"),
-        );
-        let package_id_text = std::env::var("SUNDIAL_TEST_PACKAGE_ID")
-            .expect("SUNDIAL_TEST_PACKAGE_ID must be a hexadecimal package id");
-        let package_id = u16::from_str_radix(package_id_text.trim_start_matches("0x"), 16)
-            .expect("SUNDIAL_TEST_PACKAGE_ID should be hexadecimal");
-        let chain = discover_patch_chain(&package_directory, package_id)
-            .expect("real package chain should be discoverable");
-        let source_path = &chain.latest().path;
-        let source = PackageD2PreBL::open(
-            source_path
-                .to_str()
-                .expect("real package path should be Unicode"),
-        )
-        .expect("real source package should open");
-        let original_entry_count = source.entries().len();
-        let ordinary_templates = source
-            .entries()
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| {
-                entry.file_type != SHARED_TAG_OWNER_FILE_TYPE
-                    && !(entry.file_type == SHARED_TAG_COMPANION_FILE_TYPE
-                        && entry.file_subtype == SHARED_TAG_FILE_SUBTYPE
-                        && entry.reference == SHARED_TAG_COMPANION_CLASS)
-            })
-            .map(|(index, _)| TagHash::new(package_id, index as u16))
-            .take(2)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            ordinary_templates.len(),
-            2,
-            "test package needs two ordinary non-shared entries"
-        );
-        let template_a = ordinary_templates[0];
-        let template_b = ordinary_templates[1];
-        let new_tags = [
-            NewTagSpec {
-                template_tag: template_a,
-                payload: b"mutual-data".to_vec(),
-                storage: NewTagStorageMode::InheritTemplate,
-            },
-            NewTagSpec {
-                template_tag: template_b,
-                payload: b"mutual-header".to_vec(),
-                storage: NewTagStorageMode::InheritTemplate,
-            },
-        ];
-        let artifact = build_extended_overlay_with_references(
-            &package_directory,
-            package_id,
-            &[],
-            &new_tags,
-            &[
-                NewTagReferenceOverride {
-                    new_tag_ordinal: 0,
-                    reference: NewTagReference::Appended(1),
-                },
-                NewTagReferenceOverride {
-                    new_tag_ordinal: 1,
-                    reference: NewTagReference::Appended(0),
-                },
-            ],
-        )
-        .expect("real mutual-reference overlay should build and validate");
-        let candidate_path = package_directory.join(&artifact.plan.output_file_name);
-        let candidate = PackageD2PreBL::from_reader(
-            candidate_path
-                .to_str()
-                .expect("candidate path should be Unicode"),
-            Cursor::new(artifact.bytes().to_vec()),
-        )
-        .expect("real candidate should reopen");
-        let entries = candidate.entries();
-        assert_eq!(
-            entries[original_entry_count].reference,
-            u32::from(TagHash::new(package_id, (original_entry_count + 1) as u16))
-        );
-        assert_eq!(
-            entries[original_entry_count + 1].reference,
-            u32::from(TagHash::new(package_id, original_entry_count as u16))
-        );
-        let baseline = build_extended_overlay(&package_directory, package_id, &[], &new_tags[..1])
-            .expect("baseline template overlay should build");
-        let overridden_template = build_extended_overlay_with_references(
-            &package_directory,
-            package_id,
-            &[],
-            &new_tags[..1],
-            &[NewTagReferenceOverride {
-                new_tag_ordinal: 0,
-                reference: NewTagReference::Template,
-            }],
-        )
-        .expect("template override should build");
-        assert_eq!(baseline.bytes(), overridden_template.bytes());
-    }
-}
+mod tests;

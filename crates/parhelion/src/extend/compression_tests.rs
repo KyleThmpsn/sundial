@@ -73,12 +73,9 @@ impl NativeFixture {
 }
 
 fn configured_packages() -> PathBuf {
-    PathBuf::from(
-        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-            .expect("PARHELION_CLEAN_STOCK_PACKAGES must identify a Shadowkeep install"),
-    )
-    .canonicalize()
-    .unwrap()
+    crate::test_support::stock_packages()
+        .canonicalize()
+        .unwrap()
 }
 
 fn raw_template(payloads: &[Vec<u8>]) -> Vec<u8> {
@@ -215,7 +212,7 @@ fn assert_entry_flags(
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES and its native Oodle3 DLL, writes temporary packages only"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES and its native Oodle3 DLL, writes temporary packages only"]
 fn native_standalone_compression_round_trips_mixed_blocks_and_reduces_size() {
     let fixture = NativeFixture::new();
     let payloads = vec![
@@ -275,7 +272,7 @@ fn native_standalone_compression_round_trips_mixed_blocks_and_reduces_size() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES and its native Oodle3 DLL, writes temporary packages only"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES and its native Oodle3 DLL, writes temporary packages only"]
 fn native_overlay_compression_preserves_originals_and_round_trips_new_blocks() {
     let fixture = NativeFixture::new();
     let replacement = compressible(BLOCK_SIZE * 2 + TAIL_SIZE);
@@ -415,7 +412,7 @@ fn stored_payload_size(bytes: &[u8], layout: &PackageLayout) -> usize {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES with an installed asset package, writes a temporary copy only"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES with an installed asset package, writes a temporary copy only"]
 fn native_installed_asset_compressed_copy_round_trips_without_source_changes() {
     let fixture = NativeFixture::new();
     let packages = configured_packages();

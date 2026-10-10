@@ -111,7 +111,7 @@ fn append_parents(
             "Custom badge membership duplicates a collectible parent",
         ));
     }
-    while data.len() % 16 != 0 {
+    while !data.len().is_multiple_of(16) {
         data.push(0);
     }
     let header = data.len();
@@ -121,7 +121,7 @@ fn append_parents(
     for parent in &parents {
         data.extend_from_slice(&parent.to_le_bytes());
     }
-    while (data.len() + NESTED_ARRAY_TRAILER.len()) % 16 != 0 {
+    while !(data.len() + NESTED_ARRAY_TRAILER.len()).is_multiple_of(16) {
         data.push(0);
     }
     data.extend_from_slice(&NESTED_ARRAY_TRAILER);

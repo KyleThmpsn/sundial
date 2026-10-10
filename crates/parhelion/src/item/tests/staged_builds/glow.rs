@@ -4,10 +4,10 @@ use crate::tag_payload::{array_at, relative_target};
 use serde_json::json;
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES and PARHELION_GLOW_OUTPUT"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
 fn authored_glow_keeps_stock_materials_and_stages_private_programs() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-    let output = PathBuf::from(std::env::var_os("PARHELION_GLOW_OUTPUT").unwrap());
+    let packages = crate::test_support::stock_packages();
+    let output = crate::test_support::artifact_dir("glow");
     assert!(!output.exists(), "Choose a fresh artifact directory");
     fs::create_dir_all(&output).unwrap();
     let mut original = crate::WeaponRecipe::new_weapon_for_donor(

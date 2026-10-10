@@ -11,7 +11,7 @@ use super::{
     widgets::{CommandBatch, json_string_choice},
 };
 
-#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub(crate) enum Tab {
     Player,
     Controls,
@@ -59,7 +59,7 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
     }
     ui.horizontal(|ui| {
         ui.heading("Game Settings");
-        crate::ui_help::info(
+        crate::ui::help::info(
             ui,
             if dawn.is_some() {
                 "Edit Dawn runtime configuration and database-backed player preferences."
@@ -164,7 +164,7 @@ pub(super) fn draw_account_settings(
 pub(super) fn draw_player(ui: &mut egui::Ui, document: &mut Value) -> bool {
     ui.horizontal(|ui| {
         ui.heading("Player");
-        crate::ui_help::info(
+        crate::ui::help::info(
             ui,
             "Change the player identity and language reported to Destiny 2.",
         );
@@ -175,7 +175,7 @@ pub(super) fn draw_player(ui: &mut egui::Ui, document: &mut Value) -> bool {
         ui.set_width(ui.available_width().min(360.0));
         ui.horizontal(|ui| {
             ui.strong("Player Name");
-            crate::ui_help::info(ui, "Use 1–63 printable ASCII characters. Changes take effect after fully restarting Destiny 2.");
+            crate::ui::help::info(ui, "Use 1–63 printable ASCII characters. Changes take effect after fully restarting Destiny 2.");
             if let Some(current) = document.pointer("/steam/user/persona_name").and_then(Value::as_str) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.weak(format!("{}/63", current.len()));
@@ -216,7 +216,7 @@ pub(super) fn draw_player(ui: &mut egui::Ui, document: &mut Value) -> bool {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.strong("Game Language");
-            crate::ui_help::info(
+            crate::ui::help::info(
                 ui,
                 "Controls the language reported to Destiny 2 through Steam.",
             );

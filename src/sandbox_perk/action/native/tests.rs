@@ -170,9 +170,9 @@ fn runtime_operation_path_is_a_managed_reference_not_an_editable_number() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn bundled_templates_match_nodes_in_the_reference_installation() {
-    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").expect("reference packages");
+    let packages = crate::test_support::stock_packages();
     let manager =
         crate::package_authoring::open_shadowkeep_package_manager(std::path::Path::new(&packages))
             .unwrap();

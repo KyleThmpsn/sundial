@@ -33,13 +33,12 @@ pub(super) fn draw(
     source_matches = find_matches(text, &state.query);
     ui.add_space(4.0);
 
-    if jump_to_match {
-        if let Some(range) = state
+    if jump_to_match
+        && let Some(range) = state
             .current_match
             .and_then(|index| source_matches.get(index).copied())
-        {
-            reveal_source_range(&mut state.folded, &regions, range);
-        }
+    {
+        reveal_source_range(&mut state.folded, &regions, range);
     }
     let mut projection = FoldProjection::new(text, &regions, &state.folded);
     let (matches, current_match) =
@@ -57,7 +56,8 @@ pub(super) fn draw(
     let source_line_count = text.bytes().filter(|byte| *byte == b'\n').count() + 1;
     let visible_line_numbers = visible_line_numbers(text, &projection);
     let mut layout_cache = std::mem::take(&mut state.layout_cache);
-    let mut layouter = |ui: &egui::Ui, source: &str, _wrap_width: f32| {
+    let mut layouter = |ui: &egui::Ui, source: &dyn egui::TextBuffer, _wrap_width: f32| {
+        let source = source.as_str();
         // TextEdit may call the layouter after changing the text in this same frame.
         if source == projected_before_edit {
             layout_cache.layout(ui, source, &matches, current_match)
@@ -107,19 +107,19 @@ pub(super) fn draw(
             &regions,
             &state.folded,
             &projection,
-        ) {
-            if !state.folded.remove(&id) {
-                state.folded.insert(id);
-            }
+        ) && !state.folded.remove(&id)
+        {
+            state.folded.insert(id);
         }
         if output.response.changed() {
             apply_projection_edit(text, &projection, &projected_before_edit, state);
         }
         update_cursor_location(&output, &projection, text, state);
-        if jump_to_match && !output.response.changed() {
-            if let Some(range) = current_range {
-                select_range(ui, &mut output, &projection, range, pending_jump.is_some());
-            }
+        if jump_to_match
+            && !output.response.changed()
+            && let Some(range) = current_range
+        {
+            select_range(ui, &mut output, &projection, range, pending_jump.is_some());
         }
         // Undo stores complete source documents, never the display's fold placeholders.
         state.text_edit_id = Some(output.response.id);
@@ -179,7 +179,7 @@ fn update_cursor_location(
     state: &mut JsonEditorState,
 ) {
     if let Some(cursor_range) = output.cursor_range {
-        let character_index = cursor_range.primary.ccursor.index;
+        let character_index = cursor_range.primary.index.0;
         let source_position =
             character_to_byte(&projection.text, character_index).and_then(|display| {
                 if output.response.changed() {
@@ -219,15 +219,13 @@ fn select_range(
     if focus_editor {
         output.response.request_focus();
     }
-    let start_cursor = output.galley.from_ccursor(egui::text::CCursor::new(start));
-    let end_cursor = output.galley.from_ccursor(egui::text::CCursor::new(end));
     let start_rect = output
         .galley
-        .pos_from_cursor(&start_cursor)
+        .pos_from_cursor(egui::text::CCursor::new(start))
         .translate(output.galley_pos.to_vec2());
     let end_rect = output
         .galley
-        .pos_from_cursor(&end_cursor)
+        .pos_from_cursor(egui::text::CCursor::new(end))
         .translate(output.galley_pos.to_vec2());
     ui.scroll_to_rect(
         start_rect.union(end_rect).expand2(egui::vec2(8.0, 20.0)),

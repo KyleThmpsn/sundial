@@ -115,8 +115,18 @@ fn mapped(registers: &[Option<u8>], slot: u8) -> Result<u8> {
 // Phase 0 may run again between update and rendering. Prove that it is an
 // idempotent initialization from immutable defaults and persistent lanes.
 // Track lanes because initialization commonly writes xyz while retaining w.
-fn stable_initialization(source: &Program) -> Result<bool> {
-    let mut mutable = BTreeMap::<u8, u8>::new();
+fn routed_lanes(source: &Program) -> BTreeMap<u8, u8> {
+    let mut routed = BTreeMap::<u8, u8>::new();
+    for &[bank, scalar] in &source.routes {
+        if bank == 5 {
+            *routed.entry(scalar / 4).or_default() |= 1 << (scalar % 4);
+        }
+    }
+    routed
+}
+
+fn stable_initialization(source: &Program, routed: &BTreeMap<u8, u8>) -> Result<BTreeMap<u8, u8>> {
+    let mut mutable = routed.clone();
     for section in &source.sections[..7] {
         for i in program::parse(section)? {
             if i.op == 0x4D && i.args[0] == 5 {
@@ -124,21 +134,25 @@ fn stable_initialization(source: &Program) -> Result<bool> {
             }
         }
     }
-    let mut assigned = BTreeMap::<u8, u8>::new();
+    let mut stable = (0..64)
+        .map(|slot| (slot, 15 & !mutable.get(&slot).copied().unwrap_or(0)))
+        .collect::<BTreeMap<_, _>>();
+    let mut stack = Vec::<bool>::new();
     for i in program::parse(&source.sections[0])? {
-        match i.op {
-            0x4C if i.args[0] == 6 => {}
+        let (pop, push) = effect(i.op)?;
+        ensure!(stack.len() >= pop, "initialization stack underflow");
+        let inputs = stack.drain(stack.len() - pop..).all(|value| value);
+        let value = match i.op {
+            0x4C if i.args[0] == 6 => true,
             0x4C if i.args[0] == 5 => {
-                let changed = mutable.get(&i.args[1]).copied().unwrap_or(0);
-                let stable = assigned.get(&i.args[1]).copied().unwrap_or(0);
-                if lane_mask(i.args[2])? & changed & !stable != 0 {
-                    return Ok(false);
-                }
+                lane_mask(i.args[2])? & !stable.get(&i.args[1]).copied().unwrap_or(0) == 0
             }
             0x4D if i.args[0] == 5 => {
-                *assigned.entry(i.args[1]).or_default() |= lane_mask(i.args[2])?;
+                let mask = lane_mask(i.args[2])?;
+                let lanes = stable.entry(i.args[1]).or_default();
+                *lanes = (*lanes & !mask) | if inputs { mask } else { 0 };
+                false
             }
-            0x4D if i.args[0] == 4 => {}
             1..=4
             | 7..=15
             | 0x13..=0x16
@@ -147,11 +161,16 @@ fn stable_initialization(source: &Program) -> Result<bool> {
             | 0x2E..=0x32
             | 0x35
             | 0x42..=0x46
-            | 0x48..=0x49 => {}
-            _ => return Ok(false),
-        }
+            | 0x48..=0x49 => inputs,
+            _ => false,
+        };
+        stack.extend(std::iter::repeat_n(value, push));
     }
-    Ok(true)
+    ensure!(
+        stack.is_empty(),
+        "initialization leaves an unfinished result"
+    );
+    Ok(stable)
 }
 
 fn width(op: u8) -> usize {
@@ -362,7 +381,8 @@ pub fn compact_source(source: &Program, materials: &[Material]) -> Result<Compac
     ensure!(slots <= 64, "source workspace exceeds register operands");
     let consumed = material_consumers(materials, slots)?;
     let RegisterAccess { reads, writes } = register_access(source, slots)?;
-    let stable_initialization = stable_initialization(source)?;
+    let routed = routed_lanes(source);
+    let stable_initialization = stable_initialization(source, &routed)?;
     let expressions = candidates(&source.sections[1])?
         .into_iter()
         .filter(|e| {
@@ -372,6 +392,9 @@ pub fn compact_source(source: &Program, materials: &[Material]) -> Result<Compac
                     .get(&e.slot)
                     .is_some_and(|w| w.len() == 1 && w[0].0 == 1)
                 && e.inputs.iter().all(|(input, mask)| {
+                    if *mask & routed.get(input).copied().unwrap_or(0) != 0 {
+                        return false;
+                    }
                     writes.get(input).is_none_or(|w| {
                         (0..4).all(|lane| {
                             let bit = 1 << lane;
@@ -380,7 +403,8 @@ pub fn compact_source(source: &Program, materials: &[Material]) -> Result<Compac
                             }
                             let relevant =
                                 || w.iter().filter(|&&(_, _, written)| written & bit != 0);
-                            (stable_initialization && relevant().all(|&(phase, _, _)| phase == 0))
+                            (stable_initialization.get(input).copied().unwrap_or(0) & bit != 0
+                                && relevant().all(|&(phase, _, _)| phase == 0))
                                 || relevant().all(|&(phase, at, _)| phase == 1 && at < e.start)
                         })
                     })

@@ -72,6 +72,9 @@ pub struct PerkRecipe {
     pub icon: Option<crate::perk::Icon>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classification: Option<HexHash>,
+    /// Also offered in every stock socket that offers the plug its type comes from.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub offer_everywhere: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stats: Vec<WeaponStatOverride>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -117,6 +120,7 @@ impl PerkRecipe {
             template_plug: DEFAULT_PLUG_LAYOUT.into(),
             icon: None,
             classification: None,
+            offer_everywhere: false,
             stats: Vec::new(),
             effects: Vec::new(),
             sources: Vec::new(),
@@ -181,6 +185,7 @@ impl PerkRecipe {
             }),
             icon: self.icon.clone(),
             classification_donor_hash: self.classification.clone(),
+            offer_everywhere: self.offer_everywhere,
             // Saved recipes keep stats in index order, so an applied perk equals its saved form.
             investment_stats: {
                 let mut stats = self.stats.clone();

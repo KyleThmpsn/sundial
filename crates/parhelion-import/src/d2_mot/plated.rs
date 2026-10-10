@@ -1,6 +1,6 @@
 //! Audited Shadowkeep plated-sword conversion. Modern per-vertex dye selectors
 //! become native draw groups; packed detail-scale lookup becomes TEXCOORD2.
-use crate::d2_mot::{geometry::triangles, payload::Payload, reader::write_json};
+use crate::d2_mot::{geometry::faces, payload::Payload, reader::write_json};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs, path::Path};
@@ -10,7 +10,7 @@ fn put(b: &mut [u8], o: usize, v: &[u8]) {
 }
 fn attributes(old: &[u8], scales: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
     ensure!(
-        old.len() % 20 == 0 && scales.len() % 4 == 0,
+        old.len().is_multiple_of(20) && scales.len().is_multiple_of(4),
         "invalid plated streams"
     );
     let mut bytes = Vec::new();
@@ -62,7 +62,9 @@ pub(crate) fn convert_with_plates(
     // The mapper validates the carrier's native input layout. The fixed
     // plated material bank below supplies the resulting 8/24 vertex contract.
     let original = fs::read(out.join("attributes.bin"))?;
-    let (attrs, channels) = if has_plates {
+    let float_cloth = modern.u32(mesh)? != 0
+        && crate::d2_mot::geometry::raw(source, modern.u32(mesh)?)?.u16(4)? == 48;
+    let (attrs, channels) = if has_plates && !float_cloth {
         let provenance: Value =
             serde_json::from_slice(&fs::read(source.join("source-manifest.json"))?)?;
         let auxiliary = modern.u32(mesh + 24)?;
@@ -135,7 +137,7 @@ pub(crate) fn convert_with_plates(
                 .chunks_exact(2)
                 .map(|b| u16::from_le_bytes([b[0], b[1]]) as u32)
                 .collect::<Vec<_>>();
-            let faces = triangles(&input, channels.len(), 65535)?;
+            let faces = faces(&input, channels.len(), 65535, original.u16(at + 6)?)?;
             let mut split = BTreeMap::<u8, Vec<[u32; 3]>>::new();
             for face in faces {
                 let channel = channels[face[0] as usize];
@@ -177,6 +179,7 @@ pub(crate) fn convert_with_plates(
                     indices.extend_from_slice(&u16::MAX.to_le_bytes());
                 }
                 let mut part = original.0[at..at + 32].to_vec();
+                put(&mut part, 6, &5u16.to_le_bytes());
                 put(&mut part, 8, &(start as u32).to_le_bytes());
                 put(
                     &mut part,
@@ -303,6 +306,7 @@ mod tests {
         put(&mut model, 0xD0, &0x70i64.to_le_bytes());
         put(&mut model, 0x140, &1u64.to_le_bytes());
         put(&mut model, 0x148, &0x8080737Eu32.to_le_bytes());
+        put(&mut model, 0x156, &5u16.to_le_bytes());
         put(&mut model, 0x15C, &7u32.to_le_bytes());
         model[0x150 + 29] = 3;
         fs::write(out.join("model.unlinked.bin"), model).unwrap();

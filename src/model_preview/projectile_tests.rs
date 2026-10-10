@@ -3,11 +3,13 @@ use super::*;
 use serde_json::json;
 
 #[test]
-#[ignore = "Requires installed packages, SUNDIAL_PROJECTILE_CASES and SUNDIAL_PROJECTILE_OUTPUT"]
+#[ignore = "Requires installed packages, SUNDIAL_PROJECTILE_CASES and SUNDIAL_TEST_ARTIFACTS"]
 fn projectile_preview_from_installed_packages() {
-    let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
+    let packages = crate::test_support::preview_packages();
     let input = std::env::var_os("SUNDIAL_PROJECTILE_CASES").expect("projectile case JSON");
-    let output = std::env::var_os("SUNDIAL_PROJECTILE_OUTPUT").expect("output directory");
+    let output = crate::test_support::artifacts("projectiles")
+        .map(std::path::PathBuf::into_os_string)
+        .expect("output directory");
     let output = Path::new(&output);
     std::fs::create_dir_all(output).unwrap();
     let cases: Vec<serde_json::Value> =

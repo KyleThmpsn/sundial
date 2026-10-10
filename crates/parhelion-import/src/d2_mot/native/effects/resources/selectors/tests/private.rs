@@ -42,8 +42,8 @@ fn private_category_selector_oracle() -> Result<()> {
         );
         fs::write(output.join(format!("{tag}.bin")), &native.payload.0)?;
         rows.push(
-            json!({"source":tag,"source_sha256":format!("{:x}",Sha256::digest(&source.0)),
-            "native_sha256":format!("{:x}",Sha256::digest(&native.payload.0)),
+            json!({"source":tag,"source_sha256":hex::encode(Sha256::digest(&source.0)),
+            "native_sha256":hex::encode(Sha256::digest(&native.payload.0)),
             "dictionary_slots":native.references.len(),"missing_names":native.gates.len(),
             "group_aliases":native.group_aliases}),
         );

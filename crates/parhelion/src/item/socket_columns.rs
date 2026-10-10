@@ -403,7 +403,7 @@ pub(super) fn write_numeric_program(
         write_i64(data, descriptor + 8, 0)?;
         return Ok(());
     }
-    while data.len() % 16 != 0 {
+    while !data.len().is_multiple_of(16) {
         data.push(0);
     }
     data.extend_from_slice(&[0; 8]);
@@ -418,7 +418,7 @@ pub(super) fn write_numeric_program(
         row[4..6].copy_from_slice(&instruction.operand.to_le_bytes());
         segment.extend_from_slice(&row);
     }
-    while (segment.len() + NESTED_ARRAY_TRAILER.len()) % 16 != 0 {
+    while !(segment.len() + NESTED_ARRAY_TRAILER.len()).is_multiple_of(16) {
         segment.push(0);
     }
     segment.extend_from_slice(&NESTED_ARRAY_TRAILER);
@@ -502,7 +502,7 @@ fn grow_socket_rows(
         }
     }
 
-    while data.len() % 16 != 0 {
+    while !data.len().is_multiple_of(16) {
         data.push(0);
     }
     data.extend_from_slice(&[0; 8]);
@@ -528,7 +528,7 @@ fn grow_socket_rows(
         write_u32(&mut row, 4, u32::MAX)?;
         segment.extend_from_slice(&row);
     }
-    while (segment.len() + NESTED_ARRAY_TRAILER.len()) % 16 != 0 {
+    while !(segment.len() + NESTED_ARRAY_TRAILER.len()).is_multiple_of(16) {
         segment.push(0);
     }
     segment.extend_from_slice(&NESTED_ARRAY_TRAILER);
@@ -671,7 +671,7 @@ pub(super) fn set_weapon_socket_columns(
             column.randomized_plug_set_index.unwrap_or(u16::MAX),
         )?;
 
-        while data.len() % 16 != 0 {
+        while !data.len().is_multiple_of(16) {
             data.push(0);
         }
         // A trailer after this array does not identify its own header to the native loader.
@@ -701,7 +701,7 @@ pub(super) fn set_weapon_socket_columns(
             )?;
             member_segment.extend_from_slice(&member);
         }
-        while (member_segment.len() + NESTED_ARRAY_TRAILER.len()) % 16 != 0 {
+        while !(member_segment.len() + NESTED_ARRAY_TRAILER.len()).is_multiple_of(16) {
             member_segment.push(0);
         }
         member_segment.extend_from_slice(&NESTED_ARRAY_TRAILER);

@@ -1,4 +1,4 @@
-//! Discover installed projectiles independently of whether a perk references them.
+//! Discover native assets independently of whether a perk references them.
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::Path,
@@ -658,8 +658,8 @@ fn scan_graph(manager: &PackageManager, tag: TagHash) -> Scan {
     let Some(&object_type) = payload.get(OBJECT_TYPE_OFFSET) else {
         return Scan::Empty;
     };
-    let offered =
-        ATTACHED_OBJECT_TYPES.contains(&object_type) || matches!(object_type, 1..=8 | 11 | 18..=21);
+    let offered = ATTACHED_OBJECT_TYPES.contains(&object_type)
+        || matches!(object_type, 1..=8 | 11 | 15 | 18..=21);
     let owners = match owners(&payload) {
         Ok(owners) => owners,
         Err(error) => return Scan::Unreadable(error),
@@ -896,7 +896,7 @@ fn climb(
 static CACHE: index_cache::Cache<Catalog> = index_cache::Cache::new();
 
 /// The on-disk cache name. Bump it whenever an entry's contents change.
-const CACHE_VERSION: &str = "projectiles-v25";
+const CACHE_VERSION: &str = "projectiles-v26";
 
 /// The catalog already cached for this installation, without building one. The build uses
 /// it to refuse assets that only load with an activity.

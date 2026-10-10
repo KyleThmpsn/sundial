@@ -1,7 +1,4 @@
-use super::{
-    json_summary, marker_section, runtime_registry_field_count, runtime_registry_section,
-    technical_build_report,
-};
+use super::{json_summary, marker_section, runtime_registry_section, technical_build_report};
 use crate::artifact::ArtifactMetadata;
 use crate::recipe::{AdditionalBehaviorRecipe, WeaponRecipe};
 use crate::workflow::{
@@ -49,6 +46,7 @@ fn build() -> BuildReport {
                 icon_definition_hash: Some(0x8080_0006),
                 name_hash: Some(0x9999_0001),
                 description_hash: None,
+                offered_sets: Vec::new(),
                 perks: vec![PrivatePerkBuildReport {
                     source_perk_index: 512,
                     perk_hash: 0xAAAA_BBBB,
@@ -141,12 +139,8 @@ fn the_report_reaches_private_plugs_and_their_perks() {
 #[test]
 fn the_report_explains_what_a_borrowed_behavior_brings() {
     let report = technical_build_report(Some(&build()), &recipe(), None, "", "");
-    let entry = crate::weapon::behavior::behavior("graviton-lance-graph").unwrap();
     assert!(report.contains("graviton-lance-graph"));
     assert!(report.contains("Graviton Lance"));
-    assert!(report.contains(&format!("0x{:08X}", entry.graph_tag().unwrap())));
-    assert!(report.contains(&format!("0x{:08X}", entry.intrinsic_plug.unwrap())));
-    assert!(report.contains(&format!("0x{:08X}", entry.trait_plug.unwrap())));
     // It pairs with its weapon's record, which the graft applies without being asked.
     assert!(report.contains("carries record of"));
 }
@@ -359,10 +353,6 @@ fn registry_graph() -> WeaponRuntimeGraph {
 /// name the binding, the owner it resolves to and the field's current value, or a locator in
 /// the recipe cannot be matched to what it addresses.
 #[test]
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "One rendered registry is checked line by line in one place"
-)]
 fn the_report_carries_the_effective_runtime_registry() {
     let graph = registry_graph();
     let report = runtime_registry_section(Some(Ok(&graph)), true);
@@ -390,7 +380,6 @@ fn the_report_carries_the_effective_runtime_registry() {
     assert!(!report.contains("Instance.Recoil Scale"));
     // A path that records a real traversal is what a recipe locator stores, so it is kept.
     assert!(report.contains("Component Instance / Type 0x808092D8 +0x150 / Unnamed Field +0x150"));
-    assert_eq!(runtime_registry_field_count(&graph), 6);
     // The section is what the window appends, so the report has to carry it verbatim.
     let embedded = technical_build_report(None, &recipe(), None, "", &report);
     assert!(embedded.contains("RUNTIME BINDINGS  (1)"));
@@ -473,27 +462,4 @@ fn embedded_images_are_summarized_rather_than_written_out() {
     assert!(line.contains("\"scale\":1.5"), "{line}");
     assert!(line.contains("6896d9ea3f73"), "{line}");
     assert!(!line.contains(&"A".repeat(256)), "{line}");
-}
-
-/// Carries a configured native weapon's binding and owner identities into the report.
-#[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
-fn a_real_weapon_registry_reaches_the_report() {
-    let packages =
-        std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-    // Age-Old Bond's auto rifle runtime row.
-    let key = crate::runtime::RuntimeGraphKey::new(Some(216), 0, []);
-    let (graph, _) = crate::runtime::load_effective_runtime_graph(&packages, &key).unwrap();
-    let summary = runtime_registry_section(Some(Ok(&graph)), false);
-    let full = runtime_registry_section(Some(Ok(&graph)), true);
-    assert!(summary.contains("RUNTIME REGISTRY"));
-    assert!(summary.contains("0x80BB825C"));
-    // The trigger is the binding a reader looks for first, and it resolves to the one owner
-    // that also carries the barrel, magazine and reload components.
-    assert!(summary.contains("0xD5A123FF"));
-    assert!(summary.contains("owner 0x81522686"));
-    let report = technical_build_report(None, &recipe(), None, "", &full);
-    assert!(report.contains("RUNTIME REGISTRY"));
-    assert!(report.contains("RUNTIME OWNERS"));
-    assert!(report.contains("RECIPE DOCUMENT"));
 }

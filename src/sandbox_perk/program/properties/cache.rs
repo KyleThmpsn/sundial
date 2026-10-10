@@ -7,7 +7,7 @@ use tiger_pkg::TagHash;
 
 use super::*;
 use crate::{
-    investment_schema::{GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, investment_globals_table_tag},
+    investment::schema::{GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, investment_globals_table_tag},
     package_runtime::{index_cache, resolve_live_named_tag, snapshot::Snapshot},
     sandbox_perk::{
         FINISHED_SANDBOX_PERK_CATALOG_CLASS, SANDBOX_PERK_RUNTIME_MAP_TAG, action,
@@ -75,11 +75,11 @@ pub fn cached_cancellable(
             let snapshot = Snapshot::read(packages)?;
             let canonical = packages.canonicalize().map_err(|error| error.to_string())?;
             let identity = serde_json::to_vec(&canonical).map_err(|error| error.to_string())?;
-            let path = crate::paths::cache_dir().map(|root| {
+            let path = crate::system::paths::cache_dir().map(|root| {
                 root.join(crate::sandbox_perk::CACHE_DIRECTORY)
                     .join(format!(
-                        "perk-key-sources-v1-{:x}.json",
-                        Sha256::digest(identity)
+                        "perk-key-sources-v1-{}.json",
+                        hex::encode(Sha256::digest(identity))
                     ))
             });
             let previous = path

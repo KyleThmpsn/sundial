@@ -257,30 +257,29 @@ impl Audit {
                     format!("{:08X}", edge.flags),
                 );
             }
-            if let Some(provider) = edge.provider.object {
-                if let Some(channel) = contracts
+            if let Some(provider) = edge.provider.object
+                && let Some(channel) = contracts
                     .channels
                     .iter()
                     .find(|c| c.provider == provider && c.source == edge.channel)
+            {
+                for unsupported in contracts
+                    .unsupported
+                    .iter()
+                    .filter(|u| u.object == provider)
                 {
-                    for unsupported in contracts
-                        .unsupported
-                        .iter()
-                        .filter(|u| u.object == provider)
+                    if channel.methods.is_empty()
+                        || channel
+                            .methods
+                            .iter()
+                            .any(|m| unsupported.methods.contains(m))
                     {
-                        if channel.methods.is_empty()
-                            || channel
-                                .methods
-                                .iter()
-                                .any(|m| unsupported.methods.contains(m))
-                        {
-                            self.topology_valid = false;
-                            blocker(
-                                &mut self.blockers,
-                                "unsupported_method",
-                                format!("{provider:?}:{}", edge.channel),
-                            );
-                        }
+                        self.topology_valid = false;
+                        blocker(
+                            &mut self.blockers,
+                            "unsupported_method",
+                            format!("{provider:?}:{}", edge.channel),
+                        );
                     }
                 }
             }
@@ -369,7 +368,7 @@ impl Audit {
             opaque.push(Span {
                 offset: start,
                 bytes: at - start,
-                sha256: format!("{:x}", Sha256::digest(&source.0[start..at])),
+                sha256: hex::encode(Sha256::digest(&source.0[start..at])),
             });
             blocker(
                 &mut self.blockers,

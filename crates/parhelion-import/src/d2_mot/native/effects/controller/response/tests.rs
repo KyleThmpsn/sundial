@@ -120,7 +120,7 @@ fn complete_response_owners_and_pending_gates() -> Result<()> {
             rejected += 1;
         }
         results.push(json!({"source":source_name,"native":native_name,
-            "sha256":format!("{:x}",Sha256::digest(&native.owner.0)),"references":native.references,
+            "sha256":hex::encode(Sha256::digest(&native.owner.0)),"references":native.references,
             "group_aliases":native.group_aliases}));
         payloads.push((format!("{source_name}.bin"), native.owner.0));
     }

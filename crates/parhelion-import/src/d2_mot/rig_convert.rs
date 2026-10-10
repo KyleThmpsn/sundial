@@ -21,8 +21,30 @@ pub(crate) fn used_bones(root: &Path, item: &Value) -> Result<BTreeSet<usize>> {
     let provenance = load(&root.join("source-manifest.json"))?;
     let mut used = BTreeSet::new();
     for entry in report["models"].as_array().context("rig source models")? {
+        // Geometry-only exports can omit a solver. Full cloth conversion checks
+        // its definition separately before attaching a native simulation owner.
+        if !entry["cloth_simulation"].is_null() {
+            ensure!(entry["cloth"] == true, "Non-cloth model carries a solver");
+            let definition = raw(
+                root,
+                entry["cloth_simulation"]["definition"]
+                    .as_str()
+                    .context("Source cloth definition")?,
+            )?;
+            let solver = raw(root, &format!("{:08X}", definition.u32(0x6A0)?))?;
+            used.extend(super::cloth::used_bones(&solver.0)?);
+        }
         let model = raw(root, entry["model"].as_str().context("rig source model")?)?;
         let mesh = super::geometry::selected_mesh(&model, entry)?;
+        let header = raw(root, &format!("{:08X}", model.u32(mesh)?))?;
+        if header.u16(4)? == 48 || (header.u16(6)? == 0 && model.u8(mesh + 98)? == 7) {
+            let streams = super::geometry::streams(root, &provenance, &model, mesh)?;
+            used.extend(crate::d2_mot::skinning::used(
+                &streams.positions,
+                &streams.auxiliary,
+            )?);
+            continue;
+        }
         {
             let tag = format!("{:08X}", model.u32(mesh)?);
             let header = raw(root, &tag)?;
@@ -400,11 +422,12 @@ pub fn convert(
                     .context("buffer reference")?;
                 raw(model_source, &format!("{reference:08X}"))
             };
-            let source_positions = buffer(0)?.0;
+            let streams = super::geometry::streams(model_source, &provenance, &model, mesh)?;
+            let source_positions = streams.positions;
             let weighted = source_positions.chunks_exact(24).any(|v| {
                 crate::d2_mot::skinning::selector(v).is_ok_and(crate::d2_mot::skinning::weighted)
             });
-            let auxiliary = if weighted { buffer(24)?.0 } else { Vec::new() };
+            let auxiliary = streams.auxiliary;
             let used = crate::d2_mot::skinning::used(&source_positions, &auxiliary)?;
             ensure!(
                 used.iter().all(|i| *i < count),
@@ -458,10 +481,10 @@ pub fn convert(
     let mut first_person = vec![];
     for skeleton in skeletons {
         let bones = skeleton["bones"].as_array().context("rig bones")?;
-        if bones.len() > weapon_bones.len() {
-            if let Ok(map) = match_bones(weapon_bones, bones) {
-                first_person.push(json!({"owner":skeleton["owner"],"bone_map":map}));
-            }
+        if bones.len() > weapon_bones.len()
+            && let Ok(map) = match_bones(weapon_bones, bones)
+        {
+            first_person.push(json!({"owner":skeleton["owner"],"bone_map":map}));
         }
     }
     let patches = owner_patches

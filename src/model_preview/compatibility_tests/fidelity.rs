@@ -18,7 +18,8 @@ fn composed_owners_keep_independent_rigs_and_static_parts_through_pose_and_expor
     let fixture = build();
     let manager = fixture.manager();
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_deref()
         .map(Path::new)
@@ -70,7 +71,7 @@ fn composed_owners_keep_independent_rigs_and_static_parts_through_pose_and_expor
         &json!({"positions":pose.positions,"clips":model.clips.iter().map(|c| (&c.name,c.tag)).collect::<Vec<_>>(),"notices":model.notices})).unwrap()).unwrap();
 }
 
-fn glb_vectors(bytes: &[u8], semantic: &str) -> Vec<[f32; 3]> {
+pub(super) fn glb_vectors(bytes: &[u8], semantic: &str) -> Vec<[f32; 3]> {
     let json_length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
     let document: serde_json::Value = serde_json::from_slice(&bytes[20..20 + json_length]).unwrap();
     let accessor = document["meshes"][0]["primitives"][0]["attributes"][semantic]
@@ -91,6 +92,124 @@ fn glb_vectors(bytes: &[u8], semantic: &str) -> Vec<[f32; 3]> {
 }
 
 #[test]
+fn model_owners_preserve_shared_skins_clip_selection_and_child_boundaries() {
+    let fixture = build();
+    let manager = fixture.manager();
+    let moving = fixture
+        .clips
+        .iter()
+        .find(|(name, _)| name == "float")
+        .unwrap()
+        .1;
+    let temporary = tempfile::tempdir().unwrap();
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
+    let output = configured
+        .as_deref()
+        .map(Path::new)
+        .unwrap_or(temporary.path());
+    std::fs::create_dir_all(output).unwrap();
+    let first = expectation("float", false).0;
+    let fixed = expectation("static", false).0;
+    let shared_second = first.map(|[x, y, z]| [x - 3.0, y, z]);
+    let cases = [
+        (
+            "shared-owner",
+            fixture.shared_entity,
+            Some(moving),
+            [first, shared_second].concat(),
+        ),
+        (
+            "child-owners",
+            fixture.child_entity,
+            Some(moving),
+            [first, fixed].concat(),
+        ),
+        (
+            "own-model-boundary",
+            fixture.linked_entity,
+            None,
+            fixed.to_vec(),
+        ),
+    ];
+    let mut receipt = Vec::new();
+    for (name, tag, selected, expected) in cases {
+        let model = load_with_manager(&manager, tag, &Load::default(), selected).unwrap();
+        validate(&model);
+        if name == "own-model-boundary" {
+            assert!(!model.clips.iter().any(|clip| clip.tag == moving));
+        }
+        let initial = model.pose(0.0).expect("Owner animation").positions;
+        let seconds = 1.0 / 30.0;
+        let pose = model.pose(seconds).expect("Owner animation");
+        assert_eq!(
+            pose.positions.len(),
+            expected.len(),
+            "{name}: model instances"
+        );
+        for (&actual, &expected) in pose.positions.iter().zip(&expected) {
+            close(actual, expected);
+        }
+        let glb = export::glb(&model, seconds).unwrap();
+        let exported = glb_vectors(&glb, "POSITION");
+        assert_eq!(exported.len(), expected.len(), "{name}: exported instances");
+        for (actual, &[x, y, z]) in exported.into_iter().zip(&expected) {
+            close(actual, [x, z, -y]);
+        }
+        std::fs::write(output.join(format!("{name}.glb")), glb).unwrap();
+        assert!(artifact(&model, output, name) > 100);
+        assert_eq!(
+            model.pose(0.0).unwrap().positions,
+            initial,
+            "{name}: rewind"
+        );
+        let idle = load_with_manager(&manager, tag, &Load::default(), None).unwrap();
+        for (&actual, &stored) in idle
+            .pose(seconds)
+            .unwrap()
+            .positions
+            .iter()
+            .zip(&idle.vertices)
+        {
+            close(actual, stored);
+        }
+        receipt.push(json!({"case":name,"entity":format!("{tag:08X}"),
+            "positions":pose.positions,"models":model.tags,"notices":model.notices}));
+    }
+    let ambiguous = load_with_manager(
+        &manager,
+        fixture.ambiguous_entity,
+        &Load::default(),
+        Some(moving),
+    )
+    .unwrap();
+    assert!(
+        ambiguous.pose(1.0 / 30.0).is_none(),
+        "Conflicting banks require a binding contract"
+    );
+    assert!(
+        ambiguous
+            .animation_notice
+            .as_deref()
+            .unwrap()
+            .contains("multiple")
+    );
+    let glb = export::glb(&ambiguous, 1.0 / 30.0).unwrap();
+    let stored = glb_vectors(&glb, "POSITION");
+    assert_eq!(stored.len(), 6);
+    for (actual, &[x, y, z]) in stored.into_iter().zip(&ambiguous.vertices) {
+        close(actual, [x, z, -y]);
+    }
+    std::fs::write(output.join("ambiguous-owner.glb"), glb).unwrap();
+    receipt.push(json!({"case":"ambiguous-owner","rejected":ambiguous.animation_notice}));
+    std::fs::write(
+        output.join("owner-animation-receipt.json"),
+        serde_json::to_vec_pretty(&receipt).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
 fn native_clip_families_preserve_motion_normals_and_materials_through_export() {
     let fixture = build();
     let manager = fixture.manager();
@@ -104,7 +223,8 @@ fn native_clip_families_preserve_motion_normals_and_materials_through_export() {
         fixture.clips[0].1
     );
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_ref()
         .map(Path::new)
@@ -200,7 +320,7 @@ fn verify_clip(name: &str, model: &Model, clip_count: usize, output: &Path) -> s
     let image = render::animated_image(
         model,
         render::Camera::default(),
-        render::Scene::default(),
+        render::Scene::unprocessed(),
         [320, 240],
         seconds,
     );
@@ -303,10 +423,12 @@ fn verify_export(
 }
 
 #[test]
-#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_FIDELITY_OUTPUT"]
+#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
 fn native_chicken_bank_renders_and_exports_every_clip() {
-    let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
-    let output = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT").expect("artifact directory");
+    let packages = crate::test_support::preview_packages();
+    let output = crate::test_support::artifacts("fidelity")
+        .map(std::path::PathBuf::into_os_string)
+        .expect("artifact directory");
     let output = Path::new(&output).join("chicken");
     std::fs::create_dir_all(&output).unwrap();
     let manager = crate::investment::discovery::open_packages(Path::new(&packages)).unwrap();
@@ -340,7 +462,7 @@ fn native_chicken_bank_renders_and_exports_every_clip() {
             let image = render::animated_image(
                 &model,
                 render::Camera::default(),
-                render::Scene::default(),
+                render::Scene::unprocessed(),
                 [320, 240],
                 seconds,
             );

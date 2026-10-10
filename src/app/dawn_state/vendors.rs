@@ -103,7 +103,7 @@ pub(super) fn draw(
                         points: 0,
                         rewards: 0,
                     });
-                    ui.close_menu();
+                    ui.close();
                 }
             }
         });
@@ -210,7 +210,8 @@ fn unlocks(
         egui::CollapsingHeader::new(label)
             .id_salt((owner, kind))
             .show(ui, |ui| {
-                ui.menu_button(
+                crate::ui::sticky_menu_button(
+                    ui,
                     format!("Add {}", if kind == 0 { "Flag" } else { "Value" }),
                     |ui| {
                         let search_id = ui.make_persistent_id((owner, kind, "search"));
@@ -273,7 +274,7 @@ fn unlocks(
                                             slot: index as u16,
                                             value: if kind == 0 { 1 } else { 0 },
                                         });
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 }
                             },

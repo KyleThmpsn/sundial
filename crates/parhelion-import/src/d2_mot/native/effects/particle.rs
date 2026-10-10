@@ -53,7 +53,7 @@ pub fn pixel(source: &str, bytecode: &[u8], refs: &Path) -> Result<Pixel> {
     let source = source.replace("\r\n", "\n");
     let source = signature::restore(&source, bytecode)?;
     ensure!(
-        inputs::cb_count(&source, 2)? == Some(1)
+        matches!(inputs::cb_count(&source, 2)?, Some(1 | 6))
             && inputs::cb_count(&source, 8)? == Some(8)
             && inputs::cb_count(&source, 12)? == Some(15)
             && inputs::cb_count(&source, 13)? == Some(2),
@@ -77,6 +77,12 @@ pub fn pixel(source: &str, bytecode: &[u8], refs: &Path) -> Result<Pixel> {
     resource(&native_code, &[0x3D, 3, 0, 0x43, 0])?;
     resource(&modern_code, &[0x4D, 3, 15, 0x56, 0x2A])?;
     resource(&native_code, &[0x3F, 3, 7, 0x47, 0x2A])?;
+    // Both transparent scopes publish six vectors. The source inserted two
+    // preceding provider vectors, while output slots one through five stayed put.
+    for row in 1..=5 {
+        resource(&modern_code, &[0x4B, 0x28, row + 6, 0x52, row])?;
+        resource(&native_code, &[0x3D, 0x27, row + 4, 0x43, row])?;
+    }
     let (mut hlsl, replaced) = lighting::adapt(&source)?;
     ensure!(replaced, "particle lighting family is unsupported");
     hlsl = inputs::pixel_with_plates(&hlsl, None)?;

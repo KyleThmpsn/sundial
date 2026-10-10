@@ -1,7 +1,8 @@
 //! Native transparent programs use validated family ports or bounded DXBC evaluation.
 //! Neither path selects behavior by an item tag. Channels use recovered initial values.
 use super::*;
-use crate::dyes::material::program::Program;
+pub(super) use crate::dyes::material::program::ObjectInput;
+use crate::dyes::material::program::{ObjectInputs, Program};
 pub(super) mod native;
 mod read;
 mod shade;
@@ -49,7 +50,10 @@ impl Material {
             .then_some(units)
     }
     pub(in crate::model_preview) fn opaque(&self) -> bool {
-        self.normal.is_some() || self.native.as_ref().is_some_and(native::Native::opaque)
+        self.normal.is_some() || self.native.as_ref().is_some_and(|n| n.opaque() && !n.decal)
+    }
+    pub(in crate::model_preview) fn decal(&self) -> bool {
+        self.native.as_ref().is_some_and(|n| n.decal)
     }
     pub fn frame(&self, seconds: f32) -> Option<Frame> {
         if self.kind == Kind::Unavailable || self.constants.len() > 128 {

@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-#[ignore = "requires PARHELION_SOCKET_TEST_PACKAGES, reads through an isolated package view"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES, reads through an isolated package view"]
 fn native_perk_icons_author_private_wrappers_and_preserve_stock_pixels() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_SOCKET_TEST_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|s| (*s).to_owned())
@@ -37,7 +37,9 @@ fn native_perk_icons_author_private_wrappers_and_preserve_stock_pixels() {
     });
     let resolved = resolve::resolve_project_weapons(&sources, &[weapon.clone()]).unwrap();
     let templates = PerkTemplates::read(&sources).unwrap();
-    let mut plugs = custom_plugs::plan(&sources, &resolved, &templates.strings).unwrap();
+    let mut plugs = custom_plugs::plan(&sources, &resolved, &templates.strings)
+        .unwrap()
+        .sockets;
     let stock_container = plugs[0].source_icon_container;
     assert_stock_perk_quality(&sources.manager, stock_container);
     let stock_payload = sources.manager.read_tag(stock_container).unwrap();
@@ -45,7 +47,7 @@ fn native_perk_icons_author_private_wrappers_and_preserve_stock_pixels() {
         &sources.manager,
         &resolved,
         1,
-        &mut plugs,
+        (&mut plugs, &mut []),
         &[],
         crate::branding::Branding::for_packages(view.path()),
     )
@@ -178,9 +180,9 @@ fn native_perk_icons_author_private_wrappers_and_preserve_stock_pixels() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_SOCKET_TEST_PACKAGES, writes only to temporary package views"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES, writes only to temporary package views"]
 fn bundled_custom_images_reach_private_weapon_tooltip_rows() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_SOCKET_TEST_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|s| (*s).to_owned())
@@ -204,7 +206,9 @@ fn bundled_custom_images_reach_private_weapon_tooltip_rows() {
     let sources = sources::load_project_sources(view.path()).unwrap();
     let resolved = resolve::resolve_project_weapons(&sources, &weapons).unwrap();
     let templates = PerkTemplates::read(&sources).unwrap();
-    let plugs = custom_plugs::plan(&sources, &resolved, &templates.strings).unwrap();
+    let plugs = custom_plugs::plan(&sources, &resolved, &templates.strings)
+        .unwrap()
+        .sockets;
     let image_plugs: Vec<_> = plugs
         .iter()
         .filter(|plug| matches!(plug.icon, Some(crate::perk::Icon::Image { .. })))

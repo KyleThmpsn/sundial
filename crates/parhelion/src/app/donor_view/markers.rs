@@ -221,7 +221,7 @@ fn move_grip(overrides: &mut WeaponRecipeOverrides, moved: [f32; 3]) {
 /// any is moved. Returns the edited offset in metres when it changed.
 fn offset_fields(
     ui: &mut egui::Ui,
-    id: impl std::hash::Hash,
+    id: impl std::hash::Hash + std::fmt::Debug,
     current: [f32; 3],
     limit_um: i32,
 ) -> Option<[f32; 3]> {
@@ -270,15 +270,15 @@ impl PackageAuthoringApp {
         let overrides = &self.recipe.overrides;
         let placed = !overrides.marker_offsets.is_empty() || overrides.held_offset_um != [0; 3];
         ui.horizontal(|ui| {
-            ui.strong("Placement");
-            draw_authoring_info_icon(ui, "Test in game.");
+            ui.strong("Placement")
+                .on_hover_text("Where the model sits in the hand. Test in game");
             if placed {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     crate::app::style::more_menu(ui, "Placement", |ui| {
                         if ui.button("Reset All Placement").clicked() {
                             self.recipe.overrides.marker_offsets.clear();
                             self.recipe.overrides.held_offset_um = [0; 3];
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
                 });

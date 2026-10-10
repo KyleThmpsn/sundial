@@ -264,7 +264,7 @@ pub fn prepare_with_progress(
 
 /// The source export's format. Bump it whenever extraction writes different files or reports,
 /// so an export made by an earlier importer is extracted again rather than reused.
-const SOURCE_EXPORT: u32 = 6;
+const SOURCE_EXPORT: u32 = 9;
 
 /// The newest finished export of `weapon` from the same modern packages and export format.
 /// An export is only read once it is finished, by every donor attempt alike, so a later import

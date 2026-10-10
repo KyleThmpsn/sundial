@@ -3,7 +3,7 @@
 //! A weapon's trigger, barrel and magazine are resources of one gameplay owner, so replacing the
 //! owner moves all of them together. Across every stock gameplay owner each of these components is
 //! the same graph of objects: the same classes, spans and reference positions, differing only in
-//! the values they hold and in the lengths of some arrays. A splice therefore keeps the target's
+//! the values they hold, optional spread patterns and the lengths of some arrays. A splice keeps the target's
 //! objects and every reference between them, which keeps the event wiring that addresses them,
 //! and copies the donor's values over them. An array of equal length is copied in place. A plain
 //! array of another length gets the donor's elements appended to the owner and its descriptor
@@ -13,12 +13,11 @@ use super::*;
 use crate::package_runtime::reader::PackageManager;
 
 /// Element sizes of the array classes a component graph carries, measured from the stock owners:
-/// one byte for `80800009`, sixteen for the float-quadruple curve keys `80800090` and for
-/// `8080888F` and `808045C7` rows.
+/// one byte for `80800009`, sixteen for `80800090` and `808045C7`, and twenty for spread rings.
 const ARRAY_STRIDES: [(u32, usize); 4] = [
     (0x8080_0009, 1),
     (0x8080_0090, 16),
-    (0x8080_888F, 16),
+    (0x8080_888F, 20),
     (0x8080_45C7, 16),
 ];
 
@@ -38,6 +37,18 @@ pub struct ComponentSplice {
     /// Arrays given another length: the descriptor's absolute offset, the new header and
     /// elements to append, and the element count.
     pub arrays: Vec<(usize, Vec<u8>, u64)>,
+    /// Optional native records with explicit pointer and self-reference relocation.
+    pub records: Vec<ComponentSpliceRecord>,
+}
+
+/// A self-contained native record to append on a 16-byte boundary.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ComponentSpliceRecord {
+    pub bytes: Vec<u8>,
+    /// Absolute owner slots and their target offsets within `bytes`.
+    pub pointers: Vec<(usize, usize)>,
+    /// Absolute-offset words inside `bytes` and the targets they name within `bytes`.
+    pub references: Vec<(usize, usize)>,
 }
 
 fn is_class(value: u32) -> bool {
@@ -189,6 +200,11 @@ pub fn plan_component_splice(
         ..ComponentSplice::default()
     };
     let mut copied = Vec::<(usize, u8)>::new();
+    let spread_pointers = if binding == WEAPON_BARREL_COMPONENT_KEY {
+        spread_records(&host, host_binding, &other, donor_binding, &mut splice)?
+    } else {
+        BTreeMap::new()
+    };
     let mut queue = vec![(start, start, record_end(&host))];
     let mut visited = BTreeSet::new();
     while let Some((at_host, at_donor, end_host)) = queue.pop() {
@@ -209,6 +225,13 @@ pub fn plan_component_splice(
         let mut offset = 0;
         while offset < span {
             let (h, d) = (at_host + offset, at_donor + offset);
+            if let Some(&donor_slot) = spread_pointers.get(&h) {
+                if donor_slot != d {
+                    return Err("Barrel spread pointer moved outside its paired object".into());
+                }
+                offset += 8;
+                continue;
+            }
             if offset + 16 <= span {
                 match (host.reference(h), other.reference(d)) {
                     (Some(host_target), Some(donor_target)) => {
@@ -298,6 +321,109 @@ pub fn plan_component_splice(
         }
     }
     Ok(splice)
+}
+
+/// Copy the optional spread separately. Only declared typed pointers can alias its interfaces.
+/// Integer values and the absolute-offset halves of typed references are never treated as pointers.
+fn spread_records(
+    host: &Owner,
+    host_binding: WeaponComponentBinding,
+    donor: &Owner,
+    donor_binding: WeaponComponentBinding,
+    splice: &mut ComponentSplice,
+) -> Result<BTreeMap<usize, usize>, String> {
+    use super::spread::{DEFINITION, INSTANCE, Spread};
+    use crate::package_payload::{bytes_at, write_bytes};
+    use crate::package_runtime::references::schema::Registry;
+    let target = Spread::read(&host.bytes, host_binding)?;
+    let source = Spread::read(&donor.bytes, donor_binding)?;
+    let mut record = ComponentSpliceRecord::default();
+    // Pattern objects begin eight bytes after an aligned boundary. Both the object and its
+    // ring header carry a class marker immediately before their address.
+    const PATTERN: usize = 8;
+    const HEADER: usize = 0x80;
+    if let Some(pattern) = &source.pattern {
+        record.bytes.resize(HEADER + 16, 0);
+        record.bytes[4..PATTERN + 0x68]
+            .copy_from_slice(&donor.bytes[pattern.offset - 4..pattern.offset + 0x68]);
+        write_bytes(
+            &mut record.bytes,
+            HEADER - 4,
+            &0x8080_9FBD_u32.to_le_bytes(),
+        )?;
+        write_bytes(&mut record.bytes, HEADER, &pattern.count.to_le_bytes())?;
+        write_bytes(
+            &mut record.bytes,
+            HEADER + 8,
+            &0x8080_888F_u32.to_le_bytes(),
+        )?;
+        write_bytes(
+            &mut record.bytes,
+            PATTERN + 0x50,
+            &((HEADER - PATTERN - 0x50) as i64).to_le_bytes(),
+        )?;
+        record
+            .bytes
+            .extend_from_slice(&donor.bytes[pattern.rings.clone()]);
+        record
+            .bytes
+            .resize(record.bytes.len().next_multiple_of(16), 0);
+        for ordinal in 0..3 {
+            let reference = PATTERN + ordinal * 0x18 + 8;
+            write_bytes(&mut record.bytes, reference, &host.tag.to_le_bytes())?;
+            record.references.push((reference + 8, PATTERN));
+        }
+    }
+    let mut pointers = BTreeMap::new();
+    let mut registry = Registry::new()?;
+    let host_instance = host_binding.resource_offset as usize;
+    let donor_instance = donor_binding.resource_offset as usize;
+    let host_definition = target.slot - 0xE60;
+    let donor_definition = source.slot - 0xE60;
+    for (class, host_start, donor_start) in [
+        (INSTANCE, host_instance, donor_instance),
+        (DEFINITION, host_definition, donor_definition),
+    ] {
+        let schema = registry.record(class, |_| Err("Barrel must use a native schema".into()))?;
+        for &(offset, _) in schema.fields.iter().filter(|(_, kind)| *kind == 3) {
+            let (h, d) = (host_start + offset, donor_start + offset);
+            let interface =
+                |owner: &Owner, slot: usize, spread: &Spread| -> Result<Option<usize>, String> {
+                    let delta = i64::from_le_bytes(bytes_at(&owner.bytes, slot)?);
+                    let Some(pattern) = &spread.pattern else {
+                        return Ok(None);
+                    };
+                    if delta == 0 {
+                        return Ok(None);
+                    }
+                    let named = slot.checked_add_signed(
+                        isize::try_from(delta).map_err(|_| "Spread pointer overflow")?,
+                    );
+                    Ok([0, 0x18, 0x30]
+                        .into_iter()
+                        .find(|offset| named == Some(pattern.offset + offset)))
+                };
+            let from = interface(donor, d, &source)?;
+            let old = interface(host, h, &target)?;
+            if h != target.slot && from.is_none() && old.is_none() {
+                continue;
+            }
+            pointers.insert(h, d);
+            if let Some(offset) = from {
+                record.pointers.push((h, PATTERN + offset));
+            } else if read_u64(&donor.bytes, d)? == 0 {
+                if read_u64(&host.bytes, h)? != 0 {
+                    splice.writes.push((h, vec![0; 8]));
+                }
+            } else {
+                return Err("Barrel spread interface has an unsupported donor target".into());
+            }
+        }
+    }
+    if !record.pointers.is_empty() {
+        splice.records.push(record);
+    }
+    Ok(pointers)
 }
 
 /// One array pair: equal lengths copy in place, plain arrays of another length are appended.

@@ -120,9 +120,19 @@ pub fn extract_with_progress(
             let ot = p.u32(row)?;
             let owner = r.tag(ot, Some(0x80809B06))?;
             let resource = owner.pointer(24)?;
-            if owner.u32(resource.checked_sub(4).context("invalid owner resource")?)? != 0x80806D8F
-            {
+            let resource_class =
+                owner.u32(resource.checked_sub(4).context("invalid owner resource")?)?;
+            if !matches!(resource_class, 0x80806D8F | 0x80806D6C) {
                 continue;
+            }
+            let cloth = resource_class == 0x80806D6C;
+            if cloth {
+                let instance = owner.pointer(16)?;
+                ensure!(
+                    owner.u32(instance.checked_sub(4).context("invalid cloth instance")?)?
+                        == 0x80806D5B,
+                    "cloth instance and resource types differ"
+                );
             }
             let mt = owner.u32(resource + 0x264)?;
             let mesh_count = r
@@ -156,6 +166,14 @@ pub fn extract_with_progress(
                         .collect::<Vec<_>>()
                 );
                 report["owner"] = json!(format!("{ot:08X}"));
+                report["cloth"] = json!(cloth);
+                if cloth {
+                    let definition_tag = owner.u32(resource + 0x4B0)?;
+                    let definition = r.tag(definition_tag, Some(0x80806D60))?;
+                    let solver = definition.u32(0x6A0)?;
+                    r.tag(solver, None)?;
+                    report["cloth_simulation"] = json!({"definition":format!("{definition_tag:08X}"),"solver":format!("{solver:08X}"),"converted":false,"geometry":"source skinned fallback"});
+                }
                 texture_plates(r, &owner, resource, mt, &mut report, progress)?;
                 for mat in report["materials"].as_array().context("materials")? {
                     // Some source meshes select an implicit compute-skinning

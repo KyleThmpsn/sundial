@@ -39,6 +39,7 @@ pub(in crate::model_preview) struct Gear {
 pub(in crate::model_preview) fn gear(
     manager: &PackageManager,
     material: u32,
+    model_uv: [f32; 4],
     model: &mut Model,
 ) -> Result<Option<Gear>, String> {
     let bindings = material_bindings(manager, material).unwrap_or_default();
@@ -69,20 +70,17 @@ pub(in crate::model_preview) fn gear(
         return Err("Explicit gear images have different dimensions".into());
     }
     let mut uv = None;
-    let map = if let Some(&(_, tag)) = bindings.iter().find(|(slot, _)| *slot == 3) {
-        let bytes = checked(manager, material, 0x8080_71E8)?;
-        super::super::effects::native::map_transform(manager, &bytes)
-            .map(|(transform, placement)| {
-                uv = placement;
-                load(tag, model).map(|texture| DyeMap {
-                    texture,
-                    transform: transform.map(f32::to_bits),
-                })
-            })
-            .transpose()?
-    } else {
-        None
-    };
+    let bytes = checked(manager, material, 0x8080_71E8)?;
+    let map = super::super::effects::native::map_transform(manager, &bytes, model_uv)
+        .and_then(|placement| {
+            let &(_, tag) = bindings.iter().find(|(slot, _)| *slot == placement.slot)?;
+            uv = placement.uv;
+            Some(load(tag, model).map(|texture| DyeMap {
+                texture,
+                transform: placement.transform.map(f32::to_bits),
+            }))
+        })
+        .transpose()?;
     Ok(Some(Gear {
         albedo,
         normal,

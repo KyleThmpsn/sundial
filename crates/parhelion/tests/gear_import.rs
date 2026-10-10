@@ -29,7 +29,7 @@ fn gear_imports_keep_their_family_and_art_variants_through_staging()
             .ok_or_else(|| format!("Set {key}"))
     };
     let modern = configured("PARHELION_IMPORT_MODERN_PACKAGES")?;
-    let native = configured("PARHELION_CLEAN_STOCK_PACKAGES")?;
+    let native = configured("SUNDIAL_STOCK_PACKAGES")?;
     // Matrix entries are { "hash": <source u32>, "kind": "armor" | ... }.
     // Callers select sources from their package version, without personal paths or fixed items.
     let matrix: Vec<Value> =

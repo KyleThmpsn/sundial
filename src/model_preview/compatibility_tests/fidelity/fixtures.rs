@@ -4,6 +4,10 @@ use super::*;
 pub(crate) struct Fixture {
     directory: tempfile::TempDir,
     pub entity: u32,
+    pub shared_entity: u32,
+    pub child_entity: u32,
+    pub linked_entity: u32,
+    pub ambiguous_entity: u32,
     pub clips: Vec<(String, u32)>,
     pub invalid: Vec<(String, u32)>,
 }
@@ -418,12 +422,58 @@ pub(crate) fn build() -> Fixture {
         .collect();
     array(&mut entity, 0x10, 0x8080_9C04, &rows, 12);
     let entity = package.add(ENTITY, entity);
+    let mut second_model = package.payload_mut(model).clone();
+    floats(&mut second_model, 0x60, &[0.0, 2.0, 0.0]);
+    let second_model = package.add(MODEL, second_model);
+    let mut second_render = package.payload_mut(render).clone();
+    put(
+        &mut second_render,
+        0x80 + 0x1DC,
+        &second_model.to_le_bytes(),
+    );
+    let second_render = package.add(RESOURCE, second_render);
+    let shared_entity = owner(&mut package, &[render, second_render, skeleton, definition]);
+
+    // This owner uses the same geometry and skeleton resource, but its bank contains
+    // only the idle. Choosing the first owner's moving clip must leave it in idle.
+    let mut idle_bank = vec![0; 0x18];
+    array(&mut idle_bank, 8, 0x8080_8F48, &clips[0].1.to_le_bytes(), 4);
+    let idle_bank = package.add(0x8080_36F6, idle_bank);
+    let mut idle_definition = package.payload_mut(definition).clone();
+    put(&mut idle_definition, 0x110, &idle_bank.to_le_bytes());
+    let idle_definition = package.add(RESOURCE, idle_definition);
+    let idle_entity = owner(&mut package, &[render, skeleton, idle_definition]);
+    let mut links = resource(0x8080_1234);
+    put(&mut links, 0x100, &entity.to_le_bytes());
+    put(&mut links, 0x104, &idle_entity.to_le_bytes());
+    let links = package.add(RESOURCE, links);
+    let child_entity = owner(&mut package, &[links]);
+    let linked_entity = owner(&mut package, &[render, skeleton, idle_definition, links]);
+    let ambiguous_entity = owner(
+        &mut package,
+        &[render, second_render, skeleton, definition, idle_definition],
+    );
     let directory = tempfile::tempdir().unwrap();
     package.write(directory.path());
     Fixture {
         directory,
         entity,
+        shared_entity,
+        child_entity,
+        linked_entity,
+        ambiguous_entity,
         clips,
         invalid,
     }
+}
+
+fn owner(package: &mut Package, components: &[u32]) -> u32 {
+    let mut bytes = vec![0; 0x20];
+    let rows = components
+        .iter()
+        .flat_map(|&tag| [tag, 0, 0])
+        .flat_map(u32::to_le_bytes)
+        .collect::<Vec<_>>();
+    array(&mut bytes, 0x10, 0x8080_9C04, &rows, 12);
+    package.add(ENTITY, bytes)
 }

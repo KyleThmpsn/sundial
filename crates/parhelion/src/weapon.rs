@@ -4,10 +4,12 @@
 //! itself, which every item kind goes through, is `crate::item`.
 pub(crate) mod ammo;
 pub(crate) mod animations;
+pub mod barrel;
 pub mod behavior;
 pub(crate) mod crosshair;
 pub(crate) mod glow;
 pub(crate) mod lenders;
 pub(crate) mod perk_bank;
+pub mod projectile;
 pub(crate) mod rig;
 pub(crate) mod variable_damage;

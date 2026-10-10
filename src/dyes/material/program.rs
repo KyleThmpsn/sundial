@@ -7,6 +7,8 @@ use crate::{
     package_payload::{bytes_at, native_array_at},
 };
 type Vector = [f32; 4];
+pub(crate) type ObjectInput = Result<Vector, String>;
+pub(crate) type ObjectInputs<'a> = Result<&'a [ObjectInput], &'a str>;
 
 #[derive(Clone)]
 pub(crate) struct Program {
@@ -57,16 +59,16 @@ impl Program {
                 })
             })
             .collect::<Vec<Vector>>();
-        Self::decode(code, constants, channels, &[], None, 27)
+        Self::decode(code, constants, channels, Ok(&[]), None, 27)
     }
 
     /// A material stage uses the same arithmetic but owns its output length and bindings.
-    /// Object inputs are the owning component's recovered initial vectors.
+    /// Object inputs retain unavailable slots, resolved only when the stage reads them.
     pub(crate) fn material(
         bytes: &[u8],
         stage: usize,
         channels: &[Vector],
-        objects: &[Vector],
+        objects: ObjectInputs<'_>,
         surface: u8,
         outputs: usize,
     ) -> Result<Option<Self>, String> {
@@ -89,7 +91,7 @@ impl Program {
         code: &[u8],
         constants: Vec<Vector>,
         channels: &[Vector],
-        objects: &[Vector],
+        objects: ObjectInputs<'_>,
         surface: Option<u8>,
         outputs: usize,
     ) -> Result<Option<Self>, String> {
@@ -138,8 +140,11 @@ impl Program {
                     let index = usize::from(arg()?);
                     Op::Value(
                         *objects
+                            .map_err(str::to_owned)?
                             .get(index)
-                            .ok_or("The effect's object input is unavailable")?,
+                            .ok_or("The effect's object input is unavailable")?
+                            .as_ref()
+                            .map_err(Clone::clone)?,
                     )
                 }
                 0x3D if surface.is_some() => match (arg()?, arg()?) {

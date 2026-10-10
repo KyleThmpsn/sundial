@@ -11,7 +11,7 @@ use super::{
     ARMOR_SLOTS, ConfirmationDialog, INVENTORY_LAYOUT_PREVIEW_HASH, InventoryLayoutPreviewItem,
     PreferencesTab, SundialApp, WEAPON_SLOTS, diagnostics, equipment, preferences,
 };
-use crate::account_contract::EQUIPMENT_SLOTS as SLOTS;
+use crate::account::contract::EQUIPMENT_SLOTS as SLOTS;
 use crate::game_settings;
 use crate::package_authoring::open_directory;
 use eframe::egui;
@@ -297,7 +297,7 @@ impl SundialApp {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             super::ui::section_heading(ui, "Loadout Layout");
-            crate::ui_help::info(
+            crate::ui::help::info(
                 ui,
                 "Used on Characters & loadouts. Character inventory keeps its item cards.",
             );
@@ -308,6 +308,12 @@ impl SundialApp {
             preferences_changed = true;
         }
 
+        ui.add_space(8.0);
+        super::ui::section_heading(ui, "Model Previews");
+        preferences_changed |= ui
+            .checkbox(&mut self.preferences.show_preview_fps, "Show Preview FPS")
+            .on_hover_text("Show a small frame rate counter in model previews.")
+            .changed();
         preferences_changed
     }
 
@@ -320,7 +326,7 @@ impl SundialApp {
 
         ui.horizontal(|ui| {
             super::ui::section_heading(ui, "Item Editing");
-            crate::ui_help::info(
+            crate::ui::help::info(
                 ui,
                 "Choose the plug selection mode Sundial uses when it starts.",
             );
@@ -399,7 +405,7 @@ impl SundialApp {
             .horizontal(|ui| {
                 let response =
                     ui.checkbox(&mut enable_parhelion, "Enable Parhelion Package Authoring");
-                crate::ui_help::info(
+                crate::ui::help::info(
                     ui,
                     "Build custom weapons from stock weapons, perks and appearances.",
                 );
@@ -430,7 +436,7 @@ impl SundialApp {
                     &mut self.preferences.experimental_power_above_cap,
                     "Allow Power Above Item Caps",
                 );
-                crate::ui_help::info(ui, "New items still start at their cap.");
+                crate::ui::help::info(ui, "New items still start at their cap.");
                 response
             })
             .inner;
@@ -445,7 +451,7 @@ impl SundialApp {
                     &mut self.preferences.experimental_cross_class_subclasses,
                     "Allow Cross-Class Subclasses",
                 );
-                crate::ui_help::info(
+                crate::ui::help::info(
                     ui,
                     "Shows every class's subclasses and lets Sundial equip them.",
                 );
@@ -461,7 +467,7 @@ impl SundialApp {
                     &mut self.preferences.experimental_progression,
                     "Enable Progression Editing",
                 );
-                crate::ui_help::info(
+                crate::ui::help::info(
                     ui,
                     "Edit Unlocks, Investment overrides and Collections acquisition. Browsing is always available.",
                 );
@@ -481,7 +487,7 @@ impl SundialApp {
         let mut preferences_changed = false;
         ui.horizontal(|ui| {
             super::ui::section_heading(ui, "Installation and Compatibility");
-            crate::ui_help::info(ui, "Sundial finds settings.json inside the game install.");
+            crate::ui::help::info(ui, "Sundial finds settings.json inside the game install.");
         });
         ui.add_space(10.0);
         let account_source = self.document.source_info();
@@ -668,7 +674,7 @@ impl SundialApp {
                     &mut self.preferences.review_changes_before_saving,
                     "Review Changes Before Saving",
                 );
-                crate::ui_help::info(
+                crate::ui::help::info(
                     ui,
                     "Lists changed fields before saving. Checks and backups always run.",
                 );
@@ -680,7 +686,7 @@ impl SundialApp {
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             super::ui::section_heading(ui, "Automatic Backups");
-            crate::ui_help::info(ui, "Backs up before every save, per installation. Recovery snapshots and settings.json.bak copies are never removed.");
+            crate::ui::help::info(ui, "Backs up before every save, per installation. Recovery snapshots and settings.json.bak copies are never removed.");
         });
         ui.add_space(6.0);
         ui.horizontal(|ui| {

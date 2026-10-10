@@ -310,6 +310,37 @@ pub fn ability_graphs(
     Ok(graphs)
 }
 
+/// The graphs under one root, shared between the edits that read them.
+pub type SharedGraphs = std::sync::Arc<Vec<(u32, Vec<u8>)>>;
+
+/// Source trees reused by related edits of one ability. The manager and depth are fixed
+/// for this discovery, and the shared bytes are never the private copies being authored.
+pub struct Graphs<'a> {
+    manager: &'a PackageManager,
+    depth: usize,
+    roots: std::collections::BTreeMap<u32, SharedGraphs>,
+}
+
+impl<'a> Graphs<'a> {
+    #[must_use]
+    pub fn new(manager: &'a PackageManager, depth: usize) -> Self {
+        Self {
+            manager,
+            depth,
+            roots: std::collections::BTreeMap::new(),
+        }
+    }
+
+    pub fn get(&mut self, root: u32) -> Result<SharedGraphs, String> {
+        if let Some(graphs) = self.roots.get(&root) {
+            return Ok(std::sync::Arc::clone(graphs));
+        }
+        let graphs = std::sync::Arc::new(ability_graphs(self.manager, root, self.depth)?);
+        self.roots.insert(root, std::sync::Arc::clone(&graphs));
+        Ok(graphs)
+    }
+}
+
 /// The palettes an ability's effects draw with: those of `entity` and of the graphs below it, up
 /// to `depth` levels, including those its ability bank names, each graph once. Each palette lists
 /// every use across them.
@@ -318,9 +349,17 @@ pub fn ability_palettes(
     entity: u32,
     depth: usize,
 ) -> Result<Vec<Palette>, String> {
+    palettes_in_graphs(manager, &ability_graphs(manager, entity, depth)?)
+}
+
+/// The same palette discovery over an already checked source tree, in its traversal order.
+pub fn palettes_in_graphs(
+    manager: &PackageManager,
+    graphs: &[(u32, Vec<u8>)],
+) -> Result<Vec<Palette>, String> {
     let mut found = Vec::<Palette>::new();
-    for (graph, payload) in ability_graphs(manager, entity, depth)? {
-        for palette in palettes(manager, graph, &payload)? {
+    for (graph, payload) in graphs {
+        for palette in palettes(manager, *graph, payload)? {
             match found.iter_mut().find(|each| each.header == palette.header) {
                 Some(each) => each.uses.extend(palette.uses),
                 None => found.push(palette),

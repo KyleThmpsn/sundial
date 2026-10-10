@@ -158,9 +158,9 @@ fn remove_socket_variants(recipe: &mut WeaponRecipe, socket_index: usize) {
         .retain(|variant| usize::from(variant.socket_index) != socket_index);
 }
 
-/// The base item's own label for a rarity: "Legendary (base armor)".
-fn base_rarity_label(kind: ItemKind, rarity: WeaponRarity) -> String {
-    format!("{} (base {})", rarity.label(), kind.noun())
+/// The list entry that gives a field back to the base item, which then follows the base.
+pub(super) fn follow_base(kind: ItemKind) -> String {
+    format!("Follow Base {}", kind.label())
 }
 
 struct EnergySocket {
@@ -330,6 +330,124 @@ fn set_item_stat(recipe: &mut WeaponRecipe, definition_index: u16, value: Option
     }
 }
 
+/// The stats' heading with what they are on hover, and its reset once a stat holds an edit.
+/// Returns whether the reset was clicked.
+fn stats_header(ui: &mut egui::Ui, kind: ItemKind, cap: Option<i32>, changed: bool) -> bool {
+    let title = format!("{} Stats", kind.label());
+    ui.horizontal(|ui| {
+        let hint = match kind {
+            ItemKind::Sparrow => {
+                "Tooltip stats. Use Driving Speed to change motion. The Engine also affects \
+                 ordinary Sparrow motion"
+            }
+            _ => "Totals include the starting plugs. A change here adds to the armor itself",
+        };
+        let hint = cap.map_or_else(
+            || hint.to_owned(),
+            |cap| format!("{hint}. Each stat tops out at {cap}"),
+        );
+        let heading = style::heading(ui, &title, changed);
+        // A Sparrow's stats only label its tooltip, which nobody would guess, so that one keeps
+        // its icon.
+        if kind == ItemKind::Sparrow {
+            draw_authoring_info_icon(ui, format!("{hint}."));
+        } else {
+            heading.on_hover_text(hint);
+        }
+        changed && style::reset_icon(ui, &format!("Reset {title}"))
+    })
+    .inner
+}
+
+/// One stat as a Destiny stat row: its name, its bar, its value, and the base's value to restore
+/// once the item's own differs, or Remove for a stat the recipe added. Returns the edit made: the
+/// item's own value, or none to restore the base's.
+fn draw_stat_row(
+    ui: &mut egui::Ui,
+    columns: &StatColumns,
+    row: &StatRow,
+    (cap, scale): (Option<i32>, i32),
+) -> Option<(u16, Option<i32>)> {
+    ui.push_id(("gear-stat", row.definition_index), |ui| {
+        // Grey until the item's own value differs from the base's, as a tile's name is.
+        let modified = row.item != row.base_item;
+        let cells = columns.row(ui, &row.name, modified);
+        style::stat_bar(ui, cells.bar, (row.base(), row.value()), scale);
+        // The bar's change segment says it by colour, so the base's value is also on its hover
+        // and in the field's name.
+        let name = if row.value() == row.base() {
+            row.name.clone()
+        } else {
+            ui.interact(cells.bar, ui.id().with("bar"), egui::Sense::hover())
+                .on_hover_text(format!("Base {}", row.base()));
+            format!("{}, base {}", row.name, row.base())
+        };
+        let mut value = row.value();
+        // A base already past the cap keeps its own value.
+        let upper = cap.map_or(999, |cap| cap.max(row.base()));
+        // Plugs can carry a total past the cap. The value is shown as it is: a ranged DragValue
+        // otherwise clamps it on draw and reports a change, which would rewrite the item's own
+        // stat with no edit made.
+        let field = ui.put(
+            cells.value,
+            egui::DragValue::new(&mut value)
+                .range(0..=upper)
+                .clamp_existing_to_range(false),
+        );
+        let edited = style::named_control(field, name)
+            .changed()
+            .then_some(Some(value - row.plugs));
+        let mut actions = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(cells.action)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        let cleared = if row.core {
+            // The value a restore leaves: the base's own with the plugs the item has now.
+            let restored = (row.base_item + row.plugs).to_string();
+            modified && style::restore(&mut actions, &row.name, &restored)
+        } else {
+            let remove = actions
+                .add(egui::Button::new("×").frame(false).small())
+                .on_hover_text("Remove this added stat");
+            style::focus_ring(&actions, &remove);
+            style::named_control(remove, format!("Remove {}", row.name)).clicked()
+        };
+        edited
+            .or(cleared.then_some(None))
+            .map(|value| (row.definition_index, value))
+    })
+    .inner
+}
+
+/// Armor's total under its stats, with what the edits and plugs add against the base's total,
+/// as Destiny marks a change.
+fn draw_stat_total(ui: &mut egui::Ui, columns: &StatColumns, (value, base): (i32, i32)) {
+    let cells = columns.row(ui, "Total", true);
+    let total = ui.put(
+        cells.value,
+        egui::Label::new(egui::RichText::new(value.to_string()).strong()),
+    );
+    // The name is painted, so the number carries it for a screen reader.
+    style::named_control(total, format!("Total {value}"));
+    if value == base {
+        return;
+    }
+    let (text, color) = if value > base {
+        (
+            format!("+{}", value - base),
+            style::success_color(ui.visuals()),
+        )
+    } else {
+        ((value - base).to_string(), ui.visuals().error_fg_color)
+    };
+    ui.put(
+        cells.action,
+        egui::Label::new(egui::RichText::new(text).size(11.0).color(color)),
+    )
+    .on_hover_text(format!("Base total {base}"));
+}
+
 impl PackageAuthoringApp {
     pub(super) fn current_gear_donor(&self) -> Option<WeaponDonor> {
         let hash = self.recipe.donor.item_hash.parse_u32().ok()?;
@@ -364,6 +482,7 @@ impl PackageAuthoringApp {
         match self.recipe.kind {
             ItemKind::Shader => return self.draw_shader_editor(ui),
             ItemKind::Subclass => return self.draw_subclass_editor(ui),
+            ItemKind::Mod => return self.draw_mod_editor(ui),
             _ => {}
         }
         ui.spacing_mut().item_spacing.y = 4.0;
@@ -477,24 +596,56 @@ impl PackageAuthoringApp {
         }
     }
 
-    /// The base item as the game draws it, which drags to turn as the Shader page's preview does.
-    /// Gear keeps its base's look, so this is also how the authored item looks. Beside the item's
-    /// text it ends where the base column ends, `band`, within its bounds. Its corner opens it in
-    /// the model viewer, which has the full tools.
+    /// The selected appearance, which drags to turn as the Shader page's preview does.
+    /// Beside the item's text it ends where the base column ends, `band`, within its bounds.
+    /// Its corner opens it in the model viewer, which has the full tools.
     fn draw_gear_preview(&mut self, ui: &mut egui::Ui, band: Option<f32>) {
-        if self
-            .recipe
-            .overrides
-            .sparrow
-            .as_ref()
-            .is_some_and(|s| s.summon != crate::vehicle::Summon::Sparrow)
-        {
-            ui.label("Inventory Appearance");
+        let id = egui::Id::new("gear-preview");
+        let width = ui.available_width();
+        let height = preview_height(width, band);
+        // A Sparrow that summons another vehicle shows that vehicle.
+        let summoned = self.recipe.overrides.sparrow.as_ref().and_then(|sparrow| {
+            let tag = sparrow.summon.entity().ok().flatten()?;
+            Some((tag, sparrow.summon.label()))
+        });
+        if let Some((tag, name)) = summoned {
+            // The Sparrow's icon is not the vehicle's.
+            sundial::ui::model_preview::still::placeholder(ui.ctx(), id, None);
+            let response = sundial::ui::model_preview::still::show_object(
+                ui,
+                id,
+                &self.packages,
+                Some(tag),
+                egui::vec2(width, height),
+            );
+            sundial::ui::model_preview::pop_out_object(
+                ui,
+                id,
+                response.rect,
+                &self.packages,
+                (tag, name),
+            );
+            return;
         }
         #[cfg(feature = "d2-model-importer")]
-        if self.recipe.overrides.imported_graph.is_some() {
-            ui.label("Native Runtime Preview")
-                .on_hover_text("This view shows the native runtime template. The imported appearance is applied when the recipe is built.");
+        if let Some(reference) = &self.recipe.overrides.imported_graph {
+            let appearance = crate::imported::preview::appearance(reference, self.recipe.kind);
+            sundial::ui::model_preview::still::placeholder(ui.ctx(), id, None);
+            let response = sundial::ui::model_preview::still::show_local(
+                ui,
+                id,
+                &self.packages,
+                appearance.clone(),
+                egui::vec2(width, height),
+            );
+            sundial::ui::model_preview::pop_out_local(
+                ui,
+                id,
+                response.rect,
+                &self.packages,
+                (appearance, &self.recipe.name),
+            );
+            return;
         }
         let (Some(catalog), Ok(hash)) = (
             self.catalog.as_ref(),
@@ -502,12 +653,15 @@ impl PackageAuthoringApp {
         ) else {
             return;
         };
-        let id = egui::Id::new("gear-preview");
         // No shader rows leave the item's own dyes.
         let appearance =
             catalog.shader_preview_appearance(hash, &[Vec::new(), Vec::new(), Vec::new()]);
-        let width = ui.available_width();
-        let height = preview_height(width, band);
+        // The item's icon stands in until its model is read.
+        sundial::ui::model_preview::still::placeholder(
+            ui.ctx(),
+            id,
+            catalog.item_icon(ui.ctx(), hash),
+        );
         let response = sundial::ui::model_preview::still::show(
             ui,
             id,
@@ -515,8 +669,7 @@ impl PackageAuthoringApp {
             appearance.clone(),
             &[],
             egui::vec2(width, height),
-        )
-        .on_hover_text("Drag to rotate · Double-click to reset");
+        );
         if let Some(appearance) = appearance {
             let name = catalog.item_display_name(hash).unwrap_or("Base Item");
             sundial::ui::model_preview::pop_out(
@@ -659,36 +812,36 @@ impl PackageAuthoringApp {
             }
         } else if energy.is_some() {
             &[0, 1, 2]
+        } else if kind == ItemKind::Sparrow {
+            &[0, 4]
         } else {
             &[0]
         };
-        let column_count = core_profile_column_count(ui.available_width());
-        for fields in fields.chunks(column_count) {
-            ui.columns(column_count, |columns| {
-                for (&field, column) in fields.iter().zip(columns) {
-                    match field {
-                        0 => draw_gear_rarity(
-                            column,
-                            &mut self.recipe.overrides,
-                            donor.map_or(WeaponRarity::Unknown, |donor| donor.summary.rarity),
-                            kind,
-                            branding,
-                        ),
-                        1 => {
-                            if let (Some(energy), Some(donor)) = (&energy, donor) {
-                                draw_energy_type(column, &mut self.recipe, donor, energy);
-                            }
-                        }
-                        3 => draw_armor_class(column, &mut self.recipe.overrides, inherited_class),
-                        _ => {
-                            if let (Some(energy), Some(donor)) = (&energy, donor) {
-                                draw_energy_capacity(column, &mut self.recipe, donor, energy);
-                            }
+        style::tiles(ui, |ui, width| {
+            for &field in fields {
+                style::tile_column(ui, (width, ("gear-field", field)), |column| match field {
+                    0 => draw_gear_rarity(
+                        column,
+                        &mut self.recipe.overrides,
+                        donor.map_or(WeaponRarity::Unknown, |donor| donor.summary.rarity),
+                        kind,
+                        branding,
+                    ),
+                    1 => {
+                        if let (Some(energy), Some(donor)) = (&energy, donor) {
+                            draw_energy_type(column, &mut self.recipe, donor, energy);
                         }
                     }
-                }
-            });
-        }
+                    3 => draw_armor_class(column, &mut self.recipe.overrides, inherited_class),
+                    4 => vehicle::draw_summon(column, self),
+                    _ => {
+                        if let (Some(energy), Some(donor)) = (&energy, donor) {
+                            draw_energy_capacity(column, &mut self.recipe, donor, energy);
+                        }
+                    }
+                });
+            }
+        });
     }
 
     fn draw_gear_stats(&mut self, ui: &mut egui::Ui, donor: &WeaponDonor, names: &[&'static str]) {
@@ -701,90 +854,40 @@ impl PackageAuthoringApp {
         // The base's stat group caps what each stat can show. Every armor group in the
         // Shadowkeep packages caps them at 42, Armor 1.0 included.
         let cap = catalog.item_stat_maximum(donor.summary.hash);
-        ui.horizontal_wrapped(|ui| {
-            ui.heading(format!("{} Stats", kind.label()));
-            let hint = match kind {
-                ItemKind::Sparrow => {
-                    "Tooltip stats. Use Driving Speed to change motion. The Engine also affects ordinary Sparrow motion."
-                }
-                _ => "Totals include the starting plugs. A change here adds to the armor itself.",
-            };
-            draw_authoring_info_icon(
-                ui,
-                cap.map_or_else(
-                    || hint.to_owned(),
-                    |cap| format!("{hint} Each stat tops out at {cap}."),
-                ),
-            );
-            if ui
-                .add_enabled(
-                    !self.recipe.overrides.investment_stats.is_empty(),
-                    egui::Button::new("Reset Stats"),
-                )
-                .clicked()
-            {
-                self.recipe.overrides.investment_stats.clear();
-            }
-        });
+        let changed = !self.recipe.overrides.investment_stats.is_empty();
+        if stats_header(ui, kind, cap, changed) {
+            self.recipe.overrides.investment_stats.clear();
+        }
         ui.add_space(4.0);
-        let mut edits = Vec::new();
-        egui::Grid::new(("gear-stats", kind))
-            .num_columns(4)
-            .spacing([12.0, 4.0])
-            .show(ui, |ui| {
-                ui.label("Stat");
-                ui.label("Value");
-                ui.label("Base");
-                ui.label("");
-                ui.end_row();
-                for row in &rows {
-                    ui.label(row.name.as_str());
-                    let mut value = row.value();
-                    // A base already past the cap keeps its own value.
-                    let upper = cap.map_or(999, |cap| cap.max(row.base()));
-                    // Plugs can carry a total past the cap. The value is shown as it is: a
-                    // ranged DragValue otherwise clamps it on draw and reports a change, which
-                    // would rewrite the item's own stat with no edit made.
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut value)
-                                .range(0..=upper)
-                                .clamp_existing_to_range(false),
-                        )
-                        .changed()
-                    {
-                        edits.push((row.definition_index, Some(value - row.plugs)));
-                    }
-                    ui.weak(row.base().to_string());
-                    if !row.core {
-                        if ui
-                            .add(egui::Button::new("×").small())
-                            .on_hover_text("Remove this added stat")
-                            .clicked()
-                        {
-                            edits.push((row.definition_index, None));
-                        }
-                    } else if row.item != row.base_item
-                        && ui
-                            .add(egui::Button::new("Reset").small())
-                            .on_hover_text("Restore the base value")
-                            .clicked()
-                    {
-                        edits.push((row.definition_index, None));
-                    } else if row.item == row.base_item {
-                        ui.label("");
-                    }
-                    ui.end_row();
-                }
-                let core = rows.iter().filter(|row| row.core);
-                if kind == ItemKind::Armor && core.clone().next().is_some() {
-                    ui.strong("Total");
-                    ui.strong(core.clone().map(StatRow::value).sum::<i32>().to_string());
-                    ui.weak(core.map(StatRow::base).sum::<i32>().to_string());
-                    ui.label("");
-                    ui.end_row();
-                }
-            });
+        let core = rows.iter().filter(|row| row.core).collect::<Vec<_>>();
+        let total = (kind == ItemKind::Armor && !core.is_empty()).then(|| {
+            (
+                core.iter().map(|row| row.value()).sum::<i32>(),
+                core.iter().map(|row| row.base()).sum::<i32>(),
+            )
+        });
+        let columns = StatColumns::new(
+            ui,
+            rows.iter()
+                .map(|row| row.name.as_str())
+                .chain(total.map(|_| "Total")),
+            (0.0, 0.0),
+        );
+        // A full bar is the cap, or the largest value where the group sets none.
+        let scale = cap.unwrap_or_else(|| {
+            rows.iter()
+                .map(|row| row.value().max(row.base()))
+                .max()
+                .unwrap_or(0)
+                .max(100)
+        });
+        let mut edits = rows
+            .iter()
+            .filter_map(|row| draw_stat_row(ui, &columns, row, (cap, scale)))
+            .collect::<Vec<_>>();
+        if let Some(total) = total {
+            draw_stat_total(ui, &columns, total);
+        }
         // Any stat the base carries or the catalog allows, as on weapons.
         let shown = rows
             .iter()
@@ -812,7 +915,7 @@ impl PackageAuthoringApp {
                         for (definition_index, name, value) in &choices {
                             if ui.button(format!("{definition_index}  {name}")).clicked() {
                                 edits.push((*definition_index, Some(*value)));
-                                ui.close_menu();
+                                ui.close();
                             }
                         }
                     });
@@ -829,18 +932,11 @@ impl PackageAuthoringApp {
         let has_authored_columns = !self.recipe.overrides.socket_columns.is_empty()
             || !self.recipe.overrides.socket_plug_variants.is_empty();
         ui.horizontal_wrapped(|ui| {
-            ui.heading("Perks & Sockets");
+            style::heading(ui, "Perks & Sockets", has_authored_columns);
             draw_authoring_info_icon(
                 ui,
                 "The first choice starts equipped. Right-click a choice to make it the default.",
             );
-            if ui
-                .button("Custom Perks…")
-                .on_hover_text("Open the Custom Perk Workbench.")
-                .clicked()
-            {
-                self.perk_workbench.open = true;
-            }
             self.draw_socket_options(ui, has_authored_columns);
         });
         if self.show_plug_safety_warnings {
@@ -890,26 +986,30 @@ fn draw_armor_class(
     overrides: &mut WeaponRecipeOverrides,
     inherited: Option<u8>,
 ) {
-    let label = ui.horizontal(|ui| {
-        let label = ui.label("Class");
-        draw_authoring_info_icon(ui, "Choose which class can equip this armor. Any Class removes the class restriction. Collections and badges follow this choice. The base supplies its appearance.");
-        label
-    }).inner;
-    let default_label = inherited.map_or_else(
-        || "Base Class".to_owned(),
-        |class| format!("{} (Base Armor)", class_label(class).unwrap_or("Any Class")),
+    let base = inherited.map_or("Base Class", |class| {
+        class_label(class).unwrap_or("Any Class")
+    });
+    let (label, reset) = style::stock_field_name(
+        ui,
+        "Class",
+        "Which class can equip it. Any Class removes the restriction. Collections and badges \
+         follow it",
+        overrides.armor_class.map(|_| base),
     );
+    if reset {
+        overrides.armor_class = None;
+    }
     egui::ComboBox::from_id_salt("armor_class")
-        .selected_text(
-            overrides
-                .armor_class
-                .map_or_else(|| default_label.clone(), |class| class.label().to_owned()),
-        )
+        .selected_text(overrides.armor_class.map_or(base, |class| class.label()))
         .width(ui.available_width())
         .truncate()
         .show_ui(ui, |ui| {
             workbench_style(ui);
-            ui.selectable_value(&mut overrides.armor_class, None, default_label);
+            ui.selectable_value(
+                &mut overrides.armor_class,
+                None,
+                follow_base(ItemKind::Armor),
+            );
             for class in crate::ArmorClass::ALL {
                 ui.selectable_value(&mut overrides.armor_class, Some(class), class.label());
             }
@@ -935,38 +1035,37 @@ pub(super) fn draw_gear_rarity(
             false
         }
     };
-    let default_label = if imported {
-        "Default Rarity".to_owned()
+    // An imported item has no base whose rarity it could follow.
+    let (default_label, follow) = if imported {
+        ("Default Rarity", "Default Rarity".to_owned())
     } else {
-        base_rarity_label(kind, inherited)
+        (inherited.label(), follow_base(kind))
     };
-    ui.horizontal(|ui| {
-        ui.label("Rarity");
-        draw_authoring_info_icon(
-            ui,
-            if imported {
-                if kind == ItemKind::Armor {
-                    "Sets the imported armor's rarity. Exotic armor appears under Exotics for its class and equips one piece at a time.".to_owned()
-                } else {
-                    "Sets the imported item's rarity in Collections and its inventory icon.".to_owned()
-                }
-            }
-            else if crate::collection::GearPage::for_kind(kind).is_some() {
-                format!(
-                    "Exotic needs an Exotic base. Any rarity appears on the {} page under {}.",
-                    branding.name(),
-                    kind.plural()
-                )
-            } else {
-                "Exotic needs an Exotic base. Exotic armor appears under Exotics beside its base and equips one piece at a time.".to_owned()
-            },
-        );
-    });
+    let hint = if imported {
+        if kind == ItemKind::Armor {
+            "Exotic armor appears under Exotics for its class and equips one piece at a time"
+                .to_owned()
+        } else {
+            "Its rarity in Collections and on its inventory icon".to_owned()
+        }
+    } else if crate::collection::GearPage::for_kind(kind).is_some() {
+        format!(
+            "Any rarity appears on the {} page under {}",
+            branding.name(),
+            kind.plural()
+        )
+    } else {
+        "Exotic needs an Exotic base. Exotic armor appears under Exotics beside its base and \
+         equips one piece at a time"
+            .to_owned()
+    };
+    let (label, reset) =
+        style::stock_field_name(ui, "Rarity", &hint, overrides.rarity.map(|_| default_label));
+    if reset {
+        overrides.rarity = None;
+    }
     let base_exotic = inherited == WeaponRarity::Exotic;
-    let selected_text = overrides.rarity.map_or_else(
-        || default_label.clone(),
-        |rarity| recipe_rarity_label(rarity).to_owned(),
-    );
+    let selected_text = overrides.rarity.map_or(default_label, recipe_rarity_label);
     egui::ComboBox::from_id_salt("gear_rarity")
         .selected_text(selected_text)
         .truncate()
@@ -974,7 +1073,7 @@ pub(super) fn draw_gear_rarity(
         .show_ui(ui, |ui| {
             workbench_style(ui);
             if ui
-                .selectable_label(overrides.rarity.is_none(), default_label.clone())
+                .selectable_label(overrides.rarity.is_none(), follow)
                 .clicked()
             {
                 overrides.rarity = None;
@@ -986,12 +1085,14 @@ pub(super) fn draw_gear_rarity(
                 RecipeRarity::Legendary,
                 RecipeRarity::Exotic,
             ] {
-                // Exotic stays with Exotic bases.
-                let allowed = imported || (rarity == RecipeRarity::Exotic) == base_exotic;
+                // Exotic armor stays with Exotic bases, which decide its Collections page.
+                let allowed = imported
+                    || kind != ItemKind::Armor
+                    || (rarity == RecipeRarity::Exotic) == base_exotic;
                 if ui
                     .add_enabled(
                         allowed,
-                        egui::SelectableLabel::new(
+                        egui::Button::selectable(
                             overrides.rarity == Some(rarity),
                             recipe_rarity_label(rarity),
                         ),
@@ -1001,7 +1102,9 @@ pub(super) fn draw_gear_rarity(
                     overrides.rarity = Some(rarity);
                 }
             }
-        });
+        })
+        .response
+        .labelled_by(label.id);
 }
 
 fn draw_energy_type(
@@ -1010,22 +1113,24 @@ fn draw_energy_type(
     donor: &WeaponDonor,
     energy: &EnergySocket,
 ) {
-    ui.horizontal(|ui| {
-        ui.label("Energy Type");
-        draw_authoring_info_icon(ui, "Arc, Solar or Void Energy for mods.");
-    });
+    const HINT: &str = "Arc, Solar or Void Energy for its mods";
     let current = energy.current.map(|(element, _)| element);
     let base = energy.base.map(|(element, _)| element);
-    let label = |element: &str| {
-        if Some(element) == base {
-            format!("{element} (base armor)")
-        } else {
-            element.to_owned()
-        }
+    let modified = current != base;
+    let (name, reset) = match base {
+        Some(base) => style::stock_field_name(ui, "Energy Type", HINT, modified.then_some(base)),
+        None => style::field_name(ui, "Energy Type", HINT, modified),
     };
+    // The base's own type, at the capacity the armor has now where that type offers it.
     let mut chosen = None;
-    egui::ComboBox::from_id_salt("gear_energy_type")
-        .selected_text(current.map_or_else(String::new, label))
+    if reset {
+        match base {
+            Some(element) => chosen = Some(element),
+            None => restore_socket(recipe, energy.index),
+        }
+    }
+    let combo = egui::ComboBox::from_id_salt("gear_energy_type")
+        .selected_text(current.unwrap_or_default())
         .truncate()
         .width(ui.available_width())
         .show_ui(ui, |ui| {
@@ -1038,7 +1143,7 @@ fn draw_energy_type(
                 if ui
                     .add_enabled(
                         available,
-                        egui::SelectableLabel::new(current == Some(element), label(element)),
+                        egui::Button::selectable(current == Some(element), element),
                     )
                     .clicked()
                 {
@@ -1046,6 +1151,7 @@ fn draw_energy_type(
                 }
             }
         });
+    combo.response.labelled_by(name.id);
     if let Some(element) = chosen {
         let capacity = energy.current.map_or(1, |(_, capacity)| capacity);
         // Keep the capacity when the new type has it, otherwise the nearest one it has.
@@ -1067,27 +1173,33 @@ fn draw_energy_capacity(
     donor: &WeaponDonor,
     energy: &EnergySocket,
 ) {
-    ui.horizontal(|ui| {
-        ui.label("Energy Capacity");
-        draw_authoring_info_icon(
+    const HINT: &str = "Stock armor tops out at 10. Capacity 10 adds 2 to every stat";
+    let base_capacity = energy.base.map(|(_, capacity)| capacity);
+    let modified = energy.current.map(|(_, capacity)| capacity) != base_capacity;
+    let (name, reset) = match base_capacity.map(|capacity| capacity.to_string()) {
+        Some(base) => style::stock_field_name(
             ui,
-            "Stock armor tops out at 10. Capacity 10 adds 2 to every stat.",
-        );
-    });
+            "Energy Capacity",
+            HINT,
+            modified.then_some(base.as_str()),
+        ),
+        None => style::field_name(ui, "Energy Capacity", HINT, modified),
+    };
     let Some((element, current)) = energy.current else {
         ui.add_enabled(false, egui::Button::new("Unknown"));
         return;
     };
-    let label = |capacity: u8| {
-        if energy.base == Some((element, capacity)) {
-            format!("{capacity} (base armor)")
-        } else {
-            capacity.to_string()
-        }
-    };
+    // The base's own capacity in the type the armor has now, or the base's own plug where that
+    // type does not offer it.
     let mut chosen = None;
-    egui::ComboBox::from_id_salt("gear_energy_capacity")
-        .selected_text(label(current))
+    if reset {
+        chosen = base_capacity.and_then(|capacity| energy.plugs.get(&(element, capacity)).copied());
+        if chosen.is_none() {
+            restore_socket(recipe, energy.index);
+        }
+    }
+    let combo = egui::ComboBox::from_id_salt("gear_energy_capacity")
+        .selected_text(current.to_string())
         .truncate()
         .width(ui.available_width())
         .show_ui(ui, |ui| {
@@ -1095,13 +1207,14 @@ fn draw_energy_capacity(
             for (&(candidate, capacity), &plug) in &energy.plugs {
                 if candidate == element
                     && ui
-                        .selectable_label(capacity == current, label(capacity))
+                        .selectable_label(capacity == current, capacity.to_string())
                         .clicked()
                 {
                     chosen = Some(plug);
                 }
             }
         });
+    combo.response.labelled_by(name.id);
     if let (Some(plug), Some(socket)) = (chosen, donor.sockets.get(energy.index)) {
         set_socket_plug(recipe, donor, socket, plug);
     }

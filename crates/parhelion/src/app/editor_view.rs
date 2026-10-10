@@ -107,6 +107,17 @@ impl PackageAuthoringApp {
         let id = egui::Id::new("weapon-preview");
         let width = ui.available_width();
         let height = preview_height(width, band);
+        // The appearance's icon stands in until its model is read.
+        let icon = self
+            .recipe
+            .presentation_donor
+            .as_ref()
+            .unwrap_or(&self.recipe.donor)
+            .item_hash
+            .parse_u32()
+            .ok()
+            .and_then(|hash| catalog.item_icon(ui.ctx(), hash));
+        sundial::ui::model_preview::still::placeholder(ui.ctx(), id, icon);
         let response = sundial::ui::model_preview::still::show(
             ui,
             id,
@@ -114,8 +125,7 @@ impl PackageAuthoringApp {
             appearance.clone(),
             &[],
             egui::vec2(width, height),
-        )
-        .on_hover_text("Drag to rotate · Double-click to reset");
+        );
         if let Some(appearance) = appearance {
             sundial::ui::model_preview::pop_out(
                 ui,
@@ -284,42 +294,33 @@ impl PackageAuthoringApp {
             donor.is_some_and(|gameplay| variable_damage_supported(&gameplay.summary));
         let mut inventory_slot_changed = false;
         let mut damage_changed = false;
-        // Six fields fill one wide row or two rows of three.
-        let column_count = match core_profile_column_count(ui.available_width()) {
-            5 => 6,
-            count => count,
-        };
-        let fields: &[usize] = &[0, 1, 2, 3, 4, 5];
-        for fields in fields.chunks(column_count) {
-            ui.columns(column_count, |columns| {
-                for (&field, column) in fields.iter().zip(columns) {
-                    match field {
-                        0 | 1 => {
-                            let changed = draw_combat_profile_control(
-                                column,
-                                &mut self.recipe.overrides,
-                                donor,
-                                field == 0,
-                                variable_available,
-                                damage_locked,
-                            );
-                            inventory_slot_changed |= field == 0 && changed;
-                            damage_changed |= field == 1 && changed;
-                        }
-                        2 => draw_ammo_type_control(column, &mut self.recipe.overrides, donor),
-                        3 => draw_rarity_control(column, &mut self.recipe.overrides, donor),
-                        4 => draw_power_cap_control(
+        style::tiles(ui, |ui, width| {
+            for field in 0..6 {
+                style::tile_column(ui, (width, ("weapon-field", field)), |column| match field {
+                    0 | 1 => {
+                        let changed = draw_combat_profile_control(
                             column,
                             &mut self.recipe.overrides,
                             donor,
-                            self.catalog.as_ref(),
-                        ),
-                        5 => self.draw_behavior_cell(column, donor),
-                        _ => {}
+                            field == 0,
+                            variable_available,
+                            damage_locked,
+                        );
+                        inventory_slot_changed |= field == 0 && changed;
+                        damage_changed |= field == 1 && changed;
                     }
-                }
-            });
-        }
+                    2 => draw_ammo_type_control(column, &mut self.recipe.overrides, donor),
+                    3 => draw_rarity_control(column, &mut self.recipe.overrides, donor),
+                    4 => draw_power_cap_control(
+                        column,
+                        &mut self.recipe.overrides,
+                        donor,
+                        self.catalog.as_ref(),
+                    ),
+                    _ => self.draw_behavior_cell(column, donor),
+                });
+            }
+        });
         draw_combat_profile_diagnostics(ui, &self.recipe.overrides, donor);
         if inventory_slot_changed && let Some(gameplay_donor) = donor {
             reconcile_presentation_donor(
@@ -335,19 +336,28 @@ impl PackageAuthoringApp {
         ui: &mut egui::Ui,
         donor: Option<&WeaponDonor>,
     ) {
-        ui.horizontal(|ui| {
-            ui.heading("Gameplay");
-            draw_authoring_info_icon(
-                ui,
-                "How the weapon fires and behaves: its runtime, and the parts it takes from other \
-                 weapons. Test in game.",
-            );
-        });
-        self.draw_runtime_source_summary(ui);
-        ui.add_space(10.0);
-        self.draw_weapon_pattern_picker(ui, donor);
-        ui.add_space(14.0);
-        self.draw_gameplay_parts(ui, donor);
+        ui.heading("Gameplay")
+            .on_hover_text("How the weapon fires and behaves, and the parts it takes from others");
+        ui.add_space(6.0);
+        // Parts beside the Barrel's settings when both fit, the projectile's cards under them.
+        let column = egui::Layout::top_down(egui::Align::Min);
+        if let Some(parts_width) = workbench_left_column_width(ui.available_width()) {
+            let barrel_width = ui.available_width() - parts_width - ui.spacing().item_spacing.x;
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(egui::vec2(parts_width, 0.0), column, |ui| {
+                    ui.set_width(parts_width);
+                    self.draw_gameplay_parts(ui, donor);
+                });
+                ui.allocate_ui_with_layout(egui::vec2(barrel_width, 0.0), column, |ui| {
+                    ui.set_width(barrel_width);
+                    self.draw_barrel_controls(ui);
+                });
+            });
+        } else {
+            self.draw_gameplay_parts(ui, donor);
+            self.draw_barrel_controls(ui);
+        }
+        self.draw_fired_projectile(ui);
         if self.show_experimental_options {
             ui.add_space(12.0);
             ui.separator();
@@ -532,10 +542,8 @@ impl PackageAuthoringApp {
                     |ui| {
                         ui.set_width(width);
                         ui.spacing_mut().item_spacing.x = 4.0;
-                        ui.weak("Model");
-                        draw_authoring_info_icon(
-                            ui,
-                            "Where the model comes from: an ornament, or an imported model.",
+                        ui.weak("Model").on_hover_text(
+                            "Where the model comes from: an ornament, or an imported model",
                         );
                     },
                 );
@@ -627,23 +635,18 @@ impl PackageAuthoringApp {
     #[cfg(feature = "d2-model-importer")]
     fn draw_shader_glow(&mut self, ui: &mut egui::Ui) {
         let imported = self.recipe.overrides.imported_graph.is_some();
-        ui.horizontal(|ui| {
-            let response = ui.add_enabled(
-                !imported,
-                egui::Checkbox::new(
-                    &mut self.recipe.overrides.shader_glow,
-                    "Shaders Light Glowing Parts",
-                ),
-            );
-            if imported {
-                response.on_disabled_hover_text("Imported models keep their own materials.");
-            }
-            draw_authoring_info_icon(
-                ui,
-                "Shaders with an animated glow also light this weapon's glowing parts, such as \
-                 sights and vents. Other parts stay as they are. Test in game.",
-            );
-        });
+        ui.add_enabled(
+            !imported,
+            egui::Checkbox::new(
+                &mut self.recipe.overrides.shader_glow,
+                "Shaders Light Glowing Parts",
+            ),
+        )
+        .on_hover_text(
+            "Shaders with an animated glow also light this weapon's glowing parts, such as sights \
+             and vents. Other parts stay as they are. Test in game",
+        )
+        .on_disabled_hover_text("Imported models keep their own materials.");
     }
 
     /// Whether a weapon wearing another type's appearance shows that type, and files under it in
@@ -667,19 +670,14 @@ impl PackageAuthoringApp {
         if base == look {
             return;
         }
-        ui.horizontal(|ui| {
-            ui.checkbox(
-                &mut self.recipe.overrides.base_type,
-                format!("Keep {base} Type"),
-            );
-            draw_authoring_info_icon(
-                ui,
-                format!(
-                    "Shows {base} as the weapon type and files it under {base} in Collections. \
-                     Off, it takes {look} from the appearance."
-                ),
-            );
-        });
+        ui.checkbox(
+            &mut self.recipe.overrides.base_type,
+            format!("Keep {base} Type"),
+        )
+        .on_hover_text(format!(
+            "Shows {base} as the weapon type and files it under {base} in Collections. Off, it \
+             takes {look} from the appearance"
+        ));
     }
 
     /// One of the Appearance tab's four smaller parts, by position.
@@ -992,7 +990,7 @@ impl PackageAuthoringApp {
                                 locale_index,
                                 ..Default::default()
                             });
-                            ui.close_menu();
+                            ui.close();
                         }
                     }
                 });
@@ -1094,21 +1092,19 @@ impl PackageAuthoringApp {
             // Rendering preserves explicit saved overrides; normalize only on an edit.
             let donor_exact = self.recipe.overrides.investment_stats.is_empty()
                 && self.recipe.overrides.removed_investment_stats.is_empty();
-            ui.horizontal_wrapped(|ui| {
-                ui.heading("Weapon Stats");
-                draw_authoring_info_icon(
-                    ui,
-                    "Preview shows the in-game value, such as RPM. Added stats need stat group support.",
-                );
-                if ui
-                    .add_enabled(!donor_exact, egui::Button::new("Reset Stats"))
-                    .on_hover_text("Reset to the gameplay donor's stats")
-                    .clicked()
-                {
-                    self.recipe.overrides.investment_stats.clear();
-                    self.recipe.overrides.removed_investment_stats.clear();
-                }
-            });
+            let reset = ui
+                .horizontal_wrapped(|ui| {
+                    style::heading(ui, "Weapon Stats", !donor_exact).on_hover_text(
+                        "Each row reads its in-game value, such as RPM, then the raw value saved \
+                         to the weapon. Added stats need stat group support",
+                    );
+                    !donor_exact && style::reset_icon(ui, "Reset Weapon Stats")
+                })
+                .inner;
+            if reset {
+                self.recipe.overrides.investment_stats.clear();
+                self.recipe.overrides.removed_investment_stats.clear();
+            }
             ui.add_space(4.0);
             egui::CollapsingHeader::new("Stat Options")
                 .default_open(false)
@@ -1124,12 +1120,22 @@ impl PackageAuthoringApp {
                 .map(|warning| (super::stat_editor::ROUNDS_PER_MINUTE_HASH, warning))
                 .into_iter()
                 .collect::<Vec<_>>();
+            // In the order the game lists the stats of the group the weapon displays with.
+            let order = self
+                .recipe
+                .overrides
+                .stat_group_index
+                .or(donor.summary.stat_group_index)
+                .zip(self.catalog.as_ref())
+                .map_or_else(Vec::new, |(group, catalog)| {
+                    catalog.stat_display_order(group)
+                });
             draw_investment_stats(
                 ui,
                 &mut self.recipe.overrides.investment_stats,
                 &mut self.recipe.overrides.removed_investment_stats,
                 donor,
-                self.show_internal_stats,
+                (self.show_internal_stats, &order),
                 &warnings,
             );
         } else {
@@ -1175,16 +1181,13 @@ impl PackageAuthoringApp {
             let has_authored_columns = !self.recipe.overrides.socket_columns.is_empty()
                 || !self.recipe.overrides.socket_plug_variants.is_empty();
             ui.horizontal_wrapped(|ui| {
-                ui.heading("Perks & Sockets");
-                draw_authoring_info_icon(ui,
-                    "The first choice starts equipped. Right-click a choice to make it the default. Click a role to change it. Perks that work together need separate sockets. Saved copies keep their choices.");
-                if ui
-                    .button("Custom Perks…")
-                    .on_hover_text("Open the Custom Perk Workbench.")
-                    .clicked()
-                {
-                    self.perk_workbench.open = true;
-                }
+                style::heading(ui, "Perks & Sockets", has_authored_columns);
+                draw_authoring_info_icon(
+                    ui,
+                    "The first choice starts equipped. Right-click a choice to make it the \
+                     default. Click a role to change it. Perks that work together need separate \
+                     sockets. Saved copies keep their choices.",
+                );
                 self.draw_socket_options(ui, has_authored_columns);
             });
             if self.show_plug_safety_warnings {
@@ -1228,18 +1231,36 @@ impl PackageAuthoringApp {
         }
     }
 
+    /// What follows the Perks & Sockets heading: the plugs the pickers offer while that is not the
+    /// usual scope, Custom Perks, and the section's overflow menu with socket details and Restore
+    /// All Base Sockets. Each picker's Plugs Offered dropdown changes the scope, which reads in the
+    /// words of the base item, as Dawn's do.
     pub(super) fn draw_socket_options(&mut self, ui: &mut egui::Ui, has_authored_columns: bool) {
-        draw_plug_safety_selector(
-            ui,
-            "parhelion-socket-column-plug-safety",
-            &mut self.plug_selection_mode,
-        );
-        ui.menu_button("Socket Options", |ui| {
+        if self.plug_selection_mode != PlugSelectionMode::default() {
+            let item = self.recipe.donor.item_hash.parse_u32().ok();
+            let scope = match (self.catalog.as_ref(), item) {
+                (Some(catalog), Some(item)) => {
+                    catalog.plug_scope_label(self.plug_selection_mode, item)
+                }
+                _ => self.plug_selection_mode.label().to_owned(),
+            };
+            let badge = style::badge(ui, &scope).on_hover_text("Plugs Offered");
+            style::named_control(badge, format!("Plugs Offered: {scope}"));
+        }
+        if ui
+            .button("Custom Perks…")
+            .on_hover_text("Open the Custom Perk Workbench.")
+            .clicked()
+        {
+            self.perk_workbench.open = true;
+        }
+        let mut restore = false;
+        style::more_menu(ui, "Perks & Sockets", |ui| {
+            workbench_style(ui);
             // Socket details are a weapon option. A gear socket keeps its base's plug sets.
             if self.show_experimental_options && self.recipe.kind.is_weapon() {
                 ui.checkbox(&mut self.show_technical_socket_rows, "Show Socket Details")
                     .on_hover_text("Shows extra settings under each socket.");
-                ui.separator();
             }
             if ui
                 .add_enabled(
@@ -1249,15 +1270,18 @@ impl PackageAuthoringApp {
                 .on_hover_text("Remove every socket change and custom perk.")
                 .clicked()
             {
-                if self.recipe.overrides.socket_plug_variants.is_empty() {
-                    self.restore_base_sockets();
-                } else {
-                    ui.ctx()
-                        .data_mut(|data| data.insert_temp(restore_base_sockets_id(), true));
-                }
-                ui.close_menu();
+                restore = true;
+                ui.close();
             }
         });
+        if restore {
+            if self.recipe.overrides.socket_plug_variants.is_empty() {
+                self.restore_base_sockets();
+            } else {
+                ui.ctx()
+                    .data_mut(|data| data.insert_temp(restore_base_sockets_id(), true));
+            }
+        }
         self.draw_restore_base_sockets_confirmation(ui.ctx());
     }
 
@@ -1309,7 +1333,7 @@ fn restore_base_sockets_id() -> egui::Id {
 /// points the weapon rows have always used.
 fn text_label_width(ui: &egui::Ui, kind: crate::ItemKind) -> f32 {
     let font = egui::TextStyle::Body.resolve(ui.style());
-    let width = ui.fonts(|fonts| {
+    let width = ui.fonts_mut(|fonts| {
         fonts
             .layout_no_wrap(format!("{} Name", kind.label()), font, egui::Color32::WHITE)
             .size()
@@ -1318,7 +1342,7 @@ fn text_label_width(ui: &egui::Ui, kind: crate::ItemKind) -> f32 {
     (width + 6.0).max(90.0)
 }
 
-/// The game identities a recipe carries. A subclass has no Collections entry, so it has no
+/// The game identities a recipe carries. A subclass or mod has no Collections entry, so it has no
 /// collectible or unlock.
 fn game_identity_fields(
     recipe: &WeaponRecipe,
@@ -1328,7 +1352,7 @@ fn game_identity_fields(
         "Item",
         recipe.identity.item_hash.to_string(),
     )];
-    if recipe.kind != ItemKind::Subclass {
+    if recipe.kind.has_collections() {
         fields.extend([
             IdentityField::new("Collectible", recipe.identity.collectible_hash.to_string()),
             IdentityField::new("Unlock", recipe.identity.unlock_hash.to_string()),
@@ -1359,11 +1383,7 @@ fn package_identity_fields(
             "Item Table Index",
         ]
         .into_iter()
-        .chain(
-            collection
-                .into_iter()
-                .filter(|_| kind != ItemKind::Subclass),
-        )
+        .chain(collection.into_iter().filter(|_| kind.has_collections()))
         .map(IdentityField::assigned_during_build)
         .collect();
     };

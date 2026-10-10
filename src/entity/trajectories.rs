@@ -52,7 +52,14 @@ pub fn projectile_trajectory_capacity(
     owner_tag: u32,
     instance: usize,
 ) -> Result<usize, String> {
-    pool(owner, owner_tag, instance).map(|pool| pool.count)
+    let pool = pool(owner, owner_tag, instance)?;
+    let definition = typed_target(owner, instance, owner_tag, 0x8080_388F)?;
+    if read_u32(owner, instance + FREE_ROWS)? as usize != pool.count
+        || read_u64(owner, definition + DEFINITION_CAPACITY)? != pool.count as u64
+    {
+        return Err("The projectile's instance and definition trajectory counts disagree".into());
+    }
+    Ok(pool.count)
 }
 
 /// Gives the projectile instance at `instance` room for `capacity` trajectories, in a private copy

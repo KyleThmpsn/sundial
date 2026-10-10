@@ -51,7 +51,7 @@ pub(crate) fn draw_header_lock(
     flags: Option<u8>,
     enabled: bool,
 ) -> Option<Option<u8>> {
-    let locked = flags.unwrap_or_default() & crate::account_contract::INVENTORY_FLAG_LOCKED != 0;
+    let locked = flags.unwrap_or_default() & crate::account::contract::INVENTORY_FLAG_LOCKED != 0;
     let rect = egui::Rect::from_min_size(
         header.rect.right_bottom() - egui::vec2(47.0, 19.0),
         egui::vec2(22.0, 18.0),
@@ -99,44 +99,43 @@ pub(crate) fn draw_context_menu(
             .on_hover_text("Item Menu")
         })
         .inner;
-    let menu_id = egui::Id::new("item_header_context_menu");
-    let mut state = egui::menu::BarState::load(ui.ctx(), menu_id);
-    egui::menu::MenuRoot::context_click_interaction(header, &mut state);
-    if button.clicked() {
-        let mut position = button.rect.left_bottom();
-        if let Some(transform) = ui.ctx().layer_transform_to_global(header.layer_id) {
-            position = transform * position;
-        }
-        egui::menu::MenuRoot::handle_menu_response(
-            &mut state,
-            egui::menu::MenuResponse::Create(position, header.id),
-        );
-    }
-    state.show(header, |ui| {
-        if let Some((hash, context)) = &item
-            && ui.button("Inspect Item").clicked()
-        {
-            request_hash_inspection_with_context(ui.ctx(), *hash, context.clone());
-            ui.close_menu();
-        }
-        if let Some((hash, context)) = &item
-            && ui.button("Model Preview").clicked()
-        {
-            request_model_preview(ui.ctx(), *hash, context.clone());
-            ui.close_menu();
-        }
-        contents(ui);
-        if let Some((hash, _)) = item {
-            ui.separator();
-            if ui.button("Copy Hash (Hex)").clicked() {
-                ui.ctx().copy_text(format_hash_hex(hash));
-                ui.close_menu();
+    let menu_id = header.id.with("item_header_context_menu");
+    // The menu anchors to the button and opens from either the button or a right click on
+    // the header.
+    let open = if header.secondary_clicked() {
+        Some(egui::SetOpenCommand::Bool(true))
+    } else if button.clicked() {
+        Some(egui::SetOpenCommand::Toggle)
+    } else {
+        None
+    };
+    egui::Popup::menu(&button)
+        .id(menu_id)
+        .open_memory(open)
+        .show(|ui| {
+            if let Some((hash, context)) = &item
+                && ui.button("Inspect Item").clicked()
+            {
+                request_hash_inspection_with_context(ui.ctx(), *hash, context.clone());
+                ui.close();
             }
-            if ui.button("Copy Hash (Decimal)").clicked() {
-                ui.ctx().copy_text(hash.to_string());
-                ui.close_menu();
+            if let Some((hash, context)) = &item
+                && ui.button("Model Preview").clicked()
+            {
+                request_model_preview(ui.ctx(), *hash, context.clone());
+                ui.close();
             }
-        }
-    });
-    state.store(ui.ctx(), menu_id);
+            contents(ui);
+            if let Some((hash, _)) = item {
+                ui.separator();
+                if ui.button("Copy Hash (Hex)").clicked() {
+                    ui.ctx().copy_text(format_hash_hex(hash));
+                    ui.close();
+                }
+                if ui.button("Copy Hash (Decimal)").clicked() {
+                    ui.ctx().copy_text(hash.to_string());
+                    ui.close();
+                }
+            }
+        });
 }

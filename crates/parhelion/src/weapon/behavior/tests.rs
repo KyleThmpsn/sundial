@@ -132,13 +132,12 @@ fn resolve_rejects_a_content_group_the_owner_does_not_hold() {
 /// Pins the offsets confirmed in game, so a change to the reader cannot silently move them.
 /// Hard Light and SUROS Regime share the auto rifle content owner.
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn the_element_switch_graft_matches_the_offsets_verified_in_game() {
     use sundial::package_authoring::open_shadowkeep_package_manager;
     const AUTO_RIFLE_OWNER: u32 = 0x8152_9461;
     const SUROS_GROUP: u32 = 0xA581_883B;
-    let path =
-        std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let path = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(&path).unwrap();
     let owner = manager.read_tag(TagHash(AUTO_RIFLE_OWNER)).unwrap();
     let resource = 0x80_usize;
@@ -251,6 +250,7 @@ fn the_build_keeps_an_authored_intrinsic_perk_and_repoints_it() {
     // Authored without the editor: the custom perk leads the lane, the donor's frame follows.
     overrides.socket_columns = vec![Some(column(vec![0x1234_5678, 0x0000_0010], None)), None];
     overrides.socket_plug_variants = vec![crate::item::WeaponSocketPlugVariantOverride {
+        offer_everywhere: false,
         replace_effects: false,
         investment_stats: Vec::new(),
         socket_index: 0,
@@ -408,13 +408,12 @@ fn a_socket_the_author_turned_into_a_trait_column_is_where_the_perk_lands() {
 /// it once per request put two edits over the same bytes and the overlap guard failed the
 /// build, so Hard Light could not compile at all.
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn a_graph_and_its_element_switch_apply_one_record_between_them() {
     use sundial::package_authoring::{
         open_shadowkeep_package_manager, runtime::load_weapon_runtime_entity_with_manager,
     };
-    let path =
-        std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let path = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(&path).unwrap();
     let rifle = load_weapon_runtime_entity_with_manager(&manager, 0xD84E_04AA).unwrap();
     let graft = |requested: &[String]| {
@@ -459,14 +458,13 @@ fn a_graph_and_its_element_switch_apply_one_record_between_them() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 #[allow(clippy::cognitive_complexity)]
 fn state_only_and_graph_state_sources_compile_for_another_family() {
     use sundial::package_authoring::{
         open_shadowkeep_package_manager, runtime::load_weapon_runtime_entity_with_manager,
     };
-    let path =
-        std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let path = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(&path).unwrap();
     let sniper = load_weapon_runtime_entity_with_manager(&manager, 0xBB46_CCD3).unwrap();
 
@@ -585,11 +583,10 @@ fn record_and_labels(
 /// rounds and still exposes no launch speed to raise, which is exactly the sort of guess this
 /// catches.
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn every_launching_source_is_recorded() {
     use sundial::package_authoring::open_shadowkeep_package_manager;
-    let path =
-        std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let path = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(&path).unwrap();
     let measured = CATALOG
         .iter()
@@ -610,12 +607,11 @@ fn every_launching_source_is_recorded() {
 /// The sources offering a firing pattern are a measurement too: each one's own plugs are read
 /// from the packages, perk by perk, for a change to the barrel's Rounds per Burst.
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn every_burst_source_is_recorded() {
     use sundial::package_authoring::runtime::modifiers::BARREL_ROUNDS_PER_BURST;
     use sundial::package_authoring::{open_shadowkeep_package_manager, resolve_live_named_tag};
-    let path =
-        std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let path = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(&path).unwrap();
     let globals = manager
         .read_tag(resolve_live_named_tag(&manager, "investment_globals", None).unwrap())
@@ -647,14 +643,13 @@ fn every_burst_source_is_recorded() {
 
 /// The boost only fires when the graft launches something the host cannot speed up itself.
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn the_speed_boost_scales_a_launching_graft_and_leaves_every_other_case_alone() {
     use sundial::package_authoring::{
         open_shadowkeep_package_manager,
         runtime::load_weapon_runtime_entity_at_pattern_index_with_manager,
     };
-    let path =
-        std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let path = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(&path).unwrap();
     let launching = behavior("anarchy-graph").expect("Anarchy launches grenades");
     let BehaviorSource::Graph { tag: launching } = launching.source else {
@@ -770,21 +765,20 @@ fn catalogue_ids_are_unique_and_the_element_switch_resolves_per_owner() {
 /// already produced twice, so it is checked rather than assumed.
 /// Carrying a source weapon's labels must never cost a graft that worked before.
 ///
-/// Reading those labels needs the source weapon's own block, which four catalogued sources
-/// have no route to: they carry no sandbox-pattern runtime row. Failing there took the whole
-/// build with it, so every entry is compiled against a real host here.
+/// Reading those labels needs the source weapon's selected block. A shared pattern can have a
+/// different row identity from the source item. The staged behavior-label workflow verifies
+/// that those sources transfer their additional labels without changing the host's type.
 /// A copied label array is only as good as the row size it was read with. Every block that
 /// has labels is parsed here and its rows are required to end exactly where the next array
 /// marker begins, which is what proves the count and the row stride together. A wrong stride
 /// would not fail a build: it would write a corrupt array into the game.
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn every_block_with_labels_parses_at_the_row_size_grafts_copy() {
     use sundial::package_authoring::{
         open_shadowkeep_package_manager, runtime::load_weapon_runtime_entity_with_manager,
     };
-    let path =
-        std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let path = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(&path).unwrap();
     let catalog = crate::test_support::catalog(path.parent().unwrap()).unwrap();
     let mut seen = BTreeSet::new();
@@ -856,13 +850,12 @@ fn every_block_with_labels_parses_at_the_row_size_grafts_copy() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn every_entry_compiles_a_graft_onto_a_real_host() {
     use sundial::package_authoring::{
         open_shadowkeep_package_manager, runtime::load_weapon_runtime_entity_with_manager,
     };
-    let path =
-        std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let path = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(&path).unwrap();
     let catalog = crate::test_support::catalog(path.parent().unwrap()).unwrap();
     let host = catalog
@@ -901,10 +894,9 @@ fn every_entry_compiles_a_graft_onto_a_real_host() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn every_entry_pins_the_plugs_its_own_weapon_equips() {
-    let path =
-        std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let path = crate::test_support::stock_packages();
     let catalog = crate::test_support::catalog(path.parent().unwrap()).unwrap();
     let mut problems = Vec::new();
     for entry in CATALOG {

@@ -1,7 +1,9 @@
 pub mod buffer;
 mod cache;
+pub(crate) mod dxbc;
 pub mod identity;
 pub mod inputs;
+pub mod packed;
 pub mod program;
 pub mod rigid;
 #[cfg(windows)]
@@ -33,6 +35,7 @@ unsafe extern "system" {
         code: *mut *mut c_void,
         errors: *mut *mut c_void,
     ) -> i32;
+    fn D3DStripShader(data: *const u8, size: usize, flags: u32, output: *mut *mut c_void) -> i32;
 }
 
 #[cfg(windows)]
@@ -101,6 +104,24 @@ fn compile_uncached(text: &str, vertex: bool) -> Result<(Vec<u8>, String)> {
         bytes.starts_with(b"DXBC"),
         "shader compiler returned invalid bytecode"
     );
+    let mut stripped = std::ptr::null_mut();
+    // SAFETY: The live DXBC buffer is passed with its exact length. The compiler
+    // owns the returned blob, which take_blob reads and releases once.
+    let (hr, bytes) = unsafe {
+        let hr = D3DStripShader(bytes.as_ptr(), bytes.len(), 1, &mut stripped);
+        (hr, take_blob(stripped))
+    };
+    ensure!(hr >= 0, "shader reflection stripping failed: {hr:08X}");
+    // Native resources retain signatures and executable tokens, without compiler
+    // reflection and statistics. D3DStripShader also updates the DXBC checksum.
+    program::Program::new(
+        if vertex {
+            identity::Stage::Vertex
+        } else {
+            identity::Stage::Pixel
+        },
+        bytes.clone(),
+    )?;
     Ok((bytes, messages))
 }
 

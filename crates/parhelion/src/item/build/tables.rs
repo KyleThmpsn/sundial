@@ -48,6 +48,11 @@ pub(super) struct WeaponBuildContext<'a> {
     pub sandbox_perk_definition_template: &'a [u8; ITEM_SANDBOX_PERK_ROW_SIZE],
     pub sandbox_perk_string_template: &'a [u8],
     pub custom_plugs: &'a [ResolvedCustomPlug],
+    /// Each mod's perk and its compiled definition and strings, in the same order.
+    pub mods: (
+        &'a [ResolvedCustomPlug],
+        &'a super::custom_plugs::CustomPlugPayloads,
+    ),
     /// Each authored subclass entry's compiled custom perks and icon, by item ordinal.
     pub subclass_entries: &'a [Vec<crate::subclass::authoring::CompiledEntry>],
     pub sandbox_pattern_layout: KeyedAuxiliaryLayout,
@@ -105,10 +110,10 @@ impl WeaponTables {
         let mut strings = donor.strings.clone();
         let authored_pattern_index = self.next_pattern_index(donor, context)?;
         if !donor.weapon.kind.is_weapon() {
-            let author_item = if donor.weapon.kind == ItemKind::Subclass {
-                Self::author_subclass
-            } else {
-                Self::author_gear
+            let author_item = match donor.weapon.kind {
+                ItemKind::Subclass => Self::author_subclass,
+                ItemKind::Mod => Self::author_mod,
+                _ => Self::author_gear,
             };
             let row = WeaponRow {
                 current_unlock_count,
@@ -412,6 +417,9 @@ impl WeaponTables {
         {
             crate::subclass::native::set_class(&mut definition, class)?;
         }
+        if let Some(damage) = donor.weapon.overrides.subclass_damage_type {
+            crate::subclass::native::set_damage_type(&mut strings, damage)?;
+        }
         let class_of = |definition: &[u8]| {
             sundial::package_authoring::investment_schema::subclass_equipment_class(definition)
                 .map_err(invalid)
@@ -454,6 +462,67 @@ impl WeaponTables {
             plan.subclass = Some(details);
         }
         Ok(())
+    }
+
+    /// A mod is its custom perk, compiled from the template plug into the item's own place. It
+    /// takes the rows a private socket plug takes, its type's presentation and a hash-index row
+    /// so sockets and accounts resolve it, and has no Collections entry or unlock.
+    fn author_mod(
+        &mut self,
+        context: &WeaponBuildContext<'_>,
+        ordinal: usize,
+        donor: &resolve::ResolvedWeapon,
+        row: WeaponRow,
+        _template_definition: Vec<u8>,
+        _template_strings: Vec<u8>,
+    ) -> AuthoringResult<()> {
+        let (plugs, payloads) = context.mods;
+        let position = plugs
+            .iter()
+            .position(|plug| plug.owner == Some(ordinal))
+            .ok_or_else(|| validation("The mod's perk was not compiled"))?;
+        let plug = &plugs[position];
+        let (Some(definition), Some(strings)) = (
+            payloads.definitions.get(position),
+            payloads.strings.get(position),
+        ) else {
+            return Err(validation("The mod's compiled perk is missing"));
+        };
+        let (definition, strings) = (definition.payload.clone(), strings.payload.clone());
+        if read_u32(&definition, ITEM_DEFINITION_HASH_OFFSET)? != row.identity.item_hash
+            || plug.authored_item_index != row.item_index
+            || plug.authored_definition_tag != row.definition_tag
+            || plug.authored_string_tag != row.string_tag
+        {
+            return Err(validation(
+                "The mod's compiled perk does not name the mod's own item",
+            ));
+        }
+        validate_authored_item_icon(
+            context.authored_item_icons,
+            &strings,
+            row.identity.item_hash,
+            row.authored_icon_index,
+            row.authored_icon_container,
+        )?;
+        self.append_presentation(donor, &row, context, ordinal)?;
+        if let Some(classification_index) = plug.classification_item_index {
+            set_dense_item_presentation_type(
+                &mut self.dense,
+                usize::from(row.item_index),
+                classification_index,
+            )?;
+        }
+        self.append_item_rows(donor, &row)?;
+        self.item_hash_index = append_item_hash_index_row(
+            std::mem::take(&mut self.item_hash_index),
+            plug.source_item_hash,
+            u16::try_from(plug.source_item_index)
+                .map_err(|_| invalid("The mod's template index does not fit 16 bits"))?,
+            row.identity.item_hash,
+            row.item_index,
+        )?;
+        self.record_authored(donor, &row, definition, strings)
     }
 
     fn record_authored(
@@ -947,29 +1016,33 @@ impl WeaponTables {
             identity.unlock_hash,
         )?;
         validate_authored_tables(
-            &self.item_table,
-            &self.item_strings,
-            &self.collectibles,
-            &self.collectible_displays,
-            &self.unlocks,
-            &self.unlock_displays,
-            collectible_identity,
-            definition_tag,
-            string_tag,
-            item_index,
-            collectible_index,
-            unlock_definition_index,
-            unlock_slot,
-            authored_icon_index,
-            LOCALIZATION_DONOR_TABLE_INDEX as u32,
-            collection_material_set,
-            &parents,
-            donor
-                .weapon
-                .text
-                .collection_requirement
-                .as_ref()
-                .map(|_| identity.collection_requirement_hash),
+            AuthoredTables {
+                items: &self.item_table,
+                strings: &self.item_strings,
+                collectibles: &self.collectibles,
+                collectible_displays: &self.collectible_displays,
+                unlocks: &self.unlocks,
+                displays: &self.unlock_displays,
+            },
+            AuthoredRows {
+                identity: collectible_identity,
+                definition_tag,
+                string_tag,
+                item_index,
+                collectible_index,
+                unlock_index: unlock_definition_index,
+                unlock_slot,
+                collectible_icon_index: authored_icon_index,
+                localization_table_index: LOCALIZATION_DONOR_TABLE_INDEX as u32,
+                expected_material_set: collection_material_set,
+                expected_presentation_parents: &parents,
+                collection_requirement_hash: donor
+                    .weapon
+                    .text
+                    .collection_requirement
+                    .as_ref()
+                    .map(|_| identity.collection_requirement_hash),
+            },
         )?;
         Ok(())
     }

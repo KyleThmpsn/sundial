@@ -14,7 +14,7 @@ const DESTINY_TEXT_FONT_FAMILY: &str = "Sundial Destiny text";
 pub(crate) fn destiny_text(ui: &egui::Ui, text: impl Into<String>) -> egui::RichText {
     let text = egui::RichText::new(text.into());
     let family = egui::FontFamily::Name(DESTINY_TEXT_FONT_FAMILY.into());
-    if !ui.fonts(|fonts| fonts.families().contains(&family)) {
+    if !ui.fonts_mut(|fonts| fonts.families().contains(&family)) {
         return text;
     }
     let mut font_id = egui::TextStyle::Body.resolve(ui.style());
@@ -105,7 +105,7 @@ const ICON_FONT_FAMILY: &str = "Sundial Icons";
 pub(crate) fn icon(ui: &egui::Ui, icon: &str) -> egui::RichText {
     let text = egui::RichText::new(icon);
     let family = egui::FontFamily::Name(ICON_FONT_FAMILY.into());
-    if ui.fonts(|fonts| fonts.families().contains(&family)) {
+    if ui.fonts_mut(|fonts| fonts.families().contains(&family)) {
         let size = egui::TextStyle::Body.resolve(ui.style()).size;
         text.font(egui::FontId::new(size, family))
     } else {
@@ -118,7 +118,7 @@ pub(crate) fn icon(ui: &egui::Ui, icon: &str) -> egui::RichText {
 pub(crate) fn text_with_icon(ui: &egui::Ui, text: &str, icon: &str) -> egui::text::LayoutJob {
     let body = egui::TextStyle::Body.resolve(ui.style());
     let family = egui::FontFamily::Name(ICON_FONT_FAMILY.into());
-    let icon_font = if ui.fonts(|fonts| fonts.families().contains(&family)) {
+    let icon_font = if ui.fonts_mut(|fonts| fonts.families().contains(&family)) {
         egui::FontId::new(body.size, family)
     } else {
         body.clone()
@@ -138,7 +138,7 @@ pub(crate) fn text_with_icon(ui: &egui::Ui, text: &str, icon: &str) -> egui::tex
 pub(crate) fn light_icon(ui: &egui::Ui, icon: &str) -> egui::RichText {
     let text = egui::RichText::new(icon);
     let family = egui::FontFamily::Name(ICON_LIGHT_FONT_FAMILY.into());
-    if ui.fonts(|fonts| fonts.families().contains(&family)) {
+    if ui.fonts_mut(|fonts| fonts.families().contains(&family)) {
         let size = egui::TextStyle::Body.resolve(ui.style()).size;
         text.font(egui::FontId::new(size, family))
     } else {
@@ -167,6 +167,80 @@ pub(crate) fn quiet(ui: &mut egui::Ui) {
     inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
     inactive.bg_fill = egui::Color32::TRANSPARENT;
     inactive.bg_stroke = egui::Stroke::NONE;
+}
+
+/// An image tile: an outlined, hoverable card with the thumbnail, the name, a detail at the
+/// name's right and the source below. A changed image's name reads brighter.
+pub(crate) struct ImageTile<'a> {
+    pub width: f32,
+    pub thumbnail_height: f32,
+    pub label: &'a str,
+    pub detail: Option<String>,
+    pub source: &'a str,
+    pub texture: Option<&'a egui::TextureHandle>,
+    pub modified: bool,
+    pub selected: bool,
+}
+
+pub(crate) fn image_tile(ui: &mut egui::Ui, tile: ImageTile<'_>) -> egui::Response {
+    const PADDING: f32 = 8.0;
+    let name_font = egui::FontId::proportional(13.0);
+    let detail_font = egui::FontId::proportional(11.0);
+    let (name_height, detail_height) =
+        ui.fonts_mut(|fonts| (fonts.row_height(&name_font), fonts.row_height(&detail_font)));
+    let height = 2.0 * PADDING + tile.thumbnail_height + 6.0 + name_height + 2.0 + detail_height;
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(tile.width, height), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.visuals();
+        let stroke = if tile.selected {
+            visuals.selection.stroke
+        } else if response.hovered() {
+            visuals.widgets.hovered.bg_stroke
+        } else {
+            visuals.widgets.noninteractive.bg_stroke
+        };
+        let painter = ui.painter_at(rect);
+        painter.rect(
+            rect,
+            4.0,
+            visuals.faint_bg_color,
+            stroke,
+            egui::StrokeKind::Inside,
+        );
+        let inner = rect.shrink(PADDING);
+        let thumbnail =
+            egui::Rect::from_min_size(inner.min, egui::vec2(inner.width(), tile.thumbnail_height));
+        super::image_files::draw_contained(ui, thumbnail, tile.texture);
+        let name = painter.text(
+            egui::pos2(inner.left(), thumbnail.bottom() + 6.0),
+            egui::Align2::LEFT_TOP,
+            tile.label,
+            name_font,
+            if tile.modified {
+                visuals.text_color()
+            } else {
+                secondary(visuals)
+            },
+        );
+        if let Some(detail) = tile.detail {
+            painter.text(
+                egui::pos2(name.right() + 6.0, name.bottom()),
+                egui::Align2::LEFT_BOTTOM,
+                detail,
+                detail_font.clone(),
+                secondary(visuals),
+            );
+        }
+        painter.text(
+            egui::pos2(inner.left(), name.bottom() + 2.0),
+            egui::Align2::LEFT_TOP,
+            tile.source,
+            detail_font,
+            secondary(visuals),
+        );
+    }
+    named_control(response, tile.label)
 }
 
 /// An overflow menu, saying what it acts on.
@@ -204,10 +278,21 @@ pub(crate) fn more_menu<R>(
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
                 quiet(ui);
-                egui::menu::menu_custom_button(ui, egui::Button::new(icon).frame(false), contents)
+                // Buttons close the menu themselves, so a checkbox or a value inside it keeps it
+                // open as it did before egui 0.32 made menus close on any click.
+                let (response, inner) = egui::containers::menu::MenuButton::from_button(
+                    egui::Button::new(icon).frame(false),
+                )
+                .config(
+                    egui::containers::menu::MenuConfig::new()
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+                )
+                .ui(ui, contents);
+                egui::InnerResponse::new(inner.map(|inner| inner.inner), response)
             },
         )
         .inner;
+    focus_ring(ui, &menu.response);
     menu.response = named_control(menu.response, &name).on_hover_text(name.clone());
     menu
 }
@@ -220,6 +305,36 @@ pub(crate) fn reset(ui: &mut egui::Ui, modified: bool) -> bool {
             .add(egui::Button::new("Reset").small())
             .on_hover_text("Restore the original value")
             .clicked()
+}
+
+/// A section heading, followed by the dot every edited tab and section carries once the section
+/// holds a change. The dot is its own label, so the heading's text stays the section's name, and
+/// a screen reader hears it as "Changed".
+pub(crate) fn heading(ui: &mut egui::Ui, text: &str, changed: bool) -> egui::Response {
+    let response = ui.heading(text);
+    if changed {
+        let dot = ui.add(egui::Label::new(egui::RichText::new("•").heading()).selectable(false));
+        named_control(dot, "Changed").on_hover_text("Changed");
+    }
+    response
+}
+
+/// The quiet icon that restores what a card or a line holds. `name` says what it restores to a
+/// screen reader, since a page can carry several.
+pub(crate) fn reset_icon(ui: &mut egui::Ui, name: &str) -> bool {
+    let button = ui.add(
+        egui::Button::new(light_icon(
+            ui,
+            egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE,
+        ))
+        .frame(false)
+        // A hit area larger than the glyph, which stays quiet.
+        .min_size(egui::Vec2::splat(20.0)),
+    );
+    focus_ring(ui, &button);
+    named_control(button, name)
+        .on_hover_text("Restore the original value")
+        .clicked()
 }
 
 /// A saved choice the current data no longer has: a warning and its label in the error colour,
@@ -332,6 +447,168 @@ pub(crate) fn tiles<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui, f3
     .inner
 }
 
+/// What a value's name line offers to restore.
+#[derive(Clone, Copy)]
+enum Restore<'a> {
+    /// Nothing: the value is its original.
+    Nothing,
+    /// Reset, for a value whose original has no short reading.
+    Reset,
+    /// The original as its field reads it, which the button names and restores.
+    To(&'a str),
+}
+
+/// Where a name line leaves its hint for the tile around it, which shows the hint once the tile's
+/// control has keyboard focus.
+const HINT: &str = "tile-hint";
+
+/// A value's name, small, with what it does on hover: grey while the value is its original, and
+/// white with a way back once it is not. Returns the name and whether the way back was clicked.
+fn name_line(
+    ui: &mut egui::Ui,
+    width: f32,
+    (label, hint): (&str, &str),
+    restore: Restore<'_>,
+) -> (egui::Response, bool) {
+    if !hint.is_empty() {
+        let id = ui.id().with(HINT);
+        ui.data_mut(|data| data.insert_temp(id, hint.to_owned()));
+    }
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, TILE_NAME_HEIGHT),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            // One height with or without Reset, so a line of controls stays level.
+            ui.set_min_height(TILE_NAME_HEIGHT);
+            let reset = match restore {
+                Restore::Nothing => false,
+                // Small, so it stays inside the name's line instead of taking a control's height
+                // and lowering the field.
+                Restore::Reset => {
+                    let response = ui
+                        .add(
+                            egui::Button::new(egui::RichText::new("Reset").size(11.0))
+                                .frame(false)
+                                .small(),
+                        )
+                        .on_hover_text("Restore the original value");
+                    focus_ring(ui, &response);
+                    named_control(response, format!("Reset {label}")).clicked()
+                }
+                Restore::To(original) => self::restore(ui, label, original),
+            };
+            let name = ui
+                .with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let text = egui::RichText::new(label).size(12.0);
+                    let text = if matches!(restore, Restore::Nothing) {
+                        text.color(secondary(ui.visuals()))
+                    } else {
+                        text
+                    };
+                    let hover = if hint.is_empty() {
+                        label.to_owned()
+                    } else {
+                        format!("{label}\n{hint}")
+                    };
+                    let name = ui.add(cut_label(ui, text));
+                    // The hint a pointer finds on hover, for a screen reader too.
+                    if !hint.is_empty() {
+                        ui.ctx()
+                            .accesskit_node_builder(name.id, |node| node.set_description(hint));
+                    }
+                    name.on_hover_text(hover)
+                })
+                .inner;
+            (name, reset)
+        },
+    )
+    .inner
+}
+
+/// A quiet button that restores `label`'s value and names the original it restores, so the
+/// original stays in view beside the edit, as Destiny keeps a stat's base beside its change.
+/// Returns whether it was clicked.
+pub(crate) fn restore(ui: &mut egui::Ui, label: &str, original: &str) -> bool {
+    let response = ui
+        .add(
+            egui::Button::new(restore_text(ui, original))
+                .frame(false)
+                .small(),
+        )
+        .on_hover_text(format!("Restore {original}"));
+    focus_ring(ui, &response);
+    named_control(response, format!("Restore {label} to {original}")).clicked()
+}
+
+/// A frameless control's keyboard focus, drawn as the selection outline. egui paints no frame
+/// around a frameless button, so without this its focus shows only as brighter text.
+pub(crate) fn focus_ring(ui: &egui::Ui, response: &egui::Response) {
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            response.rect.expand(1.0),
+            3.0,
+            ui.visuals().selection.stroke,
+            egui::StrokeKind::Outside,
+        );
+    }
+}
+
+/// The restore icon and the original value, at the size of a name line's Reset. Colours are left
+/// to the button, so it brightens on hover as Reset does.
+fn restore_text(ui: &egui::Ui, original: &str) -> egui::text::LayoutJob {
+    const SIZE: f32 = 11.0;
+    let family = egui::FontFamily::Name(ICON_FONT_FAMILY.into());
+    let icon_font = if ui.fonts_mut(|fonts| fonts.families().contains(&family)) {
+        egui::FontId::new(SIZE, family)
+    } else {
+        egui::FontId::proportional(SIZE)
+    };
+    let format = |font_id| egui::TextFormat {
+        font_id,
+        color: egui::Color32::PLACEHOLDER,
+        ..Default::default()
+    };
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE,
+        0.0,
+        format(icon_font),
+    );
+    job.append(original, 3.0, format(egui::FontId::proportional(SIZE)));
+    job
+}
+
+/// A field's name over a control its column lays out, in the tile style: grey until the value
+/// differs from the base item's, then white with Reset beside it. Returns the name, to label the
+/// control by, and whether Reset was clicked.
+pub(crate) fn field_name(
+    ui: &mut egui::Ui,
+    label: &str,
+    hint: &str,
+    modified: bool,
+) -> (egui::Response, bool) {
+    let restore = if modified {
+        Restore::Reset
+    } else {
+        Restore::Nothing
+    };
+    let width = ui.available_width();
+    name_line(ui, width, (label, hint), restore)
+}
+
+/// A field's name whose way back names the base's value, as a stock tile's does: `original` is
+/// that value as the field reads it, given once the field's value differs from it.
+pub(crate) fn stock_field_name(
+    ui: &mut egui::Ui,
+    label: &str,
+    hint: &str,
+    original: Option<&str>,
+) -> (egui::Response, bool) {
+    let restore = original.map_or(Restore::Nothing, Restore::To);
+    let width = ui.available_width();
+    name_line(ui, width, (label, hint), restore)
+}
+
 /// One value: its name, small, over the control. Reset sits beside the name once the value
 /// changed, so the control keeps the whole width of its tile. Returns the control's result and
 /// whether Reset was clicked.
@@ -341,12 +618,82 @@ pub(crate) fn tiles<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui, f3
 pub(crate) fn tile<R>(
     ui: &mut egui::Ui,
     width: f32,
-    salt: impl std::hash::Hash,
+    salt: impl std::hash::Hash + std::fmt::Debug,
     label: &str,
     hint: &str,
     modified: bool,
     control: impl FnOnce(&mut egui::Ui) -> R,
 ) -> (R, bool) {
+    let restore = if modified {
+        Restore::Reset
+    } else {
+        Restore::Nothing
+    };
+    tile_with(ui, (width, salt), (label, hint), restore, control)
+}
+
+/// A tile whose way back names the original value: `original` is that value as the field reads
+/// it, given once the value differs from it. An edited tile shows what it was without a hover.
+pub(crate) fn stock_tile<R>(
+    ui: &mut egui::Ui,
+    (width, salt): (f32, impl std::hash::Hash + std::fmt::Debug),
+    (label, hint): (&str, &str),
+    original: Option<&str>,
+    control: impl FnOnce(&mut egui::Ui) -> R,
+) -> (R, bool) {
+    let restore = original.map_or(Restore::Nothing, Restore::To);
+    tile_with(ui, (width, salt), (label, hint), restore, control)
+}
+
+/// The shortest length a timer's length field gives. Zero or less ends a timer at once, unless
+/// its Unlimited flag is set.
+pub(crate) const SHORTEST_LENGTH: f64 = 0.05;
+
+/// A timer's length as its field reads it: Unlimited for one that never ends, else seconds.
+pub(crate) fn length_text(seconds: f64, unlimited: bool) -> String {
+    if unlimited {
+        "Unlimited".to_owned()
+    } else {
+        format!(
+            "{} s",
+            egui::emath::format_with_decimals_in_range(seconds, 0..=2)
+        )
+    }
+}
+
+/// A typed timer length: Unlimited, No Limit or a negative number for one that never ends,
+/// which reads as -1, else seconds with or without the unit.
+pub(crate) fn parse_length(text: &str) -> Option<f64> {
+    let text = text.trim().to_lowercase();
+    if ["unl", "no", "inf"]
+        .iter()
+        .any(|word| text.starts_with(word))
+    {
+        return Some(-1.0);
+    }
+    text.trim_end_matches('s').trim().parse().ok()
+}
+
+fn tile_with<R>(
+    ui: &mut egui::Ui,
+    (width, salt): (f32, impl std::hash::Hash + std::fmt::Debug),
+    name: (&str, &str),
+    restore: Restore<'_>,
+    control: impl FnOnce(&mut egui::Ui) -> R,
+) -> (R, bool) {
+    tile_column(ui, (width, salt), |ui| {
+        let (_, reset) = name_line(ui, width, name, restore);
+        (control(ui), reset)
+    })
+}
+
+/// A tile's room for a field that draws its own name with `field_name`, so a page's fields flow
+/// as its tiles do. `salt` scopes the field's widgets, as `tile`'s does.
+pub(crate) fn tile_column<R>(
+    ui: &mut egui::Ui,
+    (width, salt): (f32, impl std::hash::Hash + std::fmt::Debug),
+    content: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
     ui.allocate_ui_with_layout(
         egui::vec2(width, 0.0),
         egui::Layout::top_down(egui::Align::Min),
@@ -359,50 +706,102 @@ pub(crate) fn tile<R>(
                 clip.y_range(),
             ));
             ui.spacing_mut().item_spacing = egui::vec2(4.0, 2.0);
-            ui.push_id(salt, |ui| {
-                let reset = ui
-                    .allocate_ui_with_layout(
-                        egui::vec2(width, TILE_NAME_HEIGHT),
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            // One height with or without Reset, so a line of controls stays level.
-                            ui.set_min_height(TILE_NAME_HEIGHT);
-                            let reset = modified
-                                && ui
-                                    .add(
-                                        egui::Button::new(egui::RichText::new("Reset").size(11.0))
-                                            .frame(false),
-                                    )
-                                    .on_hover_text("Restore the original value")
-                                    .clicked();
-                            ui.with_layout(
-                                egui::Layout::left_to_right(egui::Align::Center),
-                                |ui| {
-                                    let text = egui::RichText::new(label).size(12.0);
-                                    let text = if modified {
-                                        text
-                                    } else {
-                                        text.color(secondary(ui.visuals()))
-                                    };
-                                    let response = ui.add(egui::Label::new(text).truncate());
-                                    let hover = if hint.is_empty() {
-                                        label.to_owned()
-                                    } else {
-                                        format!("{label}\n{hint}")
-                                    };
-                                    response.on_hover_text(hover);
-                                },
-                            );
-                            reset
-                        },
-                    )
-                    .inner;
-                (control(ui), reset)
-            })
-            .inner
+            let (inner, scope) = ui.push_id(salt, |ui| (content(ui), ui.id())).inner;
+            focus_hint(ui, scope);
+            inner
         },
     )
     .inner
+}
+
+/// The hint a tile's name shows on hover, under its control while that control has keyboard
+/// focus, so a keyboard reaches what a pointer does.
+fn focus_hint(ui: &egui::Ui, scope: egui::Id) {
+    let ctx = ui.ctx();
+    if !keyboard_focus(ctx) {
+        return;
+    }
+    let Some(focused) = ctx.memory(|memory| memory.focused()) else {
+        return;
+    };
+    let Some(control) = ctx.read_response(focused) else {
+        return;
+    };
+    if !ui.min_rect().contains_rect(control.rect) {
+        return;
+    }
+    let Some(hint) = ctx.data(|data| data.get_temp::<String>(scope.with(HINT))) else {
+        return;
+    };
+    egui::Tooltip::always_open(ctx.clone(), ui.layer_id(), focused.with(HINT), control.rect).show(
+        |ui| {
+            ui.label(hint);
+        },
+    );
+}
+
+/// Whether focus last moved by keyboard. Tab sets it and a pointer press clears it, so a field
+/// clicked into shows no hint the pointer did not ask for.
+fn keyboard_focus(ctx: &egui::Context) -> bool {
+    let id = egui::Id::new("parhelion-keyboard-focus");
+    let (tab, pressed) = ctx.input(|input| {
+        (
+            input.key_pressed(egui::Key::Tab),
+            input.pointer.any_pressed(),
+        )
+    });
+    ctx.data_mut(|data| {
+        let keyboard = data.get_temp_mut_or(id, false);
+        if tab {
+            *keyboard = true;
+        } else if pressed {
+            *keyboard = false;
+        }
+        *keyboard
+    })
+}
+
+/// A tile's field across its whole width with its value centered, as `add_sized` lays out the
+/// fields every other tile holds, for a field a helper adds itself.
+pub(crate) fn tile_field<R>(
+    ui: &mut egui::Ui,
+    width: f32,
+    field: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let size = egui::vec2(width, ui.spacing().interact_size.y);
+    let layout = egui::Layout::centered_and_justified(egui::Direction::LeftToRight);
+    ui.allocate_ui_with_layout(size, layout, field).inner
+}
+
+/// A stat's bar as Destiny's item tooltip draws one, across `rect`: filled to the value on a dim
+/// track, `scale` filling it. A change from the base shows as its own segment, green where it adds
+/// and red where it takes away.
+pub(crate) fn stat_bar(ui: &egui::Ui, rect: egui::Rect, (base, value): (i32, i32), scale: i32) {
+    const HEIGHT: f32 = 8.0;
+    let bar = egui::Rect::from_center_size(rect.center(), egui::vec2(rect.width(), HEIGHT));
+    let painter = ui.painter();
+    let visuals = ui.visuals();
+    painter.rect_filled(bar, 1.0, visuals.widgets.inactive.bg_fill);
+    let x = |amount: i32| {
+        bar.left() + bar.width() * (amount.max(0) as f32 / scale.max(1) as f32).min(1.0)
+    };
+    let fill = |from: f32, to: f32, color: egui::Color32| {
+        if to > from {
+            painter.rect_filled(
+                egui::Rect::from_x_y_ranges(from..=to, bar.y_range()),
+                1.0,
+                color,
+            );
+        }
+    };
+    let (low, high) = (base.min(value), base.max(value));
+    fill(bar.left(), x(low), visuals.text_color());
+    let change = if value > base {
+        success_color(visuals)
+    } else {
+        visuals.error_fg_color
+    };
+    fill(x(low), x(high), change);
 }
 
 /// A raised card for one effect or one block: a faint fill over the window and a rounded
@@ -453,6 +852,9 @@ pub(crate) fn transparency_backdrop(ui: &egui::Ui, rect: egui::Rect) {
     }
 }
 
+/// A cut label whose tooltip is the caller's alone.
+pub(crate) use sundial::ui::cut_label;
+
 /// A virtualized row must allocate exactly the height passed to `show_rows`.
 pub(crate) fn list_row_height(ui: &egui::Ui) -> f32 {
     ui.spacing()
@@ -470,7 +872,7 @@ pub(crate) fn list_row(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::
             egui::Layout::left_to_right(egui::Align::Center)
                 .with_main_align(egui::Align::Min)
                 .with_main_justify(true),
-            |ui| ui.add(egui::SelectableLabel::new(selected, label)),
+            |ui| ui.add(egui::Button::selectable(selected, label)),
         )
         .inner
     })
@@ -485,19 +887,19 @@ mod tests {
     #[test]
     fn perk_text_follows_body_size_without_changing_the_global_theme() {
         let ctx = egui::Context::default();
-        ctx.style_mut(|style| {
+        ctx.global_style_mut(|style| {
             style
                 .text_styles
                 .insert(egui::TextStyle::Body, egui::FontId::proportional(18.0));
         });
-        let before = egui::TextStyle::Small.resolve(&ctx.style());
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let before = egui::TextStyle::Small.resolve(&ctx.global_style());
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 perk_workbench_style(ui);
                 assert_eq!(egui::TextStyle::Small.resolve(ui.style()).size, 18.0);
             });
         });
-        assert_eq!(egui::TextStyle::Small.resolve(&ctx.style()), before);
+        assert_eq!(egui::TextStyle::Small.resolve(&ctx.global_style()), before);
     }
 
     fn luminance(color: egui::Color32) -> f32 {
@@ -520,8 +922,8 @@ mod tests {
         for visuals in [egui::Visuals::light(), egui::Visuals::dark()] {
             let ctx = egui::Context::default();
             ctx.set_visuals(visuals);
-            let _ = ctx.run(egui::RawInput::default(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     workbench_style(ui);
                     let visuals = ui.visuals();
                     for foreground in [

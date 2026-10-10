@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use super::*;
 
 fn emote_catalog() -> Catalog {
-    use crate::account_contract::{EMOTE_BUCKET_HASH, EMOTE_COLLECTION_DEFINITION_HASH};
+    use crate::account::contract::{EMOTE_BUCKET_HASH, EMOTE_COLLECTION_DEFINITION_HASH};
     use crate::catalog::{ItemStackability, SocketDef};
     let collection = ItemDef {
         hash: EMOTE_COLLECTION_DEFINITION_HASH,
@@ -114,7 +114,7 @@ fn emote_loadout_uses_collection_rolls_only_on_v13_and_later() {
         let emote = equipped.iter().find(|item| item.slot == "emote").unwrap();
         let held = account::character_inventory(&document, 0).unwrap().unwrap();
         let expected = if version >= 13 {
-            crate::account_contract::EMOTE_COLLECTION_DEFINITION_HASH
+            crate::account::contract::EMOTE_COLLECTION_DEFINITION_HASH
         } else {
             7
         };
@@ -173,9 +173,9 @@ fn missing_v13_emote_collection_does_not_partially_replace_the_loadout() {
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_INSTALL with the supported native packages"]
+#[ignore = "requires SUNDIAL_INSTALL with the supported native packages"]
 fn native_emote_loadout_respects_collection_capacity_and_randomizes_four_choices() {
-    let install = std::path::PathBuf::from(std::env::var_os("SUNDIAL_TEST_INSTALL").unwrap());
+    let install = crate::test_support::install();
     let cache = crate::test_support::TestDirectory::new("emote-native-catalog");
     let catalog =
         Catalog::load_or_scan_with_progress(&install, cache.0.join("catalog.json"), false, |_| {})
@@ -194,7 +194,7 @@ fn native_emote_loadout_respects_collection_capacity_and_randomizes_four_choices
         },
     )
     .unwrap();
-    let hash = crate::account_contract::EMOTE_COLLECTION_DEFINITION_HASH;
+    let hash = crate::account::contract::EMOTE_COLLECTION_DEFINITION_HASH;
     let definition = catalog.item(hash).unwrap();
     let equipped = account::equipped_item_snapshots(&document, 0).unwrap();
     let emote = equipped.iter().find(|item| item.slot == "emote").unwrap();
@@ -205,7 +205,7 @@ fn native_emote_loadout_respects_collection_capacity_and_randomizes_four_choices
         .filter(|item| {
             catalog
                 .item(u64::from(item.definition_hash))
-                .is_some_and(|item| item.bucket_hash == crate::account_contract::EMOTE_BUCKET_HASH)
+                .is_some_and(|item| item.bucket_hash == crate::account::contract::EMOTE_BUCKET_HASH)
         })
         .collect::<Vec<_>>();
     assert_eq!(
@@ -307,7 +307,7 @@ fn emote_loadout_preserves_locked_items_and_obeys_inventory_replacement() {
                 held[1..]
                     .iter()
                     .all(|item| parse_unsigned_value(&item["definition_hash"])
-                        == Some(crate::account_contract::EMOTE_COLLECTION_DEFINITION_HASH))
+                        == Some(crate::account::contract::EMOTE_COLLECTION_DEFINITION_HASH))
             );
         } else {
             assert_eq!(held, &vec![locked, unlocked]);

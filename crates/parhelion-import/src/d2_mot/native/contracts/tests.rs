@@ -85,13 +85,17 @@ fn configured_packages_discover_contracts_and_preserve_repeated_exports() {
     assert!(!first.cube.is_null());
     let alternate = tempfile::tempdir().unwrap();
     fs::write(
-        alternate.path().join("1-previous.json"),
+        alternate
+            .path()
+            .join(format!("{}-previous.json", Catalog::SCHEMA)),
         serde_json::to_vec(&first).unwrap(),
     )
     .unwrap();
     let reused = reusable_carriers(
         alternate.path(),
-        &alternate.path().join("1-current.json"),
+        &alternate
+            .path()
+            .join(format!("{}-current.json", Catalog::SCHEMA)),
         &reader,
     )
     .unwrap();

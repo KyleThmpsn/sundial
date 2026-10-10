@@ -4,7 +4,13 @@ use super::*;
 use crate::model_preview::{export, render, texture::Texture};
 use serde_json::json;
 use std::{fs, path::PathBuf};
-use winit::platform::windows::EventLoopBuilderExtWindows;
+mod exports;
+pub(super) mod legacy;
+pub(super) mod measure;
+mod offload;
+mod output;
+mod scope;
+mod throughput;
 
 struct Case {
     name: String,
@@ -82,7 +88,7 @@ fn normal_cases(add: &mut impl FnMut(String, Model, Scene, Option<[u8; 3]>)) {
             add(
                 format!("tilted-normal-flat-{flat}-mirrored-{mirrored}"),
                 model,
-                Scene::default(),
+                Scene::unit_exposure(),
                 None,
             );
         }
@@ -102,9 +108,62 @@ fn normal_cases(add: &mut impl FnMut(String, Model, Scene, Option<[u8; 3]>)) {
         add(
             format!("missing-normal-mirrored-{mirrored}"),
             model,
-            Scene::default(),
+            Scene::unit_exposure(),
             None,
         );
+    }
+}
+
+fn deferred_cases(add: &mut impl FnMut(String, Model, Scene, Option<[u8; 3]>)) {
+    add(
+        "vehicle-framing".into(),
+        super::super::compatibility_tests::deferred::framing_case(),
+        Scene::unit_exposure(),
+        None,
+    );
+    for (name, model, scene, expected) in
+        super::super::compatibility_tests::deferred::emission_cases()
+    {
+        add(name, model, scene, Some(expected));
+    }
+    for (name, model, scene, expected) in super::super::compatibility_tests::deferred::decal_cases()
+    {
+        add(name, model, scene, Some(expected));
+    }
+    for transformed in [false, true] {
+        for (metal, smooth, normal) in [
+            (0, 64, [128, 128]),
+            (192, 224, [166, 96]),
+            (255, 255, [255, 255]),
+        ] {
+            add(
+                format!("deferred-{transformed}-{metal}-{smooth}"),
+                super::super::compatibility_tests::deferred::case(
+                    transformed,
+                    metal,
+                    smooth,
+                    normal,
+                ),
+                Scene::unit_exposure(),
+                None,
+            );
+            add(
+                format!("deferred-dark-{transformed}-{metal}-{smooth}"),
+                super::super::compatibility_tests::deferred::case(
+                    transformed,
+                    metal,
+                    smooth,
+                    normal,
+                ),
+                Scene {
+                    key: 0.0,
+                    fill: 0.0,
+                    bloom: false,
+                    ..Scene::unit_exposure()
+                },
+                Some([0; 3]),
+            );
+        }
     }
 }
 
@@ -120,6 +179,8 @@ fn cases() -> Vec<Case> {
         cases.push(Case {
             name,
             frame: Frame {
+                animate: false,
+                dyes: None,
                 model: Arc::new(model),
                 camera,
                 scene,
@@ -151,7 +212,7 @@ fn cases() -> Vec<Case> {
             model,
             Scene {
                 exposure,
-                ..Scene::default()
+                ..Scene::unit_exposure()
             },
             Some([expected; 3]),
         );
@@ -169,7 +230,7 @@ fn cases() -> Vec<Case> {
         add(
             format!("transparent-depth-{reverse}"),
             model,
-            Scene::default(),
+            Scene::unit_exposure(),
             Some([0, 255, 0]),
         );
     }
@@ -183,7 +244,7 @@ fn cases() -> Vec<Case> {
     add(
         "alpha-boundary".into(),
         model,
-        Scene::default(),
+        Scene::unit_exposure(),
         Some([255; 3]),
     );
     for shared in [false, true] {
@@ -195,7 +256,7 @@ fn cases() -> Vec<Case> {
         add(
             format!("color-and-normal-{shared}"),
             model,
-            Scene::default(),
+            Scene::unit_exposure(),
             None,
         );
     }
@@ -218,7 +279,7 @@ fn cases() -> Vec<Case> {
             add(
                 format!("mask-{alpha}-detail-{detail}"),
                 model,
-                Scene::default(),
+                Scene::unit_exposure(),
                 None,
             );
         }
@@ -248,7 +309,7 @@ fn cases() -> Vec<Case> {
         add(
             format!("iridescence-row-{row}"),
             model,
-            Scene::default(),
+            Scene::unit_exposure(),
             None,
         );
     }
@@ -260,11 +321,12 @@ fn cases() -> Vec<Case> {
         add(
             format!("dye-without-mask-{has_texture}"),
             model,
-            Scene::default(),
+            Scene::unit_exposure(),
             None,
         );
     }
     normal_cases(&mut add);
+    deferred_cases(&mut add);
     let mut model = Model::default();
     quad(&mut model, 0.0, None, None);
     model.dyes[0] = Some(dye());
@@ -272,7 +334,7 @@ fn cases() -> Vec<Case> {
     add(
         "missing-dye-assignment".into(),
         model,
-        Scene::default(),
+        Scene::unit_exposure(),
         None,
     );
     for (step, seconds) in [0.0, 0.25, 0.75, 1.25, 1.75, 0.25].into_iter().enumerate() {
@@ -291,7 +353,7 @@ fn cases() -> Vec<Case> {
         add(
             format!("native-cubic-timeline-{step}-{seconds}"),
             model,
-            Scene::default(),
+            Scene::unit_exposure(),
             None,
         );
     }
@@ -316,6 +378,55 @@ fn cases() -> Vec<Case> {
         cases.push(Case {
             name,
             frame: Frame {
+                animate: false,
+                dyes: None,
+                model: Arc::new(model),
+                camera: Camera {
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    ..Default::default()
+                },
+                scene: Scene::unit_exposure(),
+                style: Style::Textured,
+                seconds: 0.0,
+                pose: None,
+            },
+            expected: Some(expected),
+        });
+    }
+    cases.push(Case {
+        name: "packaged-particle-inspection-Solid".into(),
+        frame: Frame {
+            animate: false,
+            dyes: None,
+            model: Arc::new(crate::model_preview::compatibility_tests::particles::case(
+                true,
+            )),
+            camera,
+            scene: Scene::unit_exposure(),
+            style: Style::Solid,
+            seconds: 0.0,
+            pose: None,
+        },
+        expected: None,
+    });
+    installed_gear_cases(&mut cases);
+    installed_entity_cases(&mut cases);
+    transparency_cases(&mut cases);
+    // Earlier fixtures measure unprocessed material values independently of display output.
+    output::append(&mut cases);
+    studio_cases(&mut cases);
+    offload::cases(&mut cases);
+    cases
+}
+
+fn studio_cases(cases: &mut Vec<Case>) {
+    for (name, model) in super::super::compatibility_tests::deferred::studio_cases() {
+        cases.push(Case {
+            name,
+            frame: Frame {
+                animate: false,
+                dyes: None,
                 model: Arc::new(model),
                 camera: Camera {
                     yaw: 0.0,
@@ -327,25 +438,29 @@ fn cases() -> Vec<Case> {
                 seconds: 0.0,
                 pose: None,
             },
-            expected: Some(expected),
+            expected: None,
         });
     }
-    cases.push(Case {
-        name: "packaged-particle-inspection-Solid".into(),
-        frame: Frame {
-            model: Arc::new(crate::model_preview::compatibility_tests::particles::case(
-                true,
-            )),
-            camera,
-            scene: Scene::default(),
-            style: Style::Solid,
-            seconds: 0.0,
-            pose: None,
-        },
-        expected: None,
-    });
-    installed_gear_cases(&mut cases);
-    cases
+}
+
+fn transparency_cases(cases: &mut Vec<Case>) {
+    for case in crate::model_preview::compatibility_tests::effects::transparency::cases() {
+        let pose = case.model.pose(case.seconds).map(Arc::new);
+        cases.push(Case {
+            name: case.name,
+            frame: Frame {
+                animate: false,
+                dyes: None,
+                model: case.model,
+                camera: case.camera,
+                scene: crate::model_preview::compatibility_tests::effects::transparency::scene(),
+                style: Style::Textured,
+                seconds: case.seconds,
+                pose,
+            },
+            expected: Some(case.expected),
+        });
+    }
 }
 
 fn canvas_cases(cases: &mut Vec<Case>) {
@@ -353,13 +468,15 @@ fn canvas_cases(cases: &mut Vec<Case>) {
         cases.push(Case {
             name,
             frame: Frame {
+                animate: false,
+                dyes: None,
                 model: Arc::new(model),
                 camera: Camera {
                     yaw: 0.0,
                     pitch: 0.0,
                     ..Default::default()
                 },
-                scene: Scene::default(),
+                scene: Scene::unit_exposure(),
                 style: Style::Textured,
                 seconds: 0.0,
                 pose: None,
@@ -379,13 +496,15 @@ fn gain_cases(cases: &mut Vec<Case>, camera: Camera) {
             cases.push(Case {
                 name: format!("native-opaque-gain-{painted}-{step}"),
                 frame: Frame {
+                    animate: false,
+                    dyes: None,
                     model: model.clone(),
                     camera,
                     scene: Scene {
                         key: 0.0,
                         fill: 1.0,
                         background: [0; 3],
-                        ..Default::default()
+                        ..Scene::unit_exposure()
                     },
                     style: Style::Textured,
                     seconds,
@@ -412,6 +531,8 @@ fn tangent_cases(cases: &mut Vec<Case>) {
             cases.push(Case {
                 name: format!("{name}-{view}"),
                 frame: Frame {
+                    animate: false,
+                    dyes: None,
                     model: model.clone(),
                     camera,
                     scene: tangents::scene(),
@@ -459,13 +580,15 @@ fn paint_cases(cases: &mut Vec<Case>, camera: Camera) {
             cases.push(Case {
                 name: format!("native-paint-{alpha}-{step}"),
                 frame: Frame {
+                    animate: false,
+                    dyes: None,
                     model: model.clone(),
                     camera,
                     scene: Scene {
                         key: 0.0,
                         fill: 1.0,
                         background: [0; 3],
-                        ..Default::default()
+                        ..Scene::unit_exposure()
                     },
                     style: Style::Textured,
                     seconds,
@@ -491,11 +614,13 @@ fn native_normal_cases(cases: &mut Vec<Case>, camera: Camera) {
                 cases.push(Case {
                     name: format!("native-normal-{channel}-{alpha}-{primary}"),
                     frame: Frame {
+                        animate: false,
+                        dyes: None,
                         model: Arc::new(model),
                         camera,
                         scene: Scene {
                             background: [0; 3],
-                            ..Default::default()
+                            ..Scene::unit_exposure()
                         },
                         style: Style::Textured,
                         seconds: 0.0,
@@ -513,6 +638,8 @@ fn normal_blue_cases(cases: &mut Vec<Case>, camera: Camera) {
         cases.push(Case {
             name: format!("native-normal-blue-spatial-{channel}"),
             frame: Frame {
+                animate: false,
+                dyes: None,
                 model: Arc::new(
                     crate::model_preview::compatibility_tests::effects::normal_blue::spatial_case(
                         channel,
@@ -521,7 +648,7 @@ fn normal_blue_cases(cases: &mut Vec<Case>, camera: Camera) {
                 camera,
                 scene: Scene {
                     background: [0; 3],
-                    ..Default::default()
+                    ..Scene::unit_exposure()
                 },
                 style: Style::Textured,
                 seconds: 0.0,
@@ -539,11 +666,13 @@ fn normal_blue_cases(cases: &mut Vec<Case>, camera: Camera) {
                 cases.push(Case {
                     name: format!("native-normal-blue-{channel}-{alpha}-{primary}"),
                     frame: Frame {
+                        animate: false,
+                        dyes: None,
                         model: Arc::new(model),
                         camera,
                         scene: Scene {
                             background: [0; 3],
-                            ..Default::default()
+                            ..Scene::unit_exposure()
                         },
                         style: Style::Textured,
                         seconds: 0.0,
@@ -561,11 +690,13 @@ fn normal_blue_cases(cases: &mut Vec<Case>, camera: Camera) {
         cases.push(Case {
             name: format!("native-normal-blue-no-basis-{step}"),
             frame: Frame {
+                animate: false,
+                dyes: None,
                 model: Arc::new(model),
                 camera,
                 scene: Scene {
                     background: [0; 3],
-                    ..Default::default()
+                    ..Scene::unit_exposure()
                 },
                 style: Style::Textured,
                 seconds,
@@ -585,13 +716,15 @@ fn metal_cases(cases: &mut Vec<Case>, camera: Camera) {
             cases.push(Case {
                 name: format!("native-metal-{alpha}-{step}"),
                 frame: Frame {
+                    animate: false,
+                    dyes: None,
                     model: model.clone(),
                     camera,
                     scene: Scene {
                         key: 0.0,
                         fill: 1.0,
                         background: [0; 3],
-                        ..Default::default()
+                        ..Scene::unit_exposure()
                     },
                     style: Style::Textured,
                     seconds,
@@ -612,13 +745,15 @@ fn metal_cases(cases: &mut Vec<Case>, camera: Camera) {
                 cases.push(Case {
                     name: format!("native-metal-without-dye-{alpha}-{normal}-{step}"),
                     frame: Frame {
+                        animate: false,
+                        dyes: None,
                         model: model.clone(),
                         camera,
                         scene: Scene {
                             key: 0.0,
                             fill: 1.0,
                             background: [0; 3],
-                            ..Default::default()
+                            ..Scene::unit_exposure()
                         },
                         style: Style::Textured,
                         seconds,
@@ -643,7 +778,7 @@ fn legacy_color_cases(add: &mut impl FnMut(String, Model, Scene, Option<[u8; 3]>
             model,
             Scene {
                 background: [0; 3],
-                ..Default::default()
+                ..Scene::unit_exposure()
             },
             None,
         );
@@ -651,6 +786,48 @@ fn legacy_color_cases(add: &mut impl FnMut(String, Model, Scene, Option<[u8; 3]>
 }
 
 fn packaged_cases(add: &mut impl FnMut(String, Model, Scene, Option<[u8; 3]>)) {
+    for index in 0..4 {
+        use crate::model_preview::compatibility_tests::effects::vertex_image;
+        add(
+            format!("native-vertex-image-{index}"),
+            vertex_image::case(index).unwrap(),
+            Scene {
+                filmic: false,
+                bloom: false,
+                background: [0; 3],
+                ..Scene::unit_exposure()
+            },
+            Some(vertex_image::expected(index)),
+        );
+    }
+    for index in crate::model_preview::compatibility_tests::effects::layered::CASES {
+        use crate::model_preview::compatibility_tests::effects::layered;
+        add(
+            format!("native-layered-{index}"),
+            layered::case(index).unwrap(),
+            Scene {
+                filmic: false,
+                bloom: false,
+                background: [0; 3],
+                ..Scene::unit_exposure()
+            },
+            Some(layered::expected(index)),
+        );
+    }
+    for index in 0..4 {
+        use crate::model_preview::compatibility_tests::effects::immediate;
+        add(
+            format!("native-immediate-{index}"),
+            immediate::case(index).unwrap(),
+            Scene {
+                filmic: false,
+                bloom: false,
+                background: [0; 3],
+                ..Scene::unit_exposure()
+            },
+            Some(immediate::expected(index)),
+        );
+    }
     add(
         "native-opaque-color-and-depth".into(),
         crate::model_preview::compatibility_tests::effects::opaque::case(false).unwrap(),
@@ -658,7 +835,7 @@ fn packaged_cases(add: &mut impl FnMut(String, Model, Scene, Option<[u8; 3]>)) {
             key: 0.0,
             fill: 1.0,
             background: [0; 3],
-            ..Default::default()
+            ..Scene::unit_exposure()
         },
         None,
     );
@@ -668,7 +845,7 @@ fn packaged_cases(add: &mut impl FnMut(String, Model, Scene, Option<[u8; 3]>)) {
             crate::model_preview::compatibility_tests::effects::integer::case(mode),
             Scene {
                 background: [0; 3],
-                ..Default::default()
+                ..Scene::unit_exposure()
             },
             Some([99, 137, 225]),
         );
@@ -678,7 +855,7 @@ fn packaged_cases(add: &mut impl FnMut(String, Model, Scene, Option<[u8; 3]>)) {
         crate::model_preview::compatibility_tests::effects::derivative::case(0).unwrap(),
         Scene {
             background: [0; 3],
-            ..Default::default()
+            ..Scene::unit_exposure()
         },
         None,
     );
@@ -686,7 +863,7 @@ fn packaged_cases(add: &mut impl FnMut(String, Model, Scene, Option<[u8; 3]>)) {
         add(
             format!("packaged-particle-mesh-composed-{composed}"),
             crate::model_preview::compatibility_tests::particles::case(composed),
-            Scene::default(),
+            Scene::unit_exposure(),
             None,
         );
     }
@@ -701,7 +878,7 @@ fn packaged_cases(add: &mut impl FnMut(String, Model, Scene, Option<[u8; 3]>)) {
             hdr::case(format, cube),
             Scene {
                 background: [0; 3],
-                ..Default::default()
+                ..Scene::unit_exposure()
             },
             Some(hdr::expected(format, cube)),
         );
@@ -712,12 +889,12 @@ fn packaged_cases(add: &mut impl FnMut(String, Model, Scene, Option<[u8; 3]>)) {
         Scene {
             key: 0.0,
             fill: 1.0,
-            ..Default::default()
+            ..Scene::unit_exposure()
         },
         None,
     );
     for (name, model) in crate::model_preview::compatibility_tests::native_detail::cases() {
-        add(name, model, Scene::default(), None);
+        add(name, model, Scene::unit_exposure(), None);
     }
     for cutoff in [0.3f32, 0.5, 0.7] {
         add(
@@ -726,7 +903,7 @@ fn packaged_cases(add: &mut impl FnMut(String, Model, Scene, Option<[u8; 3]>)) {
             Scene {
                 key: 0.0,
                 fill: 1.0,
-                ..Default::default()
+                ..Scene::unit_exposure()
             },
             (cutoff > 0.5).then_some([24, 28, 35]),
         );
@@ -762,12 +939,66 @@ fn installed_gear_cases(cases: &mut Vec<Case>) {
                     cases.len()
                 ),
                 frame: Frame {
+                    animate: false,
+                    dyes: None,
                     model: model.clone(),
                     camera: crate::model_preview::compatibility_tests::installed_camera(&case),
-                    scene: Scene::default(),
+                    scene: Scene::unit_exposure(),
                     style: Style::Textured,
                     seconds,
                     pose: model.pose(seconds).map(Arc::new),
+                },
+                expected: None,
+            });
+        }
+    }
+}
+
+fn installed_entity_cases(cases: &mut Vec<Case>) {
+    let (Some(packages), Some(input)) = (
+        std::env::var_os("SUNDIAL_PREVIEW_PACKAGES"),
+        std::env::var_os("SUNDIAL_COMPATIBILITY_CASES"),
+    ) else {
+        return;
+    };
+    let manager = crate::investment::discovery::open_packages(&PathBuf::from(packages)).unwrap();
+    let input: Vec<serde_json::Value> = serde_json::from_slice(&fs::read(input).unwrap()).unwrap();
+    for case in input
+        .into_iter()
+        .filter(|c| c["minimum_surface_fraction"].is_number())
+    {
+        let tag = u32::from_str_radix(case["tag"].as_str().unwrap(), 16).unwrap();
+        let model = Arc::new(
+            crate::model_preview::load_with_manager(
+                &manager,
+                tag,
+                &crate::model_preview::Load::default(),
+                None,
+            )
+            .unwrap(),
+        );
+        for (name, scene) in [
+            ("studio", Scene::unit_exposure()),
+            (
+                "fill",
+                Scene {
+                    key: 0.0,
+                    fill: 1.0,
+                    ..Scene::unit_exposure()
+                },
+            ),
+        ] {
+            cases.push(Case {
+                name: format!("native-surface-{tag:08X}-{name}"),
+                frame: Frame {
+                    animate: false,
+                    dyes: None,
+                    model: model.clone(),
+                    camera: Camera::default(),
+                    scene,
+                    style: Style::Textured,
+                    seconds: 0.0,
+                    pose: None,
                 },
                 expected: None,
             });
@@ -796,6 +1027,8 @@ fn skeletal_cases(cases: &mut Vec<Case>) {
             cases.push(Case {
                 name: format!("skeletal-{name}-{step}"),
                 frame: Frame {
+                    animate: step != 5,
+                    dyes: None,
                     model: model.clone(),
                     camera: Camera {
                         yaw: -std::f32::consts::FRAC_PI_4,
@@ -803,12 +1036,10 @@ fn skeletal_cases(cases: &mut Vec<Case>) {
                         zoom: 0.55,
                         pan: [0.0; 2],
                     },
-                    scene: Scene::default(),
+                    scene: Scene::unit_exposure(),
                     style: Style::Textured,
                     seconds,
-                    pose: (step != 5).then(|| {
-                        Arc::new(animation.sample(&model, animation.looped_seconds(seconds)))
-                    }),
+                    pose: None,
                 },
                 expected: None,
             });
@@ -820,24 +1051,41 @@ fn skeletal_cases(cases: &mut Vec<Case>) {
 #[ignore = "Opens a native OpenGL viewport, requires SUNDIAL_PREVIEW_VERIFY_OUTPUT"]
 fn generated_materials_render_consistently() {
     let output = PathBuf::from(std::env::var_os("SUNDIAL_PREVIEW_VERIFY_OUTPUT").expect("output"));
-    fs::create_dir_all(&output).unwrap();
+    fs::create_dir_all(output.parent().unwrap()).unwrap();
+    fs::create_dir(&output).expect("Use fresh verification output");
     let completed = Arc::new(AtomicBool::new(false));
     let done = completed.clone();
     eframe::run_native(
         "Preview Rendering Verification",
         eframe::NativeOptions {
+            renderer: eframe::Renderer::Glow,
             viewport: egui::ViewportBuilder::default()
-                .with_inner_size([200.0, 200.0])
+                .with_inner_size([260.0, 240.0])
                 .with_active(false),
-            event_loop_builder: Some(Box::new(|builder| {
-                builder.with_any_thread(true);
-            })),
+            event_loop_builder: Some(Box::new(crate::test_support::native_event_loop)),
             ..Default::default()
         },
         Box::new(move |creation| {
-            assert!(creation.gl.is_some(), "OpenGL context is required");
+            let gl = creation.gl.as_ref().expect("OpenGL context is required");
+            // SAFETY: eframe creates this app with its GL context current on this thread.
+            let graphics = unsafe {
+                json!({
+                    "platform": std::env::consts::OS,
+                    "vendor": gl.get_parameter_string(glow::VENDOR),
+                    "renderer": gl.get_parameter_string(glow::RENDERER),
+                    "version": gl.get_parameter_string(glow::VERSION),
+                    "shading_language": gl.get_parameter_string(glow::SHADING_LANGUAGE_VERSION),
+                    "display": std::env::var("DISPLAY").ok(),
+                    "wayland_display": std::env::var("WAYLAND_DISPLAY").ok()
+                })
+            };
+            fs::write(
+                output.join("graphics.json"),
+                serde_json::to_vec_pretty(&graphics).unwrap(),
+            )
+            .unwrap();
             Ok(Box::new(Check {
-                cases: cases(),
+                cases: scope::select(cases()),
                 at: 0,
                 output,
                 completed: done,
@@ -852,7 +1100,7 @@ fn generated_materials_render_consistently() {
     .unwrap();
     assert!(
         completed.load(Ordering::SeqCst),
-        "rendering verification did not complete"
+        "rendering verification did not pass. Inspect rendering.json in the configured output directory"
     );
 }
 
@@ -861,7 +1109,7 @@ struct Check {
     at: usize,
     output: PathBuf,
     completed: Arc<AtomicBool>,
-    pending: Arc<Mutex<Option<egui::ColorImage>>>,
+    pending: Arc<Mutex<Option<(egui::ColorImage, serde_json::Value)>>>,
     state: Arc<Mutex<State>>,
     results: Vec<serde_json::Value>,
     timeline: Vec<([u8; 4], [u8; 4])>,
@@ -877,104 +1125,143 @@ fn interior(image: &egui::ColorImage, x: usize, y: usize, background: egui::Colo
     })
 }
 
+fn artifact_identity(output: &std::path::Path) -> serde_json::Value {
+    use sha2::{Digest, Sha256};
+    let revision = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(revision.status.success());
+    let mut files = fs::read_dir(output)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    files.sort();
+    json!({
+        "revision":String::from_utf8_lossy(&revision.stdout).trim(),
+        "executable_sha256":hex::encode(Sha256::digest(fs::read(std::env::current_exe().unwrap()).unwrap())),
+        "recipe":"Generated model and package fixtures from verification::cases, with CPU evaluation and explicit material expectations",
+        "repeat_filter":"model_preview::gpu::verification::generated_materials_render_consistently",
+        "artifacts":files.into_iter().map(|path|json!({
+            "file":path.file_name().unwrap().to_string_lossy(),
+            "sha256":hex::encode(Sha256::digest(fs::read(&path).unwrap()))
+        })).collect::<Vec<_>>()
+    })
+}
+
+impl Check {
+    fn compare(&mut self, captured: (egui::ColorImage, serde_json::Value)) {
+        let (gpu, measurements) = captured;
+        let case = &self.cases[self.at];
+        let cpu = render::styled_image(
+            &case.frame.model,
+            case.frame.camera,
+            case.frame.scene,
+            gpu.size,
+            case.frame.seconds,
+            case.frame.style,
+        );
+        for (name, image) in [("cpu", &cpu), ("gpu", &gpu)] {
+            let rgba: Vec<_> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
+            fs::write(
+                self.output.join(format!("{}-{name}.png", case.name)),
+                export::png(&rgba, image.width(), image.height()).unwrap(),
+            )
+            .unwrap();
+        }
+        if case.name.starts_with("native-cubic-timeline-") {
+            let index = gpu.height() / 2 * gpu.width() + gpu.width() / 2;
+            self.timeline
+                .push((cpu.pixels[index].to_array(), gpu.pixels[index].to_array()));
+        }
+        // Material cases use a central square. Geometry cases compare coverage
+        // throughout either renderer's interior, so missing parts cannot hide.
+        let mut error = 0_u8;
+        let mut expectation = 0_u8;
+        let geometry = case.name.starts_with("skeletal-")
+            || case.name.starts_with("packaged-particle-")
+            || case.name.starts_with("tangent-")
+            || case.name.starts_with("native-canvas-");
+        let mut compared = 0;
+        let mut coverage_mismatches = 0;
+        let [r, g, b] = case.frame.scene.background;
+        let background = egui::Color32::from_rgb(r, g, b);
+        let x_range = if geometry {
+            3..gpu.width() - 3
+        } else {
+            gpu.width() / 2 - 8..gpu.width() / 2 + 8
+        };
+        let y_range = if geometry {
+            3..gpu.height() - 3
+        } else {
+            gpu.height() / 2 - 8..gpu.height() / 2 + 8
+        };
+        for y in y_range {
+            for x in x_range.clone() {
+                let index = y * gpu.width() + x;
+                if geometry
+                    && !interior(&cpu, x, y, background)
+                    && !interior(&gpu, x, y, background)
+                {
+                    continue;
+                }
+                if (cpu.pixels[index] == background) != (gpu.pixels[index] == background) {
+                    coverage_mismatches += 1;
+                }
+                compared += 1;
+                for channel in 0..3 {
+                    let a = cpu.pixels[index].to_array()[channel];
+                    let b = gpu.pixels[index].to_array()[channel];
+                    error = error.max(a.abs_diff(b));
+                    if let Some(expected) = case.expected {
+                        expectation = expectation
+                            .max(a.abs_diff(expected[channel]))
+                            .max(b.abs_diff(expected[channel]));
+                    }
+                }
+            }
+        }
+        let gear = case.name.starts_with("gear-");
+        let blue = |image: &egui::ColorImage| {
+            image
+                .pixels
+                .iter()
+                .filter(|p| p.b() > 60 && p.b() > p.r().saturating_mul(2))
+                .count()
+        };
+        let visible =
+            |image: &egui::ColorImage| image.pixels.iter().filter(|&&p| p != background).count();
+        let gear_passed = visible(&cpu) > 100
+            && visible(&gpu) > 100
+            && (!case.name.starts_with("gear-map-") || (blue(&cpu) > 10 && blue(&gpu) > 10));
+        let mut result = if case.name.starts_with("offload-") {
+            offload::result(case, &cpu, &gpu)
+        } else if case.name.starts_with("output-") {
+            output::result(case, &cpu, &gpu, &self.results)
+        } else {
+            json!({"name":case.name,"max_channel_difference":error,
+            "independent_expectation_error":expectation,"compared_pixels":compared,
+            "coverage_mismatches":coverage_mismatches,
+            "cpu_blue_pixels":blue(&cpu),"gpu_blue_pixels":blue(&gpu),
+            "passed":if gear { gear_passed } else { error<=3 && expectation<=3 && compared>30 && coverage_mismatches==0 }})
+        };
+        result["renderer_measurements"] = measurements;
+        self.results.push(result);
+        self.at += 1;
+    }
+}
+
 impl eframe::App for Check {
-    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         assert!(
-            self.started.elapsed().as_secs() < 90,
+            self.started.elapsed().as_secs() < 300,
             "rendering verification timed out"
         );
         let captured = self.pending.lock().unwrap().take();
         if let Some(gpu) = captured {
-            let case = &self.cases[self.at];
-            let cpu = render::styled_image(
-                &case.frame.model,
-                case.frame.camera,
-                case.frame.scene,
-                gpu.size,
-                case.frame.seconds,
-                case.frame.style,
-            );
-            for (name, image) in [("cpu", &cpu), ("gpu", &gpu)] {
-                let rgba: Vec<_> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
-                fs::write(
-                    self.output.join(format!("{}-{name}.png", case.name)),
-                    export::png(&rgba, image.width(), image.height()).unwrap(),
-                )
-                .unwrap();
-            }
-            if case.name.starts_with("native-cubic-timeline-") {
-                let index = gpu.height() / 2 * gpu.width() + gpu.width() / 2;
-                self.timeline
-                    .push((cpu.pixels[index].to_array(), gpu.pixels[index].to_array()));
-            }
-            // Material cases use a central square. Geometry cases compare coverage
-            // throughout either renderer's interior, so missing parts cannot hide.
-            let mut error = 0_u8;
-            let mut expectation = 0_u8;
-            let geometry = case.name.starts_with("skeletal-")
-                || case.name.starts_with("packaged-particle-")
-                || case.name.starts_with("tangent-")
-                || case.name.starts_with("native-canvas-");
-            let mut compared = 0;
-            let mut coverage_mismatches = 0;
-            let [r, g, b] = case.frame.scene.background;
-            let background = egui::Color32::from_rgb(r, g, b);
-            let x_range = if geometry {
-                3..gpu.width() - 3
-            } else {
-                gpu.width() / 2 - 8..gpu.width() / 2 + 8
-            };
-            let y_range = if geometry {
-                3..gpu.height() - 3
-            } else {
-                gpu.height() / 2 - 8..gpu.height() / 2 + 8
-            };
-            for y in y_range {
-                for x in x_range.clone() {
-                    let index = y * gpu.width() + x;
-                    if geometry
-                        && !interior(&cpu, x, y, background)
-                        && !interior(&gpu, x, y, background)
-                    {
-                        continue;
-                    }
-                    if (cpu.pixels[index] == background) != (gpu.pixels[index] == background) {
-                        coverage_mismatches += 1;
-                    }
-                    compared += 1;
-                    for channel in 0..3 {
-                        let a = cpu.pixels[index].to_array()[channel];
-                        let b = gpu.pixels[index].to_array()[channel];
-                        error = error.max(a.abs_diff(b));
-                        if let Some(expected) = case.expected {
-                            expectation = expectation
-                                .max(a.abs_diff(expected[channel]))
-                                .max(b.abs_diff(expected[channel]));
-                        }
-                    }
-                }
-            }
-            let gear = case.name.starts_with("gear-");
-            let blue = |image: &egui::ColorImage| {
-                image
-                    .pixels
-                    .iter()
-                    .filter(|p| p.b() > 60 && p.b() > p.r().saturating_mul(2))
-                    .count()
-            };
-            let visible = |image: &egui::ColorImage| {
-                image.pixels.iter().filter(|&&p| p != background).count()
-            };
-            let gear_passed = visible(&cpu) > 100
-                && visible(&gpu) > 100
-                && (!case.name.starts_with("gear-map-") || (blue(&cpu) > 10 && blue(&gpu) > 10));
-            self.results
-                .push(json!({"name":case.name,"max_channel_difference":error,
-                "independent_expectation_error":expectation,"compared_pixels":compared,
-                "coverage_mismatches":coverage_mismatches,
-                "cpu_blue_pixels":blue(&cpu),"gpu_blue_pixels":blue(&gpu),
-                "passed":if gear { gear_passed } else { error<=3 && expectation<=3 && compared>30 && coverage_mismatches==0 }}));
-            self.at += 1;
+            self.compare(gpu);
         }
         if self.at == self.cases.len() {
             let timeline = self.timeline.len() == 6
@@ -984,9 +1271,23 @@ impl eframe::App for Check {
                 && self.timeline[4] == self.timeline[0]
                 && self.timeline[5] == self.timeline[1];
             let passed = self.results.iter().all(|row| row["passed"] == true) && timeline;
+            if !passed {
+                let failed: Vec<_> = self
+                    .results
+                    .iter()
+                    .filter(|row| row["passed"] != true)
+                    .filter_map(|row| row["name"].as_str())
+                    .collect();
+                eprintln!(
+                    "Failed rendering cases: {}. Animation timeline passed: {timeline}",
+                    failed.join(", ")
+                );
+            }
             fs::write(self.output.join("rendering.json"),serde_json::to_vec_pretty(&json!({
                 "cases":self.results.len(),"passed":self.results.iter().filter(|r|r["passed"]==true).count(),
                 "scope":"Generated model fixtures through production CPU and OpenGL rendering",
+                "selection":scope::name(),
+                "identity":artifact_identity(&self.output),
                 "gameplay_verified":false,"results":self.results,
                 "timeline_verified":timeline,"timeline_centers":self.timeline})).unwrap()).unwrap();
             self.completed.store(passed, Ordering::SeqCst);
@@ -995,6 +1296,8 @@ impl eframe::App for Check {
         }
         let case = &self.cases[self.at];
         let frame = Frame {
+            animate: case.frame.animate,
+            dyes: None,
             model: case.frame.model.clone(),
             camera: case.frame.camera,
             scene: case.frame.scene,
@@ -1004,16 +1307,29 @@ impl eframe::App for Check {
         };
         let pending = self.pending.clone();
         let state = self.state.clone();
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(160.0, 160.0), egui::Sense::hover());
+        let name = case.name.clone();
+        egui::CentralPanel::default().show(ui, |ui| {
+            let size = output::size(&case.name);
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(size[0], size[1]), egui::Sense::hover());
             let callback = eframe::egui_glow::CallbackFn::new(move |info, painter| {
                 let gl = painter.gl();
                 // SAFETY: the callback owns the live context. The readback buffer has exactly
                 // four bytes per viewport pixel and is read before the next painter command.
                 unsafe {
-                    if !state.lock().unwrap().draw(gl, &info, &frame) {
+                    let measurements = {
+                        let mut state = state.lock().unwrap();
+                        let measurements = measure::draw(gl, &mut state, &info, &frame);
+                        assert!(
+                            state.fallback.is_none(),
+                            "{name}: GPU fallback {:?}",
+                            state.fallback.as_ref().map(|(_, reason)| reason)
+                        );
+                        measurements
+                    };
+                    let Some(measurements) = measurements else {
                         return;
-                    }
+                    };
                     let viewport = info.viewport_in_pixels();
                     let (w, h) = (viewport.width_px as usize, viewport.height_px as usize);
                     let mut rgba = vec![0; w * h * 4];
@@ -1031,8 +1347,10 @@ impl eframe::App for Check {
                         flipped[y * w * 4..(y + 1) * w * 4]
                             .copy_from_slice(&rgba[(h - y - 1) * w * 4..(h - y) * w * 4]);
                     }
-                    *pending.lock().unwrap() =
-                        Some(egui::ColorImage::from_rgba_unmultiplied([w, h], &flipped));
+                    *pending.lock().unwrap() = Some((
+                        egui::ColorImage::from_rgba_unmultiplied([w, h], &flipped),
+                        measurements,
+                    ));
                 }
             });
             ui.painter().add(egui::Shape::Callback(egui::PaintCallback {

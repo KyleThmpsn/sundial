@@ -98,10 +98,10 @@ fn assert_one_slot(definition: &[u8], strings: &[u8], slot: WeaponInventorySlot,
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES and PARHELION_COMBINATION_ROOT"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
 fn native_split_slot_donors_author_slot_ammo_and_damage_independently() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-    let output = PathBuf::from(std::env::var_os("PARHELION_COMBINATION_ROOT").unwrap());
+    let packages = crate::test_support::stock_packages();
+    let output = crate::test_support::artifact_dir("combinations");
     fs::create_dir_all(&output).unwrap();
     let stock = open_manager(&packages).unwrap();
     let source = Tables::read(&stock);

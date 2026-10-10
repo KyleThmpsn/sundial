@@ -2,9 +2,9 @@ use super::*;
 use crate::app::custom_perks::workbench::parameters::tests::{editor, fixture, set_test_speed};
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES for workbench navigation"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES for workbench navigation"]
 fn native_reopening_a_different_perk_does_not_reuse_the_previous_parameter_editor() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let temporary = tempfile::tempdir().unwrap();
     let catalog = InvestmentCatalog::load_with_cache_path(
         packages.parent().unwrap(),
@@ -33,7 +33,7 @@ fn native_reopening_a_different_perk_does_not_reuse_the_previous_parameter_edito
     let second_before = workbench.documents[1].recipe.clone();
     let ctx = egui::Context::default();
     for _ in 0..3 {
-        let output = ctx.run(
+        let output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -41,9 +41,9 @@ fn native_reopening_a_different_perk_does_not_reuse_the_previous_parameter_edito
                 )),
                 ..Default::default()
             },
-            |ctx| {
+            |ui| {
                 workbench.show(
-                    ctx,
+                    ui,
                     &packages,
                     Some(&catalog),
                     &[],

@@ -1,3 +1,5 @@
+mod loadout_safety;
+
 use serde_json::json;
 
 use super::*;

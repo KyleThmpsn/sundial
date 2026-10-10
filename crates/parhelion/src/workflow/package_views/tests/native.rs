@@ -8,7 +8,7 @@ const SOURCE_NAME: &str = "w64_lifetime_source_058c_0.pkg";
 const IGNORED_NAME: &str = "w64_lifetime_excluded_058d_0.pkg";
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES and Oodle3, runs an isolated child and writes temporary files only"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES with Oodle3 and fresh SUNDIAL_TEST_ARTIFACTS, runs an isolated child"]
 fn source_decoder_is_not_loaded_from_temporary_view() {
     if std::env::var_os(CHILD_FLAG).is_some() {
         check_fresh_decoder_lifetime();
@@ -42,9 +42,7 @@ fn source_decoder_is_not_loaded_from_temporary_view() {
 
 fn check_fresh_decoder_lifetime() {
     let root = PathBuf::from(std::env::var_os(CHILD_ROOT).unwrap());
-    let installed = PathBuf::from(
-        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").expect("configure Shadowkeep packages"),
-    );
+    let installed = crate::test_support::stock_packages();
     let packages = root.join("source/packages");
     let views = root.join("views");
     fs::create_dir_all(&packages).unwrap();
@@ -86,14 +84,52 @@ fn check_fresh_decoder_lifetime() {
         loaded_oodle_path().canonicalize().unwrap(),
         stable_runtime.canonicalize().unwrap()
     );
+    // Encoding from the temporary view must also release its DLL before cleanup. The decoder
+    // remains loaded from the stable source while the independent encoder uses the view path.
+    let encoded = compressed_source_package(view.path(), &payload);
+    let emitted = root.join("emitted/packages");
+    fs::create_dir_all(&emitted).unwrap();
+    fs::write(emitted.join(SOURCE_NAME), &encoded).unwrap();
+    let readback = sundial::package_authoring::open_shadowkeep_package_manager(&emitted).unwrap();
+    assert_eq!(
+        readback
+            .read_tag(tiger_pkg::TagHash::new(0x058C, 0))
+            .unwrap(),
+        payload
+    );
+    drop(readback);
     drop(manager);
     view.close()
-        .expect("source-anchored decoder must not pin the temporary view DLL");
+        .expect("neither decoder nor completed encoder work may pin the temporary view DLL");
     assert!(!view_root.exists());
     assert_eq!(fs::read(packages.join(SOURCE_NAME)).unwrap(), source_bytes);
     assert_eq!(
         fs::read(packages.join(IGNORED_NAME)).unwrap(),
         b"excluded malformed authored data"
+    );
+    let retained = crate::test_support::artifact_dir("package-view-codec-lifetime");
+    fs::create_dir_all(retained.parent().unwrap()).unwrap();
+    fs::create_dir(&retained).unwrap();
+    fs::create_dir(retained.join("packages")).unwrap();
+    fs::write(retained.join("packages").join(SOURCE_NAME), &encoded).unwrap();
+    fs::write(retained.join("payload.bin"), &payload).unwrap();
+    crate::test_support::artifact(
+        "package-view-codec-lifetime.json",
+        &serde_json::json!({
+            "native_build":"86657.20.08.23.1800.d2_rc",
+            "executable_sha256":crate::artifact::digest_file(&std::env::current_exe().unwrap()).unwrap(),
+            "codec_sha256":crate::artifact::digest_file(&stable_runtime).unwrap(),
+            "source_packages":installed,
+            "package":format!("package-view-codec-lifetime/packages/{SOURCE_NAME}"),
+            "expected_payload":"package-view-codec-lifetime/payload.bin",
+            "encoded_package_sha256":crate::artifact::digest_file(&emitted.join(SOURCE_NAME)).unwrap(),
+            "independent_readback_bytes":payload.len(),
+            "temporary_view_removed":!view_root.exists(),
+            "stock_and_excluded_files_unchanged":true,
+            "decoder_loaded_from_stable_source":true,
+            "repeat_filter":TEST_NAME,
+            "limits":"Isolated encoder and decoder lifetime plus independent package readback. No gameplay claim."
+        }),
     );
 }
 

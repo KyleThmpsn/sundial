@@ -20,12 +20,8 @@ impl EquipmentAnimation {
     }
 }
 
-pub(in crate::item) fn load(graph: &GraphReference) -> AuthoringResult<Option<EquipmentAnimation>> {
-    let value: Value = serde_json::from_slice(
-        &fs::read(graph.directory.join("asset-graph.json"))
-            .map_err(|error| invalid(format!("Imported equipment graph: {error}")))?,
-    )
-    .map_err(|error| invalid(format!("Imported equipment graph: {error}")))?;
+pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<EquipmentAnimation>> {
+    let value = graph.value();
     let section = &value["equipment_animation"];
     if section["status"] != "linked" {
         return Ok(None);

@@ -21,15 +21,27 @@ impl PackageAuthoringApp {
     pub(super) fn start_replacement_review(&mut self) {
         self.replacement_review = None;
         self.replacement_receiver = None;
+        self.replacement_status = build_status::InstallStatus::default();
         let Some(Ok(build)) = &self.latest_build else {
             return;
         };
         let staged = build.run_directory.clone();
         let target = self.packages.clone();
         let (sender, receiver) = mpsc::channel();
+        let (progress_sender, progress_receiver) = mpsc::channel();
+        let started = Instant::now();
         thread::spawn(move || {
-            let _ = sender.send(crate::install::preview_replacement(&target, &staged));
+            let result =
+                crate::install::preview_replacement_with_progress(&target, &staged, |progress| {
+                    let _ = progress_sender.send((progress, started.elapsed()));
+                });
+            let _ = sender.send(result);
         });
+        self.replacement_status = build_status::InstallStatus {
+            receiver: Some(progress_receiver),
+            started: Some(started),
+            ..Default::default()
+        };
         self.replacement_receiver = Some(receiver);
     }
 
@@ -37,13 +49,26 @@ impl PackageAuthoringApp {
         let Some(receiver) = &self.replacement_receiver else {
             return;
         };
+        self.replacement_status.poll(&mut self.log);
         match receiver.try_recv() {
             Ok(result) => {
+                self.replacement_status.poll(&mut self.log);
+                self.replacement_status.finish();
+                self.replacement_status.activity.push(
+                    self.replacement_status.elapsed,
+                    if result.is_ok() {
+                        "Account Review Complete"
+                    } else {
+                        "Account Review Failed"
+                    }
+                    .into(),
+                );
                 self.replacement_review = Some(result);
                 self.replacement_receiver = None;
             }
             Err(mpsc::TryRecvError::Empty) => {}
             Err(mpsc::TryRecvError::Disconnected) => {
+                self.replacement_status.finish();
                 self.replacement_review = Some(Err(
                     "Account review stopped unexpectedly. Review the installation again.".into(),
                 ));
@@ -383,6 +408,16 @@ impl PackageAuthoringApp {
         {
             return;
         }
+        // A mod's base is its perk's template plug, so a new mod starts with a perk.
+        if self.recipe.kind == ItemKind::Mod {
+            if self.bind_default_mod() {
+                if !self.recipe_dirty && self.recipe_path.is_none() {
+                    self.recipe_baseline = self.recipe.clone();
+                }
+                self.advance_recipe_revision();
+            }
+            return;
+        }
         let Some(catalog) = self.catalog.as_ref() else {
             return;
         };
@@ -445,7 +480,7 @@ impl PackageAuthoringApp {
         thread::spawn(move || {
             let result = build_and_stage_snapshot_reporting(&snapshot, |progress| {
                 let _ = sender.send(BuildWorkerEvent::Progress(
-                    TimedBuildProgress::from_progress(progress, started.elapsed()),
+                    TimedBuildProgress::from_progress(progress, started),
                 ));
             });
             let _ = sender.send(BuildWorkerEvent::Finished {
@@ -459,12 +494,14 @@ impl PackageAuthoringApp {
             completed: 0,
             total: 2,
             elapsed: Duration::ZERO,
+            activity: None,
         });
         self.latest_build = None;
         self.build_blocker = None;
         self.latest_install = None;
         self.replacement_review = None;
         self.replacement_receiver = None;
+        self.replacement_status = build_status::InstallStatus::default();
         self.build_status_open = true;
         self.build_dialog_step = BuildDialogStep::Build;
         self.build_receiver = Some(receiver);
@@ -493,23 +530,15 @@ impl PackageAuthoringApp {
             };
             match event {
                 BuildWorkerEvent::Progress(progress) => {
-                    if let Some(message) = self.build_activity.progress(
-                        progress.elapsed,
-                        progress.phase.label(),
-                        progress.current_artifact.as_deref(),
-                        (progress.completed, progress.total),
-                        matches!(
-                            progress.phase,
-                            BuildPhase::InspectingSource
-                                | BuildPhase::LoadingCatalog
-                                | BuildPhase::CompilingProject
-                                | BuildPhase::BuildingPayloads
-                        ),
-                        true,
-                    ) {
+                    if let Some(message) = self.build_activity.build(&progress) {
                         self.log.push(LogEntry::info(message));
                     }
-                    self.build_progress = Some(progress);
+                    if !matches!(
+                        progress.activity,
+                        Some(crate::workflow::BuildActivity::Diagnostic(_))
+                    ) {
+                        self.build_progress = Some(progress);
+                    }
                 }
                 BuildWorkerEvent::Finished {
                     result: Ok(report),
@@ -521,6 +550,7 @@ impl PackageAuthoringApp {
                         completed: 1,
                         total: 1,
                         elapsed,
+                        activity: None,
                     });
                     self.log.push(LogEntry::info(format!(
                         "Build complete: {}",
@@ -751,6 +781,7 @@ impl PackageAuthoringApp {
         {
             return;
         }
+        self.account_resync.begin();
         let target = self.packages.clone();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
@@ -780,7 +811,7 @@ impl PackageAuthoringApp {
         // A disconnected worker can also have written part of the account. The
         // host refreshes only when it is safe to replace its current document.
         self.account_changed = true;
-        match result {
+        match &result {
             Ok(report) => {
                 self.log.push(LogEntry::info(format!(
                     "Resynced the account from the installed packages: {} authored unlocks",
@@ -794,6 +825,7 @@ impl PackageAuthoringApp {
                     .push(LogEntry::error(format!("Account resync failed: {error}")));
             }
         }
+        self.account_resync.finish(result);
     }
 
     pub(super) fn poll_install(&mut self) {

@@ -5,6 +5,7 @@ pub(crate) enum Purpose {
     Perk,
     Badge,
     Watermark,
+    Image,
 }
 impl Purpose {
     pub fn max_edge(self) -> u32 {
@@ -21,7 +22,7 @@ impl Purpose {
         }
     }
     pub fn transparent(self) -> bool {
-        self != Self::Badge
+        matches!(self, Self::Perk | Self::Watermark)
     }
     pub fn accepts_size(self, w: u32, h: u32) -> bool {
         w >= 16
@@ -40,6 +41,9 @@ impl Purpose {
             }
             Self::Watermark => {
                 "Transparent PNG, 16 to 4096 pixels per side, up to 16 MiB. The watermark editor generates the required game sizes."
+            }
+            Self::Image => {
+                "PNG or JPEG, 16 to 4096 pixels per side, up to 16 MiB. Crop, placement and colors are saved with the source image."
             }
         }
     }

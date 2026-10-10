@@ -1,6 +1,8 @@
 //! Run the source vertex equations using native geometry and animation bindings.
 use super::*;
 use crate::d2_mot::native::shader::replace_once;
+mod float;
+pub(super) use float::physical as cloth;
 
 fn table(
     c: &mut Effect,
@@ -79,42 +81,55 @@ pub(super) fn build(c: &mut Effect, draw: &SourceDraw, material: &Payload) -> Re
             .join(format!("library-surfaces-01/source-shaders/{vs:08X}.hlsl")),
     )?
     .replace("\r\n", "\n");
+    let model = c.source.model(&draw.model_tag)?;
+    let entry = &c.source.report["models"][draw.model];
+    let mesh = geometry::selected_mesh(&model, entry)?;
+    let streams = geometry::streams(&c.source.root, &c.source.manifest, &model, mesh)?;
+    if streams.float_positions.is_some() {
+        return float::build(c, draw, &model, source);
+    }
     let mut text = source.clone();
     let count = inputs::cb_count(&text, 1)?.context("source skinning buffer")?;
     ensure!(
-        count == 7 || ((24..=256).contains(&count) && count.is_multiple_of(3)),
+        matches!(count, 7 | 8) || ((24..=256).contains(&count) && count.is_multiple_of(3)),
         "source bone buffer size differs"
     );
-    let native_bones = c.graph.manifest["rig_mapping"]["native_bone_count"]
-        .as_u64()
-        .unwrap_or(0) as usize;
-    let native_count = count.max(8 + native_bones * 3);
-    text = replace_once(
-        &text,
-        &inputs::cb_decl(1, count),
-        &inputs::cb_decl(11, native_count),
-    )?;
-    text = model_reads(&text)?;
-    let view_count = inputs::cb_count(&text, 12)?;
-    ensure!(
-        view_count == Some(16) || (count == 7 && view_count == Some(8)),
-        "source vertex view layout differs"
-    );
-    if view_count == Some(16) {
-        text = replace_once(&text, &inputs::cb_decl(12, 16), &inputs::cb_decl(12, 14))?;
+    let rigid = count == 8;
+    if rigid {
+        ensure!(
+            c.source.raw(&format!("{:08X}", model.u32(mesh)?))?.u16(6)? == 0,
+            "Rigid program requires a checked unskinned stream"
+        );
     }
-    text = text.replace("cb12[15].xyz", "(-cb12[7].xyz)");
-    text = text.replace("cb12[14].xyzw", "cb12[13].xyzw");
-    text = text.replace("cb12[10].xyz", "cb12[7].xyz");
-    ensure!(
-        inputs::reads(&text, 12).is_some_and(|reads| reads.iter().all(|i| *i < 14)),
-        "unmapped source vertex view input"
-    );
+    if !rigid {
+        let native_bones = c.graph.manifest["rig_mapping"]["native_bone_count"]
+            .as_u64()
+            .unwrap_or(0) as usize;
+        let native_count = count.max(8 + native_bones * 3);
+        text = replace_once(
+            &text,
+            &inputs::cb_decl(1, count),
+            &inputs::cb_decl(11, native_count),
+        )?;
+        text = model_reads(&text)?;
+        let view_count = inputs::cb_count(&text, 12)?;
+        ensure!(
+            view_count == Some(16) || (count == 7 && view_count == Some(8)),
+            "source vertex view layout differs"
+        );
+        if view_count == Some(16) {
+            text = replace_once(&text, &inputs::cb_decl(12, 16), &inputs::cb_decl(12, 14))?;
+        }
+        text = text.replace("cb12[15].xyz", "(-cb12[7].xyz)");
+        text = text.replace("cb12[14].xyzw", "cb12[13].xyzw");
+        text = text.replace("cb12[10].xyz", "cb12[7].xyz");
+        ensure!(
+            inputs::reads(&text, 12).is_some_and(|reads| reads.iter().all(|i| *i < 14)),
+            "unmapped source vertex view input"
+        );
+    }
 
-    let model = c.source.raw(&draw.model_tag)?;
-    let entry = &c.source.report["models"][draw.model];
-    let mesh = crate::d2_mot::geometry::selected_mesh(&model, entry)?;
-    let positions = c.source.buffer(model.u32(mesh)?)?;
+    let positions = Payload(streams.positions);
     let vertices = positions.0.len() / 24;
     let normal_meta = (0..vertices)
         .flat_map(|v| {
@@ -208,6 +223,37 @@ pub(super) fn build(c: &mut Effect, draw: &SourceDraw, material: &Payload) -> Re
     }
     let scale = model.f32(0x6C)?;
     let offset = [model.f32(0x60)?, model.f32(0x64)?, model.f32(0x68)?];
+    if rigid {
+        use crate::d2_mot::native::shader::packed::{Scopes, Transform};
+        let native_model = c.graph.read("model")?;
+        let (rect, size) = c.atlas(draw.model)?;
+        let transform = Transform {
+            scale: [model.f32(0x50)?, model.f32(0x54)?, model.f32(0x58)?],
+            offset,
+            uv: [
+                native_model.f32(0x70)?,
+                native_model.f32(0x74)?,
+                native_model.f32(0x78)?,
+                native_model.f32(0x7C)?,
+            ],
+            rect,
+            size,
+            vertex_base: draw.base,
+        };
+        text = Scopes::read(&c.refs)
+            .map_err(crate::d2_mot::source_limit)?
+            .vertex(&text, &transform)?;
+        text = text.replace(
+            "cb11[4].w",
+            &format!("asfloat({}u)", color_count.saturating_sub(1)),
+        );
+        text = replace_once(&text, "void main(\n", &format!("{helpers}\nvoid main(\n"))?;
+        return Ok(Vertex {
+            text,
+            textures,
+            source,
+        });
+    }
     ensure!(
         scale.is_finite()
             && scale > 0.

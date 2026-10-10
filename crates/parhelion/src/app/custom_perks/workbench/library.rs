@@ -132,7 +132,7 @@ fn draw_row_menu(
         crate::app::style::perk_workbench_style(ui);
         if ui.button("Duplicate").clicked() {
             action = Some((source, RowAction::Duplicate));
-            ui.close_menu();
+            ui.close();
         }
         let delete = if saved {
             "Delete Perk…"
@@ -141,7 +141,7 @@ fn draw_row_menu(
         };
         if ui.button(delete).clicked() {
             action = Some((source, RowAction::Delete));
-            ui.close_menu();
+            ui.close();
         }
     });
     action
@@ -662,7 +662,7 @@ impl Workbench {
                 crate::app::style::perk_workbench_style(ui);
                 if ui.button("Import…").clicked() {
                     self.import();
-                    ui.close_menu();
+                    ui.close();
                 }
                 let edit_issue = self.edit_issue();
                 if ui
@@ -671,11 +671,11 @@ impl Workbench {
                     .clicked()
                 {
                     self.export();
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.button("Refresh Library").clicked() {
                     self.refresh_library();
-                    ui.close_menu();
+                    ui.close();
                 }
                 ui.separator();
                 let has_edits = self.has_unsaved_bundled_edits();
@@ -700,7 +700,7 @@ impl Workbench {
                         Ok(preview) => self.pending_restore_defaults = Some(preview),
                         Err(error) => self.error = Some(error),
                     }
-                    ui.close_menu();
+                    ui.close();
                 }
             });
         });
@@ -1041,7 +1041,8 @@ impl Workbench {
     }
 
     pub(super) fn handle_save_shortcut(&mut self, ctx: &egui::Context) {
-        if ctx.memory(|memory| memory.top_modal_layer().is_some() || memory.any_popup_open()) {
+        if ctx.memory(|memory| memory.top_modal_layer().is_some()) || egui::Popup::is_any_open(ctx)
+        {
             return;
         }
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
@@ -1128,10 +1129,10 @@ fn perk_row(
             )
             .inner;
         // Painted rather than laid out as a label: the icon font's line is taller than the
-        // text's, and a label of it pushed the row out of line with its neighbors.
-        let height = crate::app::style::list_row_height(ui);
+        // text's, and a label of it pushed the row out of line with its neighbors. It takes the
+        // row's height, so it stays centered beside the name and description.
         let (rect, response) =
-            ui.allocate_exact_size(egui::vec2(icon, height), egui::Sense::hover());
+            ui.allocate_exact_size(egui::vec2(icon, row.rect.height()), egui::Sense::hover());
         let font = egui::FontId::new(
             egui::TextStyle::Body.resolve(ui.style()).size,
             egui::FontFamily::Proportional,
@@ -1157,7 +1158,7 @@ fn perk_row_body(
     label: &str,
 ) -> egui::Response {
     match catalog {
-        Some(catalog) => catalog.draw_perk_row_with_icon(
+        Some(catalog) => catalog.draw_perk_card_row(
             ui,
             recipe.template_plug.parse_u32().unwrap_or_default(),
             label,

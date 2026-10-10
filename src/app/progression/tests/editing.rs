@@ -7,7 +7,7 @@ fn frame(
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
     let catalog = Catalog::for_test(Vec::new(), HashMap::new());
-    ctx.run(
+    ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -16,8 +16,8 @@ fn frame(
             events,
             ..Default::default()
         },
-        |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 draw_content(ui, document, &catalog, None, state, View::Unlocks);
             });
         },

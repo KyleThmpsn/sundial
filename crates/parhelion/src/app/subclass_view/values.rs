@@ -1,7 +1,8 @@
 //! An ability's own values and those of the graphs it spawns: each graph's fields, as the
 //! weapon's Runtime Values list them, edited on copies that only this ability uses. Graphs load
 //! on a worker, once each, with the graphs they spawn named by the object catalog. The ability's
-//! bank is left out, since the build keeps banks stock and Parameters edits them.
+//! bank is excluded from this list. Parameters owns the checked bank edits, which the build
+//! applies to private copies.
 use super::*;
 use std::sync::mpsc::{self, Receiver};
 use sundial::package_authoring::sandbox_perk::entity::catalog::{self as objects, Catalog};

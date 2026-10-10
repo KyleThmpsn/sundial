@@ -20,6 +20,7 @@ struct ListRow<'a> {
     detail: Option<&'a str>,
     edited: bool,
     selected: bool,
+    color: Option<[u8; 3]>,
 }
 
 impl ListRow<'_> {
@@ -81,6 +82,19 @@ impl ListRow<'_> {
             }
             // The edit dot keeps the right edge, so a row from another subclass shows it too.
             let mut right = rect.right() - 8.0;
+            if let Some([red, green, blue]) = self.color {
+                painter.rect(
+                    egui::Rect::from_center_size(
+                        egui::pos2(right - 6.0, middle),
+                        egui::Vec2::splat(12.0),
+                    ),
+                    2.0,
+                    egui::Color32::from_rgb(red, green, blue),
+                    egui::Stroke::new(0.5, secondary),
+                    egui::StrokeKind::Inside,
+                );
+                right -= 20.0;
+            }
             if self.edited {
                 painter.circle_filled(egui::pos2(right - 3.0, middle), 3.0, text);
                 right -= 14.0;
@@ -180,6 +194,19 @@ impl PackageAuthoringApp {
             if let Some(selection) = self.draw_path_rows(ui, base, abilities, page) {
                 clicked = Some(selection);
             }
+            ui.add_space(8.0);
+            ui.label(quiet(ui, "Always Active"));
+            for entry in layout::FOUNDATIONS {
+                if let Some(row) = self.draw_entry_row(
+                    ui,
+                    (base, abilities),
+                    Place::Ability(entry),
+                    ("", None),
+                    page.selection,
+                ) {
+                    clicked = Some(row);
+                }
+            }
         });
         (clicked, restore)
     }
@@ -220,6 +247,7 @@ impl PackageAuthoringApp {
                 .map(|summary| summary.name.as_str()),
             edited: is_own(abilities, place),
             selected: selected == SubclassSelection::Entry(place),
+            color: edits.color.or(abilities.hud_color),
         }
         .show(ui)
         .on_hover_ui(|ui| {
@@ -268,6 +296,7 @@ impl PackageAuthoringApp {
             edited: (source, source_path) != (base.hash, path)
                 || own.is_some_and(|attunement| attunement.name.is_some()),
             selected: page.selection == SubclassSelection::Path(path),
+            color: None,
         }
         .show(ui)
         .on_hover_ui(|ui| {

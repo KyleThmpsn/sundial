@@ -41,7 +41,7 @@ impl Cache {
     /// The cache for the installation at `packages`, or nothing when there is no cache
     /// directory, in which case the walk simply runs in full.
     pub(super) fn open(packages: &Path) -> Option<Self> {
-        let directory = crate::paths::cache_dir()?
+        let directory = crate::system::paths::cache_dir()?
             .join(crate::sandbox_perk::CACHE_DIRECTORY)
             .join("ancestry");
         let snapshot = Snapshot::read(packages).ok()?;

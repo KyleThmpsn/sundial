@@ -108,7 +108,7 @@ impl ItemFilter {
 
 pub(crate) fn draw_item_filter_bar(
     ui: &mut egui::Ui,
-    id_salt: impl Hash + Clone,
+    id_salt: impl Hash + std::fmt::Debug + Clone,
     scope: ItemFilterScope,
     candidates: &[&ItemDef],
     filter: &mut ItemFilter,
@@ -297,7 +297,7 @@ mod tests {
             let mut overflow = 0.0;
             let mut output = egui::FullOutput::default();
             for _ in 0..3 {
-                output = ctx.run(
+                output = ctx.run_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -305,8 +305,8 @@ mod tests {
                         )),
                         ..Default::default()
                     },
-                    |ctx| {
-                        egui::CentralPanel::default().show(ctx, |ui| {
+                    |ui| {
+                        egui::CentralPanel::default().show(ui, |ui| {
                             ui.set_width(width);
                             ui.style_mut()
                                 .text_styles
@@ -408,13 +408,13 @@ mod tests {
         events: Vec<egui::Event>,
     ) -> (egui::FullOutput, bool) {
         let mut changed = false;
-        let output = ctx.run(
+        let output = ctx.run_ui(
             egui::RawInput {
                 events,
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     changed =
                         draw_item_filter_bar(ui, "test", ItemFilterScope::WeaponDonor, &[], filter);
                 });

@@ -10,6 +10,8 @@ pub(super) struct Plan {
     pub watermark: crate::watermark::WatermarkPlan,
     pub badge: crate::badge_icon::BadgeIconPlan,
     pub hud_table: Option<ReplacementSpec>,
+    pub subclass_hud_table: Option<ReplacementSpec>,
+    pub subclass_ui: Vec<ReplacementSpec>,
     pub hud_asset_start: usize,
     /// The HUD icon layers the project's own HUD status images make, by image and by the stock
     /// status whose layer each copies.
@@ -26,7 +28,7 @@ pub(super) fn plan(
     manager: &PackageManager,
     resolved: &[resolve::ResolvedWeapon],
     weapon_count: usize,
-    custom_plugs: &mut [ResolvedCustomPlug],
+    (custom_plugs, mod_plugs): (&mut [ResolvedCustomPlug], &mut [ResolvedCustomPlug]),
     programs: &[sundial::package_authoring::sandbox_perk::program::Program],
     branding: crate::branding::Branding,
 ) -> AuthoringResult<Plan> {
@@ -47,9 +49,22 @@ pub(super) fn plan(
     let icon_requests = resolved
         .iter()
         .map(|donor| {
+            let overrides = &donor.weapon.overrides;
+            let silhouette =
+                crate::vehicle::icon::shown(overrides.sparrow.as_ref(), &overrides.icon_edit)
+                    .map(|vehicle| crate::vehicle::icon::silhouette(manager, vehicle))
+                    .transpose()
+                    .map_err(|error| donor.weapon.in_recipe(invalid(error)))?
+                    .flatten();
+            // A subclass's generated icon is drawn whole in its subclass color, so the icon's own
+            // edits would only recolor it. A silhouette takes them, as the image it replaces would.
+            let icon_edit = match (&silhouette, &donor.drawn_icon) {
+                (None, Some(drawn)) => crate::WeaponIconEdit::drawn(drawn),
+                _ => overrides.icon_edit.with_art(silhouette.as_ref()),
+            };
             Ok(WeaponIconRequest {
                 donor_container_tag: donor.donor_icon_container,
-                icon_edit: donor.weapon.overrides.icon_edit.clone(),
+                icon_edit,
                 rarity: donor
                     .weapon
                     .overrides
@@ -119,16 +134,14 @@ pub(super) fn plan(
     )?;
     let mut badges = BTreeMap::new();
     for donor in resolved {
-        if let Some(badge) = &donor.weapon.overrides.badge {
-            if let Some(previous) = badges.insert(badge.name.clone(), badge) {
-                if previous != badge {
-                    return Err(invalid(format!(
-                        "Badge {:?} has conflicting settings",
-                        badge.name
-                    ))
-                    .context(badge_context(resolved, &badge.name)));
-                }
-            }
+        if let Some(badge) = &donor.weapon.overrides.badge
+            && let Some(previous) = badges.insert(badge.name.clone(), badge)
+            && previous != badge
+        {
+            return Err(
+                invalid(format!("Badge {:?} has conflicting settings", badge.name))
+                    .context(badge_context(resolved, &badge.name)),
+            );
         }
     }
     let mut custom_badges = BTreeMap::new();
@@ -224,7 +237,7 @@ pub(super) fn plan(
             )
         })
     };
-    for plug in custom_plugs.iter_mut() {
+    for plug in custom_plugs.iter_mut().chain(mod_plugs.iter_mut()) {
         if let Some(icon) = &plug.icon {
             plug.authored_icon_container = Some(private_icon(icon, plug.source_icon_container)?);
         }
@@ -239,9 +252,13 @@ pub(super) fn plan(
                 .flat_map(|list| &list.entries)
                 .map(|entry| {
                     entry
-                        .artwork
+                        .icon
                         .as_ref()
-                        .map(|artwork| private_icon(&artwork.icon, artwork.source_container))
+                        .map(|icon| {
+                            private_container(&mut |nodes, references| {
+                                crate::subclass::node_icon::author(manager, icon, nodes, references)
+                            })
+                        })
                         .transpose()
                         .map_err(|error| {
                             donor.weapon.in_recipe_as(
@@ -251,6 +268,26 @@ pub(super) fn plan(
                         })
                 })
                 .collect::<AuthoringResult<Vec<_>>>()
+        })
+        .collect::<AuthoringResult<Vec<_>>>()?;
+    // Attached HUD artwork has its own container, independent of the tree node's icon.
+    let attached_icons = resolved
+        .iter()
+        .filter_map(|donor| donor.subclass_list.as_ref())
+        .flat_map(|list| &list.entries)
+        .filter_map(|entry| entry.entity.as_ref())
+        .flat_map(|entity| &entity.attached)
+        .map(|attached| {
+            let container = attached
+                .icon
+                .as_ref()
+                .map(|icon| {
+                    private_container(&mut |nodes, references| {
+                        crate::subclass::node_icon::author(manager, icon, nodes, references)
+                    })
+                })
+                .transpose()?;
+            AuthoringResult::Ok((attached, container))
         })
         .collect::<AuthoringResult<Vec<_>>>()?;
     // An emblem with images of its own gets a nameplate container of its own, and a subclass
@@ -291,7 +328,64 @@ pub(super) fn plan(
         .checked_add(weapon_tag_ordinal_base)
         .and_then(|count| count.checked_add(watermark_plan.new_tags.len()))
         .ok_or_else(|| invalid("Authored host runtime-tag start overflowed"))?;
+    // A glyph row drawing an entry's own artwork draws its icon container's primary layer.
+    let subclass_hud_rows = resolved
+        .iter()
+        .zip(&entry_icon_containers)
+        .flat_map(|(donor, containers)| {
+            donor
+                .subclass_list
+                .iter()
+                .flat_map(|list| &list.entries)
+                .zip(containers)
+        })
+        .filter_map(|(entry, container)| Some((entry.entity.as_ref()?.hud_color?, *container)))
+        .chain(
+            attached_icons
+                .into_iter()
+                .flat_map(|(attached, container)| {
+                    attached
+                        .rows
+                        .iter()
+                        .copied()
+                        .map(move |row| (row, container))
+                }),
+        )
+        .map(|(mut row, container)| {
+            if let Some(crate::subclass::hud::Art::OwnIcon) = row.art {
+                let payload = container
+                    .and_then(|container| {
+                        badge_icon_plan
+                            .new_tags
+                            .get(usize::from(container.entry_index()))
+                    })
+                    .ok_or_else(|| invalid("An ability's HUD art names an icon the build lacks"))?;
+                row.art = Some(crate::subclass::hud::Art::Layer(
+                    crate::subclass::hud::primary_layer(manager, &payload.payload, true)?,
+                ));
+            }
+            Ok(row)
+        })
+        .collect::<AuthoringResult<Vec<_>>>()?;
     Ok(Plan {
+        subclass_ui: if resolved
+            .iter()
+            .filter_map(|donor| donor.subclass_list.as_ref())
+            .flat_map(|list| &list.entries)
+            .any(|entry| {
+                entry.icon.as_ref().is_some_and(|icon| icon.color.is_some())
+                    || entry.entity.as_ref().is_some_and(|entity| {
+                        entity
+                            .attached
+                            .iter()
+                            .any(|attached| attached.rows.iter().any(|row| row.rgb.is_some()))
+                    })
+            }) {
+            crate::subclass::ui::build(manager)?
+        } else {
+            Vec::new()
+        },
+        subclass_hud_table: crate::subclass::hud::build(manager, subclass_hud_rows.into_iter())?,
         custom_badges,
         weapon_tag_count: weapon_tag_ordinal_base,
         weapon_runtime_start: weapon_runtime_tag_start,
@@ -373,13 +467,13 @@ pub(super) fn author_icon_rows(
         let entries = donor.subclass_list.iter().flat_map(|list| &list.entries);
         let mut indices = Vec::with_capacity(containers.len());
         for (entry, container) in entries.zip(containers) {
-            let (Some(artwork), Some(container)) = (&entry.artwork, container) else {
+            let (Some(icon), Some(container)) = (&entry.icon, container) else {
                 indices.push(None);
                 continue;
             };
             let (icons, index) = append_authored_weapon_icon_row(
                 authored_item_icons,
-                artwork.source_row,
+                icon.source_row,
                 crate::presentation::text_hash(
                     &donor.weapon.namespace,
                     &format!("{}-icon", entry.key),

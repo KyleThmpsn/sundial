@@ -110,8 +110,7 @@ pub(in crate::app) fn on_hover(
     catalog: &Catalog,
     hash: u64,
 ) -> egui::Response {
-    let menu_open =
-        response.context_menu_opened() || response.ctx.memory(|memory| memory.any_popup_open());
+    let menu_open = response.context_menu_opened() || egui::Popup::is_any_open(&response.ctx);
     if response.hovered() && !response.is_pointer_button_down_on() && !menu_open {
         show(&response.ctx, catalog, hash);
     }
@@ -127,7 +126,7 @@ fn show(ctx: &egui::Context, catalog: &Catalog, hash: u64) {
     let size = ctx
         .memory(|memory| memory.area_rect(id))
         .map_or(egui::Vec2::ZERO, |rect| rect.size());
-    let screen = ctx.screen_rect();
+    let screen = ctx.content_rect();
     let mut at = pointer + egui::Vec2::splat(POINTER_OFFSET);
     if at.x + size.x > screen.right() {
         at.x = (pointer.x - POINTER_OFFSET - size.x).max(screen.left());
@@ -460,7 +459,7 @@ fn energy_of(catalog: &Catalog, hash: u64, plugs: &[u64]) -> Option<Energy> {
 fn listed_perk(catalog: &Catalog, hash: u64) -> Option<Perk> {
     let name = catalog.display_name(hash)?.trim();
     if name.is_empty()
-        || crate::unnamed_plugs::contains(hash)
+        || crate::catalog::unnamed_plugs::contains(hash)
         || name.starts_with("Empty ")
         || name.starts_with("Default ")
     {
@@ -512,7 +511,7 @@ fn name_lines(
         .iter()
         .map(|row| {
             let line = row.glyphs.iter().map(|glyph| glyph.chr).collect::<String>();
-            ui.fonts(|fonts| fonts.layout_no_wrap(line.trim().to_owned(), font.clone(), color))
+            ui.fonts_mut(|fonts| fonts.layout_no_wrap(line.trim().to_owned(), font.clone(), color))
         })
         .collect()
 }
@@ -558,7 +557,7 @@ fn draw_band(ui: &mut egui::Ui, catalog: &Catalog, item: &Item, span: Span, scal
     let tier = (item.rarity != ItemRarity::Unknown).then(|| item.rarity.label());
     let muted = band_text(item.rarity, true);
     let tier = tier.map(|tier| {
-        ui.fonts(|fonts| fonts.layout_no_wrap(tier.to_owned(), type_font.clone(), muted))
+        ui.fonts_mut(|fonts| fonts.layout_no_wrap(tier.to_owned(), type_font.clone(), muted))
     });
     let tier_width = tier.as_ref().map_or(0.0, |galley| galley.size().x);
     let second_line = !item.type_name.is_empty() || tier.is_some();
@@ -639,7 +638,8 @@ fn draw_figure(ui: &mut egui::Ui, catalog: &Catalog, title: &Title, scale: Scale
     {
         x += advance + scale.px(FIGURE_GLYPH_GAP);
     }
-    let figure = ui.fonts(|fonts| fonts.layout_no_wrap(title.value.to_string(), figure_font, tint));
+    let figure =
+        ui.fonts_mut(|fonts| fonts.layout_no_wrap(title.value.to_string(), figure_font, tint));
     let weight = super::strike(ui, GameFace::Figure, scale.px(FIGURE_WEIGHT));
     bold(ui.painter(), egui::pos2(x, top), &figure, tint, weight);
     x += figure.size().x + weight + scale.px(FIGURE_RULE_GAP);
@@ -671,7 +671,7 @@ fn draw_element(
 ) -> Option<f32> {
     let font = super::symbol_font(ui, size)?;
     let (ink_top, ink_height) = super::ink_band(ui, font.clone(), glyph);
-    let galley = ui.fonts(|fonts| fonts.layout_no_wrap(glyph.to_string(), font, tint));
+    let galley = ui.fonts_mut(|fonts| fonts.layout_no_wrap(glyph.to_string(), font, tint));
     let width = galley.size().x;
     ui.painter().galley(
         egui::pos2(x, line - ink_top - ink_height * 0.5),
@@ -698,7 +698,8 @@ fn draw_energy(ui: &egui::Ui, energy: &Energy, row: Row, mut x: f32, scale: Scal
     {
         x += advance + scale.px(ENERGY_GLYPH_GAP);
     }
-    let capacity = ui.fonts(|fonts| fonts.layout_no_wrap(energy.capacity.to_string(), font, tint));
+    let capacity =
+        ui.fonts_mut(|fonts| fonts.layout_no_wrap(energy.capacity.to_string(), font, tint));
     let weight = super::strike(ui, GameFace::Figure, scale.px(ENERGY_VALUE_WEIGHT));
     bold(ui.painter(), egui::pos2(x, top), &capacity, tint, weight);
     x + capacity.size().x + weight + scale.px(FIGURE_RULE_GAP)
@@ -731,7 +732,7 @@ fn draw_ammunition(
     let font = body_font(ui, scale);
     let top = row.anchor - super::line_height(ui, &font) * TEXT_ANCHOR;
     let color = if title.ammo.is_some() { TEXT } else { muted() };
-    let label = ui.fonts(|fonts| fonts.layout_no_wrap(title.label.clone(), font, color));
+    let label = ui.fonts_mut(|fonts| fonts.layout_no_wrap(title.label.clone(), font, color));
     ui.painter().galley(egui::pos2(x, top), label, color);
 }
 
@@ -741,7 +742,22 @@ fn draw_stats(ui: &mut egui::Ui, item: &Item, scale: Scale, width: f32) {
     let font = body_font(ui, scale);
     let line = super::line_height(ui, &font);
     let row_height = line + scale.px(STAT_ROW_GAP);
-    let name_width = scale.px(STAT_NAME_WIDTH);
+    // A name longer than the column, such as Rounds Per Minute, widens it rather than running
+    // into the padding.
+    let widest = item
+        .stats
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != item.title.consumed)
+        .map(|(_, row)| row.name.as_str())
+        .chain(item.armor.then_some(TOTAL_LABEL))
+        .map(|name| {
+            ui.fonts_mut(|fonts| fonts.layout_no_wrap(name.to_owned(), font.clone(), muted()))
+                .size()
+                .x
+        })
+        .fold(0.0, f32::max);
+    let name_width = scale.px(STAT_NAME_WIDTH).max(widest);
     let column_gap = scale.px(STAT_COLUMN_GAP);
     let bar_width = width - name_width - scale.px(STAT_VALUE_WIDTH) - column_gap * 2.0;
     let bar_height = scale.px(STAT_BAR_HEIGHT);
@@ -754,7 +770,8 @@ fn draw_stats(ui: &mut egui::Ui, item: &Item, scale: Scale, width: f32) {
     let mut sum = 0;
     let painter = ui.painter();
     let text = |at: egui::Pos2, value: &str, color: egui::Color32, right_aligned: bool| {
-        let galley = ui.fonts(|fonts| fonts.layout_no_wrap(value.to_owned(), font.clone(), color));
+        let galley =
+            ui.fonts_mut(|fonts| fonts.layout_no_wrap(value.to_owned(), font.clone(), color));
         let x = if right_aligned {
             at.x - galley.size().x
         } else {

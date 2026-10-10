@@ -1,11 +1,10 @@
 use super::*;
 
 #[test]
-#[ignore = "requires PARHELION_HUD_TEST_PACKAGES and PARHELION_HUD_STAGE_ROOT"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
 fn real_hud_recipe_stages_with_private_texture_and_runtime() {
-    let packages =
-        PathBuf::from(std::env::var_os("PARHELION_HUD_TEST_PACKAGES").expect("packages"));
-    let out = PathBuf::from(std::env::var_os("PARHELION_HUD_STAGE_ROOT").expect("stage root"));
+    let packages = crate::test_support::stock_packages();
+    let out = crate::test_support::artifact_dir("hud-stage");
     let mut png = std::io::Cursor::new(vec![]);
     image::RgbaImage::from_pixel(137, 76, image::Rgba([240, 240, 240, 180]))
         .write_to(&mut png, image::ImageFormat::Png)
@@ -117,15 +116,14 @@ fn real_hud_recipe_stages_with_private_texture_and_runtime() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_HUD_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 #[expect(
     clippy::cognitive_complexity,
     reason = "Independent byte-level audit checks all content variants and preserves each stock HUD row"
 )]
 fn hud_icon_private_graph_preserves_source_and_every_content_variant() {
     use sundial::package_authoring::runtime::load_weapon_runtime_entity_with_manager;
-    let packages =
-        PathBuf::from(std::env::var_os("PARHELION_HUD_TEST_PACKAGES").expect("packages"));
+    let packages = crate::test_support::stock_packages();
     let manager = open_manager(&packages).unwrap();
     let source = load_weapon_runtime_entity_with_manager(&manager, 0x02222CBF).unwrap();
     let binding = weapon_component_bindings(&source.payload, 0x5F0DD954).unwrap()[0];

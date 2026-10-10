@@ -110,10 +110,9 @@ pub fn abilities(manager: &PackageManager) -> Result<Vec<AbilitySource>, String>
 mod tests {
     use super::*;
     #[test]
-    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+    #[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
     fn native_ability_ingredients_follow_modifier_perk_lists() {
-        let path =
-            std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+        let path = crate::test_support::stock_packages();
         let manager = crate::package_authoring::open_shadowkeep_package_manager(&path).unwrap();
         let sources = abilities(&manager).unwrap();
         let unique = sources

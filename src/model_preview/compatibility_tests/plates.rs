@@ -210,7 +210,8 @@ pub(in crate::model_preview) fn canvas_cases() -> Vec<(String, Model)> {
 #[test]
 fn gear_plate_landmarks_survive_package_loading_rendering_and_export() {
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_PLATE_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("plates").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_deref()
         .map(Path::new)
@@ -306,14 +307,14 @@ fn gear_plate_landmarks_survive_package_loading_rendering_and_export() {
 }
 
 #[test]
-#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES, SUNDIAL_PLATE_CASES and SUNDIAL_PLATE_OUTPUT"]
+#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES, SUNDIAL_PLATE_CASES and SUNDIAL_TEST_ARTIFACTS"]
 #[allow(
     clippy::cognitive_complexity,
     reason = "End-to-end verification keeps each case's render and its independent checks together"
 )]
 fn installed_gear_plates_render_catalog_appearances() {
-    let packages = std::path::PathBuf::from(std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").unwrap());
-    let output = std::path::PathBuf::from(std::env::var_os("SUNDIAL_PLATE_OUTPUT").unwrap());
+    let packages = crate::test_support::preview_packages();
+    let output = crate::test_support::artifact_dir("plates");
     let input = std::env::var_os("SUNDIAL_PLATE_CASES").unwrap();
     let cases: Vec<serde_json::Value> =
         serde_json::from_slice(&std::fs::read(input).unwrap()).unwrap();
@@ -351,7 +352,7 @@ fn installed_gear_plates_render_catalog_appearances() {
                 let frame = m.frame(seconds);
                 json!({"seconds":seconds,"base_gain":frame.as_ref().and_then(|f| m.native.as_ref()?.base_gain(f)),"base_metal":frame.as_ref().and_then(|f| m.native.as_ref()?.base_metal(f)),"paint_smoothness":frame.as_ref().and_then(|f| m.native.as_ref()?.paint(f)),"normal_decode":frame.as_ref().and_then(|f| m.native.as_ref()?.normal(f)),"normal_grain":frame.as_ref().and_then(|f| m.native.as_ref()?.grain(f)),"constants":frame.map(|f| f[..m.constants.len()].to_vec())})
             }).collect();
-            json!({"index":index,"local_uv":m.native.as_ref().and_then(|n| n.opaque_uv),"frames":frames})
+            json!({"index":index,"local_uv":m.native.as_ref().and_then(|n| n.opaque_uv),"intensity":m.native.as_ref().is_some_and(|n| n.intensity),"ambient_power":m.native.as_ref().and_then(|n| n.ambient_power),"frames":frames})
         }).collect();
         let normal_consumers: Vec<_> = model.effects.iter().enumerate().filter_map(|(index, material)| {
             let normal = material.normal.as_ref()?;
@@ -393,8 +394,10 @@ fn installed_gear_plates_render_catalog_appearances() {
                 &model,
                 camera,
                 render::Scene {
+                    filmic: false,
+                    bloom: false,
                     particle_study: true,
-                    ..Default::default()
+                    ..render::Scene::unit_exposure()
                 },
                 [800, 480],
                 0.0,
@@ -539,7 +542,7 @@ fn installed_gear_plates_render_catalog_appearances() {
             let image = render::animated_image(
                 &model,
                 camera,
-                render::Scene::default(),
+                render::Scene::unprocessed(),
                 [800, 480],
                 seconds,
             );

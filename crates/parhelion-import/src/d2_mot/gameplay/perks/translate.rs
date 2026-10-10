@@ -83,7 +83,7 @@ fn array_rows(p: &Payload, at: usize, stride: usize, class: u32) -> Result<Vec<u
     p.array(at, stride, Some(class))
 }
 
-fn neutral_state(p: &Payload, state: &controller::State) -> Result<()> {
+pub(super) fn neutral_state(p: &Payload, state: &controller::State) -> Result<()> {
     let at = state.offset;
     ensure!(
         p.u32(at + 4)? == 0
@@ -115,7 +115,7 @@ fn neutral_state(p: &Payload, state: &controller::State) -> Result<()> {
     Ok(())
 }
 
-fn state_effects(p: &Payload, state: &controller::State) -> Result<Vec<usize>> {
+pub(super) fn state_effects(p: &Payload, state: &controller::State) -> Result<Vec<usize>> {
     rows(p, state.offset + 8, 24, 0x8080_37AB)?
         .into_iter()
         .map(|row| {

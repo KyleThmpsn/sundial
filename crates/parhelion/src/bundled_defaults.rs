@@ -75,7 +75,7 @@ impl AppliedVersions {
 }
 
 pub(crate) fn digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 /// Defaults replaced while opening a library, with the folder holding the previous copies.

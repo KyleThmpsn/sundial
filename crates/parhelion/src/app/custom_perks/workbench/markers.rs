@@ -338,10 +338,10 @@ impl Markers {
                 let (done, total) = self.progress;
                 if !self.busy() && discovery.busy() {
                     ui.label("Waiting for the content scan…");
-                } else if total == 0 {
-                    ui.label("Reading objects…");
+                } else if let Some(percent) = (done * 100).checked_div(total) {
+                    ui.label(format!("Reading objects… {percent}%"));
                 } else {
-                    ui.label(format!("Reading objects… {}%", done * 100 / total));
+                    ui.label("Reading objects…");
                 }
             });
             return None;

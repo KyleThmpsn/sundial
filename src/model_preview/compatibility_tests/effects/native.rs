@@ -2,8 +2,11 @@
 use super::*;
 pub(crate) mod derivative;
 mod gain;
+mod gradients;
 pub(crate) mod hdr;
+pub(crate) mod immediate;
 pub(crate) mod integer;
+pub(crate) mod layered;
 pub(crate) mod metal;
 pub(crate) mod normal_blue;
 pub(crate) mod normals;
@@ -11,6 +14,8 @@ pub(crate) mod opaque;
 pub(crate) mod paint;
 pub(in crate::model_preview::compatibility_tests) mod repack;
 mod stored;
+pub(crate) mod vertex_image;
+pub(in crate::model_preview) use stored::motion_case;
 pub(crate) use stored::opaque_detail_case;
 
 pub(in crate::model_preview::compatibility_tests) fn instruction(
@@ -84,7 +89,7 @@ pub(in crate::model_preview::compatibility_tests) fn shader_stage(
             bytes.extend(name.as_bytes());
             bytes.push(0);
         }
-        while bytes.len() % 4 != 0 {
+        while !bytes.len().is_multiple_of(4) {
             bytes.push(0);
         }
         bytes
@@ -321,6 +326,7 @@ fn material(
 }
 
 pub(super) fn render_cases(cases: &mut Vec<(String, Model, [u8; 3])>) {
+    gradients::render_cases(cases);
     let mut variants = Vec::new();
     for cube in [false, true] {
         for enabled in [false, true] {
@@ -375,11 +381,11 @@ pub(super) fn render_cases(cases: &mut Vec<(String, Model, [u8; 3])>) {
 }
 
 #[test]
-#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES, SUNDIAL_EFFECT_AUDIT and SUNDIAL_EFFECT_OUTPUT"]
+#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES, SUNDIAL_EFFECT_AUDIT and SUNDIAL_TEST_ARTIFACTS"]
 fn audited_gear_effects_load_and_render() {
-    let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").unwrap();
+    let packages = crate::test_support::preview_packages();
     let audit = std::env::var_os("SUNDIAL_EFFECT_AUDIT").unwrap();
-    let output = std::path::PathBuf::from(std::env::var_os("SUNDIAL_EFFECT_OUTPUT").unwrap());
+    let output = crate::test_support::artifact_dir("effects");
     std::fs::create_dir_all(&output).unwrap();
     let audit: serde_json::Value = serde_json::from_slice(&std::fs::read(audit).unwrap()).unwrap();
     let manager = crate::investment::discovery::open_packages(Path::new(&packages)).unwrap();
@@ -413,7 +419,7 @@ fn audited_gear_effects_load_and_render() {
                         let image = render::animated_image(
                             &model,
                             render::Camera::default(),
-                            render::Scene::default(),
+                            render::Scene::unprocessed(),
                             [320, 240],
                             seconds,
                         );

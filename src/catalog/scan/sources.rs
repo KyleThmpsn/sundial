@@ -1,5 +1,5 @@
 //! Checked native roots and aligned item/string table inputs.
-use crate::investment_schema::{
+use crate::investment::schema::{
     GLOBALS_ITEM_STRING_TABLE_SLOT, GLOBALS_LOCALIZED_STRING_INDEX_TABLE_SLOT,
     INVESTMENT_ROOT_CLASS, ITEM_DEFINITION_INDEX_ROW_CLASS, ITEM_INDEX_ROW_SIZE,
     ITEM_STRING_INDEX_ROW_CLASS, ROOT_ITEM_DEFINITION_TABLE_SLOT,

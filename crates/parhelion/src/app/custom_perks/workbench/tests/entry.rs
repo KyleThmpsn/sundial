@@ -6,7 +6,7 @@ fn frame(
     app: &mut PackageAuthoringApp,
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
-    ctx.run(
+    ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -15,8 +15,8 @@ fn frame(
             events,
             ..Default::default()
         },
-        |ctx| {
-            app.draw_perk_workbench(ctx);
+        |ui| {
+            app.draw_perk_workbench(ui);
         },
     )
 }
@@ -99,10 +99,10 @@ fn perk_window_waits_for_package_operations_without_consuming_its_draft_or_reque
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES for native editor entry and private speed apply"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES for native editor entry and private speed apply"]
 fn native_micro_missile_entry_applies_speed_without_experimental_mode() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-    let install = std::env::var_os("PARHELION_PROJECTILE_CATALOG_INSTALL")
+    let packages = crate::test_support::stock_packages();
+    let install = std::env::var_os("SUNDIAL_INSTALL")
         .map(PathBuf::from)
         .unwrap_or_else(|| packages.parent().unwrap().to_path_buf());
     let catalog = crate::test_support::catalog(&install).unwrap();

@@ -10,11 +10,16 @@ pub(super) struct Key {
     pub seconds: f32,
     pub style: render::Style,
     pub overrides: Vec<SurfaceOverride>,
+    /// A continuous viewer orbit may display a completed earlier yaw frame.
+    pub orbit: bool,
 }
 impl Key {
     fn compatible(&self, other: &Self) -> bool {
         let mut comparison = self.clone();
         comparison.seconds = other.seconds;
+        if self.orbit && other.orbit {
+            comparison.camera.yaw = other.camera.yaw;
+        }
         comparison == *other
     }
 }

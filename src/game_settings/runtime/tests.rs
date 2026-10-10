@@ -331,8 +331,8 @@ fn opening_sunrise_and_display_preserves_omissions_and_extended_fov() {
     doc["state"]["account"]["settings"]["display"]["field_of_view"] = 155.into();
     doc.as_object_mut().unwrap().remove("core");
     let original = doc.clone();
-    let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
-        eframe::egui::CentralPanel::default().show(ctx, |ui| {
+    let _ = ctx.run_ui(eframe::egui::RawInput::default(), |ui| {
+        eframe::egui::CentralPanel::default().show(ui, |ui| {
             assert!(!page::draw(ui, &mut doc, true, Capabilities::default()));
             let settings = doc
                 .pointer("/state/account/settings")
@@ -356,8 +356,8 @@ fn text_edits_are_visible_before_focus_changes_and_can_be_repaired() {
         .unwrap();
     let mut document = json!({"version":16});
     let mut editor_id = egui::Id::NULL;
-    let _ = context.run(egui::RawInput::default(), |context| {
-        egui::CentralPanel::default().show(context, |ui| {
+    let _ = context.run_ui(egui::RawInput::default(), |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             editor_id = ui.make_persistent_id(("runtime-field", field.path));
             assert!(!page::draw_field(ui, &mut document, field, true));
         });
@@ -376,8 +376,8 @@ fn text_edits_are_visible_before_focus_changes_and_can_be_repaired() {
             events: vec![egui::Event::Text(replacement.into())],
             ..Default::default()
         };
-        let _ = context.run(input, |context| {
-            egui::CentralPanel::default().show(context, |ui| {
+        let _ = context.run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 assert!(page::draw_field(ui, &mut document, field, true));
             });
         });

@@ -8,11 +8,11 @@ mod runtime;
 mod tables;
 
 use super::*;
-pub(crate) use progress::Phase;
 pub(super) use progress::Progress;
+pub(crate) use progress::{Event, Phase};
 
 // Shared compilation work plus donor resolution, runtime authoring, and definitions per weapon.
-const SHARED_OPERATIONS: usize = 16;
+const SHARED_OPERATIONS: usize = 17;
 
 pub(super) fn canonical_project_weapons(
     project: &WeaponProjectSpec,
@@ -139,7 +139,7 @@ pub(crate) fn build_weapon_project_after_catalog_validation(
         package_directory,
         project,
         crate::branding::Branding::for_packages(package_directory),
-        &mut |_, _, _, _| {},
+        &mut |_| {},
     )
 }
 
@@ -148,7 +148,7 @@ pub(crate) fn compile_with_progress(
     package_directory: &Path,
     project: &WeaponProjectSpec,
     branding: crate::branding::Branding,
-    report: &mut dyn FnMut(Phase, &str, usize, usize),
+    report: &mut dyn FnMut(Event<'_>),
 ) -> AuthoringResult<NewWeaponProjectBundle> {
     let mut progress = Progress::new(SHARED_OPERATIONS + 1 + 3 * project.weapons.len(), report);
     let weapons = progress.step("Validating Recipe Identities", || {
@@ -163,7 +163,7 @@ pub(super) fn build_weapon_project_canonical(
     package_directory: &Path,
     weapons: &[WeaponCloneSpec],
 ) -> AuthoringResult<NewWeaponProjectBundle> {
-    let mut report = |_: Phase, _: &str, _: usize, _: usize| {};
+    let mut report = |_: Event<'_>| {};
     let mut progress = Progress::new(SHARED_OPERATIONS + 3 * weapons.len(), &mut report);
     compile_canonical(
         package_directory,
@@ -207,8 +207,18 @@ fn compile_canonical(
     })?;
     let dye_plan = progress.step("Planning Dyes", || dyes::plan(&sources, &mut resolved))?;
     let templates = progress.step("Reading Perk Templates", || PerkTemplates::read(&sources))?;
-    let (mut custom_plugs, entry_plans) = progress.step("Planning Private Perks", || {
-        let plugs = custom_plugs::plan(&sources, &resolved, &templates.strings)?;
+    let (planned, entry_plans, plug_sets) = progress.step("Planning Private Perks", || {
+        let planned = custom_plugs::plan(&sources, &resolved, &templates.strings)?;
+        // Socket plugs first, then each mod's, the order the joined sets return in.
+        let plugs = planned
+            .sockets
+            .iter()
+            .chain(&planned.mods)
+            .cloned()
+            .collect::<Vec<_>>();
+        // A plug offered everywhere joins the shared plug sets that offer its type's plug, as
+        // every mod is.
+        let plug_sets = super::plug_sets::plan(&sources, &resolved, &plugs)?;
         let mut planner = custom_plugs::RecordPlanner::new(&sources, &resolved, &plugs)?;
         let entries = resolved
             .iter()
@@ -221,12 +231,18 @@ fn compile_canonical(
                 .map_err(|error| donor.weapon.in_recipe(error))
             })
             .collect::<AuthoringResult<Vec<_>>>()?;
-        Ok((plugs, entries))
+        Ok((planned, entries, plug_sets))
     })?;
-    // Every private perk's program, plug and subclass entry alike, for the HUD statuses of the
-    // project's own: their images take artwork tags, and their names and rows a table.
+    let custom_plugs::Planned {
+        sockets: mut custom_plugs,
+        mods: mut mod_plugs,
+    } = planned;
+    let (plug_set_table, offered_sets) = plug_sets.unzip();
+    // Every private perk's program, plug, mod and subclass entry alike, for the HUD statuses of
+    // the project's own: their images take artwork tags, and their names and rows a table.
     let programs = custom_plugs
         .iter()
+        .chain(&mod_plugs)
         .flat_map(|plug| &plug.sandbox_perks)
         .chain(
             entry_plans
@@ -243,11 +259,18 @@ fn compile_canonical(
             &sources.manager,
             &resolved,
             weapons.len(),
-            &mut custom_plugs,
+            (&mut custom_plugs, &mut mod_plugs),
             &programs,
             branding,
         )
     })?;
+    // A mod whose perk has an icon of its own shows it as the item's icon, in place of the
+    // watermarked icon of its template plug.
+    for plug in &mod_plugs {
+        if let (Some(owner), Some(container)) = (plug.owner, plug.authored_icon_container) {
+            assets.weapon_icon_containers[owner] = container;
+        }
+    }
     let icons = progress.step("Compiling Icons", || {
         assets::author_icon_rows(
             std::mem::take(&mut sources.stock_item_icons),
@@ -256,11 +279,23 @@ fn compile_canonical(
             &mut custom_plugs,
         )
     })?;
-    let (mut runtime, custom_payloads) = runtime::author(
+    // A mod's strings name its item's icon row, which its perks' presentations show too.
+    for plug in &mut mod_plugs {
+        let owner = plug
+            .owner
+            .ok_or_else(|| validation("A mod's perk has no mod"))?;
+        write_u16(
+            &mut plug.source_strings,
+            ITEM_STRING_ICON_INDEX_OFFSET,
+            icons.weapon_indices[owner],
+        )?;
+        plug.authored_icon_container = Some(assets.weapon_icon_containers[owner]);
+    }
+    let (mut runtime, custom_payloads, mod_payloads) = runtime::author(
         package_directory,
         &mut sources,
         &resolved,
-        &custom_plugs,
+        (&custom_plugs, &mod_plugs),
         &entry_plans,
         &templates,
         &mut assets,
@@ -317,6 +352,7 @@ fn compile_canonical(
         sandbox_perk_definition_template: &templates.definition,
         sandbox_perk_string_template: &templates.strings,
         custom_plugs: &custom_plugs,
+        mods: (&mod_plugs, &mod_payloads),
         subclass_entries: &subclass_entries,
         sandbox_pattern_layout: tables::SANDBOX_PATTERN_LAYOUT,
         authored_pattern_global_ids: &runtime.pattern_global_ids,
@@ -391,6 +427,7 @@ fn compile_canonical(
             &sources.manager,
             custom_plugs
                 .iter()
+                .chain(&mod_plugs)
                 .flat_map(|plug| &plug.sandbox_perks)
                 .chain(
                     entry_plans
@@ -437,6 +474,7 @@ fn compile_canonical(
         collections,
         localization,
         has_custom_plugs: !custom_plugs.is_empty()
+            || !mod_plugs.is_empty()
             || entry_plans
                 .iter()
                 .flatten()
@@ -444,6 +482,7 @@ fn compile_canonical(
         ability_banks,
         hud_statuses,
         stat_group_table,
+        plug_set_table,
         runtime,
     };
     let (emission, manager) = progress.step("Linking Package Data", || {
@@ -451,35 +490,59 @@ fn compile_canonical(
     })?;
     let mut bundle =
         emission::emit_packages(package_directory, manager, emission, weapons, progress)?;
-    for plug in &custom_plugs {
+    let plug_plan =
+        |plug: &ResolvedCustomPlug, (socket_index, choice_index), offered_sets| NewCustomPlugPlan {
+            socket_index,
+            choice_index,
+            name: plug.authored_name.clone(),
+            item_hash: plug.authored_item_hash,
+            item_index: plug.authored_item_index,
+            definition_tag: plug.authored_definition_tag,
+            string_tag: plug.authored_string_tag,
+            icon_definition_tag: plug.authored_icon_container,
+            name_hash: plug.authored_name_hash,
+            description_hash: plug.authored_description_hash,
+            offered_sets,
+            perks: plug
+                .sandbox_perks
+                .iter()
+                .map(|perk| NewPrivatePerkPlan {
+                    source_perk_index: perk.source_index,
+                    perk_hash: perk.authored_perk_hash,
+                    runtime_key: perk.authored_runtime_key,
+                })
+                .collect(),
+        };
+    let joined = |position: usize| {
+        offered_sets
+            .as_ref()
+            .map_or_else(Vec::new, |sets| sets[position].clone())
+    };
+    for (position, plug) in custom_plugs.iter().enumerate() {
         for usage in &plug.uses {
             let weapon = bundle
                 .plan
                 .weapons
                 .get_mut(usage.weapon_ordinal)
                 .ok_or_else(|| invalid("Private perk use refers to a missing authored weapon"))?;
-            weapon.custom_plugs.push(NewCustomPlugPlan {
-                socket_index: usage.socket_index,
-                choice_index: usage.choice_index,
-                name: plug.authored_name.clone(),
-                item_hash: plug.authored_item_hash,
-                item_index: plug.authored_item_index,
-                definition_tag: plug.authored_definition_tag,
-                string_tag: plug.authored_string_tag,
-                icon_definition_tag: plug.authored_icon_container,
-                name_hash: plug.authored_name_hash,
-                description_hash: plug.authored_description_hash,
-                perks: plug
-                    .sandbox_perks
-                    .iter()
-                    .map(|perk| NewPrivatePerkPlan {
-                        source_perk_index: perk.source_index,
-                        perk_hash: perk.authored_perk_hash,
-                        runtime_key: perk.authored_runtime_key,
-                    })
-                    .collect(),
-            });
+            weapon.custom_plugs.push(plug_plan(
+                plug,
+                (usage.socket_index, usage.choice_index),
+                joined(position),
+            ));
         }
+    }
+    // A mod's perk is the mod itself, reported as its one plug with the sets it joined.
+    for (position, plug) in mod_plugs.iter().enumerate() {
+        let weapon = plug
+            .owner
+            .and_then(|owner| bundle.plan.weapons.get_mut(owner))
+            .ok_or_else(|| invalid("A mod's perk refers to a missing authored mod"))?;
+        weapon.custom_plugs.push(plug_plan(
+            plug,
+            (0, 0),
+            joined(custom_plugs.len() + position),
+        ));
     }
     for weapon in &mut bundle.plan.weapons {
         weapon

@@ -151,6 +151,8 @@ fn image(model: &Model, seconds: f32) -> eframe::egui::ColorImage {
             ..Default::default()
         },
         render::Scene {
+            filmic: false,
+            bloom: false,
             exposure: 0.4,
             background: [0; 3],
             ..Default::default()
@@ -239,7 +241,8 @@ pub(in crate::model_preview) fn cases() -> Vec<(String, Model)> {
 #[test]
 fn native_selected_decode_and_missing_basis_keep_independent_surface_properties() {
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let out = configured
         .as_deref()
         .map(Path::new)
@@ -324,7 +327,8 @@ fn native_selected_decode_and_missing_basis_keep_independent_surface_properties(
 #[test]
 fn native_normal_and_blue_limits_survive_selected_dyes_rendering_and_export() {
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let out = configured
         .as_deref()
         .map(Path::new)

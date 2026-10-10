@@ -1,6 +1,6 @@
 mod accessibility;
 mod canvas;
-pub(crate) mod capture;
+pub(crate) use sundial::test_support::capture;
 mod cards;
 mod entry;
 mod gaps;
@@ -10,6 +10,7 @@ mod library_controls;
 mod library_issues;
 mod navigation;
 mod tunings;
+mod weapon_properties;
 use super::attachment::{Change, Target};
 use super::*;
 use crate::app::custom_perks::workbench::parameters::tests::{editor, fixture};
@@ -35,16 +36,16 @@ fn frame(
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
     let weapon = WeaponRecipe::every_end();
-    ctx.run(
+    ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
             events,
             ..Default::default()
         },
-        |ctx| {
+        |ui| {
             assert!(
                 workbench
-                    .show(ctx, Path::new(""), None, &[], experimental, (&weapon, None))
+                    .show(ui, Path::new(""), None, &[], experimental, (&weapon, None))
                     .is_none()
             );
         },
@@ -242,9 +243,9 @@ fn a_deleted_bundled_perk_is_not_added_back() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES for native stock and extra socket choices"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES for native stock and extra socket choices"]
 fn native_workbench_roundtrip_preserves_all_effects_extra_choices_and_socket_metadata() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     let donor = catalog.weapon_donor(0x23DB_942F).unwrap();
     let mut weapon = WeaponRecipe::new_weapon_for_donor(

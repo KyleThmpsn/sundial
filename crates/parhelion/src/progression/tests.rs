@@ -235,7 +235,7 @@ fn synthetic_numeric_pool_rows(programs: &[Vec<(u8, u16)>]) -> Vec<u8> {
         for (opcode, operand) in tokens {
             segment.extend_from_slice(&synthetic_numeric_instruction(*opcode, *operand));
         }
-        while (segment.len() + NESTED_ARRAY_TRAILER.len()) % 16 != 0 {
+        while !(segment.len() + NESTED_ARRAY_TRAILER.len()).is_multiple_of(16) {
             segment.push(0);
         }
         segment.extend_from_slice(&NESTED_ARRAY_TRAILER);
@@ -314,11 +314,11 @@ fn synthetic_collectible_conditions(secondary_flag: u16, acquired_flag: u16) -> 
         for (opcode, operand) in &tokens {
             segment.extend_from_slice(&synthetic_numeric_instruction(*opcode, *operand));
         }
-        while (segment.len() + NESTED_ARRAY_TRAILER.len()) % 16 != 0 {
+        while !(segment.len() + NESTED_ARRAY_TRAILER.len()).is_multiple_of(16) {
             segment.push(0);
         }
         segment.extend_from_slice(&NESTED_ARRAY_TRAILER);
-        while data.len() % 16 != 0 {
+        while !data.len().is_multiple_of(16) {
             data.push(0);
         }
         let header = data.len();
@@ -481,7 +481,7 @@ fn five_socket_overrides_use_the_four_byte_array_marker_without_a_zero_word() {
         write_u32(&mut segment, row + 4, u32::MAX).unwrap();
         write_u32(&mut segment, row + 8, index as u32).unwrap();
     }
-    while (segment.len() + NESTED_ARRAY_MARKER.len()) % 16 != 0 {
+    while !(segment.len() + NESTED_ARRAY_MARKER.len()).is_multiple_of(16) {
         segment.push(0);
     }
     segment.extend_from_slice(&NESTED_ARRAY_MARKER);

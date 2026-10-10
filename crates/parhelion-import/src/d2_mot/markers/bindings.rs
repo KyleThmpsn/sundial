@@ -2,7 +2,7 @@
 use super::*;
 use anyhow::Context;
 use serde_json::{Value, json};
-pub(super) mod graft;
+pub(crate) mod graft;
 
 fn offset(patch: &Value) -> Result<usize> {
     Ok(usize::try_from(
@@ -36,7 +36,7 @@ fn copy(
     Ok((bytes, refs))
 }
 
-pub(super) fn append(
+pub(crate) fn append(
     payload: &mut Payload,
     patches: &mut Vec<Value>,
     descriptor: usize,

@@ -9,7 +9,8 @@ fn document(glb: &[u8]) -> serde_json::Value {
 #[test]
 fn dense_native_detail_exports_bounded_charts_with_explicit_sampling_limits() {
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let out = configured
         .as_deref()
         .map(Path::new)

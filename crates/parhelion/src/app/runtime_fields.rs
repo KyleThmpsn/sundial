@@ -19,12 +19,8 @@ pub(super) fn draw_runtime_value_override_field(
         .position(|value| value.locator == field.locator);
     if !runtime_field_is_editable(field) {
         ui.horizontal_wrapped(|ui| {
-            ui.add(
-                egui::Label::new(&field.path_label)
-                    .selectable(true)
-                    .truncate(),
-            )
-            .on_hover_text(runtime_field_tooltip(field));
+            ui.add(crate::app::style::cut_label(ui, &field.path_label).selectable(true))
+                .on_hover_text(runtime_field_tooltip(field));
             ui.colored_label(
                 ui.visuals().error_fg_color,
                 "This saved field cannot be written.",
@@ -68,9 +64,7 @@ pub(super) fn draw_runtime_value_override_field(
                     |ui| {
                         ui.set_min_width(label_width);
                         ui.add(
-                            egui::Label::new(&field.path_label)
-                                .selectable(true)
-                                .truncate(),
+                            crate::app::style::cut_label(ui, &field.path_label).selectable(true),
                         )
                         .on_hover_text(runtime_field_tooltip(field));
                     },
@@ -88,12 +82,8 @@ pub(super) fn draw_runtime_value_override_field(
             });
         }
         RuntimeEditorLayout::Stacked => {
-            ui.add(
-                egui::Label::new(&field.path_label)
-                    .selectable(true)
-                    .truncate(),
-            )
-            .on_hover_text(runtime_field_tooltip(field));
+            ui.add(crate::app::style::cut_label(ui, &field.path_label).selectable(true))
+                .on_hover_text(runtime_field_tooltip(field));
             ui.horizontal_wrapped(|ui| {
                 next_value = draw_runtime_value_editor(
                     ui,
@@ -421,11 +411,11 @@ fn draw_runtime_value_editor_contents(
                         let parsed =
                             parse_runtime_hex_u64(&text).and_then(|bits| u32::try_from(bits).ok());
                         invalid_bits |= parsed.is_none();
-                        if response.changed() {
-                            if let Some(parsed) = parsed {
-                                *current_bits = parsed;
-                                changed = true;
-                            }
+                        if response.changed()
+                            && let Some(parsed) = parsed
+                        {
+                            *current_bits = parsed;
+                            changed = true;
                         }
                         ui.end_row();
                     }
@@ -653,7 +643,7 @@ pub(super) fn parse_runtime_hex_bytes(value: &str, expected_size: usize) -> Opti
 pub(super) fn valid_hex_patch_text(value: &str) -> bool {
     let digits = normalized_hex_bytes(value);
     !digits.is_empty()
-        && digits.len() % 2 == 0
+        && digits.len().is_multiple_of(2)
         && digits.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 

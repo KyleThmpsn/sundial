@@ -1,12 +1,15 @@
 //! Native material and geometry conversion for every prepared source model.
 pub(crate) mod automatic;
 pub use automatic::refresh_optics;
+pub mod attachment;
 pub mod categories;
 pub mod collection;
 mod contracts;
 pub mod effects;
 mod mesh;
+pub mod projectile;
 pub(crate) mod shader;
+pub mod vertex_input;
 pub use shader::buffer::{
     Assets as MaterialBufferAssets, Buffer as MaterialBuffer, Receipt as MaterialBufferReceipt,
     Template as MaterialBufferTemplate,
@@ -15,6 +18,7 @@ pub use shader::identity::{Catalog as ShaderCatalog, Reuse as ShaderReuse, Stage
 pub use shader::inputs::{
     Bindings as ShaderBindings, Inputs as ShaderInputs, Inspection as ShaderInspection,
 };
+pub use shader::packed::{Scopes as PackedScopes, Transform as PackedTransform};
 pub use shader::program::{
     Assets as ShaderAssets, Program as ShaderProgram, Receipt as ShaderProgramReceipt,
     Template as ShaderTemplate,

@@ -299,10 +299,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires SUNDIAL_TEST_PACKAGES pointing to Shadowkeep packages"]
+    #[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
     fn unrelated_stock_companions_round_trip_byte_identically_when_configured() {
-        let package_directory = std::env::var_os("SUNDIAL_TEST_PACKAGES")
-            .expect("SUNDIAL_TEST_PACKAGES must point to Shadowkeep packages");
+        let package_directory = crate::test_support::stock_packages();
         let manager = PackageManager::new(
             Path::new(&package_directory),
             GameVersion::Destiny(DestinyVersion::Destiny2Shadowkeep),

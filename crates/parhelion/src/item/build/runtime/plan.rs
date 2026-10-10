@@ -31,12 +31,16 @@ pub(in crate::item::build) fn author(
     package_directory: &Path,
     sources: &mut sources::ProjectSources,
     resolved: &[resolve::ResolvedWeapon],
-    custom_plugs: &[ResolvedCustomPlug],
+    (custom_plugs, mod_plugs): (&[ResolvedCustomPlug], &[ResolvedCustomPlug]),
     entry_plans: &[Vec<crate::subclass::compile::EntryPlan<ResolvedPrivateSandboxPerk>>],
     templates: &PerkTemplates,
     assets: &mut assets::Plan,
     progress: &mut Progress<'_>,
-) -> AuthoringResult<(Payloads, custom_plugs::CustomPlugPayloads)> {
+) -> AuthoringResult<(
+    Payloads,
+    custom_plugs::CustomPlugPayloads,
+    custom_plugs::CustomPlugPayloads,
+)> {
     let weapon_runtime_tag_allocator =
         AppendedTagAllocator::new(HOST_PACKAGE_ID, assets.weapon_runtime_start);
     let mut weapon_runtime_new_tags = Vec::new();
@@ -63,20 +67,25 @@ pub(in crate::item::build) fn author(
              {PRIVATE_PERK_RUNTIME_EXPECTED_ENTRY_COUNT}"
         )));
     }
-    let private_perk_runtime_tag_allocator = AppendedTagAllocator::new(
-        PRIVATE_PERK_RUNTIME_PACKAGE_ID,
-        private_perk_runtime_append_start,
-    );
+    // A build's private copies can outgrow the package's table, so they continue in standalone
+    // packages of their own.
+    let private_perk_runtime_tag_allocator =
+        AppendedTagAllocator::private_runtime(private_perk_runtime_append_start);
     let mut private_perk_runtime_new_tags = Vec::new();
     let mut entity_assignments = sources.stock_entity_assignments.clone();
     let mut finished_sandbox_perks = std::mem::take(&mut sources.stock_finished_sandbox_perks);
     let mut sandbox_perk_indices = std::mem::take(&mut sources.stock_sandbox_perk_indices);
+    let stock = EntitySources {
+        sandbox_patterns: &sources.stock_sandbox_patterns,
+        entity_assignments: &sources.stock_entity_assignments,
+    };
+    // One store for the build: weapons keep their runtime entities in it, and the subclasses
+    // compiled below keep their abilities' copies.
+    let runtime_cache = super::Cache::open(&sources.manager, &stock, progress);
     let authored_pattern_global_ids = super::author_entities(
         &sources.manager,
-        EntitySources {
-            sandbox_patterns: &sources.stock_sandbox_patterns,
-            entity_assignments: &sources.stock_entity_assignments,
-        },
+        stock,
+        &runtime_cache,
         resolved,
         weapon_runtime_tag_allocator,
         super::RuntimeAssets {
@@ -99,35 +108,70 @@ pub(in crate::item::build) fn author(
         particle_symbols: &particle_symbols,
         weapon: None,
     };
-    let (custom_payloads, subclass_entries) = progress.step("Compiling Private Perks", || {
-        let payloads = custom_plugs::author_payloads(
+    // Each private perk, and each part of an authored subclass entry, reports as it starts.
+    const PRIVATE_PERKS: &str = "Compiling Private Perks";
+    progress.start(PRIVATE_PERKS);
+    let custom_payloads = custom_plugs::author_payloads(
+        &sources.manager,
+        custom_plugs,
+        resolved,
+        &templates.definition,
+        &templates.strings,
+        (&mut catalog, &mut *progress),
+    )
+    .map_err(|error| error.context(PRIVATE_PERKS))?;
+    // A mod's perk compiles the same way, into the mod's own item place.
+    let mod_payloads = custom_plugs::author_payloads(
+        &sources.manager,
+        mod_plugs,
+        resolved,
+        &templates.definition,
+        &templates.strings,
+        (&mut catalog, &mut *progress),
+    )
+    .map_err(|error| error.context(PRIVATE_PERKS))?;
+    progress.finish(PRIVATE_PERKS);
+    const SUBCLASSES: &str = "Compiling Subclasses";
+    progress.start(SUBCLASSES);
+    let subclass_entries = resolved
+        .iter()
+        .zip(entry_plans)
+        .map(|(donor, plans)| {
+            let mut compiler = custom_plugs::RecordCompiler {
+                manager: &sources.manager,
+                catalog: &mut catalog,
+                assets: (&mut asset_packages, &mut runtime_asset_tags),
+                cache: &runtime_cache,
+                item: &donor.weapon.text.name,
+                progress: &mut *progress,
+            };
+            crate::subclass::compile::compile(
+                donor.subclass_list.as_ref(),
+                plans,
+                &mut compiler,
+                &mut sources.subclass_tables,
+            )
+            .map_err(|error| donor.weapon.in_recipe(error))
+        })
+        .collect::<AuthoringResult<Vec<_>>>()
+        .map_err(|error| error.context(SUBCLASSES))?;
+    progress.finish(SUBCLASSES);
+    let mut grafted_graphs = resolved
+        .iter()
+        .flat_map(|weapon| {
+            crate::weapon::behavior::requested_graphs(&weapon.weapon.overrides.additional_behaviors)
+        })
+        .collect::<Vec<_>>();
+    for donor in resolved {
+        if let Some(graph) = crate::vehicle::authoring::projectile_dependency(
             &sources.manager,
-            custom_plugs,
-            resolved,
-            &templates.definition,
-            &templates.strings,
-            &mut catalog,
-        )?;
-        let mut compiler = custom_plugs::RecordCompiler {
-            manager: &sources.manager,
-            catalog: &mut catalog,
-            assets: (&mut asset_packages, &mut runtime_asset_tags),
-        };
-        let entries = resolved
-            .iter()
-            .zip(entry_plans)
-            .map(|(donor, plans)| {
-                crate::subclass::compile::compile(
-                    donor.subclass_list.as_ref(),
-                    plans,
-                    &mut compiler,
-                    &mut sources.subclass_tables,
-                )
-                .map_err(|error| donor.weapon.in_recipe(error))
-            })
-            .collect::<AuthoringResult<Vec<_>>>()?;
-        Ok((payloads, entries))
-    })?;
+            donor.weapon.overrides.sparrow.as_ref(),
+        )? {
+            grafted_graphs.push(graph);
+        }
+    }
+    grafted_graphs.sort_unstable();
+    grafted_graphs.dedup();
     Ok((
         Payloads {
             impacts,
@@ -144,16 +188,10 @@ pub(in crate::item::build) fn author(
             runtime_asset_tags,
             badge_tag_count,
             private_perk_allocator: private_perk_runtime_tag_allocator,
-            grafted_graphs: resolved
-                .iter()
-                .flat_map(|weapon| {
-                    crate::weapon::behavior::requested_graphs(
-                        &weapon.weapon.overrides.additional_behaviors,
-                    )
-                })
-                .collect(),
+            grafted_graphs,
         },
         custom_payloads,
+        mod_payloads,
     ))
 }
 
@@ -231,7 +269,14 @@ impl Payloads {
                     self.private_perk_tags.as_slice(),
                 ),
                 (self.weapon_allocator, self.weapon_tags.as_slice()),
-            ],
+            ]
+            .into_iter()
+            .chain(self.asset_packages.packages.iter().map(|package| {
+                (
+                    AppendedTagAllocator::new(package.id, 0),
+                    package.tags.as_slice(),
+                )
+            })),
             &self.grafted_graphs,
         )?);
         Ok(Some(

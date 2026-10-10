@@ -108,7 +108,7 @@ fn complete_selector_resources_and_pending_dependencies() -> Result<()> {
             resources.categories = saved;
         }
         rows.push(json!({"source": source_name, "native":native_name,
-            "sha256":format!("{:x}",Sha256::digest(&converted.payload.0)),
+            "sha256":hex::encode(Sha256::digest(&converted.payload.0)),
             "references":converted.references,"group_aliases":converted.group_aliases}));
         files.push((format!("{source_name}.bin"), converted.payload.0));
     }
@@ -145,7 +145,7 @@ fn complete_selector_resources_and_pending_dependencies() -> Result<()> {
             "pairs":rows,"rejection_checks":rejected,
             "unrepresented_dictionaries":missing_dictionaries.references,
             "unrepresented_categories":missing_categories.gates,
-            "private_selector_sha256":format!("{:x}",Sha256::digest(&private.payload.0)),
+            "private_selector_sha256":hex::encode(Sha256::digest(&private.payload.0)),
             "private_group_aliases":private.group_aliases,
             "unrepresented_dictionary_group_aliases":missing_dictionaries.group_aliases,
             "unrepresented_category_group_aliases":missing_categories.group_aliases,

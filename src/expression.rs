@@ -12,7 +12,7 @@ pub(crate) fn binary(opcode: u8, left: [f32; 4], right: [f32; 4]) -> [f32; 4] {
         0x04 => std::array::from_fn(|i| divide(left[i], right[i])),
         0x08 => std::array::from_fn(|i| left[i].min(right[i])),
         0x09 => std::array::from_fn(|i| left[i].max(right[i])),
-        // Native comparison inverts right < left, retaining equality. Inputs are finite.
+        // For finite inputs, the native inverted right < left comparison retains equality.
         0x0A => std::array::from_fn(|i| f32::from(left[i] <= right[i])),
         0x0B => [math::sum(std::array::from_fn(|i| left[i] * right[i])); 4],
         0x0C => [left[0], right[0], right[1], right[2]],
@@ -91,8 +91,9 @@ fn polynomial(coefficients: [f32; 4], time: f32) -> f32 {
         + (coefficients[2] * time + coefficients[3])
 }
 
-// The native denominator threshold intentionally produces a nonfinite result. Each
-// interpreter rejects that result before committing any output.
+// Small denominators follow the native threshold and can produce NaN or infinity.
+// Particle and dye evaluation reject these values. Material shader evaluation
+// retains raw values, including the IEEE clamp bounds consumed by native DXBC.
 fn divide(numerator: f32, denominator: f32) -> f32 {
     if denominator.abs() > 1e-19 {
         numerator / denominator

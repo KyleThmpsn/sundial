@@ -1,8 +1,10 @@
 //! Explicit workspace reset and backup-recovery actions.
 mod defaults;
+#[cfg(test)]
+mod tests;
 use crate::app::account_workspace as account;
 
-use super::save_support::settings_save_note;
+use super::saving::settings_save_note;
 use super::settings::{
     create_adjacent_backup, load_installed_sunrise_defaults, save_json,
     verify_workspace_source_unchanged,
@@ -166,16 +168,4 @@ fn require_game_closed_for_reset(running: Result<bool, String>) -> Result<(), St
         return Err("Close Destiny 2 before restoring Sunrise defaults, then try again".into());
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reset_requires_a_confirmed_closed_game() {
-        assert!(require_game_closed_for_reset(Ok(false)).is_ok());
-        assert!(require_game_closed_for_reset(Ok(true)).is_err());
-        assert!(require_game_closed_for_reset(Err("process scan failed".into())).is_err());
-    }
 }

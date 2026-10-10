@@ -14,7 +14,7 @@ pub mod material;
 mod tests;
 
 fn digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn bytes(payload: &Payload, at: usize, stride: usize) -> Result<Vec<u8>> {

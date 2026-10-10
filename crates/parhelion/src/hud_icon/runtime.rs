@@ -6,7 +6,7 @@ use crate::{AuthoringResult, error::invalid, item::WeaponRuntimeResourcePatch};
 use sundial::package_authoring::PackageManager;
 use sundial::package_authoring::entity::weapon_component_bindings;
 use tiger_pkg::TagHash;
-const BINDING: u32 = 0x5F0DD954;
+pub(super) const BINDING: u32 = 0x5F0DD954;
 struct Content {
     owner: Vec<u8>,
     instance: usize,
@@ -122,7 +122,6 @@ fn selected_property(
 }
 
 /// The key at property offset `field` of the weapon content's default block and of every variant.
-#[cfg_attr(not(feature = "d2-model-importer"), allow(dead_code))]
 pub(crate) fn field_values(
     manager: &PackageManager,
     entity: &[u8],

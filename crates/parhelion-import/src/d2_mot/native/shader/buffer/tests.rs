@@ -119,8 +119,8 @@ fn immutable_material_buffer_oracle() -> Result<()> {
         let header_file = file(&format!("buffer-{tag}"))?;
         let data_file = file(&format!("buffer-{tag}-data"))?;
         buffers.push(json!({"source":tag,"header":header_file,"data":data_file,
-            "source_header_sha256":format!("{:x}",Sha256::digest(&header)),
-            "source_data_sha256":format!("{:x}",Sha256::digest(&data)),
+            "source_header_sha256":hex::encode(Sha256::digest(&header)),
+            "source_data_sha256":hex::encode(Sha256::digest(&data)),
             "receipt":buffer.receipt(),"nodes":pair.nodes}));
         pending.push((header_file, pair.header, data_file, pair.data));
     }

@@ -32,13 +32,21 @@ pub struct ValueContract {
 // Multikill Clip scale by it over their 5 and 3 stacks, so it reads as the stack count.
 // Selector 1 complements the ammunition accessor against its limit, and its stock users all
 // describe the magazine running low: Under Pressure, High-Impact Reserves and SUROS Legacy.
-// Selector 2 is the same accessor's current value. The three stat slots (3 to 5) and the
-// mapped property (12) have no established meaning and no named stock user, so they are left
-// out of the choices. A stored one is preserved and reads by its number.
+// Selector 2 is the same accessor's current value. F04AF1..F04AFB sends selectors 3 to 5 to
+// one case, F04BBF, which resolves the stat provider through the cache handle at source +158
+// (EC690E stores it) and reads the record at source +160 + (selector - 3) * 0x30. The loadout
+// producer installs those records as Intellect, Discipline and Strength in that order, each a
+// tier contribution chosen from the stat's 0 to 100 value, and the nine hidden stat passive
+// entries read them through 3E44 +50. The mapped property (12) has no established meaning and
+// no named stock user, so it is left out of the choices. A stored one is preserved and reads by
+// its number.
 const COMMON_INPUTS: &[(u8, &str)] = &[
     (0, "Stacks"),
     (1, "Rounds Missing from Magazine"),
     (2, "Rounds in Magazine"),
+    (3, "Intellect"),
+    (4, "Discipline"),
+    (5, "Strength"),
     (6, "Nearby Enemies"),
     (7, "Nearby Allies"),
     (8, "Other Fireteam Members"),
@@ -156,7 +164,7 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
             result.choices = &[(0, "Remove Contribution"), (1, "Add Contribution")];
         }
         (0x80803E44, 0x50) | (0x80803E4D, 0x48) | (0x80802F18, 0x38) | (0x808029EC, 0x6B) => {
-            result.description = "What drives the value. Stacks is the number this effect keeps, usually its stack count. Nearby counts use the game's enemy and ally distances. Fireteam counts exclude you and ignore distance, and the defeated count includes members who are unavailable. None uses the action's default.";
+            result.description = "What drives the value. Stacks is the number this effect keeps, usually its stack count. Intellect, Discipline and Strength read that stat's tier, as the hidden stat passives do. Nearby counts use the game's enemy and ally distances. Fireteam counts exclude you and ignore distance, and the defeated count includes members who are unavailable. None uses the action's default.";
             result.choices = COMMON_INPUTS;
         }
         // 107FC20 passes these pairs to inclusive range checks, not multiply/add.

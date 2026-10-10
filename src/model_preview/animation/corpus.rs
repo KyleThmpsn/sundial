@@ -3,10 +3,12 @@ use super::*;
 use serde_json::json;
 
 #[test]
-#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_FIDELITY_OUTPUT"]
+#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
 fn native_clip_codec_corpus() {
-    let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
-    let output = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT").expect("artifact directory");
+    let packages = crate::test_support::preview_packages();
+    let output = crate::test_support::artifacts("fidelity")
+        .map(std::path::PathBuf::into_os_string)
+        .expect("artifact directory");
     let manager = crate::investment::discovery::open_packages(Path::new(&packages)).unwrap();
     let mut receipt = Vec::new();
     let mut errors = Vec::new();

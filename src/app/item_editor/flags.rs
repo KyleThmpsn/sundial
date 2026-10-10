@@ -1,6 +1,6 @@
 //! Source-gated item-state control shared by both loadout layouts and stored items.
 
-use crate::account_contract::{INVENTORY_FLAG_LOCKED, INVENTORY_FLAG_MASTERWORK};
+use crate::account::contract::{INVENTORY_FLAG_LOCKED, INVENTORY_FLAG_MASTERWORK};
 use eframe::egui;
 
 /// Outer option is an edit request; inner None removes a now-zero flags field.
@@ -48,10 +48,10 @@ fn draw_state_checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str, help: &
     let mut changed = false;
     ui.horizontal(|ui| {
         changed = ui.checkbox(value, label).changed();
-        crate::ui_help::info(ui, help);
+        crate::ui::help::info(ui, help);
     });
     if changed {
-        ui.close_menu();
+        ui.close();
     }
     changed
 }

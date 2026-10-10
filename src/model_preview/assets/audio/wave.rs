@@ -80,10 +80,8 @@ fn chunks(bytes: &[u8], padded: bool) -> Option<(&[u8], &[u8])> {
                     return None;
                 }
             }
-            b"data" => {
-                if data.replace(chunk).is_some() {
-                    return None;
-                }
+            b"data" if data.replace(chunk).is_some() => {
+                return None;
             }
             _ => {}
         }

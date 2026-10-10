@@ -16,7 +16,8 @@ pub(super) struct SocketRowContext<'a> {
     pub recipe: &'a mut WeaponRecipe,
     pub queries: &'a mut BTreeMap<usize, String>,
     pub page: &'a mut usize,
-    pub plug_selection_mode: PlugSelectionMode,
+    /// The plugs every picker offers, which each picker's Plugs Offered dropdown changes.
+    pub plug_selection_mode: &'a mut PlugSelectionMode,
     pub donor: &'a WeaponDonor,
     pub socket_index: usize,
     pub is_added: bool,

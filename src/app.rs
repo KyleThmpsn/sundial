@@ -10,7 +10,7 @@ use eframe::egui;
 use serde_json::Value;
 
 use crate::{
-    account_contract::EQUIPMENT_SLOTS as SLOTS,
+    account::contract::EQUIPMENT_SLOTS as SLOTS,
     catalog::{Catalog as Manifest, CatalogProgress},
     game_settings,
     package_authoring::{PackageAuthoringPreferences, PackageAuthoringUtility},
@@ -21,14 +21,13 @@ mod activity_log;
 mod chrome;
 mod confirmations;
 mod history;
-mod json_workspace;
+mod loading;
 mod preferences_page;
 mod recovery;
-mod runtime_installation;
+mod runtime_choice;
 mod saving;
 mod shortcuts;
 mod update;
-mod workspace_loading;
 
 mod startup;
 use startup::StartupApp;
@@ -38,14 +37,12 @@ use background_tasks::CatalogTask;
 
 mod diagnostics;
 
-mod persistence_compatibility;
-use persistence_compatibility::PersistenceCompatibility;
+use crate::package_runtime::installation::runtime_state::{self, RuntimeState};
 
 mod bootstrap;
 use bootstrap::parse_args;
 
-mod save_support;
-use save_support::SaveAction;
+use saving::SaveAction;
 
 mod change_review;
 
@@ -68,8 +65,6 @@ use settings::{
     catalog_path, detect_sunrise_version, encode_settings, load_workspace_json,
     missing_settings_message, prepare_settings, resolve_settings_path, validate_workspace_document,
 };
-
-mod workspace_save;
 
 mod json_editor;
 use json_editor::JsonEditorState;
@@ -117,7 +112,7 @@ fn display_version() -> &'static str {
     crate::version::display()
 }
 const ARMOR_SLOTS: &[&str] = &["helmet", "gauntlets", "chest", "legs", "class_item"];
-use crate::account_contract::WEAPON_SLOTS;
+use crate::account::contract::WEAPON_SLOTS;
 const ITEM_PICKER_MIN_HEIGHT: f32 = 320.0;
 const ITEM_PICKER_MAX_HEIGHT: f32 = 420.0;
 const PLUG_PICKER_MIN_HEIGHT: f32 = 320.0;
@@ -330,7 +325,7 @@ struct PendingFutureSchemaLoad {
 }
 
 struct SundialApp {
-    runtime_choice: runtime_installation::RuntimeChoice,
+    runtime_choice: runtime_choice::RuntimeChoice,
     settings_path: PathBuf,
     settings_layout: SettingsLayout,
     install_path: PathBuf,
@@ -339,7 +334,7 @@ struct SundialApp {
     document: WorkspaceDocument,
     persisted_document: WorkspaceDocument,
     source_warning: Option<String>,
-    persistence_compatibility: PersistenceCompatibility,
+    runtime_state: RuntimeState,
     class_armor_defaults: HashMap<u64, usize>,
     selected_character: usize,
     searches: HashMap<String, String>,
@@ -432,14 +427,14 @@ impl SundialApp {
         let sunrise_version = detect_sunrise_version(&install_path);
         // The installed DLL decides the account source. A Dawn runtime keeps its account in
         // player-state.db, which the settings schema alone cannot tell us.
-        let runtime_choice = runtime_installation::RuntimeChoice::inspect(&install_path);
+        let runtime_choice = runtime_choice::RuntimeChoice::inspect(&install_path);
         let dawn = runtime_choice
             .inspection
             .launch_copy()
             .is_some_and(|copy| copy.dawn);
         let document = WorkspaceDocument::load(json_document, &settings_path, dawn);
         let source_warning = validate_workspace_document(&document).err();
-        let persistence_compatibility = PersistenceCompatibility::inspect(&install_path);
+        let runtime_state = RuntimeState::inspect(&install_path);
         let class_armor_defaults = account::class_armor_default_characters(&document);
         let raw_json = encode_settings_for_editor(document.json())?;
         let raw_json_document = document.json().clone();
@@ -456,7 +451,7 @@ impl SundialApp {
             document,
             persisted_document,
             source_warning: source_warning.clone(),
-            persistence_compatibility: persistence_compatibility.clone(),
+            runtime_state: runtime_state.clone(),
             class_armor_defaults,
             selected_character: 0,
             searches: HashMap::new(),
@@ -504,8 +499,8 @@ impl SundialApp {
             document_repaint_pending: false,
             status: source_warning.as_ref().map_or_else(
                 || {
-                    if persistence_compatibility.detected() {
-                        persistence_compatibility::WARNING_MESSAGE.to_owned()
+                    if runtime_state.detected() {
+                        runtime_state::WARNING_MESSAGE.to_owned()
                     } else {
                         "Ready".to_owned()
                     }
@@ -516,7 +511,7 @@ impl SundialApp {
                     )
                 },
             ),
-            status_is_error: source_warning.is_some() || persistence_compatibility.detected(),
+            status_is_error: source_warning.is_some() || runtime_state.detected(),
             activity_log: activity_log::ActivityLog::default(),
             activity_log_open: false,
             window_was_focused: true,
@@ -870,43 +865,14 @@ fn draw_json_account_source_notice(ui: &mut egui::Ui, source: &AccountSourceInfo
             format!("{detail} The JSON Editor changes settings.json only."),
         ),
     };
-    let (background, border, foreground) = if ui.visuals().dark_mode {
-        (
-            egui::Color32::from_rgb(55, 40, 26),
-            egui::Color32::from_rgb(102, 72, 39),
-            egui::Color32::from_rgb(245, 215, 177),
-        )
-    } else {
-        (
-            egui::Color32::from_rgb(255, 240, 221),
-            egui::Color32::from_rgb(220, 181, 131),
-            egui::Color32::from_rgb(104, 60, 16),
-        )
-    };
-    egui::Frame::NONE
-        .fill(background)
-        .stroke(egui::Stroke::new(1.0, border))
-        .corner_radius(6.0)
-        .inner_margin(egui::Margin::symmetric(12, 10))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.visuals_mut().override_text_color = Some(foreground);
-            ui.spacing_mut().item_spacing.x = 10.0;
-            ui.horizontal_top(|ui| {
-                ui.label(egui::RichText::new(egui_phosphor::regular::INFO).size(18.0));
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 3.0;
-                    ui.strong(title);
-                    ui.add(egui::Label::new(message).wrap());
-                });
-            });
-        });
-    ui.add_space(8.0);
+    crate::ui::notice(ui, title, &message);
 }
 
 impl SundialApp {
-    fn draw_active_view(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().show(ctx, |ui| {
+    fn draw_active_view(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
+        egui::CentralPanel::default().show(ui, |ui| {
             if self.json_editor_window_open
                 && self.json_editor.has_unapplied_changes()
                 && matches!(
@@ -1027,14 +993,23 @@ impl SundialApp {
         });
     }
 
-    fn prepare_frame(&mut self, ctx: &egui::Context) -> Option<String> {
+    fn prepare_frame(&mut self, ui: &mut egui::Ui) -> Option<String> {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
+        crate::ui::model_preview::set_options(
+            ctx,
+            crate::ui::model_preview::Options {
+                show_fps: self.preferences.show_preview_fps,
+                ..Default::default()
+            },
+        );
         #[cfg(target_os = "linux")]
         {
             let title_bar_icon = self
                 .title_bar_icon
                 .get_or_insert_with(|| load_linux_title_bar_texture(ctx))
                 .clone();
-            if draw_linux_title_bar(ctx, &title_bar_icon) {
+            if draw_linux_title_bar(ui, &title_bar_icon) {
                 if let Some(message) = self.package_authoring_exit_blocker() {
                     self.set_status(message, true);
                 } else if self.has_unsaved_changes() {
@@ -1122,11 +1097,13 @@ impl SundialApp {
 }
 
 impl eframe::App for SundialApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let available_update = self.prepare_frame(ctx);
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
+        let available_update = self.prepare_frame(ui);
 
-        self.draw_app_chrome(ctx, available_update.as_deref());
-        self.draw_active_view(ctx);
+        self.draw_app_chrome(ui, available_update.as_deref());
+        self.draw_active_view(ui);
         self.draw_supporting_windows(ctx);
         self.update_package_authoring(ctx);
         crate::ui::model_preview::show(ctx);
@@ -1233,11 +1210,11 @@ fn validate_for_check(document: &WorkspaceDocument) -> Result<(), String> {
 
 pub fn run(package_authoring: Box<dyn PackageAuthoringUtility>) -> eframe::Result {
     // Before the catalog, the icon cache or any package reader opens anything.
-    if let Err(warning) = crate::file_limit::raise_open_file_limit() {
+    if let Err(warning) = crate::system::file_limit::raise_open_file_limit() {
         eprintln!("Sundial: {warning}");
     }
     // Before any worker pool starts, because the allocator keeps the arenas it has opened.
-    crate::memory::limit_allocator_arenas();
+    crate::system::memory::limit_allocator_arenas();
     let update_startup = crate::updates::startup()
         .map_err(|error| eframe::Error::AppCreation(Box::new(std::io::Error::other(error))))?;
     let (install, check_only, loaded_preferences) = parse_args();
@@ -1274,7 +1251,8 @@ pub fn run(package_authoring: Box<dyn PackageAuthoringUtility>) -> eframe::Resul
             .with_min_inner_size([720.0, 520.0])
             .with_icon(icon),
         // Window sizes, places and zoom carry over between sessions, kept beside the preferences.
-        persistence_path: crate::paths::config_dir().map(|path| path.join("window-state.ron")),
+        persistence_path: crate::system::paths::config_dir()
+            .map(|path| path.join("window-state.ron")),
         ..Default::default()
     };
     eframe::run_native(
@@ -1285,7 +1263,7 @@ pub fn run(package_authoring: Box<dyn PackageAuthoringUtility>) -> eframe::Resul
             set_windows_taskbar_icon(cc);
             crate::model_preview::gpu::set_available(cc.gl.is_some());
             cc.egui_ctx.set_theme(preferences.color_theme.egui_theme());
-            ui::configure_contrast(&cc.egui_ctx);
+            ui::configure_style(&cc.egui_ctx);
             let app = StartupApp::new(
                 install,
                 preferences,

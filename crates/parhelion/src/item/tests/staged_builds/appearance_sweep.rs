@@ -28,10 +28,10 @@ struct Outcome {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES and PARHELION_APPEARANCE_SWEEP_REPORT"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
 fn real_buildable_families_accept_other_buildable_familys_appearance() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-    let report = PathBuf::from(std::env::var_os("PARHELION_APPEARANCE_SWEEP_REPORT").unwrap());
+    let packages = crate::test_support::stock_packages();
+    let report = crate::test_support::artifact_dir("appearance-sweep-report.json");
     let threads = std::env::var("PARHELION_APPEARANCE_SWEEP_THREADS")
         .ok()
         .and_then(|value| value.parse().ok())

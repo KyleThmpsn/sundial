@@ -169,10 +169,18 @@ pub fn ability_tints(
     entity: u32,
     depth: usize,
 ) -> Result<Vec<Tint>, String> {
+    tints_in_graphs(manager, &ability_graphs(manager, entity, depth)?)
+}
+
+/// Discover tints from shared source graphs without repeating the graph walk.
+pub fn tints_in_graphs(
+    manager: &PackageManager,
+    graphs: &[(u32, Vec<u8>)],
+) -> Result<Vec<Tint>, String> {
     let mut found = Vec::<Tint>::new();
     let mut materials = BTreeMap::<u32, Option<(ConstantStore, Vec<ColorConstant>)>>::new();
-    for (graph, payload) in ability_graphs(manager, entity, depth)? {
-        for site in particle_sites(manager, &payload)? {
+    for (graph, payload) in graphs {
+        for site in particle_sites(manager, payload)? {
             let system = manager.read_tag(site.system)?;
             let material = u32_at(&system, SYSTEM_MATERIAL)?;
             // A material whose constants do not read is left stock, and the ability's other
@@ -190,7 +198,7 @@ pub fn ability_tints(
             };
             for constant in constants.iter().filter(|constant| is_tint(constant.rgb)) {
                 let tint_use = TintUse {
-                    graph,
+                    graph: *graph,
                     site,
                     material,
                     store: *store,

@@ -187,5 +187,5 @@ impl PackageAuthoringApp {
 /// The most the item list takes: the screen less room for the heading, the text, the buttons and
 /// the modal's margins, and never under a few rows.
 fn list_height(ctx: &egui::Context) -> f32 {
-    (ctx.screen_rect().height() - 240.0).clamp(80.0, 360.0)
+    (ctx.content_rect().height() - 240.0).clamp(80.0, 360.0)
 }

@@ -31,7 +31,7 @@ pub(crate) use identities::SHADER_STACK;
 mod preparation;
 use preparation::*;
 mod replacement;
-pub use replacement::{ReplacementReview, preview_replacement};
+pub use replacement::{ReplacementReview, preview_replacement, preview_replacement_with_progress};
 
 /// The authored item hashes the installation carries, read from its native tables, for the
 /// build set to be checked against before a build runs.
@@ -837,6 +837,7 @@ struct ValidatedManifest {
     selected_recipe_files: Vec<String>,
     authored_unlocks: Vec<AuthoredCollectionUnlock>,
     authored_grants: Vec<identities::GrantedItem>,
+    plug_variants: Vec<replacement::StockPlugVariant>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1302,7 +1303,7 @@ fn copy_into_open_file(source: &Path, destination: &mut File) -> io::Result<File
     destination.sync_all()?;
     Ok(FileDigest {
         byte_length,
-        sha256: format!("{:X}", digest.finalize()),
+        sha256: hex::encode_upper(digest.finalize()),
     })
 }
 

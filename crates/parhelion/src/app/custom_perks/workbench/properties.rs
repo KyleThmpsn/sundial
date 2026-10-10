@@ -11,12 +11,17 @@ pub(super) struct Panel {
 }
 
 impl Panel {
-    pub fn new(ui: &egui::Ui, scope: impl std::hash::Hash) -> Self {
+    pub fn new(ui: &egui::Ui, scope: impl std::hash::Hash + std::fmt::Debug) -> Self {
         let id = ui.make_persistent_id(("properties", scope));
         Self {
             id,
             open: ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false)),
         }
+    }
+
+    pub fn reveal(&mut self, ui: &egui::Ui) {
+        self.open = true;
+        ui.data_mut(|data| data.insert_temp(self.id, true));
     }
 
     /// The switch in an item's menu. The panel opens under the item, so the header carries
@@ -30,7 +35,7 @@ impl Panel {
         if ui.button(label).clicked() {
             self.open = !self.open;
             ui.data_mut(|data| data.insert_temp(self.id, self.open));
-            ui.close_menu();
+            ui.close();
         }
     }
 
@@ -127,7 +132,7 @@ pub(super) fn row_with<R>(
                     Emphasis::Plain => egui::RichText::new(label),
                     Emphasis::Weak => egui::RichText::new(label).weak(),
                 };
-                let response = ui.add(egui::Label::new(text).halign(halign).truncate());
+                let response = ui.add(crate::app::style::cut_label(ui, text).halign(halign));
                 let hover = match (label, hint) {
                     ("", hint) => hint.to_owned(),
                     (label, "") => label.to_owned(),
@@ -159,6 +164,31 @@ impl Workbench {
     ) -> R {
         field(ui, label, hint, value)
     }
+}
+
+/// A combo over `choices`, showing the current value's name, or its number when none names it.
+/// Returns a new choice.
+fn choice(
+    ui: &mut egui::Ui,
+    salt: &str,
+    choices: &[(i64, &'static str)],
+    current: i64,
+) -> Option<i64> {
+    let text = choices
+        .iter()
+        .find(|(value, _)| *value == current)
+        .map_or_else(|| current.to_string(), |(_, name)| (*name).to_owned());
+    let mut picked = None;
+    egui::ComboBox::from_id_salt(salt)
+        .selected_text(text)
+        .show_ui(ui, |ui| {
+            for (value, name) in choices {
+                if ui.selectable_label(*value == current, *name).clicked() {
+                    picked = Some(*value);
+                }
+            }
+        });
+    picked
 }
 
 /// Component editing keeps the existing checked asset editor and draft flow.
@@ -223,6 +253,88 @@ impl Properties {
             self.pending = Some((tag, receiver));
         }
         ui.ctx().request_repaint_after(Duration::from_millis(100));
+    }
+
+    /// Change Weapon Properties' attachment: `tag` with every modifier row neutral, once its
+    /// rows are read. Until then, or when they could not be, why not.
+    pub fn neutral_attachment(&mut self, ui: &egui::Ui, tag: u32) -> Result<Asset, &'static str> {
+        if !self.packages.is_dir() {
+            return Err("Its rows need the game's packages.");
+        }
+        let graph = match self.graphs.get(&tag) {
+            Some(Ok(graph)) => graph.clone(),
+            Some(Err(_)) => return Err("Its rows could not be read."),
+            None => {
+                self.request(ui, tag);
+                return Err("Its rows are still being read.");
+            }
+        };
+        let values =
+            parameters::modifiers::neutral(&graph).map_err(|_| "Its rows could not be written.")?;
+        let path = self
+            .source
+            .as_ref()
+            .and_then(|catalog| catalog.entries.iter().find(|entry| entry.graph == tag))
+            .and_then(|entry| entry.native_paths.first().cloned())
+            .unwrap_or_default();
+        Ok(Asset {
+            graph: tag,
+            path,
+            values,
+            ..Asset::default()
+        })
+    }
+
+    /// The Damage Type tile of a projectile asset: the damage type every damage profile its
+    /// private copy's graphs name deals, its own first.
+    pub fn damage_type(&self, ui: &mut egui::Ui, asset: &mut Asset) {
+        use sundial::package_authoring::sandbox_perk::program::DamageMode;
+        const TYPES: [(DamageMode, &str); 4] = [
+            (DamageMode::Kinetic, "Kinetic"),
+            (DamageMode::Arc, "Arc"),
+            (DamageMode::Solar, "Solar"),
+            (DamageMode::Void, "Void"),
+        ];
+        if matches!(asset.graph, 0 | u32::MAX) {
+            return;
+        }
+        let current = asset.damage_type;
+        let label = |choice: Option<DamageMode>| {
+            choice
+                .and_then(|choice| TYPES.iter().find(|(each, _)| *each == choice))
+                .map_or("Original", |(_, label)| label)
+        };
+        let (picked, reset) = crate::app::style::tiles(ui, |ui, width| {
+            crate::app::style::stock_tile(
+                ui,
+                (width, ("projectile-damage-type", asset.graph)),
+                ("Damage Type", "Changes its damage, not its colors"),
+                current.map(|_| "Original"),
+                |ui| {
+                    let mut choice = current;
+                    let response =
+                        egui::ComboBox::from_id_salt(("projectile-damage-type", asset.graph))
+                            .selected_text(label(current))
+                            .width(width)
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                crate::app::workbench_style(ui);
+                                ui.selectable_value(&mut choice, None, "Original");
+                                for (each, name) in TYPES {
+                                    ui.selectable_value(&mut choice, Some(each), name);
+                                }
+                            })
+                            .response;
+                    let _ = crate::app::style::named_control(response, "Damage Type");
+                    (choice != current).then_some(choice)
+                },
+            )
+        });
+        if let Some(choice) = picked {
+            asset.damage_type = choice;
+        } else if reset {
+            asset.damage_type = None;
+        }
     }
 
     pub fn movement(&mut self, ui: &mut egui::Ui, asset: &mut Asset) {
@@ -414,6 +526,98 @@ impl Properties {
         }
     }
 
+    /// Rows added to an attachment's modifiers, under its table: one more record each, with
+    /// the table's columns, then Add Row. Only an attachment with modifier records takes rows.
+    fn added_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        asset: &mut Asset,
+        graph: &PrivatePerkRuntimeGraph,
+    ) {
+        use sundial::package_authoring::{
+            runtime::modifiers,
+            sandbox_perk::{entity::modifiers as records, program::ModifierRow},
+        };
+        if graph
+            .graphs
+            .iter()
+            .all(|(_, graph)| records::discover(graph).is_empty())
+        {
+            return;
+        }
+        let components =
+            modifiers::field_meaning(modifiers::SETTINGS_SCHEMA, modifiers::COMPONENT_OFFSET)
+                .map_or(&[][..], |meaning| meaning.choices);
+        let abilities = modifiers::field_meaning(modifiers::SETTINGS_SCHEMA, 0x48)
+            .map_or(&[][..], |meaning| meaning.choices);
+        let operations: &[(i64, &str)] = &[
+            (modifiers::OPERATION_ADD, "Add"),
+            (modifiers::OPERATION_MULTIPLY, "Multiply"),
+        ];
+        let mut remove = None;
+        if !asset.rows.is_empty() {
+            ui.add_space(4.0);
+            ui.strong("Added Rows");
+        }
+        for (index, row) in asset.rows.iter_mut().enumerate() {
+            ui.push_id(("added-row", asset.graph, index), |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if let Some(component) =
+                        choice(ui, "component", components, i64::from(row.component))
+                    {
+                        row.component = component as u8;
+                        row.input = modifiers::input_choices(component)
+                            .first()
+                            .map_or(0, |(input, _)| *input as i16);
+                    }
+                    if i64::from(row.component) == modifiers::ABILITIES_COMPONENT
+                        && let Some(ability) =
+                            choice(ui, "ability", abilities, i64::from(row.ability))
+                    {
+                        row.ability = ability as i16;
+                    }
+                    let inputs = modifiers::input_choices(i64::from(row.component));
+                    if inputs.is_empty() {
+                        let mut input = i64::from(row.input);
+                        if ui
+                            .add(egui::DragValue::new(&mut input).range(0..=255))
+                            .changed()
+                        {
+                            row.input = input as i16;
+                        }
+                    } else if let Some(input) = choice(ui, "input", inputs, i64::from(row.input)) {
+                        row.input = input as i16;
+                    }
+                    if let Some(operation) =
+                        choice(ui, "operation", operations, i64::from(row.operation))
+                    {
+                        row.operation = operation as u8;
+                    }
+                    let mut amount = row.amount();
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut amount)
+                                .speed(0.05)
+                                .max_decimals(3),
+                        )
+                        .changed()
+                    {
+                        row.set_amount(amount);
+                    }
+                    if ui.small_button("Remove").clicked() {
+                        remove = Some(index);
+                    }
+                });
+            });
+        }
+        if let Some(index) = remove {
+            asset.rows.remove(index);
+        }
+        if ui.button("Add Row").clicked() {
+            asset.rows.push(ModifierRow::neutral());
+        }
+    }
+
     /// The asset's named values as rows, then a summary of the changes those rows do not show.
     /// An untouched asset reads quietly, since its rows are extra.
     pub fn values(&mut self, ui: &mut egui::Ui, asset: &mut Asset) {
@@ -437,6 +641,7 @@ impl Properties {
             }
         };
         let named = self.card_values(ui, asset, &graph);
+        self.added_rows(ui, asset, &graph);
         if asset.values.is_empty() {
             return;
         }
@@ -479,13 +684,13 @@ mod tests {
             ..Default::default()
         };
         let frame = |properties: &mut Properties, asset: &mut Asset, events| {
-            ctx.run(
+            ctx.run_ui(
                 egui::RawInput {
                     events,
                     ..Default::default()
                 },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| properties.movement(ui, asset));
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| properties.movement(ui, asset));
                 },
             )
         };

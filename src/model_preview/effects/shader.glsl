@@ -18,10 +18,10 @@ vec4 effectSurface(vec3 base, float raw, vec4 detail, vec3 dye, vec4 params, vec
     return vec4(overlay3(base, color), mix(mapped, effectMap(overlay(mapped, detail.a), rough), params.z));
 }
 vec4 effectBase(vec2 uv) {
-    vec3 base = uHasAlbedo == 1 ? texture(uAlbedo, uv).rgb : vec3(0.0);
-    vec4 mask = uHasGear == 1 ? texture(uGear, uv) : vec4(0.0);
+    vec3 base = uHasAlbedo == 1 ? samplePlate(uAlbedo, uv,0).rgb : vec3(0.0);
+    vec4 mask = uHasGear == 1 ? samplePlate(uGear, uv,1) : vec4(0.0);
     if (uHasDye == 0 || mask.a < 40.0 / 255.0) return vec4(base, mask.g);
-    vec4 detail = uHasDetail == 1 ? texture(uDetail, effectUv(vDetailUv, uDetailTransform)) : vec4(0.25);
+    vec4 detail = uHasDetail == 1 ? samplePlate(uDetail, effectUv(vDetailUv, uDetailTransform),3) : vec4(0.25);
     vec4 worn = effectSurface(base, mask.g, detail, uDyeWorn, clamp(uWornParams, 0.0, 1.0), uWornRough);
     vec4 fresh = effectSurface(base, mask.g, detail, uDyeAlbedo, uParams, uRough);
     return mix(worn, fresh, effectMap(sat((mask.a * 255.0 - 48.0) / 207.0), uWear));
@@ -44,9 +44,9 @@ vec4 scrollingEffect(vec2 uv, float facing) {
     tint *= uEffectConstants[8].rgb + uEffectConstants[9].rgb * effectRamp(uv.y, uEffectConstants[7]);
     float angle = min(effectCurve(sat(facing * uEffectConstants[3].x + uEffectConstants[3].y), uEffectConstants[4].x), 1.0);
     tint *= (uEffectConstants[5].rgb + uEffectConstants[6].rgb * angle) * uEffectConstants[33].rgb;
-    vec3 plate = uHasAlbedo == 1 ? texture(uAlbedo, uv).rgb : vec3(0.0);
+    vec3 plate = uHasAlbedo == 1 ? samplePlate(uAlbedo, uv,0).rgb : vec3(0.0);
     tint = (tint * plate.r + uEffectConstants[34].rgb * (uEffectConstants[35].rgb * plate.g + uEffectConstants[36].rgb * plate.b)) * uEffectConstants[37].x;
-    float alpha = (uHasGear == 1 ? sat(texture(uGear, uv).g) : 0.0) * uEffectConstants[38].x;
+    float alpha = (uHasGear == 1 ? sat(samplePlate(uGear, uv,1).g) : 0.0) * uEffectConstants[38].x;
     return vec4(tint * uEffectConstants[38].x * alpha * uEffectConstants[40].rgb, alpha * uEffectConstants[39].x);
 }
 vec4 distortedGlow(vec2 uv, float facing) {
@@ -93,12 +93,12 @@ vec4 effectColor(vec2 uv, vec3 normal) {
         fade *= fade;
         outputColor.rgb = tint * angle * angle * fade * fade * uEffectConstants[9].x * uEffectConstants[8].rgb;
     } else if (uEffect == 3) {
-        float mask = uHasGear == 1 ? texture(uGear, uv).g : 0.0;
+        float mask = uHasGear == 1 ? samplePlate(uGear, uv,1).g : 0.0;
         vec4 extra = uEffectConstants[4] + uEffectConstants[5] * sat((1.0 - mask) * uEffectConstants[3].x + uEffectConstants[3].y);
         vec4 rgba = (effectBase(uv) + extra) * uEffectConstants[6].x;
         outputColor.rgb = rgba.rgb * rgba.a * uEffectConstants[7].rgb;
     } else if (uEffect == 4) {
-        float mask = uHasGear == 1 ? texture(uGear, uv).g : 0.0;
+        float mask = uHasGear == 1 ? samplePlate(uGear, uv,1).g : 0.0;
         vec4 a = uEffectConstants[5] + uEffectConstants[6] * min(effectCurve(sat(facing * uEffectConstants[3].x + uEffectConstants[3].y), uEffectConstants[4].x), 1.0);
         vec4 b = uEffectConstants[9] + uEffectConstants[10] * min(effectCurve(sat(facing * uEffectConstants[7].x + uEffectConstants[7].y), uEffectConstants[8].x), 1.0);
         vec4 tint = uEffectConstants[15] + uEffectConstants[16] * min(effectCurve(sat(facing * uEffectConstants[13].x + uEffectConstants[13].y), uEffectConstants[14].x), 1.0);

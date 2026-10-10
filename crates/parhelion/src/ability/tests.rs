@@ -56,10 +56,7 @@ const STOCK_ROW_BANKS: [(u32, u32); 2] = [
 ];
 
 fn clean_packages() -> PathBuf {
-    PathBuf::from(
-        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-            .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages"),
-    )
+    crate::test_support::stock_packages()
 }
 
 /// Every bank the build replaces takes its row on the handler slot its own charge rows use
@@ -67,7 +64,7 @@ fn clean_packages() -> PathBuf {
 /// with no charge slot is refused, a bank that already has the key is refused, and a
 /// parameter the bank does not list is refused.
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn real_stock_banks_take_charge_and_parameter_rows() {
     let manager = open_shadowkeep_package_manager(&clean_packages())
         .expect("clean-stock manager should open");

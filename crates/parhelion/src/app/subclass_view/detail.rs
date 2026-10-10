@@ -36,7 +36,7 @@ impl Section {
     /// What the tab holds, in its tooltip.
     const fn hint(self) -> &'static str {
         match self {
-            Self::Ability => "Its name, description and icon",
+            Self::Ability => "Its name, description, icon and color",
             Self::Perks => "The perks it grants while equipped",
             Self::Gameplay => "How it behaves and what it spawns",
             Self::Visuals => "How its effects look",
@@ -51,6 +51,8 @@ impl Section {
                     || edits.name.is_some()
                     || edits.description.is_some()
                     || edits.icon.is_some()
+                    || edits.color.is_some()
+                    || !edits.attached_abilities.is_empty()
             }
             Self::Perks => {
                 !edits.added_perks.is_empty()
@@ -66,6 +68,7 @@ impl Section {
                     || !edits.ability_values.is_empty()
                     || !edits.spawn_swaps.is_empty()
                     || !edits.bank_values.is_empty()
+                    || edits.damage_type.is_some()
             }
             Self::Visuals => edits.recolors(),
         }
@@ -74,19 +77,7 @@ impl Section {
 
 /// The quiet icon that restores one value.
 pub(super) fn reset_icon(ui: &mut egui::Ui) -> bool {
-    let hover = "Restore the original value";
-    let button = ui.add(
-        egui::Button::new(style::light_icon(
-            ui,
-            egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE,
-        ))
-        .frame(false)
-        // A hit area larger than the glyph, which stays quiet.
-        .min_size(egui::Vec2::splat(20.0)),
-    );
-    style::named_control(button, hover)
-        .on_hover_text(hover)
-        .clicked()
+    style::reset_icon(ui, "Restore the original value")
 }
 
 /// A tab that carries the page's edit dot once what it shows has edits. A screen reader hears
@@ -144,7 +135,7 @@ fn detail_header<R>(
                     style::more_menu(ui, name, |ui| {
                         if ui.button(restore).clicked() {
                             clicked = true;
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
                 });
@@ -211,25 +202,97 @@ pub(super) fn marked_field<R>(
     .inner
 }
 
+/// The damage types a profile can deal, as the recipe names them, the client encodes them and
+/// the pickers label them.
+pub(super) const DAMAGE_TYPES: [(crate::recipe::RecipeDamageType, u8, &str); 4] = {
+    use crate::recipe::RecipeDamageType;
+    use sundial::package_authoring::ability_damage::{ARC, KINETIC, SOLAR, VOID};
+    [
+        (RecipeDamageType::Kinetic, KINETIC, "Kinetic"),
+        (RecipeDamageType::Arc, ARC, "Arc"),
+        (RecipeDamageType::Solar, SOLAR, "Solar"),
+        (RecipeDamageType::Void, VOID, "Void"),
+    ]
+};
+
+/// The Damage Type tile: the damage type every damage profile of the ability deals, its stock
+/// one first. `stock` holds the types its profiles deal now, as the client encodes them.
+fn damage_tile(
+    ui: &mut egui::Ui,
+    width: f32,
+    stock: &std::collections::BTreeSet<u8>,
+    edits: &mut EntryEdits,
+) {
+    use crate::recipe::RecipeDamageType;
+    const TYPES: [(RecipeDamageType, u8, &str); 4] = DAMAGE_TYPES;
+    // One stock type stands for keeping the stock profiles. Mixed ones can all take any type.
+    let single = (stock.len() == 1)
+        .then(|| stock.first())
+        .flatten()
+        .and_then(|mode| TYPES.iter().find(|(_, each, _)| each == mode));
+    // The stock entry leads the list and reads as the type itself. The tile's name says whether
+    // it is still the stock one.
+    let stock = single.map_or("Mixed", |(_, _, label)| *label);
+    let stock_label = stock.to_owned();
+    let current = edits.damage_type;
+    let (picked, reset) = style::stock_tile(
+        ui,
+        (width, "subclass-damage-type"),
+        ("Damage Type", "Changes its damage, not its colors"),
+        current.is_some().then_some(stock),
+        |ui| {
+            let mut choice = current;
+            let label = |choice: Option<RecipeDamageType>| {
+                choice
+                    .and_then(|choice| TYPES.iter().find(|(each, ..)| *each == choice))
+                    .map_or_else(|| stock_label.clone(), |(_, _, label)| (*label).to_owned())
+            };
+            let response = egui::ComboBox::from_id_salt("subclass-damage-type")
+                .selected_text(label(current))
+                .width(width)
+                .truncate()
+                .show_ui(ui, |ui| {
+                    style::workbench_style(ui);
+                    ui.selectable_value(&mut choice, None, stock_label.clone());
+                    for (damage, _, label) in TYPES {
+                        if single.is_none_or(|(each, ..)| *each != damage) {
+                            ui.selectable_value(&mut choice, Some(damage), label);
+                        }
+                    }
+                })
+                .response;
+            let _ = style::named_control(response, "Damage Type");
+            (choice != current).then_some(choice)
+        },
+    );
+    if let Some(choice) = picked {
+        edits.damage_type = choice;
+    } else if reset {
+        edits.damage_type = None;
+    }
+}
+
 /// The Charges tile: the extra charges as a field across the tile, as every other tile's.
 fn charges_tile(ui: &mut egui::Ui, width: f32, edits: &mut EntryEdits) {
     let count = edits.extra_charges;
-    let (charged, reset) = style::tile(
+    let (charged, reset) = style::stock_tile(
         ui,
-        width,
-        "subclass-charges",
-        "Charges",
-        "Extra charges",
-        count > 0,
+        (width, "subclass-charges"),
+        (
+            "Extra Charges",
+            "Charges added to the ability's normal amount",
+        ),
+        (count > 0).then_some("+0"),
         |ui| {
-            ui.spacing_mut().interact_size.x = width;
             let mut value = count;
-            let field = ui.add(
-                egui::DragValue::new(&mut value)
-                    .range(0..=MOST_CHARGES)
-                    .speed(0.05)
-                    .prefix("+"),
-            );
+            let field = style::tile_field(ui, width, |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut value)
+                        .range(0..=MOST_CHARGES)
+                        .speed(0.05)
+                        .prefix("+"),
+                )
+            });
             let field = style::named_control(field, "Extra Charges");
             (field.changed() && value != count).then_some(value)
         },
@@ -242,19 +305,20 @@ fn charges_tile(ui: &mut egui::Ui, width: f32, edits: &mut EntryEdits) {
 /// The Recharge tile: the recharge multiplier across the tile.
 fn recharge_tile(ui: &mut egui::Ui, width: f32, edits: &mut EntryEdits) {
     let current = edits.recharge();
-    let (recharged, reset) = style::tile(
+    let (recharged, reset) = style::stock_tile(
         ui,
-        width,
-        "subclass-recharge",
-        "Recharge",
-        "Higher recharges faster",
-        current.is_some(),
+        (width, "subclass-recharge"),
+        (
+            "Recharge Rate",
+            "Higher values recharge faster. ×1 keeps the normal rate",
+        ),
+        current.is_some().then_some("×1"),
         |ui| {
-            // The field fills its tile, as every other tile's does.
-            ui.spacing_mut().interact_size.x = width;
             let mut multiplier = current.unwrap_or(1.0);
-            let response = super::modifiers::recharge_field(ui, &mut multiplier);
-            let response = style::named_control(response, "Recharge");
+            let response = style::tile_field(ui, width, |ui| {
+                super::modifiers::recharge_field(ui, &mut multiplier)
+            });
+            let response = style::named_control(response, "Recharge Rate");
             (response.changed() && multiplier.is_finite()).then_some(multiplier)
         },
     );
@@ -366,7 +430,12 @@ impl PackageAuthoringApp {
             ui,
             (&place.label(), name, Some(icon.as_ref())),
             restore.as_deref(),
-            |ui| self.based_on_button(ui, (summary, entry), open),
+            |ui| {
+                ui.add_enabled_ui(!layout::FOUNDATIONS.contains(&entry), |ui| {
+                    self.based_on_button(ui, (summary, entry), open)
+                })
+                .inner
+            },
         );
         if restored {
             return Some(match place {
@@ -529,7 +598,7 @@ impl PackageAuthoringApp {
         if let Some(name) = text_field(ui, ("Name", stock_name), edits.name.as_deref(), false) {
             changed = Some(EntryEdits {
                 name,
-                ..edits.clone()
+                ..changed.unwrap_or_else(|| edits.clone())
             });
         }
         let stock_description = self.entry_description(summary, entry).unwrap_or_default();
@@ -541,22 +610,32 @@ impl PackageAuthoringApp {
         ) {
             changed = Some(EntryEdits {
                 description,
-                ..edits.clone()
+                ..changed.unwrap_or_else(|| edits.clone())
             });
         }
         let (icon, reset) = field(ui, "Icon", edits.icon.is_some(), |ui| {
-            self.draw_icon_choices(ui, base, (summary, entry), edits.icon.as_ref(), page)
+            self.draw_icon_choices(ui, base, (summary, entry), (edits.icon.as_ref(), &[]), page)
         });
         if let Some(icon) = icon {
             changed = Some(EntryEdits {
                 icon: Some(icon),
-                ..edits.clone()
+                ..changed.unwrap_or_else(|| edits.clone())
             });
         } else if reset {
             changed = Some(EntryEdits {
                 icon: None,
-                ..edits.clone()
+                ..changed.unwrap_or_else(|| edits.clone())
             });
+            page.icons.cancel();
+        }
+        if let Some(color) = self.draw_ability_color(ui, edits.color) {
+            let mut updated = changed.unwrap_or_else(|| edits.clone());
+            updated.color = color;
+            changed = Some(updated);
+        }
+        let mut updated = changed.clone().unwrap_or_else(|| edits.clone());
+        if self.draw_attached_abilities(ui, base, (summary, entry), &mut updated, page) {
+            changed = Some(updated);
         }
         changed
     }
@@ -604,20 +683,58 @@ impl PackageAuthoringApp {
         page: &mut PageState,
     ) -> Option<EntryEdits> {
         // The ability's tree: none without an entity, and `Some(None)` while it loads.
-        let tree = summary
-            .and_then(|summary| summary.entry_entities.get(&entry))
-            .map(|entity| {
-                let keys = tuning::own_keys(summary, entry);
-                self.load_properties(ui.ctx(), (*entity, keys), page)
-            });
+        let tree =
+            summary
+                .and_then(|summary| summary.entry_entities.get(&entry))
+                .map(|entity| {
+                    let mut keys = tuning::own_keys(summary, entry)
+                        .into_iter()
+                        .filter(|key| {
+                            let row = summary.and_then(|summary| summary.entry_rows.get(&entry));
+                            !edits
+                                .removed_modifiers
+                                .iter()
+                                .any(|removed| removed.key == *key && Some(&removed.row) == row)
+                        })
+                        .collect::<Vec<_>>();
+                    keys.extend(edits.modifiers.iter().filter_map(
+                        |modifier| match modifier.effect {
+                            crate::subclass::ModifierEffect::Key { key }
+                                if modifier.target == crate::subclass::place_entry(place) =>
+                            {
+                                Some(key)
+                            }
+                            _ => None,
+                        },
+                    ));
+                    self.load_properties(ui.ctx(), (*entity, keys), page)
+                });
         let loaded = match &tree {
             Some(Some(Ok(loaded))) => Some(loaded),
             _ => None,
         };
+        properties::search_bar(ui, &mut page.property_query);
+        if !page.property_query.trim().is_empty() {
+            let mut changed = self.draw_ability_card(ui, (summary, entry), edits, page, None);
+            if let Some(loaded) = loaded {
+                if let Some(next) =
+                    self.draw_property_search(ui, loaded, changed.as_ref().unwrap_or(edits), page)
+                {
+                    changed = Some(next);
+                }
+            } else if tree.is_some() {
+                ui.weak("Loading properties…");
+            }
+            return changed;
+        }
         let mut changed = self.draw_ability_card(ui, (summary, entry), edits, page, loaded);
-        if let Some(edited) =
-            self.draw_ability_changes(ui, (base, abilities), (summary, entry, place), edits, page)
-        {
+        if let Some(edited) = self.draw_ability_changes(
+            ui,
+            (base, abilities),
+            (summary, entry, place),
+            changed.as_ref().unwrap_or(edits),
+            page,
+        ) {
             changed = Some(edited);
         }
         match &tree {
@@ -629,7 +746,9 @@ impl PackageAuthoringApp {
                     .on_hover_text(error);
             }
             Some(Some(Ok(loaded))) => {
-                if let Some(edited) = self.draw_properties(ui, loaded, edits, page) {
+                if let Some(edited) =
+                    self.draw_properties(ui, loaded, changed.as_ref().unwrap_or(edits), page)
+                {
                     changed = Some(edited);
                 }
             }
@@ -638,7 +757,12 @@ impl PackageAuthoringApp {
         if tree.is_some() {
             ui.add_space(8.0);
         }
-        if let Some(edited) = self.draw_technical(ui, (summary, entry, place), edits, page) {
+        if let Some(edited) = self.draw_technical(
+            ui,
+            (summary, entry, place),
+            changed.as_ref().unwrap_or(edits),
+            page,
+        ) {
             changed = Some(edited);
         }
         changed
@@ -661,11 +785,31 @@ impl PackageAuthoringApp {
         // Only an ability whose bank shows where a charge row goes takes extra charges, and only
         // one whose bank has numeric inputs takes a recharge rate of its own. Parameters with only
         // a hash sit in Technical.
-        let charges = row.is_some_and(|row| row.charges);
-        let recharge = row.is_some_and(|row| row.recharge);
-        let named = row.map_or_else(Vec::new, |row| tuning::split_parameters(row).0);
+        let searching = !page.property_query.trim().is_empty();
+        let charges = row.is_some_and(|row| row.charges)
+            && properties::matches(&page.property_query, "Extra Charges");
+        let recharge = row.is_some_and(|row| row.recharge)
+            && properties::matches(&page.property_query, "Recharge Rate");
+        let mut named = row.map_or_else(Vec::new, |row| tuning::split_parameters(row).0);
+        if searching {
+            named.retain(|parameter| {
+                properties::matches(
+                    &page.property_query,
+                    &format!(
+                        "{} {:08X}",
+                        super::modifiers::parameter_name(parameter.name),
+                        parameter.name
+                    ),
+                )
+            });
+        }
+        // An ability whose graphs name no damage profile has no damage type to change, unless
+        // the recipe set one before.
+        let damage = own
+            .map(properties::Loaded::damage_types)
+            .filter(|damage| !damage.is_empty() || edits.damage_type.is_some());
         let own = own.filter(|own| own.has_own_values());
-        if !charges && !recharge && named.is_empty() && own.is_none() {
+        if !charges && !recharge && named.is_empty() && own.is_none() && damage.is_none() {
             return None;
         }
         let mut next = edits.clone();
@@ -673,10 +817,17 @@ impl PackageAuthoringApp {
             let query = ui
                 .horizontal(|ui| {
                     ui.label(egui::RichText::new("Ability").strong());
-                    tuning::parameter_filter(ui, named.len(), page)
+                    if searching {
+                        String::new()
+                    } else {
+                        tuning::parameter_filter(ui, named.len(), page)
+                    }
                 })
                 .inner;
             style::tiles(ui, |ui, width| {
+                if let Some(damage) = damage {
+                    damage_tile(ui, width, damage, &mut next);
+                }
                 if charges {
                     charges_tile(ui, width, &mut next);
                 }
@@ -688,15 +839,15 @@ impl PackageAuthoringApp {
                     properties::own_tiles(ui, width, own, &mut next);
                 }
             });
+            if let Some(own) = own {
+                properties::own_folds(ui, own, &mut next);
+            }
         });
         ui.add_space(8.0);
         (next != *edits).then_some(next)
     }
 
-    /// A node's Ability Changes: what selecting it changes about the subclass's abilities, as a
-    /// card of chips and Add Change, with a reset of them all once they differ. A node does what
-    /// it does this way. An ability has none: its own values sit on its Ability card, and each
-    /// other ability's on that ability's page.
+    /// What selecting an ability or node changes about the subclass's other abilities.
     fn draw_ability_changes(
         &self,
         ui: &mut egui::Ui,
@@ -705,35 +856,45 @@ impl PackageAuthoringApp {
         edits: &EntryEdits,
         page: &mut PageState,
     ) -> Option<EntryEdits> {
-        if crate::subclass::holds_ability(crate::subclass::place_entry(place)) {
-            return None;
-        }
         let edited = !edits.modifiers.is_empty() || !edits.removed_modifiers.is_empty();
-        let changed = style::card(ui, |ui| {
-            let reset = ui
-                .horizontal(|ui| {
-                    ui.label(egui::RichText::new("Ability Changes").strong())
-                        .on_hover_text("What selecting it changes about the subclass's abilities");
-                    edited && reset_icon(ui)
+        let active = summary.is_some_and(|summary| summary.entry_rows.contains_key(&entry));
+        let title = if edited {
+            "Ability Changes •"
+        } else {
+            "Ability Changes"
+        };
+        let section = egui::CollapsingHeader::new(title)
+            .id_salt(("ability-changes", place))
+            .default_open(!active || edited)
+            .show(ui, |ui| {
+                style::card(ui, |ui| {
+                    let reset = ui
+                        .horizontal(|ui| {
+                            ui.weak("Changes applied while this choice is selected.");
+                            edited && reset_icon(ui)
+                        })
+                        .inner;
+                    let changed = self.draw_entry_modifiers(
+                        ui,
+                        (base, abilities),
+                        (summary, entry, place),
+                        edits,
+                        page,
+                    );
+                    changed.or_else(|| {
+                        reset.then(|| EntryEdits {
+                            modifiers: Vec::new(),
+                            removed_modifiers: Vec::new(),
+                            ..edits.clone()
+                        })
+                    })
                 })
-                .inner;
-            let changed = self.draw_entry_modifiers(
-                ui,
-                (base, abilities),
-                (summary, entry, place),
-                edits,
-                page,
-            );
-            changed.or_else(|| {
-                reset.then(|| EntryEdits {
-                    modifiers: Vec::new(),
-                    removed_modifiers: Vec::new(),
-                    ..edits.clone()
-                })
-            })
-        });
+            });
+        if edited {
+            style::named_control(section.header_response, "Ability Changes, Changed");
+        }
         ui.add_space(8.0);
-        changed
+        section.body_returned.flatten()
     }
 
     /// An attunement: its name, then every stock attunement that fits its place.

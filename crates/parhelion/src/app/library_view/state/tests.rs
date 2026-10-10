@@ -25,6 +25,7 @@ fn entry(name: &str, path: &str, donor_hash: u32) -> RecipeLibraryEntry {
         rarity: None,
         icon_hash: donor_hash,
         icon_edit: crate::WeaponIconEdit::default(),
+        art: None,
     }
 }
 

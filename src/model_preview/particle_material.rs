@@ -1,5 +1,4 @@
-//! CPU study of one packaged additive particle pixel shader. Runtime spawn and
-//! engine constant buffers still have to be recovered before native playback.
+//! Recovered particle instance and pixel contracts in the software studio view.
 use super::{
     Model, assets,
     texture::{Sampler, Texture},
@@ -18,7 +17,52 @@ pub(super) struct State<'a> {
     visible: bool,
 }
 
-pub(super) fn prepare(model: &Model, seconds: f32) -> Option<State<'_>> {
+pub(super) struct Batch<'a> {
+    pub states: Vec<State<'a>>,
+    instances: Option<&'a [super::particles::simulation::Instance]>,
+}
+
+impl Batch<'_> {
+    /// One compact record per visible or retired instance. Mesh vertices stay on the GPU.
+    pub(super) fn gpu_instances(&self) -> Vec<[[f32; 4]; 7]> {
+        self.states
+            .iter()
+            .enumerate()
+            .map(|(index, state)| {
+                [
+                    state.transforms[0],
+                    state.transforms[1],
+                    state.transforms[2],
+                    self.instances
+                        .map_or([0.0; 4], |instances| instances[index].attributes[4]),
+                    state.ramp_control,
+                    state.intensity,
+                    [
+                        f32::from(u8::from(state.visible)),
+                        f32::from(u8::from(self.instances.is_some())),
+                        0.0,
+                        0.0,
+                    ],
+                ]
+            })
+            .collect()
+    }
+
+    pub(super) fn position(&self, instance: usize, point: [f32; 3]) -> [f32; 3] {
+        let Some(instances) = self.instances else {
+            return point;
+        };
+        let [x, y, z, angle] = instances[instance].attributes[4];
+        let (sin, cos) = angle.sin_cos();
+        [
+            x + point[0] * 0.1,
+            y + (cos * point[1] - sin * point[2]) * 0.1,
+            z + (sin * point[1] + cos * point[2]) * 0.1,
+        ]
+    }
+}
+
+pub(super) fn prepare(model: &Model, seconds: f32) -> Option<Batch<'_>> {
     let [particle] = model.assets.particles.as_slice() else {
         return None;
     };
@@ -40,6 +84,31 @@ pub(super) fn prepare(model: &Model, seconds: f32) -> Option<State<'_>> {
     else {
         return None;
     };
+    let distortion = texture(0)?;
+    let mask = texture(1)?;
+    let ramp = texture(2)?;
+    let state = |attributes: [[f32; 4]; 7]| State {
+        distortion,
+        mask,
+        ramp,
+        distortion_sampler,
+        mask_sampler,
+        ramp_sampler,
+        transforms: [attributes[0], attributes[1], attributes[2]],
+        ramp_control: attributes[5],
+        intensity: attributes[6],
+        visible: attributes[3][3] <= 0.999 && attributes[6][2] >= 0.000001,
+    };
+    if let Some(simulation) = model.particle_simulation() {
+        let instances = simulation.at(seconds);
+        return Some(Batch {
+            states: instances
+                .iter()
+                .map(|item| state(item.attributes))
+                .collect(),
+            instances: Some(instances),
+        });
+    }
     let program = particle.program.as_ref()?;
     let lifetime = program.lifetime_default()?;
     let age = (seconds / lifetime).max(0.0);
@@ -48,21 +117,12 @@ pub(super) fn prepare(model: &Model, seconds: f32) -> Option<State<'_>> {
     registers.set(1, 6, [0.0, 0.0, 0.0, 0.5]).ok()?;
     registers.set(1, 7, [0.5, 0.0, 0.0, 0.0]).ok()?;
     program.evaluate_section(4, &mut registers).ok()?;
-    Some(State {
-        distortion: texture(0)?,
-        mask: texture(1)?,
-        ramp: texture(2)?,
-        distortion_sampler,
-        mask_sampler,
-        ramp_sampler,
-        transforms: [
-            registers.get(1, 0)?,
-            registers.get(1, 1)?,
-            registers.get(1, 2)?,
-        ],
-        ramp_control: registers.get(1, 5)?,
-        intensity: registers.get(1, 6)?,
-        visible: age < 0.999,
+    let attributes = std::array::from_fn(|index| registers.get(1, index as u8).unwrap());
+    let mut material = state(attributes);
+    material.visible &= age <= 0.999;
+    Some(Batch {
+        states: vec![material],
+        instances: None,
     })
 }
 
@@ -85,13 +145,15 @@ impl State<'_> {
         ];
         let second_uv = [uv[0] * second[0] + second[2], uv[1] * second[1] + second[3]];
         let a = self.mask.sample_with_sampler(first_uv, self.mask_sampler)[0] / 255.0;
-        let b = self.mask.sample_with_sampler(second_uv, self.mask_sampler)[1] / 255.0;
+        // The native sample writes destination Y using resource X. Both UVs read red.
+        let b = self.mask.sample_with_sampler(second_uv, self.mask_sampler)[0] / 255.0;
         let ramp_u = (a * b * self.ramp_control[0] + self.ramp_control[1]).clamp(0.0, 1.0);
         let color = self
             .ramp
             .sample_with_sampler([ramp_u, 0.0], self.ramp_sampler);
         let edge = (1.0 - (uv[0] - 0.5).abs() * 2.222_222).max(0.0).powi(2);
-        let strength = edge * self.intensity[1] * self.intensity[2] * exposure * 0.02;
+        let coverage = (edge * self.intensity[2]).clamp(0.0, 1.0);
+        let strength = coverage * self.intensity[1] * exposure * 0.02;
         [
             color[0] * strength,
             color[1] * strength,

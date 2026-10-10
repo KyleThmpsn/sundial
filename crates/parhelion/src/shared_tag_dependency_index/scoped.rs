@@ -82,7 +82,7 @@ fn check_boundary(
 }
 
 /// Enforce the boundary in normal package emission, including extension hooks.
-/// Native icon definitions are an intentional eager UI resource. Other type-16
+/// Native icons and replication records are eager resources. Other type-16
 /// asset owners retain their loading boundary, including model and dye owners.
 pub(crate) fn validate_asset_loading<'a>(
     manager: &sundial::package_authoring::PackageManager,
@@ -143,7 +143,12 @@ fn deferred_owner(file_type: u8, class: u32) -> AuthoringResult<bool> {
     if file_type != 16 {
         return Err(invalid("An asset loading index requires a type-16 owner"));
     }
-    Ok(class != sundial::package_authoring::icon_schema::ICON_DEFINITION_CLASS)
+    // Native investment enrollment includes replication roots and their allocation
+    // trees. Their companion remains separately registered in the package table.
+    Ok(
+        class != sundial::package_authoring::icon_schema::ICON_DEFINITION_CLASS
+            && class != 0x8080_9BB6,
+    )
 }
 
 #[cfg(test)]

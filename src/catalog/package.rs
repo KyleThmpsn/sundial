@@ -51,7 +51,7 @@ pub(super) fn install_fingerprint(install: &Path) -> Result<String, String> {
     for path in paths {
         hash_package_header(&mut digest, &path)?;
     }
-    Ok(format!("{:x}", digest.finalize()))
+    Ok(hex::encode(digest.finalize()))
 }
 
 fn hash_package_header(digest: &mut Sha256, path: &Path) -> Result<(), String> {

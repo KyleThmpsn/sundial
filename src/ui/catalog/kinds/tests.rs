@@ -59,13 +59,13 @@ fn catalog_keeps_example_actions_in_view_and_clears_hidden_selection() {
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 640.0));
         let mut action_rect = None;
         for _ in 0..3 {
-            let _ = ctx.run(
+            let _ = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(screen),
                     ..Default::default()
                 },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         let mut actions = |ui: &mut egui::Ui, selected, _| {
                             assert_eq!(selected, Some(1));
                             let response = ui.button("Copy as New Perk");
@@ -82,13 +82,13 @@ fn catalog_keeps_example_actions_in_view_and_clears_hidden_selection() {
             "copy action clipped at {width}: {rect:?} in {clip:?}"
         );
         kinds.use_query = "no matching example".into();
-        let _ = ctx.run(
+        let _ = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(screen),
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     kinds.draw(ui, &sources, Source::Ready(&index), &mut None);
                 });
             },
@@ -170,8 +170,8 @@ fn effect_rows_describe_decoded_actions_and_display_all_source_names() {
     assert!(rows[0].name.contains("Thorn Catalyst"));
     let mut engine = Kinds::default();
     let ctx = egui::Context::default();
-    let output = ctx.run(egui::RawInput::default(), |ctx| {
-        egui::CentralPanel::default().show(ctx, |ui| {
+    let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             engine.draw_uses(
                 ui,
                 UsesSource::default(),

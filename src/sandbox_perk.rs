@@ -9,7 +9,7 @@ use crate::{
         SANDBOX_PATTERN_ENTITY_ASSIGNMENT_ROW_SIZE, SANDBOX_PATTERN_ENTITY_ASSIGNMENT_TAG,
         WEAPON_ENTITY_CLASS, validate_weapon_entity,
     },
-    investment_schema::{
+    investment::schema::{
         GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, NESTED_ARRAY_TRAILER,
         investment_globals_table_tag,
     },
@@ -1149,7 +1149,7 @@ fn detail_target(
         ));
     }
     let displacement = target - layout.secondary.rows;
-    if displacement % FINISHED_SANDBOX_PERK_DETAIL_ROW_SIZE != 0
+    if !displacement.is_multiple_of(FINISHED_SANDBOX_PERK_DETAIL_ROW_SIZE)
         || target
             .checked_add(FINISHED_SANDBOX_PERK_DETAIL_ROW_SIZE)
             .is_none_or(|end| end > layout.secondary_end)

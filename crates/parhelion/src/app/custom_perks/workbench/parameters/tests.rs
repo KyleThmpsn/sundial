@@ -124,9 +124,9 @@ pub(in crate::app) fn editor(loaded: PrivatePerkRuntimeGraph) -> PerkEditor {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn activity_asset_properties_allow_dependencies_that_the_build_enrolls() {
-    let path = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let path = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(&path).unwrap();
     for tag in [0x80C107D8, 0x80BFBBAB] {
         let report = entity::residency::inspect(&manager, tag).unwrap();
@@ -362,10 +362,10 @@ fn removing_runtime_edits_keeps_private_identity_and_effects() {
 }
 
 #[test]
-#[ignore = "requires clean Shadowkeep packages via PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires clean Shadowkeep packages via SUNDIAL_STOCK_PACKAGES"]
 fn native_micro_missile_exposes_verified_speed() {
     use sundial::package_authoring::runtime::resolve_weapon_runtime_field;
-    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").expect("package path");
+    let packages = crate::test_support::stock_packages();
     let loaded =
         load_private_perk_runtime_graph(Path::new(&packages), editor(fixture()).key, &[]).unwrap();
     let speed = guided::ProjectileSpeed::discover(&loaded).expect("verified speed profile");

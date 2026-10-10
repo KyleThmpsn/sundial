@@ -57,7 +57,7 @@ impl Titles {
                         index: u16::MAX,
                         unlock: None,
                     });
-                    ui.close_menu();
+                    ui.close();
                 }
                 if let Some(choices) = choices {
                     for choice in choices {
@@ -77,7 +77,7 @@ impl Titles {
                                     index: choice.index,
                                     unlock: Some(*unlock),
                                 });
-                                ui.close_menu();
+                                ui.close();
                             }
                             Err(reason) => {
                                 response.on_disabled_hover_text(reason);

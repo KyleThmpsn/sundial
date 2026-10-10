@@ -1,13 +1,11 @@
 use super::*;
 
 /// Renders the inspector for one representative definition of each kind from an installed
-/// catalog and writes captures when `PARHELION_UI_CAPTURE_DIR` is set.
+/// catalog and writes captures when `SUNDIAL_TEST_ARTIFACTS` is set.
 #[test]
-#[ignore = "Requires SUNDIAL_PROGRESSION_INSTALL and SUNDIAL_INSPECTOR_CATALOG"]
+#[ignore = "Requires SUNDIAL_INSTALL and SUNDIAL_INSPECTOR_CATALOG"]
 fn installed_inspector_pages_render() {
-    let install = std::path::PathBuf::from(
-        std::env::var_os("SUNDIAL_PROGRESSION_INSTALL").expect("install path"),
-    );
+    let install = crate::test_support::install();
     let cache = std::path::PathBuf::from(
         std::env::var_os("SUNDIAL_INSPECTOR_CATALOG").expect("catalog cache copy"),
     );
@@ -21,7 +19,7 @@ fn installed_inspector_pages_render() {
     assert!(!targets.is_empty());
     let ctx = egui::Context::default();
     ctx.set_theme(egui::Theme::Dark);
-    crate::app::ui::configure_contrast(&ctx);
+    crate::app::ui::configure_style(&ctx);
     crate::app::preferences::configure_destiny_symbol_fonts(&ctx, &install).ok();
     warm_icons(&ctx, &catalog, targets[0].1);
     capture_search(&ctx, &catalog, targets[0].1);
@@ -29,7 +27,7 @@ fn installed_inspector_pages_render() {
         let mut state = HashInspectionState::default();
         state.open(hash);
         let mut output = with_icons(&ctx, &catalog, &mut state);
-        crate::app::tests::capture::write(&ctx, &output, &format!("inspector-{name}"));
+        crate::test_support::capture::write(&ctx, &output, &format!("inspector-{name}"));
         if name != "weapon" {
             continue;
         }
@@ -58,7 +56,7 @@ fn installed_inspector_pages_render() {
             frames(&ctx, &catalog, &mut state, vec![click(false)], 1);
             output = frames(&ctx, &catalog, &mut state, Vec::new(), 4);
             let slug = tab.to_ascii_lowercase().replace(' ', "-");
-            crate::app::tests::capture::write(&ctx, &output, &format!("inspector-weapon-{slug}"));
+            crate::test_support::capture::write(&ctx, &output, &format!("inspector-weapon-{slug}"));
         }
     }
 }
@@ -71,7 +69,7 @@ fn capture_search(ctx: &egui::Context, catalog: &Catalog, hash: u64) {
     frames(ctx, catalog, &mut state, Vec::new(), 2);
     state.go_home();
     let output = frames(ctx, catalog, &mut state, Vec::new(), 4);
-    crate::app::tests::capture::write(ctx, &output, "inspector-home");
+    crate::test_support::capture::write(ctx, &output, "inspector-home");
     for shelf in crate::catalog::Shelf::ALL {
         state.browse.tab = super::state::BrowseTab::Shelf(shelf);
         let output = with_icons(ctx, catalog, &mut state);
@@ -80,13 +78,13 @@ fn capture_search(ctx: &egui::Context, catalog: &Catalog, hash: u64) {
             .to_ascii_lowercase()
             .replace(" & ", "-")
             .replace(' ', "-");
-        crate::app::tests::capture::write(ctx, &output, &format!("inspector-home-{slug}"));
+        crate::test_support::capture::write(ctx, &output, &format!("inspector-home-{slug}"));
     }
     state.browse.tab = super::state::BrowseTab::default();
     capture_card_tooltip_and_menu(ctx, catalog, &mut state);
     frames(ctx, catalog, &mut state, typed(), 1);
     let output = with_icons(ctx, catalog, &mut state);
-    crate::app::tests::capture::write(ctx, &output, "inspector-home-search");
+    crate::test_support::capture::write(ctx, &output, "inspector-home-search");
 
     let mut state = HashInspectionState::default();
     state.open(hash);
@@ -95,7 +93,7 @@ fn capture_search(ctx: &egui::Context, catalog: &Catalog, hash: u64) {
     frames(ctx, catalog, &mut state, Vec::new(), 2);
     frames(ctx, catalog, &mut state, typed(), 1);
     let output = with_icons(ctx, catalog, &mut state);
-    crate::app::tests::capture::write(ctx, &output, "inspector-toolbar-search");
+    crate::test_support::capture::write(ctx, &output, "inspector-toolbar-search");
     state.close();
     frames(ctx, catalog, &mut state, Vec::new(), 1);
 }
@@ -118,7 +116,7 @@ fn capture_card_tooltip_and_menu(
         1,
     );
     let output = with_icons(ctx, catalog, state);
-    crate::app::tests::capture::write(ctx, &output, "inspector-home-tooltip");
+    crate::test_support::capture::write(ctx, &output, "inspector-home-tooltip");
     let click = |pressed| egui::Event::PointerButton {
         pos: card,
         button: egui::PointerButton::Secondary,
@@ -128,7 +126,7 @@ fn capture_card_tooltip_and_menu(
     frames(ctx, catalog, state, vec![click(true)], 1);
     frames(ctx, catalog, state, vec![click(false)], 1);
     let output = frames(ctx, catalog, state, Vec::new(), 4);
-    crate::app::tests::capture::write(ctx, &output, "inspector-home-menu");
+    crate::test_support::capture::write(ctx, &output, "inspector-home-menu");
     // A click on the empty toolbar closes the menu. Escape would close the window.
     let away = egui::pos2(900.0, filter.y - 70.0);
     let press = |pressed| egui::Event::PointerButton {
@@ -157,7 +155,7 @@ fn frames(
     let mut output = egui::FullOutput::default();
     let mut events = Some(events);
     for _ in 0..count {
-        output = ctx.run(
+        output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -166,12 +164,12 @@ fn frames(
                 events: events.take().unwrap_or_default(),
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |_| {});
-                draw_catalog_hash_window(ctx, catalog, None, false, state, "capture");
+            |ui| {
+                egui::CentralPanel::default().show(ui, |_| {});
+                draw_catalog_hash_window(ui, catalog, None, false, state, "capture");
             },
         );
-        crate::app::tests::capture::record(&output);
+        crate::test_support::capture::record(&output);
     }
     output
 }

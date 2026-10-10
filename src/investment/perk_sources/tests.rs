@@ -87,9 +87,9 @@ fn provenance_includes_optional_plugs_without_claiming_default_usage() {
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_INSTALL; verifies installed masterwork aliases"]
+#[ignore = "requires SUNDIAL_INSTALL; verifies installed masterwork aliases"]
 fn installed_masterwork_sources_do_not_become_thorn_identity() {
-    let install = std::path::PathBuf::from(std::env::var_os("SUNDIAL_TEST_INSTALL").unwrap());
+    let install = crate::test_support::install();
     let catalog = crate::test_support::catalog(&install).unwrap();
     let sources = catalog.perk_sources();
     assert_eq!(sources.label(453), "Shared Effect 453");

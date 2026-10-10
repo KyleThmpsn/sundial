@@ -8,7 +8,7 @@ fn disconnected_workers_settle_pending_icons_without_discarding_completed_images
     sender
         .send(Loaded::Icon(
             1,
-            Ok(egui::ColorImage::new([1, 1], egui::Color32::WHITE)),
+            Ok(egui::ColorImage::filled([1, 1], egui::Color32::WHITE)),
         ))
         .unwrap();
     drop(sender);

@@ -120,7 +120,7 @@ fn embedded_category_predicate_oracle() -> Result<()> {
         "source_spans":fragment.source_spans,"source_references":fragment.source_references,
         "group_aliases":fragment.group_aliases,
         "native_runtime_evaluation_verified":false,
-        "sha256":format!("{:x}",Sha256::digest(&owner.0))}))?,
+        "sha256":hex::encode(Sha256::digest(&owner.0))}))?,
     )?;
     Ok(())
 }

@@ -25,7 +25,7 @@ impl Workbench {
             .map(InvestmentCatalog::perk_stat_choices)
             .unwrap_or_default();
         stats.sort_by_cached_key(|stat| stat.name.to_lowercase());
-        let mut table = crate::app::stat_editor::table::Table::new(ui, false, false);
+        let mut table = crate::app::stat_editor::table::Table::new(ui);
         table.name = table.name.min(200.0);
         let mut remove = None;
         if !recipe.stats.is_empty() {
@@ -42,8 +42,7 @@ impl Workbench {
                         ui,
                         table.name,
                         egui::Label::new(&name).truncate().halign(egui::Align::LEFT),
-                    )
-                    .on_hover_text(&name);
+                    );
                     // A perk stores a delta, not a weapon's absolute value. Do not apply
                     // the weapon display curve or its range to a negative bonus.
                     let response = table.value(ui, &mut stat.value, None, true);
@@ -60,7 +59,7 @@ impl Workbench {
                                 .clicked()
                             {
                                 stat.value = original.value;
-                                ui.close_menu();
+                                ui.close();
                             }
                         });
                     }

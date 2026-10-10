@@ -28,7 +28,10 @@ pub const OPERATION_MULTIPLY: i64 = 1;
 pub const MAGAZINE_COMPONENT: i64 = 1;
 /// The component interface of the weapon's barrel.
 pub const BARREL_COMPONENT: i64 = 2;
-/// Barrel inputs that set how many rounds one pull of the trigger fires.
+/// The Abilities interface, the one component whose records read the ability slot.
+pub const ABILITIES_COMPONENT: i64 = 9;
+/// Barrel inputs that set rounds in a burst sequence. Simultaneous pellets are stored in
+/// the Barrel's spread pattern separately from these numeric inputs.
 pub const BARREL_ROUNDS_PER_BURST: [i64; 4] = [22, 23, 24, 25];
 /// Barrel inputs that set how quickly the weapon fires: Rate of Fire 1 to 4 in shots per second,
 /// then Time Between Shots 1 and 2 in seconds.
@@ -65,7 +68,7 @@ pub fn field_meaning(schema: u32, offset: u32) -> Option<FieldMeaning> {
             ],
         ),
         INPUT_OFFSET => (
-            "Numeric input within the selected component.\nHealth and Shields: 0 = Shield Capacity, 1 = Shield Regeneration Delay, 2 = Shield Regeneration Duration, 3 = Health Capacity, 4 = Health Regeneration Delay, 5 = Health Regeneration Duration. Delays and durations are in seconds before player scaling. Halving a positive duration doubles the regeneration rate. A final duration at or below 0.0001 stops that update.\nAbilities: input 0 participates in recharge and input 4 controls the activation lockout.\nOther components have different input tables. Player Stats and Weapon Stats consume both bytes, while other mapped categories consume the low byte. Do not transfer input names between components.",
+            "Numeric input within the selected component.\nBarrel: Rounds per Burst changes the number of successive rounds. Spread changes the pattern's width. Pellets fired together in one shot are controlled by the barrel's spread pattern, separately from these inputs.\nHealth and Shields: 0 = Shield Capacity, 1 = Shield Regeneration Delay, 2 = Shield Regeneration Duration, 3 = Health Capacity, 4 = Health Regeneration Delay, 5 = Health Regeneration Duration. Delays and durations are in seconds before player scaling. Halving a positive duration doubles the regeneration rate. A final duration at or below 0.0001 stops that update.\nAbilities: input 0 participates in recharge, input 1 in activation cost, input 2 in active energy usage and input 4 controls the activation lockout. Input 6 scales targeting only on a compatible melee or selected-profile controller. It is a factor, not a distance or a universal ability input.\nOther components have different input tables. Player Stats and Weapon Stats consume both bytes, while other mapped categories consume the low byte. Do not transfer input names between components.",
             &[],
         ),
         // CA2830's exact dispatch table resolves these interfaces. Unknown
@@ -86,7 +89,8 @@ pub fn field_meaning(schema: u32, offset: u32) -> Option<FieldMeaning> {
                 (6, "Health and Shields"),
                 (9, "Abilities"),
                 // CA2830 resolves interface 44413. Its 43CC binding uses four numeric inputs.
-                // EF8797 and F0A60D read input 3 when scaling melee targeting reach.
+                // EF8797 reads input 3 to scale the melee target search, and F0A60D and F0A74B
+                // to scale the lunge ranges.
                 (11, "Melee"),
                 (13, "Player Stats"),
                 (14, "Weapon Stats"),
@@ -189,7 +193,11 @@ pub fn unread(schema: u32, offset: u32, value: i64) -> bool {
 /// - Flinch and Flinch 2 fall under No Distractions and Perk 521 ("reduces flinch").
 /// - Target Acquisition by Hip-Fire Grip ("precision hit targeting") and Gift of the Traveler.
 ///
-/// Reload: Drop Mag, Field Prep and Rapid-Fire Frame shorten all three Reload Times.
+/// Reload: the reload state takes its seconds from Reload Time while rounds remain and from
+/// Empty Reload Time when the magazine is empty (D00B46 to D00B5D read source +0x110 or +0x140).
+/// A decoded zero falls back to the caller's duration (D00B66), so zero is not an instant
+/// reload. What Reload Time 2 holds is not established. Drop Mag, Field Prep and Rapid-Fire
+/// Frame shorten all three.
 /// Charge: Charge Time by Backup Plan and Conserve Momentum ("charge time") and Archer's Tempo
 /// ("draw time"). Hold Time and Hold Time 2 by Sneak Bow ("increases hold time") and Adamantine
 /// Brace ("charges can be held indefinitely").
@@ -199,7 +207,10 @@ pub fn unread(schema: u32, offset: u32, value: i64) -> bool {
 /// Speeds.
 ///
 /// Player Stats: Mobility by Traction and Killing Wind ("increased mobility"), Lightweight
-/// Frame and MIDA Multi-Tool. Recovery by Last Stand ("greatly increased recovery").
+/// Frame and MIDA Multi-Tool. Recovery by Last Stand ("greatly increased recovery"). The native
+/// investment selector and the stock stat definitions name inputs 0 to 2 Resilience, Mobility
+/// and Recovery. Each is a stat's points before its tier table, which reads (points + 30) / 10
+/// into one of 17 tiers, so 10 points is a tier. Burning Maul adds 40 Resilience.
 ///
 /// Magazine: Magazine Size and Magazine Size 2 move together under Payday ("large mag"),
 /// Adaptive Frame, Rat Pack and Harsh Truths, and the Magazine stat sets both. Inventory Size
@@ -293,9 +304,9 @@ pub fn input_choices(component: i64) -> &'static [(i64, &'static str)] {
             (72, "Target Acquisition"),
         ],
         3 => &[
-            (0, "Reload Time"),
-            (1, "Reload Time 2"),
-            (2, "Reload Time 3"),
+            (0, "Reload Time 2"),
+            (1, "Reload Time"),
+            (2, "Empty Reload Time"),
         ],
         4 => &[(0, "Charge Time"), (1, "Hold Time"), (2, "Hold Time 2")],
         5 => &[
@@ -315,9 +326,16 @@ pub fn input_choices(component: i64) -> &'static [(i64, &'static str)] {
             (4, "Health Regeneration Delay"),
             (5, "Health Regeneration Duration"),
         ],
-        9 => &[(0, "Recharge"), (4, "Activation Lockout")],
+        // Input 2 is the source the active energy spending sites read (B94D06, B94F85, B95BD1
+        // and B99560 in the archived 86657 image, at ability runtime +0x90). Stock Super parts
+        // such as Fists of Havoc and Hammer of Sol scale it.
+        9 => &[
+            (0, "Recharge"),
+            (2, "Energy Usage"),
+            (4, "Activation Lockout"),
+        ],
         11 => &[(3, "Melee Reach")],
-        13 => &[(1, "Mobility"), (2, "Recovery")],
+        13 => &[(0, "Resilience"), (1, "Mobility"), (2, "Recovery")],
         14 => &[
             (0, "Rounds Per Minute"),
             (1, "Magazine"),
@@ -336,6 +354,25 @@ pub fn input_choices(component: i64) -> &'static [(i64, &'static str)] {
             (18, "Recoil Direction"),
         ],
         _ => &[],
+    }
+}
+
+/// What a modifier of `component`'s `input` changes, where its name alone does not say.
+#[must_use]
+pub const fn input_hint(component: i64, input: i64) -> Option<&'static str> {
+    match (component, input) {
+        (2, 22..=25) => Some(
+            "Successive rounds in a burst. Pellets fired together are set separately by the barrel.",
+        ),
+        (2, 39) => {
+            Some("Width of the shot pattern. The number of pellets fired together stays the same.")
+        }
+        (3, 1) => Some("Reload with rounds remaining"),
+        (3, 2) => Some("Reload with an empty magazine"),
+        // EF8797 scales the melee target search with it, and F0A60D and F0A74B the lunge.
+        (11, 3) => Some("Scales melee target search and lunge"),
+        (13, 0..=2) => Some("Stat points, 10 per tier"),
+        _ => None,
     }
 }
 

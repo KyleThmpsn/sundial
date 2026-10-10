@@ -27,10 +27,10 @@ pub(super) fn game_font(ui: &egui::Ui, face: GameFace, size: f32) -> egui::FontI
     let family = match face {
         GameFace::Text => egui::FontFamily::Name(GAME_TEXT_FONT_FAMILY.into()),
         GameFace::Figure => egui::FontFamily::Name(GAME_FIGURE_FONT_FAMILY.into()),
-        GameFace::Title => return crate::ui_help::emphasized_font(ui, size),
+        GameFace::Title => return crate::ui::help::emphasized_font(ui, size),
         GameFace::Symbol => destiny_text_font_family(),
     };
-    if ui.fonts(|fonts| fonts.families().contains(&family)) {
+    if ui.fonts_mut(|fonts| fonts.families().contains(&family)) {
         egui::FontId::new(size, family)
     } else {
         egui::FontId::proportional(size)
@@ -53,7 +53,9 @@ pub(super) fn game_face_em(ctx: &egui::Context, face: GameFace) -> f32 {
 pub(super) fn record_game_face(ctx: &egui::Context, face: GameFace, bytes: Option<&[u8]>) {
     let id = game_face_id(face);
     match bytes.and_then(face_em_per_height) {
-        Some(em) => ctx.data_mut(|data| data.insert_temp(id, em)),
+        Some(em) => ctx.data_mut(|data| {
+            data.insert_temp(id, em);
+        }),
         None => ctx.data_mut(|data| data.remove::<f32>(id)),
     }
 }
@@ -101,7 +103,7 @@ pub(super) fn field_label(ui: &mut egui::Ui, text: &str, width: f32) -> egui::Re
         egui::Layout::right_to_left(egui::Align::Center),
         |ui| {
             ui.set_min_width(width);
-            ui.label(crate::ui_help::emphasized_text(ui, text))
+            ui.label(crate::ui::help::emphasized_text(ui, text))
         },
     )
     .inner
@@ -111,8 +113,21 @@ pub(super) fn secondary_text_color(ui: &egui::Ui) -> egui::Color32 {
     egui::Color32::from_gray(if ui.visuals().dark_mode { 175 } else { 100 })
 }
 
-pub(super) fn configure_contrast(ctx: &egui::Context) {
+/// The text sizes, animation timing and status colors Sundial has always drawn with. egui 0.33
+/// raised its default text sizes and 0.35 slowed its animations, so these are pinned here rather
+/// than inherited, which also keeps every headless layout test where it was.
+pub(super) fn configure_style(ctx: &egui::Context) {
     ctx.all_styles_mut(|style| {
+        style
+            .text_styles
+            .insert(egui::TextStyle::Body, egui::FontId::proportional(12.5));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Button, egui::FontId::proportional(12.5));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Monospace, egui::FontId::monospace(12.0));
+        style.animation_time = 1.0 / 12.0;
         if style.visuals.dark_mode {
             style.visuals.override_text_color = Some(egui::Color32::from_gray(240));
             style.visuals.error_fg_color = egui::Color32::from_rgb(255, 128, 128);
@@ -144,7 +159,7 @@ pub(super) fn destiny_text_font_family() -> egui::FontFamily {
 
 pub(super) fn destiny_font_id(ui: &egui::Ui, mut font_id: egui::FontId) -> egui::FontId {
     let family = destiny_text_font_family();
-    if ui.fonts(|fonts| fonts.families().contains(&family)) {
+    if ui.fonts_mut(|fonts| fonts.families().contains(&family)) {
         font_id.family = family;
     }
     font_id
@@ -167,7 +182,7 @@ pub(super) fn edit_modal<R>(
     id: &'static str,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> (R, bool) {
-    let available = ui.ctx().available_rect().size();
+    let available = ui.ctx().content_rect().size();
     let response = egui::Modal::new(id.into()).show(ui.ctx(), |ui| {
         ui.set_width((available.x - 48.0).clamp(240.0, 560.0));
         // A preparation message can be much shorter than the subsequent review.
@@ -441,7 +456,7 @@ pub(super) fn single_line_galley(
     job.wrap.max_width = max_width;
     job.wrap.max_rows = 1;
     job.wrap.break_anywhere = true;
-    ui.fonts(|fonts| fonts.layout_job(job))
+    ui.fonts_mut(|fonts| fonts.layout_job(job))
 }
 
 #[cfg(test)]
@@ -463,11 +478,11 @@ mod contrast_tests {
     #[test]
     fn guidance_and_status_colors_remain_readable_after_theme_changes() {
         let ctx = egui::Context::default();
-        configure_contrast(&ctx);
+        configure_style(&ctx);
         for theme in [egui::Theme::Dark, egui::Theme::Light, egui::Theme::Dark] {
             ctx.set_theme(theme);
-            let _ = ctx.run(egui::RawInput::default(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     let visuals = ui.visuals();
                     for foreground in [
                         secondary_text_color(ui),

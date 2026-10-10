@@ -106,7 +106,7 @@ impl RuntimeSnapshot {
         Self {
             brand,
             module_path,
-            dll_sha256: format!("{:x}", Sha256::digest(bytes)),
+            dll_sha256: hex::encode(Sha256::digest(bytes)),
         }
     }
 
@@ -196,7 +196,7 @@ pub(crate) fn verify_installed_runtime(
             module_path.display()
         )
     })?;
-    let digest = format!("{:x}", Sha256::digest(bytes));
+    let digest = hex::encode(Sha256::digest(bytes));
     if digest != expected.dll_sha256 {
         return Err(format!(
             "The installed {} runtime DLL changed after it was selected: {}",
@@ -502,7 +502,7 @@ mod linux {
     }
 
     fn prepare_runtime(install: &Path) -> Result<PathBuf, String> {
-        let runtime = crate::paths::cache_dir()
+        let runtime = crate::system::paths::cache_dir()
             .ok_or("Could not locate Sundial's Linux cache folder")?
             .join("runtime")
             .join("linoodle3-0167cfd2");
@@ -515,9 +515,10 @@ mod linux {
 
         let library = runtime.join(LINOODLE_FILE_NAME);
         if !file_has_expected_hash(&library) {
-            let bytes = crate::http::get(LINOODLE_URL, LINOODLE_MAX_BYTES).map_err(|error| {
-                format!("Could not download Linux Shadowkeep package support: {error}")
-            })?;
+            let bytes =
+                crate::system::http::get(LINOODLE_URL, LINOODLE_MAX_BYTES).map_err(|error| {
+                    format!("Could not download Linux Shadowkeep package support: {error}")
+                })?;
             if !bytes_have_expected_hash(&bytes) {
                 return Err(
                     "The downloaded Linux package-support library failed its SHA-256 verification"

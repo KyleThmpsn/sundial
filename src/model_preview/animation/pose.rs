@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Transform {
+pub(in crate::model_preview) struct Transform {
     pub rotation: [f32; 4],
     pub translation: [f32; 3],
     pub scale: f32,

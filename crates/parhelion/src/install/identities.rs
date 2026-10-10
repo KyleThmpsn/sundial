@@ -313,9 +313,7 @@ mod tests {
     #[test]
     #[ignore = "requires an installed native package set; read-only"]
     fn native_account_cleanup_review_is_read_only() {
-        let path = PathBuf::from(
-            std::env::var("PARHELION_UNINSTALL_REVIEW_PACKAGES").expect("set native packages path"),
-        );
+        let path = crate::test_support::install().join("packages");
         let before = preview_uninstall(&path).unwrap();
         let plan = preview_uninstall_with_account_cleanup(&path).unwrap();
         let cleanup = plan.account_cleanup().unwrap_or_else(|| {

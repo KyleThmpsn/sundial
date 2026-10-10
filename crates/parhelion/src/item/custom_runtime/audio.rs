@@ -1,17 +1,17 @@
 //! Author modern PCM media into private Dawn Wwise banks and runtime sound
 //! components. Current imports retain source bank routing, actions and variation
 //! weights. Earlier graphs retain their explicitly recorded native bank fallback.
+use super::imports::Inputs;
 use super::*;
 use crate::shared_tag_dependency_index::{
     dependency_entries,
     scoped::{LoadingOwner, clone_scoped_dependencies},
 };
-use parhelion_import::{GraphReference, d2_mot::payload::Payload};
+use parhelion_import::d2_mot::payload::Payload;
 use serde_json::Value;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs,
-};
+use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+use std::fs;
 
 const OWNER_CLASS: u32 = 0x8080_9C36;
 const PARENT_CLASS: u32 = 0x8080_744A;
@@ -110,11 +110,8 @@ fn fnv1(name: &str) -> u32 {
         })
 }
 
-pub(in crate::item) fn load(graph: &GraphReference) -> AuthoringResult<Option<ImportedAudio>> {
-    let bytes = fs::read(graph.directory.join("asset-graph.json"))
-        .map_err(|error| invalid(format!("Imported audio graph: {error}")))?;
-    let graph_value: Value = serde_json::from_slice(&bytes)
-        .map_err(|error| invalid(format!("Imported audio graph: {error}")))?;
+pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedAudio>> {
+    let graph_value = graph.value();
     let audio = &graph_value["audio"];
     if !matches!(audio["authoring_schema"].as_u64(), Some(1..=3)) {
         return Ok(None);
@@ -188,7 +185,8 @@ pub(in crate::item) fn load(graph: &GraphReference) -> AuthoringResult<Option<Im
         {
             return Err(invalid("Converted bank escapes its graph"));
         }
-        let bytes = fs::read(graph.directory.join(path))
+        let bytes = graph
+            .read(path)
             .map_err(|error| invalid(format!("Converted bank {name}: {error}")))?;
         let bank = serde_json::from_slice(&bytes)
             .map_err(|error| invalid(format!("Converted bank {name}: {error}")))?;
@@ -254,7 +252,8 @@ pub(in crate::item) fn load(graph: &GraphReference) -> AuthoringResult<Option<Im
         {
             return Err(invalid("Converted audio file escapes its graph"));
         }
-        let bytes = fs::read(graph.directory.join(path))
+        let bytes = graph
+            .read(path)
             .map_err(|error| invalid(format!("Converted audio {name}: {error}")))?;
         let bytes = parhelion_import::d2_mot::normalize_pcm_wem(&bytes)
             .map_err(|error| invalid(format!("Converted audio {name}: {error:#}")))?;

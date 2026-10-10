@@ -28,7 +28,7 @@ pub(crate) enum Action {
 
 pub(crate) fn draw(
     ui: &mut egui::Ui,
-    id: impl std::hash::Hash,
+    id: impl std::hash::Hash + std::fmt::Debug,
     source: &Value,
     fields: &[Field],
     removable: bool,

@@ -26,6 +26,19 @@ impl WeaponDamageType {
             Self::Void => "Void",
         }
     }
+
+    /// The type the native damage enum `code` names: 0 Kinetic, 1 Solar, 2 Arc, 3 Void.
+    #[must_use]
+    pub const fn from_native(code: u8) -> Option<Self> {
+        use crate::ability::damage::{ARC, KINETIC, SOLAR, VOID};
+        match code {
+            KINETIC => Some(Self::Kinetic),
+            SOLAR => Some(Self::Solar),
+            ARC => Some(Self::Arc),
+            VOID => Some(Self::Void),
+            _ => None,
+        }
+    }
 }
 
 impl From<ItemDamageType> for WeaponDamageType {
@@ -55,7 +68,7 @@ impl WeaponDamageCarrierFamily {
     /// Returns the stock base-item sandbox-perk index for this carrier family and element.
     #[must_use]
     pub const fn base_sandbox_perk_index(self, damage_type: WeaponDamageType) -> Option<u16> {
-        use crate::investment_schema::{
+        use crate::investment::schema::{
             LEGACY_ARC_DAMAGE_PERK_INDEX, LEGACY_SOLAR_DAMAGE_PERK_INDEX,
             LEGACY_VOID_DAMAGE_PERK_INDEX, MODERN_ARC_DAMAGE_PERK_INDEX,
             MODERN_SOLAR_DAMAGE_PERK_INDEX, MODERN_VOID_DAMAGE_PERK_INDEX,
@@ -74,7 +87,7 @@ impl WeaponDamageCarrierFamily {
     /// Returns the stock default-plug item index for a type-68 carrier.
     #[must_use]
     pub const fn default_plug_item_index(self, damage_type: WeaponDamageType) -> Option<u16> {
-        use crate::investment_schema::{
+        use crate::investment::schema::{
             ARC_DAMAGE_PLUG_ITEM_INDEX, SOLAR_DAMAGE_PLUG_ITEM_INDEX, VOID_DAMAGE_PLUG_ITEM_INDEX,
         };
         if !matches!(self, Self::PlugDriven) {
@@ -255,6 +268,8 @@ pub struct SubclassSummary {
     /// What each entry's stock pool applies to abilities while it is selected: each key and
     /// the ability row it applies the key to.
     pub entry_modifiers: BTreeMap<u8, Vec<(u32, u8)>>,
+    /// The damage type its strings give it, whose icon it shows beside its name.
+    pub damage_type: Option<WeaponDamageType>,
 }
 
 /// One row of the ability tables as an ability modifier sees it: the ability's entity, the bank
@@ -524,6 +539,10 @@ pub struct WeaponSocketTypeChoice {
     pub socket_type: u16,
     pub label: String,
     pub compatible_plug_count: usize,
+    /// How many installed items of the base's type carry it.
+    pub carriers: usize,
+    /// The plug it most often starts with on those items.
+    pub default_plug: Option<u32>,
 }
 
 impl WeaponSocketTypeChoice {

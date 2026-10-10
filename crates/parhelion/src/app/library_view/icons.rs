@@ -93,14 +93,11 @@ impl Icons {
             let _ = self.worker.take().unwrap().join();
         }
         // End the receiver borrow before inserting and evicting texture handles.
-        loop {
-            let Some((path, key, result)) = self
-                .receiver
-                .as_ref()
-                .and_then(|receiver| receiver.try_recv().ok())
-            else {
-                break;
-            };
+        while let Some((path, key, result)) = self
+            .receiver
+            .as_ref()
+            .and_then(|receiver| receiver.try_recv().ok())
+        {
             if self.pending.remove(&path).as_ref() == Some(&key) {
                 self.insert(ctx, path, key, result);
             }
@@ -123,7 +120,10 @@ impl Icons {
         ctx: &egui::Context,
         packages: &Path,
         catalog: &InvestmentCatalog,
-        donors: &[WeaponDonorSummary],
+        (donors, subclasses): (
+            &[WeaponDonorSummary],
+            &[sundial::investment::SubclassSummary],
+        ),
         entries: &[RecipeLibraryEntry],
     ) {
         self.poll(ctx);
@@ -162,6 +162,7 @@ impl Icons {
                     rarity,
                     edit: entry.icon_edit.clone(),
                     plain: entry.kind == crate::ItemKind::Subclass,
+                    art: entry.art.as_ref().map(|art| art.request(subclasses)),
                 };
                 let cached = self.previews.get(&entry.path).map(|preview| match preview {
                     AuthoredIconPreview::Ready { key, .. }
@@ -188,11 +189,18 @@ impl Icons {
                     None => Ok(None),
                 };
                 let result = corner.and_then(|corner| {
+                    let manager = manager.as_ref().map_err(Clone::clone)?;
+                    let art = key
+                        .art
+                        .as_ref()
+                        .map(|art| art.draw(manager))
+                        .transpose()?
+                        .flatten();
                     crate::icon_edit::render_weapon_icon_preview_from_manager(
-                        manager.as_ref().map_err(Clone::clone)?,
+                        manager,
                         TagHash(key.container_tag),
                         key.rarity,
-                        &key.edit,
+                        &crate::icon_art::edited(key.art.as_ref(), &key.edit, art.as_ref()),
                         corner.as_ref(),
                         branding,
                         key.plain,

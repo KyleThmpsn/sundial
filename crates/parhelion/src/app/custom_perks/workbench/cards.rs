@@ -101,6 +101,10 @@ impl Card {
         ctx.data(|data| data.get_temp(self.id().with("structure")).unwrap_or(false))
     }
 
+    pub(super) fn set_structure(self, ctx: &egui::Context, open: bool) {
+        ctx.data_mut(|data| data.insert_temp(self.id().with("structure"), open));
+    }
+
     /// The effect menu's switch for the native structure.
     pub(super) fn structure_menu(self, ui: &mut egui::Ui) {
         let open = self.structure(ui.ctx());
@@ -110,10 +114,9 @@ impl Card {
             "Show Native Structure"
         };
         if ui.button(label).clicked() {
-            ui.ctx()
-                .data_mut(|data| data.insert_temp(self.id().with("structure"), !open));
+            self.set_structure(ui.ctx(), !open);
             self.set_expanded(ui.ctx(), true);
-            ui.close_menu();
+            ui.close();
         }
     }
 
@@ -135,7 +138,7 @@ impl Card {
                     effect: self.effect,
                     boundary,
                 });
-                ui.close_menu();
+                ui.close();
             }
         }
     }

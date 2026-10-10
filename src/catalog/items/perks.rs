@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use tiger_pkg::TagHash;
 
 use crate::{
-    investment_schema::{
+    investment::schema::{
         GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, ITEM_SANDBOX_PERK_DESCRIPTOR_OFFSET,
         ITEM_SANDBOX_PERK_ROW_CLASS, ITEM_SANDBOX_PERK_ROW_SIZE,
         ROOT_SANDBOX_PERK_INDEX_TABLE_SLOT, investment_globals_table_tag,
@@ -272,9 +272,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires SUNDIAL_TEST_INSTALL pointing to the supported Shadowkeep build"]
+    #[ignore = "requires SUNDIAL_INSTALL pointing to the supported Shadowkeep build"]
     fn supported_package_catalog_exposes_known_live_runtime_perk_rows() {
-        let install = PathBuf::from(std::env::var("SUNDIAL_TEST_INSTALL").unwrap());
+        let install = PathBuf::from(std::env::var("SUNDIAL_INSTALL").unwrap());
         let manager = package_runtime::open_shadowkeep_packages(&install).unwrap();
         let globals_tag =
             package_runtime::resolve_live_named_tag(&manager, "investment_globals", None).unwrap();

@@ -53,7 +53,7 @@ pub(crate) fn draw_picker_row_with_icon(
     icon: Option<crate::investment::IconOverride>,
 ) -> egui::Response {
     let title =
-        crate::ui_help::emphasized_font(ui, egui::TextStyle::Button.resolve(ui.style()).size);
+        crate::ui::help::emphasized_font(ui, egui::TextStyle::Button.resolve(ui.style()).size);
     draw_row(ui, catalog, row, icon, title)
 }
 
@@ -196,7 +196,7 @@ fn limited_line_galley(
     job.wrap.max_width = max_width;
     job.wrap.max_rows = max_rows.max(1);
     job.wrap.break_anywhere = true;
-    ui.fonts(|fonts| fonts.layout_job(job))
+    ui.fonts_mut(|fonts| fonts.layout_job(job))
 }
 
 pub(super) fn single_line_text(text: &str) -> String {
@@ -376,7 +376,7 @@ fn draw_tooltip_layout(
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 if let Some(name) = name {
-                    crate::ui_help::tooltip_title(ui, name);
+                    crate::ui::help::tooltip_title(ui, name);
                 }
                 details(ui);
             });

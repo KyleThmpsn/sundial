@@ -26,10 +26,10 @@ impl Selection {
         if response.drag_started() {
             self.anchor = response.interact_pointer_pos().map(|p| rect.clamp(p));
         }
-        if response.dragged() {
-            if let (Some(anchor), Some(pointer)) = (self.anchor, response.interact_pointer_pos()) {
-                *crop = selection(rect, anchor, rect.clamp(pointer));
-            }
+        if response.dragged()
+            && let (Some(anchor), Some(pointer)) = (self.anchor, response.interact_pointer_pos())
+        {
+            *crop = selection(rect, anchor, rect.clamp(pointer));
         }
         if response.drag_stopped() {
             self.anchor = None;
@@ -107,10 +107,10 @@ pub(super) fn controls(ui: &mut egui::Ui, crop: &mut [u16; 4], source: &image::R
     if ui.button("Reset Crop").clicked() {
         *crop = [0, 0, UNITS, UNITS];
     }
-    if ui.button("Trim Transparent Padding").clicked() {
-        if let Some(bounds) = alpha_bounds(source) {
-            *crop = bounds;
-        }
+    if ui.button("Trim Transparent Padding").clicked()
+        && let Some(bounds) = alpha_bounds(source)
+    {
+        *crop = bounds;
     }
 }
 

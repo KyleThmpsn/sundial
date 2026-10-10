@@ -1,12 +1,17 @@
 use super::*;
+mod owner;
+pub(super) use owner::{Owner, empty, finish, owners, specialized};
+
+mod cloth;
 
 pub(super) fn append(
     manager: &PackageManager,
     tag: u32,
     component: Option<&[u8]>,
-    inputs: &Result<Vec<[f32; 4]>, String>,
+    inputs: &Result<Vec<effects::ObjectInput>, String>,
     model: &mut Model,
-) -> Result<(), String> {
+    simulate_cloth: bool,
+) -> Result<Option<super::cloth::Pending>, String> {
     let vertices = model.vertices.len();
     let triangles = model.triangles.len();
     let textures = model.textures.len();
@@ -14,11 +19,29 @@ pub(super) fn append(
     let motions = model.motions.len();
     let result = (|| {
         let layouts = vertex::Layouts::read(manager)?;
-        append_stages(manager, tag, component, inputs, model, &layouts, false)?;
+        let mut pending = append_stages(
+            manager,
+            tag,
+            component,
+            inputs,
+            model,
+            &layouts,
+            false,
+            simulate_cloth,
+        )?;
         if model.triangles.len() == triangles {
-            append_stages(manager, tag, component, inputs, model, &layouts, true)?;
+            pending = append_stages(
+                manager,
+                tag,
+                component,
+                inputs,
+                model,
+                &layouts,
+                true,
+                simulate_cloth,
+            )?;
         }
-        Ok(())
+        Ok(pending)
     })();
     if result.is_err() {
         model.vertices.truncate(vertices);
@@ -100,23 +123,30 @@ fn detail_level(
     }
 }
 
+fn position_scale(bytes: &[u8]) -> Result<f32, String> {
+    let scale = f32::from_bits(u32_at(bytes, 0x6C)?);
+    if !scale.is_finite() || scale < 0.0 {
+        return Err("Invalid model position scale".into());
+    }
+    Ok(scale)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn append_stages(
     manager: &PackageManager,
     tag: u32,
     component: Option<&[u8]>,
-    inputs: &Result<Vec<[f32; 4]>, String>,
+    inputs: &Result<Vec<effects::ObjectInput>, String>,
     model: &mut Model,
     layouts: &vertex::Layouts,
     lenient: bool,
-) -> Result<(), String> {
+    simulate_cloth: bool,
+) -> Result<Option<super::cloth::Pending>, String> {
     let bytes = checked(manager, tag, MODEL)?;
-    let scale = f32::from_bits(u32_at(&bytes, 0x6C)?);
-    if !scale.is_finite() || scale < 0.0 {
-        return Err("Invalid model position scale".into());
-    }
+    let scale = position_scale(&bytes)?;
     // Marker-only companion models retain buffers but collapse every triangle in game.
     if scale == 0.0 {
-        return Ok(());
+        return Ok(None);
     }
     let scale = [scale; 3];
     let translation = vector(&bytes, 0x60)?;
@@ -127,9 +157,16 @@ fn append_stages(
         u32_at(&bytes, 0x7C)?,
     ]
     .map(f32::from_bits);
-    let parts = staged_parts(&bytes)?;
+    let (parts, mut pending) = cloth::select(
+        manager,
+        component,
+        &bytes,
+        staged_parts(&bytes)?,
+        simulate_cloth,
+        model,
+    )?;
     let Some(level) = detail_level(&parts, lenient, model)? else {
-        return Ok(());
+        return Ok(None);
     };
     let mut drawn = BTreeSet::new();
     let mut materials = std::collections::BTreeMap::new();
@@ -139,6 +176,7 @@ fn append_stages(
     let mut effects = std::collections::BTreeMap::new();
     let mut opaque_materials = std::collections::BTreeMap::new();
     let mut normal_materials = std::collections::BTreeMap::new();
+    let mut surface_materials = std::collections::BTreeMap::new();
     let mut loaded = std::collections::BTreeMap::new();
     let plate = optional_texture(
         component
@@ -209,6 +247,19 @@ fn append_stages(
         } else {
             None
         };
+        effect = effect.or_else(|| {
+            material
+                .as_ref()
+                .ok()
+                .filter(|_| matches!(stage, Some(0 | 1 | 2 | 6)))
+                .and_then(|&tag| {
+                    *surface_materials
+                        .entry((tag, bytes[part + 0x1A]))
+                        .or_insert_with(|| {
+                            surface(manager, tag, inputs, bytes[part + 0x1A], model_uv, model)
+                        })
+                })
+        });
         let dyed = bytes[part + 0x1A] < 6 && plate.is_some();
         if !drawn.insert((
             mesh,
@@ -252,7 +303,8 @@ fn append_stages(
         let gear = explicit_gear(
             manager,
             &material,
-            (stage == Some(0) && bytes[part + 0x1A] < 6)
+            model_uv,
+            (stage == Some(0) && bytes[part + 0x1A] < 6 && effect.is_none())
                 || (cutoff.is_some() && matches!(stage, Some(1 | 2 | 6))),
             &mut gear_materials,
             model,
@@ -340,13 +392,17 @@ fn append_stages(
                 attributes,
                 model,
             )?;
+            pending
+                .as_mut()
+                .map(|pending| pending.bind(read.0, &read.4))
+                .transpose()?;
             if let Some(mut motion) = motion {
                 motion.vertices = read.0..model.vertices.len();
                 model.motions.push(motion);
             }
             slot.insert(read);
         }
-        let (base, triangles, has_uv, native_detail) = &loaded[&key];
+        let (base, triangles, has_uv, native_detail, _) = &loaded[&key];
         let gear = gear.filter(|_| *has_uv);
         let map = bounded_map(gear.and_then(|g| g.map), triangles.len(), model);
         let passes = if map.is_some() { 6 } else { 1 };
@@ -391,13 +447,40 @@ fn append_stages(
             },
         );
     }
-    Ok(())
+    Ok(pending)
+}
+
+fn surface(
+    manager: &PackageManager,
+    tag: u32,
+    inputs: &Result<Vec<effects::ObjectInput>, String>,
+    dye: u8,
+    model_uv: [f32; 4],
+    model: &mut Model,
+) -> Option<usize> {
+    let decoded = match effects::native::load_surface(
+        manager,
+        tag,
+        inputs.as_ref().map(Vec::as_slice).map_err(String::as_str),
+        dye,
+        model_uv,
+        model,
+    ) {
+        Ok(material) => material?,
+        Err(error) => {
+            model.notices.push(format!("Surface material: {error}"));
+            return None;
+        }
+    };
+    let index = model.effects.len();
+    model.effects.push(decoded);
+    Some(index)
 }
 
 fn normal_material(
     manager: &PackageManager,
     key: Option<(u32, u8)>,
-    inputs: &Result<Vec<[f32; 4]>, String>,
+    inputs: &Result<Vec<effects::ObjectInput>, String>,
     materials: &mut std::collections::BTreeMap<(u32, u8), Option<usize>>,
     model: &mut Model,
 ) -> Option<usize> {
@@ -503,6 +586,7 @@ fn append_part(model: &mut Model, triangles: &[[u32; 3]], base: u32, passes: usi
 fn explicit_gear(
     manager: &PackageManager,
     material: &Result<u32, String>,
+    model_uv: [f32; 4],
     allowed: bool,
     cache: &mut std::collections::BTreeMap<u32, Option<texture::Gear>>,
     model: &mut Model,
@@ -513,7 +597,7 @@ fn explicit_gear(
     let &tag = material.as_ref().ok()?;
     *cache
         .entry(tag)
-        .or_insert_with(|| match texture::gear(manager, tag, model) {
+        .or_insert_with(|| match texture::gear(manager, tag, model_uv, model) {
             Ok(gear) => gear,
             Err(error) => {
                 model.notices.push(format!("Gear material: {error}"));
@@ -582,7 +666,7 @@ fn external_material(component: &[u8], variant: usize) -> Result<u32, String> {
     u32_at(component, rows + start * 4)
 }
 
-type MeshBuffers = (usize, Vec<[u32; 3]>, bool, bool);
+type MeshBuffers = (usize, Vec<[u32; 3]>, bool, bool, Vec<u32>);
 
 #[allow(clippy::too_many_arguments)]
 fn read_mesh(
@@ -676,7 +760,7 @@ fn read_mesh(
             model.notices.push(notice);
         }
     }
-    Ok((base, triangles, has_uv, native_detail))
+    Ok((base, triangles, has_uv, native_detail, selected))
 }
 
 fn vector(bytes: &[u8], offset: usize) -> Result<[f32; 3], String> {
@@ -722,7 +806,7 @@ pub(super) fn triangles(
         .collect::<Result<Vec<_>, _>>()?;
     let mut result = Vec::new();
     match primitive {
-        3 if count % 3 == 0 => {
+        3 if count.is_multiple_of(3) => {
             for row in indices.chunks_exact(3) {
                 result.push([row[0], row[1], row[2]]);
             }

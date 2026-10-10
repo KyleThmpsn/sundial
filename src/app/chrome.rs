@@ -2,17 +2,19 @@
 use super::account_workspace::AccountSourceKind;
 use super::background_tasks::CatalogTaskKind;
 use super::platform::load_logo_texture;
-use super::save_support::SaveAction;
+use super::saving::SaveAction;
 use super::{
     CREDITS_URL, ConfirmationDialog, DAWN_URL, MAIN_SIDEBAR_WIDTH, PROJECT_URL, PreferencesTab,
-    SUNRISE_URL, SundialApp, TIGER_PKG_URL, ViewMode, display_version, persistence_compatibility,
+    SUNRISE_URL, SundialApp, TIGER_PKG_URL, ViewMode, display_version, runtime_state,
 };
 use crate::updates::UpdateStatus;
 use eframe::egui;
 
 impl SundialApp {
-    pub(super) fn draw_app_chrome(&mut self, ctx: &egui::Context, available_update: Option<&str>) {
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+    pub(super) fn draw_app_chrome(&mut self, ui: &mut egui::Ui, available_update: Option<&str>) {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
+        egui::Panel::top("toolbar").show(ui, |ui| {
             if let Some(warning) = self.preferences_load_warning.clone() {
                 ui.horizontal_wrapped(|ui| {
                     ui.colored_label(ui.visuals().warn_fg_color, warning);
@@ -86,9 +88,9 @@ impl SundialApp {
             });
         });
 
-        self.draw_runtime_banner(ctx);
-        if self.persistence_compatibility.detected() {
-            egui::TopBottomPanel::top("persistence_compatibility_warning").show(ctx, |ui| {
+        self.draw_runtime_banner(ui);
+        if self.runtime_state.detected() {
+            egui::Panel::top("persistence_compatibility_warning").show(ui, |ui| {
                 egui::Frame::NONE
                     .fill(ui.visuals().warn_fg_color.gamma_multiply(0.12))
                     .inner_margin(egui::Margin::symmetric(8, 6))
@@ -99,16 +101,16 @@ impl SundialApp {
                                     .strong()
                                     .color(ui.visuals().warn_fg_color),
                             );
-                            ui.label(persistence_compatibility::WARNING_MESSAGE);
+                            ui.label(runtime_state::WARNING_MESSAGE);
                         });
                     });
             });
         }
 
-        egui::SidePanel::left("characters")
+        egui::Panel::left("characters")
             .resizable(false)
-            .exact_width(MAIN_SIDEBAR_WIDTH)
-            .show(ctx, |ui| {
+            .exact_size(MAIN_SIDEBAR_WIDTH)
+            .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 3.0;
                 for (view, label) in [
                     (ViewMode::Characters, "Characters & Loadouts"),
@@ -155,7 +157,7 @@ impl SundialApp {
                 }
             });
 
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+        egui::Panel::bottom("status").show(ui, |ui| {
             let color = if self.status_is_error {
                 ui.visuals().error_fg_color
             } else {
@@ -184,7 +186,7 @@ impl SundialApp {
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .on_hover_ui(|ui| {
                             ui.set_max_width(240.0);
-                            crate::ui_help::tooltip_title(ui, "Account Database");
+                            crate::ui::help::tooltip_title(ui, "Account Database");
                             ui.label(if account_source.kind == AccountSourceKind::Blocked {
                                 "Account editing is unavailable."
                             } else {
@@ -255,8 +257,7 @@ impl SundialApp {
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.add(
                         egui::Label::new(egui::RichText::new(&self.status).color(color)).truncate(),
-                    )
-                    .on_hover_text(&self.status);
+                    );
                 });
             });
         });
@@ -296,7 +297,7 @@ impl SundialApp {
                         UpdateStatus::Checking => {
                             ui.horizontal(|ui| {
                                 ui.spinner();
-                                ui.label("Checking for updates...");
+                                ui.label("Checking for updates…");
                             });
                         }
                         UpdateStatus::Current => {

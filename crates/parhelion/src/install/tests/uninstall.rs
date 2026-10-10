@@ -70,9 +70,9 @@ fn uninstall_rejects_running_game_stale_reviews_unsigned_targets_and_nested_back
 }
 
 #[test]
-#[ignore = "copies real packages into a disposable directory; requires PARHELION_UNINSTALL_TEST_PACKAGES and PARHELION_UNINSTALL_TEST_ITEM_HASH"]
+#[ignore = "copies real packages into a disposable directory; requires SUNDIAL_INSTALL and PARHELION_UNINSTALL_TEST_ITEM_HASH"]
 fn account_cleanup_and_package_removal_commit_or_rollback_together() {
-    let source = PathBuf::from(std::env::var_os("PARHELION_UNINSTALL_TEST_PACKAGES").unwrap());
+    let source = crate::test_support::install().join("packages");
     let hash = u32::from_str_radix(
         &std::env::var("PARHELION_UNINSTALL_TEST_ITEM_HASH").unwrap(),
         16,

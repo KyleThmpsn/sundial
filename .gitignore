@@ -25,6 +25,7 @@ Desktop.ini
 
 # Local agent guidance; not part of the shared repository.
 /AGENTS.md
+/.playwright-cli/
 
 # Local knowledge, research, implementation notes, and diagnostic examples.
 /knowledge/

@@ -7,6 +7,7 @@ pub(super) struct Location {
     pub effect: u16,
     pub action: Option<usize>,
     pub native: Option<sundial::package_authoring::sandbox_perk::program::NativeIssue>,
+    pub native_field: Option<program::native::problem::Target>,
 }
 
 #[derive(Clone)]
@@ -16,6 +17,24 @@ pub(super) struct Issue {
     /// Whether it keeps Apply to Weapon and the socket picker closed. A warning names a likely
     /// mistake the game still runs, so it is shown but never blocks.
     pub blocking: bool,
+}
+
+pub(super) fn located_check(
+    recipe: &PerkRecipe,
+    position: usize,
+    check: program::native::problem::Check,
+) -> Issue {
+    Issue {
+        message: format!("Effect {}: {}", position + 1, check.message),
+        location: Some(Location {
+            document: recipe.id.clone(),
+            effect: recipe.effects[position].source_perk_index,
+            action: None,
+            native: None,
+            native_field: Some(check.target),
+        }),
+        blocking: check.blocking,
+    }
 }
 
 impl Workbench {
@@ -90,6 +109,16 @@ impl Workbench {
                 blocking,
             };
         }
+        // Retain the exact field that produced this diagnostic, including a nested
+        // condition or a warning after an otherwise complete action.
+        for (position, effect) in recipe.effects.iter().enumerate() {
+            if let Some(check) = native_checks(effect.program.as_ref())
+                .into_iter()
+                .find(|check| check.blocking == blocking && check.message == message)
+            {
+                return located_check(recipe, position, check);
+            }
+        }
         for (position, effect) in recipe.effects.iter().enumerate() {
             let flagged = if blocking {
                 document.effects = vec![effect.clone()];
@@ -98,8 +127,6 @@ impl Workbench {
                         .discovery
                         .perk_issue(effect.source_perk_index)
                         .is_some()
-                    || counter_issue(effect.program.as_ref()).is_some()
-                    || choice_issue(effect.program.as_ref()).is_some()
             } else {
                 ending_issue(effect.program.as_ref()).is_some()
             };
@@ -146,6 +173,7 @@ impl Workbench {
                     effect: effect.source_perk_index,
                     action,
                     native,
+                    native_field: None,
                 }),
                 blocking,
             };
@@ -160,7 +188,10 @@ impl Workbench {
     pub(super) fn finish_reveal(&mut self, target: Option<Location>, response: &egui::Response) {
         if let Some(target) = target {
             let unhandled_action = self.reveal_action.take().is_some();
-            if target.native.is_none() && (target.action.is_none() || unhandled_action) {
+            if target.native.is_none()
+                && target.native_field.is_none()
+                && (target.action.is_none() || unhandled_action)
+            {
                 response.scroll_to_me(Some(egui::Align::Min));
             }
             self.reveal_problem = None;
@@ -222,7 +253,13 @@ pub(super) fn perk_warning(recipe: &PerkRecipe, runtime: &str) -> Option<String>
     recipe
         .effects
         .iter()
-        .find_map(|effect| ending_issue(effect.program.as_ref()))
+        .find_map(|effect| {
+            native_checks(effect.program.as_ref())
+                .into_iter()
+                .find(|check| !check.blocking)
+                .map(|check| check.message)
+                .or_else(|| ending_issue(effect.program.as_ref()))
+        })
         .or_else(|| {
             (recipe.effects.len() > SANDBOX_PERK_CAPACITY).then(|| {
                 format!(
@@ -258,45 +295,29 @@ pub(super) fn ending_issue(
     ))
 }
 
-/// A counter with no contributing conditions never moves, so its effect can never fire.
-/// The compiler accepts the bare node, since it is a valid node; the workbench is where it
-/// becomes a named problem, in the status bar and beside the counter itself. A counter counts
-/// the same way inside a requirement, a "while" check or an ending, so every one is checked.
-pub(super) fn counter_issue(
+/// All located native choices and warnings, including those behind an earlier warning.
+pub(super) fn native_checks(
     program: Option<&sundial::package_authoring::sandbox_perk::program::Program>,
-) -> Option<String> {
-    use sundial::package_authoring::sandbox_perk::{action, program::Trigger};
-    let program = program?;
-    let empty = if let Some(native) = &program.native {
-        let decoded = action::decode(&native.graph.emit().ok()?).ok()?;
-        decoded
-            .conditions()
-            .iter()
-            .any(|condition| condition.kind == 26 && condition.children.is_empty())
-    } else {
-        program.trigger == Trigger::Native
-            && program.native_trigger.as_ref().is_some_and(|node| {
-                node.kind == 26
-                    && action::decode_condition_node(&node.bytes)
-                        .is_ok_and(|condition| condition.children.is_empty())
-            })
+) -> Vec<program::native::problem::Check> {
+    let Some(program) = program else {
+        return Vec::new();
     };
-    empty.then(|| {
-        "The counter has nothing to count. Add a contributing condition such as a kill.".to_owned()
-    })
+    match &program.native {
+        Some(native) => super::program::native::problem::checks(&native.graph),
+        None => sundial::package_authoring::sandbox_perk::program::native_draft(program)
+            .map(|draft| super::program::native::problem::checks(&draft.graph))
+            .unwrap_or_default(),
+    }
 }
 
-/// A key, tag or selection a node still needs, which compiles but never acts in game.
+/// A required key or resource that still needs a choice. Empty selections only warn.
 pub(super) fn choice_issue(
     program: Option<&sundial::package_authoring::sandbox_perk::program::Program>,
 ) -> Option<String> {
-    let program = program?;
-    match &program.native {
-        Some(native) => super::program::native::unset_choice(&native.graph),
-        None => sundial::package_authoring::sandbox_perk::program::native_draft(program)
-            .ok()
-            .and_then(|draft| super::program::native::unset_choice(&draft.graph)),
-    }
+    native_checks(program)
+        .into_iter()
+        .find(|check| check.blocking)
+        .map(|check| check.message)
 }
 
 #[cfg(test)]

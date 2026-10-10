@@ -1,7 +1,7 @@
 //! Shadowkeep emblem metric categories, read from the metric presentation relationships.
 use crate::{
-    investment_localization::{LocalizedStringCache, resolve_string},
-    investment_schema::*,
+    investment::localization::{LocalizedStringCache, resolve_string},
+    investment::schema::*,
     package_payload::{native_array_at, u16_at, u32_at},
     package_runtime::{reader::PackageManager, resolve_live_named_tag},
 };

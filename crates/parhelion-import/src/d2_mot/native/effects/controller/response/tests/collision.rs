@@ -124,7 +124,7 @@ fn collision_value_selector_owner_oracle() -> Result<()> {
         output.join("report.json"),
         serde_json::to_vec_pretty(&json!({
         "source":"80CA5BA1","native_layout_control":"80FDAC4D","root":at,
-        "sha256":format!("{:x}",Sha256::digest(&native.owner.0)),"gates":native.gates,
+        "sha256":hex::encode(Sha256::digest(&native.owner.0)),"gates":native.gates,
         "reference_classes":native.reference_classes,"group_aliases":native.group_aliases,
         "native_runtime_evaluation_verified":false}))?,
     )?;

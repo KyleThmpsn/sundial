@@ -12,8 +12,20 @@ use sha2::{Digest, Sha256};
 /// The importer revision a new import records in its graph. Raise it with any change to what
 /// conversion writes. Raise [`MINIMUM_CONVERTER_REVISION`] to it as well when imports made before
 /// the change are unsafe or wrong to install, so Parhelion asks for those to be imported again.
-/// Revision 1 is the first recorded, after the reticle lens fix of 2026-10-05.
-pub const CONVERTER_REVISION: u32 = 1;
+/// Revision 1 is the first recorded, after the reticle lens fix of 2026-10-05. Revision 2 draws
+/// converted crosshair pieces with their own draw records, which gives glaives their shield meter.
+/// Revision 3 retains both operands of modern TFX multiply and add aliases.
+/// Revision 4 imports skinned float cloth and preserves four native vertex weights.
+/// Revision 5 translates supported cloth solvers and their component bindings.
+/// Revision 6 assembles supported source projectile controllers with explicit compatibility choices.
+/// Revision 7 coordinates oversized CPU particle programs with their consuming materials.
+/// Revision 8 preserves checked particle transform tables and private perk attachments.
+/// Revision 10 rebuilds private replication records for converted projectiles.
+/// Revision 11 binds transparent scene textures without depth constants and retains base emission
+/// for checked material expressions whose multiplier has no source binding.
+/// Revision 12 binds private vertex input registers to the final native model layout.
+/// Existing imports receive the same bounded repair during emission without repinning.
+pub const CONVERTER_REVISION: u32 = 12;
 /// Imports from an earlier revision need importing again. Imports made before revisions were
 /// recorded count as revision 0.
 pub const MINIMUM_CONVERTER_REVISION: u32 = 0;
@@ -123,6 +135,12 @@ impl GraphReference {
                     .flatten(),
             )
             .chain(graph["particles"]["nodes"].as_array().into_iter().flatten())
+            .chain(
+                graph["projectile"]["nodes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten(),
+            )
         {
             let file = media["file"].as_str().context("audio or particle file")?;
             let destination = output.join(file);
@@ -418,7 +436,17 @@ fn fingerprint(directory: &Path, item: Option<u32>) -> Result<String> {
         digest.update((payload.len() as u64).to_le_bytes());
         digest.update(payload);
     }
-    for node in graph["particles"]["nodes"].as_array().into_iter().flatten() {
+    for node in graph["particles"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(
+            graph["projectile"]["nodes"]
+                .as_array()
+                .into_iter()
+                .flatten(),
+        )
+    {
         let name = node["file"].as_str().context("particle payload file")?;
         let path = Path::new(name);
         ensure!(
@@ -453,7 +481,7 @@ fn fingerprint(directory: &Path, item: Option<u32>) -> Result<String> {
         digest.update((payload.len() as u64).to_le_bytes());
         digest.update(payload);
     }
-    Ok(format!("{:x}", digest.finalize()))
+    Ok(hex::encode(digest.finalize()))
 }
 
 fn validate_gear(graph: &Value, symbols: &BTreeSet<&str>) -> Result<()> {

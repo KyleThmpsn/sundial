@@ -1,4 +1,5 @@
 use super::*;
+mod fps;
 
 #[test]
 fn pending_audio_can_be_canceled_without_playing_a_late_result() {
@@ -25,7 +26,7 @@ fn pending_audio_can_be_canceled_without_playing_a_late_result() {
         }],
     });
     let frame = |preview: &mut Preview, events| {
-        let output = ctx.run(
+        let output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -34,11 +35,11 @@ fn pending_audio_can_be_canceled_without_playing_a_late_result() {
                 events,
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| preview.draw_assets(ui, &model));
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| preview.draw_assets(ui, &model));
             },
         );
-        crate::app::tests::capture::record(&output);
+        crate::test_support::capture::record(&output);
         output
     };
     let _ = frame(&mut preview, Vec::new());
@@ -53,7 +54,7 @@ fn pending_audio_can_be_canceled_without_playing_a_late_result() {
             _ => None,
         })
         .expect("pending clips need an available cancel action");
-    crate::app::tests::capture::write(&ctx, &output, "pending-audio-cancel");
+    crate::test_support::capture::write(&ctx, &output, "pending-audio-cancel");
     for pressed in [true, false] {
         let _ = frame(
             &mut preview,
@@ -172,7 +173,7 @@ fn package_generation_change_discards_the_previous_model_and_pending_result() {
 #[test]
 #[ignore = "requires installed Shadowkeep packages"]
 fn native_shader_playback_starts_and_pause_preserves_time() {
-    let packages = PathBuf::from(std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").unwrap());
+    let packages = crate::test_support::preview_packages();
     // A native UV-animation dye in all three channels isolates the playback UI.
     let appearance = Appearance {
         arrangement: 930,
@@ -201,8 +202,8 @@ fn native_shader_playback_starts_and_pause_preserves_time() {
     preview.seconds = 2.5;
     preview.last_tick = Some(std::time::Instant::now() - std::time::Duration::from_secs(5));
     let draw = |preview: &mut Preview| {
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| preview.draw(ui, "Shader Test"));
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| preview.draw(ui, "Shader Test"));
         });
     };
     draw(&mut preview);
@@ -286,15 +287,15 @@ fn switching_selection_discards_stale_geometry_without_starting_parallel_reads()
 }
 
 /// The viewer on Age-Old Bond, headless: captures of the loading and loaded screens under
-/// `PARHELION_UI_CAPTURE_DIR`, and under `SUNDIAL_PROBE_OUT` a textured frame of the model with
+/// `SUNDIAL_TEST_ARTIFACTS`, and under `SUNDIAL_TEST_ARTIFACTS` a textured frame of the model with
 /// the dye each slot resolved to. The weapon's cream body and its dark metal panels must both
 /// reach the frame: its hologram shell in the transparent stage, drawn opaque in the body's
 /// slot, once covered the panels and turned the whole gun cream.
 #[test]
-#[ignore = "requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_PROBE_OUT, and builds a catalog"]
+#[ignore = "requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_TEST_ARTIFACTS, and builds a catalog"]
 fn age_old_bond_viewer_draws_every_dye_slot() {
-    let packages = PathBuf::from(std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").unwrap());
-    let out = PathBuf::from(std::env::var_os("SUNDIAL_PROBE_OUT").unwrap());
+    let packages = crate::test_support::preview_packages();
+    let out = crate::test_support::artifact_dir("probes");
     std::fs::create_dir_all(&out).unwrap();
     let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     let loadout = catalog.preview_loadout(0x23DB_942F).expect("Age-Old Bond");
@@ -310,7 +311,7 @@ fn age_old_bond_viewer_draws_every_dye_slot() {
     };
     let ctx = egui::Context::default();
     let frame = |preview: &mut Preview, name: Option<&str>| {
-        let output = ctx.run(
+        let output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -318,16 +319,16 @@ fn age_old_bond_viewer_draws_every_dye_slot() {
                 )),
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    preview.sync(ctx, selection.clone());
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    preview.sync(ui, selection.clone());
                     preview.draw(ui, "Age-Old Bond");
                 });
             },
         );
-        crate::app::tests::capture::record(&output);
+        crate::test_support::capture::record(&output);
         if let Some(name) = name {
-            crate::app::tests::capture::write(&ctx, &output, name);
+            crate::test_support::capture::write(&ctx, &output, name);
         }
     };
     frame(&mut preview, Some("preview-loading"));

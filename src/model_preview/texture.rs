@@ -3,6 +3,7 @@ use super::*;
 pub(super) mod float;
 mod mip;
 pub(in crate::model_preview) use mip::Footprint;
+pub(in crate::model_preview) use mip::length as surface_length;
 mod gear;
 mod plate;
 const MAX_PIXELS: usize = 4096 * 4096;
@@ -48,6 +49,7 @@ impl AddressMode {
 pub(crate) struct Sampler {
     pub u: AddressMode,
     pub v: AddressMode,
+    pub w: AddressMode,
     pub border: [f32; 4],
     pub filter: Option<u32>,
     pub mip_bias: f32,
@@ -60,6 +62,7 @@ impl Default for Sampler {
         Self {
             u: AddressMode::Wrap,
             v: AddressMode::Wrap,
+            w: AddressMode::Wrap,
             border: [0.0; 4],
             filter: None,
             mip_bias: 0.0,
@@ -139,7 +142,7 @@ fn color_rank(format: u32, slot: u32) -> Option<u8> {
     }
 }
 
-/// The iridescence lookup from the render globals texture set (0x80806B99, slot 0x14).
+/// The iridescence lookup tag at byte offset 0x14 in render globals class 0x80806B99.
 pub(crate) fn iridescence(manager: &PackageManager) -> Option<Texture> {
     let (tag, _) = manager
         .get_all_by_reference(0x8080_6B99)
@@ -490,11 +493,19 @@ pub(super) fn material_samplers(manager: &PackageManager, material: u32) -> Vec<
     let Ok(bytes) = checked(manager, material, 0x8080_71E8) else {
         return Vec::new();
     };
-    let Ok((count, rows)) = array(&bytes, 0x308, 0x8080_73F3, 16, 8) else {
+    stage_samplers(manager, &bytes, 0x2C8)
+}
+
+pub(in crate::model_preview) fn stage_samplers(
+    manager: &PackageManager,
+    bytes: &[u8],
+    stage: usize,
+) -> Vec<Sampler> {
+    let Ok((count, rows)) = array(bytes, stage + 0x40, 0x8080_73F3, 16, 8) else {
         return Vec::new();
     };
     (0..count)
-        .map(|index| sampler(manager, u32_at(&bytes, rows + index * 16).ok()?))
+        .map(|index| sampler(manager, u32_at(bytes, rows + index * 16).ok()?))
         // A native resource table can retain unused non-sampler entries after the
         // shader's sampler prefix. Preserve its registers without compacting holes.
         // Material contracts still reject any sampled slot beyond this prefix.
@@ -529,6 +540,7 @@ fn sampler(manager: &PackageManager, tag: u32) -> Option<Sampler> {
     let mut sampler = Sampler {
         u: AddressMode::read(u32_at(&data, 4).ok()?)?,
         v: AddressMode::read(u32_at(&data, 8).ok()?)?,
+        w: AddressMode::read(u32_at(&data, 12).ok()?)?,
         border,
         filter: Some(filter),
         mip_bias: read(16)?,
@@ -595,23 +607,6 @@ impl Texture {
                 .as_ref()
                 .map_or(0, |levels| levels.iter().map(Self::memory).sum())
     }
-    pub(super) fn sample_ramp(&self, position: f32) -> [f32; 4] {
-        let width = self.size[0];
-        let x = (position.clamp(0.0, 1.0) * width as f32 - 0.5).clamp(0.0, (width - 1) as f32);
-        let left = x.floor() as usize;
-        let right = (left + 1).min(width - 1);
-        let blend = x - left as f32;
-        let pixel = |x: usize, channel: usize| {
-            self.linear.as_ref().map_or_else(
-                || self.rgba[x * 4 + channel] as f32,
-                |pixels| pixels[x][channel] * 255.0,
-            )
-        };
-        std::array::from_fn(|channel| {
-            pixel(left, channel) * (1.0 - blend) + pixel(right, channel) * blend
-        })
-    }
-
     #[cfg(test)]
     pub(super) fn sample(&self, uv: [f32; 2]) -> [f32; 3] {
         let rgba = self.sample_rgba(uv);
@@ -628,6 +623,7 @@ impl Texture {
                 lod: [0.0, f32::MAX],
                 u: AddressMode::Wrap,
                 v: AddressMode::Wrap,
+                w: AddressMode::Wrap,
                 border: [0.0; 4],
             },
         )
@@ -658,6 +654,7 @@ impl Texture {
                 lod: [0.0, f32::MAX],
                 u: AddressMode::Wrap,
                 v: AddressMode::Wrap,
+                w: AddressMode::Wrap,
                 border: [0.0; 4],
             },
             true,

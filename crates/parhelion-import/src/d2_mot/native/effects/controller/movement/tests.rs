@@ -225,7 +225,7 @@ fn records_of(p: &Payload) -> Vec<(usize, u32)> {
             let class = p.u32(at + 4).unwrap();
             if (0x8080_0000..0x8081_0000).contains(&class) {
                 let twin = p.u64(at + 8).unwrap() as usize;
-                if twin % 8 == 0
+                if twin.is_multiple_of(8)
                     && twin + 16 <= p.0.len()
                     && twin != at
                     && p.u32(twin).unwrap() == owner

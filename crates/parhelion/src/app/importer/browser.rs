@@ -415,7 +415,6 @@ impl PackageAuthoringApp {
                 .response;
             super::super::pickers::name_response(ui, &order, "Sort Order");
         });
-        ui.label(egui::RichText::new("Source Item Filters").small().weak());
         changed |= filters::draw(ui, browser, &self.importer.weapons);
         if changed || query_changed {
             browser.dirty = true;
@@ -709,10 +708,11 @@ mod tests {
                     unit: egui::MouseWheelUnit::Point,
                     delta: egui::vec2(0.0, -900.0),
                     modifiers: egui::Modifiers::default(),
+                    phase: egui::TouchPhase::Move,
                 });
             }
-            let output = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| app.draw_importer_contents(ui));
+            let output = ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| app.draw_importer_contents(ui));
             });
             names = output
                 .shapes

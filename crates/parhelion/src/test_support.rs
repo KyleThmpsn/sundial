@@ -1,7 +1,32 @@
 //! Helpers the tests share.
+/// The clean Shadowkeep `packages` directory the opt-in tests read, from `SUNDIAL_STOCK_PACKAGES`.
+pub(crate) fn stock_packages() -> PathBuf {
+    PathBuf::from(
+        std::env::var_os("SUNDIAL_STOCK_PACKAGES")
+            .expect("SUNDIAL_STOCK_PACKAGES must point to clean Shadowkeep packages"),
+    )
+}
+
+/// A Destiny 2 install root whose `packages` may hold authored content, from `SUNDIAL_INSTALL`.
+pub(crate) fn install() -> PathBuf {
+    PathBuf::from(
+        std::env::var_os("SUNDIAL_INSTALL").expect("SUNDIAL_INSTALL names a Destiny 2 install"),
+    )
+}
+
+/// This test's own folder under `SUNDIAL_TEST_ARTIFACTS`, or `None` when no artifact root is set.
+pub(crate) fn artifacts(name: &str) -> Option<PathBuf> {
+    std::env::var_os("SUNDIAL_TEST_ARTIFACTS").map(|root| PathBuf::from(root).join(name))
+}
+
+/// This test's own folder under `SUNDIAL_TEST_ARTIFACTS`, for tests that cannot run without one.
+pub(crate) fn artifact_dir(name: &str) -> PathBuf {
+    artifacts(name).expect("SUNDIAL_TEST_ARTIFACTS names the artifact root")
+}
+
 use std::{
     hash::{Hash, Hasher},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 pub(crate) mod driver;
@@ -68,7 +93,7 @@ pub(crate) fn donor_summary(hash: u32, name: &str, type_name: &str) -> WeaponDon
 
 /// Optional receipts from filesystem and worker workflows, alongside the UI captures.
 pub(crate) fn artifact(name: &str, value: &impl serde::Serialize) {
-    let Some(directory) = std::env::var_os("PARHELION_TEST_ARTIFACTS") else {
+    let Some(directory) = std::env::var_os("SUNDIAL_TEST_ARTIFACTS") else {
         return;
     };
     let directory = std::path::PathBuf::from(directory);

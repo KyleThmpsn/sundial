@@ -593,7 +593,27 @@ pub(super) fn decode_owner_roots(
     Ok(roots)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// One owner payload walked for runtime fields: the record it starts from, where its fields anchor
+/// and the schema registry they resolve through.
+struct RuntimeWalk<'a> {
+    owner_payload: &'a [u8],
+    root: OwnerRootDescriptor,
+    root_size: usize,
+    anchor_binding_hash: u32,
+    anchor_resource_index: u16,
+    registry: &'a RuntimeRegistry,
+}
+
+/// One value met on the walk: where it sits, what the schema says it is and how it was reached.
+struct RuntimeNode {
+    absolute: usize,
+    type_handle: u32,
+    generated_kind: Option<u8>,
+    path: Vec<WeaponRuntimePathElement>,
+    labels: Vec<String>,
+    source: WeaponRuntimeFieldSource,
+}
+
 pub(super) fn decode_generated_root_fields(
     schema_payload: &[u8],
     owner_payload: &[u8],
@@ -604,6 +624,14 @@ pub(super) fn decode_generated_root_fields(
     registry: &RuntimeRegistry,
 ) -> Result<Vec<WeaponRuntimeField>, String> {
     let generated = generated_schema_fields(schema_payload, root_size, registry)?;
+    let walk = RuntimeWalk {
+        owner_payload,
+        root,
+        root_size,
+        anchor_binding_hash,
+        anchor_resource_index,
+        registry,
+    };
     let mut fields = Vec::new();
     for field in generated {
         let path = vec![WeaponRuntimePathElement {
@@ -616,23 +644,15 @@ pub(super) fn decode_generated_root_fields(
             .target
             .checked_add(field.value_offset as usize)
             .ok_or("Generated runtime field offset overflowed")?;
-        flatten_runtime_type(
-            owner_payload,
-            root,
-            root_size,
+        let node = RuntimeNode {
             absolute,
-            field.type_handle,
-            Some((field.metadata & 0xFF) as u8),
+            type_handle: field.type_handle,
+            generated_kind: Some((field.metadata & 0xFF) as u8),
             path,
             labels,
-            WeaponRuntimeFieldSource::GeneratedSchema,
-            anchor_binding_hash,
-            anchor_resource_index,
-            registry,
-            &mut BTreeSet::new(),
-            &mut fields,
-            0,
-        )?;
+            source: WeaponRuntimeFieldSource::GeneratedSchema,
+        };
+        flatten_runtime_type(&walk, node, &mut BTreeSet::new(), &mut fields, 0)?;
     }
     Ok(fields)
 }
@@ -645,41 +665,30 @@ pub(super) fn decode_registry_root_fields(
     anchor_resource_index: u16,
     registry: &RuntimeRegistry,
 ) -> Result<Vec<WeaponRuntimeField>, String> {
-    let mut fields = Vec::new();
-    flatten_runtime_type(
+    let walk = RuntimeWalk {
         owner_payload,
         root,
         root_size,
-        root.target,
-        root.schema,
-        None,
-        Vec::new(),
-        Vec::new(),
-        WeaponRuntimeFieldSource::NativeMember,
         anchor_binding_hash,
         anchor_resource_index,
         registry,
-        &mut BTreeSet::new(),
-        &mut fields,
-        0,
-    )?;
+    };
+    let node = RuntimeNode {
+        absolute: root.target,
+        type_handle: root.schema,
+        generated_kind: None,
+        path: Vec::new(),
+        labels: Vec::new(),
+        source: WeaponRuntimeFieldSource::NativeMember,
+    };
+    let mut fields = Vec::new();
+    flatten_runtime_type(&walk, node, &mut BTreeSet::new(), &mut fields, 0)?;
     Ok(fields)
 }
 
-#[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
-pub(super) fn flatten_runtime_type(
-    owner_payload: &[u8],
-    root: OwnerRootDescriptor,
-    root_size: usize,
-    absolute: usize,
-    type_handle: u32,
-    generated_kind: Option<u8>,
-    path: Vec<WeaponRuntimePathElement>,
-    labels: Vec<String>,
-    source: WeaponRuntimeFieldSource,
-    anchor_binding_hash: u32,
-    anchor_resource_index: u16,
-    registry: &RuntimeRegistry,
+fn flatten_runtime_type(
+    walk: &RuntimeWalk<'_>,
+    node: RuntimeNode,
     active_types: &mut BTreeSet<u32>,
     output: &mut Vec<WeaponRuntimeField>,
     depth: usize,
@@ -687,153 +696,135 @@ pub(super) fn flatten_runtime_type(
     if depth >= MAX_RUNTIME_SCHEMA_DEPTH {
         return Err(format!(
             "Runtime schema 0x{:08X} exceeds the supported native nesting depth",
-            root.schema
+            walk.root.schema
         ));
     }
-    let (kind, size, resolved_source) = runtime_type_kind(type_handle, generated_kind, registry)?;
-    ensure_field_range(owner_payload, root, root_size, absolute, size)?;
+    let (kind, size, resolved_source) =
+        runtime_type_kind(node.type_handle, node.generated_kind, walk.registry)?;
+    ensure_field_range(
+        walk.owner_payload,
+        walk.root,
+        walk.root_size,
+        node.absolute,
+        size,
+    )?;
     if let Some(kind) = kind {
-        return push_runtime_leaf(
-            owner_payload,
-            root,
-            absolute,
-            type_handle,
-            generated_kind,
-            path,
-            labels,
-            kind,
-            resolved_source.unwrap_or(source),
-            anchor_binding_hash,
-            anchor_resource_index,
-            registry,
-            output,
-        );
+        let source = resolved_source.unwrap_or(node.source);
+        return push_runtime_leaf(walk, RuntimeNode { source, ..node }, kind, output);
     }
 
-    let record = registry.records.get(&type_handle).ok_or_else(|| {
-        format!("Runtime type 0x{type_handle:08X} is missing from the embedded schema closure")
-    })?;
-    if !active_types.insert(type_handle) {
-        let kind = WeaponRuntimeValueKind::FixedBytes { size };
-        return push_runtime_leaf(
-            owner_payload,
-            root,
-            absolute,
-            type_handle,
-            generated_kind,
-            path,
-            labels,
-            kind,
-            WeaponRuntimeFieldSource::OpaqueNativeType,
-            anchor_binding_hash,
-            anchor_resource_index,
-            registry,
-            output,
-        );
+    let record = walk
+        .registry
+        .records
+        .get(&node.type_handle)
+        .ok_or_else(|| {
+            format!(
+                "Runtime type 0x{:08X} is missing from the embedded schema closure",
+                node.type_handle
+            )
+        })?;
+    // A type the walk is already inside reads as one opaque value, as does one with no
+    // readable member.
+    if !active_types.insert(node.type_handle) {
+        return push_opaque_leaf(walk, node, size, output);
     }
     let before = output.len();
     if !matches!(record.base_type, 0 | u32::MAX) {
-        flatten_runtime_type(
-            owner_payload,
-            root,
-            root_size,
-            absolute,
-            record.base_type,
-            generated_kind,
-            path.clone(),
-            labels.clone(),
-            source,
-            anchor_binding_hash,
-            anchor_resource_index,
-            registry,
-            active_types,
-            output,
-            depth + 1,
-        )?;
+        let base = RuntimeNode {
+            type_handle: record.base_type,
+            path: node.path.clone(),
+            labels: node.labels.clone(),
+            ..node
+        };
+        flatten_runtime_type(walk, base, active_types, output, depth + 1)?;
     }
     for member in &record.members {
-        if member.name_hash == EMPTY_NAME_HASH {
-            continue;
+        if member.name_hash != EMPTY_NAME_HASH {
+            let child = member_node(walk, &node, member)?;
+            flatten_runtime_type(walk, child, active_types, output, depth + 1)?;
         }
-        let mut member_path = path.clone();
-        member_path.push(WeaponRuntimePathElement {
-            name_hash: member.name_hash,
-            type_handle: member.type_handle.into(),
-            byte_offset: member.byte_offset,
-        });
-        let mut member_labels = labels.clone();
-        member_labels.push(runtime_member_label(member.name_hash, registry));
-        let member_absolute = absolute
-            .checked_add(member.byte_offset as usize)
-            .ok_or("Runtime member offset overflowed")?;
-        flatten_runtime_type(
-            owner_payload,
-            root,
-            root_size,
-            member_absolute,
-            member.type_handle,
-            None,
-            member_path,
-            member_labels,
-            WeaponRuntimeFieldSource::NativeMember,
-            anchor_binding_hash,
-            anchor_resource_index,
-            registry,
-            active_types,
-            output,
-            depth + 1,
-        )?;
     }
-    active_types.remove(&type_handle);
+    active_types.remove(&node.type_handle);
     if output.len() == before {
-        push_runtime_leaf(
-            owner_payload,
-            root,
-            absolute,
-            type_handle,
-            generated_kind,
-            path,
-            labels,
-            WeaponRuntimeValueKind::FixedBytes { size },
-            WeaponRuntimeFieldSource::OpaqueNativeType,
-            anchor_binding_hash,
-            anchor_resource_index,
-            registry,
-            output,
-        )?;
+        return push_opaque_leaf(walk, node, size, output);
     }
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn push_runtime_leaf(
-    owner_payload: &[u8],
-    root: OwnerRootDescriptor,
-    absolute: usize,
-    type_handle: u32,
-    generated_kind: Option<u8>,
-    path: Vec<WeaponRuntimePathElement>,
-    mut labels: Vec<String>,
-    kind: WeaponRuntimeValueKind,
-    source: WeaponRuntimeFieldSource,
-    anchor_binding_hash: u32,
-    anchor_resource_index: u16,
-    registry: &RuntimeRegistry,
+/// The node of `member` below `node`: at the member's offset, with the member on the path and
+/// its label on the labels.
+fn member_node(
+    walk: &RuntimeWalk<'_>,
+    node: &RuntimeNode,
+    member: &RegistryMember,
+) -> Result<RuntimeNode, String> {
+    let mut path = node.path.clone();
+    path.push(WeaponRuntimePathElement {
+        name_hash: member.name_hash,
+        type_handle: member.type_handle.into(),
+        byte_offset: member.byte_offset,
+    });
+    let mut labels = node.labels.clone();
+    labels.push(runtime_member_label(member.name_hash, walk.registry));
+    Ok(RuntimeNode {
+        absolute: node
+            .absolute
+            .checked_add(member.byte_offset as usize)
+            .ok_or("Runtime member offset overflowed")?,
+        type_handle: member.type_handle,
+        generated_kind: None,
+        path,
+        labels,
+        source: WeaponRuntimeFieldSource::NativeMember,
+    })
+}
+
+/// `node` as one opaque leaf of `size` bytes.
+fn push_opaque_leaf(
+    walk: &RuntimeWalk<'_>,
+    node: RuntimeNode,
+    size: u32,
     output: &mut Vec<WeaponRuntimeField>,
 ) -> Result<(), String> {
+    let opaque = RuntimeNode {
+        source: WeaponRuntimeFieldSource::OpaqueNativeType,
+        ..node
+    };
+    push_runtime_leaf(
+        walk,
+        opaque,
+        WeaponRuntimeValueKind::FixedBytes { size },
+        output,
+    )
+}
+
+fn push_runtime_leaf(
+    walk: &RuntimeWalk<'_>,
+    node: RuntimeNode,
+    kind: WeaponRuntimeValueKind,
+    output: &mut Vec<WeaponRuntimeField>,
+) -> Result<(), String> {
+    let RuntimeNode {
+        absolute,
+        type_handle,
+        generated_kind,
+        path,
+        mut labels,
+        source,
+    } = node;
     if labels.is_empty() {
         labels.push(format!("Value 0x{type_handle:08X}"));
     }
     let owner_offset =
         u32::try_from(absolute).map_err(|_| "Runtime field offset does not fit 32 bits")?;
     let value_offset = absolute
-        .checked_sub(root.target)
+        .checked_sub(walk.root.target)
         .and_then(|offset| u32::try_from(offset).ok())
         .ok_or("Runtime field root-relative offset does not fit 32 bits")?;
-    let value = decode_runtime_value(owner_payload, absolute, &kind)?;
+    let value = decode_runtime_value(walk.owner_payload, absolute, &kind)?;
     let name_inferred = path
         .last()
-        .is_some_and(|element| runtime_member_name(element.name_hash, registry).1);
+        .is_some_and(|element| runtime_member_name(element.name_hash, walk.registry).1);
     let mut path_label = labels.join(" › ");
     if name_inferred {
         // Mark the field's own name where a reader sees it, not only in the tooltip.
@@ -842,14 +833,14 @@ pub(super) fn push_runtime_leaf(
     let name = labels
         .last()
         .cloned()
-        .unwrap_or_else(|| format_runtime_path(&path, registry));
+        .unwrap_or_else(|| format_runtime_path(&path, walk.registry));
     output.push(WeaponRuntimeField {
         locator: WeaponRuntimeFieldLocator {
             graph_tag: None,
-            binding_hash: anchor_binding_hash.into(),
-            resource_index: anchor_resource_index,
-            root: root.kind,
-            root_schema: root.schema.into(),
+            binding_hash: walk.anchor_binding_hash.into(),
+            resource_index: walk.anchor_resource_index,
+            root: walk.root.kind,
+            root_schema: walk.root.schema.into(),
             path,
             type_handle: type_handle.into(),
             value_offset,

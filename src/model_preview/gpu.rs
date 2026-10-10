@@ -20,10 +20,18 @@ use std::{
 
 static AVAILABLE: AtomicBool = AtomicBool::new(false);
 
+mod bake;
+mod deform;
 mod draw;
+mod jobs;
+mod order;
+mod output;
+mod particle;
+mod pose;
 mod resolve;
+mod resource;
 mod upload;
-#[cfg(all(test, windows))]
+#[cfg(all(test, any(windows, target_os = "linux")))]
 mod verification;
 
 /// Set once at start-up from `CreationContext::gl`.
@@ -42,15 +50,33 @@ pub(crate) struct Frame {
     pub scene: Scene,
     pub style: Style,
     pub seconds: f32,
-    /// Skinned positions and normals for this instant. `None` draws the bind pose.
+    /// An explicit CPU reference pose. `None` uses GPU deformation when `animate` is set.
     pub pose: Option<Arc<super::animation::Deformed>>,
+    /// Evaluate model deformation on the GPU. An explicit CPU pose takes precedence.
+    pub animate: bool,
+    /// Export captures keep the dye frame they started with while the editor keeps changing.
+    pub dyes: Option<[Option<shader::Dye>; 6]>,
 }
 
 /// GL objects shared by every frame of one preview. Touched only on the paint thread.
 #[derive(Clone, Default)]
-pub(crate) struct Shared(Arc<Mutex<State>>);
+pub(crate) struct Shared(Arc<Mutex<State>>, Arc<jobs::Queue>);
 
 impl Shared {
+    #[cfg(test)]
+    pub fn pose(
+        &self,
+        model: &Arc<Model>,
+        seconds: f32,
+    ) -> Option<Arc<super::animation::Deformed>> {
+        self.0.lock().ok()?.poses.sample(model, seconds)
+    }
+
+    /// Successful model paint callbacks, excluding upload work and software fallback.
+    pub fn completed_frames(&self) -> u64 {
+        self.0.lock().map_or(0, |state| state.completed_frames)
+    }
+
     pub fn fallback(&self, model: &Arc<Model>) -> Option<String> {
         self.0.lock().ok().and_then(|state| {
             state
@@ -66,7 +92,9 @@ impl Shared {
         let callback = eframe::egui_glow::CallbackFn::new(move |info, painter| {
             if let Ok(mut state) = state.lock() {
                 // SAFETY: the painter hands us its own current context on the paint thread.
-                if !unsafe { state.draw(painter.gl(), &info, &frame) } {
+                if unsafe { state.draw(painter.gl(), &info, &frame) } {
+                    state.completed_frames = state.completed_frames.saturating_add(1);
+                } else {
                     repaint
                         .request_repaint_after_for(std::time::Duration::from_millis(16), viewport);
                 }
@@ -81,15 +109,24 @@ impl Shared {
 
 #[derive(Default)]
 struct State {
+    exports: jobs::Worker,
+    completed_frames: u64,
     fallback: Option<(Arc<Model>, String)>,
     program: Option<(glow::Program, Uniforms)>,
     program_model: Option<Arc<Model>>,
     model: Option<Uploaded>,
     target: Option<Target>,
     preparation: upload::Preparation,
+    #[cfg(test)]
+    poses: pose::Cache,
+    #[cfg(all(test, any(windows, target_os = "linux")))]
+    legacy_order: bool,
+    #[cfg(all(test, any(windows, target_os = "linux")))]
+    metrics: verification::measure::Metrics,
 }
 
 struct Uniforms {
+    deformed: Option<glow::UniformLocation>,
     center: Option<glow::UniformLocation>,
     rotate: Option<glow::UniformLocation>,
     scale: Option<glow::UniformLocation>,
@@ -120,6 +157,7 @@ struct Uniforms {
     wear: Option<glow::UniformLocation>,
     detail_transform: Option<glow::UniformLocation>,
     native_detail: Option<glow::UniformLocation>,
+    sample_lod: Option<glow::UniformLocation>,
     cutoff: Option<glow::UniformLocation>,
     normal_transform: Option<glow::UniformLocation>,
     has_legacy_normal: Option<glow::UniformLocation>,
@@ -145,7 +183,12 @@ struct Uploaded {
     vao: glow::VertexArray,
     positions: glow::Buffer,
     attributes: glow::Buffer,
-    posed: bool,
+    indices: glow::Buffer,
+    source_indices: glow::Buffer,
+    deformation: Option<deform::Pipeline>,
+    particles: Option<particle::Renderer>,
+    pose: Option<Arc<super::animation::Deformed>>,
+    ordering: order::Cache,
     /// One image may serve both data and color roles. Keep a separate upload for each role.
     textures: Vec<[Option<glow::Texture>; 2]>,
     lookup: Option<glow::Texture>,
@@ -177,8 +220,11 @@ struct Key {
     cutoff: Option<u32>,
 }
 
+#[derive(Clone)]
 struct Group {
     key: Key,
+    /// Indexed groups address the sorted element buffer. Others address expanded vertices.
+    indexed: bool,
     first: i32,
     count: i32,
 }
@@ -226,10 +272,9 @@ impl State {
                 .program_model
                 .as_ref()
                 .is_some_and(|model| !Arc::ptr_eq(model, &frame.model))
+                && let Some((program, _)) = self.program.take()
             {
-                if let Some((program, _)) = self.program.take() {
-                    gl.delete_program(program);
-                }
+                gl.delete_program(program);
             }
             if self.program.is_none() {
                 self.program = compile(gl, &frame.model);
@@ -243,16 +288,24 @@ impl State {
                 .model
                 .as_ref()
                 .is_some_and(|m| !Arc::ptr_eq(&m.model, &frame.model))
+                && let Some(old) = self.model.take()
             {
-                if let Some(old) = self.model.take() {
-                    old.delete(gl);
-                }
+                old.delete(gl);
             }
             if self.model.is_none() {
                 let Some(prepared) = self.preparation.poll(&frame.model) else {
                     return false;
                 };
-                self.model = Some(upload::begin(gl, prepared));
+                match upload::begin(gl, prepared) {
+                    Ok(uploaded) => self.model = Some(uploaded),
+                    Err(error) => {
+                        self.fallback = Some((
+                            frame.model.clone(),
+                            format!("Software rendering is active. {error}"),
+                        ));
+                        return false;
+                    }
+                }
             }
             let Some(uploaded) = self.model.as_mut() else {
                 return false;
@@ -267,53 +320,57 @@ impl State {
         info: &egui::PaintCallbackInfo,
         frame: &Frame,
     ) -> bool {
-        // SAFETY: egui hands us its live GL context inside the paint callback; every object
-        // used here was created on this context and is deleted through `Uploaded::delete`.
+        let viewport = info.viewport_in_pixels();
+        // SAFETY: egui supplies its current paint context.
         unsafe {
-            let viewport = info.viewport_in_pixels();
-            let size = [viewport.width_px.max(1), viewport.height_px.max(1)];
-            // Read before any of our own bindings; the target is created below.
             let previous = gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING);
             let previous = NonZeroU32::new(previous as u32).map(glow::NativeFramebuffer);
+            self.draw_to(
+                gl,
+                frame,
+                [viewport.width_px.max(1), viewport.height_px.max(1)],
+                previous,
+                [viewport.left_px, viewport.from_bottom_px],
+            )
+        }
+    }
+
+    #[allow(clippy::cognitive_complexity)]
+    unsafe fn draw_to(
+        &mut self,
+        gl: &glow::Context,
+        frame: &Frame,
+        size: [i32; 2],
+        previous: Option<glow::Framebuffer>,
+        origin: [i32; 2],
+    ) -> bool {
+        // SAFETY: the caller provides a current context and an owned destination framebuffer.
+        unsafe {
             if !self.prepare(gl, frame) {
                 return false;
             }
             let (program, uniforms) = self.program.as_ref().expect("prepared program");
             let uploaded = self.model.as_mut().expect("prepared model");
-            if frame.pose.is_some() || uploaded.posed {
-                let positions = frame
-                    .pose
-                    .as_ref()
-                    .map_or(frame.model.vertices.as_slice(), |pose| {
-                        pose.positions.as_slice()
-                    });
-                let normals = frame
-                    .pose
-                    .as_ref()
-                    .map_or(frame.model.normals.as_slice(), |pose| {
-                        pose.normals.as_slice()
-                    });
-                let expanded = expand_positions(&uploaded.order, &frame.model, positions);
-                gl.bind_buffer(glow::ARRAY_BUFFER, Some(uploaded.positions));
-                gl.buffer_sub_data_u8_slice(
-                    glow::ARRAY_BUFFER,
-                    0,
-                    bytes_of(expanded.as_flattened()),
-                );
-                let attributes = expand_attributes(
-                    &uploaded.order,
-                    &frame.model,
-                    positions,
-                    normals,
-                    frame
-                        .pose
-                        .as_ref()
-                        .map_or(frame.model.tangents.as_slice(), |p| p.tangents.as_slice()),
-                );
-                gl.bind_buffer(glow::ARRAY_BUFFER, Some(uploaded.attributes));
-                gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, 0, bytes_of(&attributes));
+            #[cfg(all(test, any(windows, target_os = "linux")))]
+            let started = std::time::Instant::now();
+            let mut _pose_uploaded = pose::upload(gl, uploaded, frame);
+            let deformed = frame.animate && frame.pose.is_none() && uploaded.deformation.is_some();
+            if deformed {
+                _pose_uploaded |=
+                    uploaded
+                        .deformation
+                        .as_mut()
+                        .unwrap()
+                        .sample(gl, &frame.model, frame.seconds);
             }
-            uploaded.posed = frame.pose.is_some();
+            #[cfg(all(test, any(windows, target_os = "linux")))]
+            {
+                self.metrics = verification::measure::Metrics {
+                    pose_upload: started.elapsed(),
+                    pose_uploaded: _pose_uploaded,
+                    ..Default::default()
+                };
+            }
             if self.target.as_ref().is_none_or(|t| t.size != size) {
                 if let Some(old) = self.target.take() {
                     old.delete(gl);
@@ -336,21 +393,17 @@ impl State {
             // Equal passes so emissive panels coincident with a surface win by draw order.
             gl.depth_func(glow::LEQUAL);
             gl.depth_mask(true);
-            let background = frame
-                .scene
-                .background
-                .map(|v| shader::linear(f32::from(v) / 255.0));
+            let background = super::output::background(frame.scene, frame.style);
             gl.clear_color(background[0], background[1], background[2], 1.0);
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
 
-            gl.use_program(Some(*program));
-            gl.bind_vertex_array(Some(uploaded.vao));
+            let material_study = frame.style == Style::Textured
+                && frame.scene.particle_study
+                && frame.model.has_particle_material_study();
             let (bind_center, radius) =
-                uploaded.framing[usize::from(frame.style != Style::Textured)];
+                uploaded.framing[usize::from(frame.style != Style::Textured || material_study)];
             let (sy, cy) = frame.camera.yaw.sin_cos();
             let (sp, cp) = frame.camera.pitch.sin_cos();
-            gl.uniform_3_f32(uniforms.native_direction.as_ref(), -cp * sy, -cp * cy, sp);
-            gl.uniform_1_f32(uniforms.native_distance.as_ref(), (radius * 4.0).max(1.0));
             // Same rotation as the CPU rasterizer, with y up instead of down.
             let rotate = [
                 cy,
@@ -366,10 +419,47 @@ impl State {
             let scale =
                 size[0].min(size[1]) as f32 * super::render::RADIUS_SCALE * frame.camera.zoom
                     / radius;
-            let center = frame
-                .pose
-                .as_ref()
-                .map_or(bind_center, |pose| pose.framing_center(bind_center));
+            let center = if deformed {
+                uploaded.deformation.as_ref().unwrap().center(bind_center)
+            } else {
+                frame
+                    .pose
+                    .as_ref()
+                    .map_or(bind_center, |pose| pose.framing_center(bind_center))
+            };
+            let depth_radius = if deformed {
+                uploaded.deformation.as_mut().unwrap().depth_radius(
+                    gl,
+                    frame.model.vertices.len(),
+                    center,
+                    frame.camera,
+                    radius,
+                )
+            } else {
+                frame.pose.as_ref().map_or(radius, |pose| {
+                    pose.positions.iter().fold(radius, |radius, point| {
+                        let [x, y, z] =
+                            std::array::from_fn::<_, 3, _>(|axis| point[axis] - center[axis]);
+                        radius.max((cp * (sy * x + cy * y) - sp * z).abs())
+                    })
+                })
+            };
+            if deformed && gl.get_error() != glow::NO_ERROR {
+                self.fallback = Some((frame.model.clone(), "Software rendering is active because GPU deformation or its depth readback failed.".into()));
+                gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
+                return false;
+            }
+            gl.use_program(Some(*program));
+            gl.bind_vertex_array(Some(uploaded.vao));
+            gl.uniform_1_i32(uniforms.deformed.as_ref(), i32::from(deformed));
+            // samplerBuffer and sampler2D uniforms must have distinct texture units even
+            // when the dynamic branch does not sample the deformation buffer.
+            gl.uniform_1_i32(gl.get_uniform_location(*program, "uGeometry").as_ref(), 11);
+            if deformed {
+                uploaded.deformation.as_ref().unwrap().bind(gl, *program);
+            }
+            gl.uniform_3_f32(uniforms.native_direction.as_ref(), -cp * sy, -cp * cy, sp);
+            gl.uniform_1_f32(uniforms.native_distance.as_ref(), (radius * 4.0).max(1.0));
             gl.uniform_3_f32(uniforms.center.as_ref(), center[0], center[1], center[2]);
             gl.uniform_matrix_3_f32_slice(uniforms.rotate.as_ref(), false, &rotate);
             gl.uniform_2_f32(
@@ -377,15 +467,6 @@ impl State {
                 2.0 * scale / size[0] as f32,
                 2.0 * scale / size[1] as f32,
             );
-            // Keep the stable bind-pose screen scale, but include every posed vertex in
-            // the depth range. Bone motion can extend far beyond the stored bounding sphere.
-            let depth_radius = frame.pose.as_ref().map_or(radius, |pose| {
-                pose.positions.iter().fold(radius, |radius, point| {
-                    let [x, y, z] =
-                        std::array::from_fn::<_, 3, _>(|axis| point[axis] - center[axis]);
-                    radius.max((cp * (sy * x + cy * y) - sp * z).abs())
-                })
-            });
             gl.uniform_1_f32(uniforms.depth_scale.as_ref(), (1.0 - 1e-4) / depth_radius);
             // Pan is a fraction of the viewport; clip space spans two units and points up.
             gl.uniform_2_f32(
@@ -426,7 +507,124 @@ impl State {
             if frame.style == Style::Wireframe {
                 gl.polygon_mode(glow::FRONT_AND_BACK, glow::LINE);
             }
-            draw::groups(gl, uniforms, uploaded, frame, target);
+            #[cfg(all(test, any(windows, target_os = "linux")))]
+            let started = std::time::Instant::now();
+            #[cfg(all(test, any(windows, target_os = "linux")))]
+            let use_legacy = self.legacy_order;
+            #[cfg(not(all(test, any(windows, target_os = "linux"))))]
+            let use_legacy = false;
+            let _sorted = if use_legacy {
+                false
+            } else {
+                match order::update(gl, uniforms, uploaded, frame, target) {
+                    Ok(sorted) => sorted,
+                    Err(error) => {
+                        self.fallback = Some((
+                            frame.model.clone(),
+                            format!("Software rendering is active. {error}"),
+                        ));
+                        gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
+                        return false;
+                    }
+                }
+            };
+            #[cfg(all(test, any(windows, target_os = "linux")))]
+            let legacy = use_legacy.then(|| verification::legacy::groups(uploaded, frame));
+            let groups = uploaded.ordering.groups(frame.style, &uploaded.groups);
+            #[cfg(all(test, any(windows, target_os = "linux")))]
+            let groups = legacy.as_deref().unwrap_or(groups);
+            #[cfg(all(test, any(windows, target_os = "linux")))]
+            {
+                self.metrics.ordering = started.elapsed();
+                self.metrics.sorted = _sorted
+                    || legacy
+                        .as_ref()
+                        .is_some_and(|groups| matches!(groups, std::borrow::Cow::Owned(_)));
+            }
+            let study = frame.style == Style::Textured && frame.scene.particle_study;
+            let split = if study {
+                groups
+                    .iter()
+                    .position(|group| {
+                        group
+                            .key
+                            .effect
+                            .is_some_and(|index| !frame.model.effects[index].opaque())
+                    })
+                    .unwrap_or(groups.len())
+            } else {
+                groups.len()
+            };
+            let remaining = study.then(|| groups[split..].to_vec());
+            let mut _draws = draw::groups(
+                gl,
+                uniforms,
+                uploaded,
+                frame,
+                target,
+                &groups[..split],
+                draw::Pass::Color,
+            );
+            #[cfg(all(test, any(windows, target_os = "linux")))]
+            drop(legacy);
+            if study {
+                if let Err(error) = particle::paint(
+                    gl,
+                    uploaded,
+                    frame,
+                    target,
+                    center,
+                    scale,
+                    depth_radius,
+                    &rotate,
+                    deformed,
+                    particle::Pass::Material,
+                ) {
+                    self.fallback = Some((
+                        frame.model.clone(),
+                        format!("Software rendering is active. {error}"),
+                    ));
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
+                    return false;
+                }
+                gl.use_program(Some(*program));
+                gl.bind_vertex_array(Some(uploaded.vao));
+                gl.enable(glow::DEPTH_TEST);
+                let calls = draw::groups(
+                    gl,
+                    uniforms,
+                    uploaded,
+                    frame,
+                    target,
+                    remaining.as_deref().unwrap_or_default(),
+                    draw::Pass::Color,
+                );
+                _draws = [_draws[0] + calls[0], _draws[1] + calls[1]];
+                if let Err(error) = particle::paint(
+                    gl,
+                    uploaded,
+                    frame,
+                    target,
+                    center,
+                    scale,
+                    depth_radius,
+                    &rotate,
+                    deformed,
+                    particle::Pass::Sprites,
+                ) {
+                    self.fallback = Some((
+                        frame.model.clone(),
+                        format!("Software rendering is active. {error}"),
+                    ));
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
+                    return false;
+                }
+            }
+            #[cfg(all(test, any(windows, target_os = "linux")))]
+            {
+                self.metrics.draw_calls = _draws[0];
+                self.metrics.indexed_calls = _draws[1];
+            }
             gl.polygon_mode(glow::FRONT_AND_BACK, glow::FILL);
             gl.disable(glow::FRAMEBUFFER_SRGB);
             gl.disable(glow::BLEND);
@@ -443,7 +641,12 @@ impl State {
                 gl,
                 target,
                 previous,
-                [viewport.left_px, viewport.from_bottom_px],
+                origin,
+                Scene {
+                    filmic: frame.scene.filmic && frame.style == Style::Textured,
+                    bloom: frame.scene.bloom && frame.style == Style::Textured,
+                    ..frame.scene
+                },
             );
             true
         }
@@ -530,7 +733,11 @@ fn bounds(model: &Model, style: Style) -> ([f32; 3], f32) {
         .map(|axis| (high[axis] - low[axis]).powi(2))
         .sum::<f32>()
         .sqrt()
-        .max(0.0001)
+        .max(if model.triangles.is_empty() {
+            1.0
+        } else {
+            0.0001
+        })
         * 0.5;
     (center, radius)
 }
@@ -542,6 +749,15 @@ impl Uploaded {
             gl.delete_vertex_array(self.vao);
             gl.delete_buffer(self.positions);
             gl.delete_buffer(self.attributes);
+            gl.delete_buffer(self.indices);
+            gl.delete_buffer(self.source_indices);
+            self.ordering.delete(gl);
+            if let Some(deformation) = self.deformation {
+                deformation.delete(gl);
+            }
+            if let Some(particles) = self.particles {
+                particles.delete(gl);
+            }
             for sampler in self.samplers.into_iter().flatten() {
                 gl.delete_sampler(sampler);
             }
@@ -710,6 +926,16 @@ impl Target {
 }
 
 unsafe fn link(gl: &glow::Context, vertex: &str, fragment: &str) -> Option<glow::Program> {
+    // SAFETY: the caller supplies a current context, as required by link_feedback.
+    unsafe { link_feedback(gl, vertex, fragment, &[]) }
+}
+
+unsafe fn link_feedback(
+    gl: &glow::Context,
+    vertex: &str,
+    fragment: &str,
+    varyings: &[&str],
+) -> Option<glow::Program> {
     // SAFETY: shaders and the program are created and released on the supplied context.
     unsafe {
         let program = gl.create_program().ok()?;
@@ -737,6 +963,9 @@ unsafe fn link(gl: &glow::Context, vertex: &str, fragment: &str) -> Option<glow:
             }
             gl.attach_shader(program, shader);
             gl.delete_shader(shader);
+        }
+        if !varyings.is_empty() {
+            gl.transform_feedback_varyings(program, varyings, glow::INTERLEAVED_ATTRIBS);
         }
         gl.link_program(program);
         if !gl.get_program_link_status(program) {
@@ -766,9 +995,10 @@ unsafe fn compile(gl: &glow::Context, model: &Model) -> Option<(glow::Program, U
             "// NATIVE VERTEX FUNCTIONS",
             &super::effects::native::source(model, true),
         );
-        let program = link(gl, &vertex, &fragment)?;
+        let program = link_feedback(gl, &vertex, &fragment, &["vSortDepth"])?;
         let location = |name: &str| gl.get_uniform_location(program, name);
         let uniforms = Uniforms {
+            deformed: location("uDeformed"),
             center: location("uCenter"),
             rotate: location("uRotate"),
             scale: location("uScale"),
@@ -816,6 +1046,7 @@ unsafe fn compile(gl: &glow::Context, model: &Model) -> Option<(glow::Program, U
             wear: location("uWear"),
             detail_transform: location("uDetailTransform"),
             native_detail: location("uNativeDetail"),
+            sample_lod: location("uSampleLod[0]"),
             cutoff: location("uCutoff"),
             normal_transform: location("uNormalTransform"),
             has_legacy_normal: location("uHasLegacyNormal"),
@@ -843,12 +1074,16 @@ unsafe fn compile(gl: &glow::Context, model: &Model) -> Option<(glow::Program, U
 
 const VERTEX: &str = r#"#version 330 core
 layout(location = 0) in vec3 aPosition;
-layout(location = 1) in vec3 aNormal;
+layout(location = 1) in vec3 aStoredNormal;
 layout(location = 2) in vec2 aUv;
 layout(location = 3) in vec2 aDetailUv;
-layout(location = 4) in vec4 aTangent;
+layout(location = 4) in vec4 aStoredTangent;
 layout(location = 5) in vec4 aColor;
 layout(location = 6) in float aBasisValid;
+layout(location = 7) in uvec3 aIndices;
+uniform samplerBuffer uGeometry;
+uniform bool uDeformed;
+vec4 aTangent;
 uniform vec3 uCenter;
 uniform mat3 uRotate;
 uniform vec2 uScale;
@@ -860,14 +1095,36 @@ out vec2 vUv;
 out vec2 vDetailUv;
 out vec4 vNative[9];
 flat out float vBasisValid;
+out float vSortDepth;
 // NATIVE VERTEX FUNCTIONS
+vec3 normalizedOr(vec3 value,vec3 fallback){float len=length(value);return len>1e-8&&!isinf(len)?value/len:fallback;}
+bool storedBasis(int index){
+ vec4 p=texelFetch(uGeometry,index*3),n=texelFetch(uGeometry,index*3+1),t=texelFetch(uGeometry,index*3+2);
+ float len=length(n.xyz);if(p.w==0.0||n.w==0.0||!(len>1e-8)||isinf(len)||!(abs(t.w)>=1e-8))return false;
+ vec3 normal=n.xyz/len;float projected=length(t.xyz-normal*dot(t.xyz,normal));return projected>1e-8&&!isinf(projected);
+}
 void main() {
-    vec3 position=aPosition,normal=aNormal;
+    vec3 position=aPosition,normal=aStoredNormal;
+    aTangent=aStoredTangent;
+    vBasisValid=aBasisValid;
+    if(uDeformed){
+        int source=int(aIndices.x),b=int(aIndices.y),c=int(aIndices.z);
+        position=texelFetch(uGeometry,source*3).xyz;
+        vec4 storedNormal=texelFetch(uGeometry,source*3+1);
+        vec3 face=cross(texelFetch(uGeometry,b*3).xyz-position,texelFetch(uGeometry,c*3).xyz-position);
+        normal=storedNormal.w!=0.0?storedNormal.xyz:face;
+        vBasisValid=storedBasis(source)&&storedBasis(b)&&storedBasis(c)?1.0:0.0;
+        if(uNativeIndex>=0||vBasisValid!=0.0)normal=normalizedOr(normal,normalizedOr(face,vec3(0,0,1)));
+        vec3 n=normalizedOr(normal,vec3(0,0,1));vec4 t=texelFetch(uGeometry,source*3+2);
+        vec3 fallback=normalizedOr(abs(n.z)<0.9?vec3(-n.y,n.x,0):vec3(n.z,0,-n.x),vec3(1,0,0));
+        aTangent=vec4(normalizedOr(t.xyz-n*dot(t.xyz,n),fallback),t.w<0.0?-1.0:1.0);
+    }
     nativeVertex(position,normal);
     vec3 p = uRotate * (position - uCenter);
     vView = p;
     vNormal = uRotate * normal;
-    vBasisValid = aBasisValid;
+    vSortDepth=p.z;
+    for(int i=0;i<9;i++)if(any(isnan(vNative[i]))||any(isinf(vNative[i])))vSortDepth=uintBitsToFloat(0x7fc00000u);
     vUv = aUv;
     vDetailUv = aDetailUv;
     gl_Position = vec4(p.x * uScale.x + uPan.x, p.y * uScale.y + uPan.y, p.z * uDepthScale, 1.0);
@@ -890,6 +1147,7 @@ uniform sampler2D uIridescence;
 uniform sampler2D uDyeMap;
 uniform int uHasDyeMap, uMapSlot;
 uniform int uNativeDetail;
+uniform vec4 uSampleLod[5];
 uniform float uCutoff;
 uniform vec4 uMapTransform;
 uniform int uHasAlbedo, uHasGear, uHasNormal, uHasDetail, uHasDetailNormal, uHasDye, uClip, uHasIridescence, uHasConstant;
@@ -907,6 +1165,16 @@ uniform vec3 uKeyDir, uHalfDir;
 uniform float uKey, uFill, uExposure;
 
 float sat(float v) { return clamp(v, 0.0, 1.0); }
+// Native isotropic footprints use explicit LOD so driver approximations cannot shift HDR mips.
+// Anisotropic and ordinary preview sampling retain the driver's gradient filtering.
+vec4 samplePlate(sampler2D image, vec2 uv, int unit) {
+    vec4 settings = uSampleLod[unit];
+    if (settings.w == 0.0) return texture(image, uv, settings.x);
+    vec2 size = vec2(textureSize(image, 0));
+    vec2 dx = dFdx(uv) * size, dy = dFdy(uv) * size;
+    float lod = 0.5 * log2(max(max(dot(dx, dx), dot(dy, dy)), 1e-30));
+    return textureLod(image, uv, clamp(lod + settings.x, settings.y, settings.z));
+}
 float remap(float v, vec4 m) {
     return sat(m.z + m.w * sat(v * m.y + m.x));
 }
@@ -963,7 +1231,7 @@ float studio(vec3 n, float rough) {
     return mix(sharp, 0.32, sat(rough * 2.5));
 }
 
-vec3 light(vec3 albedo, float rough, float metal, float ao, vec3 emission, vec3 n, vec3 tint) {
+vec3 light(vec3 albedo, float rough, float metal, float ao, vec3 emission, vec3 n, vec3 tint, float ambient) {
     if (n.z > 0.0) n = -n;
     float diffuse = max(dot(n, uKeyDir), 0.0);
     float half_ = max(dot(n, uHalfDir), 0.0);
@@ -973,15 +1241,16 @@ vec3 light(vec3 albedo, float rough, float metal, float ao, vec3 emission, vec3 
     float highlight = pow(half_, exponent) * (1.2 - 0.8 * glint);
     float fresnel = pow(1.0 - abs(n.z), 5.0);
     float surroundings = studio(n, r);
-    vec3 specular = mix(vec3(0.04), albedo, metal);
-    vec3 diff = albedo * (1.0 - metal) * (uFill * ao + uKey * diffuse);
-    vec3 refl = tint * specular * (surroundings * ao + highlight * 2.0) + fresnel * 0.18 * ao;
+    vec3 specular = mix(mix(vec3(0.04), albedo, metal), vec3(1.0), fresnel);
+    vec3 diff = albedo * (1.0 - metal) * (vec3(1.0) - specular) * (uFill * ambient + uKey * diffuse);
+    vec3 refl = tint * specular * (uFill * surroundings * ao + uKey * highlight);
     return (diff + refl + emission) * uExposure;
 }
 
 // EFFECT FUNCTIONS
 void main() {
-    if(uStyle==0 && uNativeIndex>=0 && uEffect>=0){fragColor=nativePixel(vec3(0.0));return;}
+    if(uStyle==0 && uNativeIndex>=0){vec3 albedo;vec4 normal;float metal;float ambient;vec3 emission;float coverage;if(nativeSurface(albedo,normal,metal,ambient,emission,coverage)){fragColor=vec4(light(albedo,normal.w,metal,ambient,emission,uRotate*normal.xyz,vec3(1.0),ambient)*coverage,coverage);return;}}
+    if(uStyle==0 && uNativeIndex>=0 && uEffect>=0){float ambient;fragColor=nativePixel(vec3(0.0),ambient);return;}
     vec2 uv = vUv;
     if (uHasDyeMap == 1 && uStyle == 0) {
         vec3 map = texture(uDyeMap, uv * uMapTransform.xy + uMapTransform.zw).rgb;
@@ -990,7 +1259,7 @@ void main() {
         int slot = bank * 2 + (map.r >= 0.5 ? 1 : 0);
         if (slot != uMapSlot) discard;
     }
-    if (uClip == 1 && uHasGear == 1 && texture(uGear, uv).b * 7.96875 < uCutoff) discard;
+    if (uClip == 1 && uHasGear == 1 && samplePlate(uGear, uv,1).b * 7.96875 < uCutoff) discard;
     vec3 dp1 = dFdx(vView);
     vec3 dp2 = dFdy(vView);
     vec3 face = normalize(cross(dp1, dp2));
@@ -1008,7 +1277,7 @@ void main() {
     float lighting = uFill + uKey * min(abs(dot(n, uKeyDir)), 1.0);
     if (uStyle == 0 && uHasConstant == 1) {
         // Panel art lives in the colour plate: alpha cuts the segments, colour tints them.
-        vec4 base = uHasAlbedo == 1 ? texture(uAlbedo, uv) : vec4(1.0);
+        vec4 base = uHasAlbedo == 1 ? samplePlate(uAlbedo, uv,0) : vec4(1.0);
         if (base.a < 0.5) discard;
         fragColor = vec4(uConstant * base.rgb * uExposure, 1.0);
         return;
@@ -1021,8 +1290,8 @@ void main() {
         fragColor = vec4(uDyeAlbedo * lighting * uExposure, 1.0);
         return;
     }
-    vec3 base = texture(uAlbedo, uv).rgb;
-    vec4 mask = texture(uGear, uv) * 255.0;
+    vec3 base = samplePlate(uAlbedo, uv,0).rgb;
+    vec4 mask = samplePlate(uGear, uv,1) * 255.0;
     vec3 albedo = base;
     float rough = 0.6;
     float metal = 0.0;
@@ -1050,7 +1319,7 @@ void main() {
             vec4 detail = vec4(0.25);
             if (uHasDetail == 1) {
                 vec2 detailUv = uNativeDetail == 1 ? vNative[3].zw : uv * 5.0;
-                detail = texture(uDetail, detailUv * uDetailTransform.xy + uDetailTransform.zw);
+                detail = samplePlate(uDetail, detailUv * uDetailTransform.xy + uDetailTransform.zw,3);
                 smoothness = mix(smoothness, overlay(smoothness, detail.a), sat(params.z));
             }
             albedo = mix(legacyColor(base,detail,uDyeWorn,sat(uWornParams.x)),legacyColor(base,detail,uDyeAlbedo,uParams.x),intact);
@@ -1080,17 +1349,17 @@ void main() {
         float intact = paintRemap(sat((mask.a - 48.0) / 207.0),uWear);
         float strength = mix(sat(uWornParams.y),sat(uParams.y),intact);
         vec2 detailUv = uNativeDetail == 1 ? vNative[3].zw : uv * 5.0;
-        float blue = texture(uDetailNormal,detailUv*uNormalTransform.xy+uNormalTransform.zw).b;
+        float blue = samplePlate(uDetailNormal,detailUv*uNormalTransform.xy+uNormalTransform.zw,4).b;
         float limit = mix(1.0,sat(blue+nNormalGrain()),strength);
         rough = max(rough,1.0-limit);
     }
     if (legacyNormal && uHasNormal == 1) {
-        float limit = sat(texture(uNormal,uv).b+uLegacyNormal.z);
+        float limit = sat(samplePlate(uNormal,uv,2).b+uLegacyNormal.z);
         if (dyed && uHasDetailNormal == 1 && !isnan(uLegacyDetail.z) && !isinf(uLegacyDetail.z)) {
             float intact = paintRemap(sat((mask.a-48.0)/207.0),uWear);
             float strength = mix(sat(uWornParams.y),uParams.y,intact);
             vec2 detailUv = uNativeDetail == 1 ? vNative[3].zw : uv*5.0;
-            float blue = texture(uDetailNormal,detailUv*uNormalTransform.xy+uNormalTransform.zw).b;
+            float blue = samplePlate(uDetailNormal,detailUv*uNormalTransform.xy+uNormalTransform.zw,4).b;
             limit = min(limit,mix(1.0,sat(blue+uLegacyDetail.z),strength));
         }
         rough = max(rough,1.0-limit);
@@ -1111,7 +1380,7 @@ void main() {
             t = normalize(t - nn * dot(t, nn));
             vec3 bb = cross(nn, t);
             if (dot(bb, b) < 0.0) bb = -bb;
-            vec4 sampled = texture(uNormal, uv);
+            vec4 sampled = samplePlate(uNormal, uv,2);
             vec2 xy = sampled.rg;
             bool decodedNormal = legacyNormal || (uNativeIndex >= 0 && uEffect < 0 && nHasDecodedNormal());
             vec4 decode = legacyNormal ? vec4(uLegacyNormal.xy,uLegacyDetail.xy) : nNormalDecode();
@@ -1122,7 +1391,7 @@ void main() {
                 float intact = nativePaint ? paintRemap(wear,uWear) : sat(remap(wear,uWear));
                 float strength = decodedNormal ? mix(sat(uWornParams.y), legacyNormal ? uParams.y : sat(uParams.y), intact) : clamp(mix(uWornParams.y, uParams.y, intact), 0.0, 4.0);
                 vec2 detailUv = uNativeDetail == 1 ? vNative[3].zw : uv * 5.0;
-                vec4 detail = texture(uDetailNormal, detailUv * uNormalTransform.xy + uNormalTransform.zw);
+                vec4 detail = samplePlate(uDetailNormal, detailUv * uNormalTransform.xy + uNormalTransform.zw,4);
                 vec2 blended = mix(2.0 * xy * detail.rg, 1.0 - 2.0 * (1.0 - xy) * (1.0 - detail.rg), step(0.5, xy));
                 if (decodedNormal) {
                     if (!(any(isnan(decode.zw)) || any(isinf(decode.zw)))) xy += strength * (detail.rg * decode.z + decode.w);
@@ -1137,7 +1406,12 @@ void main() {
             n = normalize(t * p.x + bb * p.y + nn * z);
         }
     }
-    if(uNativeIndex>=0 && uEffect<0)albedo=nativePixel(albedo).rgb;
+    float nativeAmbient=-1.0;
+    if(uNativeIndex>=0 && uEffect<0){
+        vec4 nativeValue=nativePixel(albedo,nativeAmbient);
+        albedo=nativeValue.rgb;
+        if(nHasIntensity())emission=albedo*nativeValue.a;
+    }
     vec3 tint = vec3(1.0);
     if (painted && uHasIridescence == 1 && uIridescenceId >= 0.0) {
         float nDotV = sat(abs(n.z));
@@ -1154,6 +1428,6 @@ void main() {
             tint = mix(vec3(1.0), iri.rgb, strength);
         }
     }
-    fragColor = vec4(light(albedo, rough, metal, ao, emission, n, tint), 1.0);
+    fragColor = vec4(light(albedo, rough, metal, ao, emission, n, tint, nativeAmbient>=0.0?nativeAmbient:ao), 1.0);
 }
 "#;

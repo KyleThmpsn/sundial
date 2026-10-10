@@ -13,7 +13,7 @@ use sundial_account::{
 };
 
 use crate::{
-    account_contract::{
+    account::contract::{
         DISMANTLE_REWARDS_SCHEMA_VERSION, FILTERED_DISMANTLE_REWARD_CAPACITY,
         FILTERED_DISMANTLE_REWARDS_SCHEMA_VERSION, LEGACY_DISMANTLE_REWARD_CAPACITY,
         profile_item_capacity,

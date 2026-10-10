@@ -125,14 +125,14 @@ pub fn build(
                     .with_context(|| format!("albedo for material {tag:08X}"))?,
             ));
         }
-        if let Some((_, tex)) = bindings.iter().find(|x| x.0 == 1) {
-            if matches!(source.tag(*tex, None)?.u32(4)?, 98 | 99) {
-                textures.push((
-                    1u32,
-                    texture(source, native, g, *tex)
-                        .with_context(|| format!("normal for material {tag:08X}"))?,
-                ));
-            }
+        if let Some((_, tex)) = bindings.iter().find(|x| x.0 == 1)
+            && matches!(source.tag(*tex, None)?.u32(4)?, 98 | 99)
+        {
+            textures.push((
+                1u32,
+                texture(source, native, g, *tex)
+                    .with_context(|| format!("normal for material {tag:08X}"))?,
+            ));
         }
         let name = format!("material-{tag:08X}");
         let shader = format!("shader-{tag:08X}");

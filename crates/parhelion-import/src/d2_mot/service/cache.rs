@@ -34,7 +34,7 @@ pub fn package_stamp(packages: &Path) -> Result<String> {
         hash.update(length.to_le_bytes());
         hash.update(modified.to_le_bytes());
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(hex::encode(hash.finalize()))
 }
 
 #[derive(Deserialize, Serialize)]

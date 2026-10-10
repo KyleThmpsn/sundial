@@ -107,7 +107,7 @@ pub(crate) fn draw_catalog_item_header_with_trailing(
 
     let mut font = egui::TextStyle::Monospace.resolve(ui.style());
     font.size += ITEM_HEADER_TITLE_SIZE_DELTA;
-    let hash_width = ui.fonts(|fonts| {
+    let hash_width = ui.fonts_mut(|fonts| {
         fonts
             .layout_no_wrap(format_hash_hex(hash), font, ui.visuals().text_color())
             .size()
@@ -140,7 +140,7 @@ pub(crate) fn draw_catalog_item_header_with_trailing(
 }
 
 fn item_header_badge(hash: Option<u64>) -> Option<&'static str> {
-    hash.filter(|hash| crate::dummy_items::contains(*hash))
+    hash.filter(|hash| crate::catalog::dummy_items::contains(*hash))
         .map(|_| "Dummy")
 }
 
@@ -332,7 +332,7 @@ fn draw_item_header_contents(
             0.0
         };
         let badge_width = badge.map_or(0.0, |text| {
-            ui.fonts(|fonts| {
+            ui.fonts_mut(|fonts| {
                 fonts
                     .layout_no_wrap(
                         text.to_owned(),
@@ -514,12 +514,12 @@ fn draw_item_header_title(
 
     let available_width = ui.available_width().max(0.0);
     let spacing = ui.spacing().item_spacing.x;
-    let hash_galley = ui.fonts(|fonts| fonts.layout_job(hash));
+    let hash_galley = ui.fonts_mut(|fonts| fonts.layout_job(hash));
     let title_width = (available_width - hash_galley.size().x - spacing).max(0.0);
     title.wrap.max_width = title_width;
     title.wrap.max_rows = 1;
     title.wrap.break_anywhere = true;
-    let title_galley = ui.fonts(|fonts| fonts.layout_job(title));
+    let title_galley = ui.fonts_mut(|fonts| fonts.layout_job(title));
     let row_height = title_galley.size().y.max(hash_galley.size().y);
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(available_width, row_height),
@@ -539,7 +539,7 @@ fn draw_item_header_title(
 }
 
 fn layout_job_width(ui: &egui::Ui, job: &egui::text::LayoutJob) -> f32 {
-    ui.fonts(|fonts| fonts.layout_job(job.clone()).size().x)
+    ui.fonts_mut(|fonts| fonts.layout_job(job.clone()).size().x)
 }
 
 fn item_header_trailing_width(

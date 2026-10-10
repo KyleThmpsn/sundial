@@ -8,6 +8,7 @@ mod linking;
 mod ornament;
 mod packages;
 mod reskin;
+mod vehicle_art;
 
 /// The position of an authored item's definition among the host package's new tags.
 fn definition_ordinal(emission: &PackageEmission, item: u32) -> AuthoringResult<usize> {
@@ -60,7 +61,7 @@ pub(super) struct PackageEmission {
     pub(super) lore: Option<lore::Plan>,
     pub(super) hud_table: Option<ReplacementSpec>,
     pub(super) ability_banks: BTreeMap<u16, Vec<ReplacementSpec>>,
-    /// The HUD status table and name bank, when a private perk shows a HUD status of its own.
+    /// Additional HUD tables, including private status names and subclass glyph colors.
     pub(super) hud_statuses: Vec<ReplacementSpec>,
     pub(super) table_tags: super::sources::TableTags,
     pub(super) has_custom_plugs: bool,
@@ -94,6 +95,8 @@ pub(super) struct PackageEmission {
     pub(super) dye_table: Option<ReplacementSpec>,
     /// The stat group table, when a weapon has a stat group of its own.
     pub(super) stat_group_table: Option<ReplacementSpec>,
+    /// The shared plug set table, when a private perk is offered everywhere.
+    pub(super) plug_set_table: Option<ReplacementSpec>,
     pub(super) plans: Vec<NewWeaponPlan>,
     pub(super) any_sandbox_pattern: bool,
     pub(super) nodes: Vec<u8>,
@@ -128,38 +131,6 @@ fn name_audio_media(asset_packages: &mut crate::asset_packages::AssetPackages) {
     }
 }
 
-/// The crosshair table's overlay, in a package of its own: none when no build changes the
-/// table, refused when another authored table shares its package (`taken`).
-fn crosshair_overlay(
-    packages: &mut packages::Packages<'_, '_>,
-    table: &[ReplacementSpec],
-    taken: impl Fn(u16) -> bool,
-) -> AuthoringResult<Option<crate::ExtendedOverlayArtifact>> {
-    let [table] = table else {
-        return if table.is_empty() {
-            Ok(None)
-        } else {
-            Err(invalid(
-                "The crosshair table shares a package with another authored table",
-            ))
-        };
-    };
-    if taken(table.tag.pkg_id()) {
-        return Err(invalid(
-            "The crosshair table shares a package with another authored table",
-        ));
-    }
-    let overlay = packages.overlay(table.tag.pkg_id(), std::slice::from_ref(table), &[], &[])?;
-    if overlay.plan.original_entry_count != overlay.plan.final_entry_count
-        || !overlay.plan.appended_tags.is_empty()
-    {
-        return Err(validation(
-            "Crosshair table overlay unexpectedly changed its stock entry table",
-        ));
-    }
-    Ok(Some(overlay))
-}
-
 #[allow(unused_mut)]
 pub(super) fn emit_packages(
     package_directory: &Path,
@@ -180,7 +151,14 @@ pub(super) fn emit_packages(
         weapons,
         &mut replacements,
     )?;
-    // The crosshair table has a package of its own.
+    vehicle_art::apply(
+        package_directory,
+        &manager,
+        &mut emission,
+        weapons,
+        &mut replacements,
+    )?;
+    // The crosshair table joins the other UI tables of its package.
     let (crosshair_table, replacements): (Vec<_>, Vec<_>) = replacements
         .into_iter()
         .partition(|r| r.tag == crate::weapon::crosshair::TABLE);
@@ -248,6 +226,7 @@ pub(super) fn emit_packages(
         subclass_tables,
         dye_table,
         stat_group_table,
+        plug_set_table,
         plans,
         any_sandbox_pattern,
         nodes,
@@ -261,10 +240,23 @@ pub(super) fn emit_packages(
         runtime_dependencies,
         host_new_tags,
     } = emission;
-    // The HUD status table and name bank, one overlay per package they live in.
-    let mut hud_status_packages = BTreeMap::<u16, Vec<ReplacementSpec>>::new();
-    for replacement in hud_statuses {
-        hud_status_packages
+    // Private copies past the private perk-runtime package's table go to standalone packages of
+    // their own, from the top of the authored range down.
+    let (private_perk_runtime_new_tags, private_runtime_overflow) =
+        crate::appended_tags::AppendedTagAllocator::private_runtime(
+            private_perk_runtime_append_start,
+        )
+        .split(private_perk_runtime_new_tags)?;
+    // The UI tables by package, so each package takes one overlay: HUD statuses and their names,
+    // subclass glyph colors and tree decisions, the ammo HUD table and the crosshair table. The
+    // subclass tree decisions share the crosshair table's package and the ammo HUD table's.
+    let mut ui_packages = BTreeMap::<u16, Vec<ReplacementSpec>>::new();
+    for replacement in hud_statuses
+        .into_iter()
+        .chain(hud_table)
+        .chain(crosshair_table)
+    {
+        ui_packages
             .entry(replacement.tag.pkg_id())
             .or_default()
             .push(replacement);
@@ -272,12 +264,11 @@ pub(super) fn emit_packages(
     // One dependency check, six required overlays, and all optional packages in this plan.
     progress.payloads(
         7 + asset_packages.packages.len()
+            + private_runtime_overflow.len()
             + ability_banks.len()
-            + hud_status_packages.len()
+            + ui_packages.len()
             + usize::from(!private_perk_runtime_new_tags.is_empty())
-            + usize::from(runtime_dependencies.is_some())
-            + usize::from(hud_table.is_some())
-            + usize::from(!crosshair_table.is_empty()),
+            + usize::from(runtime_dependencies.is_some()),
     );
     progress.start("Checking Asset Dependencies");
     asset_packages.validate()?;
@@ -307,11 +298,7 @@ pub(super) fn emit_packages(
     // Validate the completed map after every authoring pass, not only the stock source.
     validate_sandbox_perk_runtime_map(&entity_assignments).map_err(validation)?;
     progress.finish("Checking Asset Dependencies");
-    let mut packages = packages::Packages {
-        directory: package_directory,
-        progress,
-        chains: None,
-    };
+    let mut packages = packages::Packages::new(package_directory);
     let mut host_reference_overrides = watermark_reference_overrides;
     for (ordinal, spec) in host_new_tags.iter().enumerate() {
         if spec.storage == crate::NewTagStorageMode::AudioMedia {
@@ -321,9 +308,10 @@ pub(super) fn emit_packages(
             });
         }
     }
+    let expected_host_count = HOST_EXPECTED_ENTRY_COUNT + host_new_tags.len();
     let host = packages.overlay(
         HOST_PACKAGE_ID,
-        &[
+        vec![
             ReplacementSpec {
                 tag: unlock_display_tag,
                 payload: unlock_displays,
@@ -337,37 +325,34 @@ pub(super) fn emit_packages(
                 payload: item_icons,
             },
         ],
-        &host_new_tags,
-        &host_reference_overrides,
+        host_new_tags,
+        host_reference_overrides,
     )?;
-    let expected_host_count = HOST_EXPECTED_ENTRY_COUNT + host_new_tags.len();
-    if host.plan.final_entry_count != expected_host_count {
-        return Err(validation(format!(
-            "Project host ended at {} entries instead of {expected_host_count}",
-            host.plan.final_entry_count
-        )));
-    }
+    packages.host(host, expected_host_count);
     let mut asset_packages = asset_packages;
     name_audio_media(&mut asset_packages);
-    let assets = emit_assets(&mut packages, &asset_packages)?;
+    let assets_end = usize::from(crate::package_profile::PARHELION_ASSET_PACKAGE_ID)
+        + asset_packages.packages.len();
+    let assets = plan_assets(&mut packages, asset_packages)?;
+    let private_runtime_overflow =
+        plan_private_runtime_overflow(&mut packages, assets_end, private_runtime_overflow)?;
+    let private_count = private_perk_runtime_new_tags.len();
     let private_perk_runtime = if private_perk_runtime_new_tags.is_empty() {
         None
     } else {
         Some(packages.overlay(
             PRIVATE_PERK_RUNTIME_PACKAGE_ID,
-            &[],
-            &private_perk_runtime_new_tags,
-            &[],
+            Vec::new(),
+            private_perk_runtime_new_tags,
+            Vec::new(),
         )?)
     };
-    validate_private_runtime(
-        private_perk_runtime.as_ref(),
-        private_perk_runtime_append_start,
-        private_perk_runtime_new_tags.len(),
-    )?;
+    if let Some(ticket) = private_perk_runtime {
+        packages.private(ticket, private_perk_runtime_append_start, private_count);
+    }
     let runtime_entities = packages.overlay(
         entity_assignment_tag.pkg_id(),
-        &{
+        {
             let mut replacements = vec![ReplacementSpec {
                 tag: entity_assignment_tag,
                 payload: entity_assignments,
@@ -375,19 +360,19 @@ pub(super) fn emit_packages(
             replacements.extend(imported_runtime);
             replacements
         },
-        &[],
-        &[],
+        Vec::new(),
+        Vec::new(),
     )?;
     let runtime_dependency_overlay = runtime_dependencies
         .map(|payload| {
             packages.overlay(
                 RUNTIME_DEPENDENCY_COMPANION.pkg_id(),
-                &[ReplacementSpec {
+                vec![ReplacementSpec {
                     tag: RUNTIME_DEPENDENCY_COMPANION,
                     payload,
                 }],
-                &[],
-                &[],
+                Vec::new(),
+                Vec::new(),
             )
         })
         .transpose()?;
@@ -405,9 +390,9 @@ pub(super) fn emit_packages(
             payload: collectible_displays,
         },
     ];
-    // Each subclass table, the dye table and the stat group table join the overlay that already
-    // replaces tables in their package. An imported model's dyes extend the dye table after the
-    // custom ones, so its replacement already holds them.
+    // Each subclass table, the dye table, the stat group table and the plug set table join the
+    // overlay that already replaces tables in their package. An imported model's dyes extend the
+    // dye table after the custom ones, so its replacement already holds them.
     let mut subclass_replacements = subclass_tables
         .map(crate::subclass::tables::SubclassTables::replacements)
         .transpose()?
@@ -418,6 +403,7 @@ pub(super) fn emit_packages(
             .any(|replacement| replacement.tag == table.tag)
     }));
     subclass_replacements.extend(stat_group_table);
+    subclass_replacements.extend(plug_set_table);
     let mut subclass_tables_in = |package: u16| {
         let (owned, rest) = std::mem::take(&mut subclass_replacements)
             .into_iter()
@@ -426,8 +412,12 @@ pub(super) fn emit_packages(
         owned
     };
     investment_replacements.extend(subclass_tables_in(item_table_tag.pkg_id()));
-    let investment =
-        packages.overlay(item_table_tag.pkg_id(), &investment_replacements, &[], &[])?;
+    let investment = packages.overlay(
+        item_table_tag.pkg_id(),
+        investment_replacements,
+        Vec::new(),
+        Vec::new(),
+    )?;
     let mut string_replacements = vec![
         ReplacementSpec {
             tag: item_string_table_tag,
@@ -479,9 +469,9 @@ pub(super) fn emit_packages(
     string_replacements.extend(imported_strings);
     let strings = packages.overlay(
         item_string_table_tag.pkg_id(),
-        &string_replacements,
-        &[],
-        &[],
+        string_replacements,
+        Vec::new(),
+        Vec::new(),
     )?;
     let mut localization_replacements = vec![ReplacementSpec {
         tag: localization.donor_header_tag,
@@ -495,9 +485,9 @@ pub(super) fn emit_packages(
     }));
     let localized = packages.overlay(
         localized_index_tag.pkg_id(),
-        &localization_replacements,
-        &[],
-        &[],
+        localization_replacements,
+        Vec::new(),
+        Vec::new(),
     )?;
     let mut unlock_replacements = vec![
         ReplacementSpec {
@@ -556,74 +546,53 @@ pub(super) fn emit_packages(
             stray.tag.pkg_id()
         )));
     }
-    let unlock = packages.overlay(unlock_table_tag.pkg_id(), &unlock_replacements, &[], &[])?;
-    for artifact in [
-        &runtime_entities,
-        &investment,
-        &strings,
-        &localized,
-        &unlock,
-    ] {
-        if artifact.plan.original_entry_count != artifact.plan.final_entry_count
-            || !artifact.plan.appended_tags.is_empty()
-        {
-            return Err(validation(format!(
-                "Project overlay {:04x} unexpectedly changed its stock entry table",
-                artifact.plan.chain.identity.package_id
-            )));
-        }
-    }
-
-    let other_packages = [
-        hud_table.as_ref().map(|table| table.tag.pkg_id()),
-        Some(item_table_tag.pkg_id()),
-        Some(item_string_table_tag.pkg_id()),
-        Some(localized_index_tag.pkg_id()),
-        Some(unlock_table_tag.pkg_id()),
-        Some(entity_assignment_tag.pkg_id()),
+    let unlock = packages.overlay(
+        unlock_table_tag.pkg_id(),
+        unlock_replacements,
+        Vec::new(),
+        Vec::new(),
+    )?;
+    // A UI package that another project overlay also replaces would take two overlays.
+    let project_packages = [
+        HOST_PACKAGE_ID,
+        PRIVATE_PERK_RUNTIME_PACKAGE_ID,
+        RUNTIME_DEPENDENCY_COMPANION.pkg_id(),
+        item_table_tag.pkg_id(),
+        item_string_table_tag.pkg_id(),
+        localized_index_tag.pkg_id(),
+        unlock_table_tag.pkg_id(),
+        entity_assignment_tag.pkg_id(),
     ];
-    let crosshair_overlay = crosshair_overlay(&mut packages, &crosshair_table, |package| {
-        other_packages.contains(&Some(package))
-            || ability_banks.contains_key(&package)
-            || hud_status_packages.contains_key(&package)
-    })?;
-    let hud_overlay = hud_table
-        .map(|replacement| packages.overlay(replacement.tag.pkg_id(), &[replacement], &[], &[]))
-        .transpose()?;
+    if let Some(package) = ui_packages
+        .keys()
+        .find(|package| project_packages.contains(package) || ability_banks.contains_key(package))
+    {
+        return Err(invalid(format!(
+            "UI tables in package {package:04x} share it with another authored overlay"
+        )));
+    }
     // The sandbox banks with a charge row added, one overlay per package that has any, only
     // when a private perk applies the key.
     let mut ability_bank_overlays = Vec::new();
-    for (package_id, replacements) in &ability_banks {
-        let overlay = packages.overlay(*package_id, replacements, &[], &[])?;
-        if overlay.plan.original_entry_count != overlay.plan.final_entry_count
-            || !overlay.plan.appended_tags.is_empty()
-        {
-            return Err(validation(format!(
-                "Ability bank overlay {package_id:04x} unexpectedly changed its stock entry table"
-            )));
-        }
-        ability_bank_overlays.push(overlay);
+    for (package_id, replacements) in ability_banks {
+        ability_bank_overlays.push(packages.overlay(
+            package_id,
+            replacements,
+            Vec::new(),
+            Vec::new(),
+        )?);
     }
-    let mut hud_status_overlays = Vec::new();
-    for (package_id, replacements) in &hud_status_packages {
-        let overlay = packages.overlay(*package_id, replacements, &[], &[])?;
-        if overlay.plan.original_entry_count != overlay.plan.final_entry_count
-            || !overlay.plan.appended_tags.is_empty()
-        {
-            return Err(validation(format!(
-                "HUD status overlay {package_id:04x} unexpectedly changed its stock entry table"
-            )));
-        }
-        hud_status_overlays.push(overlay);
+    let mut ui_overlays = Vec::new();
+    for (package_id, replacements) in ui_packages {
+        ui_overlays.push(packages.overlay(package_id, replacements, Vec::new(), Vec::new())?);
     }
-    let mut artifacts = assets;
-    artifacts.extend(crosshair_overlay);
-    artifacts.extend(hud_overlay);
-    artifacts.extend(hud_status_overlays);
-    artifacts.extend(ability_bank_overlays);
-    artifacts.extend(private_perk_runtime);
-    artifacts.extend(runtime_dependency_overlay);
-    artifacts.extend([
+    let mut order = assets;
+    order.extend(private_runtime_overflow);
+    order.extend(ui_overlays);
+    order.extend(ability_bank_overlays);
+    order.extend(private_perk_runtime);
+    order.extend(runtime_dependency_overlay);
+    order.extend([
         runtime_entities,
         host,
         investment,
@@ -631,6 +600,7 @@ pub(super) fn emit_packages(
         localized,
         unlock,
     ]);
+    let artifacts = packages.build(order, progress)?;
     Ok(NewWeaponProjectBundle {
         plan: NewWeaponProjectPlan {
             weapons: plans,
@@ -647,24 +617,37 @@ pub(super) fn emit_packages(
     })
 }
 
-fn emit_assets(
-    packages: &mut packages::Packages<'_, '_>,
-    asset_packages: &crate::asset_packages::AssetPackages,
-) -> AuthoringResult<Vec<crate::ExtendedOverlayArtifact>> {
-    let mut assets = Vec::new();
-    for package in &asset_packages.packages {
-        let artifact = packages.standalone(package)?;
-        if artifact.plan.original_entry_count != 0
-            || artifact.plan.final_entry_count != package.tags.len()
-            || artifact.plan.appended_tags.len() != package.tags.len()
-        {
+fn plan_assets(
+    packages: &mut packages::Packages<'_>,
+    asset_packages: crate::asset_packages::AssetPackages,
+) -> AuthoringResult<Vec<packages::Ticket>> {
+    asset_packages
+        .packages
+        .into_iter()
+        .map(|package| packages.standalone(package))
+        .collect()
+}
+
+/// Reserve each private overflow output after checking its range against the asset packages.
+fn plan_private_runtime_overflow(
+    packages: &mut packages::Packages<'_>,
+    assets_end: usize,
+    overflow: Vec<(u16, Vec<crate::NewTagSpec>)>,
+) -> AuthoringResult<Vec<packages::Ticket>> {
+    let mut planned = Vec::new();
+    for (id, tags) in overflow {
+        if usize::from(id) < assets_end {
             return Err(validation(
-                "An asset package did not contain its complete authored resource group",
+                "The build's private copies and assets need more packages than the authored range holds",
             ));
         }
-        assets.push(artifact);
+        planned.push(packages.standalone(crate::asset_packages::AssetPackage {
+            id,
+            tags,
+            references: Vec::new(),
+        })?);
     }
-    Ok(assets)
+    Ok(planned)
 }
 
 fn validate_private_runtime(
@@ -675,19 +658,18 @@ fn validate_private_runtime(
     let expected_private_perk_runtime_count = append_start
         .checked_add(tag_count)
         .ok_or_else(|| invalid("Private perk-runtime entry count overflowed"))?;
-    if let Some(private_perk_runtime) = artifact {
-        if private_perk_runtime.plan.original_entry_count
+    if let Some(private_perk_runtime) = artifact
+        && (private_perk_runtime.plan.original_entry_count
             != PRIVATE_PERK_RUNTIME_EXPECTED_ENTRY_COUNT
             || private_perk_runtime.plan.append_start_entry_count != append_start
             || private_perk_runtime.plan.reserved_entry_count
                 != append_start - PRIVATE_PERK_RUNTIME_EXPECTED_ENTRY_COUNT
             || private_perk_runtime.plan.final_entry_count != expected_private_perk_runtime_count
-            || private_perk_runtime.plan.appended_tags.len() != tag_count
-        {
-            return Err(validation(
-                "Private perk-runtime package did not preserve its stock entry table and authored tail",
-            ));
-        }
+            || private_perk_runtime.plan.appended_tags.len() != tag_count)
+    {
+        return Err(validation(
+            "Private perk-runtime package did not preserve its stock entry table and authored tail",
+        ));
     }
     Ok(())
 }

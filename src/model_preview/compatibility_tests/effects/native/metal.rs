@@ -171,10 +171,12 @@ fn image(model: &Model, seconds: f32) -> egui::ColorImage {
             ..Default::default()
         },
         render::Scene {
+            filmic: false,
+            bloom: false,
             key: 0.0,
             fill: 1.0,
             background: [0; 3],
-            ..Default::default()
+            ..render::Scene::unit_exposure()
         },
         [320, 240],
         seconds,
@@ -239,7 +241,8 @@ fn without_dye_panel(out: &Path, receipt: &mut Vec<serde_json::Value>, alpha: u8
 #[test]
 fn native_metal_uses_evaluated_constants_selected_dyes_and_exports() {
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let out = configured
         .as_deref()
         .map(Path::new)

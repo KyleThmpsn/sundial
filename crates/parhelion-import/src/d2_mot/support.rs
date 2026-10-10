@@ -71,11 +71,18 @@ pub(crate) fn export_with_progress(
     let mut models = Vec::new();
     for entry in report["models"].as_array().context("source models")? {
         let tag = profile::hash(entry, "model")?;
-        let model = Payload(fs::read(source.join(format!("raw/{tag:08X}.bin")))?);
+        let model = if entry["cloth"] == true {
+            (*r.tag(tag, Some(0x80806F07))?).clone()
+        } else {
+            super::geometry::model(&source, tag)?
+        };
         let mesh = super::geometry::selected_mesh(&model, entry)?;
         {
             let parts = model.array(mesh + 32, 36, None)?;
-            for stage in [0, 1, 3, 7, 9, 12, 14, 16] {
+            for stage in [0, 1, 3, 7, 9, 12, 14, 16, 23] {
+                if stage == 23 && entry["cloth"] != true {
+                    continue;
+                }
                 for &at in parts
                     .get(
                         model.u16(mesh + 48 + stage * 2)? as usize
@@ -101,7 +108,7 @@ pub(crate) fn export_with_progress(
             index + 1
         ));
         let mat = r.tag(tag, None)?;
-        for at in [0x70, 0x2B0] {
+        for at in [0x70, 0x2B0, 0x340] {
             let shader = mat.u32(at)?;
             if shader != u32::MAX {
                 shaders.insert(shader);

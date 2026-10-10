@@ -16,12 +16,18 @@ fn preference_edits_preserve_unknown_fields_across_reopening() {
     )
     .unwrap();
     let mut preferences = ParhelionPreferences::load_from(&path).unwrap();
+    assert!(!preferences.show_preview_fps);
+    assert!(preferences.play_preview_animations);
     preferences.package_backup_retention = 7;
     preferences.backup_recipe_snapshots = false;
+    preferences.show_preview_fps = true;
+    preferences.play_preview_animations = false;
     preferences.save_to(&path).unwrap();
     assert_eq!(ParhelionPreferences::load_from(&path).unwrap(), preferences);
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved["future_option"], unknown);
+    assert_eq!(saved["show_preview_fps"], true);
+    assert_eq!(saved["play_preview_animations"], false);
     artifact("preferences-preservation.json", &saved);
 }
 

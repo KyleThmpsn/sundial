@@ -127,9 +127,8 @@ impl BrowserList<'_> {
                 })
                 .last()
         });
-        let keyboard_owner = ui.is_enabled()
-            && !ui.memory(eframe::egui::Memory::any_popup_open)
-            && top == Some(ui.layer_id());
+        let keyboard_owner =
+            ui.is_enabled() && !egui::Popup::is_any_open(ui) && top == Some(ui.layer_id());
         let keyboard_step = if keyboard_owner {
             ui.input_mut(|input| {
                 if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {

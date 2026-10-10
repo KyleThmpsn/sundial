@@ -83,7 +83,7 @@ impl SundialApp {
         let equipment_editable = account::can_mutate_equipment(&self.document);
         ui.horizontal(|ui| {
             ui.heading("Character Inventory");
-            crate::ui_help::info(ui, "Each character's stored and equipped items.");
+            crate::ui::help::info(ui, "Each character's stored and equipped items.");
         });
         if self.document.uses_json_account() {
             draw_schema_notice(ui, mode, InventoryPageKind::Character);
@@ -389,7 +389,7 @@ impl SundialApp {
             .iter()
             .copied()
             .filter(|metadata| {
-                crate::account_contract::inventory_bucket_available(
+                crate::account::contract::inventory_bucket_available(
                     metadata.native_bucket_id,
                     self.document.supports_emote_collection(),
                 )

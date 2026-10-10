@@ -59,10 +59,10 @@ pub(super) fn compile(text: &str, vertex: bool) -> Result<Compiled> {
     static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
     let cache = CACHE.get_or_init(Mutex::default);
     let key = key(text, vertex);
-    if let Ok(mut cache) = cache.lock() {
-        if let Some(value) = cache.get(&key) {
-            return Ok(value.clone());
-        }
+    if let Ok(mut cache) = cache.lock()
+        && let Some(value) = cache.get(&key)
+    {
+        return Ok(value.clone());
     }
     // Do not hold a global lock during compilation. Errors are never cached.
     let text = text.to_owned();

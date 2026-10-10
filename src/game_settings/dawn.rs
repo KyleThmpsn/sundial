@@ -4,7 +4,7 @@ pub(crate) use page::draw;
 
 // Limits a Dawn runtime compiles in come from the contract its account reader checks. The
 // engine no-definition hash cannot identify an authored item or plug.
-use crate::account_contract::{CHARACTER_CAPACITY, MAX_ITEM_PLUGS as PLUG_CAPACITY};
+use crate::account::contract::{CHARACTER_CAPACITY, MAX_ITEM_PLUGS as PLUG_CAPACITY};
 use crate::hash::{FNV1_EMPTY_HASH as NO_DEFINITION_HASH, parse_unsigned_value};
 use crate::persistence::dawn_account::contract::{
     CHARACTER_ITEM_CAPACITY, CHARACTER_RANGES, EQUIPMENT_SLOTS,

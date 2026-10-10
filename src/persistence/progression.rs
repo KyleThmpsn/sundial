@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 use crate::catalog::UnlockDefinition;
 
 pub(crate) const ACCOUNT_FLAG_CAPACITY: usize =
-    crate::account_contract::SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY;
+    crate::account::contract::SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY;
 pub(crate) const PROFILE_FLAG_CAPACITY: usize = 512;
 pub(crate) const CHARACTER_FLAG_CAPACITY: usize = 256;
 pub(crate) const OBJECTIVE_VALUE_CAPACITY: usize = 6_200;
@@ -44,7 +44,7 @@ pub(crate) const FAMILY5_OVERRIDE_CAPACITY: usize = 100;
 pub(crate) const FAMILY5_FLAG_SLOT_MAXIMUM: usize = 23_499;
 pub(crate) const FAMILY5_VALUE_SLOT_MAXIMUM: usize = 15_499;
 pub(crate) const FAMILY5_FLAG_VALUE_MAXIMUM: u8 = 2;
-pub(crate) const ACCOUNT_FLAG_BANK: u8 = crate::account_contract::SHADOWKEEP_ACCOUNT_FLAG_BANK;
+pub(crate) const ACCOUNT_FLAG_BANK: u8 = crate::account::contract::SHADOWKEEP_ACCOUNT_FLAG_BANK;
 pub(crate) const PROFILE_FLAG_BANK: u8 = 2;
 pub(crate) const CHARACTER_OBJECT_FLAG_BANK: u8 = 3;
 pub(crate) const CHARACTER_FLAG_BANK: u8 = 6;

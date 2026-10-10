@@ -13,6 +13,7 @@ use crate::entity::{WEAPON_ENTITY_CLASS, validate_weapon_entity};
 
 pub mod catalog;
 pub mod effect_length;
+pub mod modifiers;
 pub mod projectile;
 pub mod residency;
 
@@ -118,12 +119,18 @@ impl Kind {
     }
 }
 
-/// Replace one directly referenced projectile without replacing the perk's action.
+/// Replace one directly referenced projectile without replacing the perk's action. With
+/// `donor_graph` equal to `source_graph`, the perk keeps its projectile and only `damage_type`
+/// changes it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Selection {
     pub source_graph: u32,
     pub donor_graph: u32,
+    /// The damage type every damage profile the projectile's graphs name deals, on private
+    /// copies of the profiles. `None` keeps each profile's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damage_type: Option<super::program::DamageMode>,
 }
 
 pub fn kind(payload: &[u8]) -> Result<Option<Kind>, String> {

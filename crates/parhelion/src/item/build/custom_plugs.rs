@@ -283,7 +283,7 @@ pub(super) fn plan(
     sources: &sources::ProjectSources,
     resolved: &[resolve::ResolvedWeapon],
     sandbox_perk_string_template: &[u8],
-) -> AuthoringResult<Vec<ResolvedCustomPlug>> {
+) -> AuthoringResult<Planned> {
     let custom_plug_count = resolved.iter().try_fold(0usize, |count, donor| {
         count
             .checked_add(donor.weapon.overrides.socket_plug_variants.len())
@@ -295,7 +295,7 @@ pub(super) fn plan(
         .copied()
         .collect::<BTreeSet<_>>();
     occupied_item_hashes.extend(resolved.iter().map(|donor| donor.weapon.identity.item_hash));
-    let (mut occupied_perk_hashes, mut occupied_runtime_keys) =
+    let (occupied_perk_hashes, occupied_runtime_keys) =
         occupied_perk_identities(sources, resolved)?;
     let mut occupied_localized_hashes = BTreeSet::from([
         LOCALIZATION_DONOR_STRING_HASHES[0],
@@ -342,7 +342,14 @@ pub(super) fn plan(
         .len()
         .checked_mul(2)
         .ok_or_else(|| invalid("Authored weapon host-tag count overflowed"))?;
+    let mut occupied = Occupied {
+        items: occupied_item_hashes,
+        perks: occupied_perk_hashes,
+        runtime_keys: occupied_runtime_keys,
+        localized: occupied_localized_hashes,
+    };
     let mut custom_plugs: Vec<ResolvedCustomPlug> = Vec::with_capacity(custom_plug_count);
+    let mut mods = Vec::new();
     let mut shared_keys = Vec::with_capacity(custom_plug_count);
     for (weapon_ordinal, donor) in resolved.iter().enumerate() {
         let mut variants = donor.weapon.overrides.socket_plug_variants.clone();
@@ -357,280 +364,367 @@ pub(super) fn plan(
                 usize::from(variant.choice_index) + 1
             );
             (|| -> AuthoringResult<()> {
-                    let source =
-                        read_private_plug_source(sources, &variant, sandbox_perk_string_template)?;
-                    let usage = CustomPlugUse {
-                        weapon_ordinal,
-                        socket_index: usize::from(variant.socket_index),
-                        choice_index: usize::from(variant.choice_index),
+                let source =
+                    read_private_plug_source(sources, &variant, sandbox_perk_string_template)?;
+                if donor.weapon.kind == ItemKind::Mod {
+                    // A mod's perk is the item itself, so it takes the item's own place,
+                    // tags and text, and never shares a plug with a socket's perk.
+                    let identity = donor.weapon.identity;
+                    let tag = |offset: usize| -> AuthoringResult<TagHash> {
+                        Ok(TagHash::new(
+                            HOST_PACKAGE_ID,
+                            u16::try_from(HOST_EXPECTED_ENTRY_COUNT + weapon_ordinal * 2 + offset)
+                                .map_err(|_| invalid("Mod tag index does not fit 16 bits"))?,
+                        ))
                     };
-                    let shared_key =
-                        sharing::Key::new(sources, &variant, source.classification, source.classification_perk_index)?;
-                    if let Some(index) = shared_keys.iter().position(|key| *key == shared_key) {
-                        custom_plugs[index].uses.push(usage);
-                        return Ok(());
-                    }
-                    shared_keys.push(shared_key);
-                    let custom_ordinal = custom_plugs.len();
-                    let authored_item_index = u16::try_from(
-                        sources
-                            .stock_item_count
-                            .checked_add(resolved.len())
-                            .and_then(|count| count.checked_add(custom_ordinal))
-                            .ok_or_else(|| invalid("Private socket-plug item index overflowed"))?,
-                    )
-                    .map_err(|_| invalid("Private socket-plug item index does not fit 16 bits"))?;
-                    let tag_ordinal = private_host_ordinal_base
-                        .checked_add(
-                            custom_ordinal
-                                .checked_mul(2)
-                                .ok_or_else(|| invalid("Private socket-plug tag index overflowed"))?,
-                        )
-                        .ok_or_else(|| invalid("Private socket-plug tag index overflowed"))?;
-                    let authored_definition_tag = TagHash::new(
-                        HOST_PACKAGE_ID,
-                        u16::try_from(HOST_EXPECTED_ENTRY_COUNT + tag_ordinal).map_err(|_| {
-                            invalid("Private socket-plug definition tag does not fit 16 bits")
-                        })?,
-                    );
-                    let authored_string_tag = TagHash::new(
-                        HOST_PACKAGE_ID,
-                        u16::try_from(HOST_EXPECTED_ENTRY_COUNT + tag_ordinal + 1)
-                            .map_err(|_| invalid("Private socket-plug string tag does not fit 16 bits"))?,
-                    );
-                    let item_role = format!(
-                        "socket/{}/choice/{}/private-plug",
-                        variant.socket_index, variant.choice_index
-                    );
-                    let authored_item_hash = allocate_identity_hash(
+                    let placement = Placement {
+                        roles: "mod".into(),
+                        item_index: u16::try_from(sources.stock_item_count + weapon_ordinal)
+                            .map_err(|_| invalid("Mod item index does not fit 16 bits"))?,
+                        definition_tag: tag(0)?,
+                        string_tag: tag(1)?,
+                        own: Some((identity.item_hash, identity.name_hash, identity.flavor_hash)),
+                        owner: Some(weapon_ordinal),
+                    };
+                    mods.push(resolve_plug(
+                        sources,
                         &donor.weapon.namespace,
-                        &item_role,
-                        &mut occupied_item_hashes,
-                        None,
-                    )?;
-                    let authored_name = variant.name.clone();
-                    let authored_name_hash = authored_name
-                        .as_ref()
-                        .map(|_| {
-                            allocate_identity_hash(
-                                &donor.weapon.namespace,
-                                &format!(
-                                    "socket/{}/choice/{}/private-plug/name",
-                                    variant.socket_index, variant.choice_index
-                                ),
-                                &mut occupied_localized_hashes,
-                                Some(LOCALIZATION_DONOR_STRING_HASHES[1]),
-                            )
-                        })
-                        .transpose()?;
-                    let authored_description_hash = variant
-                        .description
-                        .as_ref()
-                        .map(|_| {
-                            allocate_identity_hash(
-                                &donor.weapon.namespace,
-                                &format!(
-                                    "socket/{}/choice/{}/private-plug/description",
-                                    variant.socket_index, variant.choice_index
-                                ),
-                                &mut occupied_localized_hashes,
-                                Some(LOCALIZATION_DONOR_STRING_HASHES[1]),
-                            )
-                        })
-                        .transpose()?;
-                    let mut private_perks = Vec::with_capacity(variant.sandbox_perks.len());
-                    let mut effect_indices = Vec::new();
-                    let edited = variant
-                        .sandbox_perks
-                        .iter()
-                        .map(|perk| perk.source_perk_index)
-                        .collect::<BTreeSet<_>>();
-                    let effects = variant
-                        .sandbox_perks
-                        .into_iter()
-                        .enumerate()
-                        .map(|(position, perk)| {
-                            let hidden = if variant.replace_effects {
-                                position > 0
-                            } else {
-                                variant
-                                    .additional_sandbox_perks
-                                    .contains(&perk.source_perk_index)
-                            };
-                            (perk, hidden)
-                        })
-                        .chain(
-                            variant
-                                .additional_sandbox_perks
-                                .iter()
-                                .copied()
-                                .filter(|index| !edited.contains(index))
-                                .map(|source_perk_index| {
-                                    (
-                                        WeaponSandboxPerkRuntimeOverride {
-                                            program: None,
-                                            projectiles: Vec::new(),
-                                            source_perk_index,
-                                            activation: None,
-                                            runtime_values: Vec::new(),
-                                            action_float_values: Vec::new(),
-                                        },
-                                        true,
-                                    )
-                                }),
-                        );
-                    for (perk, hidden) in effects {
-                        effect_indices.push(perk.source_perk_index);
-                        if !variant.replace_effects
-                            && !hidden
-                            && !source.perk_indices.contains(&perk.source_perk_index)
-                        {
-                            return Err(invalid(format!(
-                                "Private socket-plug donor 0x{:08X} does not contain finished sandbox-perk index {}",
-                                variant.source_plug_hash, perk.source_perk_index
-                            )));
-                        }
-                        let Some(runtime_action) = effect_action(sources, &perk)? else {
-                            continue;
-                        };
-                        let perk_role = format!(
-                            "socket/{}/choice/{}/perk/{}/definition",
-                            variant.socket_index, variant.choice_index, perk.source_perk_index
-                        );
-                        let runtime_role = format!(
-                            "socket/{}/choice/{}/perk/{}/runtime",
-                            variant.socket_index, variant.choice_index, perk.source_perk_index
-                        );
-                        private_perks.push(ResolvedPrivateSandboxPerk {
-                            program: perk.program,
-                            source_index: usize::from(perk.source_perk_index),
-                            projectiles: perk.projectiles,
-                            activation: perk.activation,
-                            hidden,
-                            runtime_action,
-                            authored_perk_hash: allocate_identity_hash(
-                                &donor.weapon.namespace,
-                                &perk_role,
-                                &mut occupied_perk_hashes,
-                                None,
-                            )?,
-                            authored_runtime_key: allocate_identity_hash(
-                                &donor.weapon.namespace,
-                                &runtime_role,
-                                &mut occupied_runtime_keys,
-                                None,
-                            )?,
-                            runtime_values: perk.runtime_values,
-                            action_float_values: perk.action_float_values,
-                        });
-                    }
-                    // The tooltip shows a plug's visible perks with their own text, so a plug
-                    // with authored text that keeps its source's perks shows each visible one it
-                    // leaves alone through a private copy. A perk with an action becomes an
-                    // unedited private perk and a declaration-only one a copy without an action.
-                    // The stock rows stay as they ship.
-                    let mut presented_perks = Vec::new();
-                    if !variant.replace_effects
-                        && (authored_name_hash.is_some() || authored_description_hash.is_some())
-                    {
-                        for &index in &source.perk_indices {
-                            if edited.contains(&index)
-                                || variant.additional_sandbox_perks.contains(&index)
-                            {
-                                continue;
-                            }
-                            let visible = finished_sandbox_perk_at(
-                                &sources.stock_finished_sandbox_perks,
-                                usize::from(index),
-                            )
-                            .map_err(invalid)?
-                            .detail
-                            .as_ref()
-                            .is_some_and(|detail| read_u16(detail, 0).ok() != Some(u16::MAX));
-                            if !visible {
-                                continue;
-                            }
-                            let unedited = WeaponSandboxPerkRuntimeOverride {
-                                program: None,
-                                projectiles: Vec::new(),
-                                source_perk_index: index,
-                                activation: None,
-                                runtime_values: Vec::new(),
-                                action_float_values: Vec::new(),
-                            };
-                            let authored_perk_hash = allocate_identity_hash(
-                                &donor.weapon.namespace,
-                                &format!(
-                                    "socket/{}/choice/{}/perk/{index}/definition",
-                                    variant.socket_index, variant.choice_index
-                                ),
-                                &mut occupied_perk_hashes,
-                                None,
-                            )?;
-                            let Some(runtime_action) = effect_action(sources, &unedited)? else {
-                                presented_perks.push((usize::from(index), authored_perk_hash));
-                                continue;
-                            };
-                            private_perks.push(ResolvedPrivateSandboxPerk {
-                                program: None,
-                                source_index: usize::from(index),
-                                projectiles: Vec::new(),
-                                activation: None,
-                                hidden: false,
-                                runtime_action,
-                                authored_perk_hash,
-                                authored_runtime_key: allocate_identity_hash(
-                                    &donor.weapon.namespace,
-                                    &format!(
-                                        "socket/{}/choice/{}/perk/{index}/runtime",
-                                        variant.socket_index, variant.choice_index
-                                    ),
-                                    &mut occupied_runtime_keys,
-                                    None,
-                                )?,
-                                runtime_values: Vec::new(),
-                                action_float_values: Vec::new(),
-                            });
-                        }
-                    }
-                    custom_plugs.push(ResolvedCustomPlug {
-                        cosmetic: source.cosmetic,
-                        replace_effects: variant.replace_effects,
-                        investment_stats: variant.investment_stats,
-                        uses: vec![usage],
-                        source_item_hash: variant.source_plug_hash,
-                        source_item_index: source.item_index,
-                        source_definition_tag: source.definition_tag,
-                        source_string_tag: source.string_tag,
-                        source_definition: source.definition,
-                        source_strings: source.strings,
-                        source_icon_container: source.icon_container,
-                        authored_icon_container: None,
-                        icon: variant.icon.clone(),
-                        authored_item_hash,
-                        authored_item_index,
-                        authored_definition_tag,
-                        authored_string_tag,
-                        authored_name_hash,
-                        authored_name,
-                        classification: source.classification,
-                        classification_perk_index: source.classification_perk_index,
-                        classification_item_index: variant
-                            .classification_donor_hash
-                            .map(|hash| sources.stock_item_rows_by_hash[&hash][0]),
-                        authored_description_hash,
-                        authored_description: variant.description,
-                        additional_sandbox_perks: variant.additional_sandbox_perks,
-                        effect_indices,
-                        sandbox_perks: private_perks,
-                        presented_perks,
-                    });
-                    Ok(())
-                })().map_err(|error| donor.weapon.in_recipe_as(error, context))?;
+                        (variant, source),
+                        placement,
+                        &mut occupied,
+                    )?);
+                    return Ok(());
+                }
+                let usage = CustomPlugUse {
+                    weapon_ordinal,
+                    socket_index: usize::from(variant.socket_index),
+                    choice_index: usize::from(variant.choice_index),
+                };
+                let shared_key = sharing::Key::new(
+                    sources,
+                    &variant,
+                    source.classification,
+                    source.classification_perk_index,
+                )?;
+                if let Some(index) = shared_keys.iter().position(|key| *key == shared_key) {
+                    custom_plugs[index].uses.push(usage);
+                    return Ok(());
+                }
+                shared_keys.push(shared_key);
+                let custom_ordinal = custom_plugs.len();
+                let authored_item_index = u16::try_from(
+                    sources
+                        .stock_item_count
+                        .checked_add(resolved.len())
+                        .and_then(|count| count.checked_add(custom_ordinal))
+                        .ok_or_else(|| invalid("Private socket-plug item index overflowed"))?,
+                )
+                .map_err(|_| invalid("Private socket-plug item index does not fit 16 bits"))?;
+                let tag_ordinal = private_host_ordinal_base
+                    .checked_add(
+                        custom_ordinal
+                            .checked_mul(2)
+                            .ok_or_else(|| invalid("Private socket-plug tag index overflowed"))?,
+                    )
+                    .ok_or_else(|| invalid("Private socket-plug tag index overflowed"))?;
+                let authored_definition_tag = TagHash::new(
+                    HOST_PACKAGE_ID,
+                    u16::try_from(HOST_EXPECTED_ENTRY_COUNT + tag_ordinal).map_err(|_| {
+                        invalid("Private socket-plug definition tag does not fit 16 bits")
+                    })?,
+                );
+                let authored_string_tag = TagHash::new(
+                    HOST_PACKAGE_ID,
+                    u16::try_from(HOST_EXPECTED_ENTRY_COUNT + tag_ordinal + 1).map_err(|_| {
+                        invalid("Private socket-plug string tag does not fit 16 bits")
+                    })?,
+                );
+                let placement = Placement {
+                    roles: format!(
+                        "socket/{}/choice/{}",
+                        variant.socket_index, variant.choice_index
+                    ),
+                    item_index: authored_item_index,
+                    definition_tag: authored_definition_tag,
+                    string_tag: authored_string_tag,
+                    own: None,
+                    owner: None,
+                };
+                let mut plug = resolve_plug(
+                    sources,
+                    &donor.weapon.namespace,
+                    (variant, source),
+                    placement,
+                    &mut occupied,
+                )?;
+                plug.uses.push(usage);
+                custom_plugs.push(plug);
+                Ok(())
+            })()
+            .map_err(|error| donor.weapon.in_recipe_as(error, context))?;
         }
     }
 
-    Ok(custom_plugs)
+    Ok(Planned {
+        sockets: custom_plugs,
+        mods,
+    })
+}
+
+/// The private plugs a project builds: those placed in sockets, which take the private range after
+/// the items, and each mod's own, which takes the mod's item place.
+pub(super) struct Planned {
+    pub sockets: Vec<ResolvedCustomPlug>,
+    pub mods: Vec<ResolvedCustomPlug>,
+}
+
+/// The identities an authored plug and its perks may not take.
+struct Occupied {
+    items: BTreeSet<u32>,
+    perks: BTreeSet<u32>,
+    runtime_keys: BTreeSet<u32>,
+    localized: BTreeSet<u32>,
+}
+
+/// Where one private plug goes and what it is named there.
+struct Placement {
+    /// The prefix of the roles its identities are allocated under. A socket plug's roles name its
+    /// socket and choice, which keeps the identities earlier builds allocated.
+    roles: String,
+    item_index: u16,
+    definition_tag: TagHash,
+    string_tag: TagHash,
+    /// A mod's own item hash, name hash and description hash. A socket plug allocates its own.
+    own: Option<(u32, u32, u32)>,
+    /// The mod whose item this plug is.
+    owner: Option<usize>,
+}
+
+/// One private plug from its variant and validated source, with its identities, private perks and
+/// the declaration-only perks that show its text.
+fn resolve_plug(
+    sources: &sources::ProjectSources,
+    namespace: &str,
+    (variant, source): (WeaponSocketPlugVariantOverride, PrivatePlugSource),
+    placement: Placement,
+    occupied: &mut Occupied,
+) -> AuthoringResult<ResolvedCustomPlug> {
+    let roles = &placement.roles;
+    let authored_item_hash = match placement.own {
+        Some((item_hash, _, _)) => item_hash,
+        None => allocate_identity_hash(
+            namespace,
+            &format!("{roles}/private-plug"),
+            &mut occupied.items,
+            None,
+        )?,
+    };
+    let authored_name = variant.name.clone();
+    let authored_name_hash = match placement.own {
+        Some((_, name_hash, _)) => Some(name_hash),
+        None => authored_name
+            .as_ref()
+            .map(|_| {
+                allocate_identity_hash(
+                    namespace,
+                    &format!("{roles}/private-plug/name"),
+                    &mut occupied.localized,
+                    Some(LOCALIZATION_DONOR_STRING_HASHES[1]),
+                )
+            })
+            .transpose()?,
+    };
+    let authored_description_hash = match placement.own {
+        Some((_, _, description_hash)) => Some(description_hash),
+        None => variant
+            .description
+            .as_ref()
+            .map(|_| {
+                allocate_identity_hash(
+                    namespace,
+                    &format!("{roles}/private-plug/description"),
+                    &mut occupied.localized,
+                    Some(LOCALIZATION_DONOR_STRING_HASHES[1]),
+                )
+            })
+            .transpose()?,
+    };
+    let mut private_perks = Vec::with_capacity(variant.sandbox_perks.len());
+    let mut effect_indices = Vec::new();
+    let edited = variant
+        .sandbox_perks
+        .iter()
+        .map(|perk| perk.source_perk_index)
+        .collect::<BTreeSet<_>>();
+    let effects = variant
+        .sandbox_perks
+        .into_iter()
+        .enumerate()
+        .map(|(position, perk)| {
+            let hidden = if variant.replace_effects {
+                position > 0
+            } else {
+                variant
+                    .additional_sandbox_perks
+                    .contains(&perk.source_perk_index)
+            };
+            (perk, hidden)
+        })
+        .chain(
+            variant
+                .additional_sandbox_perks
+                .iter()
+                .copied()
+                .filter(|index| !edited.contains(index))
+                .map(|source_perk_index| {
+                    (
+                        WeaponSandboxPerkRuntimeOverride {
+                            program: None,
+                            projectiles: Vec::new(),
+                            source_perk_index,
+                            activation: None,
+                            runtime_values: Vec::new(),
+                            action_float_values: Vec::new(),
+                        },
+                        true,
+                    )
+                }),
+        );
+    for (perk, hidden) in effects {
+        effect_indices.push(perk.source_perk_index);
+        if !variant.replace_effects
+            && !hidden
+            && !source.perk_indices.contains(&perk.source_perk_index)
+        {
+            return Err(invalid(format!(
+                "Private socket-plug donor 0x{:08X} does not contain finished sandbox-perk index {}",
+                variant.source_plug_hash, perk.source_perk_index
+            )));
+        }
+        let Some(runtime_action) = effect_action(sources, &perk)? else {
+            continue;
+        };
+        private_perks.push(ResolvedPrivateSandboxPerk {
+            program: perk.program,
+            source_index: usize::from(perk.source_perk_index),
+            projectiles: perk.projectiles,
+            activation: perk.activation,
+            hidden,
+            runtime_action,
+            authored_perk_hash: allocate_identity_hash(
+                namespace,
+                &format!("{roles}/perk/{}/definition", perk.source_perk_index),
+                &mut occupied.perks,
+                None,
+            )?,
+            authored_runtime_key: allocate_identity_hash(
+                namespace,
+                &format!("{roles}/perk/{}/runtime", perk.source_perk_index),
+                &mut occupied.runtime_keys,
+                None,
+            )?,
+            runtime_values: perk.runtime_values,
+            action_float_values: perk.action_float_values,
+        });
+    }
+    // The tooltip shows a plug's visible perks with their own text, so a plug with authored text
+    // that keeps its source's perks shows each visible one it leaves alone through a private copy.
+    // A perk with an action becomes an unedited private perk and a declaration-only one a copy
+    // without an action. The stock rows stay as they ship.
+    let mut presented_perks = Vec::new();
+    if !variant.replace_effects
+        && (authored_name_hash.is_some() || authored_description_hash.is_some())
+    {
+        for &index in &source.perk_indices {
+            if edited.contains(&index) || variant.additional_sandbox_perks.contains(&index) {
+                continue;
+            }
+            let visible =
+                finished_sandbox_perk_at(&sources.stock_finished_sandbox_perks, usize::from(index))
+                    .map_err(invalid)?
+                    .detail
+                    .as_ref()
+                    .is_some_and(|detail| read_u16(detail, 0).ok() != Some(u16::MAX));
+            if !visible {
+                continue;
+            }
+            let unedited = WeaponSandboxPerkRuntimeOverride {
+                program: None,
+                projectiles: Vec::new(),
+                source_perk_index: index,
+                activation: None,
+                runtime_values: Vec::new(),
+                action_float_values: Vec::new(),
+            };
+            let authored_perk_hash = allocate_identity_hash(
+                namespace,
+                &format!("{roles}/perk/{index}/definition"),
+                &mut occupied.perks,
+                None,
+            )?;
+            let Some(runtime_action) = effect_action(sources, &unedited)? else {
+                presented_perks.push((usize::from(index), authored_perk_hash));
+                continue;
+            };
+            private_perks.push(ResolvedPrivateSandboxPerk {
+                program: None,
+                source_index: usize::from(index),
+                projectiles: Vec::new(),
+                activation: None,
+                hidden: false,
+                runtime_action,
+                authored_perk_hash,
+                authored_runtime_key: allocate_identity_hash(
+                    namespace,
+                    &format!("{roles}/perk/{index}/runtime"),
+                    &mut occupied.runtime_keys,
+                    None,
+                )?,
+                runtime_values: Vec::new(),
+                action_float_values: Vec::new(),
+            });
+        }
+    }
+    Ok(ResolvedCustomPlug {
+        cosmetic: source.cosmetic,
+        replace_effects: variant.replace_effects,
+        investment_stats: variant.investment_stats,
+        uses: Vec::new(),
+        owner: placement.owner,
+        source_item_hash: variant.source_plug_hash,
+        source_item_index: source.item_index,
+        source_definition_tag: source.definition_tag,
+        source_string_tag: source.string_tag,
+        source_definition: source.definition,
+        source_strings: source.strings,
+        source_icon_container: source.icon_container,
+        authored_icon_container: None,
+        icon: variant.icon.clone(),
+        authored_item_hash,
+        authored_item_index: placement.item_index,
+        authored_definition_tag: placement.definition_tag,
+        authored_string_tag: placement.string_tag,
+        authored_name_hash,
+        authored_name,
+        classification: source.classification,
+        classification_perk_index: source.classification_perk_index,
+        classification_item_index: variant
+            .classification_donor_hash
+            .map(|hash| sources.stock_item_rows_by_hash[&hash][0]),
+        offered_like: variant.offer_everywhere.then(|| {
+            variant
+                .classification_donor_hash
+                .map_or(source.item_index, |hash| {
+                    sources.stock_item_rows_by_hash[&hash][0]
+                })
+        }),
+        authored_description_hash,
+        authored_description: variant.description,
+        additional_sandbox_perks: variant.additional_sandbox_perks,
+        effect_indices,
+        sandbox_perks: private_perks,
+        presented_perks,
+    })
 }
 
 pub(super) struct PerkCatalog<'a> {
@@ -656,7 +750,7 @@ pub(super) fn author_payloads(
     resolved: &[resolve::ResolvedWeapon],
     sandbox_perk_definition_template: &[u8; ITEM_SANDBOX_PERK_ROW_SIZE],
     sandbox_perk_string_template: &[u8],
-    catalog: &mut PerkCatalog<'_>,
+    (catalog, progress): (&mut PerkCatalog<'_>, &mut Progress<'_>),
 ) -> AuthoringResult<CustomPlugPayloads> {
     let mut custom_plug_definitions = Vec::with_capacity(custom_plugs.len());
     let mut custom_plug_strings = Vec::with_capacity(custom_plugs.len());
@@ -665,11 +759,23 @@ pub(super) fn author_payloads(
             .uses
             .iter()
             .map(|usage| usage.weapon_ordinal)
+            .chain(custom_plug.owner)
             .collect::<BTreeSet<_>>();
         catalog.weapon = match weapons.len() {
             1 => weapons.first().copied(),
             _ => None,
         };
+        let users = match catalog.weapon {
+            Some(weapon) => resolved[weapon].weapon.text.name.clone(),
+            None => format!("{} Items", weapons.len()),
+        };
+        progress.start(&format!(
+            "Compiling Private Perk: {} · {users}",
+            custom_plug
+                .authored_name
+                .as_deref()
+                .unwrap_or("Unnamed Perk")
+        ));
         (|| -> AuthoringResult<()> {
             let mut definition = custom_plug.source_definition.clone();
             if custom_plug.cosmetic {
@@ -1071,7 +1177,7 @@ impl RecordPlanner<'_> {
 
 /// Compiles an item's own records' private perks and entity copies into the catalog the private
 /// plugs compile into.
-pub(super) struct RecordCompiler<'a, 'b> {
+pub(super) struct RecordCompiler<'a, 'b, 'p> {
     pub(super) manager: &'a PackageManager,
     pub(super) catalog: &'a mut PerkCatalog<'b>,
     /// Where recolored effect assets go, and the list of placed asset tags the runtime
@@ -1080,10 +1186,20 @@ pub(super) struct RecordCompiler<'a, 'b> {
         &'a mut crate::asset_packages::AssetPackages,
         &'a mut Vec<TagHash>,
     ),
+    /// The build's runtime fragments, which keep each entity copy between builds.
+    pub(super) cache: &'a super::runtime::Cache,
+    /// The item compiling, as build progress names it.
+    pub(super) item: &'a str,
+    /// Reports each operation as it starts.
+    pub(super) progress: &'a mut Progress<'p>,
 }
 
-impl crate::subclass::compile::Compiler for RecordCompiler<'_, '_> {
+impl crate::subclass::compile::Compiler for RecordCompiler<'_, '_, '_> {
     type Perk = ResolvedPrivateSandboxPerk;
+
+    fn report(&mut self, operation: &str) {
+        self.progress.start(&format!("{operation} · {}", self.item));
+    }
 
     fn perk(
         &mut self,
@@ -1110,63 +1226,36 @@ impl crate::subclass::compile::Compiler for RecordCompiler<'_, '_> {
 
     fn entity(
         &mut self,
-        source: TagHash,
+        (label, source): (&str, TagHash),
         changes: crate::subclass::compile::EntityChanges<'_>,
         pattern: u32,
     ) -> AuthoringResult<TagHash> {
-        let crate::subclass::compile::EntityChanges {
-            values,
-            palettes,
-            tints,
-            grade,
-            swaps,
-            bank_values,
-        } = changes;
-        // Recolored effects first, so the graphs that draw them can name the private systems. A
-        // grade reaches the projectiles swapped in too.
+        let manager = self.manager;
+        let allocator = self.catalog.private_perk_runtime_tag_allocator;
+        let name = format!("{label} · {}", self.item);
         let (packages, placed) = &mut self.assets;
-        let replacements = swaps
-            .iter()
-            .map(|swap| swap.replacement)
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        let (mut patches, swapped_colors) = custom_runtime::palettes::author(
-            self.manager,
-            source,
-            (palettes, tints, grade),
-            &replacements,
+        // A copy is made from its stock entity and its changes besides the native payloads it
+        // reads, and its pattern names its fragment, one for each authored ability.
+        let copy = self.cache.ability_copy(
+            manager,
+            (
+                &format!("{pattern:08X}"),
+                &format!("{source:?}/{changes:?}"),
+                &name,
+            ),
+            (allocator, &mut *self.catalog.private_perk_runtime_new_tags),
             (&mut **packages, &mut **placed),
-        )?;
-        // Each swapped projectile becomes a private copy, named where the stock one was.
-        for (graph, swapped) in custom_runtime::swap_patches(
-            self.manager,
-            swaps,
-            &swapped_colors,
-            self.catalog.private_perk_runtime_tag_allocator,
-            &mut *self.catalog.private_perk_runtime_new_tags,
-        )? {
-            patches.entry(graph).or_default().extend(swapped);
-        }
-        // Bank row values patch the entity's bank, which gives the copy a private bank.
-        if !bank_values.is_empty() {
-            patches
-                .entry(source.0)
-                .or_default()
-                .extend(custom_runtime::bank_value_patches(
-                    self.manager,
-                    source,
-                    bank_values,
-                )?);
-        }
-        // The ability's own values, and those of the graphs it spawns, each on a copy.
-        let copy = custom_runtime::append_private_graph_tree(
-            self.manager,
-            source,
-            values,
-            &patches,
-            self.catalog.private_perk_runtime_tag_allocator,
-            &mut *self.catalog.private_perk_runtime_new_tags,
+            &mut *self.progress,
+            |tags, assets, progress| {
+                author_copy(
+                    manager,
+                    (&name, source),
+                    changes,
+                    (allocator, tags),
+                    assets,
+                    progress,
+                )
+            },
         )?;
         *self.catalog.entity_assignments = insert_sandbox_perk_runtime_assignment(
             &*self.catalog.entity_assignments,
@@ -1178,7 +1267,151 @@ impl crate::subclass::compile::Compiler for RecordCompiler<'_, '_> {
     }
 }
 
-impl RecordCompiler<'_, '_> {
+/// Copies the ability entity `source` with `changes` into `tags` and the asset packages,
+/// reporting each stage for `name` as it starts. Returns the copy.
+fn author_copy(
+    manager: &PackageManager,
+    (name, source): (&str, TagHash),
+    changes: crate::subclass::compile::EntityChanges<'_>,
+    (allocator, tags): (AppendedTagAllocator, &mut Vec<NewTagSpec>),
+    (packages, placed): (&mut crate::asset_packages::AssetPackages, &mut Vec<TagHash>),
+    progress: &mut Progress<'_>,
+) -> AuthoringResult<TagHash> {
+    let crate::subclass::compile::EntityChanges {
+        values,
+        palettes,
+        tints,
+        grade,
+        swaps,
+        bank_values,
+        damage_type,
+        hud_glyph,
+        hud_keys,
+        attached,
+    } = changes;
+    // Recolored effects first, so the graphs that draw them can name the private systems. A
+    // grade reaches the projectiles swapped in too.
+    if !palettes.is_empty() || !tints.is_empty() || grade.is_some() {
+        progress.start(&format!("Recoloring Effects: {name}"));
+    }
+    let replacements = swaps
+        .iter()
+        .map(|swap| swap.replacement)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut graphs = sundial::package_authoring::ability_palette::Graphs::new(
+        manager,
+        crate::subclass::SPAWN_DEPTH,
+    );
+    let (mut patches, mut swapped_colors) = custom_runtime::palettes::author(
+        manager,
+        source,
+        (palettes, tints, grade),
+        &replacements,
+        &mut graphs,
+        (packages, placed),
+    )?;
+    // The damage type reaches the graphs' damage profiles through private copies, and the
+    // projectiles swapped in take it too, unless their swaps name a type of their own. A
+    // projectile two swaps fire is copied once, so their types must agree.
+    let mut typed = Vec::with_capacity(replacements.len());
+    for &replacement in &replacements {
+        let modes = swaps
+            .iter()
+            .filter(|swap| swap.replacement == replacement)
+            .filter_map(|swap| swap.damage_type.map(crate::subclass::damage_mode))
+            .collect::<std::collections::BTreeSet<_>>();
+        if modes.len() > 1 {
+            return Err(invalid(format!(
+                "{name} fires projectile 0x{replacement:08X} with two damage types"
+            )));
+        }
+        typed.push((replacement, modes.into_iter().next()));
+    }
+    if damage_type.is_some() || typed.iter().any(|(_, mode)| mode.is_some()) {
+        progress.start(&format!("Changing Damage Type: {name}"));
+    }
+    let (damage, swapped_damage) = custom_runtime::damage::author(
+        manager,
+        (source, damage_type),
+        &typed,
+        &mut graphs,
+        allocator,
+        tags,
+    )?;
+    for (graph, graph_patches) in damage {
+        patches.entry(graph).or_default().extend(graph_patches);
+    }
+    for (projectile, graphs) in swapped_damage {
+        let colors = swapped_colors.entry(projectile).or_default();
+        for (graph, graph_patches) in graphs {
+            colors.entry(graph).or_default().extend(graph_patches);
+        }
+    }
+    // Each swapped projectile becomes a private copy, named where the stock one was, with the
+    // values set on it. The rest of the values go to the ability's own tree.
+    if !swaps.is_empty() {
+        progress.start(&format!("Swapping Projectiles: {name}"));
+    }
+    let (values, swapped_values) =
+        custom_runtime::split_swapped_values(manager, source, values, &replacements)?;
+    for (graph, swapped) in custom_runtime::swap_patches(
+        manager,
+        swaps,
+        (&swapped_colors, &swapped_values),
+        allocator,
+        tags,
+    )? {
+        patches.entry(graph).or_default().extend(swapped);
+    }
+    // Bank row values patch the entity's bank, which gives the copy a private bank.
+    if !bank_values.is_empty() {
+        patches
+            .entry(source.0)
+            .or_default()
+            .extend(custom_runtime::bank_value_patches(
+                manager,
+                source,
+                bank_values,
+            )?);
+    }
+    // The HUD tile's glyph, which the energy controller names in its instance and definition, and
+    // the bank's rows that name one in its place while the entry's keys apply.
+    if let Some(glyph) = hud_glyph {
+        let own = patches.entry(source.0).or_default();
+        own.extend(hud_glyph_patches(manager, source, glyph)?);
+        own.extend(custom_runtime::bank_glyph_patches(
+            manager, source, hud_keys, glyph,
+        )?);
+    }
+    for child in attached {
+        let patches = patches.entry(child.graph).or_default();
+        patches.extend(hud_glyph_patches(
+            manager,
+            TagHash(child.graph),
+            child.glyph,
+        )?);
+        patches.extend(custom_runtime::attached_glyph_patches(
+            manager,
+            TagHash(child.graph),
+            &child.variants,
+        )?);
+    }
+    // The ability's own values, and those of the graphs it spawns, each on a copy.
+    progress.start(&format!("Copying Graphs: {name}"));
+    custom_runtime::append_private_graph_tree(
+        manager,
+        source,
+        &values,
+        &patches,
+        &std::collections::BTreeMap::new(),
+        allocator,
+        tags,
+    )
+}
+
+impl RecordCompiler<'_, '_, '_> {
     /// Compiles `perk`, then moves each ability key that `moves` names in its cloned action.
     /// Returns its finished row and how many keys moved.
     fn append(
@@ -1218,6 +1451,35 @@ impl RecordCompiler<'_, '_> {
             "The runtime action {action} of a private perk is not among the tags it added"
         )))
     }
+}
+
+/// Patches that make the energy controller of entity `source` name HUD glyph `glyph`, in its
+/// instance and its definition.
+fn hud_glyph_patches(
+    manager: &PackageManager,
+    source: TagHash,
+    glyph: u32,
+) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+    let entity = read_tag(manager, source, "ability entity")?;
+    let site = sundial::package_authoring::ability_hud::glyph_site(manager, &entity)
+        .map_err(invalid)?
+        .ok_or_else(|| invalid(format!("Ability entity {source} names no HUD glyph")))?;
+    let resource_index = u16::try_from(site.resource_index)
+        .map_err(|_| invalid("The HUD glyph's resource index does not fit 16 bits"))?;
+    Ok(site
+        .offsets()
+        .map_err(invalid)?
+        .into_iter()
+        .map(|offset| WeaponRuntimeResourcePatch {
+            binding_hash: site.binding_hash,
+            resource_index,
+            offset,
+            bytes: glyph.to_le_bytes().to_vec(),
+            graph_values: Vec::new(),
+            graph_removals: Vec::new(),
+            graph_trajectories: None,
+        })
+        .collect())
 }
 
 /// Whether an effect is its stock row as the game ships it: no program and no overrides.

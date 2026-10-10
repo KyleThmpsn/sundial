@@ -1,9 +1,12 @@
-//! An ability's Effect Colors: a row that grades the final color of every particle effect, a row
-//! that turns every palette and tint at once, each palette its effects draw with, as a swatch with
-//! the stock palette its colors come from, and each tint, a color its materials hold, as a chip. Each has its hue, saturation and brightness. Palettes and tints load
-//! on a worker, once per ability entity, from the entity and the graphs it spawns, as the build
-//! finds them. Every stock ability's palettes load once on another, named by the abilities that
-//! draw with them.
+//! An ability's Effect Colors: Overall, a row that grades the final color of every particle effect,
+//! beside its palettes and tints as graded, then each palette its effects draw with, as a swatch
+//! with the stock palette its colors come from, and each tint, a color its materials hold, as a
+//! chip. Each has its hue, saturation and brightness. Overall applies on top of every row, so each
+//! swatch and chip shows its color with Overall's grade, as the game draws it. With several
+//! colors, each row's menu gives its values to every color once, so no second row of controls
+//! stacks with Overall. Palettes and tints load on a worker, once per ability entity, from the
+//! entity and the graphs it spawns, as the build finds them. Every stock ability's palettes load
+//! once on another, named by the abilities that draw with them.
 use super::*;
 use crate::subclass::palette::{MOST_HUE, MOST_PERCENT};
 use crate::subclass::{EffectGrade, PaletteEdit, TintEdit};
@@ -54,6 +57,22 @@ pub(super) struct Stock {
 
 type StockLoad = Result<Vec<Stock>, String>;
 
+/// What the Overall preview shows: the entity, its grade, each palette's change and whether a
+/// taken palette's pixels had loaded for it, and each tint's change.
+type OverallKey = (
+    u32,
+    EffectGrade,
+    Vec<(PaletteEdit, bool)>,
+    Vec<Option<TintEdit>>,
+);
+
+/// One color of the Overall preview: a palette's pixels as its change colors them, or a tint's
+/// color as changed.
+enum Shown {
+    Palette(Vec<u8>),
+    Tint([f32; 3]),
+}
+
 /// Each entity's palettes once loaded, every stock palette, and the swatches shown for them.
 #[derive(Default)]
 pub(super) struct Colors {
@@ -61,10 +80,11 @@ pub(super) struct Colors {
     loading: Option<(u32, Receiver<Load>)>,
     stock: Option<Result<Arc<Vec<Stock>>, String>>,
     stock_loading: Option<Receiver<StockLoad>>,
-    /// Each palette's swatch for the change it shows, and whether a taken palette's pixels had
-    /// loaded for it.
-    swatches: BTreeMap<u32, ((PaletteEdit, bool), egui::TextureHandle)>,
+    /// Each palette's swatch for the change and grade it shows, and whether a taken palette's
+    /// pixels had loaded for it.
+    swatches: BTreeMap<u32, ((PaletteEdit, EffectGrade, bool), egui::TextureHandle)>,
     stock_swatches: BTreeMap<u32, egui::TextureHandle>,
+    overall: Option<(OverallKey, egui::TextureHandle)>,
     query: String,
 }
 
@@ -147,16 +167,22 @@ impl Colors {
             .map(|stock| stock.pixels.as_slice())
     }
 
-    /// The swatch of `palette` as `edit` colors it, made again only when the edit changes or a
-    /// taken palette's pixels arrive.
+    /// The pixels of the stock palette `edit` takes its colors from, once they have loaded.
+    fn taken(&self, edit: PaletteEdit) -> Option<&[u8]> {
+        edit.from.and_then(|from| self.stock_pixels(from))
+    }
+
+    /// The swatch of `palette` as `edit` colors it and `grade` grades it, made again only when
+    /// either changes or a taken palette's pixels arrive.
     fn swatch(
         &mut self,
         ctx: &egui::Context,
         palette: &Loaded,
         edit: PaletteEdit,
+        grade: EffectGrade,
     ) -> egui::TextureHandle {
-        let taken = edit.from.and_then(|from| self.stock_pixels(from));
-        let key = (edit, taken.is_some());
+        let taken = self.taken(edit);
+        let key = (edit, grade, taken.is_some());
         if let Some((shown, texture)) = self.swatches.get(&palette.header)
             && *shown == key
         {
@@ -164,7 +190,12 @@ impl Colors {
         }
         let mut pixels = taken.unwrap_or(&palette.pixels).to_vec();
         edit.apply(&mut pixels);
-        let texture = texture(ctx, palette.header, &pixels);
+        grade_pixels(&mut pixels, grade);
+        let texture = texture(
+            ctx,
+            format!("ability-palette-{:08X}", palette.header),
+            &pixels,
+        );
         self.swatches.insert(palette.header, (key, texture.clone()));
         texture
     }
@@ -172,21 +203,145 @@ impl Colors {
     fn stock_swatch(&mut self, ctx: &egui::Context, stock: &Stock) -> egui::TextureHandle {
         self.stock_swatches
             .entry(stock.header)
-            .or_insert_with(|| texture(ctx, stock.header, &stock.pixels))
+            .or_insert_with(|| {
+                texture(
+                    ctx,
+                    format!("ability-palette-{:08X}", stock.header),
+                    &stock.pixels,
+                )
+            })
             .clone()
+    }
+
+    /// The Overall preview of `entity`'s palettes and tints as `edits` change and grade them, made
+    /// again only when they change or a taken palette's pixels arrive.
+    fn overall(
+        &mut self,
+        ctx: &egui::Context,
+        (entity, found): (u32, &Found),
+        edits: &EntryEdits,
+    ) -> egui::TextureHandle {
+        let grade = edits.grade.unwrap_or(EffectGrade::STOCK);
+        let palettes = found
+            .palettes
+            .iter()
+            .map(|palette| {
+                let edit = edits.palette(palette.header);
+                (edit, self.taken(edit).is_some())
+            })
+            .collect();
+        let tints = found
+            .tints
+            .iter()
+            .map(|tint| edits.tint(tint.rgb))
+            .collect();
+        let key: OverallKey = (entity, grade, palettes, tints);
+        if let Some((shown, texture)) = &self.overall
+            && *shown == key
+        {
+            return texture.clone();
+        }
+        let mut sources = found
+            .palettes
+            .iter()
+            .map(|palette| {
+                let edit = edits.palette(palette.header);
+                let mut pixels = self.taken(edit).unwrap_or(&palette.pixels).to_vec();
+                edit.apply(&mut pixels);
+                grade_pixels(&mut pixels, grade);
+                (palette.uses, Shown::Palette(pixels))
+            })
+            .chain(found.tints.iter().map(|tint| {
+                let rgb = final_tint(tint.rgb, edits.tint(tint.rgb), grade);
+                (tint.uses, Shown::Tint(rgb))
+            }))
+            .collect::<Vec<_>>();
+        // Effects whose colors no palette or tint holds show the grade over every hue.
+        if sources.is_empty() {
+            let mut pixels = spectrum();
+            grade_pixels(&mut pixels, grade);
+            sources.push((1, Shown::Palette(pixels)));
+        }
+        let pixels = overall_pixels(&sources);
+        let texture = texture(ctx, format!("ability-colors-{entity:08X}"), &pixels);
+        self.overall = Some((key, texture.clone()));
+        texture
     }
 }
 
-fn texture(ctx: &egui::Context, header: u32, pixels: &[u8]) -> egui::TextureHandle {
+fn texture(ctx: &egui::Context, name: String, pixels: &[u8]) -> egui::TextureHandle {
     let image = egui::ColorImage::from_rgba_unmultiplied(
         [usize::from(PALETTE_WIDTH), usize::from(PALETTE_HEIGHT)],
         pixels,
     );
-    ctx.load_texture(
-        format!("ability-palette-{header:08X}"),
-        image,
-        egui::TextureOptions::LINEAR,
-    )
+    ctx.load_texture(name, image, egui::TextureOptions::LINEAR)
+}
+
+/// The Overall preview's pixels, a palette's size: each final color across a share of the columns
+/// as wide as its share of the effect uses. A tint shows as its chip does.
+fn overall_pixels(shown: &[(usize, Shown)]) -> Vec<u8> {
+    let (width, height) = (usize::from(PALETTE_WIDTH), usize::from(PALETTE_HEIGHT));
+    let total = shown.iter().map(|(uses, _)| (*uses).max(1)).sum::<usize>();
+    let mut pixels = vec![0; width * height * 4];
+    let mut reached = 0;
+    for (uses, color) in shown {
+        let start = reached * width / total;
+        reached += (*uses).max(1);
+        let end = reached * width / total;
+        for column in start..end {
+            // The palette column this one shows, its share stretched over the whole palette.
+            let source = (column - start) * width / (end - start);
+            for row in 0..height {
+                let pixel: [u8; 4] = match color {
+                    Shown::Palette(palette) => {
+                        let at = (row * width + source) * 4;
+                        palette[at..at + 4].try_into().unwrap_or_default()
+                    }
+                    Shown::Tint(rgb) => chip_color(*rgb).to_array(),
+                };
+                let at = (row * width + column) * 4;
+                pixels[at..at + 4].copy_from_slice(&pixel);
+            }
+        }
+    }
+    pixels
+}
+
+/// Grades sRGB palette `pixels` as Overall grades the color every effect draws. The grade works in
+/// linear light, as a pixel program writes it, so each pixel is graded linear.
+fn grade_pixels(pixels: &mut [u8], grade: EffectGrade) {
+    use egui::ecolor::{gamma_u8_from_linear_f32, linear_f32_from_gamma_u8};
+    if grade.is_stock() {
+        return;
+    }
+    for pixel in pixels.chunks_exact_mut(4) {
+        let linear = [0, 1, 2].map(|channel| linear_f32_from_gamma_u8(pixel[channel]));
+        let graded = grade.apply(linear).map(gamma_u8_from_linear_f32);
+        pixel[..3].copy_from_slice(&graded);
+    }
+}
+
+/// A tint as the game draws it: its own change, then Overall's grade. A tint is linear already.
+fn final_tint(rgb: [f32; 3], edit: Option<TintEdit>, grade: EffectGrade) -> [f32; 3] {
+    let rgb = edit.map_or(rgb, |edit| edit.apply(rgb));
+    if grade.is_stock() {
+        rgb
+    } else {
+        grade.apply(rgb)
+    }
+}
+
+/// Every hue at full saturation and brightness, as sRGB pixels of a palette's size.
+fn spectrum() -> Vec<u8> {
+    let width = usize::from(PALETTE_WIDTH);
+    let row = (0..width)
+        .flat_map(|column| {
+            let hue = column as f32 / width as f32;
+            let [r, g, b] = egui::ecolor::Hsva::new(hue, 1.0, 1.0, 1.0).to_srgb();
+            [r, g, b, u8::MAX]
+        })
+        .collect::<Vec<_>>();
+    row.repeat(usize::from(PALETTE_HEIGHT))
 }
 
 /// Draws a palette swatch in `rect`, outlined.
@@ -248,23 +403,72 @@ fn effects(count: usize) -> String {
     }
 }
 
-/// The values a row's controls set: hue, saturation, brightness and whether it colorizes.
+/// The values a color row's controls set: hue, saturation, brightness and whether it colorizes.
 type Adjustment = (i16, u16, u16, bool);
 
+/// Gives every palette and tint of `found` one row's values, each palette keeping where its colors
+/// come from.
+fn give_every_color(
+    edits: &mut EntryEdits,
+    found: &Found,
+    (hue, saturation, brightness, colorize): Adjustment,
+) {
+    for palette in &found.palettes {
+        let edit = edits.palette(palette.header);
+        edits.set_palette(PaletteEdit {
+            hue,
+            saturation,
+            brightness,
+            colorize,
+            ..edit
+        });
+    }
+    for tint in &found.tints {
+        if let Some(edit) = edits.tint(tint.rgb) {
+            edits.set_tint(TintEdit {
+                hue,
+                saturation,
+                brightness,
+                colorize,
+                ..edit
+            });
+        }
+    }
+}
+
+/// A color row's menu, named for what the row holds. Returns whether Apply to Every Color was
+/// chosen.
+fn row_menu(ui: &mut egui::Ui, subject: &str) -> bool {
+    let mut chosen = false;
+    style::more_menu(ui, subject, |ui| {
+        if ui.button("Apply to Every Color").clicked() {
+            chosen = true;
+            ui.close();
+        }
+    });
+    chosen
+}
+
 /// Colorize, Hue, Saturation and Brightness controls over one set of values. A colorized hue is
-/// the one every color takes, 0 to 359 degrees, where a turn runs both ways.
+/// the one every color takes, 0 to 359 degrees, where a turn runs both ways. A row under
+/// Overall's Colorize has its Colorize and Hue held, since Overall sets every hue (`hue_held`).
 fn adjust_controls(
     ui: &mut egui::Ui,
     (hue, saturation, brightness, colorize): (&mut i16, &mut u16, &mut u16, &mut bool),
+    hue_held: bool,
 ) {
+    // Each control is held on its own, as a scope would be placed whole and stop the line wrapping.
+    const HELD: &str = "Overall's Colorize sets every hue";
     let response = ui
-        .checkbox(colorize, "Colorize")
-        .on_hover_text("Every color takes this hue, grays included");
+        .add_enabled(!hue_held, egui::Checkbox::new(colorize, "Colorize"))
+        .on_hover_text("Every color takes this hue, grays included")
+        .on_disabled_hover_text(HELD);
     style::named_control(response, "Colorize");
-    ui.label(quiet(ui, "Hue"));
+    ui.add_enabled(!hue_held, egui::Label::new(quiet(ui, "Hue")));
     let response = if *colorize {
         let mut degrees = hue.rem_euclid(360);
-        let response = ui.add(
+        let response = ui.add_enabled(
+            !hue_held,
             egui::DragValue::new(&mut degrees)
                 .range(0..=359)
                 .suffix("°"),
@@ -278,13 +482,14 @@ fn adjust_controls(
         }
         response
     } else {
-        ui.add(
+        ui.add_enabled(
+            !hue_held,
             egui::DragValue::new(hue)
                 .range(-MOST_HUE..=MOST_HUE)
                 .suffix("°"),
         )
     };
-    style::named_control(response, "Hue");
+    style::named_control(response, "Hue").on_disabled_hover_text(HELD);
     ui.label(quiet(ui, "Saturation"));
     let response = ui.add(
         egui::DragValue::new(saturation)
@@ -301,10 +506,11 @@ fn adjust_controls(
     style::named_control(response, "Brightness");
 }
 
-/// A shader color as a chip shows it: scaled into range when it is brighter than 1.
+/// A shader color as a chip shows it: scaled into range when it is brighter than 1, and encoded
+/// for the screen from the linear light the shader writes.
 fn chip_color(rgb: [f32; 3]) -> egui::Color32 {
     let max = rgb[0].max(rgb[1]).max(rgb[2]).max(1.0);
-    let [r, g, b] = rgb.map(|channel| ((channel / max).clamp(0.0, 1.0) * 255.0).round() as u8);
+    let [r, g, b] = rgb.map(|channel| egui::ecolor::gamma_u8_from_linear_f32(channel / max));
     egui::Color32::from_rgb(r, g, b)
 }
 
@@ -396,7 +602,8 @@ impl PackageAuthoringApp {
             let mut changed = None;
             let rows = found.palettes.len() + found.tints.len();
             if found.systems > 0 {
-                if let Some(grade) = Self::draw_grade(ui, found.systems, edits.grade) {
+                if let Some(grade) = Self::draw_grade(ui, (entity, &found), edits, &mut page.colors)
+                {
                     let mut edited = edits.clone();
                     edited.set_grade(grade);
                     changed = Some(edited);
@@ -406,29 +613,44 @@ impl PackageAuthoringApp {
                     ui.separator();
                 }
             }
-            if rows > 1
-                && let Some(edited) =
-                    Self::draw_all_colors(ui, &found, changed.as_ref().unwrap_or(edits))
+            if let Some(edited) =
+                self.draw_color_rows(ui, &found, changed.as_ref().unwrap_or(edits), page)
             {
                 changed = Some(edited);
             }
-            // One color restores with the field. Several each restore on their own.
-            let own_reset = rows > 1;
-            for palette in &found.palettes {
-                let edit = edits.palette(palette.header);
-                if let Some(edit) = self.draw_palette(ui, palette, (edit, own_reset), page) {
-                    let mut edited = changed.clone().unwrap_or_else(|| edits.clone());
-                    edited.set_palette(edit);
-                    changed = Some(edited);
-                }
-            }
-            for tint in &found.tints {
-                let Some(edit) = edits.tint(tint.rgb) else {
-                    continue;
+            // A change to a color these effects don't draw, kept from another source or an older
+            // version, stops the build. It shows here so it can go.
+            let drawn_palette = |edit: &PaletteEdit| {
+                found
+                    .palettes
+                    .iter()
+                    .any(|each| each.header == edit.palette)
+            };
+            let drawn_tint =
+                |edit: &TintEdit| found.tints.iter().any(|each| edit.starts_from(each.rgb));
+            let gone = edits
+                .palettes
+                .iter()
+                .filter(|edit| !drawn_palette(edit))
+                .map(|edit| format!("Palette 0x{:08X}", edit.palette))
+                .chain(
+                    edits
+                        .tints
+                        .iter()
+                        .filter(|edit| !drawn_tint(edit))
+                        .map(|_| "Color constant".to_owned()),
+                )
+                .collect::<Vec<_>>();
+            if !gone.is_empty() {
+                let label = if gone.len() == 1 {
+                    "1 color change its effects don't draw".to_owned()
+                } else {
+                    format!("{} color changes its effects don't draw", gone.len())
                 };
-                if let Some(edit) = Self::draw_tint(ui, tint, (edit, own_reset)) {
+                if style::missing(ui, &label, &gone.join("\n")) {
                     let mut edited = changed.clone().unwrap_or_else(|| edits.clone());
-                    edited.set_tint(edit);
+                    edited.palettes.retain(drawn_palette);
+                    edited.tints.retain(drawn_tint);
                     changed = Some(edited);
                 }
             }
@@ -445,26 +667,34 @@ impl PackageAuthoringApp {
     }
 
     /// Overall: the row that grades the final color of every particle effect, after any palette
-    /// and tint changes. Returns the grade once one of its controls moves.
+    /// and tint changes, beside the palettes and tints as graded. Returns the grade once one of
+    /// its controls moves.
     fn draw_grade(
         ui: &mut egui::Ui,
-        systems: usize,
-        grade: Option<EffectGrade>,
+        (entity, found): (u32, &Found),
+        edits: &EntryEdits,
+        colors: &mut Colors,
     ) -> Option<EffectGrade> {
-        let shown = grade.unwrap_or(EffectGrade::STOCK);
+        let shown = edits.grade.unwrap_or(EffectGrade::STOCK);
         let mut next = shown;
         ui.horizontal_wrapped(|ui| {
-            let (_, response) = ui.allocate_exact_size(SWATCH, egui::Sense::hover());
-            ui.painter().text(
-                response.rect.left_center(),
+            let (rect, response) = ui.allocate_exact_size(SWATCH, egui::Sense::hover());
+            let name = ui.painter().text(
+                rect.left_center(),
                 egui::Align2::LEFT_CENTER,
                 "Overall",
                 egui::FontId::proportional(12.0),
                 ui.visuals().text_color(),
             );
+            let preview = rect.with_min_x(name.right() + ui.spacing().item_spacing.x);
+            paint_swatch(
+                ui,
+                preview,
+                &colors.overall(ui.ctx(), (entity, found), edits),
+            );
             style::named_control(response, "Overall").on_hover_text(format!(
-                "Recolors everything it draws, on top of the colors below\n{}",
-                effects(systems)
+                "Recolors everything it draws, on top of every color below\n{}",
+                effects(found.systems)
             ));
             adjust_controls(
                 ui,
@@ -474,6 +704,7 @@ impl PackageAuthoringApp {
                     &mut next.brightness,
                     &mut next.colorize,
                 ),
+                false,
             );
             if !shown.is_stock() && detail::reset_icon(ui) {
                 next = EffectGrade::STOCK;
@@ -482,84 +713,73 @@ impl PackageAuthoringApp {
         (next != shown).then_some(next)
     }
 
-    /// Set All: one row of controls over every palette and tint. It shows the first color's
-    /// values, and a change gives every color those values, each palette keeping where its
-    /// colors come from.
-    fn draw_all_colors(ui: &mut egui::Ui, found: &Found, edits: &EntryEdits) -> Option<EntryEdits> {
-        let palettes = found
-            .palettes
-            .iter()
-            .map(|palette| edits.palette(palette.header))
-            .collect::<Vec<_>>();
-        let tints = found
-            .tints
-            .iter()
-            .filter_map(|tint| edits.tint(tint.rgb))
-            .collect::<Vec<_>>();
-        let shown: Adjustment = palettes
-            .first()
-            .map(|edit| (edit.hue, edit.saturation, edit.brightness, edit.colorize))
-            .or_else(|| {
-                tints
-                    .first()
-                    .map(|edit| (edit.hue, edit.saturation, edit.brightness, edit.colorize))
-            })?;
-        let (mut hue, mut saturation, mut brightness, mut colorize) = shown;
-        ui.horizontal_wrapped(|ui| {
-            let (_, response) = ui.allocate_exact_size(SWATCH, egui::Sense::hover());
-            ui.painter().text(
-                response.rect.left_center(),
-                egui::Align2::LEFT_CENTER,
-                "Set All",
-                egui::FontId::proportional(12.0),
-                ui.visuals().text_color(),
-            );
-            style::named_control(response, "Set All")
-                .on_hover_text("Gives every color below these values");
-            adjust_controls(
-                ui,
-                (&mut hue, &mut saturation, &mut brightness, &mut colorize),
-            );
-        });
-        if (hue, saturation, brightness, colorize) == shown {
-            return None;
+    /// A row for each palette and tint, its color as the game draws it, with the grade of `edits`
+    /// on top. Returns the entry's edits once a row changes, or once one gives every color its
+    /// values.
+    fn draw_color_rows(
+        &self,
+        ui: &mut egui::Ui,
+        found: &Found,
+        edits: &EntryEdits,
+        page: &mut PageState,
+    ) -> Option<EntryEdits> {
+        let grade = edits.grade.unwrap_or(EffectGrade::STOCK);
+        // One color restores with the field. Several each restore on their own, and each can give
+        // its values to every color.
+        let several = found.palettes.len() + found.tints.len() > 1;
+        let mut changed: Option<EntryEdits> = None;
+        let mut every = None;
+        for palette in &found.palettes {
+            let edit = edits.palette(palette.header);
+            let (next, apply) = self.draw_palette(ui, palette, (edit, several), grade, page);
+            if let Some(next) = next {
+                changed
+                    .get_or_insert_with(|| edits.clone())
+                    .set_palette(next);
+            }
+            if apply {
+                every = Some((edit.hue, edit.saturation, edit.brightness, edit.colorize));
+            }
         }
-        let mut edited = edits.clone();
-        for edit in palettes {
-            edited.set_palette(PaletteEdit {
-                hue,
-                saturation,
-                brightness,
-                colorize,
-                ..edit
-            });
+        for tint in &found.tints {
+            let Some(edit) = edits.tint(tint.rgb) else {
+                continue;
+            };
+            let (next, apply) = Self::draw_tint(ui, tint, (edit, several), grade);
+            if let Some(next) = next {
+                changed.get_or_insert_with(|| edits.clone()).set_tint(next);
+            }
+            if apply {
+                every = Some((edit.hue, edit.saturation, edit.brightness, edit.colorize));
+            }
         }
-        for edit in tints {
-            edited.set_tint(TintEdit {
-                hue,
-                saturation,
-                brightness,
-                colorize,
-                ..edit
-            });
+        if let Some(values) = every {
+            give_every_color(changed.get_or_insert_with(|| edits.clone()), found, values);
         }
-        Some(edited)
+        changed
     }
 
-    /// One tint's chip, its stock color then as changed, and its controls. Returns its change
-    /// once one of them moves.
+    /// One tint's chip, its stock color then as the game draws it, with its own change and
+    /// `grade`, and its controls. With `several` colors it has a reset of its own and a menu
+    /// holding Apply to Every Color. Returns its change once one of them moves, and whether Apply
+    /// to Every Color was chosen.
     fn draw_tint(
         ui: &mut egui::Ui,
         tint: &LoadedTint,
-        (edit, own_reset): (TintEdit, bool),
-    ) -> Option<TintEdit> {
+        (edit, several): (TintEdit, bool),
+        grade: EffectGrade,
+    ) -> (Option<TintEdit>, bool) {
         let mut next = edit;
+        let mut every = false;
         ui.horizontal_wrapped(|ui| {
             let (rect, response) = ui.allocate_exact_size(SWATCH, egui::Sense::hover());
             let (stock, changed) = rect.split_left_right_at_fraction(0.5);
             ui.painter().rect_filled(stock, 2.0, chip_color(tint.rgb));
-            ui.painter()
-                .rect_filled(changed, 2.0, chip_color(edit.apply(tint.rgb)));
+            ui.painter().rect_filled(
+                changed,
+                2.0,
+                chip_color(final_tint(tint.rgb, Some(edit), grade)),
+            );
             ui.painter().rect_stroke(
                 rect,
                 2.0,
@@ -577,32 +797,40 @@ impl PackageAuthoringApp {
                     &mut next.brightness,
                     &mut next.colorize,
                 ),
+                grade.colorize,
             );
-            if own_reset && !edit.is_stock() && detail::reset_icon(ui) {
-                next = TintEdit {
-                    hue: 0,
-                    saturation: 100,
-                    brightness: 100,
-                    colorize: false,
-                    ..edit
-                };
+            if several {
+                every = row_menu(ui, "Tint");
+                if !edit.is_stock() && detail::reset_icon(ui) {
+                    next = TintEdit {
+                        hue: 0,
+                        saturation: 100,
+                        brightness: 100,
+                        colorize: false,
+                        ..edit
+                    };
+                }
             }
         });
-        (next != edit).then_some(next)
+        ((next != edit).then_some(next), every)
     }
 
-    /// One palette's swatch and controls, with a reset of its own when `own_reset`. Returns its
-    /// change once one of them moves.
+    /// One palette's swatch, as the game draws it with its own change and `grade`, and its
+    /// controls. With `several` colors it has a reset of its own and a menu holding Apply to
+    /// Every Color. Returns its change once one of them moves, and whether Apply to Every Color
+    /// was chosen.
     fn draw_palette(
         &self,
         ui: &mut egui::Ui,
         palette: &Loaded,
-        (edit, own_reset): (PaletteEdit, bool),
+        (edit, several): (PaletteEdit, bool),
+        grade: EffectGrade,
         page: &mut PageState,
-    ) -> Option<PaletteEdit> {
+    ) -> (Option<PaletteEdit>, bool) {
         let mut next = edit;
+        let mut every = false;
         ui.horizontal_wrapped(|ui| {
-            let texture = page.colors.swatch(ui.ctx(), palette, edit);
+            let texture = page.colors.swatch(ui.ctx(), palette, edit, grade);
             let (rect, response) = ui.allocate_exact_size(SWATCH, egui::Sense::hover());
             paint_swatch(ui, rect, &texture);
             style::named_control(response, "Palette").on_hover_text(format!(
@@ -619,13 +847,17 @@ impl PackageAuthoringApp {
                     &mut next.brightness,
                     &mut next.colorize,
                 ),
+                grade.colorize,
             );
             next.from = self.draw_colors_from(ui, palette.header, edit.from, page);
-            if own_reset && !edit.is_stock() && detail::reset_icon(ui) {
-                next = PaletteEdit::new(palette.header);
+            if several {
+                every = row_menu(ui, "Palette");
+                if !edit.is_stock() && detail::reset_icon(ui) {
+                    next = PaletteEdit::new(palette.header);
+                }
             }
         });
-        (next != edit).then_some(next)
+        ((next != edit).then_some(next), every)
     }
 
     /// The stock palette a palette's colors come from: its own, or another ability's. Each choice

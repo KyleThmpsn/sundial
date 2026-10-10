@@ -62,22 +62,21 @@ impl Editor {
                 .then_some(appearance.pattern_index)
                 .flatten(),
         );
-        if let Some(image) = draft.as_ref() {
-            if self
+        if let Some(image) = draft.as_ref()
+            && self
                 .preview
                 .as_ref()
                 .is_none_or(|(cached, _)| cached != image)
-            {
-                let texture = ui.ctx().load_texture(
-                    "ammo-hud-preview",
-                    squared(egui::ColorImage::from_rgba_unmultiplied(
-                        [WIDTH as usize, HEIGHT as usize],
-                        image.rgba(),
-                    )),
-                    egui::TextureOptions::LINEAR,
-                );
-                self.preview = Some((image.clone(), texture));
-            }
+        {
+            let texture = ui.ctx().load_texture(
+                "ammo-hud-preview",
+                squared(egui::ColorImage::from_rgba_unmultiplied(
+                    [WIDTH as usize, HEIGHT as usize],
+                    image.rgba(),
+                )),
+                egui::TextureOptions::LINEAR,
+            );
+            self.preview = Some((image.clone(), texture));
         }
         let texture = if draft.is_some() {
             self.preview.as_ref().map(|(_, texture)| texture.clone())
@@ -163,7 +162,7 @@ impl Editor {
 pub(super) fn squared(image: egui::ColorImage) -> egui::ColorImage {
     let [width, height] = image.size;
     let side = width.max(height);
-    let mut square = egui::ColorImage::new([side, side], egui::Color32::TRANSPARENT);
+    let mut square = egui::ColorImage::filled([side, side], egui::Color32::TRANSPARENT);
     let (left, top) = ((side - width) / 2, (side - height) / 2);
     for y in 0..height {
         for x in 0..width {

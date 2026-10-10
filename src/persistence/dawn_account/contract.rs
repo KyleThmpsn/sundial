@@ -24,19 +24,19 @@ pub(super) const FIRST_PROFILE_ITEM_SOID: u64 = 0x5000_0000_0000_0001;
 pub(super) const EQUIPMENT_LOCATION: i64 = 0;
 pub(super) const INVENTORY_LOCATION: i64 = 1;
 
-pub(super) const CHARACTER_CAPACITY: usize = crate::account_contract::CHARACTER_CAPACITY;
+pub(super) const CHARACTER_CAPACITY: usize = crate::account::contract::CHARACTER_CAPACITY;
 // Dawn inventory_state.h: kCharacterItemCapacity. Includes ordinary and recovery rows.
 // Bucket limits are independent. Postmaster rows never consume weapon or armor slots.
 pub(crate) const CHARACTER_ITEM_CAPACITY: usize = 334;
 pub(super) const PROFILE_ITEM_CAPACITY: usize = 701;
 pub(crate) const PROFILE_ACTION_SOURCE_CAPACITY: usize = 100;
 pub(super) const DISMANTLE_REWARD_CAPACITY: usize = 8;
-pub(super) const PLUG_CAPACITY: usize = crate::account_contract::MAX_ITEM_PLUGS;
+pub(super) const PLUG_CAPACITY: usize = crate::account::contract::MAX_ITEM_PLUGS;
 
 /// Dawn's `EquipmentSlot` enum, in declaration order. Position is the array index.
 pub(crate) const EQUIPMENT_SLOTS: [&str; 16] = {
     let mut slots = [""; 16];
-    let metadata = crate::account_contract::EQUIPMENT_SLOTS;
+    let metadata = crate::account::contract::EQUIPMENT_SLOTS;
     let mut index = 0;
     while index < slots.len() {
         slots[index] = metadata[index].0;

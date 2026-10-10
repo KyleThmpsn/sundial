@@ -204,41 +204,129 @@ fn authored_account_operations_fail_closed_without_a_recognized_runtime() {
     }
 }
 
-/// The durable account is written through the same storage-neutral rows the settings path uses,
-/// and a Dawn install gains the flag without its settings document being touched at all.
+/// Resolve an installed Dawn runtime, synchronize its authored unlock, and independently reload
+/// the durable account. Unsupported layouts must leave the account and its settings untouched.
 #[test]
-fn an_authored_unlock_reaches_a_dawn_durable_account() {
-    let directory = fixture::install();
-    let root = directory.path();
-    fs::create_dir(root.join("Sunrise")).unwrap();
-    let path = root.join("Sunrise/settings.json");
-    let original = serde_json::to_vec(&json!({"version":6})).unwrap();
-    fs::write(&path, &original).unwrap();
-    let player_state = crate::persistence::dawn_path(&path);
-    crate::persistence::dawn_account::tests::create_fixture(&player_state);
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "The account lifecycle keeps accepted writes, refused layouts and independent readback together"
+)]
+fn dawn_collection_sync_preserves_accounts_and_refuses_unsupported_layouts() {
+    use crate::persistence::native_account::snapshot;
+    use rusqlite::{Connection, OpenFlags};
 
-    let rows = dawn_rows(&[(
-        1,
-        crate::account_contract::SHADOWKEEP_ACCOUNT_FLAG_BANK,
-        11_930,
-    )])
-    .unwrap();
-    let receipt =
-        crate::persistence::dawn_account::apply_authored_unlocks(&player_state, &rows).unwrap();
+    let read = |path: &Path| {
+        let db = snapshot::open(path, false).unwrap();
+        snapshot::snapshot(&db).unwrap()
+    };
 
-    assert_eq!(receipt.changed, 1);
-    let stored: i64 = rusqlite::Connection::open(&player_state)
-        .unwrap()
-        .query_row(
-            "SELECT value FROM durable_flags WHERE scope=0 AND slot=11930",
-            [],
-            |row| row.get(0),
+    let cases = [
+        ("supported", "", None),
+        ("older", "PRAGMA user_version=4", Some("schema version 4")),
+        ("newer", "PRAGMA user_version=6", Some("schema version 6")),
+        (
+            "unknown",
+            "PRAGMA user_version=99",
+            Some("schema version 99"),
+        ),
+        (
+            "extended-account",
+            "ALTER TABLE account ADD COLUMN future_value TEXT",
+            Some("account has unrecognized columns"),
+        ),
+        (
+            "trigger",
+            "CREATE TRIGGER future_unlock AFTER INSERT ON durable_flags BEGIN DELETE FROM editor_notes; END",
+            Some("unrecognized trigger future_unlock"),
+        ),
+    ];
+    let mut evidence = Vec::new();
+    for (name, change, refused) in cases {
+        let directory = fixture::install();
+        let root = directory.path();
+        fs::create_dir(root.join("Dawn")).unwrap();
+        fs::write(
+            root.join("steam_api64.dll"),
+            fixture::module_with_schema("Dawn", 6),
         )
         .unwrap();
-    assert_eq!(stored, i64::from(sundial_account::FLAG_SET));
-    assert_eq!(
-        fs::read(&path).unwrap(),
-        original,
-        "Dawn keeps no unlocks in its settings document"
+        let settings = root.join("Dawn/settings.json");
+        let original = serde_json::to_vec(&json!({"version":6,"keep":"unchanged"})).unwrap();
+        fs::write(&settings, &original).unwrap();
+        let player_state = crate::persistence::dawn_path(&settings);
+        crate::persistence::dawn_account::tests::create_fixture(&player_state);
+        let (target, durable) =
+            authored_unlock_target(root, &preferences(root, "dawn_root")).unwrap();
+        assert!(durable);
+        assert_eq!(target, player_state);
+        {
+            let db = Connection::open(&target).unwrap();
+            db.execute_batch("CREATE TABLE editor_notes(note TEXT); INSERT INTO editor_notes VALUES('keep this row')")
+                .unwrap();
+            db.execute_batch(change).unwrap();
+        }
+        let before = read(&target);
+        let bytes = fs::read(&target).unwrap();
+        let backup_directory =
+            crate::backups::source_directory(&crate::backups::root().unwrap(), &target).unwrap();
+        let rows = dawn_rows(&[(
+            1,
+            crate::account::contract::SHADOWKEEP_ACCOUNT_FLAG_BANK,
+            11_930,
+        )])
+        .unwrap();
+        let result = crate::persistence::dawn_account::apply_authored_unlocks(&target, &rows);
+        if let Some(expected) = refused {
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains(expected), "{name}: {error}");
+            assert_eq!(read(&target), before, "{name}");
+            assert_eq!(fs::read(&target).unwrap(), bytes, "{name}");
+            assert!(!backup_directory.exists(), "{name}");
+            evidence.push(json!({"case":name,"error":error,"before":before,"after":read(&target)}));
+        } else {
+            let receipt = result.unwrap();
+            assert_eq!(receipt.changed, 1);
+            assert_eq!(read(receipt.backup.as_ref().unwrap()), before);
+            let after = read(&target);
+            for (table, rows) in &before.tables {
+                if table != "metadata" && table != "durable_flags" {
+                    assert_eq!(after.tables.get(table), Some(rows), "{table}");
+                }
+            }
+            let db =
+                Connection::open_with_flags(&target, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+            let (owner, stored): (String, i64) = db
+                .query_row(
+                    "SELECT owner_soid,value FROM durable_flags WHERE scope=0 AND slot=11930",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(owner, "9EAA300100100100");
+            assert_eq!(stored, i64::from(sundial_account::FLAG_SET));
+            drop(db);
+            let repeated =
+                crate::persistence::dawn_account::apply_authored_unlocks(&target, &rows).unwrap();
+            assert_eq!(repeated.changed, 0);
+            assert!(repeated.backup.is_none());
+            assert_eq!(read(&target), after);
+            // Already-set flags must still refuse a database that has changed its schema.
+            Connection::open(&target)
+                .unwrap()
+                .pragma_update(None, "user_version", 6)
+                .unwrap();
+            let unsupported = read(&target);
+            let error = crate::persistence::dawn_account::apply_authored_unlocks(&target, &rows)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("schema version 6"), "{error}");
+            assert_eq!(read(&target), unsupported);
+            evidence.push(json!({"case":name,"before":before,"after":after,"repeated_changed":repeated.changed,"unsupported_noop_error":error}));
+        }
+        assert_eq!(fs::read(&settings).unwrap(), original, "{name}");
+    }
+    crate::test_support::artifact(
+        "dawn-collection-schema-readback.json",
+        &json!({"cases":evidence}),
     );
 }

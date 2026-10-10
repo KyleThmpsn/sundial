@@ -1,13 +1,11 @@
 use super::*;
 
 #[test]
-#[ignore = "Requires SUNDIAL_PROGRESSION_INSTALL and installed packages"]
+#[ignore = "Requires SUNDIAL_INSTALL and installed packages"]
 fn installed_progression_coverage_and_frame_cost() {
     use crate::package_authoring::{open_shadowkeep_package_manager, resolve_live_named_tag};
     use crate::package_payload::{array_at, u32_at};
-    let install = std::path::PathBuf::from(
-        std::env::var_os("SUNDIAL_PROGRESSION_INSTALL").expect("install path"),
-    );
+    let install = crate::test_support::install();
     let directory = crate::test_support::TestDirectory::new("installed-progression-coverage");
     let cache = directory.0.join("catalog.json");
     let catalog = Catalog::load_or_scan_with_progress(&install, cache, false, |progress| {
@@ -39,7 +37,7 @@ fn installed_progression_coverage_and_frame_cost() {
         .read_tag(tiger_pkg::TagHash(
             u32_at(
                 &root,
-                8 + crate::investment_schema::ROOT_RECORD_DEFINITION_TABLE_SLOT * 16,
+                8 + crate::investment::schema::ROOT_RECORD_DEFINITION_TABLE_SLOT * 16,
             )
             .unwrap(),
         ))
@@ -124,18 +122,17 @@ fn installed_progression_coverage_and_frame_cost() {
     native["_reward_context"] = json!({"character":0,"character_count":1,"class":3,"pending":[],"consumables":[],"inventory":[],"next_serial":1});
     // Populate a valid unclaimed stage baseline. Generic counter fixtures can exceed a ladder.
     for record in catalog.records().unwrap() {
-        if let Some(index) = record.redeemed_intervals {
-            if let Some(slot) = catalog
+        if let Some(index) = record.redeemed_intervals
+            && let Some(slot) = catalog
                 .unlock_value_definition(usize::from(index))
                 .and_then(|definition| definition.compact_slot)
-            {
-                let _ = super::super::mutations::set_unlock_value(
-                    &mut native,
-                    "objective_values",
-                    usize::from(slot),
-                    0,
-                );
-            }
+        {
+            let _ = super::super::mutations::set_unlock_value(
+                &mut native,
+                "objective_values",
+                usize::from(slot),
+                0,
+            );
         }
     }
     triumphs::edit_benchmark(&native, &catalog);
@@ -178,7 +175,7 @@ fn table_frames(
     for tick in 0..250 {
         let events = interaction_events(frame, mode, &previous);
         let start = std::time::Instant::now();
-        let output = ctx.run(
+        let output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -187,8 +184,8 @@ fn table_frames(
                 events,
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     if mode == "collections" {
                         assert!(!crate::app::collections_page::draw_content(
                             ui,
@@ -229,7 +226,7 @@ fn table_frames(
             "{mode} must paint only the viewport"
         );
         if frame == 34 {
-            crate::app::tests::capture::write(&ctx, &output, &format!("installed-{mode}"));
+            crate::test_support::capture::write(&ctx, &output, &format!("installed-{mode}"));
         }
         previous = output;
         frame += 1;
@@ -301,6 +298,7 @@ fn interaction_events(frame: usize, mode: &str, previous: &egui::FullOutput) -> 
             unit: egui::MouseWheelUnit::Point,
             delta: egui::vec2(0.0, -600.0),
             modifiers: Default::default(),
+            phase: egui::TouchPhase::Move,
         });
     }
     if frame == 23 {

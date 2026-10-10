@@ -1,8 +1,10 @@
-//! Checked donor selection and private motion owner allocation.
-use super::{Sparrow, motion};
+//! Checked donor selection and transactional private vehicle owner allocation.
+use super::{Durability, Sparrow, Weapons, health, motion, weapons};
 use crate::{
-    AuthoringResult, NewTagSpec, NewTagStorageMode, appended_tags::AppendedTagAllocator,
-    error::invalid, tag_payload::read_u16,
+    AuthoringResult, NewTagSpec, NewTagStorageMode,
+    appended_tags::AppendedTagAllocator,
+    error::invalid,
+    tag_payload::{read_u16, read_u32, write_u64},
 };
 use std::collections::{BTreeMap, BTreeSet};
 use sundial::package_authoring::{
@@ -95,7 +97,25 @@ pub(crate) fn select(
     Ok((tag, payload))
 }
 
-pub(crate) fn speed(
+#[derive(Default)]
+struct Edits {
+    motion: BTreeSet<usize>,
+    health: BTreeSet<usize>,
+    barrels: BTreeSet<usize>,
+}
+
+/// Firing graphs swapped into owner payloads need their own residency closure.
+pub(crate) fn projectile_dependency(
+    manager: &PackageManager,
+    settings: Option<&Sparrow>,
+) -> AuthoringResult<Option<u32>> {
+    match settings {
+        Some(settings) => weapons::projectile(manager, &settings.weapons.projectile),
+        None => Ok(None),
+    }
+}
+
+pub(crate) fn apply(
     manager: &PackageManager,
     settings: Option<&Sparrow>,
     source_tag: TagHash,
@@ -103,44 +123,90 @@ pub(crate) fn speed(
     allocator: &AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<()> {
-    let Some(settings) = settings.filter(|s| s.speed_percent != 100) else {
+    let Some(settings) = settings.filter(|s| s.runtime_changes()) else {
         return Ok(());
     };
-    // Imported animation may already have private owners. Inspect the source graph for motion
-    // roots and retarget only its unchanged motion owner in the composed graph.
+    settings.validate().map_err(invalid)?;
+    // Imported animation may already have private owners. Inspect the source for tuning roots
+    // and retarget the source owners that remain in the composed graph.
     let original = manager
         .read_tag(source_tag)
         .map_err(|error| invalid(format!("Vehicle source {source_tag}: {error}")))?;
     let graph = graph(manager, source_tag, &original)?;
-    let mut owners = BTreeMap::<u32, BTreeSet<usize>>::new();
+    let mut owners = BTreeMap::<u32, Edits>::new();
     for resource in &graph.resources {
-        if resource.instance.schema != HOVER_INSTANCE {
+        let Some(root) = resource.definition.as_ref() else {
             continue;
+        };
+        let offset = root.owner_offset as usize;
+        let (size, roots) = match (resource.instance.schema, root.schema) {
+            (HOVER_INSTANCE, HOVER_DEFINITION) if settings.motion_changes() => (
+                0xD00,
+                &mut owners.entry(resource.owner_tag).or_default().motion,
+            ),
+            (0x8080_4BEE, 0x8080_4B8A) if settings.durability != Durability::default() => (
+                0x5C8,
+                &mut owners.entry(resource.owner_tag).or_default().health,
+            ),
+            (0x8080_3889, 0x8080_3865) if settings.weapons != Weapons::default() => (
+                0x1DC0,
+                &mut owners.entry(resource.owner_tag).or_default().barrels,
+            ),
+            _ => continue,
+        };
+        if root.byte_size != size {
+            return Err(invalid(format!(
+                "Vehicle owner 0x{:08X} has an unsupported definition size for class 0x{:08X}",
+                resource.owner_tag, root.schema
+            )));
         }
-        let root = resource
-            .definition
-            .as_ref()
-            .filter(|r| r.schema == HOVER_DEFINITION)
-            .ok_or_else(|| {
-                invalid("Driving Speed requires the supported hover motion definition")
-            })?;
-        owners
-            .entry(resource.owner_tag)
-            .or_default()
-            .insert(root.owner_offset as usize);
+        roots.insert(offset);
     }
-    if owners.is_empty() {
+    if settings.motion_changes() && owners.values().all(|e| e.motion.is_empty()) {
         return Err(invalid(
-            "Driving Speed requires hover vehicle motion. Tank motion is not supported.",
+            "Driving controls require hover vehicle motion. Tank motion is not supported.",
         ));
     }
+    if settings.durability != Durability::default() && owners.values().all(|e| e.health.is_empty())
+    {
+        return Err(invalid(
+            "Durability requires supported vehicle health and shield settings",
+        ));
+    }
+    if settings.weapons != Weapons::default() && owners.values().all(|e| e.barrels.is_empty()) {
+        return Err(invalid(
+            "Vehicle weapon controls require a supported armed vehicle barrel",
+        ));
+    }
+    let projectile = weapons::projectile(manager, &settings.weapons.projectile)?;
     // Plan every owner first. Unsupported programs must not leave partial allocations behind.
     let mut planned = Vec::new();
-    for (owner, roots) in owners {
+    for (owner, edits) in owners {
         let mut payload = manager
             .read_tag(TagHash(owner))
-            .map_err(|error| invalid(format!("Vehicle motion owner 0x{owner:08X}: {error}")))?;
-        motion::scale(&mut payload, owner, roots, settings.speed_percent)?;
+            .map_err(|error| invalid(format!("Vehicle owner 0x{owner:08X}: {error}")))?;
+        for (roots, instance) in [
+            (&edits.motion, HOVER_INSTANCE),
+            (&edits.health, 0x8080_4BEE),
+            (&edits.barrels, 0x8080_3889),
+        ] {
+            for root in roots {
+                // A base-class definition may be inline in a derived definition and carry no
+                // preceding class marker. Its typed graph root and paired instance agree.
+                if read_u32(&payload, *root)? != owner || read_u32(&payload, *root + 4)? != instance
+                {
+                    return Err(invalid(format!(
+                        "Vehicle owner 0x{owner:08X} has an unsupported paired definition"
+                    )));
+                }
+            }
+        }
+        motion::tune(&mut payload, owner, edits.motion, settings)?;
+        health::tune(&mut payload, edits.health, &settings.durability)?;
+        weapons::tune(&mut payload, edits.barrels, &settings.weapons, projectile)?;
+        let size =
+            u64::try_from(payload.len()).map_err(|_| invalid("Vehicle owner is too large"))?;
+        write_u64(&mut payload, 0, size)?;
         planned.push((owner, payload));
     }
     let mut edited = entity.clone();
@@ -148,8 +214,8 @@ pub(crate) fn speed(
     for (owner, mut payload) in planned {
         let tag = allocator.assigned_tag(
             tags.len() + appended.len(),
-            "Private vehicle motion",
-            "vehicle motion owner",
+            "Private vehicle tuning",
+            "vehicle component owner",
         )?;
         retarget_weapon_component_owner_payload(&mut payload, &edited, owner, tag.0)
             .map_err(invalid)?;

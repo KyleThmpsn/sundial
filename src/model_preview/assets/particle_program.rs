@@ -5,7 +5,7 @@ mod coverage;
 #[cfg(test)]
 mod verification;
 mod vm;
-pub(crate) use vm::Registers;
+pub(crate) use vm::{Registers, Runtime, Sources};
 
 pub(crate) struct Program {
     pub sections: [u16; 8],
@@ -114,9 +114,9 @@ impl Program {
     /// The captured native caller publishes position XYZ through route 8 and direction XYZ
     /// through route 9 before section 3, preserving each vector's fourth component. This
     /// bridge recognizes adjacent bank-2 inputs and bank-1 outputs in stored programs.
-    /// Air Weak 2's vertex shader appears to read the position vector as a particle center
-    /// and the direction vector's fourth component as a visibility or age control.
-    /// That final draw interpretation still requires its runtime bindings.
+    /// Original Air Weak 2 vertex execution consumes this position vector as the center
+    /// and the direction vector's fourth component as an age cutoff. Native upload and
+    /// attachment producers remain separate from the witnessed shader consumer.
     pub fn state_routes(&self) -> Option<[(Route, Route); 2]> {
         let first = (self.routes[9]?, self.routes[7]?);
         let second = (self.routes[8]?, self.routes[6]?);

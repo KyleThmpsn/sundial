@@ -44,6 +44,7 @@ pub mod assets;
 pub mod batch;
 pub mod bundle;
 pub mod catalog;
+pub mod cloth;
 pub mod convert;
 pub mod dye_bundle;
 pub mod dyes;

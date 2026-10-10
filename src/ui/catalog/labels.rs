@@ -40,7 +40,7 @@ fn choices(
     let (mut query, mut show_all) = ui
         .data(|data| data.get_temp::<(String, bool)>(state))
         .unwrap_or_default();
-    ui.set_width(340.0_f32.min(ui.ctx().screen_rect().width() - 40.0));
+    ui.set_width(340.0_f32.min(ui.ctx().content_rect().width() - 40.0));
     let mut hashes = Vec::new();
     ui.horizontal(|ui| {
         super::search(
@@ -81,7 +81,7 @@ fn choices(
                     let response = ui.selectable_label(selected.contains(&hash), &label);
                     if response.clicked() {
                         selected = vec![hash];
-                        ui.close_menu();
+                        ui.close();
                     }
                     response
                 };

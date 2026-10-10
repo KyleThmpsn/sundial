@@ -27,6 +27,39 @@ pub(super) fn validate_events(entity: &[u8]) -> Result<(), String> {
     event_rows(entity).map(|_| ())
 }
 
+/// Where an event row keeps its source and its destination. Each end names its owner tag, then
+/// the class and the owner offset of the object in it.
+const EVENT_SOURCE_END: usize = 0x08;
+const EVENT_DESTINATION_END: usize = 0x28;
+
+/// One end of an event row. A destination that receives nothing names the null owner tag.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct EventEnd {
+    pub(crate) owner: u32,
+    pub(crate) class: u32,
+    pub(crate) offset: u64,
+}
+
+/// Each event row of `entity`, as its source and its destination.
+pub(crate) fn event_ends(entity: &[u8]) -> Result<Vec<(EventEnd, EventEnd)>, String> {
+    let end = |at: usize| -> Result<EventEnd, String> {
+        Ok(EventEnd {
+            owner: read_u32(entity, at)?,
+            class: read_u32(entity, at + 0x04)?,
+            offset: read_u64(entity, at + 0x08)?,
+        })
+    };
+    event_rows(entity)?
+        .into_iter()
+        .map(|row| {
+            Ok((
+                end(row + EVENT_SOURCE_END)?,
+                end(row + EVENT_DESTINATION_END)?,
+            ))
+        })
+        .collect()
+}
+
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum Endpoint {
     Resource(u32, Vec<(u32, usize)>),

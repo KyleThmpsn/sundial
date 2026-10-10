@@ -98,7 +98,8 @@ fn embedded(glb: &[u8]) -> Vec<Vec<u8>> {
 #[test]
 fn native_placed_detail_survives_sparse_draws_rendering_and_baking() {
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let out = configured
         .as_deref()
         .map(Path::new)

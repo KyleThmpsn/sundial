@@ -75,7 +75,7 @@ fn read_with_manager(
     }
     // Every action's payload has been decoded into the catalog and dropped. The catalog is a
     // fraction of what reading them cost, so this is where the difference goes back.
-    crate::memory::release_free_memory();
+    crate::system::memory::release_free_memory();
     Ok(catalog)
 }
 

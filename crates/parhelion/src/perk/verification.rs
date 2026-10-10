@@ -11,7 +11,7 @@ use std::{
 
 pub(crate) fn recipe_hash(recipe: &PerkRecipe) -> Result<String, String> {
     serde_json::to_vec(recipe)
-        .map(|bytes| format!("{:X}", Sha256::digest(bytes)))
+        .map(|bytes| hex::encode_upper(Sha256::digest(bytes)))
         .map_err(|error| error.to_string())
 }
 
@@ -214,7 +214,7 @@ impl Record {
         if manifest.artifacts.is_empty() {
             return Err("The staged build has no compiled packages.".into());
         }
-        self.staged_manifest_sha256 = Some(format!("{:X}", Sha256::digest(bytes)));
+        self.staged_manifest_sha256 = Some(hex::encode_upper(Sha256::digest(bytes)));
         self.destinations = destinations;
         self.selected_destination = (self.destinations.len() == 1).then_some(0);
         self.packages = manifest.artifacts;

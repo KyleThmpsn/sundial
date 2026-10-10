@@ -16,7 +16,7 @@ pub(crate) fn split_mapped(
     bones: &[u16],
 ) -> Result<(Vec<u8>, Vec<u8>)> {
     ensure!(
-        positions.len() % 24 == 0 && uvs.len() == positions.len() / 24 * 4,
+        positions.len().is_multiple_of(24) && uvs.len() == positions.len() / 24 * 4,
         "packed vertex counts differ"
     );
     let mut p = Vec::new();
@@ -43,7 +43,7 @@ pub(crate) fn split_mapped(
     Ok((p, a))
 }
 fn header(data: &[u8], stride: u16) -> Result<Vec<u8>> {
-    ensure!(data.len() % stride as usize == 0, "invalid stride");
+    ensure!(data.len().is_multiple_of(stride as usize), "invalid stride");
     let mut h = vec![];
     h.extend_from_slice(&u32::try_from(data.len())?.to_le_bytes());
     h.extend_from_slice(&stride.to_le_bytes());
@@ -72,7 +72,7 @@ pub fn convert_mapped(
         .get(index)
         .context("model index outside report")?;
     let tag = modern["model"].as_str().context("model tag")?;
-    let model = Payload(fs::read(source.join("raw").join(format!("{tag}.bin")))?);
+    let model = super::geometry::model(source, u32::from_str_radix(tag, 16)?)?;
     let mesh = super::geometry::selected_mesh(&model, modern)?;
     let buffer = |offset| -> Result<Vec<u8>> {
         let h = model.u32(mesh + offset)?;
@@ -83,22 +83,16 @@ pub fn convert_mapped(
             source.join("raw").join(format!("{reference:08X}.bin")),
         )?)
     };
-    let source_positions = buffer(0)?;
-    let auxiliary = if source_positions
-        .chunks_exact(24)
-        .any(|v| crate::d2_mot::skinning::selector(v).is_ok_and(crate::d2_mot::skinning::weighted))
-    {
-        buffer(24)?
-    } else {
-        Vec::new()
-    };
+    let streams = super::geometry::streams(source, &provenance, &model, mesh)?;
+    let source_positions = streams.positions;
+    let auxiliary = streams.auxiliary;
     let (positions, attributes) = match bones {
         Some(bones) => split_mapped(
             &crate::d2_mot::skinning::carrier_positions(&source_positions, &auxiliary)?,
             &buffer(4)?,
             bones,
         )?,
-        None => split(&buffer(0)?, &buffer(4)?)?,
+        None => split(&source_positions, &buffer(4)?)?,
     };
     let native_stride = if bones.is_some() && plated { 24 } else { 20 };
     let mut compatible = None;
@@ -150,7 +144,6 @@ pub fn convert_mapped(
         let start = model.u32(part + 8)? as usize;
         let len = model.u32(part + 12)? as usize;
         let primitive = model.u16(part + 6)?;
-        ensure!(primitive == 5, "unsupported primitive");
         let slice = indices
             .get(start * 2..(start + len) * 2)
             .context("part exceeds indices")?;
@@ -158,7 +151,7 @@ pub fn convert_mapped(
             .chunks_exact(2)
             .map(|v| u16::from_le_bytes([v[0], v[1]]) as u32)
             .collect::<Vec<_>>();
-        let faces = crate::d2_mot::geometry::triangles(&decoded, count, 65535)?;
+        let faces = crate::d2_mot::geometry::faces(&decoded, count, 65535, primitive)?;
         part_plan.push(json!({"source_offset":part,"material":format!("{:08X}",model.u32(part)?),"index_offset":start,"index_count":len,"primitive":primitive,"lod":model.u8(part+29)?,"triangles":faces.len(),"mapping":"see mapping.parts; compute-only records are removed"}));
     }
     fs::create_dir_all(&output)?;
@@ -202,6 +195,7 @@ pub fn convert_mapped(
 }
 #[cfg(test)]
 mod tests {
+    mod cloth;
     use super::*;
     #[test]
     fn mapped_bones_preserve_geometry_and_reject_missing_or_weighted_selectors() {

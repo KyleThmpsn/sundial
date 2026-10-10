@@ -137,7 +137,8 @@ pub(crate) fn case(mode: usize) -> Model {
 #[test]
 fn unsigned_metadata_arithmetic_preserves_bits_aliases_and_null_outputs() {
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_deref()
         .map(Path::new)
@@ -154,8 +155,10 @@ fn unsigned_metadata_arithmetic_preserves_bits_aliases_and_null_outputs() {
                 ..Default::default()
             },
             render::Scene {
+                filmic: false,
+                bloom: false,
                 background: [0; 3],
-                ..Default::default()
+                ..render::Scene::unit_exposure()
             },
             [320, 240],
             0.0,

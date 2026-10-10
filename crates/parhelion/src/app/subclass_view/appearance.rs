@@ -11,7 +11,6 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 /// The thumbnail inside a tile, and the tallest the editor draws a picture.
 const THUMBNAIL: f32 = 110.0;
 const PREVIEW: f32 = 320.0;
-const TILE_PADDING: f32 = 8.0;
 const TILE_GAP: f32 = 8.0;
 /// The narrowest a tile gets before the tiles stack.
 const TILE_MIN_WIDTH: f32 = 180.0;
@@ -121,52 +120,19 @@ fn draw_tile(
     shown: &Shown,
     selected: bool,
 ) -> egui::Response {
-    let name_font = egui::FontId::proportional(13.0);
-    let detail_font = egui::FontId::proportional(11.0);
-    let (name_height, detail_height) =
-        ui.fonts(|fonts| (fonts.row_height(&name_font), fonts.row_height(&detail_font)));
-    let height = 2.0 * TILE_PADDING + THUMBNAIL + 6.0 + name_height + 2.0 + detail_height;
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
-    if ui.is_rect_visible(rect) {
-        let visuals = ui.visuals();
-        let stroke = if selected {
-            visuals.selection.stroke
-        } else if response.hovered() {
-            visuals.widgets.hovered.bg_stroke
-        } else {
-            visuals.widgets.noninteractive.bg_stroke
-        };
-        let painter = ui.painter_at(rect);
-        painter.rect(
-            rect,
-            4.0,
-            visuals.faint_bg_color,
-            stroke,
-            egui::StrokeKind::Inside,
-        );
-        let inner = rect.shrink(TILE_PADDING);
-        let thumbnail = egui::Rect::from_min_size(inner.min, egui::vec2(inner.width(), THUMBNAIL));
-        draw_contained(ui, thumbnail, shown.texture.as_ref());
-        let name = painter.text(
-            egui::pos2(inner.left(), thumbnail.bottom() + 6.0),
-            egui::Align2::LEFT_TOP,
-            part.label(),
-            name_font,
-            if shown.modified {
-                visuals.text_color()
-            } else {
-                style::secondary(visuals)
-            },
-        );
-        painter.text(
-            egui::pos2(inner.left(), name.bottom() + 2.0),
-            egui::Align2::LEFT_TOP,
-            &shown.source,
-            detail_font,
-            style::secondary(visuals),
-        );
-    }
-    style::named_control(response, part.label())
+    style::image_tile(
+        ui,
+        style::ImageTile {
+            width,
+            thumbnail_height: THUMBNAIL,
+            label: part.label(),
+            detail: None,
+            source: &shown.source,
+            texture: shown.texture.as_ref(),
+            modified: shown.modified,
+            selected,
+        },
+    )
 }
 
 impl PackageAuthoringApp {

@@ -161,8 +161,10 @@ fn image(model: &Model, seconds: f32) -> eframe::egui::ColorImage {
             ..Default::default()
         },
         render::Scene {
+            filmic: false,
+            bloom: false,
             background: [0; 3],
-            ..Default::default()
+            ..render::Scene::unit_exposure()
         },
         [320, 240],
         seconds,
@@ -329,7 +331,8 @@ fn spatial(out: &Path, channel: usize) -> serde_json::Value {
 #[test]
 fn native_normal_blue_keeps_grain_without_ambient_occlusion() {
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let out = configured
         .as_deref()
         .map(Path::new)

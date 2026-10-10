@@ -40,7 +40,7 @@ pub(in crate::app::custom_perks::workbench::program::native) fn draw_single(
                 chose |= typed.row(ui);
             });
         if chose {
-            ui.memory_mut(egui::Memory::close_popup);
+            egui::Popup::close_all(ui);
         }
         pickers::name_combo(ui, "registered-label", "Label");
     });

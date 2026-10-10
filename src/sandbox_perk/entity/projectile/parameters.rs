@@ -285,6 +285,19 @@ impl Parameter {
     }
 }
 
+/// The moving projectile's definition, when `resource` is one with paired roots of the native
+/// sizes.
+fn moving_projectile(resource: &WeaponRuntimeResource) -> Option<&WeaponRuntimeRoot> {
+    let definition = resource.definition.as_ref()?;
+    (resource.instance.kind == WeaponRuntimeRootKind::ComponentInstance
+        && resource.instance.schema == 0x8080_3B73
+        && resource.instance.byte_size == 0x1E0
+        && definition.kind == WeaponRuntimeRootKind::ComponentDefinition
+        && definition.schema == 0x8080_388F
+        && definition.byte_size == 0x5D0)
+        .then_some(definition)
+}
+
 /// Discover only the exact native moving-projectile schema and its paired roots.
 /// Callers select a private action's owned graph before invoking this adapter.
 pub fn discover(graph: &WeaponRuntimeGraph) -> Vec<Parameter> {
@@ -292,18 +305,9 @@ pub fn discover(graph: &WeaponRuntimeGraph) -> Vec<Parameter> {
         .resources
         .iter()
         .flat_map(|resource| {
-            let Some(definition) = &resource.definition else {
+            let Some(definition) = moving_projectile(resource) else {
                 return Vec::new();
             };
-            if resource.instance.kind != WeaponRuntimeRootKind::ComponentInstance
-                || resource.instance.schema != 0x8080_3B73
-                || resource.instance.byte_size != 0x1E0
-                || definition.kind != WeaponRuntimeRootKind::ComponentDefinition
-                || definition.schema != 0x8080_388F
-                || definition.byte_size != 0x5D0
-            {
-                return Vec::new();
-            }
             [Kind::Speed, Kind::Gravity, Kind::TravelDistance]
                 .into_iter()
                 .filter_map(|kind| {
@@ -320,4 +324,254 @@ pub fn discover(graph: &WeaponRuntimeGraph) -> Vec<Parameter> {
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+/// One setting of a moving projectile's speed and gravity curve. Over the distance it travels
+/// from Curve Start to Curve End, its speed and gravity move from their launch values to Final
+/// Speed and Final Gravity, clamped at both ends.
+///
+/// The definition keeps the four settings as typed fields of `80803803` at +0xC8. Reset copies
+/// them into the instance's curve state, where they sit at +0x14C, followed at +0x15C by the
+/// distance scale: one over the interval, or one when its absolute value is under 0.0001
+/// (`487FAD`), clamped to 0 through 10000 (`D00D31..D00D58`).
+/// The package instance holds that state already, so an edit writes the setting, its copy in the
+/// state, and, for either end, the scale.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CurveKind {
+    FinalSpeed,
+    FinalGravity,
+    Start,
+    End,
+}
+
+impl CurveKind {
+    const ALL: [Self; 4] = [Self::FinalSpeed, Self::FinalGravity, Self::Start, Self::End];
+
+    const fn index(self) -> usize {
+        match self {
+            Self::FinalSpeed => 0,
+            Self::FinalGravity => 1,
+            Self::Start => 2,
+            Self::End => 3,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::FinalSpeed => "Final Speed",
+            Self::FinalGravity => "Final Gravity",
+            Self::Start => "Curve Start",
+            Self::End => "Curve End",
+        }
+    }
+
+    pub fn validate(self, value: f32) -> Result<(), String> {
+        let valid = value.is_finite()
+            && match self {
+                Self::FinalGravity => (0.0..=10.0).contains(&value),
+                Self::FinalSpeed | Self::Start | Self::End => value >= 0.0,
+            };
+        if valid {
+            Ok(())
+        } else {
+            let range = match self {
+                Self::FinalGravity => "from 0 to 10",
+                Self::FinalSpeed | Self::Start | Self::End => "zero or greater",
+            };
+            Err(format!("{} must be a finite value {range}.", self.label()))
+        }
+    }
+}
+
+/// Where the definition's curve settings sit, and the member that holds them.
+const CURVE_SETTINGS: u32 = 0x8080_3803;
+const CURVE_MEMBER: u32 = 0x8080_37B3;
+const CURVE_MEMBER_OFFSET: u32 = 0xC8;
+/// Where the instance's curve state keeps its copy of the settings, and then the scale.
+const CURVE_STATE: u32 = 0x14C;
+const CURVE_SCALE: u32 = 0x15C;
+/// An interval narrower than this takes a scale of one.
+const NARROW_INTERVAL: f32 = 0.0001;
+
+/// The scale the native reset derives from a curve's ends.
+fn curve_scale(start: f32, end: f32) -> f32 {
+    let interval = end - start;
+    if interval.abs() < NARROW_INTERVAL {
+        1.0
+    } else {
+        (1.0 / interval).clamp(0.0, 10000.0)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Curve {
+    pub kind: CurveKind,
+    pub owner_tag: u32,
+    /// The definition's four settings, in [`CurveKind`] order.
+    settings: [WeaponRuntimeField; 4],
+    /// The instance's copy of each, in the same order.
+    state: [Lane; 4],
+    scale: Lane,
+}
+
+impl Curve {
+    fn setting(&self, kind: CurveKind, draft: &[WeaponRuntimeValueOverride]) -> f32 {
+        let field = &self.settings[kind.index()];
+        let value = draft
+            .iter()
+            .find(|entry| entry.locator == field.locator)
+            .map_or(&field.value, |entry| &entry.value);
+        match value {
+            WeaponRuntimeValue::Float32Bits(bits) => f32::from_bits(*bits),
+            _ => f32::NAN,
+        }
+    }
+
+    pub fn original(&self) -> f32 {
+        self.setting(self.kind, &[])
+    }
+
+    pub fn is_modified(&self, draft: &[WeaponRuntimeValueOverride]) -> bool {
+        let state = &self.state[self.kind.index()];
+        self.setting(self.kind, draft).to_bits() != self.original().to_bits()
+            || state.bits(draft) != state.bits(&[])
+    }
+
+    pub fn value(&self, draft: &[WeaponRuntimeValueOverride]) -> Result<f32, String> {
+        let value = self.setting(self.kind, draft);
+        self.kind.validate(value)?;
+        if self.is_modified(draft) && self.state[self.kind.index()].bits(draft)? != value.to_bits()
+        {
+            return Err(format!(
+                "{} differs between the setting and the curve state. Set it again or reset it.",
+                self.kind.label()
+            ));
+        }
+        Ok(value)
+    }
+
+    pub fn set(
+        &self,
+        draft: &mut Vec<WeaponRuntimeValueOverride>,
+        value: f32,
+    ) -> Result<(), String> {
+        self.kind.validate(value)?;
+        self.write(draft, value)
+    }
+
+    pub fn reset(&self, draft: &mut Vec<WeaponRuntimeValueOverride>) -> Result<(), String> {
+        self.write(draft, self.original())
+    }
+
+    fn write(&self, draft: &mut Vec<WeaponRuntimeValueOverride>, value: f32) -> Result<(), String> {
+        let mut next = draft.clone();
+        let field = &self.settings[self.kind.index()];
+        next.retain(|entry| entry.locator != field.locator);
+        if value.to_bits() != self.original().to_bits() {
+            next.push(WeaponRuntimeValueOverride {
+                locator: field.locator.clone(),
+                value: WeaponRuntimeValue::Float32Bits(value.to_bits()),
+            });
+        }
+        self.state[self.kind.index()].write(&mut next, value.to_bits())?;
+        if matches!(self.kind, CurveKind::Start | CurveKind::End) {
+            let (start, end) = (
+                self.setting(CurveKind::Start, &next),
+                self.setting(CurveKind::End, &next),
+            );
+            // Stock ends keep the stock scale bits, so a reset leaves the state as it shipped.
+            let stock = start.to_bits() == self.setting(CurveKind::Start, &[]).to_bits()
+                && end.to_bits() == self.setting(CurveKind::End, &[]).to_bits();
+            let bits = if stock {
+                self.scale.bits(&[])?
+            } else {
+                curve_scale(start, end).to_bits()
+            };
+            self.scale.write(&mut next, bits)?;
+        }
+        *draft = next;
+        Ok(())
+    }
+}
+
+/// The definition's curve setting `kind`, a typed field of the member at +0xC8.
+fn curve_setting(definition: &WeaponRuntimeRoot, kind: CurveKind) -> Option<WeaponRuntimeField> {
+    let offset = 4 * kind.index() as u32;
+    let mut fields = definition.fields.iter().filter(|field| {
+        field.source == crate::runtime::WeaponRuntimeFieldSource::NativeDeclaration
+            && field.locator.type_handle.get() == CURVE_SETTINGS
+            && field.locator.value_offset == offset
+            && field.locator.byte_size == 4
+            && matches!(field.value, WeaponRuntimeValue::Float32Bits(_))
+            && field.locator.path.iter().any(|step| {
+                step.type_handle.get() == CURVE_MEMBER && step.byte_offset == CURVE_MEMBER_OFFSET
+            })
+    });
+    let field = fields.next()?.clone();
+    fields.next().is_none().then_some(field)
+}
+
+/// The speed and gravity curve settings of each moving projectile whose instance state already
+/// holds the definition's settings and the scale they derive. Any other shape offers none.
+pub fn curves(graph: &WeaponRuntimeGraph) -> Vec<Curve> {
+    let mut found = Vec::new();
+    for resource in &graph.resources {
+        let Some(definition) = moving_projectile(resource) else {
+            continue;
+        };
+        let Some(settings) = CurveKind::ALL
+            .iter()
+            .map(|kind| curve_setting(definition, *kind))
+            .collect::<Option<Vec<_>>>()
+            .and_then(|settings| <[WeaponRuntimeField; 4]>::try_from(settings).ok())
+        else {
+            continue;
+        };
+        let Some(state) = CurveKind::ALL
+            .iter()
+            .map(|kind| {
+                Lane::resolve(
+                    &resource.instance,
+                    resource,
+                    CURVE_STATE + 4 * kind.index() as u32,
+                )
+            })
+            .collect::<Option<Vec<_>>>()
+            .and_then(|state| <[Lane; 4]>::try_from(state).ok())
+        else {
+            continue;
+        };
+        let Some(scale) = Lane::resolve(&resource.instance, resource, CURVE_SCALE) else {
+            continue;
+        };
+        let template = Curve {
+            kind: CurveKind::FinalSpeed,
+            owner_tag: resource.owner_tag,
+            settings,
+            state,
+            scale,
+        };
+        // The state must hold each setting, and the scale its ends derive.
+        let held = CurveKind::ALL.iter().all(|kind| {
+            let setting = template.setting(*kind, &[]);
+            kind.validate(setting).is_ok()
+                && template.state[kind.index()].bits(&[]).ok() == Some(setting.to_bits())
+        });
+        let expected = curve_scale(
+            template.setting(CurveKind::Start, &[]),
+            template.setting(CurveKind::End, &[]),
+        );
+        let scaled = template
+            .scale
+            .bits(&[])
+            .is_ok_and(|bits| (f32::from_bits(bits) - expected).abs() <= expected.abs() * 1e-5);
+        if !held || !scaled {
+            continue;
+        }
+        found.extend(CurveKind::ALL.map(|kind| Curve {
+            kind,
+            ..template.clone()
+        }));
+    }
+    found
 }

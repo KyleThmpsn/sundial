@@ -155,6 +155,7 @@ fn fields(
 }
 
 pub(super) fn append_fields(
+    manager: &PackageManager,
     resources: &mut [WeaponRuntimeResource],
     owners: &mut [WeaponRuntimeOwner],
     payloads: &BTreeMap<u32, Vec<u8>>,
@@ -182,13 +183,20 @@ pub(super) fn append_fields(
     }
     for resource in resources {
         for root in std::iter::once(&mut resource.instance).chain(resource.definition.iter_mut()) {
-            let extra = fields(
+            let mut extra = fields(
                 &payloads[&resource.owner_tag],
                 root,
                 resource.binding_hash,
                 resource.resource_index,
                 &root.structure,
             )?;
+            extra.extend(crate::ability::settings::native::fields(
+                manager,
+                &payloads[&resource.owner_tag],
+                root,
+                resource.binding_hash,
+                resource.resource_index,
+            )?);
             root.fields.extend(extra.into_iter().filter(|f| {
                 seen.insert((resource.owner_tag, f.owner_offset, f.locator.byte_size))
             }));
@@ -196,13 +204,20 @@ pub(super) fn append_fields(
     }
     for owner in owners {
         for root in &mut owner.roots {
-            let extra = fields(
+            let mut extra = fields(
                 &payloads[&owner.owner_tag],
                 root,
                 owner.anchor_binding_hash,
                 owner.anchor_resource_index,
                 &root.structure,
             )?;
+            extra.extend(crate::ability::settings::native::fields(
+                manager,
+                &payloads[&owner.owner_tag],
+                root,
+                owner.anchor_binding_hash,
+                owner.anchor_resource_index,
+            )?);
             root.fields.extend(
                 extra.into_iter().filter(|f| {
                     seen.insert((owner.owner_tag, f.owner_offset, f.locator.byte_size))
@@ -220,6 +235,17 @@ pub(super) fn resolve(
     locator: &WeaponRuntimeFieldLocator,
     registry: &RuntimeRegistry,
 ) -> Result<Option<WeaponRuntimeField>, String> {
+    if crate::ability::settings::native::recognizes(locator) {
+        return Ok(crate::ability::settings::native::fields(
+            manager,
+            data,
+            root,
+            locator.binding_hash.get(),
+            locator.resource_index,
+        )?
+        .into_iter()
+        .find(|field| field.locator == *locator));
+    }
     if !is_native(locator) {
         return Ok(root.fields.iter().find(|f| f.locator == *locator).cloned());
     }

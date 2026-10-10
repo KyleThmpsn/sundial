@@ -154,8 +154,8 @@ fn category_owner_oracle() -> Result<()> {
     fs::write(output.join("owner.bin"), &native.owner.0)?;
     fs::write(output.join("allocation.bin"), &native.allocation.0)?;
     let report = serde_json::json!({
-        "source_sha256":format!("{:x}",Sha256::digest(&source.0)),
-        "native_sha256":format!("{:x}",Sha256::digest(&native.owner.0)),
+        "source_sha256":hex::encode(Sha256::digest(&source.0)),
+        "native_sha256":hex::encode(Sha256::digest(&native.owner.0)),
         "objects":native.objects.iter().map(|mapping| serde_json::json!({
             "source":mapping.source,"target":mapping.target})).collect::<Vec<_>>(),
         "channels":native.channels.iter().map(|((object,source),target)| serde_json::json!({

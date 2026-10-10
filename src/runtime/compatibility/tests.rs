@@ -141,10 +141,9 @@ fn native_components_without_a_definition_prefix_remain_distinct() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn native_resource_shapes_match_full_decoding_for_stock_and_projectile_resources() {
-    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-        .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages");
+    let packages = crate::test_support::stock_packages();
     let manager = open_shadowkeep_packages(Path::new(&packages).parent().unwrap()).unwrap();
     let source = load_weapon_runtime_entity_at_pattern_index_with_manager(&manager, 370).unwrap();
     // This existing private-projectile fixture exercises native instance 0x80803B73 and

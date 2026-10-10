@@ -6,14 +6,14 @@ fn frame(
     events: Vec<egui::Event>,
 ) -> (Option<bool>, egui::FullOutput) {
     let mut decision = None;
-    let output = ctx.run(
+    let output = ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
             events,
             ..Default::default()
         },
-        |ctx| {
-            decision = introduction(ctx);
+        |ui| {
+            decision = introduction(ui);
         },
     );
     (decision, output)

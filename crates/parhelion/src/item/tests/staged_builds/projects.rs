@@ -1,12 +1,11 @@
 use super::*;
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 #[allow(clippy::cognitive_complexity)]
 fn real_two_weapon_project_is_permutation_identical_when_configured() {
-    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-        .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages");
-    let clean_packages = PathBuf::from(packages);
+    let packages = crate::test_support::stock_packages();
+    let clean_packages = packages;
     let clean_root = clean_packages
         .parent()
         .expect("clean packages directory needs a parent");
@@ -542,12 +541,9 @@ fn real_two_weapon_project_is_permutation_identical_when_configured() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn project_builder_allows_forced_plugs_but_rejects_catalog_incompatible_stats() {
-    let packages = PathBuf::from(
-        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-            .expect("PARHELION_CLEAN_STOCK_PACKAGES must be configured"),
-    );
+    let packages = crate::test_support::stock_packages();
     let mut spec = bundled_every_end_spec();
     spec.namespace = "parhelion.public-incompatible-socket-integration".to_owned();
     spec.identity = WeaponCloneIdentity::from_namespace(&spec.namespace)

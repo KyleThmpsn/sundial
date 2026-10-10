@@ -334,7 +334,8 @@ fn many_materials_keep_sparse_geometry_and_original_vertex_identity() {
         }
     }
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_deref()
         .map(Path::new)
@@ -369,7 +370,8 @@ fn divided_vertex_addresses_reach_their_numeric_detail_and_color_tables() {
         model.notices
     );
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_deref()
         .map(Path::new)
@@ -388,7 +390,8 @@ fn divided_vertex_addresses_reach_their_numeric_detail_and_color_tables() {
 #[test]
 fn body_and_decal_stages_keep_their_native_material_motion() {
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_deref()
         .map(Path::new)
@@ -422,7 +425,7 @@ fn body_and_decal_stages_keep_their_native_material_motion() {
             let image = render::styled_image(
                 &model,
                 render::Camera::default(),
-                render::Scene::default(),
+                render::Scene::unprocessed(),
                 [320, 240],
                 seconds,
                 render::Style::Solid,
@@ -446,7 +449,8 @@ fn body_and_decal_stages_keep_their_native_material_motion() {
 #[test]
 fn indexed_numeric_attributes_survive_package_loading_and_composition() {
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_deref()
         .map(Path::new)
@@ -523,7 +527,8 @@ fn high_resolution_native_texture_keeps_single_pixel_landmarks() {
     }
     assert_eq!(&texture.rgba[3000 * 4..3000 * 4 + 4], &[0; 4]);
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_deref()
         .map(Path::new)
@@ -536,6 +541,11 @@ fn high_resolution_native_texture_keeps_single_pixel_landmarks() {
     .unwrap();
     std::fs::write(output.join("high-resolution-receipt.json"), serde_json::to_vec_pretty(
         &json!({"size":texture.size,"landmarks":[0,2047,2048,3001,4095],"rgba":[17,193,251,255]})).unwrap()).unwrap();
+}
+
+pub(in crate::model_preview) fn motion_case(stage: usize) -> Model {
+    let (directory, tag) = fixture_at(false, stage);
+    fixtures::load(directory.path(), tag).unwrap()
 }
 
 pub(crate) fn opaque_detail_case() -> Model {
@@ -604,9 +614,11 @@ fn recovered_detail_coordinates_drive_the_opaque_color_pattern() {
             pan: [0.0; 2],
         },
         render::Scene {
+            filmic: false,
+            bloom: false,
             key: 0.0,
             fill: 1.0,
-            ..Default::default()
+            ..render::Scene::unit_exposure()
         },
         [320, 240],
         0.0,
@@ -617,7 +629,8 @@ fn recovered_detail_coordinates_drive_the_opaque_color_pattern() {
         "The native detail coordinate selects blue, the atlas coordinate selects red: {center:?}"
     );
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_deref()
         .map(Path::new)
@@ -690,7 +703,8 @@ fn recovered_detail_patterns_survive_overlapping_uvs_in_export() {
         "Missing red detail: {colors:?}"
     );
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_deref()
         .map(Path::new)

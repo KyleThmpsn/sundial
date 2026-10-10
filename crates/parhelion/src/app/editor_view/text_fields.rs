@@ -23,7 +23,7 @@ pub(super) fn language(index: u8) -> &'static str {
         .unwrap_or("Unknown Language")
 }
 
-#[derive(Clone, Copy, Hash)]
+#[derive(Debug, Clone, Copy, Hash)]
 pub(super) enum TextSection {
     Weapon,
     Collections,

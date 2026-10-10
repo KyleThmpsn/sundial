@@ -2,7 +2,7 @@
 use std::{fs, path::Path};
 
 use parhelion_import::d2_mot::{
-    gameplay::perks::{lower, translate},
+    gameplay::perks::{lower, presentation, translate},
     payload::Payload,
     reader::{Reader, outside},
 };
@@ -14,7 +14,7 @@ use sundial::{
         PackageManager,
         entity::{WEAPON_ENTITY_CLASS, weapon_component_bindings},
         open_shadowkeep_package_manager, resolve_live_named_tag,
-        runtime::load_weapon_runtime_entity_with_manager,
+        runtime::load_weapon_runtime_entity_for_item_with_manager,
         sandbox_perk::load_sandbox_perk_runtime_action,
         sandbox_perk::program::{
             Action, NativeAssetPatch, NativeAssetResourcePatch, NativeNode, Program, Trigger,
@@ -38,6 +38,8 @@ const SWORD_CLASS: u32 = 0x8080_43D2;
 // discovered and checked, rather than identifying the imported behavior by an item hash.
 const LUNGE_GRAPH: u32 = 0x8162_C91A;
 const LUNGE_BINDING: u32 = 0x7330_E39F;
+
+mod kinetic;
 
 pub struct Request<'a> {
     pub modern_packages: &'a Path,
@@ -110,7 +112,7 @@ fn checked_tag(manager: &PackageManager, tag: u32, class: u32) -> Result<Vec<u8>
 }
 
 fn sword(manager: &PackageManager, hash: u32) -> Result<(), String> {
-    let entity = load_weapon_runtime_entity_with_manager(manager, hash)?;
+    let entity = load_weapon_runtime_entity_for_item_with_manager(manager, hash)?;
     let bindings = weapon_component_bindings(&entity.payload, SWORD_BINDING)?;
     if bindings.len() != 1 || bindings[0].concrete_class != SWORD_CLASS {
         return Err(format!(
@@ -373,7 +375,7 @@ fn program(
 /// Source auxiliary consumers and native swing publication remain explicit gaps.
 pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
     if request.recipe.kind != ItemKind::Weapon {
-        return Err("A sword perk import requires a weapon recipe".into());
+        return Err("A perk import requires a weapon recipe".into());
     }
     if request
         .recipe
@@ -406,18 +408,6 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
         );
     }
     let donor_hash = request.recipe.donor.item_hash.parse_u32().map_err(error)?;
-    sword(&manager, donor_hash)?;
-    if let Some(hash) = &request.recipe.overrides.weapon_pattern_donor_hash {
-        sword(&manager, hash.parse_u32().map_err(error)?)?;
-    }
-    for component in &request.recipe.runtime_component_donors {
-        if component.binding_hash.parse_u32().map_err(error)? == SWORD_BINDING {
-            sword(
-                &manager,
-                component.donor.item_hash.parse_u32().map_err(error)?,
-            )?;
-        }
-    }
     let catalog = InvestmentCatalog::load_with_cache_path(
         native
             .parent()
@@ -437,7 +427,47 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
             format!("The selected native finished perk has no usable runtime: {error}")
         })?;
     let mut reader = Reader::new(&modern, &output.join("source"), true).map_err(error)?;
+    let assigned =
+        parhelion_import::d2_mot::gameplay::perks::assigned(&mut reader, request.plug_hash)
+            .map_err(error)?;
+    if assigned.len() == 1 {
+        let controller =
+            parhelion_import::d2_mot::gameplay::perks::controller::read(&assigned[0].controller)
+                .map_err(error)?;
+        if controller
+            .states
+            .first()
+            .and_then(|state| state.transitions.first())
+            .and_then(|transition| transition.conditions.first())
+            .is_some_and(|condition| condition.class == 0x8080B7B3)
+        {
+            return kinetic::prepare(request, &manager, &mut reader, &output, &donor, choices);
+        }
+    }
+    sword(&manager, donor_hash)?;
+    if let Some(hash) = &request.recipe.overrides.weapon_pattern_donor_hash {
+        sword(&manager, hash.parse_u32().map_err(error)?)?;
+    }
+    for component in &request.recipe.runtime_component_donors {
+        if component.binding_hash.parse_u32().map_err(error)? == SWORD_BINDING {
+            sword(
+                &manager,
+                component.donor.item_hash.parse_u32().map_err(error)?,
+            )?;
+        }
+    }
     let source = translate::extract(&mut reader, request.plug_hash).map_err(error)?;
+    let presentation = presentation::read(&mut reader, request.plug_hash).map_err(error)?;
+    let icon = presentation
+        .icon_png
+        .as_deref()
+        .map(|bytes| {
+            crate::icon_edit::ImportedIcon::from_bytes(bytes).map(|image| super::Icon::Image {
+                name: presentation.name.clone(),
+                image,
+            })
+        })
+        .transpose()?;
     let profile = SwordProfileRecipe {
         key: HexHash::new(request.profile_key),
         near_scale_bits: source.angular.scales.near_bits,
@@ -480,21 +510,23 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
         .overrides
         .socket_plug_variants
         .push(WeaponSocketPlugVariantRecipe {
-        replace_effects: true,
-        socket_index: request.socket_index,
-        choice_index: request.choice_index,
-        source_plug_hash: HexHash::new(request.source_plug_hash),
-        name: Some(request.name.into()),
-        description: Some(
-            "Experimental source-derived sword perk candidate. Gameplay verification is pending."
-                .into(),
-        ),
-        icon: None,
-        classification_donor_hash: None,
-        investment_stats: Vec::new(),
-        additional_sandbox_perks: Vec::new(),
-        sandbox_perks: vec![effect],
-    });
+            offer_everywhere: false,
+            replace_effects: true,
+            socket_index: request.socket_index,
+            choice_index: request.choice_index,
+            source_plug_hash: HexHash::new(request.source_plug_hash),
+            name: Some(if request.name.trim().is_empty() {
+                presentation.name.clone()
+            } else {
+                request.name.into()
+            }),
+            description: Some(presentation.description.clone()),
+            icon,
+            classification_donor_hash: None,
+            investment_stats: Vec::new(),
+            additional_sandbox_perks: Vec::new(),
+            sandbox_perks: vec![effect],
+        });
     recipe.overrides.sword_profile = Some(profile);
     recipe.to_spec().map_err(error)?.validate().map_err(error)?;
     reader.finish().map_err(error)?;
@@ -503,6 +535,7 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
         "status": "experimental package candidate",
         "full_perk_installable": false,
         "gameplay_verified": false,
+        "presentation": presentation.report,
         "prepared_recipe_sha256": digest(encoded.as_bytes()),
         "baseline_recipe_sha256": digest(request.recipe.to_json_pretty().map_err(error)?.as_bytes()),
         "remaining": ["Unknown source auxiliary consumer", "Native swing publication and channel-2 timing proof", "Gameplay verification"],

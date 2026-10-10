@@ -99,7 +99,7 @@ fn currency(ui: &mut egui::Ui, catalog: &Catalog, debt: &RewardDebt, width: f32)
                 } else {
                     ui.allocate_exact_size(egui::vec2(height, height), egui::Sense::hover());
                 }
-                ui.add(egui::Label::new(&name).truncate())
+                ui.add(crate::ui::cut_label(ui, &name))
             },
         )
         .inner

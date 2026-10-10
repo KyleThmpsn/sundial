@@ -6,7 +6,7 @@ use std::{fmt, io::Cursor, sync::Arc};
 
 pub(crate) const WIDTH: u32 = 512;
 pub(crate) const HEIGHT: u32 = 512;
-const SOURCE_EDGE: u32 = 1024;
+const SOURCE_EDGE: u32 = crate::image_import::MAX_EMBEDDED_EDGE;
 #[derive(Clone, Eq, PartialEq)]
 pub struct Artwork {
     source: Arc<Data>,
@@ -117,13 +117,13 @@ impl<'de> Deserialize<'de> for Artwork {
         let edited = embedded.composition.is_some();
         if embedded.png_base64.len()
             > if edited {
-                6 * 1024 * 1024
+                32 * 1024 * 1024
             } else {
                 2 * 1024 * 1024
             }
         {
             return Err(serde::de::Error::custom(
-                "Embedded badge and corner PNG exceeds size limit",
+                "Embedded artwork exceeds the size limit",
             ));
         }
         let bytes = STANDARD

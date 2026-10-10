@@ -74,7 +74,7 @@ fn save_shortcut_preserves_unapplied_parameters_and_closed_workbenches() {
 /// The library and its drafts file through a restart: what a reader left open comes back with
 /// its edits, what they saved is on disk, a draft the workbench cannot read is set aside
 /// without taking the others with it, and export, import and delete work on the files.
-/// With `PARHELION_LIBRARY_OUT` set, a report of each step is written there.
+/// With `SUNDIAL_TEST_ARTIFACTS` set, a report of each step is written there.
 #[test]
 fn drafts_and_saved_perks_survive_a_restart_and_a_bad_draft_is_set_aside() {
     let temporary = tempfile::tempdir().unwrap();
@@ -255,12 +255,11 @@ fn two_windows_keep_both_drafts(root: &Path, steps: &mut Vec<String>) {
     ));
 }
 
-/// The report of each step, where `PARHELION_LIBRARY_OUT` asks for it.
+/// The report of each step, where `SUNDIAL_TEST_ARTIFACTS` asks for it.
 fn write_library_report(steps: &[String]) {
-    let Some(out) = std::env::var_os("PARHELION_LIBRARY_OUT") else {
+    let Some(out) = crate::test_support::artifacts("library-controls") else {
         return;
     };
-    let out = PathBuf::from(out);
     std::fs::create_dir_all(&out).unwrap();
     let report = format!(
         "# Custom perk library round trip\n\n{}\n",
@@ -287,10 +286,10 @@ fn truncated_program_summary_opens_only_one_tooltip() {
     let summary = super::super::guidance::summary_with_assets(&program, None, None);
     let labels = std::collections::BTreeMap::new();
     let ctx = egui::Context::default();
-    ctx.style_mut(|style| style.interaction.tooltip_delay = 0.0);
+    ctx.global_style_mut(|style| style.interaction.tooltip_delay = 0.0);
     // A locked card reads its program as one line, truncated in a narrow pane.
     let mut frame = |events| {
-        ctx.run(
+        ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -299,8 +298,8 @@ fn truncated_program_summary_opens_only_one_tooltip() {
                 events,
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     canvas::draw_effect(
                         ui,
                         Canvas {

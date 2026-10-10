@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tiger_pkg::TagHash;
 
 use crate::{
-    investment_schema::{
+    investment::schema::{
         ITEM_INSTANCED_OFFSET as INVENTORY_INSTANCED_OFFSET,
         ITEM_INVENTORY_SLOT_OFFSET as INVENTORY_BUCKET_ID_OFFSET,
         ITEM_MAX_STACK_SIZE_OFFSET as INVENTORY_MAX_STACK_SIZE_OFFSET,
@@ -270,7 +270,7 @@ impl Catalog {
             .filter_map(|hash| self.inventory_definition(*hash))
             .filter(move |definition| {
                 definition.metadata.is_profile_items_candidate()
-                    && !crate::dummy_items::contains(definition.hash)
+                    && !crate::catalog::dummy_items::contains(definition.hash)
                     && query.matches(
                         self,
                         definition.hash,
@@ -292,7 +292,7 @@ impl Catalog {
             .iter()
             .filter_map(|hash| self.inventory_definition(*hash))
             .filter(move |definition| {
-                (show_dummy_items || !crate::dummy_items::contains(definition.hash))
+                (show_dummy_items || !crate::catalog::dummy_items::contains(definition.hash))
                     && self.fits_character_inventory(
                         definition.hash,
                         class_type,
@@ -353,7 +353,7 @@ pub(crate) fn character_row_class(
 /// Whether a native bucket holds equipment: those Sundial knows a bucket hash for, and the emote
 /// collection's, where only one item has a hash.
 const fn holds_equipment(bucket: u8) -> bool {
-    bucket == crate::account_contract::EMOTE_COLLECTION_NATIVE_BUCKET
+    bucket == crate::account::contract::EMOTE_COLLECTION_NATIVE_BUCKET
         || bucket_hash(bucket).is_some()
 }
 
@@ -501,10 +501,10 @@ pub(in crate::catalog) fn item_inventory_metadata(
 /// The emote collection has no native equipment slot; Sunrise gives this one definition
 /// an explicit emote-slot fallback. Its original native inventory metadata is not rewritten.
 pub(in crate::catalog) const fn item_bucket_hash(hash: u64, bucket: u8) -> Option<u64> {
-    if hash == crate::account_contract::EMOTE_COLLECTION_DEFINITION_HASH
-        && bucket == crate::account_contract::EMOTE_COLLECTION_NATIVE_BUCKET
+    if hash == crate::account::contract::EMOTE_COLLECTION_DEFINITION_HASH
+        && bucket == crate::account::contract::EMOTE_COLLECTION_NATIVE_BUCKET
     {
-        Some(crate::account_contract::EMOTE_BUCKET_HASH)
+        Some(crate::account::contract::EMOTE_BUCKET_HASH)
     } else {
         bucket_hash(bucket)
     }
@@ -612,7 +612,7 @@ mod tests {
 
     #[test]
     fn emote_collection_fallback_is_exact_and_keeps_other_buckets_unchanged() {
-        use crate::account_contract::{EMOTE_BUCKET_HASH, EMOTE_COLLECTION_DEFINITION_HASH};
+        use crate::account::contract::{EMOTE_BUCKET_HASH, EMOTE_COLLECTION_DEFINITION_HASH};
         assert_eq!(
             item_bucket_hash(EMOTE_COLLECTION_DEFINITION_HASH, 12),
             Some(EMOTE_BUCKET_HASH)

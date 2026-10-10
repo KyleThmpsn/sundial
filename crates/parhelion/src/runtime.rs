@@ -145,10 +145,9 @@ mod tests {
     };
 
     #[test]
-    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+    #[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
     fn mountaintop_translator_is_rewired_where_pairing_refuses_it() {
-        let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-            .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages");
+        let packages = crate::test_support::stock_packages();
         let manager = open_shadowkeep_package_manager(Path::new(&packages)).unwrap();
         let mut baseline =
             load_weapon_runtime_entity_at_pattern_index_with_manager(&manager, 370).unwrap();

@@ -315,9 +315,9 @@ fn cases(catalog: &InvestmentCatalog) -> Vec<Case> {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn borrowed_burst_changes_follow_the_chosen_firing_pattern_in_staged_packages() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     let source = open_manager(&packages).unwrap();
     let source_globals = source
@@ -367,10 +367,8 @@ fn borrowed_burst_changes_follow_the_chosen_firing_pattern_in_staged_packages() 
             "stock perk {perk} is unchanged"
         );
     }
-    let out = std::env::var_os("PARHELION_FIRING_OUT").map_or_else(
-        || std::env::temp_dir().join("parhelion-behavior-firing"),
-        PathBuf::from,
-    );
+    let out = crate::test_support::artifacts("behavior-firing")
+        .unwrap_or_else(|| std::env::temp_dir().join("parhelion-behavior-firing"));
     fs::create_dir_all(&out).unwrap();
     fs::write(out.join("report.md"), &report).unwrap();
     eprintln!("{report}\nReport: {}", out.join("report.md").display());

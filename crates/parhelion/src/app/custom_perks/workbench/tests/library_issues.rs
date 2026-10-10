@@ -2,11 +2,11 @@
 //! warning the workbench names carries the muted warning icon, no other perk does, the icon
 //! never covers a name, and a behavior that never ends warns without blocking Apply.
 //!
-//! Opt in with `PARHELION_WORKBENCH_INSTALL` (an install root), `PARHELION_WORKBENCH_CATALOG` (a
+//! Opt in with `SUNDIAL_INSTALL` (an install root), `PARHELION_WORKBENCH_CATALOG` (a
 //! copy of the catalog cache, never the live one), `PARHELION_LIBRARY_ROOT` (a Parhelion data
-//! directory, whose perks are copied so nothing touches it) and `PARHELION_LIBRARY_ISSUES_OUT`
+//! directory, whose perks are copied so nothing touches it) and `SUNDIAL_TEST_ARTIFACTS`
 //! (the report directory). A perk that never ends joins the copy, so one row is always flagged.
-//! `PARHELION_UI_CAPTURE_DIR` also captures the list.
+//! `SUNDIAL_TEST_ARTIFACTS` also captures the list.
 use super::*;
 use crate::test_support::driver::texts;
 use sundial::package_authoring::sandbox_perk::program::{Action, NativeNode, Trigger};
@@ -16,7 +16,7 @@ fn env_path(name: &str) -> PathBuf {
 }
 
 fn draw(ctx: &egui::Context, app: &mut crate::app::PackageAuthoringApp) -> egui::FullOutput {
-    ctx.run(
+    ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -24,20 +24,20 @@ fn draw(ctx: &egui::Context, app: &mut crate::app::PackageAuthoringApp) -> egui:
             )),
             ..Default::default()
         },
-        |ctx| {
-            egui::CentralPanel::default().show(ctx, |_| {});
-            app.draw_perk_workbench(ctx);
+        |ui| {
+            egui::CentralPanel::default().show(ui, |_| {});
+            app.draw_perk_workbench(ui);
         },
     )
 }
 
 #[test]
-#[ignore = "requires PARHELION_WORKBENCH_INSTALL, PARHELION_WORKBENCH_CATALOG, PARHELION_LIBRARY_ROOT and PARHELION_LIBRARY_ISSUES_OUT"]
+#[ignore = "requires SUNDIAL_INSTALL, PARHELION_WORKBENCH_CATALOG, PARHELION_LIBRARY_ROOT and SUNDIAL_TEST_ARTIFACTS"]
 fn a_real_library_marks_exactly_the_perks_with_problems() {
-    let install = env_path("PARHELION_WORKBENCH_INSTALL");
+    let install = env_path("SUNDIAL_INSTALL");
     let cache = env_path("PARHELION_WORKBENCH_CATALOG");
     let source = env_path("PARHELION_LIBRARY_ROOT").join("perks");
-    let out = env_path("PARHELION_LIBRARY_ISSUES_OUT");
+    let out = env_path("SUNDIAL_TEST_ARTIFACTS");
     std::fs::create_dir_all(&out).unwrap();
     let root = tempfile::tempdir().unwrap();
     for file in std::fs::read_dir(&source).unwrap() {

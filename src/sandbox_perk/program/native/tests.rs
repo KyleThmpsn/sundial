@@ -2,10 +2,9 @@ use super::*;
 use crate::sandbox_perk::program::{self, decompile};
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn orb_generation_compiles_a_kill_event_position_and_keeps_native_asset_editable() {
-    let path =
-        std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let path = crate::test_support::stock_packages();
     let manager = crate::package_authoring::open_shadowkeep_package_manager(&path).unwrap();
     let program = Program {
         name: "Orb Harvest".into(),
@@ -119,10 +118,9 @@ fn captured_programs_preserve_all_groups_policies_and_auxiliary_records() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn native_complete_programs_compile_multiple_groups_policies_and_auxiliary_data() {
-    let path =
-        std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let path = crate::test_support::stock_packages();
     let manager = crate::package_authoring::open_shadowkeep_package_manager(&path).unwrap();
     let globals = manager
         .read_tag(

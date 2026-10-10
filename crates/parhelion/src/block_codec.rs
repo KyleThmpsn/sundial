@@ -1,9 +1,38 @@
 use std::path::Path;
+use std::{cell::Cell, time::Duration};
 
 use crate::{AuthoringError, AuthoringResult, format::BLOCK_SIZE};
 
 pub(crate) const FULL_RAW_FLAGS: u16 = 0;
 const COMPRESSED_FLAGS: u16 = 1;
+
+/// Per-worker native timings. Package readback remains a separate emitted operation.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Timings {
+    pub blocks: usize,
+    pub wait: Duration,
+    pub compression: Duration,
+    pub verification: Duration,
+}
+
+thread_local! {
+    static TIMINGS: Cell<Timings> = Cell::new(Timings::default());
+}
+
+impl Timings {
+    pub(crate) fn take() -> Self {
+        TIMINGS.with(|timings| timings.replace(Self::default()))
+    }
+
+    #[cfg(all(windows, target_pointer_width = "64"))]
+    fn record(update: impl FnOnce(&mut Self)) {
+        TIMINGS.with(|timings| {
+            let mut value = timings.get();
+            update(&mut value);
+            timings.set(value);
+        });
+    }
+}
 
 #[cfg(all(windows, target_pointer_width = "64"))]
 mod oodle;
@@ -45,7 +74,7 @@ pub(crate) struct PackageBlockEncoder {
     compressor: Option<std::sync::Arc<oodle::Compressor>>,
 }
 
-/// One loaded encoder per DLL path for the whole process.
+/// Share one loaded encoder per DLL path while callers still own it.
 ///
 /// Every package a build emits opens the same DLL, and opening it is a `LoadLibrary` plus an
 /// ABI check. The path is canonical by the time it reaches here, so it keys the cache.
@@ -54,21 +83,22 @@ fn shared_compressor(runtime: &Path) -> AuthoringResult<std::sync::Arc<oodle::Co
     use std::{
         collections::HashMap,
         path::PathBuf,
-        sync::{Arc, Mutex, OnceLock},
+        sync::{Arc, Mutex, OnceLock, Weak},
     };
-    static ENCODERS: OnceLock<Mutex<HashMap<PathBuf, Arc<oodle::Compressor>>>> = OnceLock::new();
+    static ENCODERS: OnceLock<Mutex<HashMap<PathBuf, Weak<oodle::Compressor>>>> = OnceLock::new();
     let mut encoders = ENCODERS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .map_err(|_| {
             AuthoringError::InvalidInput("The package encoder cache is poisoned".into())
         })?;
-    if let Some(compressor) = encoders.get(runtime) {
-        return Ok(Arc::clone(compressor));
+    if let Some(compressor) = encoders.get(runtime).and_then(Weak::upgrade) {
+        return Ok(compressor);
     }
+    encoders.retain(|_, value| value.strong_count() > 0);
     let compressor =
         Arc::new(oodle::Compressor::open(runtime).map_err(AuthoringError::InvalidInput)?);
-    encoders.insert(runtime.to_path_buf(), Arc::clone(&compressor));
+    encoders.insert(runtime.to_path_buf(), Arc::downgrade(&compressor));
     Ok(compressor)
 }
 

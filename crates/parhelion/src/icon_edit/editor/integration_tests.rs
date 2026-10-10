@@ -11,10 +11,10 @@ use crate::tag_payload::{read_u16, read_u32};
 use sundial::package_authoring::icon_schema::ICON_BACKGROUND_LAYER_OFFSET;
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn native_rarity_backgrounds_match_stock_and_preserve_exotic_artwork() {
     use crate::AuthoredWeaponRarity as R;
-    let packages = std::path::PathBuf::from(std::env::var_os("SUNDIAL_TEST_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(&packages).unwrap();
     let exotic = TagHash(0x8132_36D9); // Cerberus+1
     let original = manager.read_tag(exotic).unwrap();
@@ -69,9 +69,9 @@ fn imported_edit() -> WeaponIconEdit {
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn multiple_replacements_match_compiled_artwork_and_keep_context_layers() {
-    let packages = std::path::PathBuf::from(std::env::var_os("SUNDIAL_TEST_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(&packages).unwrap();
     let container = TagHash(0x8132_5796);
     let mut edit = imported_edit();
@@ -185,13 +185,13 @@ fn editor_pages_keep_controls_and_footer_inside_the_viewport_without_scrolling()
                 editor.color_page = page;
                 let mut output = egui::FullOutput::default();
                 for _ in 0..3 {
-                    output = context.run(
+                    output = context.run_ui(
                         egui::RawInput {
                             screen_rect: Some(screen),
                             ..Default::default()
                         },
-                        |ctx| {
-                            editor.show(ctx);
+                        |ui| {
+                            editor.show(ui);
                         },
                     );
                 }
@@ -246,14 +246,14 @@ fn editor_reset_changes_the_draft_and_escape_returns_cancel() {
     let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(380.0, 420.0));
     let mut frame = |events| {
         let mut action = None;
-        let output = context.run(
+        let output = context.run_ui(
             egui::RawInput {
                 screen_rect: Some(viewport),
                 events,
                 ..Default::default()
             },
-            |ctx| {
-                action = editor.show(ctx);
+            |ui| {
+                action = editor.show(ui);
             },
         );
         (output, action)
@@ -298,10 +298,9 @@ fn editor_reset_changes_the_draft_and_escape_returns_cancel() {
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn real_import_matches_preview_and_preserves_native_texture_graph() {
-    let directory =
-        std::env::var_os("SUNDIAL_TEST_PACKAGES").expect("Shadowkeep package directory");
+    let directory = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(Path::new(&directory)).unwrap();
     let container = TagHash::from(0x8132_5796); // Misfit's audited RGBA8 artwork.
     let edit = imported_edit();
@@ -366,7 +365,7 @@ fn real_import_matches_preview_and_preserves_native_texture_graph() {
             preview.foreground.as_ref(),
         ])
     );
-    if let Some(directory) = std::env::var_os("SUNDIAL_TEST_ICON_PREVIEW_DIR") {
+    if let Some(directory) = crate::test_support::artifacts("icon-previews") {
         let rgba: Vec<u8> = rendered
             .pixels
             .iter()

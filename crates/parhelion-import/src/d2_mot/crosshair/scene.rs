@@ -7,12 +7,15 @@
 //! each object, its anchor piece, its animated piece, its clip and a flag.
 //!
 //! A source piece with a twin is that twin. Any other piece clones the native piece of a twin
-//! with the same object type and component classes. Its own rig controls, skeleton, markers and
-//! animation (lookup, lookup table, bank, clips and bank consumer) convert onto the clone's
-//! components. A component with no converter keeps the native piece's own, recorded as a carrier.
-//! Modern components with no native class are left out, recorded as dropped. Kept native pieces
-//! and owners load only through the index of the native pair whose scene holds them, so the
-//! converted pair inherits every such pair's index.
+//! with the same object type and component classes, preferring the twin that shares the most
+//! owners and then the one whose channel banks declare the channels closest to the source's.
+//! Its own rig controls, skeleton, markers and animation (lookup, lookup table, bank, clips and
+//! bank consumer) convert onto the clone's components. A channels owner whose draw record leaves
+//! out some of the template's materials gets a copy of the native owner with those slots emptied.
+//! A component with no converter keeps the native piece's own, recorded as a carrier. Modern
+//! components with no native class are left out, recorded as dropped. Kept native pieces and
+//! owners load only through the index of the native pair whose scene holds them, and so do
+//! copies of them, so the converted pair inherits every such pair's index.
 use super::twins::{self, Piece, Twins, native_class};
 use super::*;
 use crate::d2_mot::{
@@ -32,6 +35,34 @@ const NATIVE_OBJECT: u32 = 0x8080_664F;
 const SHARED_COMPANION: u32 = 0x81A6_62DE;
 const MODERN_LOOKUP: u32 = 0x8080_25F8;
 const MODERN_CONSUMER: u32 = 0x8080_289B;
+const MODERN_CHANNELS: u32 = 0x8080_6A58;
+const MODERN_CHANNEL_BANK: u32 = 0x8080_9597;
+/// A channels owner's draw record, modern then native, and their sizes.
+const MODERN_RECORD: u32 = 0x8080_6C71;
+const NATIVE_RECORD: u32 = 0x8080_7140;
+const MODERN_RECORD_SIZE: usize = 0x110;
+const NATIVE_RECORD_SIZE: usize = 0xD0;
+/// Material slots of a draw record, modern then native: four draw materials and two more.
+const RECORD_SLOTS: [(usize, usize); 6] = [
+    (0xD0, 0x90),
+    (0xD4, 0x94),
+    (0xD8, 0x98),
+    (0xDC, 0x9C),
+    (0xE0, 0xA0),
+    (0xE4, 0xA4),
+];
+/// Record words both versions hold unchanged, and the draw flags.
+const RECORD_VALUES: [(usize, usize); 6] = [
+    (0xF0, 0xA8),
+    (0xF4, 0xAC),
+    (0xF8, 0xB0),
+    (0xFC, 0xB4),
+    (0x100, 0xB8),
+    (0x108, 0xC0),
+];
+const RECORD_FLAGS: (usize, usize) = (0x104, 0xBC);
+/// The modern-only draw flag. Every twin record holds the modern flags without it.
+const MODERN_ONLY_FLAG: u32 = 0x0040_0000;
 const NATIVE_LOOKUP: u32 = 0x8080_344B;
 const NATIVE_CONSUMER: u32 = 0x8080_36CF;
 /// Modern lookup table classes and their native counterparts, with the arrays' marker.
@@ -293,11 +324,18 @@ pub(super) fn convert(
         vec![(0, root_symbol.clone())],
     );
     unit.finish(graph, nodes)?;
-    // Pieces and owners kept from other native scenes load only through their own pair's index.
+    // Pieces and owners kept from other native scenes load only through their own pair's index,
+    // and so do the native assets a copy of one of them names.
     let mut inherited = BTreeSet::new();
     for node in &nodes[first_node..] {
         let file = node["file"].as_str().context("crosshair node file")?;
-        for (_, word) in words(&Payload(fs::read(graph.join(file))?)) {
+        let template = node["template"]
+            .as_u64()
+            .and_then(|tag| u32::try_from(tag).ok());
+        for word in words(&Payload(fs::read(graph.join(file))?))
+            .map(|(_, word)| word)
+            .chain(template)
+        {
             if let Some(&owner) = twins.pairs.get(&word) {
                 inherited.insert(owner);
             }
@@ -339,19 +377,28 @@ fn convert_piece(
     }
     let source = twins::piece(m, tag, true)?;
     let classes = |p: &Piece| p.owners.iter().map(|(_, c)| *c).collect::<Vec<_>>();
-    let (template, native) = twins
+    let mut best = None;
+    for candidate in twins
         .pieces
         .iter()
         .filter(|(t, _)| t.object == source.object && classes(t) == classes(&source))
-        .max_by_key(|(t, _)| {
-            t.owners
+    {
+        let score = (
+            candidate
+                .0
+                .owners
                 .iter()
                 .filter(|o| source.owners.contains(o))
-                .count()
-        })
-        .context(format!(
-            "no native crosshair piece has the shape of {tag:08X}"
-        ))?;
+                .count(),
+            channel_similarity(m, &source, &candidate.0)?,
+        );
+        if best.as_ref().is_none_or(|(top, _)| score >= *top) {
+            best = Some((score, candidate));
+        }
+    }
+    let (_, (template, native)) = best.context(format!(
+        "no native crosshair piece has the shape of {tag:08X}"
+    ))?;
     let mut unit = Unit::new();
     let mut entity = n.tag(native.tag, Some(twins::NATIVE_ENTITY))?.0.clone();
     let mut components = Vec::new();
@@ -432,6 +479,16 @@ fn convert_piece(
                     .push(json!({"source":hex(owner),"class":hex(class),"result":"with lookup"}));
                 continue;
             }
+            MODERN_CHANNELS => channels(
+                m,
+                n,
+                owner,
+                template.owners[index].0,
+                carrier,
+                &twins.map,
+                &part,
+                &mut unit,
+            ),
             _ => Err(anyhow::anyhow!("no converter")),
         };
         components.push(match converted {
@@ -449,6 +506,174 @@ fn convert_piece(
         json!({"source":hex(tag),"template":hex(template.tag),"native_template":hex(native.tag),
             "symbol":symbol,"components":components}),
     ))
+}
+
+/// The channels a modern channel bank declares.
+fn bank_channels(m: &mut Reader, owner: u32) -> Result<BTreeSet<u32>> {
+    let p = m.tag(owner, None)?;
+    let definition = p.pointer(24)?;
+    ensure!(
+        p.u32(definition - 4)? == MODERN_CHANNEL_BANK,
+        "crosshair channel bank layout differs"
+    );
+    p.array(definition + 0x148, 112, Some(0x8080_95A9))?
+        .into_iter()
+        .map(|row| p.u32(row))
+        .collect()
+}
+
+/// How closely a template piece's channel banks declare the source piece's channels: minus the
+/// channels either side declares alone, over the banks the two do not share.
+fn channel_similarity(m: &mut Reader, source: &Piece, template: &Piece) -> Result<i64> {
+    let mut score = 0i64;
+    for (&(owner, class), &(other, _)) in source.owners.iter().zip(&template.owners) {
+        if class == MODERN_CHANNEL_BANK && owner != other {
+            let (a, b) = (bank_channels(m, owner)?, bank_channels(m, other)?);
+            score -= i64::try_from(a.symmetric_difference(&b).count())?;
+        }
+    }
+    Ok(score)
+}
+
+/// The channel names a channels owner reads, from its definition's 40-byte input rows.
+fn channel_inputs(p: &Payload, owner: u32, field: usize) -> Result<BTreeSet<u32>> {
+    p.array(p.pointer(24)? + field, 40, None)?
+        .into_iter()
+        .map(|row| {
+            ensure!(
+                p.u32(row)? == owner,
+                "crosshair channel input owner differs"
+            );
+            p.u32(row + 0x20)
+        })
+        .collect()
+}
+
+/// The one draw record a channels owner names, and where.
+fn draw_record(r: &mut Reader, p: &Payload, modern: bool) -> Result<(usize, u32)> {
+    let class = if modern { MODERN_RECORD } else { NATIVE_RECORD };
+    let mut found = Vec::new();
+    for at in (0..p.0.len().saturating_sub(16)).step_by(4) {
+        let target = if modern {
+            match r.ref64(p, at) {
+                Ok(target) => target,
+                Err(_) => continue,
+            }
+        } else {
+            p.u32(at)?
+        };
+        if r.reference(target).ok() == Some(class) {
+            found.push((at, target));
+        }
+    }
+    found.dedup_by_key(|(_, target)| *target);
+    let [found] = found.as_slice() else {
+        anyhow::bail!("crosshair channels owner names no unique draw record");
+    };
+    Ok(*found)
+}
+
+/// A channels owner that draws a subset of its template's materials. The template's twin
+/// carries the same channel inputs and a draw record of the same layout, so a copy of it whose
+/// record copy leaves out the materials the source leaves out draws what the source draws.
+/// The source may read fewer channels than the template, never others, and its record may differ
+/// from the template's only in emptied material slots, its draw flags and its own id.
+#[allow(clippy::too_many_arguments)]
+fn channels(
+    m: &mut Reader,
+    n: &mut Reader,
+    owner: u32,
+    template_owner: u32,
+    carrier: u32,
+    twin_map: &BTreeMap<u32, u32>,
+    symbol: &str,
+    unit: &mut Unit,
+) -> Result<()> {
+    const RECORD_ID: usize = 0xCC;
+    ensure!(
+        twin_map.get(&template_owner) == Some(&carrier),
+        "the template's channels owner is not the native carrier's twin"
+    );
+    let source = m.tag(owner, Some(0x8080_9B06))?;
+    let template = m.tag(template_owner, Some(0x8080_9B06))?;
+    for p in [&source, &template] {
+        ensure!(
+            p.u32(p.pointer(24)? - 4)? == MODERN_CHANNELS,
+            "crosshair channels owner layout differs"
+        );
+    }
+    let read = channel_inputs(&source, owner, 0x140)?;
+    let offered = channel_inputs(&template, template_owner, 0x140)?;
+    ensure!(
+        read.is_subset(&offered),
+        "the source channels owner reads channels its template lacks"
+    );
+    let (_, source_record) = draw_record(m, &source, true)?;
+    let (_, template_record) = draw_record(m, &template, true)?;
+    let native_owner = n.tag(carrier, None)?;
+    let (_, native_record) = draw_record(n, &native_owner, false)?;
+    let sr = m.tag(source_record, Some(MODERN_RECORD))?;
+    let tr = m.tag(template_record, Some(MODERN_RECORD))?;
+    let nr = n.tag(native_record, Some(NATIVE_RECORD))?;
+    ensure!(
+        sr.0.len() == MODERN_RECORD_SIZE
+            && tr.0.len() == MODERN_RECORD_SIZE
+            && nr.0.len() == NATIVE_RECORD_SIZE,
+        "crosshair draw record size differs"
+    );
+    let free = RECORD_SLOTS
+        .iter()
+        .map(|(modern, _)| *modern)
+        .chain([RECORD_FLAGS.0, RECORD_ID])
+        .collect::<Vec<_>>();
+    for (at, word) in words(&sr) {
+        ensure!(
+            free.contains(&at) || tr.u32(at)? == word,
+            "crosshair draw record differs from its template at {at:X}"
+        );
+    }
+    // The template pair shows how each field reads natively.
+    let (modern_flags, native_flags) = RECORD_FLAGS;
+    ensure!(
+        nr.u32(native_flags)? == tr.u32(modern_flags)? & !MODERN_ONLY_FLAG,
+        "native draw flags differ from the template's"
+    );
+    for (modern, native) in RECORD_VALUES {
+        ensure!(
+            nr.u32(native)? == tr.u32(modern)?,
+            "native draw record value differs from the template's"
+        );
+    }
+    let mut record = nr.as_ref().clone();
+    for (modern, native) in RECORD_SLOTS {
+        let (from, to) = (tr.u32(modern)?, nr.u32(native)?);
+        ensure!(
+            (from == u32::MAX) == (to == u32::MAX),
+            "native draw record slot differs from the template's"
+        );
+        match sr.u32(modern)? {
+            word if word == from => {}
+            u32::MAX => write_u32(&mut record.0, native, u32::MAX),
+            word => anyhow::bail!("source draw record names its own material {word:08X}"),
+        }
+    }
+    write_u32(
+        &mut record.0,
+        native_flags,
+        sr.u32(modern_flags)? & !MODERN_ONLY_FLAG,
+    );
+    ensure!(
+        record.0 != nr.0,
+        "the source draw record matches the template's"
+    );
+    unit.add(
+        &format!("{symbol}-record"),
+        native_record,
+        record.0,
+        Vec::new(),
+    );
+    unit.add(symbol, carrier, native_owner.0.clone(), Vec::new());
+    Ok(())
 }
 
 /// Convert a piece's animation: the lookup owner names its bank and its lookup table, the bank

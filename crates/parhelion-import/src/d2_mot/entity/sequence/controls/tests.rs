@@ -284,7 +284,7 @@ fn additional_flow_package_oracle() -> Result<()> {
         fs::write(output.join(format!("{key}.bin")), &payload)?;
         rows.push(serde_json::json!({"key": key, "bytes": payload.len(),
             "whole_control_array_verified": whole_owner,
-            "sha256": format!("{:x}", Sha256::digest(&payload))}));
+            "sha256": hex::encode(Sha256::digest(&payload))}));
     }
     fs::write(
         output.join("report.json"),

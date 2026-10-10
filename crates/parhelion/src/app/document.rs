@@ -19,7 +19,7 @@ impl PackageAuthoringApp {
             Ok(preferences) => preferences,
             Err(error) => {
                 log.push(LogEntry::error(format!(
-                    "Could not load Parhelion backup preferences. Using defaults: {error}"
+                    "Could not load Parhelion preferences. Using defaults: {error}"
                 )));
                 self.preferences_error = Some(error);
                 ParhelionPreferences::default()
@@ -64,6 +64,8 @@ impl PackageAuthoringApp {
         self.limit_package_backups = backup_preferences.limit_package_backups;
         self.package_backup_retention = backup_preferences.package_backup_retention;
         self.backup_recipe_snapshots = backup_preferences.backup_recipe_snapshots;
+        self.show_preview_fps = backup_preferences.show_preview_fps;
+        self.play_preview_animations = backup_preferences.play_preview_animations;
         self.log = log;
     }
 

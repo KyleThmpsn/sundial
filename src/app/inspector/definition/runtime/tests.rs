@@ -86,9 +86,9 @@ fn cache_is_bounded_and_target_kinds_cannot_collide() {
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_INSTALL pointing to a Shadowkeep install; read-only"]
+#[ignore = "requires SUNDIAL_INSTALL pointing to a Shadowkeep install; read-only"]
 fn installed_weapon_and_perk_runtime_inspection() {
-    let install = std::env::var_os("SUNDIAL_TEST_INSTALL").expect("set SUNDIAL_TEST_INSTALL");
+    let install = crate::test_support::install();
     let install = Path::new(&install);
     let weapon = loader::load(install, RuntimeTarget::Weapon(285)).unwrap();
     let LoadedDetails::Weapon(graph) = weapon else {

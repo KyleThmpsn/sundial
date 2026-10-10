@@ -84,7 +84,7 @@ impl Referrers {
 }
 
 fn directory() -> Option<PathBuf> {
-    crate::paths::cache_dir().map(|root| root.join("references"))
+    crate::system::paths::cache_dir().map(|root| root.join("references"))
 }
 
 /// Every runtime package with the resources a walk can read, in package order.

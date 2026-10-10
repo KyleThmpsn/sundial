@@ -195,9 +195,9 @@ fn loadout_candidates(
     supports_emote_collection: bool,
     plug_mode: PlugSelectionMode,
 ) -> Result<(Vec<&ItemDef>, PlugSelectionMode), String> {
-    if supports_emote_collection && bucket_hash == crate::account_contract::EMOTE_BUCKET_HASH {
+    if supports_emote_collection && bucket_hash == crate::account::contract::EMOTE_BUCKET_HASH {
         let collection = catalog
-            .item(crate::account_contract::EMOTE_COLLECTION_DEFINITION_HASH)
+            .item(crate::account::contract::EMOTE_COLLECTION_DEFINITION_HASH)
             .filter(|item| item.bucket_hash == bucket_hash && item_can_be_authored(item))
             .ok_or("The Emote Collection (0xBDBB7999) is unavailable in the item catalog")?;
         // Collection rolls contain emotes even when the general picker is unrestricted.
@@ -209,7 +209,7 @@ fn loadout_candidates(
                 .into_iter()
                 .filter(|item| {
                     item_can_be_authored(item)
-                        && crate::account_contract::definition_available(
+                        && crate::account::contract::definition_available(
                             item.hash,
                             supports_emote_collection,
                         )
@@ -488,7 +488,7 @@ pub(super) fn random_item_candidates(
 }
 
 pub(super) fn slot_definition(slot: &str) -> Option<(&'static str, &'static str, u64)> {
-    crate::account_contract::ALL_EQUIPMENT_SLOTS
+    crate::account::contract::ALL_EQUIPMENT_SLOTS
         .iter()
         .find(|(known_slot, _, _)| *known_slot == slot)
         .copied()

@@ -8,6 +8,8 @@
 //! adds each authored entry's custom perks to its pool once they are compiled.
 use std::collections::{BTreeMap, BTreeSet};
 
+mod attached;
+
 use sundial::investment::InvestmentCatalog;
 use sundial::package_authoring::{PackageManager, fnv1_name_hash};
 use tiger_pkg::TagHash;
@@ -123,8 +125,8 @@ pub(crate) struct AuthoredEntry {
     pool: Vec<u8>,
     record_template: TagHash,
     record: Vec<u8>,
-    /// Artwork of its own, which takes an icon row the build adds.
-    pub(crate) artwork: Option<Artwork>,
+    /// Artwork or a node color of its own, which takes a private icon row and container.
+    pub(crate) icon: Option<NodeIcon>,
     /// Perks from the perk workbench, compiled with the private perks.
     pub(crate) custom_perks: Vec<PerkRecipe>,
     /// What it asks to change about abilities, by the entry holding each: its modifiers, its
@@ -154,13 +156,34 @@ pub(crate) struct AbilityEntity {
     pub(crate) grade: Option<super::EffectGrade>,
     pub(crate) swaps: Vec<super::SpawnSwap>,
     pub(crate) bank_values: Vec<super::BankValue>,
+    /// The damage type its damage profiles take, as the client encodes it.
+    pub(crate) damage_type: Option<u8>,
+    /// The HUD glyph its energy controller names in place of its own: the glyph of the ability
+    /// whose icon the entry takes.
+    pub(crate) hud_glyph: Option<u32>,
+    /// The keys its entry applies to its row. Its bank's rows that name a glyph while one of them
+    /// applies name `hud_glyph` too, since the tile shows theirs.
+    pub(crate) hud_keys: Vec<u32>,
+    /// A private glyph row carrying the ability color and, for a Super, its inherited theme.
+    pub(crate) hud_color: Option<super::hud::Row>,
+    pub(crate) attached: Vec<AttachedHud>,
+}
+
+/// One descendant's controller glyph and conditional variants, with optional private artwork.
+#[derive(Clone)]
+pub(crate) struct AttachedHud {
+    pub(crate) graph: u32,
+    /// The controller's row first, followed by distinct glyphs its bank can select.
+    pub(crate) rows: Vec<super::hud::Row>,
+    pub(crate) icon: Option<NodeIcon>,
 }
 
 /// An entry's own artwork, and the stock icon row it replaces, whose container the authored
 /// one is built from.
 #[derive(Clone)]
-pub(crate) struct Artwork {
-    pub(crate) icon: Icon,
+pub(crate) struct NodeIcon {
+    pub(crate) artwork: Option<Icon>,
+    pub(crate) color: Option<[u8; 3]>,
     pub(crate) source_row: u16,
     pub(crate) source_container: TagHash,
 }
@@ -268,9 +291,20 @@ fn source_subclasses(abilities: &SubclassAbilities) -> BTreeSet<u32> {
                 .iter()
                 .flat_map(|attunement| attunement.nodes.iter().map(|node| node.source)),
         )
-        .chain(edits.filter_map(|edits| match edits.icon {
-            Some(EntryIcon::Ability { subclass, .. }) => Some(subclass),
-            _ => None,
+        .chain(edits.flat_map(|edits| {
+            edits
+                .icon
+                .iter()
+                .chain(
+                    edits
+                        .attached_abilities
+                        .iter()
+                        .filter_map(|edit| edit.icon.as_ref()),
+                )
+                .filter_map(|icon| match icon {
+                    EntryIcon::Ability { subclass, .. } => Some(*subclass),
+                    _ => None,
+                })
         }))
         .collect()
 }
@@ -284,10 +318,12 @@ pub(crate) fn author_list(
     abilities: &SubclassAbilities,
 ) -> AuthoringResult<ResolvedList> {
     abilities.validate().map_err(invalid)?;
+    let mut abilities = abilities.clone();
+    super::hud::include_entries(&mut abilities, base_hash);
     let base = StockList::read(sources, base_hash, "Base subclass")?;
     let base_entries = base.entries()?;
     let mut stock = BTreeMap::<u32, StockList>::new();
-    for hash in source_subclasses(abilities) {
+    for hash in source_subclasses(&abilities) {
         let source = StockList::read(sources, hash, "Ability source")?;
         if source
             .entries()?
@@ -305,8 +341,14 @@ pub(crate) fn author_list(
     let mut display = base.display.clone();
     let mut entries = Vec::new();
     for choice in &abilities.choices {
-        AbilitySlot::of_entry(choice.entry)
-            .ok_or_else(|| invalid(format!("Entry {} is not an ability slot", choice.entry)))?;
+        if AbilitySlot::of_entry(choice.entry).is_none()
+            && !layout::FOUNDATIONS.contains(&choice.entry)
+        {
+            return Err(invalid(format!(
+                "Entry {} is not an editable ability",
+                choice.entry
+            )));
+        }
         let source = &stock[&choice.source];
         copy_entry(
             &mut list,
@@ -316,12 +358,14 @@ pub(crate) fn author_list(
             choice.entry,
             choice.source_entry,
         )?;
-        if !choice.edits.is_empty() {
+        let color = abilities.hud_color;
+        if !choice.edits.is_empty() || color.is_some() {
             entries.push(author_entry(
                 sources,
                 (&stock, namespace),
                 Place::Ability(choice.entry),
                 &choice.edits,
+                color,
                 (source, choice.entry, choice.source_entry),
             )?);
         }
@@ -354,12 +398,14 @@ pub(crate) fn author_list(
                 target,
                 node.source_entry(),
             )?;
-            if !node.edits.is_empty() {
+            let color = abilities.hud_color;
+            if !node.edits.is_empty() || color.is_some() {
                 entries.push(author_entry(
                     sources,
                     (&stock, namespace),
                     Place::Node(attunement.path, node.position),
                     &node.edits,
+                    color,
                     (node_source, target, node.source_entry()),
                 )?);
             }
@@ -431,6 +477,76 @@ fn label(place: Place) -> String {
     }
 }
 
+/// The HUD glyph of the Super a subclass on `base` with `abilities` equips, whose row colors its
+/// ability tiles: the one its icon takes from another ability, else its own.
+pub(crate) fn super_glyph(
+    sources: &Sources<'_>,
+    base: u32,
+    abilities: Option<&SubclassAbilities>,
+) -> AuthoringResult<Option<u32>> {
+    let choice = abilities.map_or_else(
+        || super::SubclassChoice::stock(layout::SUPER, base, layout::SUPER),
+        |abilities| abilities.ability(base, layout::SUPER),
+    );
+    if let Some(EntryIcon::Ability { subclass, entry }) = &choice.edits.icon {
+        let owner = StockList::read(sources, *subclass, "Super icon source")?;
+        if let Some(glyph) = entry_glyph(sources, &owner, *entry)? {
+            return Ok(Some(glyph));
+        }
+    }
+    let source = StockList::read(sources, choice.source, "Super source")?;
+    entry_glyph(sources, &source, choice.source_entry)
+}
+
+/// The HUD glyph entity `tag` shows while `keys` apply: the last row of its bank naming one that
+/// they apply, as dodges and melees name each variant's, else the glyph its energy controller
+/// names. `None` for an entity with neither.
+fn entity_glyph(sources: &Sources<'_>, tag: TagHash, keys: &[u32]) -> AuthoringResult<Option<u32>> {
+    use sundial::package_authoring::{ability_hud, ability_modifier};
+    let entity = read_tag(sources.manager, tag, "ability entity")?;
+    // A bank without a HUD controller cannot supply a tile glyph. Its native gates may also
+    // be outside the row editor's contract, while its graph remains safe to copy unchanged.
+    let Some(site) = ability_hud::glyph_site(sources.manager, &entity).map_err(invalid)? else {
+        return Ok(None);
+    };
+    if let Some(bank) = ability_modifier::entity_bank(&entity).map_err(invalid)? {
+        let bank = read_tag(sources.manager, TagHash(bank), "ability bank")?;
+        if let Some(variant) = ability_hud::variant_glyphs(&bank, keys)
+            .map_err(invalid)?
+            .last()
+        {
+            return Ok(Some(variant.glyph));
+        }
+    }
+    Ok(Some(site.key))
+}
+
+/// The keys `pool` applies to ability row `row`.
+fn row_keys(pool: &[u8], row: u8) -> AuthoringResult<Vec<u32>> {
+    Ok(native::modifiers(pool)?
+        .into_iter()
+        .filter(|(_, applied)| *applied == row)
+        .map(|(key, _)| key)
+        .collect())
+}
+
+/// The HUD glyph of the ability `list`'s entry `entry` equips, through the first equipped row
+/// with an entity, as the entry's own keys select it. `None` for an entry that equips no
+/// ability, such as a passive node.
+fn entry_glyph(sources: &Sources<'_>, list: &StockList, entry: u8) -> AuthoringResult<Option<u32>> {
+    let pool = read_tag(
+        sources.manager,
+        TagHash(list.entry(entry)?.pool),
+        "subclass pool",
+    )?;
+    for row in native::equipped_rows(&pool)? {
+        if let Some(entity) = (sources.entity_of)(row)? {
+            return entity_glyph(sources, entity, &row_keys(&pool, row)?);
+        }
+    }
+    Ok(None)
+}
+
 /// An ability or path node with edits of its own: its source entry's pool with the perks edited,
 /// and its node record with the text and icon pointed at the recipe's.
 fn author_entry(
@@ -438,6 +554,7 @@ fn author_entry(
     (stock, namespace): (&BTreeMap<u32, StockList>, &str),
     place: Place,
     edits: &EntryEdits,
+    theme: Option<[u8; 3]>,
     (source, target, from): (&StockList, u8, u8),
 ) -> AuthoringResult<AuthoredEntry> {
     let (label, key) = (label(place), place.key());
@@ -474,6 +591,11 @@ fn author_entry(
     )
     .map_err(|error| error.context(label.clone()))?;
     let mut artwork = None;
+    // The HUD draws an ability's glyph, not its node icon, so an icon from another ability brings
+    // that ability's glyph too. An icon with no glyph, a passive node's or the entry's own
+    // artwork, is drawn in a glyph row of the ability's own from the icon's primary layer.
+    let mut icon_glyph = None;
+    let mut icon_art = None;
     match &edits.icon {
         Some(EntryIcon::Ability { subclass, entry }) => {
             let owner = stock.get(subclass).ok_or_else(|| {
@@ -484,20 +606,55 @@ fn author_entry(
                 owner.node_record(*entry)?,
                 "subclass node record",
             )?;
-            record = native::set_node_icon(&record, native::node_icon(&icon_record)?)?;
+            let icon_row = native::node_icon(&icon_record)?;
+            record = native::set_node_icon(&record, icon_row)?;
+            icon_glyph = entry_glyph(sources, owner, *entry)?;
+            if icon_glyph.is_none() {
+                let container = read_tag(
+                    sources.manager,
+                    (sources.icon_container)(icon_row)?,
+                    "icon container",
+                )?;
+                icon_art = Some(super::hud::Art::Layer(super::hud::primary_layer(
+                    sources.manager,
+                    &container,
+                    false,
+                )?));
+            }
         }
         Some(EntryIcon::Artwork { artwork: icon }) => {
-            let source_row = native::node_icon(&record)?;
-            artwork = Some(Artwork {
-                icon: icon.clone(),
-                source_row,
-                source_container: (sources.icon_container)(source_row)
-                    .map_err(|error| error.context(format!("{label} has no icon to replace")))?,
-            });
+            artwork = Some(icon.clone());
+            icon_art = Some(super::hud::Art::OwnIcon);
         }
         None => {}
     }
-    let entity = if edits.keeps_entity() {
+    let color = edits.color.or(theme);
+    let icon = if artwork.is_some() || color.is_some() {
+        let source_row = native::node_icon(&record)?;
+        // Foundation records can deliberately have no menu icon. A color applies only where
+        // an icon exists, independently of the ability's HUD glyph and its other edits.
+        if source_row == u16::MAX && artwork.is_none() {
+            None
+        } else {
+            Some(NodeIcon {
+                artwork,
+                color,
+                source_row,
+                source_container: (sources.icon_container)(source_row)
+                    .map_err(|error| error.context(format!("{label} has no icon to replace")))?,
+            })
+        }
+    } else {
+        None
+    };
+    let hud_color = edits
+        .color
+        .or(theme.filter(|_| super::hud::is_super(place)));
+    let entity = if edits.keeps_entity()
+        && icon_glyph.is_none()
+        && icon_art.is_none()
+        && hud_color.is_none()
+    {
         None
     } else {
         // The page scopes each value to the graph it loaded: the ability's entity, or a graph it
@@ -521,19 +678,77 @@ fn author_entry(
                 }
             }
         }
-        let (row, source) = named
-            .or(first)
-            .ok_or_else(|| invalid(format!("{label} has no entity of its own to change")))?;
-        Some(AbilityEntity {
-            row,
-            source,
-            values: edits.ability_values.clone(),
-            palettes: edits.palettes.clone(),
-            tints: edits.tints.clone(),
-            grade: edits.grade,
-            swaps: edits.spawn_swaps.clone(),
-            bank_values: edits.bank_values.clone(),
-        })
+        match named.or(first) {
+            // A node with no entity of its own shows its icon on the Subclass screen alone.
+            None if edits.keeps_entity() => None,
+            None => {
+                return Err(invalid(format!(
+                    "{label} has no entity of its own to change"
+                )));
+            }
+            Some((row, source)) => {
+                // The keys the entry still applies to its row choose the glyph the tile shows.
+                let hud_keys = row_keys(&pool, row)?
+                    .into_iter()
+                    .filter(|key| {
+                        !edits
+                            .removed_modifiers
+                            .iter()
+                            .any(|stock| (stock.key, stock.row) == (*key, row))
+                    })
+                    .collect::<Vec<_>>();
+                let own_glyph = entity_glyph(sources, source, &hud_keys)?;
+                // A row of its own for a color, or for an icon that no glyph row holds.
+                let color_row = own_glyph
+                    .map(|own| icon_glyph.unwrap_or(own))
+                    .filter(|_| hud_color.is_some() || icon_art.is_some())
+                    .map(|glyph| -> AuthoringResult<_> {
+                        Ok(super::hud::Row {
+                            key: crate::presentation::text_hash(
+                                namespace,
+                                &format!("{key}-hud-color"),
+                            ),
+                            source: glyph,
+                            rgb: hud_color,
+                            theme: if super::hud::is_super(place) {
+                                theme.or(super::hud::row_color(sources.manager, glyph)?)
+                            } else {
+                                None
+                            },
+                            art: icon_art,
+                        })
+                    })
+                    .transpose()?;
+                let hud_glyph = match (icon_glyph, own_glyph) {
+                    (Some(glyph), Some(own)) if glyph != own => Some(glyph),
+                    _ => None,
+                };
+                let hud_glyph = color_row.map(|row| row.key).or(hud_glyph);
+                let attached = attached::resolve(
+                    sources,
+                    stock,
+                    (namespace, &key),
+                    source,
+                    &edits.attached_abilities,
+                    native::node_icon(&record)?,
+                )?;
+                (!edits.keeps_entity() || hud_glyph.is_some()).then(|| AbilityEntity {
+                    row,
+                    source,
+                    values: edits.ability_values.clone(),
+                    palettes: edits.palettes.clone(),
+                    tints: edits.tints.clone(),
+                    grade: edits.grade,
+                    swaps: edits.spawn_swaps.clone(),
+                    bank_values: edits.bank_values.clone(),
+                    damage_type: edits.damage_mode(),
+                    hud_glyph,
+                    hud_keys,
+                    hud_color: color_row,
+                    attached,
+                })
+            }
+        }
     };
     let removed_modifiers = edits
         .removed_modifiers
@@ -588,7 +803,7 @@ fn author_entry(
         pool,
         record_template,
         record,
-        artwork,
+        icon,
         custom_perks: edits.custom_perks.clone(),
         requested,
         modifiers: Vec::new(),
@@ -687,7 +902,7 @@ impl ResolvedList {
         let mut records = Vec::with_capacity(self.entries.len());
         for (index, (authored, compiled)) in self.entries.iter().zip(compiled).enumerate() {
             if compiled.perks.len() != authored.effect_count()
-                || compiled.icon.is_some() != authored.artwork.is_some()
+                || compiled.icon.is_some() != authored.icon.is_some()
                 || compiled.row.is_some() != authored.entity.is_some()
                 || compiled
                     .retargeted
@@ -904,7 +1119,7 @@ fn carry_copies(
             pool,
             record_template,
             record: read_tag(sources.manager, record_template, "subclass node record")?,
-            artwork: None,
+            icon: None,
             custom_perks: Vec::new(),
             requested: Vec::new(),
             modifiers: Vec::new(),

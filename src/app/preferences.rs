@@ -104,6 +104,8 @@ pub(super) struct Preferences {
     #[serde(default)]
     pub(super) show_plug_hashes: bool,
     #[serde(default)]
+    pub(super) show_preview_fps: bool,
+    #[serde(default)]
     pub(super) item_card_width: ItemCardWidth,
     #[serde(default)]
     pub(super) character_inventory_layout: CharacterInventoryLayout,
@@ -267,7 +269,7 @@ pub(super) fn configure_destiny_symbol_fonts(
     ctx.all_styles_mut(|style| {
         let size = egui::TextStyle::Body.resolve(style).size + 2.0;
         style.text_styles.insert(
-            crate::ui_help::tooltip_title_style(),
+            crate::ui::help::tooltip_title_style(),
             egui::FontId::new(size, tooltip_family.clone()),
         );
     });
@@ -294,6 +296,7 @@ impl Default for Preferences {
             color_theme: ColorTheme::Dark,
             always_open_json_editor_in_second_window: false,
             show_plug_hashes: false,
+            show_preview_fps: false,
             item_card_width: ItemCardWidth::Standard,
             character_inventory_layout: CharacterInventoryLayout::Cards,
             experimental_progression: false,

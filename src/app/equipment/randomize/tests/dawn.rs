@@ -81,7 +81,7 @@ fn catalog() -> Catalog {
         },
     );
     let emotes = emote_catalog();
-    let collection = crate::account_contract::EMOTE_COLLECTION_DEFINITION_HASH;
+    let collection = crate::account::contract::EMOTE_COLLECTION_DEFINITION_HASH;
     items.push(emotes.item(collection).unwrap().clone());
     metadata.insert(collection, *emotes.inventory_metadata(collection).unwrap());
     Catalog::for_test_with_inventory(items, HashMap::new(), metadata)

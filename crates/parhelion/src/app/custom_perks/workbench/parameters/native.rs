@@ -735,6 +735,22 @@ fn changes(
             flags: &flags,
         };
         guided.changes(loaded, draft, &mut lines)?;
+        // An Unlimited length reads its flag's byte, so the byte needs no line of its own.
+        for flag in guided
+            .lengths
+            .iter()
+            .filter_map(|length| length.unlimited_flag(loaded, draft))
+        {
+            for edit in draft
+                .iter()
+                .filter(|edit| guided::equivalent(loaded, &flag.field.locator, &edit.locator))
+            {
+                covered
+                    .entry(edit.locator.clone())
+                    .or_default()
+                    .insert(flag.at);
+            }
+        }
         field_changes(
             loaded,
             draft,
@@ -778,8 +794,8 @@ impl Guided<'_> {
         for length in &self.lengths {
             if length.is_modified(loaded, draft) {
                 lines.push(format!(
-                    "Attachment Length: {} s",
-                    length.value(loaded, draft)?
+                    "Attachment Length: {}",
+                    super::effect_length::text(length.value(loaded, draft)?)
                 ));
             }
         }
@@ -812,7 +828,7 @@ impl Guided<'_> {
             || self
                 .lengths
                 .iter()
-                .any(|length| length.targets_field(owner, field))
+                .any(|length| length.targets_field(loaded, draft, owner, field))
             || self
                 .flags
                 .iter()

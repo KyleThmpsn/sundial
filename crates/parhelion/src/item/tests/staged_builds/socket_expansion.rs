@@ -28,6 +28,7 @@ fn expansion_recipe(count: usize, alternative: u32, second_plug: u32) -> crate::
         });
     }
     recipe.overrides.socket_plug_variants = vec![WeaponSocketPlugVariantRecipe {
+        offer_everywhere: false,
         replace_effects: false,
         investment_stats: Vec::new(),
         socket_index: 10,
@@ -156,9 +157,9 @@ fn verify_expanded_weapon(
 }
 
 #[test]
-#[ignore = "requires PARHELION_SOCKET_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn real_added_sockets_stage_and_rescan_with_private_plugs_and_unchanged_stock() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_SOCKET_TEST_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|name| (*name).to_owned())
@@ -233,9 +234,9 @@ fn real_added_sockets_stage_and_rescan_with_private_plugs_and_unchanged_stock() 
 }
 
 #[test]
-#[ignore = "requires PARHELION_SOCKET_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn real_removed_socket_stages_and_rescans_without_shifting_neighbors() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_SOCKET_TEST_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let ignored = crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES
         .iter()
         .map(|name| (*name).to_owned())

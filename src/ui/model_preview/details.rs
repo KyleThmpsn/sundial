@@ -146,7 +146,7 @@ fn target(model: &Model, entry: Entry) -> Option<u32> {
 }
 
 /// Name and value rows, names muted.
-fn facts(ui: &mut egui::Ui, id: impl std::hash::Hash, rows: &[(&str, String)]) {
+fn facts(ui: &mut egui::Ui, id: impl std::hash::Hash + std::fmt::Debug, rows: &[(&str, String)]) {
     if rows.is_empty() {
         return;
     }
@@ -205,8 +205,7 @@ impl Preview {
                 self.navigation.pop();
                 ui.ctx().request_repaint_of(window::viewport_id());
             }
-            ui.add(egui::Label::new(egui::RichText::new(name).heading()).truncate())
-                .on_hover_text(name);
+            ui.add(egui::Label::new(egui::RichText::new(name).heading()).truncate());
         });
         ui.add_space(4.0);
         let Some(model) = self.model.clone() else {
@@ -286,16 +285,16 @@ impl Preview {
         let id = ui.id().with("asset-browser");
         let width = ui.available_width();
         if width >= SIDE_BY_SIDE {
-            egui::SidePanel::left(id.with("list"))
+            egui::Panel::left(id.with("list"))
                 .resizable(true)
-                .default_width(280.0)
-                .width_range(180.0..=(width * 0.5).max(180.0))
-                .show_inside(ui, |ui| self.draw_asset_list(ui, model, &sections));
+                .default_size(280.0)
+                .size_range(180.0..=(width * 0.5).max(180.0))
+                .show(ui, |ui| self.draw_asset_list(ui, model, &sections));
         } else {
-            egui::TopBottomPanel::top(id.with("list-stacked"))
+            egui::Panel::top(id.with("list-stacked"))
                 .resizable(true)
-                .default_height(ui.available_height() * 0.4)
-                .show_inside(ui, |ui| self.draw_asset_list(ui, model, &sections));
+                .default_size(ui.available_height() * 0.4)
+                .show(ui, |ui| self.draw_asset_list(ui, model, &sections));
         }
         egui::ScrollArea::vertical()
             .id_salt(id.with("card"))
@@ -387,7 +386,7 @@ impl Preview {
                             Row::Entry(entry, label) => {
                                 let selected = self.asset_entry == Some(*entry);
                                 let response = ui
-                                    .add(egui::SelectableLabel::new(selected, label))
+                                    .add(egui::Button::selectable(selected, label))
                                     .on_hover_text(label);
                                 if response.clicked() {
                                     self.asset_entry = Some(*entry);
@@ -419,8 +418,7 @@ impl Preview {
         let assets = &model.assets;
         let title = label(model, entry);
         let opens = target(model, entry);
-        ui.add(egui::Label::new(egui::RichText::new(&title).heading()).truncate())
-            .on_hover_text(&title);
+        ui.add(egui::Label::new(egui::RichText::new(&title).heading()).truncate());
         ui.horizontal(|ui| {
             ui.weak(entry.kind());
             if let Some(tag) = opens.filter(|tag| hex(*tag) != title) {
@@ -509,7 +507,7 @@ impl Preview {
     fn draw_links(
         &mut self,
         ui: &mut egui::Ui,
-        id: impl std::hash::Hash,
+        id: impl std::hash::Hash + std::fmt::Debug,
         links: &[(&str, Option<u32>)],
     ) {
         let links = links

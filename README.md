@@ -96,7 +96,7 @@ Report bugs through [GitHub Issues](https://github.com/kylethmpsn/sundial/issues
 
 ## Building
 
-Requires Rust 1.88 or later.
+Requires Rust 1.95 or later. The repository pins Rust 1.99.0 in `rust-toolchain.toml`, so rustup installs that toolchain on the first build.
 
 ```sh
 cargo build --release --locked -p sundial-suite

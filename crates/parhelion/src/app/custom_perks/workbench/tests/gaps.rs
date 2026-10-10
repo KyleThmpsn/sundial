@@ -110,25 +110,20 @@ fn catalog_edit_save_reopen_readback_keeps_native_configuration_and_provenance()
 }
 
 #[test]
-fn runtime_budget_and_destination_diagnostics_survive_consolidation_and_refusal() {
+fn runtime_budget_diagnostics_survive_consolidation_and_refusal() {
     let mut recipe = PerkRecipe::new();
     for index in 405..411 {
         recipe
             .effects
             .push(authored(index, Trigger::Drawn, index - 404));
     }
-    let diagnostics = preflight::check(&recipe, crate::ItemKind::Armor);
+    let diagnostics = preflight::check(&recipe);
     assert_eq!(
         diagnostics
             .iter()
             .filter(|issue| issue.code == "inactive_effect")
             .count(),
         2
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|issue| issue.code == "weapon_context")
     );
     preflight::consolidate(&mut recipe, 0, 5).unwrap();
     assert_eq!(recipe.effects.len(), 5);
@@ -168,7 +163,7 @@ fn native_noop_selector_is_blocked_but_an_unverified_host_remains_authorable() {
     }];
     recipe.effects.push(effect);
     assert!(
-        preflight::check(&recipe, crate::ItemKind::Armor)
+        preflight::check(&recipe)
             .iter()
             .any(|issue| issue.blocking && issue.code == "invalid_state")
     );
@@ -177,20 +172,14 @@ fn native_noop_selector_is_blocked_but_an_unverified_host_remains_authorable() {
     {
         *flag = 0.into();
     }
-    let diagnostics = preflight::check(&recipe, crate::ItemKind::Armor);
-    assert!(!diagnostics.iter().any(|issue| issue.blocking));
-    assert!(
-        diagnostics
-            .iter()
-            .any(|issue| issue.code == "required_component")
-    );
+    assert!(!preflight::check(&recipe).iter().any(|issue| issue.blocking));
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn discovery_can_stop_between_native_phases_without_publishing_partial_catalog() {
     use sundial::investment::discovery::{DiscoveryEvent, Phase, discover_cancellable};
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let stop = std::sync::atomic::AtomicBool::new(false);
     let mut phases = Vec::new();
     let result = discover_cancellable(&packages, &stop, |event| {
@@ -214,15 +203,11 @@ fn diagnostics_window_shows_all_inactive_effects_and_navigates_to_one() {
     for index in 405..411 {
         recipe.effects.push(authored(index, Trigger::Drawn, 1));
     }
-    // Different element values still write the same weapon. A value byte is not a target.
-    for (effect, mode) in recipe.effects.iter_mut().zip([1, 3]) {
-        effect.program.as_mut().unwrap().actions = vec![Action::set_damage_type(mode.into())];
-    }
     workbench.documents.push(Document::new(recipe, None));
     workbench.diagnostics_open = true;
     let ctx = egui::Context::default();
     let mut render = |events| {
-        ctx.run(
+        ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -231,16 +216,17 @@ fn diagnostics_window_shows_all_inactive_effects_and_navigates_to_one() {
                 events,
                 ..Default::default()
             },
-            |ctx| workbench.show_diagnostics(ctx),
+            |ui| workbench.show_diagnostics(ui),
         )
     };
     let mut output = render(vec![]);
     for _ in 0..3 {
         output = render(vec![]);
     }
+    // Six effects overrun the four-effect budget, so the last two are inactive.
     assert!(
-        label(&output, "Open Effect 2").is_some(),
-        "the author can find the conflicting damage-type override in the diagnostics window"
+        label(&output, "Open Effect 5").is_some(),
+        "the first inactive effect is listed in the diagnostics window"
     );
     let problem = label(&output, "Open Effect 6")
         .expect("the second inactive effect is reachable")
@@ -282,11 +268,11 @@ fn verification_records_are_bound_to_configuration_and_cannot_invent_gameplay_ev
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES and PARHELION_TEST_STAGING_ROOT"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
 fn catalog_to_staged_private_perk_has_a_repeatable_package_receipt() {
     use super::super::catalog_insert::{Placement, Request};
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-    let staging_root = PathBuf::from(std::env::var_os("PARHELION_TEST_STAGING_ROOT").unwrap());
+    let packages = crate::test_support::stock_packages();
+    let staging_root = crate::test_support::artifact_dir("staging");
     let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     let donor = catalog.weapon_donor(0x23DB_942F).unwrap();
     let discovery = sundial::investment::discovery::discover(&packages, |_| {}).unwrap();

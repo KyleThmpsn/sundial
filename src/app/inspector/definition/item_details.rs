@@ -146,7 +146,7 @@ pub(super) fn filter_field(ui: &mut egui::Ui, id: egui::Id, hint: &str) -> Strin
 pub(super) fn draw_table(
     ui: &mut egui::Ui,
     catalog: &Catalog,
-    id: impl std::hash::Hash,
+    id: impl std::hash::Hash + std::fmt::Debug,
     headings: &[&str],
     rows: &[Vec<Cell>],
 ) {
@@ -672,7 +672,7 @@ fn dye_row(stage: usize, index: usize, key: i8, value: u16) -> Vec<String> {
 pub(super) fn draw_item_hash_list(
     ui: &mut egui::Ui,
     catalog: &Catalog,
-    id: impl std::hash::Hash,
+    id: impl std::hash::Hash + std::fmt::Debug,
     title: &str,
     hashes: &[u64],
 ) {

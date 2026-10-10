@@ -259,17 +259,6 @@ pub fn emit(
                 .is_some_and(|control| control.parent.is_none()),
         "sequence initial control requires translation"
     );
-    ensure!(
-        source
-            .0
-            .get(sd + 0x280..sd + 0x2E8)
-            .context("sequence presentation extent")?
-            .iter()
-            .all(|v| *v == 0)
-            && source.u64(sd + 0x2F8)? == 0x8000
-            && source.u32(sd + 0x308)? == 0,
-        "source sequence presentation fields require translation"
-    );
     let source_owner = source.u32(si)?;
     let old_owner = template.u32(ni)?;
     let mut output = template.clone();
@@ -310,6 +299,7 @@ pub fn emit(
         &mut objects,
     )?;
     let (locator_count, locator_allocation) = locators(source, &mut output)?;
+    let presentation_allocation = super::presentation::emit(source, &mut output, bindings)?;
     let input_map = (0..main_count as u32).map(|i| (i, i)).collect();
     let control_allocation =
         super::controls::write(source, &sequence, &mut output, &input_map, main_count)?;
@@ -337,6 +327,7 @@ pub fn emit(
         sequence.event_count,
     ));
     allocations.push(locator_allocation);
+    allocations.extend(presentation_allocation);
     if aux_count > 0 {
         let mut aux = Allocation::array(0xCA95F655, u32::MAX, 0);
         aux.children

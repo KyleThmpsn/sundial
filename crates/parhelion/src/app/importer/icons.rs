@@ -156,19 +156,14 @@ impl Icons {
                             })
                             .map(|image| {
                                 let image = thumbnail(&image);
-                                if let Some(path) = &path {
-                                    if let Some(parent) = path.parent()
-                                        && let Ok(temporary) =
-                                            tempfile::NamedTempFile::new_in(parent)
-                                        && image
-                                            .save_with_format(
-                                                temporary.path(),
-                                                image::ImageFormat::Png,
-                                            )
-                                            .is_ok()
-                                    {
-                                        let _ = temporary.persist(path);
-                                    }
+                                if let Some(path) = &path
+                                    && let Some(parent) = path.parent()
+                                    && let Ok(temporary) = tempfile::NamedTempFile::new_in(parent)
+                                    && image
+                                        .save_with_format(temporary.path(), image::ImageFormat::Png)
+                                        .is_ok()
+                                {
+                                    let _ = temporary.persist(path);
                                 }
                                 egui::ColorImage::from_rgba_unmultiplied(
                                     [image.width() as usize, image.height() as usize],

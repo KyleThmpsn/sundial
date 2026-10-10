@@ -7,7 +7,7 @@ fn browsing_and_closing_never_apply_and_confirmation_returns_only_the_highlighte
     let mut applied = None;
     let mut confirm = egui::Rect::NOTHING;
     let mut frame = |opened, events| {
-        let _ = ctx.run(
+        let _ = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -16,8 +16,8 @@ fn browsing_and_closing_never_apply_and_confirmation_returns_only_the_highlighte
                 events,
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     applied = show(
                         ui,
                         egui::Id::new("test-chooser"),

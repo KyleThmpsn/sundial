@@ -89,7 +89,7 @@ const ARRIVAL_FIELDS: &[Field] = &[
 ];
 
 pub(super) fn draw(ui: &mut egui::Ui, document: &mut Value, capabilities: Capabilities) -> bool {
-    ui.horizontal(|ui| { ui.strong("Activity Destinations"); crate::ui_help::info(ui, "Use indices and package names from the installed game. Choose Apply to keep your changes or Cancel to discard them."); });
+    ui.horizontal(|ui| { ui.strong("Activity Destinations"); crate::ui::help::info(ui, "Use indices and package names from the installed game. Choose Apply to keep your changes or Cancel to discard them."); });
     let mut changed = false;
     egui::CollapsingHeader::new("Default Destination").show(ui, |ui| {
         match optional_value(document, activity::DESTINATION) {

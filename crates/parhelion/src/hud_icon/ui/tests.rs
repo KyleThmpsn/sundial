@@ -15,8 +15,8 @@ fn completed_import_waits_until_recipe_controls_are_enabled() {
     let mut draft = None;
     let ctx = egui::Context::default();
     for enabled in [false, false, true] {
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 ui.add_enabled_ui(enabled, |ui| {
                     editor.draw(
                         ui,

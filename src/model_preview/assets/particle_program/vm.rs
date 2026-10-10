@@ -63,7 +63,6 @@ impl Registers {
         self.banks.get(bank as usize)?.get(slot as usize).copied()
     }
 
-    #[cfg(test)]
     pub fn output(&self, program: &Program, index: usize) -> Option<f32> {
         let route = program.routes.get(index)?.as_ref()?;
         let slot = route.scalar / 4;
@@ -105,7 +104,8 @@ impl Program {
     }
 
     /// `0x43` reads a scalar from the flattened scoped input vectors, while
-    /// `0x47` reads a named channel. Their tables are independent.
+    /// `0x47` reads a resolved runtime input. Their tables are independent. The native
+    /// consumer indexes its float4 pool through a binding table supplied by the caller.
     pub fn evaluate_section_with_sources(
         &self,
         section: usize,

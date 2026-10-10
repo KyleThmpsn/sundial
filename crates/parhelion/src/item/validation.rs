@@ -317,12 +317,12 @@ pub(super) fn validate_native_scalar_overrides(
             "Choose either one power-cap group for every version row or advanced per-row power-cap groups, not both",
         ));
     }
-    if let Some(groups) = &overrides.power_cap_groups {
-        if groups.is_empty() {
-            return Err(invalid(
-                "Advanced power-cap groups must contain at least one table index",
-            ));
-        }
+    if let Some(groups) = &overrides.power_cap_groups
+        && groups.is_empty()
+    {
+        return Err(invalid(
+            "Advanced power-cap groups must contain at least one table index",
+        ));
     }
     if overrides.weapon_pattern_index == Some(u16::MAX) {
         return Err(invalid(

@@ -1,0 +1,121 @@
+//! Shared compact help for Sundial and the weapon workbench.
+
+use eframe::egui;
+
+pub(crate) fn tooltip_title_style() -> egui::TextStyle {
+    egui::TextStyle::Name("Tooltip Title".into())
+}
+
+/// Use the installed medium-weight face with its symbol fallbacks, at the caller's size.
+pub(crate) fn emphasized_font(ui: &egui::Ui, size: f32) -> egui::FontId {
+    let body = egui::TextStyle::Body.resolve(ui.style());
+    let mut font = ui
+        .style()
+        .text_styles
+        .get(&tooltip_title_style())
+        // Font definitions take effect on the next egui pass, while styles
+        // change immediately. Use the body font during that transition.
+        .filter(|font| ui.fonts_mut(|fonts| fonts.families().contains(&font.family)))
+        .cloned()
+        .unwrap_or_else(|| body.clone());
+    font.size = size;
+    font
+}
+
+pub(crate) fn emphasized_text(ui: &egui::Ui, text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text)
+        .font(emphasized_font(
+            ui,
+            egui::TextStyle::Body.resolve(ui.style()).size,
+        ))
+        .strong()
+}
+
+/// Shared tooltip title typography for Sundial and Parhelion.
+pub fn tooltip_title(ui: &mut egui::Ui, title: impl Into<String>) -> egui::Response {
+    let size = egui::TextStyle::Body.resolve(ui.style()).size + 2.0;
+    ui.label(emphasized_text(ui, title).size(size))
+}
+
+/// Hover for a tooltip, or click/keyboard-activate to keep the help open.
+pub(crate) fn info(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
+    compact_help(
+        ui,
+        egui::RichText::new(egui_phosphor::regular::INFO),
+        "More information",
+        text.into(),
+    )
+}
+
+/// Compact warning whose explanation stays available by hover, click or keyboard activation.
+pub(crate) fn warning(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
+    compact_help(
+        ui,
+        egui::RichText::new(egui_phosphor::regular::WARNING).color(ui.visuals().warn_fg_color),
+        "Warning details",
+        text.into(),
+    )
+}
+
+fn compact_help(
+    ui: &mut egui::Ui,
+    glyph: egui::RichText,
+    accessible_label: &'static str,
+    text: egui::WidgetText,
+) -> egui::Response {
+    let (response, _) = egui::containers::menu::MenuButton::from_button(
+        egui::Button::new(glyph).frame(false),
+    )
+    .ui(ui, |ui| {
+        ui.set_max_width(360.0);
+        ui.label(text.clone());
+    });
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, accessible_label)
+    });
+    response
+        .on_hover_cursor(egui::CursorIcon::Help)
+        .on_hover_text(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn help_opens_from_keyboard_focus() {
+        let ctx = egui::Context::default();
+        let help = "Help remains available without a mouse.";
+        let mut found = false;
+        for frame in 0..3 {
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(640.0, 480.0),
+                )),
+                ..Default::default()
+            };
+            if frame == 1 {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            let output = ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let response = info(ui, help);
+                    if frame == 0 {
+                        response.request_focus();
+                    }
+                });
+            });
+            found |= output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == help)
+            });
+        }
+        assert!(found, "Keyboard activation should render the help text");
+    }
+}

@@ -6,7 +6,7 @@ use tiger_pkg::TagHash;
 
 use super::super::Catalog;
 use crate::{
-    investment_schema::{
+    investment::schema::{
         POWER_CAP_ROW_CLASS, POWER_CAP_ROW_SIZE, POWER_CAP_TABLE_CLASS, ROOT_POWER_CAP_TABLE_SLOT,
         investment_root_table_tag, item_version_array,
     },

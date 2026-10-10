@@ -17,7 +17,7 @@ fn viewport_navigation_requests_visible_rows_and_bounds_retained_icons() {
         .collect::<Vec<_>>();
     let ctx = egui::Context::default();
     let mut icons = LibraryIcons::default();
-    let _ = ctx.run(
+    let _ = ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -25,8 +25,8 @@ fn viewport_navigation_requests_visible_rows_and_bounds_retained_icons() {
             )),
             ..Default::default()
         },
-        |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .max_height(160.0)
                     .show(ui, |ui| {
@@ -62,13 +62,14 @@ fn viewport_navigation_requests_visible_rows_and_bounds_retained_icons() {
                 rarity: crate::AuthoredWeaponRarity::Legendary,
                 edit: entry.icon_edit.clone(),
                 plain: false,
+                art: None,
             };
             icons.pending.insert(entry.path.clone(), key.clone());
             sender
                 .send((
                     entry.path.clone(),
                     key,
-                    Ok(egui::ColorImage::new([96, 96], egui::Color32::WHITE)),
+                    Ok(egui::ColorImage::filled([96, 96], egui::Color32::WHITE)),
                 ))
                 .unwrap();
         }

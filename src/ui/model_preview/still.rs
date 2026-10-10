@@ -2,10 +2,37 @@
 //! made. The model is read in the background once per appearance, and a change to its surface
 //! colors draws it again without reading it again.
 use super::*;
+mod camera;
+mod playback;
+pub use camera::zoom_controls;
+pub(super) use playback::control as playback_control;
+
+/// What a still shows: an item's appearance, or a whole object by its entity graph tag, such as a
+/// vehicle a Sparrow summons.
+#[derive(Clone, PartialEq)]
+enum Subject {
+    Appearance(Appearance),
+    Object(u32),
+    Local(LocalAppearance),
+}
+
+impl Subject {
+    /// Whether `other` is the same model, which keeps the angle it was turned to.
+    fn same_model(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Appearance(own), Self::Appearance(other)) => {
+                own.arrangement == other.arrangement
+            }
+            (Self::Object(own), Self::Object(other)) => own == other,
+            (Self::Local(own), Self::Local(other)) => own == other,
+            _ => false,
+        }
+    }
+}
 
 type Wanted = (
     PathBuf,
-    Appearance,
+    Subject,
     Option<Arc<BTreeMap<usize, crate::dyes::DyeSource>>>,
 );
 
@@ -33,9 +60,16 @@ struct Still {
     rendered: Option<(Camera, [usize; 2], Vec<SurfaceOverride>)>,
     /// Shared playback time for hardware and software shader animation.
     seconds: f32,
+    /// A manual choice lasts for this model. A changed default clears the choice.
+    playing: Option<bool>,
+    autoplay: Option<bool>,
     last_tick: Option<std::time::Instant>,
     rendered_seconds: Option<f32>,
     software: image_job::Job,
+    fps: fps::Counter,
+    software_frames: u64,
+    /// What stands in for the model until the first one is read, such as the item's icon.
+    placeholder: Option<egui::TextureHandle>,
 }
 
 /// The camera a model is fitted with: the default one, turned to `angle` when one is set.
@@ -65,8 +99,21 @@ pub(super) fn pause(ctx: &egui::Context, paused: bool) {
 /// than the viewer's default framing.
 const STILL_FILL: f32 = 0.92;
 
+/// Sets the image `id`'s still shows until its first model is read, such as the item's icon, so
+/// a page opens on the item rather than on an empty frame. `None` shows the frame alone.
+pub fn placeholder(ctx: &egui::Context, id: egui::Id, image: Option<egui::TextureHandle>) {
+    let state = ctx.data_mut(|data| {
+        data.get_temp_mut_or_default::<Arc<Mutex<Still>>>(id)
+            .clone()
+    });
+    if let Ok(mut still) = state.lock() {
+        still.placeholder = image;
+    }
+}
+
 /// Draws `appearance` in a `size` rectangle, with `overrides` in place of its dyes' colors,
-/// inside a hairline border. Dragging turns the model and a double click faces it forward again.
+/// inside a hairline border. Dragging turns the model, Shift-drag pans and scrolling zooms at the
+/// pointer. A double click restores the starting view.
 pub fn show(
     ui: &mut egui::Ui,
     id: egui::Id,
@@ -88,6 +135,57 @@ pub fn show_sources(
     size: egui::Vec2,
     sources: Option<Arc<BTreeMap<usize, crate::dyes::DyeSource>>>,
 ) -> egui::Response {
+    show_subject(
+        ui,
+        id,
+        packages,
+        appearance.map(Subject::Appearance),
+        overrides,
+        size,
+        sources,
+    )
+}
+
+/// Draws the object `tag`, an entity graph such as a vehicle, in a `size` rectangle like [`show`]
+/// draws an appearance.
+pub fn show_object(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    packages: &Path,
+    tag: Option<u32>,
+    size: egui::Vec2,
+) -> egui::Response {
+    show_subject(ui, id, packages, tag.map(Subject::Object), &[], size, None)
+}
+
+/// Draw an unbuilt imported appearance through the native model and material renderer.
+pub fn show_local(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    packages: &Path,
+    appearance: LocalAppearance,
+    size: egui::Vec2,
+) -> egui::Response {
+    show_subject(
+        ui,
+        id,
+        packages,
+        Some(Subject::Local(appearance)),
+        &[],
+        size,
+        None,
+    )
+}
+
+fn show_subject(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    packages: &Path,
+    subject: Option<Subject>,
+    overrides: &[SurfaceOverride],
+    size: egui::Vec2,
+    sources: Option<Arc<BTreeMap<usize, crate::dyes::DyeSource>>>,
+) -> egui::Response {
     let state = ui.ctx().data_mut(|data| {
         data.get_temp_mut_or_default::<Arc<Mutex<Still>>>(id)
             .clone()
@@ -102,18 +200,10 @@ pub fn show_sources(
             .ctx()
             .data(|data| data.get_temp::<bool>(paused_id))
             .unwrap_or(false);
-    still.wanted = appearance.map(|appearance| (packages.to_owned(), appearance, sources));
+    still.wanted = subject.map(|subject| (packages.to_owned(), subject, sources));
     still.receive();
     request_preview(&mut still, ui.ctx(), paused);
-    if response.dragged() {
-        let delta = response.drag_delta();
-        still.camera.yaw += delta.x * 0.01;
-        still.camera.pitch =
-            (still.camera.pitch + delta.y * 0.01).clamp(-render::MAX_PITCH, render::MAX_PITCH);
-    }
-    if response.double_clicked() {
-        still.camera = Camera::default();
-    }
+    still.interact(ui, &response);
     still.draw(ui, rect, overrides, paused);
     ui.painter().rect_stroke(
         rect,
@@ -132,7 +222,11 @@ pub fn show_sources(
     } else {
         response
     };
-    response.on_hover_cursor(egui::CursorIcon::Grab)
+    response
+        .on_hover_cursor(egui::CursorIcon::Grab)
+        .on_hover_text(
+            "Drag to rotate · Shift-drag to pan · Scroll to zoom · Double-click to reset",
+        )
 }
 
 impl Still {
@@ -159,9 +253,10 @@ impl Still {
                 if self
                     .shown
                     .as_ref()
-                    .is_none_or(|shown| shown.1.arrangement != source.1.arrangement)
+                    .is_none_or(|shown| shown.0 != source.0 || !shown.1.same_model(&source.1))
                 {
                     self.camera = Camera::default();
+                    self.playing = None;
                 }
                 self.bounds = Some(render::drawn_bounds(&model, render::Style::Textured));
                 self.model = Some(Arc::new(model));
@@ -169,9 +264,11 @@ impl Still {
                 self.error = None;
                 self.rendered = None;
                 self.seconds = 0.0;
-                self.last_tick = Some(std::time::Instant::now());
+                self.last_tick = None;
                 self.rendered_seconds = None;
                 self.software = image_job::Job::default();
+                self.fps = fps::Counter::default();
+                self.software_frames = 0;
             }
             Err(error) if error == model_preview::CANCELLED => {}
             Err(error) => self.error = Some((source, error)),
@@ -203,18 +300,24 @@ impl Still {
         let load = model_preview::Load::default();
         self.pending = Some((wanted.clone(), receiver));
         self.load = Some(load.clone());
-        let (packages, appearance, sources) = wanted.clone();
+        let (packages, subject, sources) = wanted.clone();
         let (repaint, viewport) = (ctx.clone(), ctx.viewport_id());
         let read = model_preview::PackageRead::start();
         std::thread::spawn(move || {
             let _read = read;
-            let result = model_preview::appearance::load_reported(&packages, &appearance, &load)
-                .and_then(|mut model| {
-                    if let Some(sources) = sources {
-                        crate::dyes::source::apply(&packages, &sources, &mut model, &load)?;
-                    }
-                    Ok(model)
-                });
+            let model = match &subject {
+                Subject::Appearance(appearance) => {
+                    model_preview::appearance::load_reported(&packages, appearance, &load)
+                }
+                Subject::Object(tag) => model_preview::load_reported(&packages, *tag, &load, None),
+                Subject::Local(appearance) => appearance.load(&packages, &load, None, None),
+            };
+            let result = model.and_then(|mut model| {
+                if let Some(sources) = sources {
+                    crate::dyes::source::apply(&packages, &sources, &mut model, &load)?;
+                }
+                Ok(model)
+            });
             let _ = sender.send(result);
             repaint.request_repaint_of(viewport);
         });
@@ -255,11 +358,41 @@ impl Still {
             painter.galley(at, galley, ui.visuals().weak_text_color());
             return;
         }
-        if let Some(model) = self.model.clone() {
-            self.draw_model(ui, &painter, rect, &model, overrides, paused);
+        let drawn = self
+            .model
+            .clone()
+            .is_some_and(|model| self.draw_model(ui, &painter, rect, &model, overrides, paused));
+        if drawn {
+            let enabled = options::get(ui.ctx(), ui.ctx().viewport_id()).show_fps;
+            self.fps.draw(
+                ui,
+                rect,
+                enabled,
+                if enabled {
+                    self.gpu
+                        .completed_frames()
+                        .saturating_add(self.software_frames)
+                } else {
+                    0
+                },
+            );
         }
-        // An older model stays up while the one the page asks for loads.
-        if self.shown != self.wanted && !paused {
+        // Until the first model is read, the item's icon, faded, stands in for it.
+        if self.model.is_none()
+            && let Some(image) = &self.placeholder
+        {
+            let side = (rect.width().min(rect.height()) * 0.4).min(96.0);
+            painter.image(
+                image.id(),
+                egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(side)),
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                egui::Color32::from_white_alpha(110),
+            );
+        }
+        // An older model stays up while the one the page asks for loads, and while the software
+        // renderer draws the first image of a newly read one, which would otherwise pass for it.
+        let rendering = self.model.is_some() && !drawn;
+        if (self.shown != self.wanted || rendering) && !paused {
             let spinner = egui::Rect::from_min_size(
                 rect.left_bottom() + egui::vec2(10.0, -26.0),
                 egui::vec2(16.0, 16.0),
@@ -275,6 +408,8 @@ impl Still {
         }
     }
 
+    /// Paints `model`, and returns whether what it painted is that model. A software image of the
+    /// model shown before stays up until the first one of this model is ready.
     fn draw_model(
         &mut self,
         ui: &egui::Ui,
@@ -283,18 +418,19 @@ impl Still {
         model: &Arc<Model>,
         overrides: &[SurfaceOverride],
         paused: bool,
-    ) {
+    ) -> bool {
         model.set_surface_overrides(overrides);
-        let animated = model.has_shader_animation() || model.has_animation();
+        let animated = model.has_shader_animation() || model.has_animation() || model.has_cloth();
         let now = std::time::Instant::now();
-        if animated && !paused {
+        let moving = animated && !paused && self.playback_enabled(ui.ctx());
+        if moving {
             if let Some(last) = self.last_tick {
-                self.seconds += now.duration_since(last).as_secs_f32();
+                self.seconds += now.duration_since(last).as_secs_f32().min(0.1);
             }
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(33));
         }
-        self.last_tick = Some(now);
+        self.last_tick = moving.then_some(now);
         let seconds = if animated { self.seconds } else { 0.0 };
         // The software image's whole pixels, which the fit also uses so two previews of one size
         // frame a model alike however fractional their rectangles.
@@ -322,10 +458,12 @@ impl Still {
                     scene: Scene::default(),
                     style: render::Style::Textured,
                     seconds,
-                    pose: model.pose(seconds).map(Arc::new),
+                    pose: None,
+                    animate: true,
+                    dyes: None,
                 },
             );
-            return;
+            return true;
         }
         // Software previews also advance the material program while preserving cached static views.
         let key = (camera, pixels, overrides.to_vec());
@@ -337,8 +475,10 @@ impl Still {
             seconds,
             style: render::Style::Textured,
             overrides: overrides.to_vec(),
+            orbit: false,
         };
         if let Some((rendered, image)) = self.software.update(ui.ctx(), model.clone(), request) {
+            self.software_frames = self.software_frames.saturating_add(1);
             match &mut self.texture {
                 Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
                 None => {
@@ -360,6 +500,8 @@ impl Still {
                 egui::Color32::WHITE,
             );
         }
+        // Reading a model clears what was rendered, so an image of this one has been drawn.
+        self.rendered.is_some()
     }
 }
 
@@ -484,7 +626,8 @@ pub fn show_pins(
             .ctx()
             .data(|data| data.get_temp::<bool>(paused_id))
             .unwrap_or(false);
-    still.wanted = appearance.map(|appearance| (packages.to_owned(), appearance, None));
+    still.wanted =
+        appearance.map(|appearance| (packages.to_owned(), Subject::Appearance(appearance), None));
     still.receive();
     request_preview(&mut still, ui.ctx(), paused);
     if let Some((yaw, pitch)) = view.angle() {

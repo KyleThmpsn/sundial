@@ -182,10 +182,10 @@ impl PackageAuthoringApp {
         let behaviors = unique_behavior_sources(donor);
         let base_name = donor.map_or("Base Weapon", |donor| donor.summary.name.as_str());
         if behaviors.is_empty() {
-            ui.label("Behavior");
+            style::field_name(ui, "Behavior", "", false);
             ui.add_enabled(
                 false,
-                egui::Button::new(format!("{base_name} (base weapon)"))
+                egui::Button::new(base_name)
                     .truncate()
                     .min_size(egui::vec2(ui.available_width(), 0.0)),
             );
@@ -226,48 +226,6 @@ impl PackageAuthoringApp {
                 ui.vertical(|ui| draw_unique_behavior_details(ui, &mut self.recipe.overrides));
             });
         }
-    }
-
-    pub(super) fn draw_runtime_source_summary(&self, ui: &mut egui::Ui) {
-        let gameplay = self
-            .recipe
-            .donor
-            .expected_name
-            .as_deref()
-            .unwrap_or("Gameplay donor");
-        let runtime = self
-            .recipe
-            .overrides
-            .weapon_pattern_donor_hash
-            .as_ref()
-            .and_then(|hash| hash.parse_u32().ok())
-            .and_then(|hash| self.donor_summaries.iter().find(|donor| donor.hash == hash))
-            .map_or(gameplay, |donor| donor.name.as_str());
-        let borrowed = self.recipe.runtime_component_donors.len()
-            + self.recipe.overrides.component_splices.len();
-        ui.horizontal_wrapped(|ui| {
-            ui.label(format!("Base weapon: {gameplay}"));
-            ui.separator();
-            ui.label(format!("Runtime source: {runtime}"));
-            // A moved rig is the appearance's, and stats still convert as the base weapon's type.
-            if let Some(name) = self.runtime_rig_appearance.map(|hash| {
-                self.donor_summaries
-                    .iter()
-                    .find(|donor| donor.hash == hash)
-                    .map_or_else(|| format!("0x{hash:08X}"), |donor| donor.name.clone())
-            }) {
-                ui.separator();
-                ui.label(format!("Rig: {name}"));
-            }
-            if borrowed > 0 {
-                ui.separator();
-                ui.label(if borrowed == 1 {
-                    "1 component from another weapon".to_owned()
-                } else {
-                    format!("{borrowed} components from other weapons")
-                });
-            }
-        });
     }
 
     pub(super) fn draw_translation_overrides(
@@ -470,148 +428,112 @@ impl PackageAuthoringApp {
         }
     }
 
-    pub(super) fn draw_weapon_pattern_picker(
+    /// Gameplay's first part row: the weapon whose runtime the build starts from, which sets how
+    /// it fires and behaves. The part rows under it follow it, and the appearance stays.
+    pub(super) fn draw_runtime_part(
         &mut self,
         ui: &mut egui::Ui,
         gameplay_donor: Option<&WeaponDonor>,
     ) {
-        draw_donor_section_label(
-            ui,
-            "Firing & Runtime Baseline",
-            Some("Sets firing and weapon behavior. The appearance is kept. Test in game."),
-        );
-        let inherited_summary = gameplay_donor.map(|donor| &donor.summary);
-        let override_index = self.recipe.overrides.weapon_pattern_index;
-        let source_hash = self
+        let index = self.recipe.overrides.weapon_pattern_index;
+        let saved = self
             .recipe
             .overrides
             .weapon_pattern_donor_hash
             .as_ref()
             .and_then(|hash| hash.parse_u32().ok());
-        let selected_summary = override_index
-            .and_then(|index| {
-                source_hash.and_then(|hash| {
-                    self.donor_summaries.iter().find(|donor| {
-                        donor.hash == hash && donor.weapon_pattern_index == Some(index)
-                    })
-                })
-            })
-            .or_else(|| {
-                override_index
-                    .is_none()
-                    .then_some(inherited_summary)
-                    .flatten()
-            });
-        let selected_text = match override_index {
-            Some(index) => selected_summary.map_or_else(
-                || {
-                    let representatives = self
-                        .donor_summaries
-                        .iter()
-                        .filter(|donor| donor.weapon_pattern_index == Some(index))
-                        .count();
-                    if representatives == 0 {
-                        format!("Runtime row {index} · not in catalog")
-                    } else {
-                        format!(
-                            "Runtime row {index} · {representatives} stock {}",
-                            if representatives == 1 {
-                                "weapon"
-                            } else {
-                                "weapons"
-                            }
-                        )
-                    }
-                },
-                |donor| {
-                    format!(
-                        "{} · Runtime row {index} · 0x{:08X}",
-                        donor.name, donor.hash
-                    )
-                },
-            ),
-            None => inherited_summary.map_or_else(
-                || "Follow Base Weapon".to_owned(),
-                |donor| {
-                    donor.weapon_pattern_index.map_or_else(
-                        || format!("Preserve {} · unknown row", donor.name),
-                        |index| format!("Follow {} · Runtime row {index}", donor.name),
-                    )
-                },
-            ),
-        };
-        let selection = self.catalog.as_ref().and_then(|catalog| {
-            catalog.draw_weapon_donor_header_picker(
-                ui,
-                "weapon-pattern-donor",
-                &mut self.weapon_pattern_query,
+        // The weapon the recipe names for the row, else the first installed one that uses it.
+        let runtime = index.and_then(|index| {
+            let users = || {
                 self.donor_summaries
                     .iter()
-                    .filter(|candidate| candidate.weapon_pattern_index.is_some()),
-                WeaponDonorPickerOptions {
-                    selected_hash: selected_summary.map(|donor| donor.hash),
-                    selected_label: &selected_text,
-                    header_label: None,
-                    action_label: "Swap Runtime",
-                    selected_icon_override: None,
-                    secondary_action_label: None,
-                    row_detail: None,
-                    clear: Some(WeaponDonorPickerClearChoice {
-                        label: "Follow Base Weapon",
-                        tooltip: "Use the base weapon's runtime.",
-                        selected: override_index.is_none(),
-                    }),
-                    selected_detail: None,
-                },
-            )
+                    .filter(move |donor| donor.weapon_pattern_index == Some(index))
+            };
+            users()
+                .find(|donor| Some(donor.hash) == saved)
+                .or_else(|| users().next())
         });
-        match selection {
+        let value = match (index, runtime) {
+            (Some(_), Some(runtime)) => runtime.name.clone(),
+            (Some(index), None) => format!("Runtime Row {index}"),
+            (None, _) => gameplay_donor.map_or_else(
+                || "Base Weapon".to_owned(),
+                |donor| donor.summary.name.clone(),
+            ),
+        };
+        // A row no installed weapon uses has no icon, and still reads as chosen with its reset.
+        let chosen = index.map(|_| runtime.map_or(saved.unwrap_or_default(), |donor| donor.hash));
+        let missing = index.filter(|_| runtime.is_none());
+        let another_type = runtime.zip(gameplay_donor).is_some_and(|(runtime, base)| {
+            runtime.type_name != base.summary.type_name
+                || runtime.inventory_slot != base.summary.inventory_slot
+        });
+        // A moved rig is the appearance's, and stats still convert as the base weapon's type.
+        let rig = self.runtime_rig_appearance.map(|hash| {
+            self.donor_summaries
+                .iter()
+                .find(|donor| donor.hash == hash)
+                .map_or_else(|| format!("0x{hash:08X}"), |donor| donor.name.clone())
+        });
+        let summaries = &self.donor_summaries;
+        let detail = |hash: u32| {
+            summaries
+                .iter()
+                .find(|donor| donor.hash == hash)
+                .map(|donor| donor.type_name.clone())
+        };
+        let action = parts::draw_part(
+            ui,
+            self.catalog.as_ref(),
+            "weapon-pattern-donor",
+            &mut self.weapon_pattern_query,
+            summaries
+                .iter()
+                .filter(|candidate| candidate.weapon_pattern_index.is_some()),
+            parts::Part {
+                column: &parts::GAMEPLAY_COLUMN,
+                label: "Runtime",
+                hint: "The weapon it fires and behaves like. The parts below follow it.".into(),
+                value: &value,
+                chosen,
+                follow: "Follow Base Weapon",
+                blocked: None,
+                detail: Some(&detail),
+            },
+        );
+        match action {
             Some(WeaponDonorPickerAction::Clear) => {
                 self.recipe.overrides.weapon_pattern_index = None;
                 self.recipe.overrides.weapon_pattern_donor_hash = None;
             }
             Some(WeaponDonorPickerAction::Select(hash)) => {
-                self.recipe.overrides.weapon_pattern_index = self
+                let index = self
                     .donor_summaries
                     .iter()
                     .find(|donor| donor.hash == hash)
                     .and_then(|donor| donor.weapon_pattern_index);
-                self.recipe.overrides.weapon_pattern_donor_hash = self
-                    .recipe
-                    .overrides
-                    .weapon_pattern_index
-                    .map(|_| HexHash::new(hash));
+                self.recipe.overrides.weapon_pattern_index = index;
+                self.recipe.overrides.weapon_pattern_donor_hash = index.map(|_| HexHash::new(hash));
             }
             Some(WeaponDonorPickerAction::Secondary) | None => {}
         }
-
-        if let Some(index) = self.recipe.overrides.weapon_pattern_index {
-            let pattern_donor = source_hash
-                .and_then(|hash| {
-                    self.donor_summaries.iter().find(|donor| {
-                        donor.hash == hash && donor.weapon_pattern_index == Some(index)
-                    })
-                })
-                .or_else(|| {
-                    self.donor_summaries
-                        .iter()
-                        .find(|donor| donor.weapon_pattern_index == Some(index))
-                });
-            if pattern_donor.is_none() {
-                ui.colored_label(
-                    ui.visuals().error_fg_color,
-                    format!("No installed weapon uses runtime row {index}."),
-                );
-            } else if let (Some(pattern), Some(gameplay)) = (pattern_donor, gameplay_donor) {
-                if pattern.type_name != gameplay.summary.type_name
-                    || pattern.inventory_slot != gameplay.summary.inventory_slot
-                {
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
-                        "Runtime from a different weapon type or slot. Test in game.",
-                    );
-                }
-            }
+        let secondary = crate::app::style::secondary(ui.visuals());
+        if let Some(index) = missing {
+            let error = ui.visuals().error_fg_color;
+            let text = format!("No installed weapon uses runtime row {index}.");
+            parts::note(
+                ui,
+                &parts::GAMEPLAY_COLUMN,
+                egui::RichText::new(text).color(error),
+            );
+        } else if another_type {
+            let text = egui::RichText::new("Another weapon type or slot.").color(secondary);
+            parts::note(ui, &parts::GAMEPLAY_COLUMN, text);
+        }
+        if let Some(rig) = rig {
+            let text = egui::RichText::new(format!("Rig from {rig}")).color(secondary);
+            parts::note(ui, &parts::GAMEPLAY_COLUMN, text)
+                .on_hover_text("From the appearance. Stats convert as the base weapon's type.");
         }
     }
 
@@ -867,6 +789,55 @@ impl PackageAuthoringApp {
         }
     }
 
+    /// The Inventory Icon heading. A subclass can generate its icon instead, from the checkbox at
+    /// the label's right.
+    fn draw_icon_heading(&mut self, ui: &mut egui::Ui) {
+        if self.recipe.kind == crate::ItemKind::Subclass {
+            ui.horizontal(|ui| {
+                ui.strong("Inventory Icon")
+                    .on_hover_text("Changes only the inventory icon.");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    self.draw_generated_icon_toggle(ui);
+                });
+            });
+        } else {
+            draw_donor_section_label(
+                ui,
+                "Inventory Icon",
+                Some("Changes only the inventory icon."),
+            );
+        }
+    }
+
+    /// What the icon picker reads: the imported source's own icon, the weapon icon donor, or the
+    /// gear item whose icon it borrows.
+    fn icon_donor_label(
+        &self,
+        imported_source: bool,
+        inherited_hash: Option<u32>,
+        current_hash: Option<u32>,
+    ) -> String {
+        let kind = self.recipe.kind;
+        if imported_source && self.recipe.icon_donor.is_none() {
+            return "Source Item Icon".to_owned();
+        }
+        if kind.is_weapon() {
+            return self.appearance_donor_label(
+                self.recipe.icon_donor.as_ref(),
+                inherited_hash,
+                "Unknown icon donor",
+            );
+        }
+        current_hash
+            .and_then(|hash| {
+                self.gear_donors_for(kind)
+                    .iter()
+                    .find(|donor| donor.hash == hash)
+            })
+            .map(|donor| format!("{} · 0x{:08X}", donor.name, donor.hash))
+            .unwrap_or_else(|| format!("Use Base {} Icon", kind.label()))
+    }
+
     pub(super) fn draw_icon_donor_picker(&mut self, ui: &mut egui::Ui) {
         let kind = self.recipe.kind;
         let imported_source = {
@@ -880,11 +851,7 @@ impl PackageAuthoringApp {
                 false
             }
         };
-        draw_donor_section_label(
-            ui,
-            "Inventory Icon",
-            Some("Changes only the inventory icon."),
-        );
+        self.draw_icon_heading(ui);
         let inherited_hash = self.appearance_donor_hash();
         let inherits_appearance = self.recipe.icon_donor.is_none();
         let current_hash = self
@@ -893,24 +860,7 @@ impl PackageAuthoringApp {
             .as_ref()
             .and_then(|donor| donor.item_hash.parse_u32().ok());
         let displayed_hash = current_hash.or(inherited_hash);
-        let selected_text = if imported_source && self.recipe.icon_donor.is_none() {
-            "Source Item Icon".to_owned()
-        } else if kind.is_weapon() {
-            self.appearance_donor_label(
-                self.recipe.icon_donor.as_ref(),
-                inherited_hash,
-                "Unknown icon donor",
-            )
-        } else {
-            current_hash
-                .and_then(|hash| {
-                    self.gear_donors_for(kind)
-                        .iter()
-                        .find(|donor| donor.hash == hash)
-                })
-                .map(|donor| format!("{} · 0x{:08X}", donor.name, donor.hash))
-                .unwrap_or_else(|| format!("Use Base {} Icon", kind.label()))
-        };
+        let selected_text = self.icon_donor_label(imported_source, inherited_hash, current_hash);
         let icon_editor_target = self.catalog.as_ref().and_then(|catalog| {
             let item_hash = displayed_hash?;
             let container_tag = catalog.weapon_icon_container(item_hash)?;
@@ -943,6 +893,19 @@ impl PackageAuthoringApp {
                 self.authored_icon_preview = None;
                 (None, None)
             };
+        // A generated icon takes the icon's image, so its card shows it and chooses its symbol in
+        // place of an icon to borrow or edit.
+        if kind == crate::ItemKind::Subclass
+            && self.draw_generated_icon_card(ui, authored_icon_override.as_ref())
+        {
+            if let Some(error) = authored_icon_error {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    format!("Icon preview unavailable: {error}"),
+                );
+            }
+            return;
+        }
         let donors = if kind.is_weapon() {
             self.donor_summaries.as_slice()
         } else {
@@ -1032,6 +995,7 @@ impl PackageAuthoringApp {
                 if let Some((item_hash, donor_name, container_tag)) = icon_editor_target
                     && let Some(rarity) = self.authored_icon_rarity()
                 {
+                    let art = self.icon_art();
                     self.icon_editor = Some(
                         WeaponIconEditor::open(
                             &self.packages,
@@ -1042,6 +1006,7 @@ impl PackageAuthoringApp {
                             self.recipe.overrides.icon_edit.clone(),
                             self.recipe.kind == crate::ItemKind::Subclass,
                         )
+                        .with_art(art.as_ref())
                         .with_corner(self.recipe.overrides.corner_icon.as_ref()),
                     );
                 }
@@ -1586,15 +1551,8 @@ pub(super) fn draw_unique_behavior_control(
     use crate::weapon::behavior::ELEMENT_SWITCH;
     let selected = selected_unique_behavior(overrides);
     let offered = offered_behaviors(sources, selected);
-    // A grid dropdown names an inherited value as the others there do.
     let selected_text = selected.map_or_else(
-        || {
-            if stacked {
-                format!("{base_name} (base weapon)")
-            } else {
-                base_name.to_owned()
-            }
-        },
+        || base_name.to_owned(),
         |entry| behavior_choice_label(entry, catalog),
     );
     // The browser lists weapons, so a behavior is found by the weapon it came from. Each offered

@@ -233,10 +233,10 @@ mod tests {
             &serde_json::json!({
                 "channels": 1, "sample_rate": 8000, "duration_ms": 1000,
                 "decoded_bytes": decoded.len(), "source_bytes": source.len(),
-                "sha256": format!("{:x}", sha2::Sha256::digest(&decoded)),
+                "sha256": hex::encode(sha2::Sha256::digest(&decoded)),
             }),
         );
-        if let Some(output) = std::env::var_os("PARHELION_TEST_ARTIFACTS") {
+        if let Some(output) = std::env::var_os("SUNDIAL_TEST_ARTIFACTS") {
             std::fs::write(
                 std::path::PathBuf::from(output).join("pcm-wave-roundtrip.wav"),
                 decoded,

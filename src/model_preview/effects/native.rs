@@ -8,20 +8,28 @@ mod evaluate;
 mod gear;
 mod glsl;
 mod gpu;
+mod image;
+mod layered;
 mod motion;
 mod opaque;
 mod program;
+mod resource;
 mod shade;
+mod surface;
 mod vertex;
 
 pub(in crate::model_preview) use attributes::{Attributes, load as load_attributes};
 pub(in crate::model_preview) use coverage::load as load_cutoff;
 pub(in crate::model_preview) use gear::map_transform;
+pub(in crate::model_preview) use glsl::HELPERS as GPU_HELPERS;
 pub(in crate::model_preview) use gpu::source;
 pub(crate) use motion::Motion;
 pub(in crate::model_preview) use motion::load as load_motion;
+pub(in crate::model_preview) use opaque::intensity::ambient as ambient_visibility;
+pub(in crate::model_preview) use opaque::intensity::decode as decode_intensity;
 pub(in crate::model_preview) use opaque::{LegacyNormal, load_normal, load_opaque};
-pub(in crate::model_preview) use shade::{Depth, Pixel, sample};
+pub(in crate::model_preview) use shade::{Depth, Pixel, sample, sample_with_ambient};
+pub(in crate::model_preview) use surface::{load as load_surface, sample as sample_surface};
 pub(in crate::model_preview) use vertex::{Input, Varyings};
 
 impl Native {
@@ -114,6 +122,10 @@ pub(crate) struct Native {
     pixel: program::Program,
     vertex: Option<Vertex>,
     pub(in crate::model_preview) opaque_uv: Option<[f32; 4]>,
+    pub(in crate::model_preview) intensity: bool,
+    pub(in crate::model_preview) deferred: bool,
+    pub(in crate::model_preview) decal: bool,
+    pub(in crate::model_preview) ambient_power: Option<f32>,
     base_gain: Option<opaque::Gain>,
     paint: Option<opaque::Paint>,
     pub(in crate::model_preview) bindings: Vec<Binding>,
@@ -125,6 +137,7 @@ struct Vertex {
     expression: Option<Program>,
     quaternion: bool,
     stored_uv: Option<[f32; 4]>,
+    samplers: Vec<texture::Sampler>,
 }
 
 #[derive(Clone, Copy)]
@@ -143,16 +156,18 @@ pub(in crate::model_preview) enum Role {
 
 pub(in crate::model_preview) struct Binding {
     pub slot: usize,
+    pub vertex: bool,
     pub role: Role,
     pub color: bool,
     pub cube: Option<cube::Cube>,
+    pub layered: Option<layered::Layered>,
     /// Native sampler registers start at one. Load-only resources have no sampler.
     pub sampler: Option<usize>,
 }
 
 impl Native {
     pub(in crate::model_preview) fn opaque(&self) -> bool {
-        self.opaque_uv.is_some()
+        self.opaque_uv.is_some() || self.deferred
     }
     pub(in crate::model_preview) fn base_gain(&self, frame: &Frame) -> Option<[f32; 3]> {
         self.base_gain.as_ref()?.value(frame)
@@ -170,7 +185,12 @@ impl Native {
         self.paint.as_ref()?.grain(frame)
     }
     pub(in crate::model_preview) fn texture_unit(&self, binding: usize) -> usize {
-        binding + if self.opaque() { 6 } else { 0 }
+        binding
+            + if self.opaque() && !self.deferred {
+                6
+            } else {
+                0
+            }
     }
     pub(in crate::model_preview) fn animated(&self) -> bool {
         self.vertex
@@ -207,7 +227,7 @@ fn load_vertex(
     manager: &PackageManager,
     bytes: &[u8],
     globals: &[[f32; 4]],
-    objects: &[[f32; 4]],
+    objects: ObjectInputs<'_>,
     surface: u8,
 ) -> Result<Option<Vertex>, String> {
     let vertex_tag = u32_at(bytes, 0x48)?;
@@ -222,7 +242,7 @@ fn load_vertex(
                 .ok_or("The stored vertex texture coordinates are unavailable")?,
         )
     } else {
-        contract(&code, true)?;
+        contract(&code, true, false)?;
         None
     };
     let constants = super::read::stage_constants(manager, bytes, 0x48)?;
@@ -237,29 +257,15 @@ fn load_vertex(
         expression,
         quaternion,
         stored_uv,
+        samplers: texture::stage_samplers(manager, bytes, 0x48),
     }))
-}
-
-/// The texture each slot the material binds explicitly, refusing a slot bound twice.
-fn explicit_textures(bytes: &[u8]) -> Result<std::collections::BTreeMap<usize, u32>, String> {
-    let (count, rows) = super::vertex::table(bytes, 0x2D0, 0x8080_7211, 8, 32)?;
-    let mut explicit = std::collections::BTreeMap::new();
-    for row in (0..count).map(|i| rows + i * 8) {
-        if explicit
-            .insert(u32_at(bytes, row)? as usize, u32_at(bytes, row + 4)?)
-            .is_some()
-        {
-            return Err("The effect binds a texture slot more than once".into());
-        }
-    }
-    Ok(explicit)
 }
 
 pub(super) fn load(
     manager: &PackageManager,
     tag: u32,
     bytes: &[u8],
-    objects: &[[f32; 4]],
+    objects: ObjectInputs<'_>,
     surface: u8,
     model: &mut Model,
 ) -> Result<Material, String> {
@@ -267,19 +273,27 @@ pub(super) fn load(
         &super::read::shader_bytes(manager, u32_at(bytes, 0x2C8)?, 0)?,
         0,
     )?;
-    load_program(manager, tag, bytes, objects, surface, model, (pixel, false))
+    load_program(
+        manager,
+        tag,
+        bytes,
+        objects,
+        surface,
+        model,
+        (pixel, false, false),
+    )
 }
 
 fn load_program(
     manager: &PackageManager,
-    tag: u32,
+    _tag: u32,
     bytes: &[u8],
-    objects: &[[f32; 4]],
+    objects: ObjectInputs<'_>,
     surface: u8,
     model: &mut Model,
-    (pixel, opaque): (program::Program, bool),
+    (pixel, opaque, deferred): (program::Program, bool, bool),
 ) -> Result<Material, String> {
-    contract(&pixel, false)?;
+    contract(&pixel, false, deferred)?;
     let globals = crate::dyes::material::global_channels(manager);
     let constants = super::read::stage_constants(manager, bytes, 0x2C8)?;
     check_constants(&pixel, &constants)?;
@@ -289,99 +303,18 @@ fn load_program(
     } else {
         load_vertex(manager, bytes, &globals, objects, surface)?
     };
-    let samplers = texture::material_samplers(manager, tag);
-    let explicit = explicit_textures(bytes)?;
-    let dye = pixel
-        .buffers
-        .iter()
-        .find(|(slot, _)| (5..=7).contains(slot))
-        .map(|(slot, _)| *slot);
-    let mut bindings = Vec::new();
-    let mut pending = Vec::new();
-    for resource in &pixel.resources {
-        let sampling = sampling_for(&pixel, resource, samplers.len())?;
-        let (role, color, cube) = if let Some(&tag) = explicit.get(&resource.slot) {
-            let header = manager.read_tag(tag)?;
-            let color = matches!(u32_at(&header, 4)?, 29 | 72 | 75 | 78 | 91 | 93 | 99);
-            let (cube, image) = if resource.dimension == 6 {
-                let (cube, image) = cube::Cube::load(manager, tag)?;
-                (Some(cube), image)
-            } else {
-                (None, texture::load(manager, tag)?)
-            };
-            if cube.is_none() {
-                let source = [
-                    usize::from(u16_at(&header, 14)?),
-                    usize::from(u16_at(&header, 16)?),
-                ];
-                if image.size != source {
-                    model.notices.push(format!("Texture 0x{tag:08X} uses a {} × {} mip instead of {} × {} to fit the preview memory budget.", image.size[0], image.size[1], source[0], source[1]));
-                }
-            }
-            if resource.integer {
-                return Err("Integer effect images are not supported".into());
-            }
-            let index = if let Some(index) = model
-                .textures
-                .iter()
-                .chain(&pending)
-                .position(|t| t.tag == tag)
-            {
-                index
-            } else {
-                if model.textures.len() + pending.len() >= MAX_TEXTURES {
-                    return Err("The preview texture budget is full".into());
-                }
-                pending.push(image);
-                texture::check_pending(model, &pending)?;
-                model.textures.len() + pending.len() - 1
-            };
-            (Role::Texture(index), color, cube)
-        } else {
-            if matches!((resource.slot, resource.dimension), (15 | 16, 3) | (17, 5))
-                && pixel.buffers.contains(&(12, 13))
-                && pixel.buffers.contains(&(13, 2))
-            {
-                bindings.push(Binding {
-                    slot: resource.slot,
-                    role: Role::Scene,
-                    color: false,
-                    cube: None,
-                    sampler: sampling,
-                });
-                continue;
-            }
-            if resource.dimension != 3 {
-                return Err("The reflection texture is missing".into());
-            }
-            let detail = dye.map(|slot| 3 + (7 - slot) * 2);
-            let role = match resource.slot {
-                3 if resource.integer => Role::Mask,
-                0 => Role::Albedo,
-                1 => Role::Normal,
-                2 => Role::Gear,
-                10 => Role::Depth,
-                slot if Some(slot) == detail => Role::Detail,
-                slot if Some(slot) == detail.map(|v| v + 1) => Role::DetailNormal,
-                _ => {
-                    return Err(format!(
-                        "The effect texture slot {} has no preview binding",
-                        resource.slot
-                    ));
-                }
-            };
-            (role, matches!(role, Role::Albedo | Role::Detail), None)
-        };
-        bindings.push(Binding {
-            slot: resource.slot,
-            role,
-            color,
-            cube,
-            sampler: sampling,
-        });
+    let mut samplers = texture::stage_samplers(manager, bytes, 0x2C8);
+    let mut plan = resource::Plan::new(manager, model);
+    plan.stage(bytes, &pixel, &samplers, false, 0)?;
+    if let Some(vertex) = &vertex
+        && vertex.stored_uv.is_none()
+    {
+        plan.stage(bytes, &vertex.code, &vertex.samplers, true, samplers.len())?;
+        samplers.extend_from_slice(&vertex.samplers);
     }
-    if bindings.len() > 9 {
-        return Err("The effect texture count exceeds preview limits".into());
+    let (bindings, pending) = plan.finish();
+    if opaque && !deferred && bindings.len() > 3 {
+        return Err("The opaque effect texture count exceeds preview limits".into());
     }
     let material = Material {
         kind: Kind::Native,
@@ -392,6 +325,10 @@ fn load_program(
             pixel,
             vertex,
             opaque_uv: opaque.then_some([1.0, 1.0, 0.0, 0.0]),
+            ambient_power: None,
+            intensity: false,
+            deferred,
+            decal: false,
             base_gain: None,
             paint: None,
             bindings,
@@ -422,7 +359,7 @@ fn check_constants(program: &program::Program, constants: &[[f32; 4]]) -> Result
     Ok(())
 }
 
-fn contract(program: &program::Program, vertex: bool) -> Result<(), String> {
+fn contract(program: &program::Program, vertex: bool, deferred: bool) -> Result<(), String> {
     if program
         .instructions
         .iter()
@@ -455,8 +392,13 @@ fn contract(program: &program::Program, vertex: bool) -> Result<(), String> {
             return Err("The effect constant scope exceeds its preview contract".into());
         }
     }
-    if vertex && !program.resources.is_empty() {
-        return Err("Vertex texture sampling is not available".into());
+    if vertex
+        && program
+            .instructions
+            .iter()
+            .any(|i| matches!(i.code, 69 | 108 | 122 | 124))
+    {
+        return Err("The vertex effect requires pixel derivatives".into());
     }
     if program.resources.iter().any(|r| r.integer && r.slot != 3) {
         return Err("The effect requires an unavailable integer texture".into());
@@ -465,7 +407,9 @@ fn contract(program: &program::Program, vertex: bool) -> Result<(), String> {
         let supported = if vertex {
             (semantic.name == "TEXCOORD" && semantic.index < 9) || semantic.system == 1
         } else {
-            semantic.name == "SV_TARGET" && semantic.index == 0 && semantic.register == 0
+            semantic.name == "SV_TARGET"
+                && semantic.register == semantic.index as usize
+                && (semantic.index == 0 || deferred && semantic.index < 3)
         };
         if !supported {
             return Err("The effect output signature is unavailable".into());
@@ -499,9 +443,6 @@ fn contract(program: &program::Program, vertex: bool) -> Result<(), String> {
         return Err("The effect has no stored-space position output".into());
     }
     for (at, i) in program.instructions.iter().enumerate() {
-        if i.code == 61 && (i.operands[1].kind != 4 || i.operands[1].literal != [0; 4]) {
-            return Err("Only base-level effect texture dimensions are available".into());
-        }
         if i.code == 108 {
             let slot = i.operands[2].indices[0].base as usize;
             if program

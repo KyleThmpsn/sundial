@@ -38,6 +38,8 @@ struct IconKey {
     edit: crate::WeaponIconEdit,
     /// A subclass icon, shown without a rarity plate or watermark.
     plain: bool,
+    /// The art the icon shows in place of its image: a vehicle's silhouette or a generated icon.
+    art: Option<crate::icon_art::Request>,
 }
 
 type LibraryIconResult = (PathBuf, IconKey, Result<egui::ColorImage, String>);
@@ -124,10 +126,10 @@ fn build_selection_footer_height(ui: &egui::Ui, error: &Option<String>) -> f32 {
 /// reach past the bottom edge: take whichever limit is nearer, leaving room for the bottom
 /// margin and border the window frame draws below the contents.
 fn windowed_list_height(ui: &egui::Ui, footer_height: f32) -> f32 {
-    let style = ui.ctx().style();
+    let style = ui.ctx().global_style();
     let frame_bottom =
         f32::from(style.spacing.window_margin.bottom) + style.visuals.window_stroke.width;
-    let room_on_screen = ui.ctx().screen_rect().bottom() - ui.cursor().top() - frame_bottom;
+    let room_on_screen = ui.ctx().content_rect().bottom() - ui.cursor().top() - frame_bottom;
     (ui.available_height() - footer_height)
         .min(room_on_screen - footer_height)
         .max(120.0)
@@ -501,7 +503,7 @@ impl PackageAuthoringApp {
                         .clicked()
                     {
                         *action = Some(LibraryAction::ExportOpen);
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui
                         .add_enabled(
@@ -511,7 +513,7 @@ impl PackageAuthoringApp {
                         .clicked()
                     {
                         *action = Some(LibraryAction::ChooseExport);
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui
                         .add_enabled(
@@ -521,7 +523,7 @@ impl PackageAuthoringApp {
                         .clicked()
                     {
                         *action = Some(LibraryAction::ExportAll);
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
             });
@@ -615,7 +617,7 @@ impl PackageAuthoringApp {
                 ctx,
                 &self.packages,
                 catalog,
-                &self.library_donors,
+                (&self.library_donors, &self.subclasses),
                 &self.recipe_entries,
             );
         }

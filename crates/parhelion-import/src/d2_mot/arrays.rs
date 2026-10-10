@@ -40,12 +40,12 @@ fn row(b: &[u8], at: usize, class: u32) -> Result<Option<(usize, usize)>, String
 }
 pub fn validate(b: &[u8]) -> Result<(), String> {
     for (i, at) in descriptors(b)?.into_iter().enumerate() {
-        if let Some((h, _)) = row(b, at, if i == 0 { 0x808077B5 } else { 0x808077B3 })? {
-            if h < 4 || u32::from_le_bytes(read(b, h - 4)?) >> 16 != 0x8080 {
-                return Err(format!(
-                    "appearance array at {at:X} lacks native header marker"
-                ));
-            }
+        if let Some((h, _)) = row(b, at, if i == 0 { 0x808077B5 } else { 0x808077B3 })?
+            && (h < 4 || u32::from_le_bytes(read(b, h - 4)?) >> 16 != 0x8080)
+        {
+            return Err(format!(
+                "appearance array at {at:X} lacks native header marker"
+            ));
         }
     }
     Ok(())

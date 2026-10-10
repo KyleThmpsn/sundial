@@ -12,9 +12,21 @@ pub(super) fn prepare(
 ) -> Result<()> {
     crate::cancellation::check()?;
     if source["runtime_kind"] != "equipment" {
-        graph["limitations"].as_array_mut().context("Import details")?.push(json!(
-            "Armor uses the native character animation and physics. Source cloth simulation is not converted."
-        ));
+        let detail = if graph["rendering"].as_array().is_some_and(|parts| {
+            parts.iter().any(|part| {
+                part["cloth"]
+                    .as_array()
+                    .is_some_and(|rows| rows.iter().any(|row| row["simulation_converted"] == true))
+            })
+        }) {
+            "Armor follows native character animation. Converted cloth uses native simulation. Its motion still needs an in-game check."
+        } else {
+            "Armor follows native character animation."
+        };
+        graph["limitations"]
+            .as_array_mut()
+            .context("Import details")?
+            .push(json!(detail));
         return Ok(());
     }
     progress("Converting equipment animation clips...".into());

@@ -37,15 +37,15 @@ pub(in crate::app) fn workspace<R>(
         WorkspacePlacement::Side => {
             let maximum_width = (ui.available_width() - PRIMARY_WORKSPACE_MIN_WIDTH)
                 .clamp(SIDE_WORKSPACE_MIN_WIDTH, SIDE_WORKSPACE_MAX_WIDTH);
-            egui::SidePanel::right(side_id)
+            egui::Panel::right(side_id)
                 .resizable(true)
-                .default_width(SIDE_WORKSPACE_DEFAULT_WIDTH.min(maximum_width))
-                .width_range(SIDE_WORKSPACE_MIN_WIDTH..=maximum_width)
+                .default_size(SIDE_WORKSPACE_DEFAULT_WIDTH.min(maximum_width))
+                .size_range(SIDE_WORKSPACE_MIN_WIDTH..=maximum_width)
                 .frame(
                     egui::Frame::side_top_panel(ui.style())
                         .inner_margin(egui::Margin::symmetric(12, 8)),
                 )
-                .show_inside(ui, |ui| add_contents(ui, placement))
+                .show(ui, |ui| add_contents(ui, placement))
                 .inner
         }
         WorkspacePlacement::Bottom => {
@@ -80,8 +80,7 @@ pub(in crate::app) fn heading(ui: &mut egui::Ui, title: impl Into<String>) -> bo
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.add(
                     egui::Label::new(egui::RichText::new(&title).strong().size(17.0)).truncate(),
-                )
-                .on_hover_text(&title);
+                );
             });
         });
     });

@@ -47,7 +47,7 @@ pub(super) fn draw(
             .response
             .on_hover_text(contract.description);
         if chose {
-            ui.memory_mut(egui::Memory::close_popup);
+            egui::Popup::close_all(ui);
         }
         pickers::name_combo(
             ui,

@@ -5,7 +5,7 @@ use sundial::package_authoring::sandbox_perk::action::native::NodeKind as Native
 #[test]
 fn aliases_share_one_entry_without_losing_configurations_or_weapon_restrictions() {
     let family = Family::Condition(trigger_family(Trigger::WeaponKill).unwrap());
-    let rows = vec![
+    let rows = [
         Row {
             family: family.clone(),
             enabled: true,
@@ -460,14 +460,13 @@ fn every_promoted_condition_reads_as_a_plain_row() {
 /// that fails with an engine message. Every condition the picker offers is compiled here
 /// against the installed packages, so the promise is checked rather than assumed.
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn every_offered_condition_compiles_into_a_program() {
     use sundial::package_authoring::open_shadowkeep_package_manager;
     use sundial::package_authoring::sandbox_perk::program::{
         Action, Position, Program, Trigger, compile,
     };
-    let packages =
-        std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(&packages).unwrap();
     let offered = nodes::CONDITIONS
         .iter()

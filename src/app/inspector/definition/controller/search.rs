@@ -98,7 +98,7 @@ pub(super) fn toolbar_search(
         close_popup(ui, popup_id);
     } else if response.has_focus() && (response.changed() || response.gained_focus() || keys.moved)
     {
-        ui.memory_mut(|memory| memory.open_popup(popup_id));
+        egui::Popup::open_id(ui, popup_id);
     }
     let rows = search_rows(
         catalog,
@@ -107,14 +107,13 @@ pub(super) fn toolbar_search(
         DROPDOWN_LIMIT,
     );
     let highlighted = search.results.highlighted;
-    let clicked = egui::popup_below_widget(
-        ui,
-        popup_id,
-        &response,
-        egui::PopupCloseBehavior::CloseOnClickOutside,
-        |ui| dropdown(ui, catalog, &rows, highlighted),
-    )
-    .flatten();
+    let clicked = crate::ui::dropdown(&response, popup_id)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(response.rect.width());
+            dropdown(ui, catalog, &rows, highlighted)
+        })
+        .and_then(|popup| popup.inner);
     let chosen = clicked.or_else(|| {
         keys.enter
             .then(|| chosen_target(&rows, highlighted, &search.query))
@@ -179,7 +178,6 @@ fn draw_home(
         navigation_buttons(ui, catalog, history, forward, action);
     });
     ui.separator();
-    ui.add_space(6.0);
     match home_contents(ui, catalog, base_id, history, search, browse) {
         Some(Target::Hash(hash)) => action.open_hash = Some(hash),
         Some(Target::History(index)) => action.history_index = Some(index),
@@ -357,7 +355,7 @@ fn home_field(
     field.add(
         egui::TextEdit::singleline(query)
             .id(id)
-            .frame(false)
+            .frame(egui::Frame::NONE)
             .hint_text(HINT)
             .desired_width(f32::INFINITY),
     )
@@ -534,11 +532,9 @@ fn navigation_keys(ui: &mut egui::Ui, highlighted: &mut usize, rows: usize) -> K
 }
 
 fn close_popup(ui: &egui::Ui, popup_id: egui::Id) {
-    ui.memory_mut(|memory| {
-        if memory.is_popup_open(popup_id) {
-            memory.close_popup();
-        }
-    });
+    if egui::Popup::is_id_open(ui, popup_id) {
+        egui::Popup::close_id(ui, popup_id);
+    }
 }
 
 /// The highlighted row, or the query itself when it reads as a hash.
@@ -740,7 +736,7 @@ mod tests {
             let frame = |search: &mut DefinitionSearch, enabled, keys: bool| {
                 let mut chosen = None;
                 let mut retained = false;
-                let output = ctx.run(
+                let output = ctx.run_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -762,8 +758,8 @@ mod tests {
                         },
                         ..Default::default()
                     },
-                    |ctx| {
-                        egui::CentralPanel::default().show(ctx, |ui| {
+                    |ui| {
+                        egui::CentralPanel::default().show(ui, |ui| {
                             ui.memory_mut(|memory| memory.request_focus(field));
                             ui.add_enabled_ui(enabled, |ui| {
                                 if toolbar_mode {
@@ -792,7 +788,7 @@ mod tests {
                         });
                     },
                 );
-                crate::app::tests::capture::record(&output);
+                crate::test_support::capture::record(&output);
                 (chosen, retained, output)
             };
             let _ = frame(&mut search, true, false);
@@ -800,7 +796,7 @@ mod tests {
             assert_eq!(chosen, None);
             assert!(retained);
             assert_eq!(search.results.highlighted, 0);
-            crate::app::tests::capture::write(
+            crate::test_support::capture::write(
                 &ctx,
                 &output,
                 if toolbar_mode {
@@ -839,13 +835,13 @@ mod tests {
         let mut highlighted = 0;
         for _ in 0..3 {
             let mut keys = Keys::default();
-            let _ = ctx.run(
+            let _ = ctx.run_ui(
                 egui::RawInput {
                     events: vec![press(egui::Key::ArrowDown), press(egui::Key::ArrowDown)],
                     ..Default::default()
                 },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         keys = navigation_keys(ui, &mut highlighted, 3);
                     });
                 },

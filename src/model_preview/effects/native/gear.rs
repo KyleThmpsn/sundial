@@ -77,7 +77,12 @@ fn written(
         .enumerate()
         .rev()
         .find(|(_, i)| {
-            i.operands.first().is_some_and(|d| {
+            let destinations = match i.code {
+                13 | 18 | 21 | 31 | 62 => 0,
+                38 | 77 | 78 => 2,
+                _ => 1,
+            };
+            i.operands.iter().take(destinations).any(|d| {
                 d.kind == operand.kind
                     && d.indices[0].base as usize == index
                     && d.mask & (1 << lane) != 0
@@ -130,6 +135,25 @@ pub(super) fn stored_vertex_uv(p: &Program) -> Option<[f32; 4]> {
     (x[1] == 0.0 && y[0] == 0.0 && x[0] > 0.0 && y[1] > 0.0).then_some([x[0], y[1], x[2], y[2]])
 }
 
+/// Bind the model placement before recovering raw-vertex UV equations. Palette
+/// dependencies stay untouched and cannot be evaluated by the affine reader.
+pub(super) fn bind_model_uv(code: &mut Program, uv: [f32; 4]) {
+    for row in &mut code.instructions {
+        for operand in &mut row.operands {
+            if operand.kind == 8
+                && operand.indices.len() == 2
+                && operand.indices[0].base == 11
+                && operand.indices[1].base == 6
+                && operand.indices.iter().all(|i| i.relative.is_none())
+            {
+                operand.kind = 4;
+                operand.literal = uv.map(f32::to_bits);
+                operand.indices.clear();
+            }
+        }
+    }
+}
+
 fn add(a: Affine, b: Affine) -> Affine {
     std::array::from_fn(|i| a[i] + b[i])
 }
@@ -143,22 +167,42 @@ fn multiply(a: Affine, b: Affine) -> Option<Affine> {
     }
 }
 
+pub(in crate::model_preview) struct Placement {
+    pub slot: u32,
+    pub transform: [f32; 4],
+    pub uv: Option<[f32; 4]>,
+}
+
 pub(in crate::model_preview) fn map_transform(
     manager: &PackageManager,
     bytes: &[u8],
-) -> Option<([f32; 4], Option<[f32; 4]>)> {
+    model_uv: [f32; 4],
+) -> Option<Placement> {
     let pixel = super::super::read::shader_bytes(manager, u32_at(bytes, 0x2C8).ok()?, 0).ok()?;
-    let program = Program::read(&pixel, 0).ok()?;
-    // The translated family selects six surfaces from three merged modern dye banks.
-    if !program
+    let program = Program::read_affine(&pixel, 0).ok()?;
+    // Translated dyes use either a merged constant bank or three native banks.
+    // Their explicit per-pixel selection images occupy different resource slots.
+    let slot = if program
         .buffers
         .iter()
         .any(|&(slot, size)| slot == 0 && size >= 63)
-        || !program
-            .instructions
+    {
+        3
+    } else if (5..=7).all(|slot| {
+        program
+            .buffers
             .iter()
-            .flat_map(|i| &i.operands)
-            .any(|v| v.kind == 8 && v.indices.get(1).is_some_and(|i| i.relative.is_some()))
+            .any(|&(binding, count)| binding == slot && (25..=27).contains(&count))
+    }) {
+        9
+    } else {
+        return None;
+    };
+    if !program
+        .instructions
+        .iter()
+        .flat_map(|i| &i.operands)
+        .any(|v| v.kind == 8 && v.indices.get(1).is_some_and(|i| i.relative.is_some()))
     {
         return None;
     }
@@ -189,7 +233,7 @@ pub(in crate::model_preview) fn map_transform(
     let plate = coordinates(0)?;
     if coordinates(1)? != plate
         || coordinates(2)? != plate
-        || coordinates(3)? != [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+        || coordinates(slot)? != [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
     {
         return None;
     }
@@ -211,7 +255,10 @@ pub(in crate::model_preview) fn map_transform(
     let vertex = super::super::read::shader_bytes(manager, u32_at(bytes, 0x48).ok()?, 1)
         .ok()
         .and_then(|bytes| Program::read_stored(&bytes).ok())
-        .filter(super::motion::stored);
+        .map(|mut code| {
+            bind_model_uv(&mut code, model_uv);
+            code
+        });
     let uv = match vertex {
         Some(vertex) => {
             let v = stored_vertex_uv(&vertex)?;
@@ -224,5 +271,9 @@ pub(in crate::model_preview) fn map_transform(
         }
         None => None,
     };
-    Some((map, uv))
+    Some(Placement {
+        slot,
+        transform: map,
+        uv,
+    })
 }

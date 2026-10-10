@@ -1,10 +1,10 @@
-//! Runtime constraints and destination uncertainty, separate from compiler support.
+//! Runtime constraints that keep a perk from working as authored, separate from compiler support.
 use super::{PerkRecipe, SANDBOX_PERK_CAPACITY};
-use crate::{ItemKind, WeaponSandboxPerkRuntimeRecipe};
+use crate::WeaponSandboxPerkRuntimeRecipe;
 use serde::Serialize;
 use sundial::package_authoring::sandbox_perk::{
     action,
-    program::{self, Program, Trigger},
+    program::{self, Program},
 };
 
 #[derive(Clone, Debug, Serialize)]
@@ -16,7 +16,9 @@ pub(crate) struct Diagnostic {
     pub message: String,
 }
 
-pub(crate) fn check(recipe: &PerkRecipe, destination: ItemKind) -> Vec<Diagnostic> {
+/// What keeps a perk from working as authored. Each issue is a known failure, never a doubt the
+/// catalog cannot settle.
+pub(crate) fn check(recipe: &PerkRecipe) -> Vec<Diagnostic> {
     let mut issues = Vec::new();
     if let Err(message) = recipe.validate() {
         issues.push(Diagnostic {
@@ -27,7 +29,6 @@ pub(crate) fn check(recipe: &PerkRecipe, destination: ItemKind) -> Vec<Diagnosti
             message,
         });
     }
-    let mut overrides = std::collections::BTreeMap::new();
     for (index, effect) in recipe.effects.iter().enumerate() {
         let mut add = |code, group, blocking, message| {
             issues.push(Diagnostic {
@@ -58,50 +59,13 @@ pub(crate) fn check(recipe: &PerkRecipe, destination: ItemKind) -> Vec<Diagnosti
                 continue;
             }
         };
-        if !destination.is_weapon()
-            && (matches!(
-                program.trigger,
-                Trigger::Drawn | Trigger::WeaponKill | Trigger::PrecisionKill
-            ) || decoded
-                .conditions()
-                .iter()
-                .any(|node| matches!(node.kind, 13 | 16..=19)))
-        {
-            add(
-                "weapon_context",
-                None,
-                false,
-                format!(
-                    "This behavior expects a weapon event. Its event routing on {} has not been verified.",
-                    destination.label()
-                ),
-            );
-        }
-        inspect_behaviors(&decoded, index, &mut overrides, &mut add);
+        inspect_behaviors(&decoded, &mut add);
     }
     issues
 }
 
-type Overrides = std::collections::BTreeMap<(u8, u8, u8), (usize, Vec<u8>)>;
-
-fn override_key(kind: u8, bytes: &[u8]) -> (u8, u8, u8) {
-    // Override Host Key has separate target and interface selectors. Other overrides in
-    // this check address the host or potentially overlapping ability slots. In particular,
-    // Set Host Mode and Two Ability State Overrides store replacement values at +2.
-    match kind {
-        35 => (
-            kind,
-            bytes.get(2).copied().unwrap_or_default(),
-            bytes.get(3).copied().unwrap_or_default(),
-        ),
-        _ => (kind, 0, 0),
-    }
-}
-
 fn inspect_behaviors(
     decoded: &action::DecodedAction,
-    index: usize,
-    overrides: &mut Overrides,
     add: &mut impl FnMut(&'static str, Option<usize>, bool, String),
 ) {
     for (group, behavior) in decoded.groups.iter().enumerate() {
@@ -110,60 +74,34 @@ fn inspect_behaviors(
                 .activation
                 .iter()
                 .any(|node| matches!(node.kind, 0 | 1 | 14 | 16));
+        // Always and After a Delay start a behavior with no event, so nothing is the event's.
+        let no_event = behavior
+            .activation
+            .iter()
+            .all(|node| matches!(node.kind, 0 | 1));
         if event && behavior.removal.is_empty() {
             add("no_ending", Some(group), false,
                 "This event starts a behavior with no ending. It cannot start again until removed. Set a duration or an immediate ending.".into());
         }
+        // An event-started extra behavior never fired in game, and no stock perk has one.
         if group > 0 && event {
             add("secondary_event", Some(group), false,
-                "An event-started secondary behavior has not fired in the verified runtime. Move this behavior to its own effect and keep it within the four-effect budget.".into());
+                "Only an effect's first behavior starts on an event. Move this behavior to its own effect, within the four-effect budget.".into());
         }
         for node in &behavior.effects {
             if node.kind == 8 && node.native.get(3).is_some_and(|state| *state > 2) {
                 add("invalid_state", Some(group), true,
                     "Component Value Adjustment skips state selectors above 2. Choose Any, Inactive, or Active.".into());
             }
-            if matches!(node.kind, 7 | 8 | 10 | 11 | 24..=26 | 35 | 48 | 53) {
-                add(
-                    "required_component",
-                    Some(group),
-                    false,
-                    format!(
-                        "{} requires its selected runtime component. The catalog does not prove that this destination supplies it.",
-                        node.name()
-                    ),
-                );
-            }
             if matches!(node.kind, 1 | 2 | 4)
                 && node
                     .native
                     .get(2)
                     .is_some_and(|target| matches!(target, 2 | 3))
-                && !event
+                && no_event
             {
                 add("event_target", Some(group), false,
-                    "This action selects an event object, but the activation has no verified event object. Test the target or choose the host or owning player.".into());
-            }
-            if node.kind == 1 && node.native.get(2).is_some_and(|target| *target > 3) {
-                add("unknown_target", Some(group), false,
-                    "The selected entity target has no mapped meaning. Its native value is preserved.".into());
-            }
-            if matches!(node.kind, 6 | 18 | 22 | 25 | 26 | 28 | 29 | 35) {
-                let key = override_key(node.kind, &node.native);
-                if let Some(previous) = overrides.insert(key, (index, node.native.clone()))
-                    && previous.1 != node.native
-                {
-                    add(
-                        "overlapping_override",
-                        Some(group),
-                        false,
-                        format!(
-                            "{} may override the same component as effect {}. If both behaviors run together, check the targets, resulting value, and cleanup order in gameplay.",
-                            node.name(),
-                            previous.0 + 1
-                        ),
-                    );
-                }
+                    "This action targets the event's object, but its trigger has no event. Choose the host or the owning player.".into());
             }
         }
     }
@@ -192,6 +130,7 @@ fn mergeable(effect: &WeaponSandboxPerkRuntimeRecipe) -> Result<Program, String>
     if !original.ability_tunings.is_empty()
         || !original.ability_inputs.is_empty()
         || !original.native_asset_patches.is_empty()
+        || !original.imported_assets.is_empty()
         || original.assets().any(|asset| {
             *asset
                 != program::Asset {

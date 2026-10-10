@@ -330,10 +330,9 @@ fn shared_owner_ranges_preserve_bytes_and_reject_stale_boundaries() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn displayed_runtime_fields_resolve_to_exact_source_bytes() {
-    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-        .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages");
+    let packages = crate::test_support::stock_packages();
     let manager = open_shadowkeep_packages(Path::new(&packages).parent().unwrap()).unwrap();
     // These two verified stock rows exercise different weapon families. Neither is required
     // to contain unreflected shared-owner ranges. The synthetic boundary tests above cover

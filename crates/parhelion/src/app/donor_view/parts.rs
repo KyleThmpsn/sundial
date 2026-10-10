@@ -5,9 +5,9 @@ use super::*;
 use crate::recipe::{AnimationAction, WeaponDonorReference};
 use crate::weapon::lenders::Lender;
 
-/// Every part row's label, so the rows of both cards line up.
 /// Gameplay's Parts rows, so every value lines up.
-pub(super) const GAMEPLAY_COLUMN: [&str; 6] = [
+pub(in crate::app) const GAMEPLAY_COLUMN: [&str; 7] = [
+    "Runtime",
     "Behavior",
     "Type Markers",
     "Firing Behavior",
@@ -36,7 +36,7 @@ pub(super) fn label_width(ui: &egui::Ui, column: &[&str]) -> f32 {
     let widest = column
         .iter()
         .map(|label| {
-            ui.fonts(|fonts| {
+            ui.fonts_mut(|fonts| {
                 fonts
                     .layout_no_wrap(
                         (*label).to_owned(),
@@ -48,7 +48,7 @@ pub(super) fn label_width(ui: &egui::Ui, column: &[&str]) -> f32 {
             }) + nesting(label)
         })
         .fold(0.0, f32::max);
-    widest + ui.spacing().interact_size.y + ui.spacing().item_spacing.x * 2.0
+    widest + ui.spacing().item_spacing.x
 }
 
 /// How far a row's label sits in from its column: the action rows nest under Animations.
@@ -65,22 +65,81 @@ fn nesting(label: &str) -> f32 {
 }
 
 /// One part row.
-pub(super) struct Part<'a> {
-    pub(super) label: &'a str,
+pub(in crate::app) struct Part<'a> {
+    pub(in crate::app) label: &'a str,
     /// Every label in the row's group, so their values line up.
-    pub(super) column: &'a [&'a str],
-    /// What the part is and what it changes, behind the info icon after the label.
-    pub(super) hint: egui::WidgetText,
+    pub(in crate::app) column: &'a [&'a str],
+    /// What the part is and what it changes, on the label's hover.
+    pub(in crate::app) hint: egui::WidgetText,
     /// The weapon the part comes from now.
-    pub(super) value: &'a str,
+    pub(in crate::app) value: &'a str,
     /// The weapon chosen in place of the card's own, when one is.
-    pub(super) chosen: Option<u32>,
+    pub(in crate::app) chosen: Option<u32>,
     /// The choice that gives the part back to the card's own weapon.
-    pub(super) follow: &'a str,
+    pub(in crate::app) follow: &'a str,
     /// Why the row cannot open, while it cannot.
-    pub(super) blocked: Option<&'a str>,
+    pub(in crate::app) blocked: Option<&'a str>,
     /// A second line for each weapon in the browser.
-    pub(super) detail: Option<&'a dyn Fn(u32) -> Option<String>>,
+    pub(in crate::app) detail: Option<&'a dyn Fn(u32) -> Option<String>>,
+}
+
+/// A row's name in the label column, with what the part is on its hover.
+fn label_cell(ui: &mut egui::Ui, part: &Part<'_>) {
+    let width = label_width(ui, part.column);
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, ui.spacing().interact_size.y),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_width(width);
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.add_space(nesting(part.label));
+            ui.weak(part.label).on_hover_text(part.hint.clone());
+        },
+    );
+}
+
+/// The width a row's value takes: its own, within what the line leaves beside the reset. The
+/// value hugs its text and caret, so neither floats away from the other.
+fn fitted_width(ui: &egui::Ui, value: &str, (icon, reset): (bool, bool)) -> f32 {
+    let height = ui.spacing().interact_size.y;
+    let reset_width = if reset {
+        height + ui.spacing().item_spacing.x
+    } else {
+        0.0
+    };
+    value_width(ui, value, icon).min((ui.available_width() - reset_width).max(height))
+}
+
+/// The quiet X that gives a part back to what it follows, named for that.
+fn reset_button(ui: &mut egui::Ui, follow: &str) -> bool {
+    ui.scope(|ui| {
+        crate::app::style::quiet(ui);
+        let response = ui
+            .add(egui::Button::new(crate::app::style::light_icon(
+                ui,
+                egui_phosphor::regular::X,
+            )))
+            .on_hover_text(follow);
+        // Read out as what it does, not as the glyph.
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, follow));
+        response.clicked()
+    })
+    .inner
+}
+
+/// A line under a part row, lined up with the text of its value.
+pub(in crate::app) fn note(
+    ui: &mut egui::Ui,
+    column: &[&str],
+    text: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    ui.horizontal(|ui| {
+        let spacing = ui.spacing();
+        let indent = spacing.item_spacing.x + spacing.button_padding.x;
+        ui.add_space(label_width(ui, column) + indent);
+        ui.label(text)
+    })
+    .inner
 }
 
 /// Draws a part row and returns the weapon picked in its browser, or `Clear` when the part goes
@@ -93,27 +152,10 @@ pub(super) fn draw_part<'a>(
     candidates: impl IntoIterator<Item = &'a WeaponDonorSummary>,
     part: Part<'_>,
 ) -> Option<WeaponDonorPickerAction> {
-    let label_width = label_width(ui, part.column);
     ui.horizontal(|ui| {
-        let height = ui.spacing().interact_size.y;
-        ui.allocate_ui_with_layout(
-            egui::vec2(label_width, height),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.set_width(label_width);
-                ui.spacing_mut().item_spacing.x = 4.0;
-                ui.add_space(nesting(part.label));
-                ui.weak(part.label);
-                draw_authoring_info_icon(ui, part.hint.clone());
-            },
-        );
-        let reset_width = if part.chosen.is_some() {
-            height + ui.spacing().item_spacing.x
-        } else {
-            0.0
-        };
-        // The value hugs its text and caret, so neither floats away from the other.
-        let width = value_width(ui, &part).min((ui.available_width() - reset_width).max(height));
+        label_cell(ui, &part);
+        let chosen = part.chosen.is_some();
+        let width = fitted_width(ui, part.value, (chosen, chosen));
         let enabled = catalog.is_some() && part.blocked.is_none();
         let trigger = ui
             .add_enabled_ui(enabled, |ui| value_button(ui, catalog, width, &part))
@@ -146,28 +188,42 @@ pub(super) fn draw_part<'a>(
                 },
             )
         });
-        let reset = part.chosen.is_some()
-            && ui
-                .scope(|ui| {
-                    crate::app::style::quiet(ui);
-                    let response = ui
-                        .add(egui::Button::new(crate::app::style::light_icon(
-                            ui,
-                            egui_phosphor::regular::X,
-                        )))
-                        .on_hover_text(part.follow);
-                    // Read out as what it does, not as the glyph.
-                    response.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, part.follow)
-                    });
-                    response.clicked()
-                })
-                .inner;
-        if reset {
+        if chosen && reset_button(ui, part.follow) {
             Some(WeaponDonorPickerAction::Clear)
         } else {
             picked
         }
+    })
+    .inner
+}
+
+/// A part row whose value opens a window of its own rather than the weapon browser, as Reload's
+/// compatibility review does. `overridden` fills the field while the part is not the runtime's
+/// own, `part.chosen` names the weapon whose icon it shows, and the reset, offered while
+/// `resettable`, is named `part.follow`. Returns whether the value and the reset were clicked.
+pub(in crate::app) fn draw_window_part(
+    ui: &mut egui::Ui,
+    catalog: Option<&InvestmentCatalog>,
+    part: &Part<'_>,
+    (overridden, resettable): (bool, bool),
+) -> (bool, bool) {
+    ui.horizontal(|ui| {
+        label_cell(ui, part);
+        let width = fitted_width(ui, part.value, (part.chosen.is_some(), resettable));
+        let enabled = catalog.is_some() && part.blocked.is_none();
+        let icon = catalog.zip(part.chosen);
+        let field = (part.label, part.value);
+        let trigger = ui
+            .add_enabled_ui(enabled, |ui| {
+                value_field(ui, width, field, (overridden, icon))
+            })
+            .inner;
+        let trigger = match part.blocked {
+            Some(reason) => trigger.on_disabled_hover_text(reason),
+            None => trigger,
+        };
+        let reset = resettable && reset_button(ui, part.follow);
+        (trigger.clicked(), reset)
     })
     .inner
 }
@@ -182,10 +238,11 @@ pub(super) fn draw_stacked_part<'a>(
     candidates: impl IntoIterator<Item = &'a WeaponDonorSummary>,
     part: Part<'_>,
 ) -> Option<WeaponDonorPickerAction> {
-    ui.horizontal(|ui| {
-        ui.label(part.label);
-        draw_authoring_info_icon(ui, part.hint.clone());
-    });
+    // Named as the profile's other fields are, with Reset giving the part back to the base. The
+    // hint keeps its own text style, which can carry the game's symbols.
+    let (name, reset) = style::field_name(ui, part.label, "", part.chosen.is_some());
+    name.on_hover_text(part.hint.clone());
+    let cleared = reset.then_some(WeaponDonorPickerAction::Clear);
     let Some(catalog) = catalog.filter(|_| part.blocked.is_none()) else {
         let response = ui.add_enabled(
             false,
@@ -196,9 +253,9 @@ pub(super) fn draw_stacked_part<'a>(
         if let Some(reason) = part.blocked {
             response.on_disabled_hover_text(reason);
         }
-        return None;
+        return cleared;
     };
-    catalog.draw_weapon_donor_dropdown_picker(
+    let picked = catalog.draw_weapon_donor_dropdown_picker(
         ui,
         (scope, "stacked"),
         query,
@@ -218,7 +275,8 @@ pub(super) fn draw_stacked_part<'a>(
             }),
             selected_detail: None,
         },
-    )
+    );
+    picked.or(cleared)
 }
 
 /// One entry in a part row's short list: what it is called, a second line, the weapon recorded
@@ -254,26 +312,10 @@ pub(super) fn draw_choice_part(
     choices: &[Choice],
     part: Part<'_>,
 ) -> Option<Picked> {
-    let label_width = label_width(ui, part.column);
     ui.horizontal(|ui| {
-        let height = ui.spacing().interact_size.y;
-        ui.allocate_ui_with_layout(
-            egui::vec2(label_width, height),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.set_width(label_width);
-                ui.spacing_mut().item_spacing.x = 4.0;
-                ui.add_space(nesting(part.label));
-                ui.weak(part.label);
-                draw_authoring_info_icon(ui, part.hint.clone());
-            },
-        );
-        let reset_width = if part.chosen.is_some() {
-            height + ui.spacing().item_spacing.x
-        } else {
-            0.0
-        };
-        let width = value_width(ui, &part).min((ui.available_width() - reset_width).max(height));
+        label_cell(ui, &part);
+        let chosen = part.chosen.is_some();
+        let width = fitted_width(ui, part.value, (chosen, chosen));
         let enabled = part.blocked.is_none();
         // No weapon icon: an entry stands for every weapon that shares it.
         let trigger = ui
@@ -285,16 +327,13 @@ pub(super) fn draw_choice_part(
         };
         let popup = ui.make_persistent_id(("part-choices", scope));
         if trigger.clicked() {
-            ui.memory_mut(|memory| memory.toggle_popup(popup));
+            egui::Popup::toggle_id(ui, popup);
             query.clear();
         }
         let mut picked = None;
-        egui::popup::popup_below_widget(
-            ui,
-            popup,
-            &trigger,
-            egui::PopupCloseBehavior::CloseOnClickOutside,
-            |ui| {
+        sundial::ui::dropdown(&trigger, popup)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
                 ui.set_min_width(trigger.rect.width().max(260.0));
                 let filtered = crate::app::pickers::wants_filter(choices.len());
                 if filtered {
@@ -350,28 +389,15 @@ pub(super) fn draw_choice_part(
                             }
                         }
                     });
-            },
-        );
+            });
         if picked.is_some() {
-            ui.memory_mut(egui::Memory::close_popup);
+            egui::Popup::close_all(ui);
         }
-        let reset = part.chosen.is_some()
-            && ui
-                .scope(|ui| {
-                    crate::app::style::quiet(ui);
-                    let response = ui
-                        .add(egui::Button::new(crate::app::style::light_icon(
-                            ui,
-                            egui_phosphor::regular::X,
-                        )))
-                        .on_hover_text(part.follow);
-                    response.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, part.follow)
-                    });
-                    response.clicked()
-                })
-                .inner;
-        if reset { Some(Picked::Clear) } else { picked }
+        if chosen && reset_button(ui, part.follow) {
+            Some(Picked::Clear)
+        } else {
+            picked
+        }
     })
     .inner
 }
@@ -388,45 +414,57 @@ fn members(names: &[String]) -> Option<String> {
 
 /// The width a value needs: its text, the chosen weapon's icon, the caret and the padding around
 /// them, never narrower than a short name.
-fn value_width(ui: &egui::Ui, part: &Part<'_>) -> f32 {
+fn value_width(ui: &egui::Ui, value: &str, icon: bool) -> f32 {
     let font = egui::TextStyle::Body.resolve(ui.style());
-    let text = ui.fonts(|fonts| {
+    let text = ui.fonts_mut(|fonts| {
         fonts
-            .layout_no_wrap(part.value.to_owned(), font, egui::Color32::PLACEHOLDER)
+            .layout_no_wrap(value.to_owned(), font, egui::Color32::PLACEHOLDER)
             .size()
             .x
     });
     let padding = ui.spacing().button_padding.x;
-    let icon = if part.chosen.is_some() {
-        ICON_SIZE + 6.0
-    } else {
-        0.0
-    };
+    let icon = if icon { ICON_SIZE + 6.0 } else { 0.0 };
     (padding * 3.0 + icon + text + ui.spacing().icon_width)
         .max(140.0)
         .ceil()
 }
 
-/// The row's value: the chosen weapon's icon and name in a field framed like a dropdown, or the
-/// card's own weapon muted with only the caret, framed while hovered. A muted value in a filled
-/// field read as a disabled control.
+/// The row's value, opening the weapon browser.
 fn value_button(
     ui: &mut egui::Ui,
     catalog: Option<&InvestmentCatalog>,
     width: f32,
     part: &Part<'_>,
 ) -> egui::Response {
+    let icon = catalog.zip(part.chosen);
+    value_field(
+        ui,
+        width,
+        (part.label, part.value),
+        (part.chosen.is_some(), icon),
+    )
+}
+
+/// A row's value: another weapon's part with its icon and name in a field framed like a dropdown,
+/// or the card's own part muted with only the caret, framed while hovered. A muted value in a
+/// filled field read as a disabled control.
+fn value_field(
+    ui: &mut egui::Ui,
+    width: f32,
+    (label, value): (&str, &str),
+    (overridden, icon): (bool, Option<(&InvestmentCatalog, u32)>),
+) -> egui::Response {
     let height = ui.spacing().interact_size.y;
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
     let enabled = ui.is_enabled();
-    let spoken = format!("{}: {}", part.label, part.value);
+    let spoken = format!("{label}: {value}");
     response
         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, enabled, &spoken));
     if !ui.is_rect_visible(rect) {
         return response;
     }
     let visuals = *ui.style().interact(&response);
-    let inherited = part.chosen.is_none();
+    let inherited = !overridden;
     if !inherited {
         ui.painter().rect(
             rect,
@@ -468,14 +506,14 @@ fn value_button(
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     row.spacing_mut().item_spacing.x = 6.0;
-    if let (Some(hash), Some(catalog)) = (part.chosen, catalog) {
+    if let Some((catalog, hash)) = icon {
         catalog.draw_perk_icon(&mut row, hash, ICON_SIZE);
     }
     // Body text either way: the muted label carries the row's name, and the field and icon are
     // what mark a part another weapon supplies.
     let color = ui.visuals().text_color();
     row.add(
-        egui::Label::new(egui::RichText::new(part.value).color(color))
+        egui::Label::new(egui::RichText::new(value).color(color))
             .truncate()
             .selectable(false),
     );
@@ -737,17 +775,13 @@ impl PackageAuthoringApp {
             (
                 WEAPON_TRIGGER_COMPONENT_KEY,
                 "Firing Behavior",
-                "How the trigger fires. Test in game.",
+                "How the trigger fires.",
             ),
-            (
-                WEAPON_BARREL_COMPONENT_KEY,
-                "Barrel",
-                "Barrel values. Test in game.",
-            ),
+            (WEAPON_BARREL_COMPONENT_KEY, "Barrel", "Barrel values."),
             (
                 WEAPON_MAGAZINE_COMPONENT_KEY,
                 "Magazine",
-                "Magazine and reserves. Test in game.",
+                "Magazine and reserves.",
             ),
         ];
         self.update_lenders(ui.ctx());
@@ -839,7 +873,7 @@ impl PackageAuthoringApp {
             .map(|donor| donor.name.clone())
     }
 
-    /// The weapon whose runtime the build starts from: the Swap Runtime row's weapon when one
+    /// The weapon whose runtime the build starts from: the Runtime row's weapon when one
     /// is set, otherwise the base weapon.
     pub(in crate::app) fn runtime_base(&self) -> Option<u32> {
         let key = self.runtime_graph_key()?;
@@ -1407,11 +1441,9 @@ impl PackageAuthoringApp {
         let mut picks = Vec::new();
         egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, mixed > 0)
             .show_header(ui, |ui| {
-                ui.weak("Actions");
-                draw_authoring_info_icon(
-                    ui,
+                ui.weak("Actions").on_hover_text(
                     "Single actions played from another frame's animations. The rest follow \
-                     Animations. Test in game.",
+                     Animations. Test in game",
                 );
                 if mixed > 0 {
                     ui.weak(format!("{mixed} Mixed"));

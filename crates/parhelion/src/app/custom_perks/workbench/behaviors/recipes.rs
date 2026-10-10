@@ -10,6 +10,15 @@ const FULL_AUTO_FIRE: u32 = 0x75DD_B3C9;
 /// The full auto recipe's title, which Suggested also lists by.
 pub(super) const FULL_AUTO: &str = "Fire at Full Auto";
 
+/// Change Weapon Properties' row title, which Suggested also lists by.
+pub(super) const WEAPON_PROPERTIES: &str = "Change Weapon Properties";
+/// The attachment Change Weapon Properties starts from: the entity Crimson's Banned Weapon
+/// (perk 662) attaches to the weapon itself from the start: one modifier component holding 21
+/// records over the Weapon Controller, the Magazine and the Barrel, and nothing else. The row
+/// attaches it the same way, with
+/// every record neutral, so the rows an author sets are its whole effect.
+pub(in crate::app::custom_perks::workbench) const WEAPON_PROPERTIES_GRAPH: u32 = 0x80EF_AE52;
+
 /// A behavior the stock perks build from one or more actions.
 #[derive(Clone)]
 pub(super) struct Recipe {

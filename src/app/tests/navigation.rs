@@ -1,0 +1,231 @@
+//! Real-fixture smoke coverage for navigation and uncommon account workflows.
+use crate::app::tests::driver::*;
+use crate::app::*;
+use serde_json::json;
+
+const HISTORICAL_FIXTURES: [&str; 6] = [
+    include_str!("../../../tests/fixtures/sunrise-v2-052d6a48-defaults.json"),
+    include_str!("../../../tests/fixtures/sunrise-v3-86bd0a16-defaults.json"),
+    include_str!("../../../tests/fixtures/sunrise-v4-b2724889-defaults.json"),
+    include_str!("../../../tests/fixtures/sunrise-v5-161efee2-defaults.json"),
+    include_str!("../../../tests/fixtures/sunrise-v8-d0fe8886-defaults.json"),
+    include_str!("../../../tests/fixtures/sunrise-v15-f84356c1-defaults.json"),
+];
+
+#[derive(Clone, Copy)]
+enum Page {
+    Character(usize),
+    Inventory(usize),
+    Profile,
+    Settings(game_settings::Tab),
+    Progression(ProgressionSection),
+    Preferences(PreferencesTab),
+    Json,
+}
+
+fn pages() -> Vec<Page> {
+    let mut pages = vec![Page::Profile, Page::Json];
+    for index in 0..3 {
+        pages.extend([Page::Character(index), Page::Inventory(index)]);
+    }
+    pages.extend(
+        [
+            game_settings::Tab::Player,
+            game_settings::Tab::Controls,
+            game_settings::Tab::Audio,
+            game_settings::Tab::Display,
+            game_settings::Tab::Interface,
+            game_settings::Tab::Social,
+            game_settings::Tab::KeyBindings,
+            game_settings::Tab::Sunrise,
+        ]
+        .map(Page::Settings),
+    );
+    pages.extend(
+        [
+            ProgressionSection::Collections,
+            ProgressionSection::Unlocks,
+            ProgressionSection::Investment,
+        ]
+        .map(Page::Progression),
+    );
+    pages.extend(PreferencesTab::ALL.map(Page::Preferences));
+    pages
+}
+
+fn select(app: &mut SundialApp, page: Page) {
+    app.view_mode = match page {
+        Page::Character(index) => {
+            app.selected_character = index;
+            ViewMode::Characters
+        }
+        Page::Inventory(index) => {
+            app.selected_character = index;
+            ViewMode::CharacterInventory
+        }
+        Page::Profile => ViewMode::ProfileInventory,
+        Page::Settings(tab) => {
+            app.game_settings_tab = tab;
+            ViewMode::GameSettings
+        }
+        Page::Progression(section) => {
+            app.progression_section = section;
+            ViewMode::Progression
+        }
+        Page::Preferences(tab) => {
+            app.preferences_tab = tab;
+            ViewMode::Preferences
+        }
+        Page::Json => ViewMode::AdvancedJson,
+    };
+}
+
+fn draw(app: &mut SundialApp, ctx: &egui::Context, size: egui::Vec2) {
+    let output = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            ..Default::default()
+        },
+        |ui| {
+            app.draw_app_chrome(ui, None);
+            app.draw_active_view(ui);
+        },
+    );
+    assert!(!output.shapes.is_empty());
+    for primitive in ctx.tessellate(output.shapes, output.pixels_per_point) {
+        if let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive {
+            assert!(mesh.vertices.iter().all(|vertex| vertex.pos.is_finite()));
+        }
+    }
+}
+
+#[test]
+fn actual_schemas_all_pages_preserve_data_across_sizes_themes_and_navigation() {
+    let mut frames = 0;
+    for fixture in FIXTURES.into_iter().chain(HISTORICAL_FIXTURES) {
+        let mut json: Value = serde_json::from_str(fixture).unwrap();
+        json["future_extension"] = json!({"unicode":"玩家 🌅", "null":null,"nested":[false,42]});
+        // Every schema gets navigation coverage. Layout and theme combinations
+        // use the shipped v8 and current JSON v16 contracts.
+        let mut views = vec![(egui::vec2(900.0, 600.0), true)];
+        if matches!(json["version"].as_u64(), Some(8 | 16)) {
+            views.extend([
+                (egui::vec2(640.0, 480.0), false),
+                (egui::vec2(1280.0, 800.0), true),
+                (egui::vec2(1920.0, 1080.0), false),
+            ]);
+        }
+        for (size, dark) in views {
+            let directory = TestDirectory::new("schema-page-smoke");
+            let mut app = with_document(directory.0.clone(), json.clone());
+            let original = app.document.clone();
+            let ctx = egui::Context::default();
+            ctx.set_visuals(if dark {
+                egui::Visuals::dark()
+            } else {
+                egui::Visuals::light()
+            });
+            for (page_index, page) in pages().into_iter().enumerate() {
+                select(&mut app, page);
+                for _ in 0..2 {
+                    draw(&mut app, &ctx, size);
+                    frames += 1;
+                    assert_eq!(
+                        app.document, original,
+                        "schema {} page {page_index}",
+                        json["version"]
+                    );
+                    assert!(!app.dirty, "schema {} page {page_index}", json["version"]);
+                }
+            }
+            assert!(app.undo_history.is_empty());
+            assert!(app.redo_history.is_empty());
+            assert!(!app.settings_path.exists());
+        }
+    }
+    eprintln!(
+        "Validated {frames} real-fixture UI frames across v2, v3, v4, v5, v6, v8, v13, v15, and v16"
+    );
+}
+
+#[test]
+fn v18_native_database_all_pages_preserve_data_across_sizes_and_themes() {
+    for size in [egui::vec2(640.0, 480.0), egui::vec2(1280.0, 800.0)] {
+        for dark in [false, true] {
+            let directory = TestDirectory::new("v18-page-smoke");
+            let json: Value = serde_json::from_str(include_str!(
+                "../../../tests/fixtures/sunrise-v18-169fd29-defaults.json"
+            ))
+            .unwrap();
+            let mut app = with_document(directory.0.clone(), json.clone());
+            let database = crate::persistence::investment_path(&app.settings_path);
+            std::fs::create_dir_all(database.parent().unwrap()).unwrap();
+            let db = rusqlite::Connection::open(&database).unwrap();
+            db.execute_batch("BEGIN").unwrap();
+            for sql in [
+                include_str!("../../persistence/sqlite_account/fixtures/investment_schema.sql"),
+                include_str!(
+                    "../../persistence/sqlite_account/fixtures/account_settings_schema.sql"
+                ),
+                include_str!("../../persistence/sqlite_account/fixtures/investment_defaults.sql"),
+                include_str!(
+                    "../../persistence/sqlite_account/fixtures/account_settings_defaults.sql"
+                ),
+            ] {
+                db.execute_batch(sql).unwrap();
+            }
+            db.execute_batch("COMMIT").unwrap();
+            app.document = WorkspaceDocument::load(json, &app.settings_path, false);
+            assert_eq!(
+                app.document.source_kind(),
+                account::AccountSourceKind::Sqlite
+            );
+            app.persisted_document = app.document.clone();
+            let original = app.document.clone();
+            let native = crate::persistence::sqlite_account::snapshot::read(&database).unwrap();
+            let ctx = egui::Context::default();
+            ctx.set_visuals(if dark {
+                egui::Visuals::dark()
+            } else {
+                egui::Visuals::light()
+            });
+            for (index, page) in pages().into_iter().enumerate() {
+                select(&mut app, page);
+                for _ in 0..2 {
+                    draw(&mut app, &ctx, size);
+                    assert_eq!(app.document, original, "v18 page {index}");
+                    assert!(!app.dirty, "v18 page {index}");
+                }
+            }
+            assert_eq!(
+                crate::persistence::sqlite_account::snapshot::read(&database).unwrap(),
+                native
+            );
+        }
+    }
+}
+
+#[test]
+fn missing_or_malformed_optional_account_sections_are_not_repaired_by_navigation() {
+    for version in [6, 8, 16] {
+        for state in [
+            Value::Null,
+            json!({}),
+            json!({"characters":[],"account":{}}),
+            json!({"characters":"opaque", "account":null}),
+        ] {
+            let directory = TestDirectory::new("schema-optional-smoke");
+            let json = json!({"version":version,"state":state,"future":{"keep":true}});
+            let mut app = with_document(directory.0.clone(), json);
+            let original = app.document.clone();
+            let ctx = egui::Context::default();
+            for page in pages() {
+                select(&mut app, page);
+                draw(&mut app, &ctx, egui::vec2(900.0, 600.0));
+                assert_eq!(app.document, original, "schema {version}");
+                assert!(!app.dirty);
+            }
+            assert!(!app.settings_path.exists());
+        }
+    }
+}

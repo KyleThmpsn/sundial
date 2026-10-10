@@ -27,103 +27,7 @@ pub(super) fn host_graph(content: &Content, block: usize) -> Option<u32> {
 
 /// Weapons that fire instantly carry this sentinel where a launch speed would be. Every stock
 /// hitscan weapon's graph reads exactly this, and no weapon that launches anything does.
-const HITSCAN_SPEED: f32 = 9999.0;
-
-/// A graph's Projectile Movement binding: the projectile whose trajectory pool a host fills.
-const PROJECTILE_MOVEMENT: u32 = 0x0437_756D;
-/// The Barrel definition's spread pattern member, `m_spread`, a relative pointer to the pattern.
-/// Every stock weapon that fires pellets sets it, Legend of Acrius and Tractor Cannon included, and
-/// every other stock weapon leaves it zero, including Lord of Wolves, fusion rifles and bows.
-const SPREAD_MEMBER: u32 = 0x3124_7F94;
-/// The spread pattern's class, and where it keeps its total pellets per shot: 12 on every stock
-/// pellet shotgun, the sum of its rings (1, 4 and 7), and 1 on Tractor Cannon.
-const SPREAD_PATTERN: u32 = 0x8080_888D;
-const SPREAD_PELLETS: usize = 0x60;
-
-/// The trajectory pool a grafted graph's private clone needs on this host.
-///
-/// A weapon fires one trajectory per pellet, and the graph's projectile has a fixed pool of them.
-/// The client looks each pellet's row up by index and reads through a missing one, so a pool
-/// smaller than the host's pellets per shot froze the game on the second pellet: Thorn's graph,
-/// with a pool of one like every graph that fires one round, on a shotgun firing twelve. The stock
-/// graphs that fire pellets carry fifteen. A host that fires one round, or a graph with room
-/// already, needs nothing.
-pub(super) fn trajectory_need(
-    manager: &PackageManager,
-    host: &[u8],
-    graph: u32,
-) -> AuthoringResult<Option<u16>> {
-    use sundial::package_authoring::entity::projectile_trajectory_capacity;
-    let Some(pellets) = host_pellets(manager, host) else {
-        return Ok(None);
-    };
-    let payload = manager
-        .read_tag(TagHash(graph))
-        .map_err(|error| invalid(error.to_string()))?;
-    let Ok(projectiles) = weapon_component_bindings(&payload, PROJECTILE_MOVEMENT) else {
-        return Ok(None);
-    };
-    let [projectile] = projectiles.as_slice() else {
-        return Err(invalid(format!(
-            "Graph 0x{graph:08X} has {} projectiles, so its trajectory pool cannot be fitted to a pellet weapon",
-            projectiles.len()
-        )));
-    };
-    let owner = manager
-        .read_tag(TagHash(projectile.owner_tag))
-        .map_err(|error| invalid(error.to_string()))?;
-    let instance = usize::try_from(projectile.resource_offset)
-        .map_err(|_| invalid("Projectile resource offset overflow"))?;
-    let capacity = projectile_trajectory_capacity(&owner, projectile.owner_tag, instance)
-        .map_err(|error| invalid(format!("Graph 0x{graph:08X}: {error}")))?;
-    Ok((usize::from(pellets) > capacity).then_some(pellets))
-}
-
-/// The host's pellets per shot, when its Barrel carries a spread pattern laid out as the stock
-/// ones are. A host without one, or one that cannot be read, fires one round as far as a graft is
-/// concerned, as every graft assumed before.
-fn host_pellets(manager: &PackageManager, host: &[u8]) -> Option<u16> {
-    use sundial::package_authoring::entity::WEAPON_BARREL_COMPONENT_KEY;
-    use sundial::package_authoring::runtime::{
-        WeaponRuntimeValue, load_weapon_runtime_graph_for_entity,
-    };
-    let graph = load_weapon_runtime_graph_for_entity(manager, 0, 0, 0, host).ok()?;
-    let (owner_tag, field, spread) = graph
-        .resources
-        .iter()
-        .filter(|resource| resource.binding_hash == WEAPON_BARREL_COMPONENT_KEY)
-        .flat_map(|resource| {
-            std::iter::once(&resource.instance)
-                .chain(resource.definition.iter())
-                .flat_map(move |root| {
-                    root.fields
-                        .iter()
-                        .map(move |field| (resource.owner_tag, field))
-                })
-        })
-        .find_map(|(owner_tag, field)| {
-            let spread = match field.value {
-                WeaponRuntimeValue::Unsigned(spread) if spread != 0 => spread,
-                _ => return None,
-            };
-            field
-                .locator
-                .path
-                .last()
-                .is_some_and(|step| step.name_hash == SPREAD_MEMBER)
-                .then_some((owner_tag, field.owner_offset, spread))
-        })?;
-    let owner = manager.read_tag(TagHash(owner_tag)).ok()?;
-    let pattern = usize::try_from(field)
-        .ok()?
-        .checked_add_signed(isize::try_from(spread as i64).ok()?)?;
-    if u32_at(&owner, pattern).ok()? != SPREAD_PATTERN {
-        return None;
-    }
-    u16::try_from(u32_at(&owner, pattern + SPREAD_PELLETS).ok()?)
-        .ok()
-        .filter(|pellets| *pellets > 1)
-}
+pub(crate) const HITSCAN_SPEED: f32 = 9999.0;
 
 /// Values to apply inside a grafted graph's private clone, if it needs any.
 ///
@@ -282,8 +186,8 @@ pub(super) fn source_block(
     manager: &PackageManager,
     entry: &Behavior,
 ) -> AuthoringResult<(Vec<u8>, usize)> {
-    use sundial::package_authoring::runtime::load_weapon_runtime_entity_with_manager;
-    let runtime = load_weapon_runtime_entity_with_manager(manager, entry.source_item_hash)
+    use sundial::package_authoring::runtime::load_weapon_runtime_entity_for_item_with_manager;
+    let runtime = load_weapon_runtime_entity_for_item_with_manager(manager, entry.source_item_hash)
         .map_err(|error| invalid(format!("{}: {error}", entry.source_name)))?;
     let source = content(manager, &runtime.payload)?;
     let block = block_for_group(&source, runtime.weapon_content_group_hash)?;
@@ -359,6 +263,8 @@ pub(super) fn label_append(
             i64::try_from(rows).map_err(|_| invalid("Weapon label array count overflow"))?,
         )],
         arrays: Vec::new(),
+        pointers: Vec::new(),
+        references: Vec::new(),
     }))
 }
 
@@ -427,15 +333,25 @@ pub(crate) struct Content {
 
 /// Resolves the shared content owner and its variant blocks for one weapon entity.
 pub(crate) fn content(manager: &PackageManager, entity: &[u8]) -> AuthoringResult<Content> {
+    content_with(entity, |tag| {
+        manager
+            .read_tag(TagHash(tag))
+            .map_err(|error| invalid(error.to_string()))
+    })
+}
+
+/// Read through the compiler's overlay after component owners have been copied and edited.
+pub(crate) fn content_with(
+    entity: &[u8],
+    read: impl FnOnce(u32) -> AuthoringResult<Vec<u8>>,
+) -> AuthoringResult<Content> {
     let bindings = weapon_component_bindings(entity, BINDING).map_err(invalid)?;
     let [binding] = bindings.as_slice() else {
         return Err(invalid(
             "Behavior grafting requires one weapon-content component",
         ));
     };
-    let owner = manager
-        .read_tag(TagHash(binding.owner_tag))
-        .map_err(|error| invalid(error.to_string()))?;
+    let owner = read(binding.owner_tag)?;
     let resource = usize::try_from(binding.resource_offset)
         .map_err(|_| invalid("Weapon-content resource offset overflow"))?;
     let definition = usize::try_from(u64_at(&owner, resource + 8)?)

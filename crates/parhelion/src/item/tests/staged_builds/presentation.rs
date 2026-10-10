@@ -1,10 +1,9 @@
 use super::*;
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn clean_stock_sunrise_build_enrolls_the_weapon_icon_graph_in_the_native_host() {
-    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-        .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages");
+    let packages = crate::test_support::stock_packages();
     let spec = bundled_every_end_spec();
     let bundle = build_weapon_project_after_catalog_validation(
         Path::new(&packages),
@@ -52,7 +51,7 @@ fn clean_stock_sunrise_build_enrolls_the_weapon_icon_graph_in_the_native_host() 
             .iter()
             .any(|entry| { entry.tag == bundle.plan.sunrise.badge_icon_tag })
     );
-    if let Some(staging) = std::env::var_os("PARHELION_TEST_STAGE") {
+    if let Some(staging) = crate::test_support::artifacts("presentation-stage") {
         let paths = bundle
             .write_new(Path::new(&staging))
             .expect("configured Sunrise staging should remain create-new only");
@@ -61,11 +60,11 @@ fn clean_stock_sunrise_build_enrolls_the_weapon_icon_graph_in_the_native_host() 
 }
 
 #[test]
-#[ignore = "requires PARHELION_PROJECTILE_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn real_private_intrinsic_classification_preserves_perks_and_native_socket() {
     use crate::plug_classification::PlugClassification;
     use sundial::package_authoring::investment_schema::ITEM_STRING_UI_TEMPLATE_HASH_OFFSET;
-    let packages = PathBuf::from(std::env::var_os("PARHELION_PROJECTILE_TEST_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let manager = open_manager(&packages).unwrap();
     let globals = read_tag(
         &manager,
@@ -165,11 +164,9 @@ fn real_private_intrinsic_classification_preserves_perks_and_native_socket() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn stock_weapon_icon_rows_are_keyed_by_their_item_hash_when_configured() {
-    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-        .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages");
-    let packages = PathBuf::from(packages);
+    let packages = crate::test_support::stock_packages();
     let manager = open_manager(&packages).expect("clean stock packages should open");
     let globals =
         resolve_live_named_tag(&manager, "investment_globals", None).expect("globals tag");

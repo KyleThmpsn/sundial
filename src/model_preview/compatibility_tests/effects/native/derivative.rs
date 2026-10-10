@@ -77,7 +77,8 @@ fn affine_temporary_derivatives_keep_screen_scale_and_lane_writes() {
         "A branch-dependent derivative was accepted"
     );
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_deref()
         .map(Path::new)
@@ -93,8 +94,10 @@ fn affine_temporary_derivatives_keep_screen_scale_and_lane_writes() {
                 ..Default::default()
             },
             render::Scene {
+                filmic: false,
+                bloom: false,
                 background: [0; 3],
-                ..Default::default()
+                ..render::Scene::unit_exposure()
             },
             size,
             0.0,

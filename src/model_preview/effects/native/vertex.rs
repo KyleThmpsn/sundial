@@ -37,6 +37,7 @@ impl Input {
 impl Native {
     pub(in crate::model_preview) fn vertex(
         &self,
+        model: &Model,
         input: &Input,
         constants: &Frame,
     ) -> Option<Varyings> {
@@ -90,6 +91,11 @@ impl Native {
             values,
             constants,
             quaternion: vertex.quaternion,
+            images: Some(Images {
+                model,
+                native: self,
+                samplers: &vertex.samplers,
+            }),
         })?;
         let mut varyings = input.default_varyings();
         for semantic in &vertex.code.outputs {
@@ -124,6 +130,7 @@ pub(super) fn evaluate(
         values,
         constants,
         quaternion: false,
+        images: None,
     })
 }
 
@@ -131,6 +138,30 @@ struct Context<'a> {
     values: [[u32; 4]; 16],
     constants: &'a Frame,
     quaternion: bool,
+    images: Option<Images<'a>>,
+}
+
+struct Images<'a> {
+    model: &'a Model,
+    native: &'a Native,
+    samplers: &'a [texture::Sampler],
+}
+
+impl Images<'_> {
+    fn at(&self, resource: usize) -> Option<image::Image<'_>> {
+        let binding = self
+            .native
+            .bindings
+            .iter()
+            .find(|b| b.vertex && b.slot == resource)?;
+        let Role::Texture(index) = binding.role else {
+            return None;
+        };
+        Some(image::Image {
+            binding,
+            texture: self.model.textures.get(index)?,
+        })
+    }
 }
 
 pub(super) fn constant(
@@ -153,17 +184,43 @@ pub(super) fn constant(
 }
 
 impl evaluate::Context for Context<'_> {
+    fn size(&self, resource: usize, mip: u32) -> [u32; 4] {
+        self.images
+            .as_ref()
+            .and_then(|images| images.at(resource))
+            .map_or([0; 4], |image| image.size(mip))
+    }
     fn input(&self, register: usize) -> [u32; 4] {
         self.values.get(register).copied().unwrap_or([0; 4])
     }
     fn constant(&self, buffer: usize, index: usize) -> [u32; 4] {
         constant(buffer, index, self.quaternion, self.constants).map(f32::to_bits)
     }
-    fn sample(&self, _: usize, _: usize, _: [f32; 4], _: Option<f32>, _: [i32; 3]) -> [u32; 4] {
-        [0; 4]
+    fn sample(
+        &self,
+        resource: usize,
+        sampler: usize,
+        uv: [f32; 4],
+        sampling: evaluate::Sampling,
+        offset: [i32; 3],
+    ) -> [u32; 4] {
+        let Some(images) = &self.images else {
+            return [0; 4];
+        };
+        images.at(resource).map_or([0; 4], |image| {
+            image.sample(
+                uv,
+                sampler.checked_sub(1).and_then(|i| images.samplers.get(i)),
+                sampling,
+                offset,
+            )
+        })
     }
-    fn load(&self, _: usize, _: [i32; 4], _: [i32; 3]) -> [u32; 4] {
-        [0; 4]
+    fn load(&self, resource: usize, position: [i32; 4], offset: [i32; 3]) -> [u32; 4] {
+        self.images
+            .as_ref()
+            .and_then(|images| images.at(resource))
+            .map_or([0; 4], |image| image.load(position, offset))
     }
     fn lod(&self, _: usize, _: [f32; 4]) -> [f32; 4] {
         [0.0; 4]

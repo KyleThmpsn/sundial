@@ -49,7 +49,7 @@ fn plans<'a>(
     jobs: &'a [Vec<u32>],
     snapshot: &Snapshot,
 ) -> Result<Vec<Plan<'a>>, String> {
-    let directory = crate::paths::cache_dir().map(|root| {
+    let directory = crate::system::paths::cache_dir().map(|root| {
         root.join(crate::sandbox_perk::CACHE_DIRECTORY)
             .join("marker-shards")
     });

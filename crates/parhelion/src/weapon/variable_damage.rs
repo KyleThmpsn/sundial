@@ -214,6 +214,7 @@ pub(crate) fn expand_overrides(
         expanded
             .socket_plug_variants
             .push(WeaponSocketPlugVariantOverride {
+                offer_everywhere: false,
                 replace_effects: true,
                 investment_stats: Vec::new(),
                 socket_index,
@@ -349,6 +350,7 @@ mod tests {
         occupied
             .socket_plug_variants
             .push(WeaponSocketPlugVariantOverride {
+                offer_everywhere: false,
                 replace_effects: false,
                 investment_stats: Vec::new(),
                 socket_index: 3,

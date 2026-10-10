@@ -9,12 +9,12 @@
 //! effect's material a private copy of its pixel program that grades the color it draws.
 use super::*;
 use crate::subclass::{EffectGrade, PaletteEdit, TintEdit};
-use sundial::package_authoring::ability_materials::material_routes;
+use sundial::package_authoring::ability_materials::Routes;
 use sundial::package_authoring::ability_palette::{
-    self, MATERIAL_CLASS, ParticleSite, SYSTEM_MATERIAL, ability_graphs, ability_palettes,
-    binding_tag_offset, particle_sites,
+    self, Graphs, MATERIAL_CLASS, ParticleSite, SYSTEM_MATERIAL, binding_tag_offset,
+    palettes_in_graphs, particle_sites,
 };
-use sundial::package_authoring::ability_tint::{ConstantStore, ability_tints};
+use sundial::package_authoring::ability_tint::{ConstantStore, tints_in_graphs};
 
 /// Where a material names its pixel program, and its external constant buffer.
 const PIXEL_PROGRAM: usize = 0x2C8;
@@ -57,6 +57,14 @@ impl Copies {
             return Ok(*index);
         }
         let payload = read_tag(manager, TagHash(stock), what)?;
+        Ok(self.insert(stock, payload))
+    }
+
+    /// Keep any earlier palette or tint edits when the source payload is already available.
+    fn insert(&mut self, stock: u32, payload: Vec<u8>) -> usize {
+        if let Some(index) = self.by_stock.get(&stock) {
+            return *index;
+        }
         self.nodes.push(Node {
             template: stock,
             payload,
@@ -64,7 +72,7 @@ impl Copies {
             patches: Vec::new(),
         });
         self.by_stock.insert(stock, self.nodes.len() - 1);
-        Ok(self.nodes.len() - 1)
+        self.nodes.len() - 1
     }
 
     /// A header and data pair copied together, naming each other. Returns the header's copy.
@@ -86,16 +94,11 @@ impl Copies {
 
     /// A header and data pair copied together, naming each other, apart from any other copy of
     /// them, as each variant of a graded program is. Returns the header's copy.
-    fn fresh_pair(
-        &mut self,
-        manager: &PackageManager,
-        (header, data): (u32, u32),
-        what: &str,
-    ) -> AuthoringResult<usize> {
-        for template in [data, header] {
+    fn fresh_pair(&mut self, header: (u32, Vec<u8>), data: (u32, Vec<u8>)) -> usize {
+        for (template, payload) in [data, header] {
             self.nodes.push(Node {
                 template,
-                payload: read_tag(manager, TagHash(template), what)?,
+                payload,
                 reference: None,
                 patches: Vec::new(),
             });
@@ -104,7 +107,7 @@ impl Copies {
         let data_copy = header_copy - 1;
         self.nodes[data_copy].reference = Some(header_copy);
         self.nodes[header_copy].reference = Some(data_copy);
-        Ok(header_copy)
+        header_copy
     }
 
     fn patch(&mut self, node: usize, offset: usize, target: usize) {
@@ -149,7 +152,7 @@ fn graded_program(
     }) {
         return Ok(None);
     }
-    let header = read_tag(manager, TagHash(pixel), "effect pixel program")?;
+    let mut header = read_tag(manager, TagHash(pixel), "effect pixel program")?;
     let code = read_tag(manager, TagHash(data), "effect pixel bytecode")?;
     if header.len() != PROGRAM_HEADER_SIZE
         || read_u64(&header, 0)? != PROGRAM_HEADER_SIZE as u64
@@ -164,15 +167,10 @@ fn graded_program(
     else {
         return Ok(None);
     };
-    let copy = copies.fresh_pair(manager, (pixel, data), "effect pixel program")?;
-    let data = copies.nodes[copy]
-        .reference
-        .ok_or_else(|| validation("A pixel program copy lost the bytecode it names"))?;
     let length =
         u32::try_from(code.len()).map_err(|_| invalid("A graded pixel program is too large"))?;
-    write_u32(&mut copies.nodes[copy].payload, 8, length)?;
-    copies.nodes[data].payload = code;
-    Ok(Some(copy))
+    write_u32(&mut header, 8, length)?;
+    Ok(Some(copies.fresh_pair((pixel, header), (data, code))))
 }
 
 /// The resource patches that make each graph of a tree name private copies, by graph.
@@ -193,9 +191,10 @@ fn author_palettes(
     manager: &PackageManager,
     source: TagHash,
     palettes: &[PaletteEdit],
+    graphs: &[(u32, Vec<u8>)],
     (copies, reached): (&mut Copies, &mut Reached),
 ) -> AuthoringResult<()> {
-    let found = ability_palettes(manager, source.0, SPAWN_DEPTH).map_err(invalid)?;
+    let found = palettes_in_graphs(manager, graphs).map_err(invalid)?;
     let mut headers = BTreeMap::<u32, usize>::new();
     for edit in palettes {
         let palette = found
@@ -203,7 +202,7 @@ fn author_palettes(
             .find(|palette| palette.header == edit.palette)
             .ok_or_else(|| {
                 invalid(format!(
-                    "No effect of {source} draws with palette 0x{:08X}",
+                    "Its Effect Colors change palette 0x{:08X}, which no effect of {source} draws. Remove the change on the Visuals tab.",
                     edit.palette
                 ))
             })?;
@@ -238,14 +237,19 @@ fn author_tints(
     manager: &PackageManager,
     source: TagHash,
     tints: &[TintEdit],
+    graphs: &[(u32, Vec<u8>)],
     (copies, reached): (&mut Copies, &mut Reached),
 ) -> AuthoringResult<()> {
-    let found = ability_tints(manager, source.0, SPAWN_DEPTH).map_err(invalid)?;
+    let found = tints_in_graphs(manager, graphs).map_err(invalid)?;
     for edit in tints {
         let tint = found
             .iter()
             .find(|tint| edit.starts_from(tint.rgb))
-            .ok_or_else(|| invalid(format!("No effect of {source} draws with one of its tints")))?;
+            .ok_or_else(|| {
+                invalid(format!(
+                    "Its Effect Colors change a color no effect of {source} draws. Remove the change on the Visuals tab."
+                ))
+            })?;
         let rgb = edit.apply(tint.rgb);
         for tint_use in &tint.uses {
             let material = copies.of(manager, tint_use.material, "effect material")?;
@@ -278,15 +282,32 @@ fn author_tints(
 
 /// Grades materials for `grade`, each pixel program once for each kind of blend, since many
 /// materials share one.
-struct Grader {
+struct Grader<'a> {
     grade: EffectGrade,
     graded: BTreeMap<(u32, bool), Option<usize>>,
+    materials: BTreeMap<u32, Option<usize>>,
+    systems: BTreeMap<u32, u32>,
+    routes: Routes<'a>,
 }
 
-impl Grader {
+impl Grader<'_> {
     /// The graded copy of `material`, or `None` for one that is not an effect material or whose
     /// blend or program cannot be graded.
     fn material(
+        &mut self,
+        manager: &PackageManager,
+        copies: &mut Copies,
+        material: u32,
+    ) -> AuthoringResult<Option<usize>> {
+        if let Some(copy) = self.materials.get(&material) {
+            return Ok(*copy);
+        }
+        let copy = self.copy_material(manager, copies, material)?;
+        self.materials.insert(material, copy);
+        Ok(copy)
+    }
+
+    fn copy_material(
         &mut self,
         manager: &PackageManager,
         copies: &mut Copies,
@@ -324,7 +345,7 @@ impl Grader {
         let Some(header) = header else {
             return Ok(None);
         };
-        let copy = copies.of(manager, material, "effect material")?;
+        let copy = copies.insert(material, payload);
         copies.patch(copy, PIXEL_PROGRAM, header);
         Ok(Some(copy))
     }
@@ -339,13 +360,20 @@ impl Grader {
         (copies, reached, routed): (&mut Copies, &mut Reached, &mut Routed),
     ) -> AuthoringResult<()> {
         for site in particle_sites(manager, payload).map_err(invalid)? {
-            let system = read_tag(manager, TagHash(site.system), "effect particle system")?;
-            let material = read_u32(&system, SYSTEM_MATERIAL)?;
+            let material = match self.systems.get(&site.system) {
+                Some(material) => *material,
+                None => {
+                    let system = read_tag(manager, TagHash(site.system), "effect particle system")?;
+                    let material = read_u32(&system, SYSTEM_MATERIAL)?;
+                    self.systems.insert(site.system, material);
+                    material
+                }
+            };
             if self.material(manager, copies, material)?.is_some() {
                 reached.push((root, graph, site, material));
             }
         }
-        for route in material_routes(manager, graph, payload).map_err(invalid)? {
+        for route in self.routes.get(graph, payload).map_err(invalid)? {
             let Some(mut next) = self.material(manager, copies, route.material())? else {
                 continue;
             };
@@ -372,6 +400,7 @@ pub(in crate::item) fn author(
     source: TagHash,
     (palettes, tints, grade): (&[PaletteEdit], &[TintEdit], Option<EffectGrade>),
     swapped: &[u32],
+    graphs: &mut Graphs<'_>,
     (packages, placed): (&mut crate::asset_packages::AssetPackages, &mut Vec<TagHash>),
 ) -> AuthoringResult<(ColorPatches, BTreeMap<u32, ColorPatches>)> {
     if palettes.is_empty() && tints.is_empty() && grade.is_none() {
@@ -384,22 +413,38 @@ pub(in crate::item) fn author(
     // Each place a route to a changed material starts, with the copy of its first resource.
     let mut routed = Routed::new();
     if !palettes.is_empty() {
-        author_palettes(manager, source, palettes, (&mut copies, &mut reached))?;
+        author_palettes(
+            manager,
+            source,
+            palettes,
+            &graphs.get(source.0).map_err(invalid)?,
+            (&mut copies, &mut reached),
+        )?;
     }
     if !tints.is_empty() {
-        author_tints(manager, source, tints, (&mut copies, &mut reached))?;
+        author_tints(
+            manager,
+            source,
+            tints,
+            &graphs.get(source.0).map_err(invalid)?,
+            (&mut copies, &mut reached),
+        )?;
     }
     if let Some(grade) = grade {
         let mut grader = Grader {
             grade,
             graded: BTreeMap::new(),
+            materials: BTreeMap::new(),
+            systems: BTreeMap::new(),
+            routes: Routes::new(manager),
         };
         let roots = std::iter::once(source.0).chain(swapped.iter().copied());
         for (root, tag) in roots.enumerate() {
-            for (graph, payload) in ability_graphs(manager, tag, SPAWN_DEPTH).map_err(invalid)? {
+            let tree = graphs.get(tag).map_err(invalid)?;
+            for (graph, payload) in tree.iter() {
                 grader.graph(
                     manager,
-                    (root, graph, &payload),
+                    (root, *graph, payload),
                     (&mut copies, &mut reached, &mut routed),
                 )?;
             }

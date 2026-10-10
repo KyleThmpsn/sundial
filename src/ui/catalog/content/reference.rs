@@ -42,7 +42,7 @@ pub(super) fn resource_link(
     response.context_menu(|ui| {
         if name != "Unnamed Resource" && ui.button("Copy Path").clicked() {
             ui.ctx().copy_text(name.to_owned());
-            ui.close_menu();
+            ui.close();
         }
         copy_tag(ui, "Copy Resource Tag", tag);
     });

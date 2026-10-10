@@ -19,7 +19,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-mod dxbc;
+mod definition;
+use crate::d2_mot::native::shader::dxbc;
 mod material;
 mod program;
 mod shader;
@@ -427,36 +428,7 @@ fn system(c: &mut Context, source: u32) -> Result<(String, Value)> {
         read.gpu_binding.is_none(),
         "particle compiled identity requires GPU conversion"
     );
-    let program_symbol = format!("particle-program-{:08X}", read.program);
-    if !c.nodes.contains(&program_symbol) {
-        let program = c.source.tag(read.program, Some(0x80806927))?;
-        let identity = Payload(program.0.clone()).u32(0x100)?;
-        // Native identities share the 82 prefix and sit above the runtime package range, so
-        // reference walks never read them as tags (stock ones run from 8242 to 824C). The
-        // source identity's low bits keep them distinct, with bit 23 set clear of every stock one.
-        let native_identity = 0x8280_0000 | (identity & 0x007F_FFFF);
-        let bytes = program::native(&program.0, c.request.inputs, native_identity)
-            .with_context(|| format!("particle program {:08X}", read.program))?;
-        c.nodes.add(Node {
-            symbol: program_symbol.clone(),
-            template: c.templates.program,
-            payload: bytes,
-            reference: None,
-            patches: Vec::new(),
-        })?;
-    }
-    let (material_symbol, material) = if c
-        .nodes
-        .contains(&format!("particle-material-{:08X}", read.material))
-    {
-        (
-            format!("particle-material-{:08X}", read.material),
-            json!({"source":format!("{:08X}", read.material),"shared":true}),
-        )
-    } else {
-        material::convert(c, read.material)
-            .with_context(|| format!("particle material {:08X}", read.material))?
-    };
+    let definition = definition::convert(c, &read)?;
     let emitter = read
         .model
         .map(|container| c.emitter(container))
@@ -468,7 +440,7 @@ fn system(c: &mut Context, source: u32) -> Result<(String, Value)> {
     }
     out[0x0C..0x10].copy_from_slice(&read.render_layout.to_le_bytes());
     out[0x20..0x30].copy_from_slice(&read.draw_metadata);
-    let mut patches = vec![(0, program_symbol.clone()), (0x14, material_symbol)];
+    let mut patches = vec![(0, definition.program.clone()), (0x14, definition.material)];
     match &emitter {
         // A mesh emitter names its converted model container, a point emitter the template's.
         Some(container) => {
@@ -486,7 +458,8 @@ fn system(c: &mut Context, source: u32) -> Result<(String, Value)> {
     })?;
     Ok((
         symbol,
-        json!({"source":format!("{source:08X}"),"program":program_symbol,"material":material,
+        json!({"source":format!("{source:08X}"),"program":definition.program,"material":definition.material_evidence,
+            "workspace": definition.workspace,
             "emitter":emitter,
             "render_layout":format!("{:08X}", read.render_layout),"draw_metadata":hex::encode(read.draw_metadata)}),
     ))
@@ -548,7 +521,9 @@ pub fn convert(request: &Request) -> Result<Value> {
             "patches": node.patches.iter().map(|(offset, symbol)| json!({"offset":offset,"symbol":symbol})).collect::<Vec<_>>(),
         }));
     }
-    let section = json!({"nodes":nodes,"systems":systems,"refused":refused,
+    let coverage = json!({"requested":request.systems.len(),"converted":systems.len(),"refused":refused.len(),
+        "workspace_compacted":evidence.iter().filter(|row| row["workspace"]["moved_vectors"].as_array().is_some_and(|v| !v.is_empty())).count()});
+    let section = json!({"nodes":nodes,"systems":systems,"refused":refused,"coverage":coverage,
         "inputs":request.inputs.iter().map(|(k, v)| (format!("{k:08X}"), json!(v))).collect::<serde_json::Map<_, _>>(),
         "template":format!("{:08X}", request.template),"installable":true,"gameplay_verified":false});
     write_json(

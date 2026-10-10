@@ -9,6 +9,7 @@ pub(crate) struct Editor {
     corner: ImageEditor,
     lore: lore::Preview,
     artwork: Option<editor::Editor>,
+    nameplate_source: Option<crate::HexHash>,
 }
 impl Editor {
     /// Discard recipe-specific previews and dialogs without forgetting the active runtime.
@@ -34,6 +35,7 @@ impl Editor {
                 ..Default::default()
             };
             self.artwork = None;
+            self.nameplate_source = None;
         }
     }
     /// Whether the base item's lore has finished loading, so a capture shows it.
@@ -44,6 +46,21 @@ impl Editor {
 
     pub(crate) fn editing(&self) -> bool {
         self.artwork.is_some()
+    }
+
+    pub(crate) fn edit_nameplate(
+        &mut self,
+        part: crate::emblem::NameplatePart,
+        size: (u32, u32),
+        artwork: Artwork,
+        source_emblem: Option<crate::HexHash>,
+    ) {
+        self.nameplate_source = source_emblem;
+        self.artwork = Some(editor::Editor::with_branding(
+            Kind::Nameplate { part, size },
+            Some(artwork),
+            self.branding,
+        ));
     }
 
     pub(crate) fn show(
@@ -65,9 +82,21 @@ impl Editor {
         let kind = editor.kind;
         match editor.show_with_sources(ctx, packages, catalog) {
             Some(editor::Action::Apply(artwork)) => {
+                if let Kind::Nameplate { part, .. } = kind {
+                    let image = crate::emblem::NameplateImage::Artwork {
+                        artwork,
+                        source_emblem: self.nameplate_source.take(),
+                    };
+                    let nameplate = draft.nameplate.get_or_insert_with(Default::default);
+                    let changed = nameplate.part(part) != Some(&image);
+                    nameplate.set(part, Some(image));
+                    self.artwork = None;
+                    return changed;
+                }
                 let target = match kind {
                     Kind::Badge => draft.badge.as_mut().map(|badge| &mut badge.icon),
                     Kind::Watermark => Some(&mut draft.corner_icon),
+                    Kind::Nameplate { .. } => unreachable!(),
                 };
                 let mut changed = false;
                 if let Some(target) = target {
@@ -79,6 +108,7 @@ impl Editor {
             }
             Some(editor::Action::Cancel) => {
                 self.artwork = None;
+                self.nameplate_source = None;
                 false
             }
             None => false,
@@ -294,6 +324,13 @@ impl ImageEditor {
                             .map(|image| editor::color_image(&image)),
                     }
                     .map_err(|e| e.to_string()),
+                    Kind::Nameplate {
+                        size: (width, height),
+                        ..
+                    } => draft
+                        .as_ref()
+                        .map(|artwork| editor::color_image(&artwork.render(width, height)))
+                        .ok_or_else(|| "Choose nameplate artwork first.".to_owned()),
                 };
                 match rendered {
                     Ok(image) => {
@@ -348,6 +385,10 @@ impl ImageEditor {
                     let size = match kind {
                         Kind::Badge => egui::vec2(110.0, 67.0),
                         Kind::Watermark => egui::vec2(64.0, 64.0),
+                        Kind::Nameplate {
+                            size: (width, height),
+                            ..
+                        } => egui::vec2(110.0, 110.0 * height as f32 / width as f32),
                     };
                     ui.add(egui::Image::new(texture).fit_to_exact_size(size));
                 }

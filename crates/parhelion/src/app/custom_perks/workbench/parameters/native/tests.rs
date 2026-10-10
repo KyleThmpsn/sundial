@@ -58,9 +58,9 @@ fn matching_components_in_distinct_graphs_edit_and_reset_independently() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_PROJECTILE_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn native_paired_movement_edits_import_and_reset_through_the_existing_controls() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_PROJECTILE_TEST_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let loaded = super::super::load_entity_parameters(&packages, 0x80BB_B1B9).unwrap();
     let graph = &loaded.graphs[0].1;
     let speed = entity::projectile::parameters::discover(graph)
@@ -278,7 +278,7 @@ fn non_projectile_fields_are_searchable_and_visible_without_experimental_control
         let mut editor = super::super::tests::editor(loaded.clone());
         editor.query = "activation".into();
         let ctx = egui::Context::default();
-        let output = ctx.run(
+        let output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -286,8 +286,8 @@ fn non_projectile_fields_are_searchable_and_visible_without_experimental_control
                 )),
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     editor.draw_runtime_fields(ui, &loaded, false);
                     assert!(ui.min_rect().right() <= width);
                 });
@@ -342,7 +342,7 @@ fn component_checkbox_edits_an_isolated_draft_and_reset_removes_the_edit() {
     let mut editor = super::super::tests::editor(loaded.clone());
     let ctx = egui::Context::default();
     let render = |editor: &mut PerkEditor, events| {
-        ctx.run(
+        ctx.run_ui(
             egui::RawInput {
                 events,
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -351,8 +351,8 @@ fn component_checkbox_edits_an_isolated_draft_and_reset_removes_the_edit() {
                 )),
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     editor.draw_native_values(ui, &loaded, graph, owner, &[&field])
                 });
             },

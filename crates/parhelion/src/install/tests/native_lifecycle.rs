@@ -14,8 +14,7 @@ struct NativeFixture {
 
 impl NativeFixture {
     fn copy_from_environment(version: u64) -> Self {
-        let source =
-            PathBuf::from(std::env::var_os("PARHELION_LIFECYCLE_SOURCE_PACKAGES").unwrap());
+        let source = crate::test_support::install().join("packages");
         let stage = PathBuf::from(std::env::var_os("PARHELION_TEST_STAGED_RUN").unwrap());
         let mut manifest: ManifestDocument =
             serde_json::from_slice(&fs::read(stage.join(MANIFEST_FILE_NAME)).unwrap()).unwrap();
@@ -140,7 +139,7 @@ fn copy_stage_for_target(
 }
 
 #[test]
-#[ignore = "copies native files into a disposable directory; requires PARHELION_LIFECYCLE_SOURCE_PACKAGES and PARHELION_TEST_STAGED_RUN"]
+#[ignore = "copies native files into a disposable directory; requires SUNDIAL_INSTALL and PARHELION_TEST_STAGED_RUN"]
 fn staged_native_packages_install_repeat_recover_and_uninstall_without_changing_stock() {
     if let Some(version) = std::env::var_os(CHILD_SCHEMA) {
         let version = version.to_str().unwrap().parse().unwrap();

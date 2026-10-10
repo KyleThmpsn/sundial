@@ -381,7 +381,7 @@ impl<'f> Table<'f> {
         let body = egui::TextStyle::Body.resolve(ui.style());
         let small = egui::TextStyle::Small.resolve(ui.style());
         let measure = |text: &str, font: &egui::FontId| {
-            ui.fonts(|fonts| {
+            ui.fonts_mut(|fonts| {
                 fonts
                     .layout_no_wrap(text.to_owned(), font.clone(), secondary)
                     .size()

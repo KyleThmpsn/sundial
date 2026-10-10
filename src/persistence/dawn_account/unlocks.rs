@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use sundial_account::{AuthoredUnlock, FLAG_SET, UnlockScope};
 
 use super::error::DawnAccountError;
@@ -49,9 +49,14 @@ pub(crate) fn apply_authored_unlocks(
         });
     }
     let backup = super::writer::create_backup(path)?;
-    let mut connection = Connection::open(path)?;
+    // The active account must still exist after its backup was taken.
+    let mut connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    super::schema_guard::validate(&transaction)?;
     let revision: i64 = transaction.query_row(
         "SELECT value FROM metadata WHERE key='account_revision'",
         [],
@@ -143,6 +148,7 @@ fn pending_rows(
     unlocks: &[AuthoredUnlock],
 ) -> Result<Vec<Vec<FlagRow>>, DawnAccountError> {
     let connection = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    super::schema_guard::validate(&connection)?;
     let account: String = connection
         .query_row("SELECT primary_soid FROM account WHERE id=1", [], |row| {
             row.get(0)

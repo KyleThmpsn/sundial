@@ -17,10 +17,10 @@ jobs:
       - name: Check Out Source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Install Rust 1.88
+      - name: Install Rust 1.99
         run: |
-          rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt --no-self-update
-          rustup default 1.88.0
+          rustup toolchain install 1.99.0 --profile minimal --component clippy --component rustfmt --no-self-update
+          rustup default 1.99.0
 
       - name: Install Build Tools
         run: |
@@ -82,10 +82,9 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --release --workspace --no-deps --locked --lib
 
-      # Narrow Linux accessibility XML exceptions. Any other RustSec vulnerability
-      # still fails this check.
+      # Any RustSec vulnerability or yanked crate fails this check.
       - name: Audit Dependencies
-        run: cargo audit --deny yanked --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
+        run: cargo audit --deny yanked
 
       - name: Upload Build Timings
         if: always()
@@ -103,11 +102,11 @@ jobs:
       - name: Check Out Source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Install Rust 1.88
+      - name: Install Rust 1.99
         shell: pwsh
         run: |
-          rustup toolchain install 1.88.0 --profile minimal --component clippy --no-self-update
-          rustup default 1.88.0
+          rustup toolchain install 1.99.0 --profile minimal --component clippy --no-self-update
+          rustup default 1.99.0
 
       - name: Cache Rust Dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2

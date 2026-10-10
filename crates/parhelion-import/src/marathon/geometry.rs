@@ -94,7 +94,7 @@ pub fn read(r: &mut Reader, entries: &[Value]) -> Result<Mesh> {
                         )?,
                         3 => {
                             ensure!(
-                                count % 3 == 0
+                                count.is_multiple_of(3)
                                     && values.iter().all(|i| (*i as usize) < p.0.len() / 24),
                                 "invalid triangle list"
                             );

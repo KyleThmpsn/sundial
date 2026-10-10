@@ -52,7 +52,7 @@ pub(super) fn set_members(
         }
         write_u64(&mut data, 0, retained as u64)?;
         append_presentation_child_array_terminator(&mut data)?;
-        while graph.nodes.len() % 16 != 0 {
+        while !graph.nodes.len().is_multiple_of(16) {
             graph.nodes.push(0);
         }
         let header = graph.nodes.len();

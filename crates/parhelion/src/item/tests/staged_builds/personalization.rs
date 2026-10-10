@@ -2,12 +2,10 @@ use super::*;
 use crate::presentation::Badge;
 
 #[test]
-#[ignore = "requires PARHELION_PRESENTATION_TEST_PACKAGES and PARHELION_PRESENTATION_STAGE_ROOT"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
 fn real_personalization_stages_distinct_badges_corner_icons_and_lore() {
-    let packages =
-        PathBuf::from(std::env::var_os("PARHELION_PRESENTATION_TEST_PACKAGES").expect("packages"));
-    let staging_root =
-        PathBuf::from(std::env::var_os("PARHELION_PRESENTATION_STAGE_ROOT").expect("stage root"));
+    let packages = crate::test_support::stock_packages();
+    let staging_root = crate::test_support::artifact_dir("presentation-stage");
     let mut recipes = recipes();
     let build = |recipes| {
         let snapshot = crate::BatchBuildSnapshot::new(crate::BatchBuildRequest {

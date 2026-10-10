@@ -185,7 +185,7 @@ mod tests {
             let (width, height) = image.dimensions();
             let source = image.into_raw();
             let adjusted = adjust_corner_glyph(index, width, height, source.clone()).unwrap();
-            if let Some(directory) = std::env::var_os("SUNDIAL_TEST_ICON_PREVIEW_DIR") {
+            if let Some(directory) = crate::test_support::artifacts("icon-previews") {
                 let path = std::path::Path::new(&directory).join(format!("watermark-{index}.png"));
                 image::save_buffer(path, &adjusted, width, height, image::ColorType::Rgba8)
                     .unwrap();

@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
 use sundial_account::ItemPlugs;
 
 use crate::persistence::native_account::snapshot;
@@ -40,7 +40,11 @@ pub(crate) fn save(
 
 fn save_candidate(document: &mut DawnAccountDocument) -> Result<DawnSaveReceipt, DawnAccountError> {
     let backup = create_backup(&document.path)?;
-    let mut connection = Connection::open(&document.path)?;
+    // The active account must still exist after its backup was taken.
+    let mut connection = Connection::open_with_flags(
+        &document.path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     super::schema_guard::validate(&transaction)?;

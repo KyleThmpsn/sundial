@@ -111,7 +111,7 @@ fn draw_panel(
         );
     });
     if boxed {
-        let list_height = (ui.ctx().screen_rect().height() * 0.52).clamp(300.0, 540.0);
+        let list_height = (ui.ctx().content_rect().height() * 0.52).clamp(300.0, 540.0);
         egui::ScrollArea::vertical()
             .id_salt(panel.scope)
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)

@@ -104,16 +104,15 @@ pub(super) fn unlock(catalog: &Catalog, index: usize, value: bool) -> Label {
         label.named = true;
         return label;
     }
-    if let Some(context) = context {
-        if let Some(name) = (!context.name.trim().is_empty())
+    if let Some(context) = context
+        && let Some(name) = (!context.name.trim().is_empty())
             .then_some(context.name.as_str())
             .or_else(|| catalog.display_name(context.hash))
-        {
-            label.text = name.to_owned();
-            label.reference = true;
-            label.named = true;
-            return label;
-        }
+    {
+        label.text = name.to_owned();
+        label.reference = true;
+        label.named = true;
+        return label;
     }
     if value && let Some(objective) = catalog.objective_for_unlock_value(index) {
         for text in [

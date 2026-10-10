@@ -450,7 +450,7 @@ fn assessed(mut reasons: Vec<String>, affected: &[u32]) -> ComponentDonorAssessm
         DonorCompatibility::Experimental
     };
     if reasons.is_empty() {
-        reasons.push("Known family, ammo, animations and affected component schemas match. In-game behavior is not verified.".into());
+        reasons.push("Known family, ammo, animations and affected component schemas match.".into());
     }
     ComponentDonorAssessment {
         status,

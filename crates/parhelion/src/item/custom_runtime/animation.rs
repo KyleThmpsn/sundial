@@ -6,12 +6,12 @@
 //! clip they replace. Each link in that chain is a plain tag word, so every copy
 //! is rewritten to name the next private tag and the authored runtime entity is
 //! retargeted from the native attachment owner to the private one.
+use super::imports::Inputs;
 use super::*;
-use parhelion_import::GraphReference;
 use parhelion_import::d2_mot::rig_convert::animation::first_person::consumers;
 use parhelion_import::d2_mot::rig_convert::animation::first_person::profile;
 use serde_json::Value;
-use std::{collections::BTreeMap, fs};
+use std::collections::BTreeMap;
 pub(in crate::item) mod equipment;
 
 const FIRST_PERSON_ENTITY_CLASS: u32 = 0x8080_9C0F;
@@ -84,23 +84,16 @@ fn tag(section: &Value, key: &str) -> AuthoringResult<u32> {
     .map_err(|_| invalid(format!("Imported animation {key} is not a tag")))
 }
 
-fn payload(graph: &GraphReference, file: &Value) -> AuthoringResult<Vec<u8>> {
+fn payload(graph: &Inputs, file: &Value) -> AuthoringResult<Vec<u8>> {
     let name = file
         .as_str()
         .ok_or_else(|| invalid("Imported animation file name missing"))?;
-    let path = graph.directory.join(name);
-    if !path.starts_with(&graph.directory) || name.contains("..") {
-        return Err(invalid("Imported animation file escapes its graph"));
-    }
-    fs::read(&path).map_err(|error| invalid(format!("Imported animation {name}: {error}")))
+    graph.read(name)
 }
 
 /// Read a graph's linked first-person animation, if it prepared one.
-pub(in crate::item) fn load(graph: &GraphReference) -> AuthoringResult<Option<ImportedAnimation>> {
-    let text = fs::read(graph.directory.join("asset-graph.json"))
-        .map_err(|error| invalid(format!("Imported graph: {error}")))?;
-    let value: Value = serde_json::from_slice(&text)
-        .map_err(|error| invalid(format!("Imported graph: {error}")))?;
+pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedAnimation>> {
+    let value = graph.value();
     let animation = &value["animation"];
     if animation["first_person_status"] != "linked" {
         return Ok(None);
@@ -587,18 +580,18 @@ pub(in crate::item) fn author(
         let at = consumers::bank_field(&payload)
             .map_err(|error| invalid(format!("Animation bank consumer: {error:#}")))?;
         payload.0[at..at + 4].copy_from_slice(&bank_tag.to_le_bytes());
-        if let Some(layers) = &animation.pose_layers {
-            if layers.owner == *original {
-                let field = payload
-                    .pointer(24)
-                    .map_err(|error| invalid(format!("Pose layer controller: {error:#}")))?
-                    + 0x11C;
-                payload.0[field..field + 4].copy_from_slice(
-                    &pose_layer_tag
-                        .ok_or_else(|| invalid("Private pose layer tag missing"))?
-                        .to_le_bytes(),
-                );
-            }
+        if let Some(layers) = &animation.pose_layers
+            && layers.owner == *original
+        {
+            let field = payload
+                .pointer(24)
+                .map_err(|error| invalid(format!("Pose layer controller: {error:#}")))?
+                + 0x11C;
+            payload.0[field..field + 4].copy_from_slice(
+                &pose_layer_tag
+                    .ok_or_else(|| invalid("Private pose layer tag missing"))?
+                    .to_le_bytes(),
+            );
         }
         let assigned = allocator
             .assigned_tag(tags.len(), "Imported animation", "bank consumer")?

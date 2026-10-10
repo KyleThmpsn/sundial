@@ -1,5 +1,8 @@
 //! Restart admission uses the same document and Parhelion state as normal closing.
-use super::{SundialApp, save_support::SaveAction};
+
+#[cfg(test)]
+mod tests;
+use super::{SundialApp, saving::SaveAction};
 use crate::updates::Action;
 use eframe::egui;
 

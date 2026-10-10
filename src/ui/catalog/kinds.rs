@@ -391,7 +391,7 @@ impl Kinds {
                     selected,
                     &[
                         egui::RichText::new(node.kind.to_string()),
-                        crate::ui_help::emphasized_text(ui, node.name),
+                        crate::ui::help::emphasized_text(ui, node.name),
                         egui::RichText::new(
                             count.map_or_else(|| "…".into(), |count| count.to_string()),
                         ),
@@ -610,7 +610,7 @@ impl Kinds {
                         selected,
                         &[
                             egui::RichText::new(index.to_string()),
-                            crate::ui_help::emphasized_text(ui, &row.name),
+                            crate::ui::help::emphasized_text(ui, &row.name),
                             egui::RichText::new(&row.description).weak(),
                         ],
                     )
@@ -628,7 +628,7 @@ impl Kinds {
                     response.context_menu(|ui| {
                         if self.reference_links && ui.button("Open in Perk Effects").clicked() {
                             open = Some(index);
-                            ui.close_menu();
+                            ui.close();
                         }
                         if let Some(actions) = actions.as_deref_mut() {
                             actions(ui, Some(index), UseLocation::Menu);

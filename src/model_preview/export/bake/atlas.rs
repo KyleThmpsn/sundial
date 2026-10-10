@@ -95,6 +95,7 @@ pub(super) fn bake(
     plate: Plate,
     triangles: &[usize],
     budget: &mut Budget,
+    backend: &mut Option<&mut dyn Baker>,
 ) -> Result<Vec<Layer>, String> {
     if triangles.is_empty() {
         return Ok(Vec::new());
@@ -124,7 +125,7 @@ pub(super) fn bake(
                 .checked_sub(page.len())
                 .ok_or("The detail chart plan does not match its geometry")?;
             let triangles: Vec<_> = page.iter().map(|&(triangle, _)| triangle).collect();
-            let mut layer = paint(model, dyes, plate, &triangles, size, cell);
+            let mut layer = paint(model, dyes, plate, &triangles, size, cell, backend)?;
             layer.detail_sampling = page
                 .iter()
                 .filter(|&&(_, required)| required > cell as f32)
@@ -143,8 +144,13 @@ fn paint(
     triangles: &[usize],
     size: [usize; 2],
     cell: usize,
-) -> Layer {
-    let count = size[0] * size[1];
+    backend: &mut Option<&mut dyn Baker>,
+) -> Result<Layer, String> {
+    let count = if backend.is_none() {
+        size[0] * size[1]
+    } else {
+        0
+    };
     let mut painted = Painted {
         color: vec![0; count * 4],
         channels: vec![255; count * 3],
@@ -155,6 +161,7 @@ fn paint(
     let interior = (cell - 2 * MARGIN - 1) as f32;
     let mut coordinates = Vec::new();
     let mut claims = Vec::new();
+    let mut surfaces = Vec::new();
     for (index, &triangle) in triangles.iter().enumerate() {
         let origin = [(index % columns) * cell, (index / columns) * cell];
         let indices = model.triangles[triangle];
@@ -171,7 +178,23 @@ fn paint(
                 (origin[axis] as f32 + MARGIN as f32 + 0.5 + v[axis] * interior) / size[axis] as f32
             })
         }));
-        for y in 0..cell {
+        surfaces.push(Surface {
+            triangle,
+            dye: model
+                .triangle_dyes
+                .get(triangle)
+                .copied()
+                .unwrap_or(u8::MAX),
+            clip: model.triangle_clip.get(triangle).copied().unwrap_or(false),
+            cutoff: model
+                .triangle_cutoff
+                .get(triangle)
+                .copied()
+                .flatten()
+                .unwrap_or(0.5),
+            detail: None,
+        });
+        for y in 0..if backend.is_none() { cell } else { 0 } {
             for x in 0..cell {
                 let mut weight =
                     [x, y].map(|v| ((v as f32 - MARGIN as f32) / interior).clamp(0.0, 1.0));
@@ -216,8 +239,17 @@ fn paint(
             texels: Vec::new(),
         });
     }
+    if let Some(backend) = backend.as_deref_mut() {
+        painted = backend.paint(Request {
+            size,
+            plate,
+            dyes: *dyes,
+            surfaces,
+            layout: Layout::Charts { cell },
+        })?;
+    }
     let members = (0..claims.len()).collect::<Vec<_>>();
     let mut layer = assemble(painted, plate, size, &members, &claims);
     layer.coordinates = Some(coordinates);
-    layer
+    Ok(layer)
 }

@@ -87,6 +87,34 @@ pub(crate) fn carrier_positions(positions: &[u8], auxiliary: &[u8]) -> Result<Ve
     Ok(result)
 }
 
+/// Native declaration 28 stores four byte weights followed by four byte indices.
+pub(crate) fn native_vertices(
+    positions: &[u8],
+    auxiliary: &[u8],
+    bones: &[u16],
+) -> Result<Vec<[u8; 8]>> {
+    used(positions, auxiliary)?;
+    positions
+        .chunks_exact(24)
+        .enumerate()
+        .map(|(index, vertex)| {
+            let mut result = [0; 8];
+            let influences = influences(selector(vertex)?, index, auxiliary)?;
+            let first = *bones
+                .get(influences[0].0)
+                .context("skin bone has no native mapping")?;
+            result[4..].fill(u8::try_from(first).context("skin bone exceeds native byte palette")?);
+            for (lane, (bone, weight)) in influences.into_iter().enumerate() {
+                let target = *bones.get(bone).context("skin bone has no native mapping")?;
+                result[lane] = weight;
+                result[lane + 4] =
+                    u8::try_from(target).context("skin bone exceeds native byte palette")?;
+            }
+            Ok(result)
+        })
+        .collect()
+}
+
 pub(crate) fn remap(positions: &[u8], auxiliary: &[u8], bones: &[u16]) -> Result<Vec<u8>> {
     used(positions, auxiliary)?;
     let mut result = auxiliary.to_vec();

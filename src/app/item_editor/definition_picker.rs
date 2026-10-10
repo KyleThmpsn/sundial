@@ -12,7 +12,7 @@ struct DefinitionPickerBehavior {
 pub(crate) fn draw_definition_picker_with_open_request(
     ui: &mut egui::Ui,
     catalog: &Catalog,
-    scope: impl Hash,
+    scope: impl Hash + std::fmt::Debug,
     query: &mut String,
     height: PickerHeight,
     trigger: (Option<&egui::Response>, bool),
@@ -36,7 +36,7 @@ pub(crate) fn draw_definition_picker_with_open_request(
 pub(crate) fn draw_definition_picker_with_open_request_and_item_filter(
     ui: &mut egui::Ui,
     catalog: &Catalog,
-    scope: impl Hash,
+    scope: impl Hash + std::fmt::Debug,
     query: &mut String,
     height: PickerHeight,
     trigger: (Option<&egui::Response>, bool),
@@ -78,7 +78,7 @@ pub(crate) fn draw_definition_picker_with_open_request_and_item_filter(
 pub(crate) fn draw_definition_picker_with_open_request_item_filter_and_footer<T>(
     ui: &mut egui::Ui,
     catalog: &Catalog,
-    scope: impl Hash,
+    scope: impl Hash + std::fmt::Debug,
     query: &mut String,
     height: PickerHeight,
     trigger: (Option<&egui::Response>, bool),
@@ -122,7 +122,7 @@ pub(crate) fn draw_definition_picker_with_open_request_item_filter_and_footer<T>
 pub(crate) fn draw_definition_picker_with_open_request_and_footer<T>(
     ui: &mut egui::Ui,
     catalog: &Catalog,
-    scope: impl Hash,
+    scope: impl Hash + std::fmt::Debug,
     query: &mut String,
     height: PickerHeight,
     trigger: (Option<&egui::Response>, bool),
@@ -149,7 +149,7 @@ pub(crate) fn draw_definition_picker_with_open_request_and_footer<T>(
 fn draw_definition_picker_with_open_request_and_controls<T>(
     ui: &mut egui::Ui,
     catalog: &Catalog,
-    scope: impl Hash,
+    scope: impl Hash + std::fmt::Debug,
     query: &mut String,
     behavior: DefinitionPickerBehavior,
     trigger: (Option<&egui::Response>, bool),
@@ -177,20 +177,20 @@ fn draw_definition_picker_with_open_request_and_controls<T>(
             if supports_nested_popups {
                 set_independent_popup_open(ui, popup_id, true);
             } else {
-                ui.memory_mut(|memory| memory.open_popup(popup_id));
+                egui::Popup::open_id(ui, popup_id);
             }
         }
         let is_open = if supports_nested_popups {
             independent_popup_is_open(ui, popup_id)
         } else {
-            ui.memory(|memory| memory.is_popup_open(popup_id))
+            egui::Popup::is_id_open(ui, popup_id)
         };
         if !is_open {
             return (None, None);
         }
 
         let row_height = ui.spacing().interact_size.y.max(44.0);
-        let popup_direction = popup_direction(ui.ctx().screen_rect(), picker_response.rect);
+        let popup_direction = popup_direction(ui.ctx().content_rect(), picker_response.rect);
         let mut action = None;
         let mut footer_action = None;
         let mut nested_popup_interacted = false;
@@ -210,15 +210,14 @@ fn draw_definition_picker_with_open_request_and_controls<T>(
             }
             let (choices, interacted) = choices_for_query(ui, query);
             nested_popup_interacted = interacted;
-            if let Some(hash) = choices.random_item_builder_hash {
-                if ui
+            if let Some(hash) = choices.random_item_builder_hash
+                && ui
                     .button("Open Item in Random Item Builder")
                     .on_hover_text("Open this item and its current plugs in Random Item Builder")
                     .clicked()
-                {
-                    action = Some(ItemEditorAction::OpenInRandomItemBuilder { hash });
-                    ui.memory_mut(egui::Memory::close_popup);
-                }
+            {
+                action = Some(ItemEditorAction::OpenInRandomItemBuilder { hash });
+                egui::Popup::close_all(ui);
             }
             ui.separator();
             let has_picker_choices = !choices.definitions.is_empty()
@@ -226,15 +225,14 @@ fn draw_definition_picker_with_open_request_and_controls<T>(
                 || choices.clear.is_some();
             if !has_picker_choices {
                 ui.weak(&choices.empty_message);
-            } else if let Some(clear) = &choices.clear {
-                if ui
+            } else if let Some(clear) = &choices.clear
+                && ui
                     .selectable_label(clear.selected, &clear.label)
                     .on_hover_text(&clear.tooltip)
                     .clicked()
-                {
-                    action = Some(ItemEditorAction::ClearDefinition);
-                    ui.memory_mut(egui::Memory::close_popup);
-                }
+            {
+                action = Some(ItemEditorAction::ClearDefinition);
+                egui::Popup::close_all(ui);
             }
 
             let rows = definition_picker_rows(&choices.definitions);
@@ -296,7 +294,7 @@ fn draw_definition_picker_with_open_request_and_controls<T>(
                                 action = Some(ItemEditorAction::EquipInventoryItem {
                                     item_index: existing.item_index,
                                 });
-                                ui.memory_mut(egui::Memory::close_popup);
+                                egui::Popup::close_all(ui);
                             }
                         } else {
                             match &rows[index - existing_rows] {
@@ -337,7 +335,7 @@ fn draw_definition_picker_with_open_request_and_controls<T>(
                                         action = Some(ItemEditorAction::SetDefinition {
                                             hash: definition.hash,
                                         });
-                                        ui.memory_mut(egui::Memory::close_popup);
+                                        egui::Popup::close_all(ui);
                                     }
                                 }
                             }
@@ -348,11 +346,11 @@ fn draw_definition_picker_with_open_request_and_controls<T>(
 
             if let Some(selected) = draw_footer(ui) {
                 footer_action = Some(selected);
-                ui.memory_mut(egui::Memory::close_popup);
+                egui::Popup::close_all(ui);
             }
         };
         if supports_nested_popups {
-            let nested_popup_was_open = ui.memory(|memory| memory.any_popup_open());
+            let nested_popup_was_open = egui::Popup::is_any_open(ui);
             let popup_response = show_independent_picker_popup(
                 ui,
                 popup_id,
@@ -372,14 +370,10 @@ fn draw_definition_picker_with_open_request_and_controls<T>(
                 set_independent_popup_open(ui, popup_id, false);
             }
         } else {
-            egui::popup::popup_above_or_below_widget(
-                ui,
-                popup_id,
-                &picker_response,
-                popup_direction,
-                egui::PopupCloseBehavior::CloseOnClickOutside,
-                draw_popup,
-            );
+            crate::ui::dropdown(&picker_response, popup_id)
+                .align(popup_direction)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(draw_popup);
         }
         (action, footer_action)
     })
@@ -405,12 +399,13 @@ fn show_independent_picker_popup<R>(
     parent_ui: &egui::Ui,
     popup_id: egui::Id,
     widget_response: &egui::Response,
-    direction: egui::AboveOrBelow,
+    direction: egui::RectAlign,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::Response {
-    let (mut position, pivot) = match direction {
-        egui::AboveOrBelow::Above => (widget_response.rect.left_top(), egui::Align2::LEFT_BOTTOM),
-        egui::AboveOrBelow::Below => (widget_response.rect.left_bottom(), egui::Align2::LEFT_TOP),
+    let (mut position, pivot) = if direction == egui::RectAlign::TOP_START {
+        (widget_response.rect.left_top(), egui::Align2::LEFT_BOTTOM)
+    } else {
+        (widget_response.rect.left_bottom(), egui::Align2::LEFT_TOP)
     };
     if let Some(to_global) = parent_ui
         .ctx()

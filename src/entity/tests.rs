@@ -406,9 +406,9 @@ fn allocated_resource_tables_still_require_correct_classes_and_counts() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn installed_entity_graphs_all_validate_including_omitted_tables() {
-    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").expect("clean packages");
+    let packages = crate::test_support::stock_packages();
     let manager =
         crate::package_authoring::open_shadowkeep_package_manager(std::path::Path::new(&packages))
             .unwrap();

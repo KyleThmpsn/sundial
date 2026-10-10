@@ -6,6 +6,7 @@ use super::*;
 use std::borrow::Cow;
 
 pub(super) struct Entry {
+    line: u64,
     label: String,
     item: Option<String>,
     completed: usize,
@@ -62,6 +63,9 @@ fn finished_label(label: &str) -> Cow<'_, str> {
         "Backing" => "Backed",
         "Applying" => "Applied",
         "Copying" => "Copied",
+        "Recoloring" => "Recolored",
+        "Changing" => "Changed",
+        "Swapping" => "Swapped",
         "Installing" => "Installed",
         "Updating" => "Updated",
         "Refreshing" => "Refreshed",
@@ -93,6 +97,7 @@ impl Activity {
     ) -> Option<String> {
         let (completed, total) = counts;
         let mut entry = Entry {
+            line: self.first_line + self.lines.len() as u64,
             label: label.to_owned(),
             item: item.map(str::to_owned),
             completed,
@@ -107,12 +112,13 @@ impl Activity {
                 && previous.total == total
                 && previous.completed <= completed;
             if same {
+                entry.line = previous.line;
                 entry.finished |= previous.finished || completed > previous.completed;
                 entry.phase_finished = previous.phase_finished;
                 let changed =
                     previous.completed != completed || previous.finished != entry.finished;
                 let text = entry.message();
-                self.update_last(elapsed, text.clone());
+                self.update(entry.line, elapsed, text.clone());
                 self.operation = Some(entry);
                 return changed.then_some(text);
             }
@@ -123,13 +129,87 @@ impl Activity {
                 if previous.label == label && previous.total == total {
                     previous.completed = previous.completed.max(completed);
                 }
-                self.update_last(elapsed, previous.message());
+                self.update(previous.line, elapsed, previous.message());
             }
         }
         let text = entry.message();
         self.push(elapsed, text.clone());
         self.operation = Some(entry);
         Some(text)
+    }
+
+    pub(in crate::app) fn build(&mut self, progress: &TimedBuildProgress) -> Option<String> {
+        use crate::workflow::{BuildActivity, OperationStatus};
+        let elapsed = progress.elapsed;
+        match &progress.activity {
+            Some(BuildActivity::Diagnostic(text)) => {
+                self.append(elapsed, text.clone());
+                Some(text.clone())
+            }
+            Some(BuildActivity::Package {
+                id,
+                step,
+                status,
+                duration,
+            }) => {
+                // The serial compiler phase is complete before package dispatch. Parallel
+                // operations thereafter close only on their own producer's terminal event.
+                if let Some(mut previous) = self.operation.take() {
+                    previous.finished = true;
+                    previous.phase_finished = true;
+                    self.update(previous.line, elapsed, previous.message());
+                }
+                let key = (*id, *step);
+                if self.packages.get(&key).is_some_and(|(_, prior)| {
+                    *prior != OperationStatus::Started || *status == OperationStatus::Started
+                }) {
+                    return None;
+                }
+                let label = progress
+                    .current_artifact
+                    .as_deref()
+                    .unwrap_or("Package operation");
+                let operation = match status {
+                    OperationStatus::Started => label.to_owned(),
+                    OperationStatus::Finished => format!(
+                        "{} ({} elapsed)",
+                        finished_label(label),
+                        format_elapsed(*duration)
+                    ),
+                    OperationStatus::Failed => {
+                        format!("Failed: {label} ({} elapsed)", format_elapsed(*duration))
+                    }
+                };
+                let text = message(
+                    progress.phase.label(),
+                    Some(&operation),
+                    progress.completed,
+                    progress.total,
+                );
+                if let Some((line, _)) = self.packages.get(&key).copied() {
+                    self.update(line, elapsed, text.clone());
+                    self.packages.insert(key, (line, *status));
+                } else {
+                    let line = self.append(elapsed, text.clone());
+                    self.packages.insert(key, (line, *status));
+                }
+                Some(text)
+            }
+            None => self.progress(
+                elapsed,
+                progress.phase.label(),
+                progress.current_artifact.as_deref(),
+                (progress.completed, progress.total),
+                matches!(
+                    progress.phase,
+                    BuildPhase::InspectingSource
+                        | BuildPhase::LoadingCatalog
+                        | BuildPhase::CompilingProject
+                        | BuildPhase::BuildingPayloads
+                ),
+                true,
+            ),
+        }
     }
 }
 

@@ -13,7 +13,7 @@ fn disabled_choices_preserve_selection_and_resume_keyboard_activation_when_enabl
         modifiers: egui::Modifiers::NONE,
     };
     let mut frame = |enabled, events| {
-        let output = ctx.run(
+        let output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -22,8 +22,8 @@ fn disabled_choices_preserve_selection_and_resume_keyboard_activation_when_enabl
                 events,
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     ui.add_enabled_ui(enabled, |ui| {
                         let result = BrowserList {
                             keys: &[10, 20, 30],
@@ -49,7 +49,7 @@ fn disabled_choices_preserve_selection_and_resume_keyboard_activation_when_enabl
             },
         );
         if !enabled {
-            crate::app::tests::capture::write(&ctx, &output, "disabled-picker");
+            crate::test_support::capture::write(&ctx, &output, "disabled-picker");
         }
         (inspected.last().copied(), chosen.clone())
     };
@@ -69,7 +69,7 @@ fn disabled_choices_preserve_selection_and_resume_keyboard_activation_when_enabl
 fn filling_a_reserved_toolbar_status_does_not_rewind_the_body_cursor() {
     for width in [320.0, 1050.0] {
         let ctx = egui::Context::default();
-        let _ = ctx.run(
+        let _ = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -77,8 +77,8 @@ fn filling_a_reserved_toolbar_status_does_not_rewind_the_body_cursor() {
                 )),
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     let mut status = egui::Rect::NOTHING;
                     ui.horizontal_wrapped(|ui| {
                         ui.label("Search Behaviors");
@@ -105,7 +105,7 @@ fn search_result_changes_preserve_the_list_height() {
         for keys in [&[1_u64, 2][..], &[][..], &[2][..]] {
             let mut extent = 0.0;
             for _ in 0..3 {
-                let _ = ctx.run(
+                let _ = ctx.run_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -113,8 +113,8 @@ fn search_result_changes_preserve_the_list_height() {
                         )),
                         ..Default::default()
                     },
-                    |ctx| {
-                        egui::CentralPanel::default().show(ctx, |ui| {
+                    |ui| {
+                        egui::CentralPanel::default().show(ui, |ui| {
                             let top = ui.cursor().top();
                             BrowserList {
                                 keys,
@@ -156,7 +156,7 @@ fn alternating_rows_follow_result_indices_after_keyboard_scrolling() {
     let mut output = egui::FullOutput::default();
     for step in 0..31 {
         visible.clear();
-        output = ctx.run(
+        output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -175,8 +175,8 @@ fn alternating_rows_follow_result_indices_after_keyboard_scrolling() {
                 },
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     stripe_color = ui.visuals().faint_bg_color;
                     BrowserList {
                         keys: &keys,
@@ -223,7 +223,7 @@ fn inspecting_filtering_and_confirming_are_separate_and_keep_stable_identity() {
         let mut inspected = 0;
         let mut results = Vec::new();
         let mut frame = |keys: &[u64], events, reset| {
-            ctx.run(
+            ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -232,8 +232,8 @@ fn inspecting_filtering_and_confirming_are_separate_and_keep_stable_identity() {
                     events,
                     ..Default::default()
                 },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         let value = BrowserList {
                             keys,
                             height: 650.0,

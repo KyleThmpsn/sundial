@@ -159,7 +159,7 @@ impl PackageAuthoringApp {
                     workbench_style(ui);
                     if ui.button("Edit as Custom Perk…").clicked() {
                         changed = Some(Change::Open(AbilityPerk::Stock(perk)));
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
                 if removed {
@@ -207,7 +207,7 @@ impl PackageAuthoringApp {
                             let mut edited = edits.clone();
                             edited.add_perk(perk);
                             changed = Some(Change::Edits(Box::new(edited)));
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
             });

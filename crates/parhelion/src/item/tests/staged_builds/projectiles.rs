@@ -5,12 +5,12 @@ use sundial::package_authoring::runtime::{BindingHash, SchemaHandle};
 const PRIVATE_PERK_RESIDENCY_COMPANION_SIZE: usize = 0xE6;
 
 #[test]
-#[ignore = "requires PARHELION_PROJECTILE_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn native_component_values_compile_into_private_owners_and_reject_stale_paths() {
     use sundial::package_authoring::runtime::{
         WeaponRuntimeFieldSource, load_weapon_runtime_graph_for_entity,
     };
-    let packages = PathBuf::from(std::env::var_os("PARHELION_PROJECTILE_TEST_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let manager = open_manager(&packages).unwrap();
     let mut tested = BTreeSet::new();
     let mut linked = 0;
@@ -116,14 +116,14 @@ fn native_component_values_compile_into_private_owners_and_reject_stale_paths() 
 }
 
 #[test]
-#[ignore = "requires PARHELION_PROJECTILE_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 #[expect(
     clippy::cognitive_complexity,
     reason = "Independent native-byte audit checks the owner, graph, both caster links, and stale recipe rejection together"
 )]
 fn private_referenced_telesto_graph_preserves_stock_and_shares_both_caster_links() {
     use sundial::package_authoring::runtime::load_weapon_runtime_graph_for_entity;
-    let packages = PathBuf::from(std::env::var_os("PARHELION_PROJECTILE_TEST_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let manager = open_manager(&packages).unwrap();
     let graph_tag = TagHash(0x80BB_B1B9);
     let stock_graph = read_tag(&manager, graph_tag, "Telesto projectile graph").unwrap();
@@ -270,7 +270,7 @@ fn private_referenced_telesto_graph_preserves_stock_and_shares_both_caster_links
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 #[allow(clippy::cognitive_complexity)]
 fn real_breachlight_private_micro_missile_perk_chain_round_trips_when_configured() {
     const BREACHLIGHT_ITEM_HASH: u32 = 0x4CE3_CE93;
@@ -278,9 +278,7 @@ fn real_breachlight_private_micro_missile_perk_chain_round_trips_when_configured
     const MICRO_MISSILE_PERK_INDEX: usize = 1178;
     const TRAIT_SOCKET_INDEX: usize = 4;
 
-    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-        .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages");
-    let packages = PathBuf::from(packages);
+    let packages = crate::test_support::stock_packages();
     let source_manager = open_manager(&packages).expect("clean-stock manager should open");
     let source_globals_tag = resolve_live_named_tag(&source_manager, "investment_globals", None)
         .expect("investment globals should be named");
@@ -405,6 +403,7 @@ fn real_breachlight_private_micro_missile_perk_chain_round_trips_when_configured
         overrides: WeaponCloneOverrides {
             socket_columns,
             socket_plug_variants: vec![WeaponSocketPlugVariantOverride {
+                offer_everywhere: false,
                 replace_effects: false,
                 investment_stats: vec![(13, 10)],
                 socket_index: TRAIT_SOCKET_INDEX as u16,
@@ -1032,7 +1031,7 @@ fn real_breachlight_private_micro_missile_perk_chain_round_trips_when_configured
 }
 
 #[test]
-#[ignore = "requires PARHELION_PROJECTILE_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 #[expect(
     clippy::cognitive_complexity,
     reason = "Independent integration audit compares every native graph and action field with stock"
@@ -1041,10 +1040,7 @@ fn real_private_projectile_speed_clone_preserves_stock_graph_and_action() {
     use sundial::package_authoring::runtime::{
         WeaponRuntimeRootKind, WeaponRuntimeValue, load_weapon_runtime_graph_for_entity,
     };
-    let packages = PathBuf::from(
-        std::env::var_os("PARHELION_PROJECTILE_TEST_PACKAGES")
-            .expect("set PARHELION_PROJECTILE_TEST_PACKAGES"),
-    );
+    let packages = crate::test_support::stock_packages();
     let manager = open_manager(&packages).unwrap();
     let globals_tag = resolve_live_named_tag(&manager, "investment_globals", None).unwrap();
     let globals = read_tag(&manager, globals_tag, "globals").unwrap();

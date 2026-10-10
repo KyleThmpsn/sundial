@@ -255,7 +255,7 @@ fn content_pin(graph: &str, ordered: &[String], files: &BTreeMap<String, Vec<u8>
         digest.update((bytes.len() as u64).to_le_bytes());
         digest.update(bytes);
     }
-    format!("{:x}", digest.finalize())
+    hex::encode(digest.finalize())
 }
 
 fn asset_files(raw: &str) -> Result<Vec<String>, String> {

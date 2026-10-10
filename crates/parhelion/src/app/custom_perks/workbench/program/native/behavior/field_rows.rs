@@ -51,12 +51,13 @@ fn row_fields(
                     fields::contract(list.class, field).description,
                     false,
                     |ui| {
-                        ui.horizontal_wrapped(|ui| {
+                        let response = ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().interact_size.x = control;
                             ui.spacing_mut().combo_width = control;
                             super::super::scalar(ui, field, &mut graph.blocks[index], row)
-                        })
-                        .inner
+                        });
+                        problem::field_response(ui, &path, row, field.offset, &response.response);
+                        response.inner
                     },
                 )
                 .0?;
@@ -191,6 +192,11 @@ fn nested_at(
             let context = super::super::reference_name(graph, parent, at % stride, Some(child))?;
             egui::CollapsingHeader::new(context)
                 .id_salt(("nested-fields", &child_path))
+                .open(problem::open_header(
+                    ui,
+                    ui.make_persistent_id(("nested-fields", &child_path)),
+                    problem::contains(ui, &child_path),
+                ))
                 .show(ui, |ui| {
                     structure::scoped(graph, &child_path, |graph, child| {
                         let count = graph.blocks[child].count.unwrap_or(1);
@@ -199,7 +205,7 @@ fn nested_at(
                                 ui.strong(format!("Entry {}", row + 1));
                             }
                             for field in &fields {
-                                ui.push_id((row, field.offset), |ui| {
+                                let response = ui.push_id((row, field.offset), |ui| {
                                     super::super::super::super::properties::field(
                                         ui,
                                         super::super::plain_field_label(class, &field.label),
@@ -213,8 +219,15 @@ fn nested_at(
                                             )
                                         },
                                     )
-                                })
-                                .inner?;
+                                });
+                                response.inner?;
+                                problem::field_response(
+                                    ui,
+                                    &child_path,
+                                    row,
+                                    field.offset,
+                                    &response.response,
+                                );
                             }
                             ui.push_id((row, "labels"), |ui| {
                                 labels::draw_row_sites(ui, graph, child, row)
@@ -353,7 +366,7 @@ fn add_target_menu(
                     let mut shown = revealed.to_vec();
                     shown.push(field.offset);
                     ui.data_mut(|data| data.insert_temp(id, shown));
-                    ui.close_menu();
+                    ui.close();
                 }
             }
         });
@@ -676,6 +689,7 @@ pub(super) fn controls_with_trail(
     trail: Option<Trail<'_>>,
 ) -> Result<(), String> {
     let class = graph.blocks[index].class;
+    let path = structure::path_to(graph, index)?;
     // A kill condition draws its leading chance beside its Kill Trigger preset.
     let chance_tile = chance_leads(&graph.blocks[index], view, demotes, trigger)
         && !(class == trigger::CLASS && matches!(view, FieldView::Primary));
@@ -768,12 +782,16 @@ pub(super) fn controls_with_trail(
             };
             let hint = fields::contract(class, field).description;
             let content = |ui: &mut egui::Ui| {
-                if ability && field.offset == 2 {
-                    super::super::ability_target(ui, &mut graph.blocks[index].bytes[2]);
-                    Ok(())
-                } else {
-                    super::super::scalar(ui, field, &mut graph.blocks[index], 0)
-                }
+                let response = ui.scope(|ui| {
+                    if ability && field.offset == 2 {
+                        super::super::ability_target(ui, &mut graph.blocks[index].bytes[2]);
+                        Ok(())
+                    } else {
+                        super::super::scalar(ui, field, &mut graph.blocks[index], 0)
+                    }
+                });
+                problem::field_response(ui, &path, 0, field.offset, &response.response);
+                response.inner
             };
             // The cell scopes its own widgets. A scope around it in the wrapping line would
             // place it at the cursor without wrapping, and squeeze every row after the first.
@@ -815,7 +833,7 @@ pub(super) fn controls_with_trail(
                 let control = super::super::tile_width(class, field, width).unwrap_or(width);
                 let (drawn, _) =
                     crate::app::style::tile(ui, width, field.offset, label, hint, false, |ui| {
-                        ui.horizontal_wrapped(|ui| {
+                        let response = ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().interact_size.x = control;
                             ui.spacing_mut().combo_width = control;
                             if target {
@@ -824,8 +842,9 @@ pub(super) fn controls_with_trail(
                             } else {
                                 super::super::scalar(ui, field, &mut graph.blocks[index], 0)
                             }
-                        })
-                        .inner
+                        });
+                        problem::field_response(ui, &path, 0, field.offset, &response.response);
+                        response.inner
                     });
                 if let Err(error) = drawn
                     && failed.is_none()

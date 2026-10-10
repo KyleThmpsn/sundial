@@ -59,8 +59,7 @@ fn group_selection_replaces_conflicting_choices_and_preserves_independent_edits(
 }
 
 fn stock() -> (std::path::PathBuf, Vec<WeaponDonorSummary>) {
-    let packages =
-        std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let cache = tempfile::tempdir().unwrap();
     let catalog = InvestmentCatalog::load_with_cache_path(
         packages.parent().unwrap(),
@@ -74,7 +73,7 @@ fn stock() -> (std::path::PathBuf, Vec<WeaponDonorSummary>) {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn native_group_swap_repairs_conflicts_and_previews_transferred_settings() {
     let (packages, donors) = stock();
     let baseline = donors
@@ -197,7 +196,7 @@ fn native_group_swap_repairs_conflicts_and_previews_transferred_settings() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn preview_uses_compiler_overlap_checks_for_automatic_ammo_edits() {
     let (packages, donors) = stock();
     let baseline = donors

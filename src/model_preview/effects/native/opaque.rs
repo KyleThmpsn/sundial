@@ -2,6 +2,7 @@
 use super::*;
 use program::{Instruction, Operand, Program as Code};
 mod gain;
+pub(super) mod intensity;
 mod paint;
 pub(super) use gain::Gain;
 pub(super) use paint::Paint;
@@ -10,7 +11,7 @@ pub(in crate::model_preview) use paint::legacy::Normal as LegacyNormal;
 pub(in crate::model_preview) fn load_normal(
     manager: &PackageManager,
     tag: u32,
-    objects: Result<&[[f32; 4]], &str>,
+    objects: ObjectInputs<'_>,
     surface: u8,
 ) -> Result<Option<Material>, String> {
     if matches!(tag, 0 | u32::MAX) {
@@ -30,14 +31,7 @@ pub(in crate::model_preview) fn load_normal(
         return Ok(None);
     };
     let globals = crate::dyes::material::global_channels(manager);
-    let program = Program::material(
-        &bytes,
-        0x2C8,
-        &globals,
-        objects.map_err(str::to_owned)?,
-        surface,
-        constants.len(),
-    )?;
+    let program = Program::material(&bytes, 0x2C8, &globals, objects, surface, constants.len())?;
     Ok(Some(Material {
         kind: Kind::Native,
         constants,
@@ -151,7 +145,19 @@ fn reads(i: &Instruction, source: usize, lanes: u8, needed: &mut [u8; 32]) -> Re
     Ok(())
 }
 
-fn slice(mut code: Code) -> Result<Option<(Code, usize, Operand)>, String> {
+struct Slice {
+    code: Code,
+    at: usize,
+    base: Operand,
+    intensity: bool,
+    ambient: bool,
+}
+
+fn slice(
+    mut code: Code,
+    allow_intensity: bool,
+    allow_ambient: bool,
+) -> Result<Option<Slice>, String> {
     if code.outputs.len() != 3
         || !(0..3).all(|target| {
             code.outputs.iter().any(|s| {
@@ -200,7 +206,7 @@ fn slice(mut code: Code) -> Result<Option<(Code, usize, Operand)>, String> {
             offset: [0; 3],
         },
     );
-    let mut selected = select(&code)?;
+    let (mut selected, intensity, ambient) = retain(&code, allow_intensity, allow_ambient)?;
     if !selected
         .iter()
         .flat_map(|i| &i.operands)
@@ -233,7 +239,30 @@ fn slice(mut code: Code) -> Result<Option<(Code, usize, Operand)>, String> {
             .any(|v| v.kind == 8 && v.indices[0].base as usize == buffer)
     });
     code.recover_derivatives();
-    Ok(Some((code, at, base)))
+    Ok(Some(Slice {
+        code,
+        at,
+        base,
+        intensity,
+        ambient,
+    }))
+}
+
+fn retain(
+    code: &Code,
+    allow_intensity: bool,
+    allow_ambient: bool,
+) -> Result<(Vec<Instruction>, bool, bool), String> {
+    let intensity = allow_intensity && intensity::recover(code);
+    if intensity {
+        if allow_ambient && let Ok(selected) = select(code, true, true) {
+            return Ok((selected, true, true));
+        }
+        if let Ok(selected) = select(code, true, false) {
+            return Ok((selected, true, false));
+        }
+    }
+    Ok((select(code, false, false)?, false, false))
 }
 
 struct Needed {
@@ -282,7 +311,7 @@ impl Needed {
     }
 }
 
-fn select(code: &Code) -> Result<Vec<Instruction>, String> {
+fn select(code: &Code, intensity: bool, ambient: bool) -> Result<Vec<Instruction>, String> {
     let mut branch = 0usize;
     let mut depths = Vec::new();
     for i in &code.instructions {
@@ -299,6 +328,9 @@ fn select(code: &Code) -> Result<Vec<Instruction>, String> {
         outputs: [0; 16],
     };
     needed.outputs[0] = 7;
+    if intensity {
+        needed.outputs[2] = if ambient { 10 } else { 2 };
+    }
     let mut selected = Vec::new();
     for (at, i) in code.instructions.iter().enumerate().rev() {
         if let Some(kept) = needed.take(i, depths[at])? {
@@ -315,7 +347,7 @@ fn select(code: &Code) -> Result<Vec<Instruction>, String> {
 pub(in crate::model_preview) fn load_opaque(
     manager: &PackageManager,
     tag: u32,
-    objects: Result<&[[f32; 4]], &str>,
+    objects: ObjectInputs<'_>,
     surface: u8,
     uv: [f32; 4],
     model: &mut Model,
@@ -329,12 +361,35 @@ pub(in crate::model_preview) fn load_opaque(
     let Ok(code) = Code::read(&raw, 0) else {
         return Ok(None);
     };
-    let Some((sliced, at, base)) = slice(code.clone())? else {
+    let power = intensity::ambient_power(manager);
+    let Some(Slice {
+        code: mut sliced,
+        at,
+        base,
+        mut intensity,
+        mut ambient,
+    }) = slice(code.clone(), true, power.is_some())?
+    else {
         return Ok(None);
     };
     let constants = super::super::read::stage_constants(manager, &bytes, 0x2C8)?;
     let gain = gain::recover(&code, at, &base, &constants, uv)?;
     let paint = paint::recover(&code, at, &base, &constants)?;
+    if ambient && sliced.resources.len() > 3 {
+        let Some(emission) = slice(code.clone(), true, false)? else {
+            return Ok(None);
+        };
+        sliced = emission.code;
+        intensity = emission.intensity;
+        ambient = false;
+    }
+    if intensity && sliced.resources.len() > 3 {
+        let Some(rgb) = slice(code.clone(), false, false)? else {
+            return Ok(None);
+        };
+        sliced = rgb.code;
+        intensity = false;
+    }
     if sliced.resources.len() > 3 {
         return Err("Opaque color exceeds its separate texture budget".into());
     }
@@ -354,12 +409,24 @@ pub(in crate::model_preview) fn load_opaque(
         manager,
         tag,
         &bytes,
-        objects.map_err(str::to_owned)?,
+        objects,
         surface,
         model,
-        (sliced, true),
+        (sliced, true, false),
     )?;
     let native = material.native.as_mut().unwrap();
+    native.intensity = intensity;
+    native.ambient_power = power.filter(|_| ambient);
+    if intensity && power.is_some() && !ambient {
+        model.notices.push(format!(
+            "Material 0x{tag:08X}: Native ambient shading uses an unsupported material recipe."
+        ));
+    }
+    if !intensity && intensity::present(&code) {
+        model.notices.push(format!(
+            "Material 0x{tag:08X}: Native emission uses an unsupported material recipe."
+        ));
+    }
     native.opaque_uv = Some(uv);
     native.base_gain = gain;
     if paint.as_ref().is_some_and(Paint::metal_unavailable) {

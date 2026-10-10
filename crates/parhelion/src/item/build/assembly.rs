@@ -19,6 +19,8 @@ pub(super) struct Output {
     pub hud_statuses: Vec<ReplacementSpec>,
     /// The stat group table, when a weapon has a stat group of its own.
     pub stat_group_table: Option<ReplacementSpec>,
+    /// The shared plug set table, when a private perk is offered everywhere.
+    pub plug_set_table: Option<ReplacementSpec>,
 }
 
 impl Output {
@@ -91,6 +93,7 @@ pub(super) fn prepare(
         ability_banks,
         hud_statuses,
         stat_group_table,
+        plug_set_table,
     } = output;
     if localization.donor_header_tag.pkg_id() != sources.table_tags.localized_index_tag.pkg_id()
         || localization.locale_data.iter().any(|locale| {
@@ -129,7 +132,11 @@ pub(super) fn prepare(
         lore,
         hud_table: assets.hud_table,
         ability_banks,
-        hud_statuses,
+        hud_statuses: hud_statuses
+            .into_iter()
+            .chain(assets.subclass_hud_table)
+            .chain(assets.subclass_ui)
+            .collect(),
         table_tags: sources.table_tags,
         has_custom_plugs,
         watermark_layer_tag: assets.watermark.watermark_layer_tag,
@@ -159,6 +166,7 @@ pub(super) fn prepare(
         subclass_tables: subclass_lists_added.then_some(tables.subclass),
         dye_table,
         stat_group_table,
+        plug_set_table,
         plans: tables.plans,
         any_sandbox_pattern: tables.any_sandbox_pattern,
         nodes: collections.nodes,

@@ -7,7 +7,7 @@ mod particle_program;
 mod particle_shaders;
 use audio::wave_info;
 pub(crate) use audio::{decoded_wave, decoded_wave_cancelable, wave_duration};
-pub(crate) use particle_program::{Program, Registers};
+pub(crate) use particle_program::{Program, Registers, Runtime, Sources};
 pub(crate) use particle_shaders::PixelKind;
 
 #[derive(Default)]
@@ -31,6 +31,8 @@ pub(crate) struct Particle {
     pub name: Option<String>,
     pub definition: Option<u32>,
     pub program: Option<Program>,
+    pub simulation: Option<super::particles::simulation::Timeline>,
+    pub simulation_notice: Option<String>,
     pub emitter: Option<u32>,
     pub emitter_model: Option<u32>,
     pub point_emitter: bool,
@@ -223,22 +225,22 @@ pub(super) fn generic(manager: &PackageManager, tag: u32) -> Result<Assets, Stri
     }
     if entry.file_size <= 2 * 1024 * 1024 {
         let bytes = manager.read_tag(tag)?;
-        if matches!(entry.file_type, 20..=22 | 26) {
-            if let Some((codec, channels, sample_rate)) = wave_info(&bytes) {
-                assets.sounds.push(Sound {
+        if matches!(entry.file_type, 20..=22 | 26)
+            && let Some((codec, channels, sample_rate)) = wave_info(&bytes)
+        {
+            assets.sounds.push(Sound {
+                tag,
+                name: manager.get_tag_name(tag),
+                clips: vec![AudioClip {
                     tag,
                     name: manager.get_tag_name(tag),
-                    clips: vec![AudioClip {
-                        tag,
-                        name: manager.get_tag_name(tag),
-                        size: entry.file_size,
-                        codec,
-                        channels,
-                        sample_rate,
-                    }],
-                    notice: None,
-                });
-            }
+                    size: entry.file_size,
+                    codec,
+                    channels,
+                    sample_rate,
+                }],
+                notice: None,
+            });
         }
         if matches!(entry.file_type, 8 | 16) {
             assets.references = declared_references(manager, &bytes, entry.reference)
@@ -342,10 +344,14 @@ fn particle(manager: &PackageManager, tag: u32) -> Particle {
             .is_some_and(|entry| entry.reference == 0x8080_6E2C && entry.file_type == 8)
         {
             particle.definition = Some(definition);
-            particle.program = Some(
-                Program::read(&manager.read_tag(definition)?)
-                    .map_err(|error| format!("Particle program 0x{definition:08X}: {error}"))?,
-            );
+            let definition_bytes = manager.read_tag(definition)?;
+            let program = Program::read(&definition_bytes)
+                .map_err(|error| format!("Particle program 0x{definition:08X}: {error}"))?;
+            match super::particles::simulation::Timeline::build(&program, &definition_bytes) {
+                Ok(timeline) => particle.simulation = Some(timeline),
+                Err(error) => particle.simulation_notice = Some(error),
+            }
+            particle.program = Some(program);
         }
         let emitter = u32_at(&bytes, 0x18)?;
         if manager
@@ -404,6 +410,8 @@ fn particle_summary(manager: &PackageManager, tag: u32) -> Particle {
         name: manager.get_tag_name(tag),
         definition: None,
         program: None,
+        simulation: None,
+        simulation_notice: None,
         emitter: None,
         emitter_model: None,
         point_emitter: false,
@@ -496,6 +504,13 @@ fn sound_clip_tags(bytes: &[u8], class: u32) -> Result<Vec<u32>, String> {
 
 pub(crate) fn clip_bytes(packages: &Path, tag: u32) -> Result<Vec<u8>, String> {
     let manager = crate::investment::discovery::open_packages(packages)?;
+    clip_bytes_with_manager(&manager, tag)
+}
+
+pub(super) fn clip_bytes_with_manager(
+    manager: &PackageManager,
+    tag: u32,
+) -> Result<Vec<u8>, String> {
     let entry = manager.get_entry(tag).ok_or("Audio clip is missing")?;
     if !matches!(entry.file_type, 20..=22 | 26) || entry.file_size > 32 * 1024 * 1024 {
         return Err("Unsupported audio clip type or size".into());

@@ -146,7 +146,8 @@ fn case_at(cutoff: f32, stage: usize) -> Model {
 #[test]
 fn native_body_cutouts_use_their_coverage_and_material_cutoff() {
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_deref()
         .map(Path::new)
@@ -167,8 +168,11 @@ fn native_body_cutouts_use_their_coverage_and_material_cutoff() {
                 pan: [0.0; 2],
             },
             render::Scene {
+                filmic: false,
+                bloom: false,
                 key: 0.0,
                 fill: 1.0,
+                exposure: 1.0,
                 ..Default::default()
             },
             [480, 240],

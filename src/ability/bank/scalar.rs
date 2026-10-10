@@ -128,12 +128,18 @@ pub(super) fn with_row(
     let placement = Placement {
         instance_first: property_instances + 16,
         definition_first: property_definitions + 16,
+    };
+    let added = [Added {
+        key,
+        before: count,
+        gate: None,
+        handler,
+        classes: modifier_classes(modifier),
         modifier_instance,
         modifier_definition,
-    };
-    write_rows(
-        payload, &mut out, &layout, count, &placement, shift, key, handler,
-    )?;
+        body: Body::Own,
+    }];
+    write_rows(payload, &mut out, &layout, count, &placement, shift, &added)?;
     pair(
         &mut out,
         layout.owner,
@@ -193,14 +199,14 @@ pub(super) fn with_row(
         &mut out,
         &layout,
         shift,
-        count,
+        count + 1,
         property_instances,
         property_definitions,
         None,
     )?;
     let size = out.len() as u64;
     put_u64(&mut out, SIZE, size);
-    check_read_back(&out, &before, key, handler, CLASS, modifier, None)?;
+    check_read_back(&out, &before, &added, None)?;
     // Keep the declaration, flattened value and runtime activation state in agreement.
     let new_i = input_instances + 16 + runtime.count * 80;
     let new_d = input_definitions + 16 + runtime.count * 48;

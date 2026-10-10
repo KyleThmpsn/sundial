@@ -16,14 +16,19 @@ pub(crate) mod authoring;
 pub(crate) mod compile;
 mod edits;
 pub(crate) mod grouping;
+pub(crate) mod hud;
+pub mod icon;
 pub mod layout;
 mod modifiers;
 pub(crate) mod native;
+pub(crate) mod node_icon;
 pub mod palette;
 pub(crate) mod tables;
+pub(crate) mod ui;
 
 pub use art::{ArtImage, ArtPart, ScreenArt};
-pub use edits::{BankValue, EntryEdits, EntryIcon, SpawnSwap};
+pub use edits::{AttachedAbility, BankValue, EntryEdits, EntryIcon, SpawnSwap, damage_mode};
+pub use icon::GeneratedIcon;
 pub use modifiers::{
     AbilityModifier, MOST_CHARGES, ModifierEffect, ParameterValue, RECHARGE_RANGE, StockModifier,
     entry_place, holds_ability, place_entry,
@@ -181,6 +186,11 @@ impl Place {
             }))
     }
 
+    /// Visible tree entries followed by the always-applied foundations.
+    pub fn editable() -> impl Iterator<Item = Self> {
+        Self::all().chain(layout::FOUNDATIONS.into_iter().map(Self::Ability))
+    }
+
     /// What names the entry's authored text and icon row: `ability-7`, or
     /// `attunement-top-node-2`.
     #[must_use]
@@ -197,6 +207,8 @@ impl Place {
     #[must_use]
     pub fn label(self) -> String {
         match self {
+            Self::Ability(layout::BASE_MOVEMENT) => "Base Movement".into(),
+            Self::Ability(layout::STAT_PASSIVES) => "Stat Passives".into(),
             Self::Ability(entry) => AbilitySlot::of_entry(entry)
                 .map_or_else(|| format!("Entry {entry}"), |slot| slot.entry_label(entry)),
             Self::Node(path, position) => format!("{} Path · Node {}", path.label(), position + 1),
@@ -209,6 +221,10 @@ impl Place {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SubclassAbilities {
+    /// The inherited sRGB color of tree nodes and ability tiles. The persisted name predates
+    /// tree colors and stays compatible with existing recipes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hud_color: Option<[u8; 3]>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub choices: Vec<SubclassChoice>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -218,7 +234,7 @@ pub struct SubclassAbilities {
 impl SubclassAbilities {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.choices.is_empty() && self.attunements.is_empty()
+        self.hud_color.is_none() && self.choices.is_empty() && self.attunements.is_empty()
     }
 
     #[must_use]
@@ -385,13 +401,18 @@ impl SubclassAbilities {
     /// subclasses when the recipe builds.
     pub fn validate(&self) -> Result<(), String> {
         for (index, choice) in self.choices.iter().enumerate() {
-            let slot = AbilitySlot::of_entry(choice.entry)
-                .ok_or_else(|| format!("Subclass entry {} is not an ability slot", choice.entry))?;
-            let context = slot.entry_label(choice.entry);
-            if !slot.entries().contains(&choice.source_entry) {
+            let slot = AbilitySlot::of_entry(choice.entry);
+            let context = Place::Ability(choice.entry).label();
+            let compatible = slot.map_or_else(
+                || {
+                    layout::FOUNDATIONS.contains(&choice.entry)
+                        && choice.source_entry == choice.entry
+                },
+                |slot| slot.entries().contains(&choice.source_entry),
+            );
+            if !compatible {
                 return Err(format!(
-                    "{context} takes a {}, but source entry {} is not one",
-                    slot.label().to_lowercase(),
+                    "{context} cannot use source entry {}",
                     choice.source_entry
                 ));
             }
@@ -401,9 +422,7 @@ impl SubclassAbilities {
             {
                 return Err(format!("{context} is set twice"));
             }
-            choice
-                .edits
-                .validate(&context, Place::Ability(choice.entry))?;
+            choice.edits.validate(&context, choice.source_entry)?;
         }
         for (index, attunement) in self.attunements.iter().enumerate() {
             if !attunement.source_path.fits(attunement.path) {
@@ -515,8 +534,7 @@ impl SubclassAttunement {
                     node.source_path.label().to_lowercase()
                 ));
             }
-            node.edits
-                .validate(&context, Place::Node(self.path, node.position))?;
+            node.edits.validate(&context, node.source_entry())?;
         }
         Ok(())
     }

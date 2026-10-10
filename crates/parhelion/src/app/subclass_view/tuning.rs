@@ -103,17 +103,18 @@ pub(super) fn split_parameters(
 /// The parameter filter, where `count` parameters are enough to want one. Returns the lowercased
 /// query, empty when there is none.
 pub(super) fn parameter_filter(ui: &mut egui::Ui, count: usize, page: &mut PageState) -> String {
-    if !crate::app::pickers::wants_filter(count) {
+    if count == 0 {
         return String::new();
     }
-    ui.add(
+    let response = ui.add(
         egui::TextEdit::singleline(&mut page.parameter_query)
-            .hint_text(format!(
-                "{} Filter",
-                egui_phosphor::regular::MAGNIFYING_GLASS
-            ))
-            .desired_width(PARAMETER_FILTER_WIDTH),
+            .hint_text("Filter Parameters")
+            .desired_width(PARAMETER_FILTER_WIDTH.min(ui.available_width().max(80.0))),
     );
+    style::named_control(response, "Filter Parameters");
+    if !page.parameter_query.is_empty() && ui.small_button("Clear").clicked() {
+        page.parameter_query.clear();
+    }
     page.parameter_query.trim().to_lowercase()
 }
 
@@ -135,8 +136,8 @@ pub(super) fn parameter_tiles(
     }
 }
 
-/// One parameter: its name over its field, what it does and its stock value in the name's
-/// tooltip.
+/// One parameter: its name over its field, what it does in the name's tooltip, and its stock
+/// value beside the name once it changes.
 fn parameter_tile(
     ui: &mut egui::Ui,
     width: f32,
@@ -146,20 +147,21 @@ fn parameter_tile(
     let own = edits.parameter(parameter.name);
     let mut value = own.unwrap_or(parameter.reset);
     let kind = shown_kind(parameter.name, parameter.reset, value);
-    let stock = format!("Stock {}", reading(kind, parameter.reset));
-    let hint = parameter_meaning(parameter.name)
-        .map_or_else(|| stock.clone(), |meaning| format!("{meaning}\n{stock}"));
-    let (edited, reset) = style::tile(
+    let stock = reading(kind, parameter.reset);
+    let hint = parameter_meaning(parameter.name).unwrap_or_default();
+    let (edited, reset) = style::stock_tile(
         ui,
-        width,
-        parameter.name,
-        name,
-        &hint,
-        own.is_some(),
+        (width, parameter.name),
+        (name, hint),
+        own.is_some().then_some(stock.as_str()),
         |ui| {
-            // A number field fills its tile.
-            ui.spacing_mut().interact_size.x = width;
-            let field = style::named_control(value_field(ui, kind, &mut value), name);
+            // A number fills its tile as every other tile's does. A switch stays a checkbox.
+            let field = if matches!(kind, ParameterKind::Switch) {
+                value_field(ui, kind, &mut value)
+            } else {
+                style::tile_field(ui, width, |ui| value_field(ui, kind, &mut value))
+            };
+            let field = style::named_control(field, name);
             (field.changed() && value.is_finite()).then_some(value)
         },
     );
@@ -175,6 +177,67 @@ fn parameter_tile(
 pub(super) struct Trail {
     entity: u32,
     graphs: Vec<u32>,
+    swaps: Vec<(u32, u32, u32)>,
+}
+
+/// The values a script uses when no selected key supplies an override. The native table order
+/// identifies a reset lane, even when two rows share a parameter name.
+fn parameter_defaults(ui: &mut egui::Ui, parameters: &[AbilityParameter], edits: &mut EntryEdits) {
+    if parameters.is_empty() {
+        return;
+    }
+    let changed = edits.bank_values.iter().any(|value| value.parameter);
+    let title = if changed {
+        "Parameter Defaults •"
+    } else {
+        "Parameter Defaults"
+    };
+    let section = egui::CollapsingHeader::new(title)
+        .id_salt("parameter-defaults")
+        .show(ui, |ui| {
+            ui.weak("Values used when no selected ability or perk overrides the parameter.");
+            style::tiles(ui, |ui, width| {
+                for (index, parameter) in parameters.iter().enumerate() {
+                    let Ok(row) = u16::try_from(index) else {
+                        continue;
+                    };
+                    let own = edits
+                        .bank_values
+                        .iter()
+                        .find(|value| {
+                            value.parameter && value.key == parameter.name && value.row == row
+                        })
+                        .map(|value| f32::from_bits(value.bits));
+                    let mut value = own.unwrap_or(parameter.reset);
+                    let kind = shown_kind(parameter.name, parameter.reset, value);
+                    let name = format!("Default {}", parameter_name(parameter.name));
+                    let stock = reading(kind, parameter.reset);
+                    let (edited, reset) = style::stock_tile(
+                        ui,
+                        (width, ("default", row)),
+                        (&name, "Fallback value in this ability's private bank"),
+                        own.map(|_| stock.as_str()),
+                        |ui| {
+                            let response =
+                                style::named_control(value_field(ui, kind, &mut value), &name);
+                            (response.changed() && value.is_finite()).then_some(value)
+                        },
+                    );
+                    if let Some(value) = edited {
+                        edits.set_parameter_default(
+                            parameter.name,
+                            row,
+                            (value.to_bits() != parameter.reset.to_bits()).then_some(value),
+                        );
+                    } else if reset {
+                        edits.set_parameter_default(parameter.name, row, None);
+                    }
+                }
+            });
+        });
+    if changed {
+        style::named_control(section.header_response, "Parameter Defaults, Changed");
+    }
 }
 
 impl PackageAuthoringApp {
@@ -194,6 +257,7 @@ impl PackageAuthoringApp {
             .and_then(|row| self.catalog.as_ref()?.ability_row(*row));
         let unnamed = row.map(|row| split_parameters(row).1).unwrap_or_default();
         let marked = !edits.ability_values.is_empty()
+            || edits.bank_values.iter().any(|value| value.parameter)
             || unnamed
                 .iter()
                 .any(|parameter| edits.parameter(parameter.name).is_some());
@@ -203,6 +267,9 @@ impl PackageAuthoringApp {
             .default_open(false)
             .show(ui, |ui| {
                 let mut next = edits.clone();
+                if let Some(row) = row {
+                    parameter_defaults(ui, &row.parameters, &mut next);
+                }
                 if !unnamed.is_empty() {
                     ui.label(quiet(ui, "Unnamed Parameters"));
                     style::tiles(ui, |ui, width| {
@@ -211,7 +278,7 @@ impl PackageAuthoringApp {
                     ui.add_space(6.0);
                 }
                 let values = match entity {
-                    Some(entity) => self.draw_spawns(ui, entity, place, edits, page),
+                    Some(entity) => self.draw_spawns(ui, entity, place, &next, page),
                     None => {
                         ui.weak("No values.");
                         None
@@ -226,8 +293,8 @@ impl PackageAuthoringApp {
         technical.body_returned.flatten()
     }
 
-    /// Raw Values: a trail back to the ability, then the open graph's values, the ability's own
-    /// at the trail's root, and the graphs it spawns in turn, each marked once its values change.
+    /// Raw Values: a trail back to the ability, the graphs the open graph spawns, each marked once
+    /// its values change, then the open graph's values, the ability's own at the trail's root.
     fn draw_spawns(
         &self,
         ui: &mut egui::Ui,
@@ -236,10 +303,16 @@ impl PackageAuthoringApp {
         edits: &EntryEdits,
         page: &mut PageState,
     ) -> Option<EntryEdits> {
-        if page.trail.entity != entity {
+        let swaps = edits
+            .spawn_swaps
+            .iter()
+            .map(|swap| (swap.graph, swap.replaced, swap.replacement))
+            .collect::<Vec<_>>();
+        if page.trail.entity != entity || page.trail.swaps != swaps {
             page.trail = Trail {
                 entity,
                 graphs: Vec::new(),
+                swaps,
             };
         }
         let open = page.trail.graphs.last().copied().unwrap_or(entity);
@@ -261,9 +334,14 @@ impl PackageAuthoringApp {
             let mut parent = entity;
             for (depth, graph) in page.trail.graphs.iter().enumerate() {
                 ui.label(quiet(ui, "›"));
+                let stock = edits
+                    .spawn_swaps
+                    .iter()
+                    .find(|swap| swap.graph == parent && swap.replacement == *graph)
+                    .map_or(*graph, |swap| swap.replaced);
                 let name = page
                     .values
-                    .spawn_name(parent, *graph)
+                    .spawn_name(parent, stock)
                     .map_or_else(|| format!("Graph 0x{graph:08X}"), str::to_owned);
                 if depth + 1 == page.trail.graphs.len() {
                     ui.label(egui::RichText::new(name).strong());
@@ -289,6 +367,32 @@ impl PackageAuthoringApp {
                 return None;
             }
         };
+        // What it spawns leads, so the graphs below it stay in view above a long value list.
+        let mut opened = None;
+        if page.trail.graphs.len() < SPAWN_DEPTH && !loaded.spawns.is_empty() {
+            ui.label(quiet(ui, "Spawns"));
+            for (graph, name) in &loaded.spawns {
+                let replacement = edits.swap(open, *graph);
+                let graph = replacement.unwrap_or(*graph);
+                let name = if replacement.is_some() {
+                    format!("{name} (Replacement)")
+                } else {
+                    name.clone()
+                };
+                let (label, hover) = if edited(graph) {
+                    (format!("{name} •"), format!("Changed · 0x{graph:08X}"))
+                } else {
+                    (name.clone(), format!("0x{graph:08X}"))
+                };
+                if style::list_row(ui, false, &label)
+                    .on_hover_text(hover)
+                    .clicked()
+                {
+                    opened = Some(graph);
+                }
+            }
+            ui.add_space(6.0);
+        }
         let changed = self
             .draw_graph_values(
                 ui,
@@ -301,29 +405,6 @@ impl PackageAuthoringApp {
                 ability_values,
                 ..edits.clone()
             });
-        ui.add_space(6.0);
-        if page.trail.graphs.len() >= SPAWN_DEPTH {
-            return changed;
-        }
-        if loaded.spawns.is_empty() {
-            ui.weak("Spawns nothing.");
-            return changed;
-        }
-        ui.label(quiet(ui, "Spawns"));
-        let mut opened = None;
-        for (graph, name) in &loaded.spawns {
-            let (label, hover) = if edited(*graph) {
-                (format!("{name} •"), format!("Changed · 0x{graph:08X}"))
-            } else {
-                (name.clone(), format!("0x{graph:08X}"))
-            };
-            if style::list_row(ui, false, &label)
-                .on_hover_text(hover)
-                .clicked()
-            {
-                opened = Some(*graph);
-            }
-        }
         if let Some(graph) = opened {
             page.trail.graphs.push(graph);
         }

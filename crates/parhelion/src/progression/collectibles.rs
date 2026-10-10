@@ -712,7 +712,7 @@ pub(crate) fn append_collectible(
         material_set_index,
     )?;
 
-    while data.len() % 16 != 0 {
+    while !data.len().is_multiple_of(16) {
         data.push(0);
     }
     let new_parent_target = data.len();
@@ -721,7 +721,7 @@ pub(crate) fn append_collectible(
     for parent in presentation_parents {
         parent_block.extend_from_slice(&parent.to_le_bytes());
     }
-    while (parent_block.len() + NESTED_ARRAY_TRAILER.len()) % 16 != 0 {
+    while !(parent_block.len() + NESTED_ARRAY_TRAILER.len()).is_multiple_of(16) {
         parent_block.push(0);
     }
     parent_block.extend_from_slice(&NESTED_ARRAY_TRAILER);
@@ -738,7 +738,7 @@ pub(crate) fn append_collectible(
     )?;
 
     for nested in nested_clones {
-        while data.len() % 16 != 0 {
+        while !data.len().is_multiple_of(16) {
             data.push(0);
         }
         let new_target = data.len();

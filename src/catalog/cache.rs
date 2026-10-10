@@ -11,7 +11,7 @@ use super::{
     ProgressionDefinition, RecordDefinition, UnlockDefinition,
 };
 
-pub(super) const CACHE_SCHEMA: u32 = 135;
+pub(super) const CACHE_SCHEMA: u32 = 136;
 pub(super) const SUNDIAL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Serialize, Deserialize)]

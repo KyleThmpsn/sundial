@@ -11,12 +11,8 @@
 //! - Its melee audio (`audio`): swing, hit and surface sounds from its own melee controller,
 //!   played through a contact profile whose key the Adaptive Glaive's melee program names as
 //!   the glaive's melee attack.
-//! - The glaive bolt: Skyburner's Oath projectile carrying the source bolt's ballistics and
-//!   damage (`glaive/bolt.json`), with the source bolt's particles for the weapon's damage type.
-//!   The bolt's sequence keeps one group of systems per damage type, so the template's Void
-//!   systems give way to the same places in the glaive's own group. It applies when the source's
-//!   barrel fires the projectile it was converted from, which every glaive's does, exotics
-//!   included.
+//! - A private projectile assembled from the source bolt's converted controllers, programs
+//!   and supported particle events. The graph receipt records native compatibility choices.
 //! - The modern glaive shield's first-person particle systems, converted into the model graph.
 //!   The shield is shared glaive guard content (entity `80CEE9AC`, sequence `80CED6E3`, control
 //!   `shield`), not part of any one glaive, so every glaive converts the same three systems.
@@ -85,9 +81,6 @@ const MAGAZINE: u32 = 0xE6BE_4C5A;
 const BASE_MAGAZINE: [[i32; 2]; 2] = [[0, 4], [100, 14]];
 const STAT_TABLE_SLOT: usize = 95;
 const STAT_ROW_CLASS: u32 = 0x8080_7D09;
-/// The Enigma's bolt as a fired graph, converted from the projectile every glaive's barrel
-/// fires, with the bolt particle systems its slots name.
-const BOLT: &str = include_str!("glaive/bolt.json");
 /// The runtime value modern particle programs read as the weapon's damage type.
 const DAMAGE_TYPE_INPUT: u32 = 0x49FC_E899;
 /// The bolt sequence's event rows, its particle event kind and that event's system rows.
@@ -160,79 +153,46 @@ fn fnv1(text: &str) -> u32 {
     })
 }
 
-/// The particle systems the bolt sequence plays under the control named `branch`, in event
-/// order, its descendants' included.
-fn branch_systems(sr: &mut Reader, sequence: u32, branch: &str) -> Result<Vec<u32>> {
-    let p = sr.tag(sequence, None)?;
-    let read = crate::d2_mot::entity::sequence::Sequence::read(&p)?;
-    let definition = p.pointer(24)?;
-    let events = p
-        .array(definition + 0x1D8, 24, Some(SEQUENCE_EVENT_ROW))?
-        .into_iter()
-        .map(|row| p.pointer(row + 16))
-        .collect::<Result<Vec<_>>>()?;
-    let named = read
-        .controls
-        .iter()
-        .enumerate()
-        .filter(|(_, control)| control.name == fnv1(branch))
-        .map(|(index, _)| index)
-        .collect::<Vec<_>>();
-    let [root] = named[..] else {
-        anyhow::bail!("the bolt sequence names {} {branch} controls", named.len());
-    };
-    let mut systems = Vec::new();
-    let mut pending = vec![root];
-    while let Some(index) = pending.pop() {
-        let control = &read.controls[index];
-        for child in &control.children {
-            if !child.event {
-                continue;
-            }
-            let at = *events.get(child.index).context("bolt sequence event")?;
-            if p.u32(at + 0x1C)? != PARTICLE_EVENT {
-                continue;
-            }
-            for row in p.array(at + 0x28, 24, Some(PARTICLE_EVENT_ROW))? {
-                systems.push(p.u32(row + 16)?);
-            }
+/// Follow the barrel projectile and sequence ancestry without weapon or bolt hash gates.
+fn bolt_systems(sr: &mut Reader, projectile: u32, branch: Option<&str>) -> Result<Vec<u32>> {
+    use crate::d2_mot::entity::{links::Graph, sequence::Sequence};
+    let entity = sr.tag(projectile, Some(ENTITY_CLASS))?;
+    let graph = Graph::read(&entity, true)?;
+    let branches = ["thermal", "arc", "void", "stasis", "strand"].map(fnv1);
+    let selected = branch.map(fnv1);
+    let mut systems = BTreeSet::new();
+    for component in graph.components {
+        let p = sr.tag(component, None)?;
+        if p.u32(p.pointer(16)? + 4)? != 0x80808179 {
+            continue;
         }
-        // Children run in table order, so push them reversed.
-        for child in control.children.iter().rev().filter(|child| !child.event) {
-            pending.push(child.index);
+        let sequence = Sequence::read(&p)?;
+        for row in p.array(p.pointer(24)? + 0x1D8, 24, Some(SEQUENCE_EVENT_ROW))? {
+            let event = p.pointer(row + 16)?;
+            if p.u32(event + 0x1C)? != PARTICLE_EVENT {
+                continue;
+            }
+            let mut parent = Some(usize::try_from(p.i16(event + 6)?)?);
+            let mut keep = true;
+            while let Some(index) = parent {
+                let control = sequence.controls.get(index).context("bolt event parent")?;
+                if branches.contains(&control.name) && Some(control.name) != selected {
+                    keep = false;
+                }
+                parent = control.parent;
+            }
+            if keep {
+                for system in p.array(event + 0x28, 24, Some(PARTICLE_EVENT_ROW))? {
+                    systems.insert(p.u32(system + 16)?);
+                }
+            }
         }
     }
-    Ok(systems)
-}
-
-/// The bolt systems for the glaive's damage type: the template's systems with each one from its
-/// Void group replaced by the system at the same place in the glaive's group. A Void system with
-/// no counterpart maps to `None`, and its slot keeps the base projectile's own particles.
-fn bolt_systems(
-    sr: &mut Reader,
-    bolt: &Value,
-    branch: Option<&str>,
-) -> Result<Vec<(u32, Option<u32>)>> {
-    let sequence = u32::from_str_radix(bolt["sequence"].as_str().context("bolt sequence")?, 16)?;
-    let template_branch = bolt["branch"].as_str().context("bolt branch")?;
-    let template = branch_systems(sr, sequence, template_branch)?;
-    let own = match branch {
-        Some(branch) if branch != template_branch => branch_systems(sr, sequence, branch)?,
-        Some(_) => template.clone(),
-        None => Vec::new(),
-    };
-    bolt["systems"]
-        .as_array()
-        .context("bolt systems")?
-        .iter()
-        .map(|system| {
-            let system = u32::from_str_radix(system.as_str().context("bolt system")?, 16)?;
-            Ok(match template.iter().position(|tag| *tag == system) {
-                Some(place) => (system, own.get(place).copied()),
-                None => (system, Some(system)),
-            })
-        })
-        .collect()
+    ensure!(
+        !systems.is_empty(),
+        "source projectile has no supported particle events"
+    );
+    Ok(systems.into_iter().collect())
 }
 
 /// Whether the source's item type is Glaive.
@@ -292,12 +252,9 @@ pub(crate) fn apply(
         source_rig: inputs.source_rig,
         namespace: recipe["namespace"].as_str().context("recipe namespace")?,
     })?;
-    // The bolt is the projectile the source's barrel fires. Every glaive's weapon component
-    // names the one the template was converted from, exotics included.
-    let bolt: Value = serde_json::from_str(BOLT)?;
     let mut sr = Reader::discovery(inputs.modern, &inputs.work.join("source"), true)?;
-    let projectile = source_projectile(&mut sr, inputs.source_rig)?;
-    let shared_bolt = projectile.is_some_and(|tag| bolt["projectile"] == format!("{tag:08X}"));
+    let projectile = source_projectile(&mut sr, inputs.source_rig)?
+        .context("The glaive barrel does not name one supported source projectile")?;
     let kit: Value = serde_json::from_str(KIT)?;
     let graph_path = inputs.graph.join("asset-graph.json");
     let mut graph: Value = serde_json::from_slice(&fs::read(&graph_path)?)?;
@@ -319,14 +276,9 @@ pub(crate) fn apply(
     let (lane, plug) = intrinsic(&mut native, base, recipe)?;
     let perks = perk_rows(&mut native, &kit["source_perks"])?;
     let element = element(source);
-    // Each bolt slot's template system and the glaive's own for it. Without a known damage type
-    // every slot keeps the base projectile's own particles.
-    let bolt_slots = match (shared_bolt, element) {
-        (true, Some((branch, _))) => bolt_systems(&mut sr, &bolt, branch)?,
-        _ => Vec::new(),
-    };
+    let (branch, element_value) = element.context("The glaive damage type is unsupported")?;
     let mut systems = SHIELD_SYSTEMS.to_vec();
-    systems.extend(bolt_slots.iter().filter_map(|(_, own)| *own));
+    systems.extend(bolt_systems(&mut sr, projectile, branch)?);
     progress("Converting the glaive shield and bolt particles…".into());
     let decompiler = super::native::automatic::decompiler(progress)?;
     let mut inputs_fixed: BTreeMap<u32, f32> = NEUTRAL_INPUTS.into_iter().collect();
@@ -353,45 +305,32 @@ pub(crate) fn apply(
             serde_json::to_string(&refused)?
         );
     }
-    let fired = if shared_bolt {
-        ensure!(
-            recipe["overrides"].get("fired_graph").is_none(),
-            "the recipe already fires its own graph"
-        );
-        let mut fired = bolt["fired_graph"].clone();
-        // A slot whose system has no counterpart for this damage type, or one the converter
-        // refuses, is left out and keeps the base projectile's own particles.
-        let mut slots = Vec::new();
-        let mut kept = Vec::new();
-        for mut slot in fired["particles"]
-            .as_array_mut()
-            .context("bolt particle slots")?
-            .drain(..)
-        {
-            let template = slot["system"]
-                .as_str()
-                .and_then(|symbol| symbol.strip_prefix("particle-system-"))
-                .context("bolt particle slot system")?;
-            let template = u32::from_str_radix(template, 16)?;
-            let own = bolt_slots
-                .iter()
-                .find(|(system, _)| *system == template)
-                .and_then(|(_, own)| *own);
-            let symbol = own.and_then(|own| section["systems"][format!("{own:08X}")].as_str());
-            slots.push(json!({"template":format!("{template:08X}"),
-                "system":own.map(|own| format!("{own:08X}")),"converted":symbol.is_some()}));
-            if let Some(symbol) = symbol {
-                slot["system"] = json!(symbol);
-                kept.push(slot);
-            }
-        }
-        fired["particles"] = json!(kept);
-        recipe["overrides"]["fired_graph"] = fired;
-        json!({"projectile":bolt["projectile"],"element":element.and_then(|(branch, _)| branch),
-            "slots":slots,"refused":refused})
-    } else {
-        json!({"projectile":projectile.map(|tag| format!("{tag:08X}")),"kept":"the base's own firing"})
-    };
+    ensure!(
+        recipe["overrides"].get("fired_graph").is_none(),
+        "the recipe already fires its own graph"
+    );
+    ensure!(
+        graph.get("projectile").is_none(),
+        "the model already carries a projectile"
+    );
+    progress("Converting the source projectile controllers…".into());
+    let projectile_section = super::native::projectile::convert(
+        &mut sr,
+        &mut native,
+        projectile,
+        &section,
+        inputs.graph,
+        &super::native::projectile::Profile {
+            namespace: recipe["namespace"].as_str().context("recipe namespace")?,
+            element: element_value,
+            // The glaive kit uses an instant-fire native carrier. Retain its established
+            // launch compensation while translating the source controller graph.
+            speed_boost: 120.0,
+        },
+    )?;
+    recipe["overrides"]["fired_graph"] = json!({"imported":projectile_section["root"]});
+    let fired = projectile_section["conversion"].clone();
+    graph["projectile"] = projectile_section;
     let geometry = hidden_geometry(&mut native, inputs.graph)?;
     section["nodes"]
         .as_array_mut()

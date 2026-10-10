@@ -57,7 +57,7 @@ impl Scale {
 /// The height of a line of `font` as Dear ImGui measures it, which Dawn lays out by: the face's
 /// ascent less its descent. egui adds the face's line gap, which the game faces leave at zero.
 pub(super) fn line_height(ui: &egui::Ui, font: &egui::FontId) -> f32 {
-    ui.fonts(|fonts| fonts.row_height(font))
+    ui.fonts_mut(|fonts| fonts.row_height(font))
 }
 
 /// The band an item's rarity gives it. An unclassified item takes Common's, as in game.
@@ -122,9 +122,23 @@ pub(super) fn single_line(
     color: egui::Color32,
     width: f32,
 ) -> Arc<egui::Galley> {
+    tracked_line(ui, text, (font, color), width, 0.0)
+}
+
+/// [`single_line`] with `tracking` pixels added after each letter.
+pub(super) fn tracked_line(
+    ui: &egui::Ui,
+    text: &str,
+    (font, color): (egui::FontId, egui::Color32),
+    width: f32,
+    tracking: f32,
+) -> Arc<egui::Galley> {
     let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+    if let Some(section) = job.sections.first_mut() {
+        section.format.extra_letter_spacing = tracking;
+    }
     job.wrap = egui::text::TextWrapping::truncate_at_width((width - CLIP_SLACK).max(0.0));
-    ui.fonts(|fonts| fonts.layout_job(job))
+    ui.fonts_mut(|fonts| fonts.layout_job(job))
 }
 
 /// Text wrapped to `width`.
@@ -135,7 +149,7 @@ pub(super) fn wrapped(
     color: egui::Color32,
     width: f32,
 ) -> Arc<egui::Galley> {
-    ui.fonts(|fonts| fonts.layout(text.to_owned(), font, color, width.max(0.0)))
+    ui.fonts_mut(|fonts| fonts.layout(text.to_owned(), font, color, width.max(0.0)))
 }
 
 /// Capitals set with the game's letter spacing.
@@ -157,7 +171,7 @@ pub(super) fn spaced_capitals(
             ..Default::default()
         },
     );
-    ui.fonts(|fonts| fonts.layout_job(job))
+    ui.fonts_mut(|fonts| fonts.layout_job(job))
 }
 
 /// The extra weight a heavier game face is struck with: none when the install has the face,
@@ -212,7 +226,7 @@ pub(super) fn cap_band(ui: &egui::Ui, font: egui::FontId) -> (f32, f32) {
 /// symbol is artwork with no baseline of its own, so it is laid out on its ink.
 pub(super) fn ink_band(ui: &egui::Ui, font: egui::FontId, glyph: char) -> (f32, f32) {
     let galley =
-        ui.fonts(|fonts| fonts.layout_no_wrap(glyph.to_string(), font, egui::Color32::WHITE));
+        ui.fonts_mut(|fonts| fonts.layout_no_wrap(glyph.to_string(), font, egui::Color32::WHITE));
     galley
         .rows
         .first()

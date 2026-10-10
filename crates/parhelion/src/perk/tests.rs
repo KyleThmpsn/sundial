@@ -79,6 +79,7 @@ fn standalone_perks_reject_invalid_compiler_inputs_before_library_save() {
     effect.projectiles.push(
         sundial::package_authoring::sandbox_perk::entity::Selection {
             source_graph: 0,
+            damage_type: None,
             donor_graph: 0x80BB_DAD4,
         },
     );

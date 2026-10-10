@@ -143,8 +143,10 @@ fn image(model: &Model, size: [usize; 2]) -> eframe::egui::ColorImage {
             ..Default::default()
         },
         render::Scene {
+            filmic: false,
+            bloom: false,
             background: [0; 3],
-            ..Default::default()
+            ..render::Scene::unit_exposure()
         },
         size,
         0.0,
@@ -179,7 +181,8 @@ fn export_geometry(glb: &[u8]) -> usize {
 #[test]
 fn native_mip_images_and_sampler_footprints_survive_preview_and_saved_artifacts() {
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let out = configured
         .as_deref()
         .map(Path::new)

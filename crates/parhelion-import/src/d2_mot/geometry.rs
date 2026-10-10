@@ -6,6 +6,41 @@ use std::{
     fs::File,
     io::Write,
 };
+mod cloth;
+mod stream;
+pub(crate) use stream::{raw, streams};
+
+/// Read a conversion view while preserving the original exported bytes.
+pub(crate) fn model(root: &std::path::Path, tag: u32) -> Result<Payload> {
+    cloth::prepare(raw(root, tag)?, &mut |tag| raw(root, tag))
+}
+
+pub(crate) fn faces(
+    indices: &[u32],
+    vertices: usize,
+    restart: u32,
+    primitive: u16,
+) -> Result<Vec<[u32; 3]>> {
+    match primitive {
+        5 => triangles(indices, vertices, restart),
+        3 => {
+            ensure!(indices.len().is_multiple_of(3), "incomplete triangle list");
+            ensure!(
+                indices
+                    .iter()
+                    .all(|&i| i != restart && (i as usize) < vertices),
+                "triangle list exceeds vertex buffer"
+            );
+            Ok(indices
+                .chunks_exact(3)
+                .filter_map(|v| {
+                    (v[0] != v[1] && v[1] != v[2] && v[0] != v[2]).then_some([v[0], v[1], v[2]])
+                })
+                .collect())
+        }
+        _ => anyhow::bail!("unsupported source primitive {primitive}"),
+    }
+}
 
 /// Which detail categories of a source model count as part of the weapon.
 ///
@@ -128,6 +163,16 @@ pub(crate) fn indices(header: &Payload, data: &Payload) -> Result<(Vec<u32>, u32
         .collect::<Result<Vec<_>>>()?;
     Ok((values, if wide { u32::MAX } else { u32::from(u16::MAX) }))
 }
+fn export_auxiliary(r: &mut Reader, tag: u32) -> Result<()> {
+    // Materials also use this buffer for detail UV scales. Preserve the declared
+    // dependency even when the geometry reader needs no auxiliary skin weights.
+    if ![0, u32::MAX, 0x811C9DC5].contains(&tag) {
+        r.tag(tag, None)?;
+        r.tag(r.reference(tag)?, None)?;
+    }
+    Ok(())
+}
+
 pub fn export_mesh(
     r: &mut Reader,
     tag: u32,
@@ -135,36 +180,25 @@ pub fn export_mesh(
     single: bool,
     detail: Detail,
 ) -> Result<Value> {
-    let model = r.tag(tag, Some(0x80806F07))?;
+    let model = cloth::prepare((*r.tag(tag, Some(0x80806F07))?).clone(), &mut |tag| {
+        Ok((*r.tag(tag, None)?).clone())
+    })?;
     let meshes = model.array(16, 128, Some(0x80806EC5))?;
     ensure!(!single || meshes.len() == 1, "expected single mesh");
     let mesh = *meshes
         .get(index)
         .ok_or_else(|| anyhow::anyhow!("mesh index outside model"))?;
-    let auxiliary = model.u32(mesh + 24)?;
-    if auxiliary != 0 && auxiliary != u32::MAX {
-        r.tag(auxiliary, None)?;
-        r.tag(r.reference(auxiliary)?, None)?;
-    }
-    let pt = model.u32(mesh)?;
+    export_auxiliary(r, model.u32(mesh + 24)?)?;
+    let streams = stream::read(&model, mesh, &mut |tag| {
+        Ok((
+            (*r.tag(tag, None)?).clone(),
+            (*r.tag(r.reference(tag)?, None)?).clone(),
+        ))
+    })?;
     let ut = model.u32(mesh + 4)?;
     let it = model.u32(mesh + 16)?;
-    let ph = r.tag(pt, None)?;
-    let uh = r.tag(ut, None)?;
-    ensure!(
-        (ph.i16(4)?, ph.i16(6)?) == (24, 1) && (uh.i16(4)?, uh.i16(6)?) == (4, 1),
-        "unsupported packed vertex format"
-    );
-    let pos = r.tag(r.reference(pt)?, None)?;
+    let pos = Payload(streams.positions);
     let uv = r.tag(r.reference(ut)?, None)?;
-    ensure!(
-        pos.0.len() == ph.u32(0)? as usize && uv.0.len() == uh.u32(0)? as usize,
-        "vertex header size mismatch"
-    );
-    ensure!(
-        pos.0.len() % 24 == 0 && uv.0.len() == pos.0.len() / 24 * 4,
-        "vertex counts differ"
-    );
     let vertices = pos.0.len() / 24;
     let ih = r.tag(it, None)?;
     let ib = r.tag(r.reference(it)?, None)?;
@@ -177,11 +211,13 @@ pub fn export_mesh(
         if !detail.keeps(model.u8(part + 29)?) || !seen.insert((start, count)) {
             continue;
         }
-        ensure!(model.u16(part + 6)? == 5, "unsupported primitive");
         let slice = indices
             .get(start..start + count)
             .ok_or_else(|| anyhow::anyhow!("part index range exceeds buffer"))?;
-        parts.push((model.u32(part)?, triangles(slice, vertices, restart)?));
+        parts.push((
+            model.u32(part)?,
+            faces(slice, vertices, restart, model.u16(part + 6)?)?,
+        ));
     }
     let used = parts
         .iter()
@@ -209,7 +245,10 @@ pub fn export_mesh(
             write!(
                 out,
                 " {}",
-                pos.i16(i as usize * 24 + a * 2)? as f32 / 32767. * model.f32(0x50 + a * 4)?
+                (match &streams.float_positions {
+                    Some(values) => values.f32(i as usize * 48 + a * 4)?,
+                    None => pos.i16(i as usize * 24 + a * 2)? as f32 / 32767.,
+                }) * model.f32(0x50 + a * 4)?
                     + model.f32(0x60 + a * 4)?
             )?
         }
@@ -251,8 +290,8 @@ pub fn export_mesh(
     }
     out.flush()?;
     let mut bones = BTreeMap::new();
-    for o in (0..pos.0.len()).step_by(24) {
-        *bones.entry(pos.i16(o + 6)?.to_string()).or_insert(0usize) += 1;
+    for bone in crate::d2_mot::skinning::used(&pos.0, &streams.auxiliary)? {
+        bones.insert(bone.to_string(), 1usize);
     }
     Ok(
         json!({"model":format!("{tag:08X}"),"mesh_index":index,"obj":filename,"vertices_all_lods":vertices,"full_detail_vertices":used.len(),"full_detail_triangles":parts.iter().map(|(_,f)|f.len()).sum::<usize>(),"rigid_bone_zero":bones.len()==1&&bones.contains_key("0"),"bone_selectors":bones,"materials":model.array(mesh+32,36,Some(0x80806ECB))?.iter().map(|&p|Ok(format!("{:08X}",model.u32(p)?))).collect::<Result<BTreeSet<_>>>()?}),

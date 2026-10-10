@@ -31,16 +31,26 @@ const CARD_COLUMN_GAP: f32 = 8.0;
 const CARD_ROW_GAP: f32 = 3.0;
 const CARD_TEXT_GAP: f32 = 8.0;
 const CARD_TEXT_RIGHT_INSET: f32 = 10.0;
-/// The name is all capitals, so its line's descender room already parts it from the detail.
-const CARD_LINE_GAP: f32 = -1.0;
-const CARD_NAME_SCALE: f32 = 1.8;
-const CARD_DETAIL_SCALE: f32 = 1.1;
+/// The space between the name's capitals and the detail's, as a share of the name's cap height,
+/// close enough that the two read as one lockup. The measured glyph bounds include a pixel of
+/// padding, so the visible gap is somewhat smaller.
+const CARD_INK_GAP: f32 = 0.65;
+/// How far the lockup sits above the card's middle, which the eye reads as centred.
+const CARD_OPTICAL_LIFT: f32 = 0.5;
+/// Space after each of the name's capitals, a touch so they do not crowd. Tabs and headings,
+/// smaller, take far more.
+const CARD_NAME_TRACKING: f32 = 0.4;
+/// The detail size of Dawn's collection card, whose row this card's geometry follows. The name is
+/// larger than either of Dawn's card names (1.15 and the band card's 1.35).
+const CARD_NAME_SCALE: f32 = 1.45;
+const CARD_DETAIL_SCALE: f32 = 1.0;
 const CARD_NAME_WEIGHT: f32 = 0.8;
 /// Separator between the halves of a card's detail line.
 const DETAIL_SEPARATOR: &str = "  /  ";
-/// Tabs: their height, widest width, the rail under the open one, and the capitals' spacing.
-const TAB_HEIGHT: f32 = 34.0;
-const TAB_MAXIMUM_WIDTH: f32 = 110.0;
+/// Tabs: their height, the room either side of a label, which spaces every label evenly apart,
+/// the rail under the open one, and the capitals' spacing.
+const TAB_HEIGHT: f32 = 28.0;
+const TAB_PADDING: f32 = 14.0;
 const TAB_RAIL_INSET: f32 = 10.0;
 const TAB_RAIL_HEIGHT: f32 = 2.0;
 const TAB_HOVER_ALPHA: f32 = 0.45;
@@ -250,15 +260,13 @@ fn tab_button(
     let muted = look::muted(ui);
     let label_galley = item_art::spaced_capitals(ui, label, font.clone(), text, scale.px(TRACKING));
     let count_galley = count.map(|count| {
-        ui.fonts(|fonts| fonts.layout_no_wrap(count.to_string(), font.clone(), muted))
+        ui.fonts_mut(|fonts| fonts.layout_no_wrap(count.to_string(), font.clone(), muted))
     });
     let count_width = count_galley
         .as_ref()
         .map_or(0.0, |galley| galley.size().x + scale.px(HEADING_COUNT_GAP));
     let content = label_galley.size().x + count_width;
-    let width = scale
-        .px(TAB_MAXIMUM_WIDTH)
-        .max(content + scale.px(TAB_RAIL_INSET) * 2.0);
+    let width = content + scale.px(TAB_PADDING) * 2.0;
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(width, scale.px(TAB_HEIGHT)),
         egui::Sense::click(),
@@ -310,7 +318,12 @@ pub(super) fn filter_row(
 ) -> (egui::Response, bool) {
     let scale = Scale::of(ui);
     let filters = browse.tab != BrowseTab::Recent;
-    let height = ui.spacing().interact_size.y.max(scale.px(30.0));
+    // The search and pickers take an ordinary control's height, with room for a line of text.
+    let height = ui
+        .spacing()
+        .interact_size
+        .y
+        .max(ui.text_style_height(&egui::TextStyle::Body) + 6.0);
     let mut reset = false;
     let response = ui
         .horizontal_wrapped(|ui| {
@@ -366,7 +379,7 @@ pub(super) fn filter_row(
 
 fn text_width(ui: &egui::Ui, style: egui::TextStyle, text: &str) -> f32 {
     let font = style.resolve(ui.style());
-    ui.fonts(|fonts| {
+    ui.fonts_mut(|fonts| {
         fonts
             .layout_no_wrap(text.to_owned(), font, egui::Color32::WHITE)
             .size()
@@ -484,7 +497,7 @@ fn picker(
     let scale = Scale::of(ui);
     let popup_id = egui::Id::new(id);
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
-    let open = ui.memory(|memory| memory.is_popup_open(popup_id));
+    let open = egui::Popup::is_id_open(ui, popup_id);
     let visuals = ui.visuals();
     let stroke = if open || response.hovered() {
         visuals.widgets.hovered.bg_stroke
@@ -525,21 +538,20 @@ fn picker(
         egui::Stroke::NONE,
     ));
     if response.clicked() {
-        ui.memory_mut(|memory| memory.toggle_popup(popup_id));
+        egui::Popup::toggle_id(ui, popup_id);
     }
-    egui::popup_below_widget(
-        ui,
-        popup_id,
+    crate::ui::dropdown(
         &response.on_hover_cursor(egui::CursorIcon::PointingHand),
-        egui::PopupCloseBehavior::CloseOnClick,
-        |ui| {
-            ui.set_min_width(width);
-            ui.spacing_mut().item_spacing.y = 1.0;
-            egui::ScrollArea::vertical()
-                .max_height(scale.px(PICKER_LIST_HEIGHT))
-                .show(ui, rows);
-        },
-    );
+        popup_id,
+    )
+    .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+    .show(|ui| {
+        ui.set_min_width(width);
+        ui.spacing_mut().item_spacing.y = 1.0;
+        egui::ScrollArea::vertical()
+            .max_height(scale.px(PICKER_LIST_HEIGHT))
+            .show(ui, rows);
+    });
 }
 
 /// One row of a picker's list. The chosen row carries a rail at its left edge.
@@ -893,7 +905,7 @@ fn section_heading(
     let top = rect.top() + scale.px(HEADING_PADDING) * 0.5;
     let rule_y = rect.top() + item_art::line_height(ui, &font) + scale.px(HEADING_PADDING) - 1.0;
     let line = item_art::line_height(ui, &font);
-    let count_galley = ui.fonts(|fonts| fonts.layout_no_wrap(count.to_string(), font, muted));
+    let count_galley = ui.fonts_mut(|fonts| fonts.layout_no_wrap(count.to_string(), font, muted));
     let painter = ui.painter();
     // A heading that folds leads with a chevron, pointing down while open and right while folded.
     let label_left = if folded.is_some() {
@@ -971,24 +983,27 @@ fn card(
     let icon = egui::Rect::from_min_size(rect.min, egui::Vec2::splat(rect.height()));
     item_art::icon(ui, catalog, entry.hash, entry.rarity, icon);
 
-    // The name and the detail are centred as a pair against the icon, on Dear ImGui's line
-    // heights. The pair keeps its place when an item has no detail line.
+    // The name and the detail are centred as a pair on their ink, from the name's capitals to
+    // the detail's baseline, lifted a little so the pair reads as centred. Line boxes would leave
+    // the capitals-only name's empty descender room in the measure and set the pair low. The
+    // pair keeps its place when an item has no detail line.
     let text_left = icon.right() + scale.px(CARD_TEXT_GAP);
     let text_width = (rect.right() - scale.px(CARD_TEXT_RIGHT_INSET) - text_left).max(0.0);
     let name_color = item_art::band_text(entry.rarity, false);
     let detail_color = item_art::band_text(entry.rarity, true);
     let name_font = item_art::title_font(ui, scale.body * CARD_NAME_SCALE);
     let detail_font = item_art::text_font(ui, scale.body * CARD_DETAIL_SCALE);
-    let name_height = item_art::line_height(ui, &name_font);
-    let line_gap = scale.px(CARD_LINE_GAP);
-    let top = rect.top()
-        + (rect.height() - name_height - line_gap - item_art::line_height(ui, &detail_font)) * 0.5;
-    let name = item_art::single_line(
+    let (name_ink, name_cap) = item_art::cap_band(ui, name_font.clone());
+    let (detail_ink, detail_cap) = item_art::cap_band(ui, detail_font.clone());
+    let gap = name_cap * CARD_INK_GAP;
+    let ink_top = rect.top() + (rect.height() - name_cap - gap - detail_cap) * 0.5
+        - scale.px(CARD_OPTICAL_LIFT);
+    let name = item_art::tracked_line(
         ui,
         &item_art::shout(&entry.name),
-        name_font,
-        name_color,
+        (name_font, name_color),
         text_width,
+        scale.px(CARD_NAME_TRACKING),
     );
     let detail = detail(entry);
     let detail = (!detail.is_empty())
@@ -997,14 +1012,14 @@ fn card(
     let painter = ui.painter();
     item_art::bold(
         painter,
-        egui::pos2(text_left, top),
+        egui::pos2(text_left, ink_top - name_ink),
         &name,
         name_color,
         weight,
     );
     if let Some(detail) = detail {
         painter.galley(
-            egui::pos2(text_left, top + name_height + line_gap),
+            egui::pos2(text_left, ink_top + name_cap + gap - detail_ink),
             detail,
             detail_color,
         );
@@ -1027,7 +1042,7 @@ fn card_menu(ui: &mut egui::Ui, catalog: &Catalog, entry: &BrowseEntry) -> bool 
         .clicked()
     {
         crate::app::item_editor::request_model_preview(ui.ctx(), entry.hash, Default::default());
-        ui.close_menu();
+        ui.close();
     }
     ui.separator();
     for (label, text) in [
@@ -1037,11 +1052,11 @@ fn card_menu(ui: &mut egui::Ui, catalog: &Catalog, entry: &BrowseEntry) -> bool 
     ] {
         if ui.button(label).clicked() {
             ui.ctx().copy_text(text);
-            ui.close_menu();
+            ui.close();
         }
     }
     if open {
-        ui.close_menu();
+        ui.close();
     }
     open
 }
@@ -1082,7 +1097,7 @@ fn add_menu(ui: &mut egui::Ui, catalog: &Catalog, entry: &BrowseEntry) {
                 let fits = fits(*class, targets.cross_class_subclasses);
                 if ui.add_enabled(fits, egui::Button::new(label)).clicked() {
                     requests::request_add(ui.ctx(), entry.hash, AddDestination::Character(index));
-                    ui.close_menu();
+                    ui.close();
                 }
             }
             if ui
@@ -1090,7 +1105,7 @@ fn add_menu(ui: &mut egui::Ui, catalog: &Catalog, entry: &BrowseEntry) {
                 .clicked()
             {
                 requests::request_add(ui.ctx(), entry.hash, AddDestination::Profile);
-                ui.close_menu();
+                ui.close();
             }
         });
     });

@@ -1,6 +1,6 @@
 //! Real-file smoke coverage for coordinated saves and retries.
 use super::*;
-use crate::app::workspace_save::{
+use crate::app::saving::sources::{
     WorkspaceSaveError, WorkspaceSaveReceipt, save_changed_sources_with_json,
 };
 use crate::persistence::sqlite_account::snapshot;
@@ -102,7 +102,7 @@ fn sqlite_smoke_mixed_save_conflict_rollback_retry_and_reload() {
     let mut repeat = reopened.clone();
     save_changed_sources(&mut repeat, &reopened, &settings, false, true).unwrap();
     assert_eq!(snapshot::read(&database).unwrap(), before_repeat);
-    if let Some(path) = std::env::var_os("SUNDIAL_SQLITE_SMOKE_EXPORT") {
+    if let Some(path) = crate::test_support::artifacts("sqlite-smoke.sqlite3") {
         db.backup(rusqlite::MAIN_DB, std::path::Path::new(&path), None)
             .unwrap();
     }

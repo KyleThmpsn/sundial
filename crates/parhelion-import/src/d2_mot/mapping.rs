@@ -181,7 +181,7 @@ fn mesh_carries(
                 let tag = model.u32(np)?;
                 let mat = native_raw(tag)?;
                 if mat.u32(8)? == source_mat.u32(8)?
-                    && (stage == 7 || (model.u16(np + 24)? as u32 & 8) == alpha)
+                    && (plated || stage == 7 || (model.u16(np + 24)? as u32 & 8) == alpha)
                     && mat.u8(32)? == source_mat.u8(48)?
                 {
                     matches.insert(tag);
@@ -330,9 +330,9 @@ pub(crate) fn contract_signature(
             ));
         }
     }
-    // Version 2 also requires each retained stage's actual input layout.
-    // Earlier cached carriers were selected from buffer strides alone.
-    let mut key = format!("v2/{stride}/{}", u8::from(plated));
+    // Plated conversion replaces the material programs and keeps the source
+    // draw flags. A donor's draw flags therefore do not constrain this shell.
+    let mut key = format!("v3/{stride}/{}", u8::from(plated));
     for (stage, class, state, alpha) in wanted {
         key.push_str(&format!(":{stage},{class:X},{state:X},{alpha}"));
     }
@@ -461,7 +461,7 @@ pub(crate) fn uncarried(
     let mut missing = vec![];
     for entry in report["models"].as_array().context("source models")? {
         let tag = u32::from_str_radix(entry["model"].as_str().context("source model tag")?, 16)?;
-        let model = raw(source, tag)?;
+        let model = source_model(source, tag)?;
         let mesh = super::geometry::selected_mesh(&model, entry)?;
         if choose_carrier(source, native, &model, mesh, template, (true, stride)).is_err() {
             missing.push((tag, mesh));
@@ -472,7 +472,7 @@ pub(crate) fn uncarried(
 
 /// Read one extracted source model payload by tag.
 pub(crate) fn source_model(source: &Path, tag: u32) -> Result<Payload> {
-    raw(source, tag)
+    super::geometry::model(source, tag)
 }
 
 /// Return the same primary render owner that bundle emission will retain.
@@ -489,7 +489,7 @@ pub(crate) fn primary_carrier_owner(
         .context("source models")?
         .first()
         .context("primary source model")?;
-    let model = raw(
+    let model = source_model(
         source,
         u32::from_str_radix(entry["model"].as_str().context("source model")?, 16)?,
     )?;
@@ -521,7 +521,7 @@ pub(crate) fn check_carriers(
 ) -> Result<()> {
     for entry in report["models"].as_array().context("source models")? {
         let tag = entry["model"].as_str().context("source model tag")?;
-        let model = raw(source, u32::from_str_radix(tag, 16)?)?;
+        let model = source_model(source, u32::from_str_radix(tag, 16)?)?;
         let mesh = super::geometry::selected_mesh(&model, entry)?;
         choose_carrier(source, native, &model, mesh, template, (true, stride))
             .with_context(|| format!("source model {tag}"))?;
@@ -623,7 +623,7 @@ fn map_stages(
                 }
                 let mat = raw(native, tag)?;
                 if mat.u32(8)? == bind
-                    && (stage == 7 || (native_model.u16(np + 24)? as u32 & 8) == alpha)
+                    && (plated || stage == 7 || (native_model.u16(np + 24)? as u32 & 8) == alpha)
                     && mat.u8(32)? == source_mat.u8(48)?
                 {
                     candidates.push((tag, np, mat));

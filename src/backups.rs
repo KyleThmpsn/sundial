@@ -1,6 +1,6 @@
 //! Readable backups with per-file ownership and legacy history retention.
 mod index;
-use crate::paths;
+use crate::system::paths;
 pub(crate) use index::create;
 use sha2::{Digest, Sha256};
 use std::{
@@ -44,7 +44,7 @@ pub(crate) fn source_directory(root: &Path, source: &Path) -> Result<PathBuf, St
             root.display()
         )
     })?;
-    let directory = resolved_root.join("sources").join(format!("{digest:x}"));
+    let directory = resolved_root.join("sources").join(hex::encode(digest));
     let resolved = paths::resolve_path_for_comparison(&directory).map_err(|error| {
         format!(
             "Could not resolve backup folder {}: {error}",

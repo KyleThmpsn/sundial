@@ -23,7 +23,7 @@ pub(crate) fn file_sha256(path: &Path) -> io::Result<String> {
         }
         hash.update(&buffer[..count]);
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(hex::encode(hash.finalize()))
 }
 
 /// An advisory write lease for cooperating processes. Keep the lock file in place,

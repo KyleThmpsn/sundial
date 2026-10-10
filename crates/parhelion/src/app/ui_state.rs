@@ -6,17 +6,19 @@ pub(crate) enum WorkbenchPage {
     #[default]
     Weapon,
     Appearance,
-    Collections,
     Advanced,
+    Collections,
     Identity,
 }
 
 impl WorkbenchPage {
+    /// In the order the tabs show: what the item is, how it looks, how it fires, then where it
+    /// appears and its identity.
     pub(crate) const ALL: [Self; 5] = [
         Self::Weapon,
         Self::Appearance,
-        Self::Collections,
         Self::Advanced,
+        Self::Collections,
         Self::Identity,
     ];
 
@@ -37,6 +39,8 @@ impl WorkbenchPage {
             crate::ItemKind::Weapon => &Self::ALL,
             // A subclass has no Collections entry. Its Appearance holds its screen art.
             crate::ItemKind::Subclass => &[Self::Weapon, Self::Appearance, Self::Identity],
+            // Nor has a mod, which the sockets of its type offer.
+            crate::ItemKind::Mod => &[Self::Weapon, Self::Identity],
             _ => &[Self::Weapon, Self::Collections, Self::Identity],
         }
     }

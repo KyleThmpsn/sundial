@@ -44,8 +44,8 @@ pub(in crate::catalog) use quality::{item_power_cap, scan_power_cap_definitions}
 pub(in crate::catalog) use scan::{ItemScan, ItemScanContext, scan_items};
 pub(crate) use sockets::SocketDef;
 pub(in crate::catalog) use sockets::{
-    GearKind, build_gear_type_options, build_socket_type_options, format_plug_label,
-    intern_socket_pools, sort_plug_options,
+    GearKind, SocketCarriers, build_gear_type_options, build_socket_type_carriers,
+    build_socket_type_options, format_plug_label, intern_socket_pools, sort_plug_options,
 };
 #[cfg(test)]
 pub(in crate::catalog) use sockets::{SocketOptionSource, SocketOptionSourceKind};
@@ -135,6 +135,10 @@ pub(crate) struct ItemPackageMetadata {
     pub string_definition_tag: Option<u32>,
     #[serde(default)]
     pub stat_group_index: Option<u16>,
+    /// The damage type the item's strings give it, in the native damage enum. A subclass shows
+    /// it beside its name.
+    #[serde(default)]
+    pub display_damage_type: Option<u8>,
     #[serde(default)]
     pub icon_container_tag: Option<u32>,
     /// The container the strings' second icon row names: an emblem's nameplate.

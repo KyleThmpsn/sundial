@@ -6,6 +6,15 @@ use sundial::package_authoring::account::{
     preview_authored_client_settings_for_runtime,
 };
 
+/// A staged recipe's private copy of a stock plug in one socket of its item. The copy takes the
+/// stock plug's place among that socket's choices.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct StockPlugVariant {
+    pub item_hash: u32,
+    pub lane: usize,
+    pub source: u32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplacementReview {
     installed: Vec<ArtifactMetadata>,
@@ -52,6 +61,15 @@ pub fn preview_replacement(target: &Path, staged: &Path) -> Result<ReplacementRe
     preview_with_progress(target, staged, &mut |_| {})
 }
 
+/// Read-only proposal with the package and account checks reported as they run.
+pub fn preview_replacement_with_progress(
+    target: &Path,
+    staged: &Path,
+    mut progress: impl FnMut(InstallProgress),
+) -> Result<ReplacementReview, String> {
+    preview_with_progress(target, staged, &mut progress)
+}
+
 const REVIEW_OPERATIONS: usize = 11;
 
 fn report(progress: progress::Observer<'_>, label: &str, completed: usize) {
@@ -88,6 +106,7 @@ fn preview_for_runtime_with_progress(
     report(progress, "Verifying Staged Packages and Recipes", 1);
     let incoming =
         validate_manifest_and_staged_files(&staged, &target).map_err(|e| e.to_string())?;
+    let variants = incoming.plug_variants;
     report(progress, "Checking Installed Packages", 2);
     let installed = preview_uninstall(&target).map_err(|e| e.to_string())?;
     report(progress, "Reading Client Settings", 3);
@@ -112,7 +131,8 @@ fn preview_for_runtime_with_progress(
         let old = identities::read_identities(&installed)?;
         report(progress, "Reading Staged Item Identities", 5);
         let incoming = identities::Generation::open(&target, &staged)?;
-        let compared = compare_generations(&installed, &incoming, old, &mut review, progress);
+        let compared =
+            compare_generations(&installed, &incoming, old, &variants, &mut review, progress);
         incoming.finish(compared)
     })();
     installed.finish(compared)?;
@@ -137,6 +157,7 @@ fn compare_generations(
     installed: &identities::Generation,
     staged: &identities::Generation,
     (old, old_unlocks): (BTreeSet<u32>, Vec<AuthoredCollectionUnlock>),
+    variants: &[StockPlugVariant],
     review: &mut ReplacementReview,
     progress: progress::Observer<'_>,
 ) -> Result<(), String> {
@@ -147,7 +168,7 @@ fn compare_generations(
     let previous = identities::socket_defaults(installed, &retained)?;
     report(progress, "Reading Staged Socket Choices", 7);
     let incoming = identities::socket_defaults(staged, &retained)?;
-    review.socket_changes = socket_changes(previous, incoming)?;
+    review.socket_changes = socket_changes(&previous, &incoming, &new, variants)?;
     report(progress, "Comparing Equipment Slots", 8);
     review.slots = identities::slot_replacement(installed, staged, &retained)?;
     review.removed_unlocks = old_unlocks
@@ -162,8 +183,10 @@ fn compare_generations(
 }
 
 fn socket_changes(
-    previous: BTreeMap<u32, Vec<Option<u32>>>,
-    incoming: BTreeMap<u32, Vec<Option<u32>>>,
+    previous: &BTreeMap<u32, Vec<Option<u32>>>,
+    incoming: &BTreeMap<u32, Vec<Option<u32>>>,
+    authored: &BTreeSet<u32>,
+    variants: &[StockPlugVariant],
 ) -> Result<Vec<AuthoredSocketChange>, String> {
     if previous.keys().ne(incoming.keys()) {
         return Err(
@@ -171,14 +194,14 @@ fn socket_changes(
         );
     }
     Ok(incoming
-        .into_iter()
-        .filter_map(|(definition_hash, default_plugs)| {
+        .iter()
+        .filter_map(|(&definition_hash, default_plugs)| {
             let installed = &previous[&definition_hash];
             // A lane both generations have whose default changed, such as a private plug taking
             // the place of a stock default, carries saved selections of the old default along.
-            let replaced_defaults = installed
+            let mut replaced_defaults = installed
                 .iter()
-                .zip(&default_plugs)
+                .zip(default_plugs)
                 .enumerate()
                 .filter_map(|(lane, (old, new))| match old {
                     Some(old) if Some(*old) != *new && *old != 0 && *old != u32::MAX => {
@@ -187,14 +210,41 @@ fn socket_changes(
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            (installed.len() != default_plugs.len() || !replaced_defaults.is_empty()).then_some(
+            // A lane whose default is a recipe's private copy of a stock plug carries saved
+            // selections of that stock plug along too, however many installs ago the copy took
+            // its place. A lane with more than one copy leaves its saved choices alone.
+            let item_variants = variants
+                .iter()
+                .filter(|variant| variant.item_hash == definition_hash)
+                .collect::<Vec<_>>();
+            for variant in &item_variants {
+                let lane = variant.lane;
+                let alone = item_variants.iter().filter(|v| v.lane == lane).count() == 1;
+                let private_default = default_plugs
+                    .get(lane)
+                    .copied()
+                    .flatten()
+                    .is_some_and(|plug| plug != variant.source && authored.contains(&plug));
+                let unclaimed = replaced_defaults.iter().all(|(other, _)| *other != lane);
+                if alone
+                    && private_default
+                    && unclaimed
+                    && lane < installed.len()
+                    && variant.source != 0
+                    && variant.source != u32::MAX
+                {
+                    replaced_defaults.push((lane, variant.source));
+                }
+            }
+            replaced_defaults.sort_unstable();
+            (installed.len() != default_plugs.len() || !replaced_defaults.is_empty()).then(|| {
                 AuthoredSocketChange {
                     definition_hash,
                     previous_socket_count: installed.len(),
-                    default_plugs,
+                    default_plugs: default_plugs.clone(),
                     replaced_defaults,
-                },
-            )
+                }
+            })
         })
         .collect())
 }

@@ -41,6 +41,7 @@ pub fn context(r: &mut Reader, modern: bool) -> Result<Value> {
                 | "gear_plated_textures"
                 | "frame"
                 | "view"
+                | "rigid_model"
                 | "gear_dye_0"
                 | "gear_dye_1"
                 | "gear_dye_2"

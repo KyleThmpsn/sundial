@@ -606,7 +606,7 @@ fn append_nodes(
         let row = rows_end + position * PRESENTATION_NODE_ROW_SIZE;
         nodes[row..row + PRESENTATION_NODE_ROW_SIZE].copy_from_slice(template);
         for clone in &descriptor_clones[position] {
-            while nodes.len() % 16 != 0 {
+            while !nodes.len().is_multiple_of(16) {
                 nodes.push(0);
             }
             let header = nodes.len();

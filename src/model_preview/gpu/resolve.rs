@@ -7,6 +7,10 @@ pub(super) struct Resolve {
     vao: glow::VertexArray,
     program: glow::Program,
     source: Option<glow::UniformLocation>,
+    bloom: Option<super::output::Bloom>,
+    bloom_sources: [Option<glow::UniformLocation>; 3],
+    has_bloom: Option<glow::UniformLocation>,
+    filmic: Option<glow::UniformLocation>,
 }
 
 impl Resolve {
@@ -14,7 +18,8 @@ impl Resolve {
         // SAFETY: all objects belong to the current paint context. Failed construction
         // releases every object it allocated before returning.
         unsafe {
-            let program = link(gl, VERTEX, FRAGMENT)?;
+            let fragment = format!("{FRAGMENT}\n{}", crate::model_preview::output::GLSL);
+            let program = link(gl, VERTEX, &fragment)?;
             let fbo = match gl.create_framebuffer() {
                 Ok(value) => value,
                 Err(_) => {
@@ -39,12 +44,18 @@ impl Resolve {
                     return None;
                 }
             };
-            let result = Self {
+            let mut result = Self {
                 fbo,
                 color,
                 vao,
                 program,
                 source: gl.get_uniform_location(program, "uSource"),
+                bloom: None,
+                bloom_sources: std::array::from_fn(|i| {
+                    gl.get_uniform_location(program, &format!("uBloom{i}"))
+                }),
+                has_bloom: gl.get_uniform_location(program, "uHasBloom"),
+                filmic: gl.get_uniform_location(program, "uFilmic"),
             };
             gl.bind_texture(glow::TEXTURE_2D, Some(color));
             gl.tex_image_2d(
@@ -59,7 +70,10 @@ impl Resolve {
                 glow::PixelUnpackData::Slice(None),
             );
             for parameter in [glow::TEXTURE_MIN_FILTER, glow::TEXTURE_MAG_FILTER] {
-                gl.tex_parameter_i32(glow::TEXTURE_2D, parameter, glow::NEAREST as i32);
+                gl.tex_parameter_i32(glow::TEXTURE_2D, parameter, glow::LINEAR as i32);
+            }
+            for parameter in [glow::TEXTURE_WRAP_S, glow::TEXTURE_WRAP_T] {
+                gl.tex_parameter_i32(glow::TEXTURE_2D, parameter, glow::CLAMP_TO_EDGE as i32);
             }
             gl.bind_texture(glow::TEXTURE_2D, None);
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
@@ -74,6 +88,11 @@ impl Resolve {
                 result.delete(gl);
                 return None;
             }
+            result.bloom = super::output::Bloom::new(gl, size);
+            if result.bloom.is_none() {
+                result.delete(gl);
+                return None;
+            }
             Some(result)
         }
     }
@@ -84,6 +103,7 @@ impl Resolve {
         target: &Target,
         previous: Option<glow::Framebuffer>,
         origin: [i32; 2],
+        scene: Scene,
     ) {
         // SAFETY: the multisample source and single-sample destination have identical
         // dimensions and float formats. The final triangle stays inside the painter's viewport.
@@ -103,6 +123,20 @@ impl Resolve {
                 glow::COLOR_BUFFER_BIT,
                 glow::NEAREST,
             );
+            gl.disable(glow::FRAMEBUFFER_SRGB);
+            gl.disable(glow::BLEND);
+            gl.disable(glow::DEPTH_TEST);
+            gl.bind_vertex_array(Some(self.vao));
+            if scene.bloom
+                && let Some(bloom) = &self.bloom
+            {
+                bloom.paint(
+                    gl,
+                    self.color,
+                    target.size,
+                    crate::model_preview::output::background(scene, Style::Textured),
+                );
+            }
             gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
             gl.viewport(origin[0], origin[1], target.size[0], target.size[1]);
             gl.enable(glow::SCISSOR_TEST);
@@ -114,10 +148,24 @@ impl Resolve {
             gl.bind_sampler(0, None);
             gl.bind_texture(glow::TEXTURE_2D, Some(self.color));
             gl.uniform_1_i32(self.source.as_ref(), 0);
+            gl.uniform_1_i32(self.has_bloom.as_ref(), i32::from(scene.bloom));
+            gl.uniform_1_i32(self.filmic.as_ref(), i32::from(scene.filmic));
+            if let Some(bloom) = &self.bloom {
+                for (index, texture) in bloom.textures().enumerate() {
+                    gl.active_texture(glow::TEXTURE1 + index as u32);
+                    gl.bind_sampler(index as u32 + 1, None);
+                    gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                    gl.uniform_1_i32(self.bloom_sources[index].as_ref(), index as i32 + 1);
+                }
+            }
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             gl.bind_vertex_array(None);
-            gl.bind_texture(glow::TEXTURE_2D, None);
+            for unit in 0..4 {
+                gl.active_texture(glow::TEXTURE0 + unit);
+                gl.bind_texture(glow::TEXTURE_2D, None);
+            }
+            gl.active_texture(glow::TEXTURE0);
             gl.use_program(None);
         }
     }
@@ -129,11 +177,14 @@ impl Resolve {
             gl.delete_texture(self.color);
             gl.delete_vertex_array(self.vao);
             gl.delete_program(self.program);
+            if let Some(bloom) = self.bloom {
+                bloom.delete(gl);
+            }
         }
     }
 }
 
-const VERTEX: &str = r#"#version 330 core
+pub(super) const VERTEX: &str = r#"#version 330 core
 out vec2 vUv;
 void main() {
     vec2 point = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
@@ -145,9 +196,15 @@ void main() {
 const FRAGMENT: &str = r#"#version 330 core
 in vec2 vUv;
 uniform sampler2D uSource;
+uniform sampler2D uBloom0,uBloom1,uBloom2;
+uniform int uHasBloom,uFilmic;
 out vec4 fragColor;
+vec3 film(vec3 value);
 void main() {
-    vec3 value = clamp(texture(uSource, vUv).rgb, 0.0, 1.0);
+    vec3 value = max(texture(uSource, vUv).rgb, vec3(0.0));
+    if(uHasBloom==1)value+=(texture(uBloom0,vUv).rgb+texture(uBloom1,vUv).rgb+texture(uBloom2,vUv).rgb)/3.0;
+    if(uFilmic==1)value=film(value);
+    value=clamp(value,0.0,1.0);
     vec3 low = value * 12.92;
     vec3 high = 1.055 * pow(value, vec3(1.0 / 2.4)) - 0.055;
     fragColor = vec4(mix(low, high, step(vec3(0.0031308), value)), 1.0);

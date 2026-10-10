@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use tiger_pkg::TagHash;
 
 use crate::{
-    investment_localization::{LocalizedStringCache, resolve_localized_hash, resolve_string},
-    investment_schema::{GLOBALS_SUBCLASS_DISPLAY_TABLE_SLOT, ROOT_SOCKET_ENTRY_LIST_TABLE_SLOT},
+    investment::localization::{LocalizedStringCache, resolve_localized_hash, resolve_string},
+    investment::schema::{GLOBALS_SUBCLASS_DISPLAY_TABLE_SLOT, ROOT_SOCKET_ENTRY_LIST_TABLE_SLOT},
     package_payload::{array_at, i32_at, i64_at, relative_offset, u32_at},
 };
 
@@ -829,9 +829,9 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires SUNDIAL_TEST_INSTALL pointing to the supported Shadowkeep build"]
+    #[ignore = "requires SUNDIAL_INSTALL pointing to the supported Shadowkeep build"]
     fn native_subclass_super_lanes() {
-        let install = std::path::PathBuf::from(std::env::var("SUNDIAL_TEST_INSTALL").unwrap());
+        let install = std::path::PathBuf::from(std::env::var("SUNDIAL_INSTALL").unwrap());
         let manager = crate::package_runtime::open_shadowkeep_packages(&install).unwrap();
         let globals =
             crate::package_runtime::resolve_live_named_tag(&manager, "investment_globals", None)

@@ -33,7 +33,7 @@ pub(super) fn layout(
     } else {
         egui::Color32::from_rgb(167, 189, 195)
     };
-    let title = ui.fonts(|fonts| {
+    let title = ui.fonts_mut(|fonts| {
         let mut job = egui::text::LayoutJob::simple(
             name.clone(),
             egui::FontId::proportional(14.0),

@@ -93,19 +93,170 @@ fn remove_base_socket(recipe: &mut WeaponRecipe, socket_count: usize, socket_ind
         .retain(|variant| usize::from(variant.socket_index) != socket_index);
 }
 
-/// Intrinsic, then Trait, then every other role by name.
-fn sort_socket_type_choices(choices: &mut [sundial::investment::WeaponSocketTypeChoice]) {
+/// One row of the socket role pickers: a socket type and the text that tells it apart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Role {
+    socket_type: u16,
+    label: String,
+}
+
+/// The roles the socket pickers offer, one clear row each, Intrinsic, then Trait, then every
+/// other role by name.
+///
+/// A type only one other item carries, its own ornaments or catalyst with a reissue of the same
+/// piece counted once, or one that offers no plug is left out unless the item carries it, and
+/// Technical's Socket Type still reaches it. A blank label takes the type of the plug the socket
+/// starts with, as a seasonal armor mod socket's Empty Mod Socket names its season, else that
+/// plug's name. Roles of one label that offer the same plugs are one row. A label still shared names a row by the item type most of its plugs share
+/// when no other row has it, as the class Universal Ornament sockets do. Of the rest, the item's
+/// own, else the most carried, keeps the label. The others add their plug count where it differs
+/// from that row's and from each other's, else their type.
+fn role_choices(catalog: &InvestmentCatalog, donor: &WeaponDonor) -> Result<Vec<Role>, String> {
+    let own = donor
+        .sockets
+        .iter()
+        .map(|socket| socket.socket_type)
+        .collect::<BTreeSet<_>>();
+    let choices = socket_type_choices(catalog, donor)?;
+    let mut groups =
+        BTreeMap::<String, Vec<(sundial::investment::WeaponSocketTypeChoice, bool)>>::new();
+    for choice in choices {
+        let owned = own.contains(&choice.socket_type);
+        if !owned && (choice.carriers < 2 || choice.compatible_plug_count == 0) {
+            continue;
+        }
+        let label = [
+            Some(choice.label.clone()),
+            choice
+                .default_plug
+                .and_then(|plug| catalog.item_type_name(plug)),
+            choice
+                .default_plug
+                .map(|plug| catalog.plug_label(plug, false)),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|label| label.trim().to_owned())
+        .find(|label| !label.is_empty() && label != "Restore Defaults")
+        .unwrap_or_else(|| format!("Type {}", choice.socket_type));
+        groups.entry(label).or_default().push((choice, owned));
+    }
+    let mut roles = Vec::new();
+    for (label, mut rows) in groups {
+        rows.sort_by(|(left, left_own), (right, right_own)| {
+            right_own
+                .cmp(left_own)
+                .then(right.carriers.cmp(&left.carriers))
+                .then(right.compatible_plug_count.cmp(&left.compatible_plug_count))
+                .then(left.socket_type.cmp(&right.socket_type))
+        });
+        if let [(only, _)] = rows.as_slice() {
+            roles.push(Role {
+                socket_type: only.socket_type,
+                label,
+            });
+            continue;
+        }
+        let plugs = rows
+            .iter()
+            .map(|(choice, _)| catalog.socket_type_plugs(donor.summary.hash, choice.socket_type))
+            .collect::<Vec<_>>();
+        let kept = (0..rows.len())
+            .filter(|&row| !(0..row).any(|earlier| plugs[earlier] == plugs[row]))
+            .collect::<Vec<_>>();
+        let specific = kept
+            .iter()
+            .map(|&row| majority_type(catalog, &plugs[row]).filter(|named| *named != label))
+            .collect::<Vec<_>>();
+        // The plain row's plug count, once a row keeps the label. A count only tells a row apart
+        // from it when the two differ.
+        let mut plain = None;
+        let mut named = kept
+            .iter()
+            .zip(&specific)
+            .map(|(&row, row_type)| {
+                let choice = &rows[row].0;
+                let count = choice.compatible_plug_count;
+                let text = match row_type {
+                    Some(named) if specific_is_unique(&specific, named) => named.clone(),
+                    _ if plain.is_none() => {
+                        plain = Some(count);
+                        label.clone()
+                    }
+                    _ if plain == Some(count) => format!("{label} · Type {}", choice.socket_type),
+                    _ if count == 1 => format!("{label} · 1 Plug"),
+                    _ => format!("{label} · {count} Plugs"),
+                };
+                (choice.socket_type, text)
+            })
+            .collect::<Vec<_>>();
+        let texts = named
+            .iter()
+            .map(|(_, text)| text.clone())
+            .collect::<Vec<_>>();
+        for (socket_type, text) in &mut named {
+            if texts.iter().filter(|other| *other == text).count() > 1 {
+                *text = format!("{label} · Type {socket_type}");
+            }
+        }
+        roles.extend(
+            named
+                .into_iter()
+                .map(|(socket_type, label)| Role { socket_type, label }),
+        );
+    }
+    // A specific type can match another group's label.
+    let labels = roles
+        .iter()
+        .map(|role| role.label.clone())
+        .collect::<Vec<_>>();
+    for role in &mut roles {
+        if labels.iter().filter(|label| **label == role.label).count() > 1 {
+            role.label = format!("{} · Type {}", role.label, role.socket_type);
+        }
+    }
     let rank = |socket_type: u16| match socket_type {
         176 => 0,
         92 => 1,
         _ => 2,
     };
-    choices.sort_by(|a, b| {
+    roles.sort_by(|a, b| {
         rank(a.socket_type)
             .cmp(&rank(b.socket_type))
             .then_with(|| a.label.cmp(&b.label))
             .then(a.socket_type.cmp(&b.socket_type))
     });
+    Ok(roles)
+}
+
+/// Whether `named` is the specific type of exactly one row.
+fn specific_is_unique(specific: &[Option<String>], named: &str) -> bool {
+    specific
+        .iter()
+        .filter(|other| other.as_deref() == Some(named))
+        .count()
+        == 1
+}
+
+/// The item type at least half of `plugs` share, when one does.
+fn majority_type(catalog: &InvestmentCatalog, plugs: &[u32]) -> Option<String> {
+    let mut counts = BTreeMap::<String, usize>::new();
+    for &plug in plugs {
+        if let Some(named) = catalog
+            .item_type_name(plug)
+            .map(|named| named.trim().to_owned())
+            .filter(|named| !named.is_empty() && named != "Restore Defaults")
+        {
+            *counts.entry(named).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by(|(left, left_count), (right, right_count)| {
+            left_count.cmp(right_count).then_with(|| right.cmp(left))
+        })
+        .filter(|(_, count)| count * 2 >= plugs.len())
+        .map(|(named, _)| named)
 }
 
 /// The roles a socket can take or be added with: the socket types installed items of the base's
@@ -136,30 +287,24 @@ fn draw_add_socket(
     let can_add = socket_count < sundial::investment::MAX_WEAPON_SOCKETS;
     ui.horizontal(|ui| {
         ui.add_enabled_ui(can_add, |ui| {
-            ui.menu_button("+ Add Socket", |ui| {
-                match socket_type_choices(catalog, donor) {
-                    Ok(mut choices) => {
-                        sort_socket_type_choices(&mut choices);
-                        egui::ScrollArea::vertical()
-                            .max_height(320.0)
-                            .show(ui, |ui| {
-                                for choice in choices.into_iter().filter(|choice| {
-                                    authored_socket_choice_limit(choice.socket_type) > 0
-                                }) {
-                                    if ui.button(&choice.label).clicked() {
-                                        append_socket(
-                                            recipe,
-                                            donor.sockets.len(),
-                                            choice.socket_type,
-                                        );
-                                        ui.close_menu();
-                                    }
+            ui.menu_button("+ Add Socket", |ui| match role_choices(catalog, donor) {
+                Ok(roles) => {
+                    egui::ScrollArea::vertical()
+                        .max_height(320.0)
+                        .show(ui, |ui| {
+                            for role in roles
+                                .into_iter()
+                                .filter(|role| authored_socket_choice_limit(role.socket_type) > 0)
+                            {
+                                if ui.button(&role.label).clicked() {
+                                    append_socket(recipe, donor.sockets.len(), role.socket_type);
+                                    ui.close();
                                 }
-                            });
-                    }
-                    Err(error) => {
-                        ui.colored_label(ui.visuals().error_fg_color, error);
-                    }
+                            }
+                        });
+                }
+                Err(error) => {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
                 }
             })
             .response
@@ -169,6 +314,15 @@ fn draw_add_socket(
             "{socket_count} / {} sockets",
             sundial::investment::MAX_WEAPON_SOCKETS
         ));
+        // A weapon's default plugs share one bank of 16 effects. Later sockets' effects past it
+        // are left out.
+        if recipe.kind.is_weapon() {
+            let bank = crate::weapon::perk_bank::project(recipe, donor, |hash| {
+                catalog.item_sandbox_perk_indices(hash)
+            });
+            ui.weak(format!("· {} / 16 perk effects", bank.default_count))
+                .on_hover_text("Effects past 16 are left out");
+        }
     });
 }
 
@@ -248,7 +402,7 @@ pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContex
                 recipe,
                 queries: &mut queries[socket_index],
                 page: &mut pages[socket_index],
-                plug_selection_mode: *plug_selection_mode,
+                plug_selection_mode: &mut *plug_selection_mode,
                 donor: effective_donor,
                 socket_index,
                 is_added: socket_index >= native_socket_count,
@@ -273,21 +427,21 @@ pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContex
         return;
     }
     if !unused.is_empty() {
-        egui::CollapsingHeader::new(format!(
-            "Unused Donor Sockets · Available: {}",
-            unused.len()
-        ))
-        .id_salt("unused-weapon-sockets")
-        .show(ui, |ui| {
-            for &socket_index in &unused {
-                draw_row(ui, socket_index);
-            }
-        });
+        egui::CollapsingHeader::new(format!("Unused Base Sockets · {}", unused.len()))
+            .id_salt("unused-weapon-sockets")
+            .show(ui, |ui| {
+                for &socket_index in &unused {
+                    draw_row(ui, socket_index);
+                }
+            })
+            .header_response
+            .on_hover_text("Base weapon sockets with no role here");
     }
     draw_add_socket(ui, catalog, recipe, donor);
 }
 
-/// The weapon's replicated effect bank and the damage behaviors that need a socket of their own.
+/// The damage behaviors that need a socket of their own, and the warnings of the weapon's
+/// replicated effect bank, whose count sits beside the socket count.
 fn draw_weapon_socket_notes(
     ui: &mut egui::Ui,
     catalog: &InvestmentCatalog,
@@ -297,10 +451,6 @@ fn draw_weapon_socket_notes(
     let bank = crate::weapon::perk_bank::project(recipe, donor, |hash| {
         catalog.item_sandbox_perk_indices(hash)
     });
-    ui.label(format!(
-        "Replicated Effect Bank: {} / 16",
-        bank.default_count
-    ));
     // The Fundamentals now leads its trait socket in the list below, so the only thing left to
     // say is when there is no trait socket for it to lead. A socket the author gave the trait
     // role, or appended, counts as one, so this asks the lanes the same way the build does.
@@ -525,26 +675,23 @@ pub(super) fn socket_role_label(
     role.map_or_else(
         || socket.label.clone(),
         |value| {
-            let choices = if matches!(value, 176 | 92) {
-                Vec::new()
-            } else {
-                socket_type_choices(catalog, donor).unwrap_or_default()
-            };
+            let roles = role_choices(catalog, donor).unwrap_or_default();
             // A type the list leaves out keeps its native label, read without the "3. " position
             // the catalog puts in front of it.
             let native = (value == socket.socket_type)
                 .then(|| socket.label.split_once(". ").map(|(_, name)| name))
                 .flatten();
-            let name = match value {
-                176 => "Intrinsic",
-                92 => "Trait",
-                _ => choices
-                    .iter()
-                    .find(|choice| choice.socket_type == value)
-                    .map(|choice| choice.label.as_str())
-                    .or(native)
-                    .unwrap_or("Custom Socket"),
-            };
+            let name = roles
+                .iter()
+                .find(|role| role.socket_type == value)
+                .map(|role| role.label.as_str())
+                .or(match value {
+                    176 => Some("Intrinsic"),
+                    92 => Some("Trait"),
+                    _ => None,
+                })
+                .or(native)
+                .unwrap_or("Custom Socket");
             format!("{}. {name}", socket_index + 1)
         },
     )
@@ -572,36 +719,63 @@ pub(super) fn draw_socket_role_label(
         egui::vec2(width, ui.spacing().interact_size.y),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            egui::ComboBox::from_id_salt(("socket-role", socket_index))
-                .selected_text(display_label)
+            // The role reads as the row's label, with no box around it until hovered, so the
+            // perks are what a row shows first.
+            crate::app::style::quiet(ui);
+            let combo = egui::ComboBox::from_id_salt(("socket-role", socket_index))
+                .selected_text("")
                 .width(width)
-                .truncate()
                 .show_ui(ui, |ui| {
-                    let mut choices = socket_type_choices(catalog, donor).unwrap_or_default();
-                    sort_socket_type_choices(&mut choices);
+                    let roles = role_choices(catalog, donor).unwrap_or_default();
                     ui.weak("Socket Role");
                     if !is_added {
                         ui.selectable_value(role, None, "Keep Base Role");
                     }
-                    for (value, label) in [(176, "Intrinsic"), (92, "Trait")] {
-                        if choices.iter().any(|choice| choice.socket_type == value) {
-                            ui.selectable_value(role, Some(value), label);
+                    for value in [176, 92] {
+                        if let Some(choice) =
+                            roles.iter().find(|choice| choice.socket_type == value)
+                        {
+                            ui.selectable_value(role, Some(value), &choice.label);
                         }
                     }
                     ui.separator();
-                    for choice in &choices {
+                    for choice in &roles {
                         if ![176, 92, u16::MAX].contains(&choice.socket_type) {
                             ui.selectable_value(role, Some(choice.socket_type), &choice.label);
                         }
                     }
                 })
-                .response
-                .on_hover_ui(|ui| {
-                    sundial::investment::tooltip_title(ui, label);
-                    ui.label("Custom perks keep their display type.");
-                });
+                .response;
+            draw_role_text(ui, &combo, &display_label);
+            combo.on_hover_ui(|ui| {
+                sundial::investment::tooltip_title(ui, label);
+                ui.label("Custom perks keep their display type.");
+            });
         },
     );
+}
+
+/// The role on its combo box, against the arrow rather than at the left, so the roles line up on
+/// the perks they hold as the stat names line up on their bars. Cut short when it is too long.
+fn draw_role_text(ui: &egui::Ui, combo: &egui::Response, text: &str) {
+    let visuals = if egui::ComboBox::is_open(ui.ctx(), combo.id) {
+        &ui.visuals().widgets.open
+    } else {
+        ui.style().interact(combo)
+    };
+    let inner = combo.rect.shrink2(ui.spacing().button_padding);
+    let room = inner.width() - ui.spacing().icon_spacing - ui.spacing().icon_width;
+    let galley = egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        room,
+        egui::TextStyle::Button,
+    );
+    let at = egui::pos2(
+        inner.left() + room - galley.size().x,
+        inner.center().y - galley.size().y / 2.0,
+    );
+    ui.painter().galley(at, galley, visuals.text_color());
 }
 
 pub(super) fn socket_choice_columns(available_width: f32, button_count: usize) -> usize {
@@ -618,7 +792,7 @@ pub(super) fn socket_choice_columns(available_width: f32, button_count: usize) -
 
 pub(super) fn draw_numeric_program_editor(
     ui: &mut egui::Ui,
-    id: impl std::hash::Hash,
+    id: impl std::hash::Hash + std::fmt::Debug,
     program: &mut Vec<WeaponNumericInstructionRecipe>,
     allow_empty: bool,
 ) {

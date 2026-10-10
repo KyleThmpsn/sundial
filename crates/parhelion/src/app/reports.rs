@@ -176,11 +176,10 @@ pub(super) fn draw_install_report(ui: &mut egui::Ui, report: &InstallReport) {
         if let Some(path) = &report.cleaned_account {
             path_row(ui, "Account", path);
         }
-        if let Some(Ok(sync)) = &report.profile_sync {
-            if report.cleaned_account.as_ref() != Some(&sync.settings_path) {
+        if let Some(Ok(sync)) = &report.profile_sync
+            && report.cleaned_account.as_ref() != Some(&sync.settings_path) {
                 path_row(ui, "Account", &sync.settings_path);
             }
-        }
         if let Some(Ok(grants)) = &report.item_grants
             && grants.backup_path.is_some()
             && report.cleaned_account.as_ref() != Some(&grants.account_path)
@@ -233,7 +232,7 @@ pub(super) fn path_row(ui: &mut egui::Ui, label: &str, path: &Path) {
     let display = display_path(path);
     ui.horizontal(|ui| {
         ui.strong(label);
-        ui.add(egui::Label::new(&display).truncate())
+        ui.add(crate::app::style::cut_label(ui, &display))
             .on_hover_ui(|ui| {
                 sundial::investment::tooltip_title(ui, label);
                 ui.label(&display);

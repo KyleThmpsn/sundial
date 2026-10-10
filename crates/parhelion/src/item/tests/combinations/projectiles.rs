@@ -16,8 +16,8 @@ const HOSTS: &[(u32, &str)] = &[
 #[test]
 #[ignore = "requires clean packages, control output and the user's frame recipe"]
 fn native_effect_controls_stage_without_changing_stock_sources() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-    let output = PathBuf::from(std::env::var_os("PARHELION_EFFECT_CONTROL_ROOT").unwrap());
+    let packages = crate::test_support::stock_packages();
+    let output = crate::test_support::artifact_dir("effect-controls");
     fs::create_dir_all(&output).unwrap();
     let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     let mut frame = WeaponRecipe::load_json(PathBuf::from(
@@ -297,6 +297,7 @@ fn recipe(
         .overrides
         .socket_plug_variants
         .push(crate::WeaponSocketPlugVariantRecipe {
+            offer_everywhere: false,
             replace_effects: false,
             socket_index: u16::try_from(donor.sockets.len()).unwrap(),
             choice_index: 0,
@@ -354,12 +355,12 @@ fn verify_stock_graphs(
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES and PARHELION_PROJECTILE_MATRIX_ROOT"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
 fn native_projectile_matrix_preserves_private_speed_and_stock_sources() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-    let output = PathBuf::from(std::env::var_os("PARHELION_PROJECTILE_MATRIX_ROOT").unwrap());
+    let packages = crate::test_support::stock_packages();
+    let output = crate::test_support::artifact_dir("projectile-matrix");
     fs::create_dir_all(&output).unwrap();
-    let install = std::env::var_os("PARHELION_PROJECTILE_CATALOG_INSTALL")
+    let install = std::env::var_os("SUNDIAL_INSTALL")
         .map(PathBuf::from)
         .unwrap_or_else(|| packages.parent().unwrap().to_path_buf());
     let catalog = crate::test_support::catalog(&install).unwrap();

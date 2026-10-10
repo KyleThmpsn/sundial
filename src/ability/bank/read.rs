@@ -53,7 +53,7 @@ pub fn bank_owner(payload: &[u8]) -> Result<u32, String> {
     Ok(layout(payload)?.owner)
 }
 
-pub(super) fn layout(payload: &[u8]) -> Result<Layout, String> {
+fn block_pair(payload: &[u8]) -> Result<(u32, usize, usize), String> {
     let size = usize::try_from(u64_at(payload, SIZE)?)
         .map_err(|_| "Bank size does not fit this platform".to_owned())?;
     if size != payload.len() {
@@ -73,6 +73,35 @@ pub(super) fn layout(payload: &[u8]) -> Result<Layout, String> {
     {
         return Err("Bank definition and instance blocks are not twins".into());
     }
+    Ok((owner, definition, instance))
+}
+
+/// HUD-only descendants may have a valid bank with no property rows. Recognize paired empty
+/// descriptors without relaxing the populated-table contract used by the row editor.
+pub(crate) fn has_property_rows(payload: &[u8]) -> Result<bool, String> {
+    let (_, definition, instance) = block_pair(payload)?;
+    let descriptors = [
+        definition + INSTANCE_ROWS_DESCRIPTOR,
+        instance + DEFINITION_ROWS_DESCRIPTOR,
+    ];
+    if descriptors.iter().all(|&at| u64_at(payload, at) == Ok(0)) {
+        for at in descriptors {
+            if i64_at(payload, at + 8)? != 0 {
+                return Err("An empty bank row descriptor has a nonzero pointer".into());
+            }
+        }
+        for (block, twin) in [(definition, instance), (instance, definition)] {
+            if block < 4 || u32_at(payload, block - 4)? != u32_at(payload, twin + BLOCK_CLASS)? {
+                return Err("An empty bank's paired block classes disagree".into());
+            }
+        }
+        return Ok(false);
+    }
+    layout(payload).map(|_| true)
+}
+
+pub(super) fn layout(payload: &[u8]) -> Result<Layout, String> {
+    let (owner, definition, instance) = block_pair(payload)?;
     let instance_rows = rows(
         payload,
         definition + INSTANCE_ROWS_DESCRIPTOR,
@@ -154,12 +183,12 @@ pub(super) fn layout(payload: &[u8]) -> Result<Layout, String> {
                 "Bank row {index}'s instance modifier does not point back at the row"
             ));
         }
-        if i64_at(payload, definition_row + ROW_ATTACK_KEY)? != 0 {
-            let reference = pointer(payload, definition_row + ROW_ATTACK_KEY)?;
-            if reference < instance + 4 || u32_at(payload, reference - 4)? != ATTACK_KEY_CLASS {
+        if i64_at(payload, definition_row + ROW_GATE)? != 0 {
+            let gate = pointer(payload, definition_row + ROW_GATE)?;
+            if gate < instance + 4 || u32_at(payload, gate - 4)? != GATE_CLASS {
                 return Err(format!(
-                    "Bank row {index}'s attack key reference is not a {ATTACK_KEY_CLASS:08X} \
-                     block in the instance region"
+                    "Bank row {index}'s gate is not a {GATE_CLASS:08X} block in the instance \
+                     region"
                 ));
             }
         }
@@ -175,7 +204,7 @@ pub(super) fn layout(payload: &[u8]) -> Result<Layout, String> {
 }
 
 /// Checks the structure the edits rely on: the header, both blocks, both row arrays, the
-/// parameter table and every row's twin, modifier pair and attack key reference.
+/// parameter table and every row's twin, modifier pair and gate.
 pub fn validate(payload: &[u8]) -> Result<(), String> {
     layout(payload).map(|_| ())
 }
@@ -349,7 +378,7 @@ pub fn row_modifiers(payload: &[u8]) -> Result<Vec<(usize, bool)>, String> {
             let row = layout.definition_rows.first + index * DEFINITION_ROW_SIZE;
             Ok((
                 pointer(payload, row + ROW_MODIFIER)?,
-                i64_at(payload, row + ROW_ATTACK_KEY)? != 0,
+                i64_at(payload, row + ROW_GATE)? != 0,
             ))
         })
         .collect()
@@ -366,7 +395,7 @@ pub(super) fn blocks(payload: &[u8], owner: u32) -> BTreeMap<usize, usize> {
         {
             let twin = u64_at(payload, at + BLOCK_TWIN).unwrap_or(u64::MAX) as usize;
             if twin + 16 <= payload.len()
-                && twin % BLOCK_ALIGNMENT == 0
+                && twin.is_multiple_of(BLOCK_ALIGNMENT)
                 && u32_at(payload, twin).unwrap_or(0) == owner
                 && u64_at(payload, twin + BLOCK_TWIN).unwrap_or(0) as usize == at
             {

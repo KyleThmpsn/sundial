@@ -14,6 +14,7 @@ const fn item_phrase(kind: ItemKind) -> &'static str {
         ItemKind::Shader => "a shader",
         ItemKind::Subclass => "a subclass",
         ItemKind::Emblem => "an emblem",
+        ItemKind::Mod => "a mod",
     }
 }
 

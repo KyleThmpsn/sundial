@@ -185,7 +185,7 @@ fn clean_equipment(
         {
             // Only a weapon slot can be left empty. Armor, a Ghost Shell, a Sparrow or a Ship
             // has to be swapped for another item before the authored one is removed.
-            if !crate::account_contract::WEAPON_SLOTS.contains(&row.slot) {
+            if !crate::account::contract::WEAPON_SLOTS.contains(&row.slot) {
                 return Err(format!(
                     "A removed Parhelion item is equipped in the {} slot. Equip another item there first.",
                     equipment::equipment_slot_label(row.slot)

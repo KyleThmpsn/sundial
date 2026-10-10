@@ -5,8 +5,8 @@ use tiger_pkg::TagHash;
 
 use super::{InventoryMetadata, InventoryScope, ItemPackageMetadata, perks::item_perk_indices};
 use crate::{
-    investment_localization::{LocalizedStringCache, resolve_string},
-    investment_schema::{GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, investment_globals_table_tag},
+    investment::localization::{LocalizedStringCache, resolve_string},
+    investment::schema::{GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, investment_globals_table_tag},
     sandbox_perk::{
         FINISHED_SANDBOX_PERK_CATALOG_CLASS, finished_sandbox_perk_at, finished_sandbox_perk_count,
     },

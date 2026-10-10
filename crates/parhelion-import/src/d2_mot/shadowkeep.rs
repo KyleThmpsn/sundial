@@ -1,4 +1,4 @@
-use crate::d2_mot::reader::Reader;
+use crate::d2_mot::{payload::Payload, reader::Reader};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -96,6 +96,24 @@ fn art_placements(
     })
 }
 
+fn entity_models(r: &mut Reader, entity_tag: u32, entity: &Payload) -> Result<Vec<Value>> {
+    let mut models = Vec::new();
+    for component in entity.array(16, 12, Some(0x80809C04))? {
+        let owner_tag = entity.u32(component)?;
+        let owner = r.tag(owner_tag, Some(0x80809C36))?;
+        let resource = owner.pointer(24)?;
+        let resource_class =
+            owner.u32(resource.checked_sub(4).context("invalid native resource")?)?;
+        if !matches!(resource_class, 0x808072BD | 0x80807286) {
+            continue;
+        }
+        let model_tag = owner.u32(resource + 0x1dc)?;
+        let meshes = meshes(r, model_tag)?;
+        models.push(json!({"entity":format!("{entity_tag:08X}"),"owner":format!("{owner_tag:08X}"),"model":format!("{model_tag:08X}"),"meshes":meshes,"cloth":resource_class == 0x80807286}));
+    }
+    Ok(models)
+}
+
 pub fn extract(r: &mut Reader, item_hash: u32) -> Result<Value> {
     let named = r
         .manager
@@ -191,18 +209,7 @@ pub fn extract(r: &mut Reader, item_hash: u32) -> Result<Value> {
         let Some(entity) = entity else {
             continue;
         };
-        for component in entity.array(16, 12, Some(0x80809C04))? {
-            let owner_tag = entity.u32(component)?;
-            let owner = r.tag(owner_tag, Some(0x80809C36))?;
-            let resource = owner.pointer(24)?;
-            if owner.u32(resource.checked_sub(4).context("invalid native resource")?)? != 0x808072BD
-            {
-                continue;
-            }
-            let model_tag = owner.u32(resource + 0x1dc)?;
-            let meshes = meshes(r, model_tag)?;
-            models.push(json!({"entity":format!("{entity_tag:08X}"),"owner":format!("{owner_tag:08X}"),"model":format!("{model_tag:08X}"),"meshes":meshes}));
-        }
+        models.extend(entity_models(r, entity_tag, &entity)?);
     }
     ensure!(!models.is_empty(), "no native template models");
     for tag in [0x80EC270D, 0x80EC2713, 0x80EC270C, 0x80EC2710, 0x80EC271D] {

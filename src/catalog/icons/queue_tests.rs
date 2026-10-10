@@ -31,7 +31,7 @@ fn scrolling_defers_excess_requests_without_failure_or_unbounded_pending_work() 
     assert_eq!(runtime.pending.len(), MAX_PENDING_CATALOG_ICONS);
     assert!(runtime.worker.is_some());
     assert!(runtime.diagnostic(1023).is_none());
-    if let Some(directory) = std::env::var_os("PARHELION_TEST_ARTIFACTS") {
+    if let Some(directory) = std::env::var_os("SUNDIAL_TEST_ARTIFACTS") {
         let directory = PathBuf::from(directory);
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(directory.join("catalog-icon-queue.json"), serde_json::to_vec_pretty(&serde_json::json!({

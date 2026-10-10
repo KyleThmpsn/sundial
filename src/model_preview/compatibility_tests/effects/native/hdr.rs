@@ -188,7 +188,8 @@ pub(crate) fn expected(format: u32, cube: bool) -> [u8; 3] {
 #[test]
 fn packaged_hdr_color_plate_survives_basic_material_export() {
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_deref()
         .map(Path::new)
@@ -293,7 +294,8 @@ fn packaged_hdr_color_plate_survives_basic_material_export() {
 #[test]
 fn packaged_hdr_values_survive_sampling_and_later_attenuation() {
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let output = configured
         .as_deref()
         .map(Path::new)
@@ -315,8 +317,10 @@ fn packaged_hdr_values_survive_sampling_and_later_attenuation() {
                 pan: [0.0; 2],
             },
             render::Scene {
+                filmic: false,
+                bloom: false,
                 background: [0; 3],
-                ..Default::default()
+                ..render::Scene::unit_exposure()
             },
             [320, 240],
             0.0,

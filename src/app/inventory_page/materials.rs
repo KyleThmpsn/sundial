@@ -83,7 +83,7 @@ impl SundialApp {
                                 .clicked()
                             {
                                 edit = Some(Edit::Add(hash));
-                                ui.close_menu();
+                                ui.close();
                             }
                         }
                         if count == 0 {

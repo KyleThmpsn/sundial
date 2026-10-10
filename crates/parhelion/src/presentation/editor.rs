@@ -20,6 +20,10 @@ use std::{
 pub(crate) enum Kind {
     Badge,
     Watermark,
+    Nameplate {
+        part: crate::emblem::NameplatePart,
+        size: (u32, u32),
+    },
 }
 
 impl Kind {
@@ -27,19 +31,33 @@ impl Kind {
         match self {
             Self::Badge => "Edit Badge Artwork",
             Self::Watermark => "Edit Release Watermark",
+            Self::Nameplate { part, .. } => match part {
+                crate::emblem::NameplatePart::Banner => "Edit Emblem Banner",
+                crate::emblem::NameplatePart::Overlay => "Edit Emblem Overlay",
+                crate::emblem::NameplatePart::Background => "Edit Emblem Background",
+            },
         }
     }
     fn background(self) -> Background {
         match self {
             Self::Badge => Background::Sunrise,
-            Self::Watermark => Background::Transparent,
+            Self::Watermark | Self::Nameplate { .. } => Background::Transparent,
         }
     }
     fn default_artwork(self, branding: crate::branding::Branding) -> Artwork {
+        if let Self::Nameplate {
+            size: (width, height),
+            ..
+        } = self
+        {
+            return Artwork::from_source(image::RgbaImage::new(width, height))
+                .expect("valid nameplate canvas");
+        }
         if branding == crate::branding::Branding::Dawn {
             return match self {
                 Self::Badge => branding.badge(),
                 Self::Watermark => branding.corner(),
+                Self::Nameplate { .. } => unreachable!(),
             }
             .expect("bundled Dawn artwork is valid")
             .expect("Dawn supplies runtime artwork");
@@ -49,8 +67,25 @@ impl Kind {
             Self::Watermark => include_bytes!(
                 "../../../../assets/parhelion/watermark/sunrise-watermark-2-45x45.png"
             ),
+            Self::Nameplate { .. } => unreachable!(),
         };
         Artwork::from_png(bytes).expect("bundled artwork is valid")
+    }
+
+    fn default_composition(self, branding: crate::branding::Branding) -> Composition {
+        Composition {
+            fit: if matches!(self, Self::Nameplate { .. }) {
+                Fit::Cover
+            } else {
+                Fit::Contain
+            },
+            background: if self == Self::Badge && branding == crate::branding::Branding::Dawn {
+                Background::Dawn
+            } else {
+                self.background()
+            },
+            ..Default::default()
+        }
     }
 }
 
@@ -63,6 +98,7 @@ enum Tab {
     #[default]
     Placement,
     Crop,
+    Colors,
     Background,
 }
 enum ContextPreview {
@@ -77,6 +113,9 @@ pub(crate) struct Editor {
     browser_query: String,
     source: Artwork,
     composition: Composition,
+    defaults: Composition,
+    original: Artwork,
+    show_original: bool,
     tab: Tab,
     crop: crop::Selection,
     importing: Option<Receiver<Result<Option<Artwork>, String>>>,
@@ -114,30 +153,31 @@ impl Editor {
         branding: crate::branding::Branding,
     ) -> Self {
         let source = current.unwrap_or_else(|| kind.default_artwork(branding));
+        let defaults = kind.default_composition(branding);
         let mut composition = source
             .composition()
             .cloned()
-            .unwrap_or_else(|| Composition {
-                background: if kind == Kind::Badge && branding == crate::branding::Branding::Dawn {
-                    Background::Dawn
-                } else {
-                    kind.background()
-                },
-                ..Default::default()
-            });
+            .unwrap_or_else(|| defaults.clone());
         if kind == Kind::Watermark {
             composition.background = Background::Transparent;
         }
+        let original = source
+            .with_composition(composition.clone())
+            .expect("valid source artwork");
         Self {
             kind,
             browser: crate::artwork_browser::Picker::for_purpose(match kind {
                 Kind::Badge => crate::artwork_browser::Purpose::Badge,
                 Kind::Watermark => crate::artwork_browser::Purpose::Watermark,
+                Kind::Nameplate { .. } => crate::artwork_browser::Purpose::Image,
             }),
             browsing: false,
             browser_query: String::new(),
             source,
             composition,
+            defaults,
+            original,
+            show_original: false,
             tab: Tab::default(),
             crop: crop::Selection::default(),
             importing: None,
@@ -169,6 +209,9 @@ impl Editor {
             return;
         }
         self.context_requested = true;
+        if matches!(self.kind, Kind::Nameplate { .. }) {
+            return;
+        }
         let packages = PathBuf::from(packages);
         let kind = self.kind;
         let ctx = ctx.clone();
@@ -193,6 +236,7 @@ impl Editor {
                             )
                         })
                         .map(|preview| ContextPreview::Watermark(Box::new(preview))),
+                    Kind::Nameplate { .. } => unreachable!(),
                 };
                 let _ = tx.send(result);
                 ctx.request_repaint();
@@ -214,8 +258,9 @@ impl Editor {
                     self.source = source;
                     self.composition = Composition {
                         background: self.composition.background.clone(),
-                        ..Default::default()
+                        ..self.defaults.clone()
                     };
+                    self.show_original = false;
                     self.source_texture = None;
                     self.rendered = None;
                     self.error = None;
@@ -252,7 +297,7 @@ impl Editor {
     pub(crate) fn show(&mut self, ctx: &egui::Context) -> Option<Action> {
         self.poll();
         self.sync_textures(ctx);
-        let size = ctx.screen_rect().size();
+        let size = ctx.content_rect().size();
         let width = (size.x - 48.0).clamp(260.0, 880.0);
         let mut height = (size.y - 180.0).clamp(180.0, 570.0);
         if width >= 690.0 && self.tab != Tab::Crop {
@@ -264,6 +309,8 @@ impl Editor {
                 crate::app::workbench_style(ui);
                 ui.set_width(width);
                 ui.heading(self.kind.title());
+                let (source_width, source_height) = self.source.pixels().dimensions();
+                ui.weak(format!("Source {source_width} × {source_height} px"));
                 ui.add_space(4.0);
                 ui.separator();
                 if width >= 690.0 {
@@ -309,6 +356,19 @@ impl Editor {
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() {
                         return Some(Action::Cancel);
+                    }
+                    if ui
+                        .add_enabled(
+                            self.composition != self.defaults,
+                            egui::Button::new("Reset All Edits"),
+                        )
+                        .on_hover_text(
+                            "Reset crop, placement and colors while keeping the source image.",
+                        )
+                        .clicked()
+                    {
+                        self.composition = self.defaults.clone();
+                        self.show_original = false;
                     }
                     let ready = self.importing.is_none() && self.composition.validate().is_ok();
                     if ui

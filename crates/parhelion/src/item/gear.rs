@@ -51,6 +51,11 @@ pub(super) fn validate_spec(spec: &WeaponCloneSpec) -> AuthoringResult<()> {
 
 fn unsupported_setting(spec: &WeaponCloneSpec) -> Option<&'static str> {
     let overrides = &spec.overrides;
+    if spec.kind == ItemKind::Mod
+        && let Some(setting) = unsupported_mod_setting(spec)
+    {
+        return Some(setting);
+    }
     if spec.kind == ItemKind::Subclass {
         if let Some(setting) = crate::subclass::authoring::unsupported_setting(overrides) {
             return Some(setting);
@@ -109,6 +114,8 @@ fn unsupported_setting(spec: &WeaponCloneSpec) -> Option<&'static str> {
             overrides.behavior_projectile_speed.is_some(),
             "a projectile speed",
         ),
+        (overrides.projectile.is_some(), "projectile values"),
+        (overrides.barrel.is_some(), "Barrel settings"),
         (
             overrides.behavior_firing != crate::weapon::behavior::BehaviorFiring::default(),
             "a firing pattern",
@@ -156,6 +163,79 @@ fn unsupported_setting(spec: &WeaponCloneSpec) -> Option<&'static str> {
     .find_map(|(set, setting)| set.then_some(setting))
 }
 
+/// A mod is its one custom perk, built on the perk's template plug and offered in every socket of
+/// its type. Its text, icon, type and stats are the perk's, so the item carries none of its own.
+fn unsupported_mod_setting(spec: &WeaponCloneSpec) -> Option<&'static str> {
+    let overrides = &spec.overrides;
+    let [perk] = overrides.socket_plug_variants.as_slice() else {
+        return Some(if overrides.socket_plug_variants.is_empty() {
+            "no custom perk"
+        } else {
+            "more than one custom perk"
+        });
+    };
+    [
+        (
+            perk.socket_index != 0 || perk.choice_index != 0,
+            "a socket position",
+        ),
+        (
+            perk.source_plug_hash != spec.donor_item_hash,
+            "a base other than its perk's template",
+        ),
+        (!perk.offer_everywhere, "a perk not offered everywhere"),
+        (!overrides.socket_columns.is_empty(), "sockets"),
+        (
+            !overrides.investment_stats.is_empty()
+                || !overrides.removed_investment_stats.is_empty(),
+            "item stats",
+        ),
+        (overrides.rarity.is_some(), "a rarity"),
+        (spec.icon_donor.is_some(), "an icon donor"),
+    ]
+    .into_iter()
+    .find_map(|(set, setting)| set.then_some(setting))
+}
+
+/// A mod's perk stats follow the custom perk rule, and its type must be one some stock socket
+/// offers, or the mod would join no plug set.
+fn validate_mod_against_catalog(
+    catalog: &InvestmentCatalog,
+    spec: &WeaponCloneSpec,
+) -> AuthoringResult<()> {
+    let [perk] = spec.overrides.socket_plug_variants.as_slice() else {
+        return Err(invalid("A mod holds exactly one custom perk"));
+    };
+    let perk_stats = catalog.perk_stat_choices();
+    let source_stats = catalog.item_stat_contributions(perk.source_plug_hash);
+    for &(index, _) in &perk.investment_stats {
+        let declared = (perk.replace_effects
+            && perk_stats.iter().any(|stat| stat.definition_index == index))
+            || source_stats
+                .iter()
+                .any(|stat| stat.definition_index == index);
+        if !declared {
+            return Err(invalid(format!(
+                "Mod stat {index} is not declared by its template plug"
+            )));
+        }
+    }
+    let offered = perk
+        .classification_donor_hash
+        .unwrap_or(perk.source_plug_hash);
+    if catalog
+        .reusable_set_counts()
+        .get(&offered)
+        .is_none_or(|&sets| sets == 0)
+    {
+        return Err(invalid(format!(
+            "No stock socket offers {}, so the mod would appear nowhere. Choose another type.",
+            catalog.plug_label(offered, true)
+        )));
+    }
+    Ok(())
+}
+
 /// Checks a gear recipe's stats, sockets and custom perks against the installed catalog.
 pub(super) fn validate_against_catalog(
     catalog: &InvestmentCatalog,
@@ -168,6 +248,9 @@ pub(super) fn validate_against_catalog(
             spec.donor_item_hash,
             spec.overrides.subclass_abilities.as_ref(),
         );
+    }
+    if spec.kind == ItemKind::Mod {
+        return validate_mod_against_catalog(catalog, spec);
     }
     if spec.kind == ItemKind::Shader {
         if !catalog.is_shader(spec.donor_item_hash) {
@@ -503,23 +586,29 @@ pub(super) fn resolve(
         definition,
         strings,
     } = base;
+    let expanded = crate::vehicle::perks::expand(
+        &sources.manager,
+        spec,
+        &definition,
+        &sources.stock_item_table,
+        sources.item_rows,
+        &sources.stock_item_rows_by_hash,
+    )?;
+    let spec = expanded.as_ref().unwrap_or(spec);
     let (bucket, _) = native_slot(&definition, spec.kind)?;
     let base_rarity = rarity(&definition)?;
-    // Ordinary recipes keep their base's placement. Imported items select a compatible
-    // Collections exemplar independently of the native runtime template.
+    // Ordinary armor keeps its base's placement, which Exotic decides. Imported items select a
+    // compatible Collections exemplar independently of the native runtime template. Other gear
+    // goes on the runtime's own page whatever its rarity, so any rarity suits any base.
     if let Some(authored) = spec.overrides.rarity
+        && spec.kind == ItemKind::Armor
         && !imported(spec)
         && (authored == AuthoredWeaponRarity::Exotic)
             != (base_rarity == AuthoredWeaponRarity::Exotic)
     {
-        return Err(invalid(if spec.kind != ItemKind::Armor {
-            format!(
-                "A {} can be Exotic only on an Exotic base.",
-                spec.kind.noun()
-            )
-        } else {
-            "Armor can be Exotic only on an Exotic base, which places it under Exotics.".to_owned()
-        }));
+        return Err(invalid(
+            "Armor can be Exotic only on an Exotic base, which places it under Exotics.",
+        ));
     }
     client_classification(&strings)?;
     if (!spec.overrides.socket_columns.is_empty()
@@ -657,6 +746,7 @@ pub(super) fn resolve(
         damage_carrier_source: None,
         render_gear_donor: None,
         runtime_component_donors: Vec::new(),
+        component_splice_sources: Vec::new(),
         runtime_pattern_source,
         gear_art_pattern_source: runtime_pattern_source,
         appearance_rig_donor: None,
@@ -670,6 +760,7 @@ pub(super) fn resolve(
         dye_rows: None,
         nameplate,
         screen_art: None,
+        drawn_icon: None,
     })
 }
 

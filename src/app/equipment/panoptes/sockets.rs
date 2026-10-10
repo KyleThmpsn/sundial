@@ -250,6 +250,10 @@ impl SundialApp {
         }
         match action {
             Some(ItemEditorAction::SetPlug { hash, .. }) => Some((snapshot.socket_label, hash)),
+            Some(ItemEditorAction::SetPlugSelectionMode { mode }) => {
+                self.request_plug_selection_mode(mode);
+                None
+            }
             _ => None,
         }
     }

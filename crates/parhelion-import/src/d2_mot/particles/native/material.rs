@@ -3,25 +3,35 @@
 //! The layout follows 1,331 twin materials compiled for both games. Bind mode, render state
 //! and stage programs carry over. A native stage is the source stage with sixteen bytes added
 //! before its object count, eight-byte texture rows naming tags, sampler rows naming native
-//! samplers, and the renderer's extern inputs renumbered: the particle draw inputs move from
+//! resources naming native samplers or textures, and the renderer's extern inputs renumbered:
+//! the particle draw inputs move from
 //! extern 27 to 26 and the emitter vectors from extern 26 to 25.
 use super::{Context, Node, array, shader, texture};
-use crate::d2_mot::{payload::Payload, tfx};
+use crate::d2_mot::{particles::renderer::Material, payload::Payload, tfx};
 use anyhow::{Context as _, Result, ensure};
 use std::collections::BTreeMap;
+
+mod resources;
 
 const SOURCE_STAGES: [usize; 6] = [0x70, 0x100, 0x190, 0x220, 0x2B0, 0x340];
 const NATIVE_STAGES: [usize; 6] = [0x48, 0xE8, 0x188, 0x228, 0x2C8, 0x368];
 const NATIVE_SIZE: usize = 0x408;
 const FNV64_BASIS: u64 = 0xCBF29CE484222325;
 
+pub(super) struct Prepared {
+    source: Payload,
+    /// Complete numeric consumer closure after the other shader stages have been refused.
+    pub stages: [Material; 2],
+}
+
 struct Stage {
     textures: Vec<(u32, String)>,
     code: Vec<u8>,
     tfx_constants: Vec<u8>,
-    samplers: Vec<u32>,
+    resources: resources::Resources,
     values: Vec<u8>,
     writes: bool,
+    matrix_evidence: Vec<serde_json::Value>,
 }
 
 fn vectors(p: &Payload, field: usize) -> Result<Vec<u8>> {
@@ -32,18 +42,44 @@ fn vectors(p: &Payload, field: usize) -> Result<Vec<u8>> {
 }
 
 /// Renderer externs the source programs read, renumbered for the native renderer.
-fn externs(code: &[u8], bindings: &mut tfx::program::Bindings) -> Result<()> {
+fn externs(
+    code: &[u8],
+    bindings: &mut tfx::program::Bindings,
+    render_inputs: &std::path::Path,
+) -> Result<Vec<serde_json::Value>> {
+    let mut evidence = Vec::new();
     for instruction in tfx::program::parse(code)? {
         match (instruction.op, instruction.args) {
+            (0x4C, [8, 0]) => {
+                evidence.push(crate::d2_mot::native::shader::packed::rigid_matrix(
+                    render_inputs,
+                )?);
+                bindings
+                    .external_textures
+                    .insert([0x4C, 8, 0], [0x3E, 8, 0]);
+            }
             (0x4A, [27, offset]) => {
                 bindings
                     .external_textures
                     .insert([0x4A, 27, *offset], [0x3C, 26, *offset]);
             }
             (0x4B, [26, vector]) => {
+                ensure!(
+                    *vector < 10,
+                    "particle material exceeds the native emitter packet"
+                );
                 bindings
                     .external_textures
                     .insert([0x4B, 26, *vector], [0x3D, 25, *vector]);
+            }
+            (0x4A, [26, scalar]) => {
+                ensure!(
+                    *scalar < 40,
+                    "particle material exceeds the native emitter packet"
+                );
+                bindings
+                    .external_textures
+                    .insert([0x4A, 26, *scalar], [0x3C, 25, *scalar]);
             }
             (0x4D, [27, 0]) => {
                 bindings
@@ -61,13 +97,14 @@ fn externs(code: &[u8], bindings: &mut tfx::program::Bindings) -> Result<()> {
             _ => {}
         }
     }
-    Ok(())
+    Ok(evidence)
 }
 
 fn stage(
     c: &mut Context,
     source: &Payload,
     base: usize,
+    expression: &Material,
     vertex: bool,
     extra: &[u8],
 ) -> Result<Stage> {
@@ -77,17 +114,9 @@ fn stage(
         let tag = c.source.ref64(source, row + 8)?;
         textures.push((slot, texture::convert(c, tag)?));
     }
-    let mut samplers = Vec::new();
-    for row in source.array(base + 0x40, 16, None)? {
-        let tag = c.source.ref64(source, row)?;
-        samplers.push(c.native_sampler(tag)?);
-    }
-    let code = source
-        .array(base + 0x20, 1, Some(0x80800009))?
-        .into_iter()
-        .map(|at| source.u8(at))
-        .collect::<Result<Vec<_>>>()?;
-    let tfx_constants = vectors(source, base + 0x30)?;
+    let resources = resources::Resources::read(c, source, base + 0x40)?;
+    let code = &expression.code;
+    let mut tfx_constants = expression.constants.concat();
     let external = source.u32(base + 0x74)?;
     let values = if [0, u32::MAX, 0x811C9DC5].contains(&external) {
         vectors(source, base + 0x50)?
@@ -112,15 +141,17 @@ fn stage(
     let mut bindings = tfx::program::Bindings {
         constant_count: tfx_constants.len() / 16,
         output_count: values.len() / 16,
-        sampler_count: samplers.len(),
+        sampler_count: resources.tags.len(),
         sampler_stage: Some(if vertex { 2 } else { 1 }),
         globals: c.globals.clone(),
         ..Default::default()
     };
-    externs(&code, &mut bindings)?;
-    let lowered = tfx::program::lower(&code, &bindings)
+    resources.bind(code, &mut bindings, &mut tfx_constants)?;
+    let matrix_evidence = externs(code, &mut bindings, c.request.render_inputs)?;
+    let lowered = tfx::program::lower(code, &bindings)
         .with_context(|| format!("particle material stage {base:X} program"))?;
     lowered.require_runtime_inputs()?;
+    resources.validate_samplers(&lowered)?;
     let writes = lowered.evidence.iter().any(|row| row["translated"] == true);
     let mut code = lowered.code;
     code.extend_from_slice(extra);
@@ -128,9 +159,10 @@ fn stage(
         textures,
         code,
         tfx_constants,
-        samplers,
+        resources,
         values,
         writes,
+        matrix_evidence,
     })
 }
 
@@ -172,12 +204,16 @@ fn write_stage(
     out[base + 0x18..base + 0x20].copy_from_slice(&hash.to_le_bytes());
     array(out, base + 0x20, 0x80800009, &stage.code, 1)?;
     array(out, base + 0x30, 0x80800090, &stage.tfx_constants, 16)?;
-    let samplers = stage
-        .samplers
+    let resources = stage
+        .resources
+        .tags
         .iter()
         .flat_map(|tag| tag.to_le_bytes().into_iter().chain([0; 12]))
         .collect::<Vec<_>>();
-    array(out, base + 0x40, 0x808073F3, &samplers, 16)?;
+    let start = array(out, base + 0x40, 0x808073F3, &resources, 16)?;
+    for (index, symbol) in &stage.resources.patches {
+        patches.push((start + index * 16, symbol.clone()));
+    }
     array(out, base + 0x50, 0x80800090, &stage.values, 16)?;
     // Native flag 0x10 requests writable constant storage before the program runs.
     out[base + 0x74] = if stage.values.is_empty() {
@@ -193,8 +229,7 @@ fn write_stage(
     Ok(())
 }
 
-pub(super) fn convert(c: &mut Context, tag: u32) -> Result<(String, serde_json::Value)> {
-    let symbol = format!("particle-material-{tag:08X}");
+pub(super) fn prepare(c: &mut Context, tag: u32) -> Result<Prepared> {
     let source = c.source.tag(tag, Some(0x80806DAA))?;
     let source = Payload(source.0.clone());
     ensure!(
@@ -227,11 +262,45 @@ pub(super) fn convert(c: &mut Context, tag: u32) -> Result<(String, serde_json::
         matches!(word >> 24, 8 | 12),
         "particle material stage word differs"
     );
+    let expression = |base: usize| -> Result<Material> {
+        Ok(Material {
+            code: source
+                .array(base + 0x20, 1, Some(0x80800009))?
+                .into_iter()
+                .map(|at| source.u8(at))
+                .collect::<Result<_>>()?,
+            constants: source
+                .array(base + 0x30, 16, Some(0x80800090))?
+                .into_iter()
+                .map(|at| source.bytes(at))
+                .collect::<Result<_>>()?,
+        })
+    };
+    let stages = [expression(0x70)?, expression(0x2B0)?];
+    Ok(Prepared { source, stages })
+}
+
+pub(super) fn convert(
+    c: &mut Context,
+    tag: u32,
+    prepared: &Prepared,
+    symbol: &str,
+) -> Result<serde_json::Value> {
+    let source = &prepared.source;
+    let scopes = source.u64(0x20)?;
+    let word = source.u32(0x0C)?;
     let vertex = shader::vertex(c, source.u32(0x70)?)?;
     let pixel = shader::pixel(c, source.u32(0x2B0)?)?;
     shader::link(&vertex.bytecode, &pixel.bytecode)?;
-    let vertex_stage = stage(c, &source, 0x70, true, &vertex.bindings)?;
-    let pixel_stage = stage(c, &source, 0x2B0, false, &pixel.bindings)?;
+    let vertex_stage = stage(c, source, 0x70, &prepared.stages[0], true, &vertex.bindings)?;
+    let pixel_stage = stage(
+        c,
+        source,
+        0x2B0,
+        &prepared.stages[1],
+        false,
+        &pixel.bindings,
+    )?;
     let mut out = vec![0; NATIVE_SIZE];
     out[8..12].copy_from_slice(&source.u32(8)?.to_le_bytes());
     // The stage word's top byte is twice the native value in every twin.
@@ -254,7 +323,7 @@ pub(super) fn convert(c: &mut Context, tag: u32) -> Result<(String, serde_json::
         }
     }
     let mut patches = vec![(0x48, vertex.symbol.clone()), (0x2C8, pixel.symbol.clone())];
-    // A per-material value in place of the texture-set hash, which no converted material shares.
+    // Variants of one source material keep its texture set even when their numeric programs differ.
     let identity = 0x5A5A_0000_0000_0000 | u64::from(tag);
     write_stage(&mut out, 0x48, &vertex_stage, identity, &mut patches)?;
     write_stage(&mut out, 0x2C8, &pixel_stage, identity ^ 0x4, &mut patches)?;
@@ -266,17 +335,22 @@ pub(super) fn convert(c: &mut Context, tag: u32) -> Result<(String, serde_json::
         "vertex": vertex.evidence,
         "pixel": pixel.evidence,
         "scopes": format!("{native_scopes:08X}"),
+        "matrix_providers": [vertex_stage.matrix_evidence, pixel_stage.matrix_evidence],
         "textures": pixel_stage.textures.iter().map(|(slot, s)| serde_json::json!({"slot":slot,"symbol":s})).collect::<Vec<_>>(),
-        "samplers": pixel_stage.samplers.iter().map(|t| format!("{t:08X}")).collect::<Vec<_>>(),
+        "resources": pixel_stage.resources.tags.iter().enumerate().map(|(index, tag)| serde_json::json!({
+            "index": index,
+            "tag": format!("{tag:08X}"),
+            "symbol": pixel_stage.resources.patches.iter().find(|(i, _)| *i == index).map(|(_, symbol)| symbol),
+        })).collect::<Vec<_>>(),
     });
     c.nodes.add(Node {
-        symbol: symbol.clone(),
+        symbol: symbol.to_owned(),
         template: c.templates.material,
         payload: out,
         reference: None,
         patches,
     })?;
-    Ok((symbol, evidence))
+    Ok(evidence)
 }
 
 /// Native global channel indices by source index, matched by channel name.

@@ -2,7 +2,7 @@
 use super::{Asset, Program};
 use crate::sandbox_perk::action::{
     self,
-    native::{Graph, schema},
+    native::{Graph, fields, schema},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -13,9 +13,34 @@ mod tests;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeProgram {
+    #[serde(deserialize_with = "read_graph")]
     pub graph: Graph,
     /// Component edits belong to their referenced entity, independently of node ordering.
     pub assets: Vec<Asset>,
+}
+
+/// Earlier authored data stored zero for optional attachment fields. Repair only that
+/// representation in complete saved recipe and draft rows. Native package reads remain
+/// byte exact in `Graph::read`, and explicit nonzero values are retained.
+fn read_graph<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Graph, D::Error> {
+    let mut graph = Graph::deserialize(deserializer)?;
+    for block in &mut graph.blocks {
+        if !matches!(block.class, 0x8080_3E45 | 0x8080_3E47)
+            || block.count.unwrap_or(1).checked_mul(64) != Some(block.bytes.len())
+        {
+            continue;
+        }
+        for row in block.bytes.chunks_exact_mut(64) {
+            for at in [0x10, 0x18, 0x1C, 0x30] {
+                if let Some(empty) = fields::optional_empty(block.class, at)
+                    && row[at..at + 4] == [0; 4]
+                {
+                    row[at..at + 4].copy_from_slice(&empty.to_le_bytes());
+                }
+            }
+        }
+    }
+    Ok(graph)
 }
 
 /// A source-independent readiness failure, located in execution order.

@@ -160,7 +160,7 @@ fn quaternion_interpolation_takes_the_short_arc() {
 #[test]
 #[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and installed Shadowkeep packages"]
 fn chicken_idle_decodes_and_deforms_without_changing_topology() {
-    let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
+    let packages = crate::test_support::preview_packages();
     let model = load_model(Path::new(&packages));
     let animation = model.animation.as_ref().expect("native chicken idle");
     assert_eq!(animation.tag, 0x80BC90D2);
@@ -185,7 +185,9 @@ fn chicken_idle_decodes_and_deforms_without_changing_topology() {
                 .all(|v| v.is_finite() && v.abs() < 2.0)
         );
     }
-    if let Some(output) = std::env::var_os("SUNDIAL_ANIMATION_OUTPUT") {
+    if let Some(output) =
+        crate::test_support::artifacts("animation").map(std::path::PathBuf::into_os_string)
+    {
         let path = Path::new(&output);
         std::fs::create_dir_all(path).unwrap();
         for frame in 0..40 {
@@ -248,7 +250,7 @@ fn animation_resources(manager: &PackageManager, entity: u32) -> Vec<Vec<u8>> {
 #[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and installed Shadowkeep packages"]
 #[allow(clippy::cognitive_complexity)]
 fn chicken_bank_enumerates_playable_clips_and_loads_each_one() {
-    let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
+    let packages = crate::test_support::preview_packages();
     let model = load_model(Path::new(&packages));
     let manager = crate::investment::discovery::open_packages(Path::new(&packages)).unwrap();
     let resources = animation_resources(&manager, 0x80BC90E3);

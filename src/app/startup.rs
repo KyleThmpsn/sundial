@@ -242,7 +242,9 @@ impl StartupApp {
         let _ = diagnostics::initialize_log(&report);
     }
 
-    fn draw_startup(&mut self, ctx: &egui::Context) {
+    fn draw_startup(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let logo = self
             .logo
             .get_or_insert_with(|| load_logo_texture(ctx))
@@ -253,19 +255,19 @@ impl StartupApp {
                 .title_bar_icon
                 .get_or_insert_with(|| super::load_linux_title_bar_texture(ctx))
                 .clone();
-            if draw_linux_title_bar(ctx, &title_bar_icon) {
+            if draw_linux_title_bar(ui, &title_bar_icon) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 return;
             }
         }
         if let Some(warning) = &self.preferences_warning {
-            egui::TopBottomPanel::top("preferences_load_warning").show(ctx, |ui| {
+            egui::Panel::top("preferences_load_warning").show(ui, |ui| {
                 ui.colored_label(ui.visuals().warn_fg_color, warning);
             });
         }
         if self.receiver.is_some() {
             draw_catalog_loading_view(
-                ctx,
+                ui,
                 &logo,
                 CatalogLoadingView {
                     product_name: "Sundial",
@@ -278,7 +280,7 @@ impl StartupApp {
             );
             return;
         }
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             let top_space = ((ui.available_height() - 440.0) / 2.0).max(16.0);
             ui.add_space(top_space);
             ui.vertical_centered(|ui| {
@@ -377,11 +379,10 @@ impl StartupApp {
                                     if ui.button("Choose Another Folder").clicked() {
                                         self.choose_install();
                                     }
-                                    if let Some(path) = self.install_path.clone() {
-                                        if ui.button("Try Again").clicked() {
+                                    if let Some(path) = self.install_path.clone()
+                                        && ui.button("Try Again").clicked() {
                                             self.begin_loading(path, None);
                                         }
-                                    }
                                 });
                                 return;
                             }
@@ -439,13 +440,13 @@ fn send_startup_error(sender: &Sender<StartupEvent>, error: String) {
 }
 
 impl eframe::App for StartupApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.receive_events();
         if let Some(editor) = &mut self.editor {
-            editor.update(ctx, frame);
+            editor.ui(ui, frame);
         } else {
-            self.draw_startup(ctx);
-            ctx.request_repaint_after(Duration::from_millis(50));
+            self.draw_startup(ui);
+            ui.ctx().request_repaint_after(Duration::from_millis(50));
         }
     }
 }

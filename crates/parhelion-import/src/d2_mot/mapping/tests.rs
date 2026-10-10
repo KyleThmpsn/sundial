@@ -17,6 +17,11 @@ fn fixture() -> (tempfile::TempDir, Payload, Value) {
     }
     let mut modern = vec![0u8; 0x1A0];
     array(&mut modern, 16, 0xA0, 1, 0x80806EC5);
+    put(&mut modern, 0xB0, &0x10u32.to_le_bytes()).unwrap();
+    let mut positions = vec![0; 12];
+    put(&mut positions, 4, &24u16.to_le_bytes()).unwrap();
+    put(&mut positions, 6, &1u16.to_le_bytes()).unwrap();
+    fs::write(dir.path().join("source/raw/00000010.bin"), positions).unwrap();
     array(&mut modern, 0xB0 + 32, 0x130, 2, 0x80806ECB);
     for stage in 1..24 {
         put(&mut modern, 0xB0 + 48 + stage * 2, &1u16.to_le_bytes()).unwrap();
@@ -152,7 +157,8 @@ fn preflight_checks_later_model_parts_without_emitting_assets() {
     let report = json!({"models":[{"model":"00000020"}]});
     check_carriers(&source, &native, &report, &template, 20).unwrap();
     let mut unsupported = model.clone();
-    put(&mut unsupported.0, 0x140 + 24, &13u32.to_le_bytes()).unwrap();
+    // The later model asks a draw stage to use an incompatible material mode.
+    put(&mut unsupported.0, 0x140, &2u32.to_le_bytes()).unwrap();
     fs::write(source.join("raw/00000021.bin"), &unsupported.0).unwrap();
     let report = json!({"models":[{"model":"00000020"},{"model":"00000021"}]});
     let error = check_carriers(&source, &native, &report, &template, 20).unwrap_err();

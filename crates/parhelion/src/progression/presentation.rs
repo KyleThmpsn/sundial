@@ -144,7 +144,7 @@ pub(crate) fn append_numeric_program(
     for instruction in instructions {
         data.extend_from_slice(instruction);
     }
-    while (data.len() + NESTED_ARRAY_TRAILER.len()) % 16 != 0 {
+    while !(data.len() + NESTED_ARRAY_TRAILER.len()).is_multiple_of(16) {
         data.push(0);
     }
     data.extend_from_slice(&NESTED_ARRAY_TRAILER);
@@ -179,7 +179,7 @@ pub(crate) fn append_single_u16_array(
     data.extend_from_slice(&row_class.to_le_bytes());
     data.extend_from_slice(&0_u32.to_le_bytes());
     data.extend_from_slice(&value.to_le_bytes());
-    while (data.len() + NESTED_ARRAY_TRAILER.len()) % 16 != 0 {
+    while !(data.len() + NESTED_ARRAY_TRAILER.len()).is_multiple_of(16) {
         data.push(0);
     }
     data.extend_from_slice(&NESTED_ARRAY_TRAILER);
@@ -246,7 +246,7 @@ pub(crate) fn append_presentation_node_child(
     authored_rows.push(authored);
     authored_rows.extend(source_rows.iter().cloned());
 
-    while nodes.len() % 16 != 0 {
+    while !nodes.len().is_multiple_of(16) {
         nodes.push(0);
     }
     let new_header = nodes.len();
@@ -255,7 +255,7 @@ pub(crate) fn append_presentation_node_child(
     for row in &authored_rows {
         nodes.extend_from_slice(row);
     }
-    while (nodes.len() + NESTED_ARRAY_TRAILER.len()) % 16 != 0 {
+    while !(nodes.len() + NESTED_ARRAY_TRAILER.len()).is_multiple_of(16) {
         nodes.push(0);
     }
     nodes.extend_from_slice(&NESTED_ARRAY_TRAILER);
@@ -272,7 +272,7 @@ pub(crate) fn append_presentation_node_child(
         }
         let source_descriptor = child_rows + position * PRESENTATION_NODE_CHILD_NODE_ROW_SIZE + 8;
         let layout = numeric_program_layout(nodes, source_descriptor)?;
-        while nodes.len() % 16 != 0 {
+        while !nodes.len().is_multiple_of(16) {
             nodes.push(0);
         }
         let target = nodes.len();
@@ -348,7 +348,7 @@ pub(crate) fn append_collectible_child_to_node(
         u16::try_from(authored_collectible_index)
             .map_err(|_| invalid("Authored collectible index does not fit 16 bits"))?,
     )?;
-    while nodes.len() % 16 != 0 {
+    while !nodes.len().is_multiple_of(16) {
         nodes.push(0);
     }
     let new_header = nodes.len();
@@ -399,7 +399,7 @@ pub(crate) fn prepend_collectible_children_to_node(
     authored.extend_from_slice(&nodes[rows..child_end]);
     append_presentation_child_array_terminator(&mut authored)?;
     write_u64(&mut authored, 0, (count + members.len()) as u64)?;
-    while nodes.len() % 16 != 0 {
+    while !nodes.len().is_multiple_of(16) {
         nodes.push(0);
     }
     let new_header = nodes.len();
@@ -458,7 +458,7 @@ pub(crate) fn replace_with_single_collectible_child(
         .get(source_rows..source_rows + PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE)
         .ok_or_else(|| invalid("Badge collectible-child template is truncated"))?
         .to_vec();
-    while nodes.len() % 16 != 0 {
+    while !nodes.len().is_multiple_of(16) {
         nodes.push(0);
     }
     let header = nodes.len();
@@ -549,7 +549,7 @@ mod trailer_tests {
             PRESENTATION_NODE_DEFINITION_ROW_CLASS,
         )
         .unwrap();
-        while nodes.len() % 16 != 0 {
+        while !nodes.len().is_multiple_of(16) {
             nodes.push(0);
         }
         let child_header = nodes.len();

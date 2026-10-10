@@ -30,7 +30,7 @@ fn consumable_triumph_claims_wait_for_confirmation_and_are_undoable() {
     let ctx = egui::Context::default();
     let mut state = State::default();
     let frame = |document: &mut Value, state: &mut State, events| {
-        ctx.run(
+        ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -39,8 +39,8 @@ fn consumable_triumph_claims_wait_for_confirmation_and_are_undoable() {
                 events,
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     draw(ui, document, &catalog, state, false);
                 });
             },
@@ -76,7 +76,7 @@ fn consumable_triumph_claims_wait_for_confirmation_and_are_undoable() {
             .find(|text| text.galley.job.text == button)
             .expect("Review button");
         let pos = text.pos + text.galley.size() * 0.5;
-        crate::app::tests::capture::write(&ctx, &output, "consumable-reward-confirmation");
+        crate::test_support::capture::write(&ctx, &output, "consumable-reward-confirmation");
         for pressed in [true, false] {
             frame(
                 &mut document,

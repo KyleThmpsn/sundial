@@ -1,4 +1,5 @@
 //! Converts portable perk definitions through the same validation used by weapons.
+use super::compile::parse_recipe_hash;
 use super::*;
 
 impl WeaponSocketPlugVariantRecipe {
@@ -28,6 +29,7 @@ impl WeaponSocketPlugVariantRecipe {
             )?,
             name: self.name.clone(),
             description: self.description.clone(),
+            offer_everywhere: self.offer_everywhere,
             additional_sandbox_perks: self.additional_sandbox_perks.clone(),
             icon: self.icon.clone(),
             classification_donor_hash: self

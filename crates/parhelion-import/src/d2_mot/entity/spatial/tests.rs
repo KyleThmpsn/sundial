@@ -292,7 +292,7 @@ fn spatial_package_oracle() -> Result<()> {
     fs::write(
         output.join("report.json"),
         serde_json::to_vec_pretty(
-            &serde_json::json!({"source_owner_sha256":format!("{:x}",Sha256::digest(&source.0)),"source_entity_sha256":format!("{:x}",Sha256::digest(&entity.0)),"owner_sha256":format!("{:x}",Sha256::digest(&converted.owner.0)),"allocation_sha256":format!("{:x}",Sha256::digest(&converted.allocation.0)),"objects":converted.objects,"methods":methods,"active_graph_getters":active,"refusals":refusals,"scope":"Private native component with verified initial-state envelope, native allocation, authored getter names and explicit source graph interface correspondence. No whole-owner twin or live execution proof.","installable":false,"gameplay_verified":false}),
+            &serde_json::json!({"source_owner_sha256":hex::encode(Sha256::digest(&source.0)),"source_entity_sha256":hex::encode(Sha256::digest(&entity.0)),"owner_sha256":hex::encode(Sha256::digest(&converted.owner.0)),"allocation_sha256":hex::encode(Sha256::digest(&converted.allocation.0)),"objects":converted.objects,"methods":methods,"active_graph_getters":active,"refusals":refusals,"scope":"Private native component with verified initial-state envelope, native allocation, authored getter names and explicit source graph interface correspondence. No whole-owner twin or live execution proof.","installable":false,"gameplay_verified":false}),
         )?,
     )?;
     Ok(())

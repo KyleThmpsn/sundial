@@ -11,6 +11,7 @@ use sundial::package_authoring::sandbox_perk::action::native::{
 
 mod behavior;
 mod masks;
+pub(in crate::app::custom_perks::workbench) mod problem;
 mod structure;
 pub(in crate::app::custom_perks::workbench) mod tunings;
 
@@ -66,41 +67,6 @@ pub(in crate::app::custom_perks::workbench) fn label_choices(
     ctx.data_mut(|data| {
         data.insert_temp(egui::Id::new("installed-label-registry"), (registry, error));
     });
-}
-
-/// The first choice a program still needs, naming the field and its node: a key or tag left
-/// at zero, or a selection mask left empty (`fields::unset`). The compiler accepts the node,
-/// but it never matches or never acts, as a counter with nothing to count never fires.
-pub(in crate::app::custom_perks::workbench) fn unset_choice(graph: &Graph) -> Option<String> {
-    let graph = Graph::read(
-        &graph.emit().ok()?,
-        0,
-        sundial::package_authoring::sandbox_perk::action::ACTION_ROOT_CLASS,
-    )
-    .ok()?;
-    graph
-        .blocks
-        .iter()
-        .filter(|block| block.class != 0)
-        .find_map(|block| {
-            let described = fields::describe(block.class).ok()?;
-            let rows = block.count.unwrap_or(1);
-            let stride = block.bytes.len() / rows.max(1);
-            let field = (0..rows).find_map(|row| {
-                described.iter().find(|field| {
-                    let at = row * stride + field.offset;
-                    block
-                        .bytes
-                        .get(at..at + field.width)
-                        .is_some_and(|bytes| fields::unset(block.class, field, bytes))
-                })
-            })?;
-            Some(format!(
-                "Choose the {} for {}.",
-                plain_field_label(block.class, &field.label),
-                node_title(block)
-            ))
-        })
 }
 
 /// A node's plain name from its class alone, for messages about one of its fields.
@@ -169,13 +135,13 @@ pub(in crate::app::custom_perks::workbench) fn draw_complete(
                         }
                         ui.separator();
                     }
-                    allocation(ui, &mut changed.graph, 0, &mut Vec::new())
+                    allocation(ui, &mut changed.graph, 0, &[], &mut Vec::new())
                 })
                 .transpose();
             if let (Err(error), None) = (structure, &failed) {
                 failed = Some(error);
             }
-            if !editing {
+            if !editing || changed == *program {
                 return (failed, false);
             }
             // Every edit above repointed its allocation rather than writing through one that
@@ -311,7 +277,7 @@ pub(super) fn draw(ui: &mut egui::Ui, id: &str, node: &mut NativeNode, family: N
         ui.push_id(id, |ui| {
             behavior::draw_node(ui, &mut graph, 0)?;
             egui::CollapsingHeader::new("Advanced")
-                .show(ui, |ui| allocation(ui, &mut graph, 0, &mut Vec::new()))
+                .show(ui, |ui| allocation(ui, &mut graph, 0, &[], &mut Vec::new()))
                 .body_returned
                 .transpose()?;
             Ok::<_, String>(())
@@ -336,6 +302,7 @@ fn allocation(
     ui: &mut egui::Ui,
     graph: &mut Graph,
     index: usize,
+    path: &[usize],
     ancestors: &mut Vec<usize>,
 ) -> Result<(), String> {
     if ancestors.contains(&index) || ancestors.len() >= 64 {
@@ -383,11 +350,18 @@ fn allocation(
             if count.is_some() {
                 egui::CollapsingHeader::new(format!("{} {}", fields::name(class), row + 1))
                     .id_salt((index, row))
-                    .show(ui, |ui| record(ui, graph, index, row, stride, ancestors))
+                    .open(problem::open_header(
+                        ui,
+                        ui.make_persistent_id((index, row)),
+                        problem::contains_row(ui, path, row, stride),
+                    ))
+                    .show(ui, |ui| {
+                        record(ui, graph, index, row, stride, path, ancestors)
+                    })
                     .body_returned
                     .transpose()?;
             } else {
-                record(ui, graph, index, row, stride, ancestors)?;
+                record(ui, graph, index, row, stride, path, ancestors)?;
             }
         }
     }
@@ -408,6 +382,7 @@ fn record(
     index: usize,
     row: usize,
     stride: usize,
+    path: &[usize],
     ancestors: &mut Vec<usize>,
 ) -> Result<(), String> {
     let class = graph.blocks[index].class;
@@ -436,9 +411,9 @@ fn record(
             continue;
         }
         let at = row * stride + field.offset;
-        ui.push_id((index, row, field.offset), |ui| {
+        let response = ui.push_id((index, row, field.offset), |ui| {
             if field.format == Format::Pointer {
-                pointer(ui, graph, index, at, field.offset, ancestors)
+                pointer(ui, graph, index, at, field.offset, path, ancestors)
             } else {
                 // The selector alone names the ability, whatever the flag and option bytes
                 // hold (see `action::roles`), so the picker is not gated on them.
@@ -460,8 +435,9 @@ fn record(
                     },
                 )
             }
-        })
-        .inner?;
+        });
+        response.inner?;
+        problem::field_response(ui, path, row, field.offset, &response.response);
     }
     Ok(())
 }
@@ -662,6 +638,7 @@ fn pointer(
     index: usize,
     at: usize,
     field: usize,
+    path: &[usize],
     ancestors: &mut Vec<usize>,
 ) -> Result<(), String> {
     let class = graph.blocks[index].class;
@@ -671,7 +648,15 @@ fn pointer(
     }
     let target = graph.blocks[index].links.get(&at).copied();
     let name = reference_name(graph, index, field, target)?;
-    egui::CollapsingHeader::new(format!("{name} +0x{field:02X}"))
+    let title = format!("{name} +0x{field:02X}");
+    let mut child_path = path.to_vec();
+    child_path.push(at);
+    egui::CollapsingHeader::new(&title)
+        .open(problem::open_header(
+            ui,
+            ui.make_persistent_id(&title),
+            problem::contains(ui, &child_path),
+        ))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 let mut choices = schema::choices(class, field);
@@ -679,16 +664,15 @@ fn pointer(
                     .fields
                     .iter()
                     .find(|(offset, _)| *offset == field)
+                    && matches!(code, 1 | 2)
                 {
-                    if matches!(code, 1 | 2) {
-                        choices = vec![(0, false)];
-                    }
+                    choices = vec![(0, false)];
                 }
                 ui.menu_button("Choose Reference", |ui| {
                     for (class, array) in choices {
                         if ui.button(fields::name(class)).clicked() {
                             graph.create_target(index, at, class, array)?;
-                            ui.close_menu();
+                            ui.close();
                         }
                     }
                     Ok::<_, String>(())
@@ -707,7 +691,7 @@ fn pointer(
             })
             .inner?;
             if let Some(target) = graph.blocks[index].links.get(&at).copied() {
-                allocation(ui, graph, target, ancestors)?;
+                allocation(ui, graph, target, &child_path, ancestors)?;
             } else {
                 ui.weak("No reference selected.");
             }
@@ -763,7 +747,7 @@ fn reference_name(
     for (source, kind, _) in schema::inline(class)? {
         if kind == native::labels::SOURCE_CLASS
             && field >= source + 8
-            && (field - source - 8) % 16 == 0
+            && (field - source - 8).is_multiple_of(16)
             && field < source + 64
         {
             name = behavior::labels::OPERATIONS[(field - source - 8) / 16].into();
@@ -1047,7 +1031,7 @@ fn key_control(
             ui.data_mut(|data| data.insert_temp(query_id.with("focus"), true));
         }
         if searched && picked {
-            ui.memory_mut(egui::Memory::close_popup);
+            egui::Popup::close_all(ui);
         }
         ui.data_mut(|data| data.insert_temp(query_id, query));
         combo.response.on_hover_text(hover);

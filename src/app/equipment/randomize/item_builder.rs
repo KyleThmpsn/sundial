@@ -306,8 +306,7 @@ fn draw_base_section(
                     } else {
                         ui.visuals().strong_text_color()
                     };
-                    ui.add(egui::Label::new(egui::RichText::new(text).color(color)).truncate())
-                        .on_hover_text(text);
+                    ui.add(egui::Label::new(egui::RichText::new(text).color(color)).truncate());
                 }
             });
         });
@@ -368,11 +367,11 @@ fn draw_base_section(
         );
         let search_popup_id = ui.make_persistent_id("randomize-base-results-popup");
         if state.base_query.trim().is_empty() {
-            if ui.memory(|memory| memory.is_popup_open(search_popup_id)) {
-                ui.memory_mut(|memory| memory.close_popup());
+            if egui::Popup::is_id_open(ui, search_popup_id) {
+                egui::Popup::close_all(ui);
             }
         } else if search.changed() || search.gained_focus() {
-            ui.memory_mut(|memory| memory.open_popup(search_popup_id));
+            egui::Popup::open_id(ui, search_popup_id);
         }
         if !state.base_query.trim().is_empty() {
             let definition_results = matching_items(
@@ -389,12 +388,9 @@ fn draw_base_section(
                 .collect::<HashSet<_>>();
             let instance_results =
                 matching_item_instances(document, character_index, &matching_hashes);
-            egui::popup::popup_below_widget(
-                ui,
-                search_popup_id,
-                &search,
-                egui::PopupCloseBehavior::CloseOnClickOutside,
-                |ui| {
+            crate::ui::dropdown(&search, search_popup_id)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| {
                     ui.set_width(search.rect.width());
                     if instance_results.is_empty() && definition_results.is_empty() {
                         ui.weak("No items match the search and filters.");
@@ -433,7 +429,7 @@ fn draw_base_section(
                                         if response.clicked() {
                                             action =
                                                 Some(BaseAction::SelectInstance(choice.request));
-                                            ui.memory_mut(|memory| memory.close_popup());
+                                            egui::Popup::close_all(ui);
                                         }
                                     }
                                     if !definition_results.is_empty() {
@@ -473,13 +469,12 @@ fn draw_base_section(
                                     );
                                     if response.clicked() {
                                         action = Some(BaseAction::SelectDefinition(item.hash));
-                                        ui.memory_mut(|memory| memory.close_popup());
+                                        egui::Popup::close_all(ui);
                                     }
                                 }
                             });
                     }
-                },
-            );
+                });
         }
 
         if let Some(action) = action {
@@ -961,7 +956,7 @@ fn plug_icon_or_blank(
 
     let texture = ui.ctx().load_texture(
         "randomize-blank-plug-icon",
-        egui::ColorImage::new([1, 1], egui::Color32::TRANSPARENT),
+        egui::ColorImage::filled([1, 1], egui::Color32::TRANSPARENT),
         egui::TextureOptions::NEAREST,
     );
     ui.ctx()

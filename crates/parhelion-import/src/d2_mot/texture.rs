@@ -5,6 +5,37 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 use std::fs;
 
+/// Immutable modern texture tiling and tile/layer counts used by material expressions.
+pub(crate) fn metadata(header: &crate::d2_mot::payload::Payload, opcode: u8) -> Result<[u8; 16]> {
+    ensure!(
+        header.0.len() == 64 && header.u16(32)? == 0xcafe,
+        "source texture metadata header differs"
+    );
+    match opcode {
+        0x61 => {
+            ensure!(
+                (0..4).all(|i| header.f32(16 + i * 4).is_ok_and(f32::is_finite)),
+                "nonfinite texture tiling"
+            );
+            header.bytes::<16>(16)
+        }
+        0x62 => {
+            let values = [
+                f32::from(header.u16(42)?),
+                f32::from(header.u16(40)?),
+                0.,
+                0.,
+            ];
+            let mut result = [0; 16];
+            for (target, value) in result.chunks_exact_mut(4).zip(values) {
+                target.copy_from_slice(&value.to_le_bytes());
+            }
+            Ok(result)
+        }
+        _ => bail!("unsupported texture metadata opcode {opcode:02X}"),
+    }
+}
+
 /// Describe one complete native texture payload without the donor's streaming state.
 pub(crate) fn resident(header: &mut [u8], bytes: usize) -> Result<()> {
     ensure!(header.len() == 40, "native texture header size differs");

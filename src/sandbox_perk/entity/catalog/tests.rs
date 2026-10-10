@@ -544,10 +544,9 @@ fn discovery_variants_are_stable_across_catalog_order_and_keep_shared_weapon_typ
 }
 
 #[test]
-#[ignore = "requires PARHELION_PROJECTILE_CATALOG_INSTALL"]
+#[ignore = "requires SUNDIAL_INSTALL"]
 fn installed_discovery_identifies_enemy_and_guardian_projectiles_from_native_sources() {
-    let install =
-        std::path::PathBuf::from(std::env::var_os("PARHELION_PROJECTILE_CATALOG_INSTALL").unwrap());
+    let install = crate::test_support::install();
     let manager = crate::package_runtime::open_shadowkeep_packages(&install).unwrap();
     let catalog = cached(&install.join("packages"), &manager).unwrap();
     assert!(

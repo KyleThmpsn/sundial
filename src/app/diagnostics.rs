@@ -8,13 +8,13 @@ use std::{
 use crate::{
     package_authoring::{parhelion_data_directory, parhelion_recipe_library_directory},
     package_runtime::sunrise_module_path,
-    paths,
+    system::paths,
 };
 
 use super::{
     SettingsLayout,
     account_workspace::{AccountSourceInfo, AccountSourceKind},
-    persistence_compatibility::{PersistenceCompatibility, WARNING_MESSAGE},
+    runtime_state::{RuntimeState, WARNING_MESSAGE},
     settings::settings_path_for_install,
 };
 
@@ -181,7 +181,7 @@ fn append_build_information(report: &mut String) {
     writeln!(report, "process_id = {}", std::process::id())
         .expect("writing to a String cannot fail");
     // The figure a reader is looking at in their task manager when they open an issue.
-    if let Some(bytes) = crate::memory::resident_bytes() {
+    if let Some(bytes) = crate::system::memory::resident_bytes() {
         writeln!(report, "resident_memory_mb = {}", bytes / (1024 * 1024))
             .expect("writing to a String cannot fail");
     }
@@ -368,7 +368,7 @@ fn append_workspace_section(report: &mut String, context: &ReportContext<'_>) {
 }
 
 fn append_persistence_compatibility(report: &mut String, install: &Path) {
-    let inspection = PersistenceCompatibility::inspect(install);
+    let inspection = RuntimeState::inspect(install);
     if !inspection.detected() {
         return;
     }

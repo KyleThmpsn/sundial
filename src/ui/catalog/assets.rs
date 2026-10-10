@@ -147,7 +147,7 @@ pub fn draw_path(ui: &mut egui::Ui, path: &str) {
     ui.add(egui::Label::new(path).wrap()).context_menu(|ui| {
         if ui.button("Copy Path").clicked() {
             ui.ctx().copy_text(path.to_owned());
-            ui.close_menu();
+            ui.close();
         }
     });
 }

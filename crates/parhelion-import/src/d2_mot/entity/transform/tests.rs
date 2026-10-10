@@ -67,8 +67,8 @@ fn transform_package_oracle() -> Result<()> {
             &native.owner.0,
         )?;
         reports.push(serde_json::json!({"source":source_tag,"native":native_tag,
-            "source_sha256":format!("{:x}",Sha256::digest(&source.0)),
-            "native_sha256":format!("{:x}",Sha256::digest(&native.owner.0)),
+            "source_sha256":hex::encode(Sha256::digest(&source.0)),
+            "native_sha256":hex::encode(Sha256::digest(&native.owner.0)),
             "objects":native.objects,"byte_identical":true}));
     }
     let source = load("modern-owners/80D8A174.bin")?;
@@ -100,7 +100,7 @@ fn transform_package_oracle() -> Result<()> {
         fs::write(output.join("allocation.bin"), &native.allocation.0)?;
         reports.push(
             serde_json::json!({"entity":entity_tag,"source":0x80D8A174u32,
-            "owner_sha256":format!("{:x}",Sha256::digest(&native.owner.0)),
+            "owner_sha256":hex::encode(Sha256::digest(&native.owner.0)),
             "objects":native.objects,"source_graph_checked":true}),
         );
     }

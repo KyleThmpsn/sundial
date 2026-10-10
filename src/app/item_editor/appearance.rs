@@ -216,7 +216,10 @@ pub(super) fn browser(
     footer: impl FnOnce(&mut egui::Ui) -> bool,
 ) -> Option<ItemEditorAction> {
     let loadout = snapshot.preview.as_ref()?;
-    model_preview::chooser::show(
+    // A scope change keeps the chooser open, so it is returned after the window rather than
+    // picked from it.
+    let mut scope = None;
+    let picked = model_preview::chooser::show(
         ui,
         id,
         &format!("Choose {}", snapshot.socket_label),
@@ -235,6 +238,7 @@ pub(super) fn browser(
                     hash: default.value(),
                 }));
             }
+            scope = super::plug_picker::draw_plug_scope_selector(ui, snapshot);
             let response = ui.add(
                 egui::TextEdit::singleline(query)
                     .hint_text("Search Shaders or Ornaments")
@@ -332,7 +336,10 @@ pub(super) fn browser(
             )
         },
     )
-    .flatten()
+    .flatten();
+    scope
+        .map(|mode| ItemEditorAction::SetPlugSelectionMode { mode })
+        .or(picked)
 }
 
 #[cfg(test)]

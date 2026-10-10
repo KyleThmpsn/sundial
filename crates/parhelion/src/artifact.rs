@@ -16,7 +16,7 @@ pub struct ArtifactMetadata {
     pub sha256: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct FileDigest {
     pub(crate) byte_length: u64,
     pub(crate) sha256: String,
@@ -37,7 +37,7 @@ pub(crate) fn digest_file(path: &Path) -> io::Result<FileDigest> {
     }
     Ok(FileDigest {
         byte_length,
-        sha256: format!("{:X}", digest.finalize()),
+        sha256: hex::encode_upper(digest.finalize()),
     })
 }
 

@@ -6,6 +6,9 @@ use anyhow::{Context, Result, ensure};
 
 use crate::d2_mot::payload::Payload;
 
+mod energy;
+pub use energy::component_value;
+
 pub struct Node {
     pub class: u32,
     pub kind: u8,

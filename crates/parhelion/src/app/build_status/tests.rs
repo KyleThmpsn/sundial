@@ -11,6 +11,10 @@ use super::*;
 use std::fmt::Write as _;
 use std::sync::mpsc;
 
+mod parallel;
+mod resize;
+mod review;
+
 const BUILDS: (u32, &str) = (0xA25B_8F8F, "Arc Logic");
 /// A Legendary whose game data carries no ammo type, so Collections refuses it without one.
 const NO_AMMO: (u32, &str) = (0x90D4_2800, "Rose");
@@ -28,7 +32,7 @@ fn frame(
         events,
         ..Default::default()
     };
-    ctx.run(input, |ctx| app.draw_build_status_window(ctx))
+    ctx.run_ui(input, |ui| app.draw_build_status_window(ui))
 }
 
 /// Every button the dialog draws, with its center.
@@ -173,9 +177,9 @@ fn open(setup: &mut Setup, ctx: &egui::Context, failure: BuildFailure, report: &
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn a_recipe_that_stops_the_build_can_be_removed_from_it_or_opened() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let mut setup = setup(packages);
     let failure = build(&setup.app).expect_err("a recipe with no ammo type stops the build");
     assert_eq!(failure.recipe.as_deref(), Some(setup.namespace.as_str()));
@@ -201,10 +205,8 @@ fn a_recipe_that_stops_the_build_can_be_removed_from_it_or_opened() {
     let _ = writeln!(report, "Build Blocked offers: {}.\n", offered.join(", "));
     remove(&mut setup, &ctx, &mut report);
     open(&mut setup, &ctx, failure, &mut report);
-    let out = std::env::var_os("PARHELION_BLOCKER_OUT").map_or_else(
-        || std::env::temp_dir().join("parhelion-build-blocker"),
-        PathBuf::from,
-    );
+    let out = crate::test_support::artifacts("build-blocker")
+        .unwrap_or_else(|| std::env::temp_dir().join("parhelion-build-blocker"));
     std::fs::create_dir_all(&out).unwrap();
     std::fs::write(out.join("report.md"), &report).unwrap();
     eprintln!("{report}\nReport: {}", out.join("report.md").display());

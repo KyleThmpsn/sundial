@@ -20,10 +20,10 @@ fn extreme_aspect_imports_render_the_center_at_canvas_size() {
         let result = cover(imported.pixels(), 512, 256);
         assert_eq!(result.dimensions(), (512, 256));
         assert!(result.pixels().all(|pixel| pixel.0 == [255, 255, 255, 128]));
-        if let Some(directory) = std::env::var_os("PARHELION_UI_CAPTURE_DIR") {
+        if let Some(directory) = crate::test_support::artifacts("captures") {
             std::fs::create_dir_all(&directory).unwrap();
             result
-                .save(std::path::PathBuf::from(directory).join(format!("cover-{horizontal}.png")))
+                .save(directory.join(format!("cover-{horizontal}.png")))
                 .unwrap();
         }
     }
@@ -56,10 +56,10 @@ fn a_detailed_import_can_be_saved_and_reopened_at_its_supported_resolution() {
         (MAX_EMBEDDED_EDGE, MAX_EMBEDDED_EDGE)
     );
     assert_eq!(reopened, imported);
-    if let Some(directory) = std::env::var_os("PARHELION_UI_CAPTURE_DIR") {
+    if let Some(directory) = crate::test_support::artifacts("captures") {
         std::fs::create_dir_all(&directory).unwrap();
         cover(reopened.pixels(), 320, 180)
-            .save(std::path::PathBuf::from(directory).join("reopened-image.png"))
+            .save(directory.join("reopened-image.png"))
             .unwrap();
     }
 }

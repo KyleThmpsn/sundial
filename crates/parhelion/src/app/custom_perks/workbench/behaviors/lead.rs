@@ -34,10 +34,11 @@ const TRIGGER_LEAD: [Lead; 13] = [
 ];
 
 /// The actions most weapon perks are built from, in the order Suggested lists them.
-const ACTION_LEAD: [Lead; 14] = [
-    // Change a Weapon or Ability Stat, Change Fired Projectile, Change Outgoing Damage and
-    // Reload from Reserves.
+const ACTION_LEAD: [Lead; 15] = [
+    // Change a Weapon or Ability Stat, Change Weapon Properties, Change Fired Projectile,
+    // Change Outgoing Damage and Reload from Reserves.
     Lead::Kind(10),
+    Lead::Recipe(recipes::WEAPON_PROPERTIES),
     Lead::Kind(26),
     Lead::Kind(40),
     Lead::Kind(16),

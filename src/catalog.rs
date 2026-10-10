@@ -7,15 +7,14 @@ use std::{
 
 use tiger_pkg::TagHash;
 
-use crate::{
-    hash::{format_hash_hex, parse_hash_hex},
-    unnamed_plugs,
-};
+use crate::hash::{format_hash_hex, parse_hash_hex};
 
 mod browse;
 mod cache;
+pub(crate) mod class_items;
 mod collections;
-mod icons;
+pub(crate) mod dummy_items;
+pub(crate) mod icons;
 mod items;
 pub use items::stock_subclass_list_classes;
 pub(crate) use items::{character_row_class, inventory_bucket_capacity, weapon_bucket_capacities};
@@ -26,8 +25,10 @@ mod progression;
 mod reverse;
 mod scan;
 mod search;
+pub(crate) mod subclass;
+pub(crate) mod unnamed_plugs;
 
-use crate::investment_localization::resolve_string;
+use crate::investment::localization::resolve_string;
 pub(crate) use browse::{BrowseEntry, Shelf};
 pub(crate) use cache::cache_is_current;
 use cache::{CACHE_SCHEMA, CatalogCache, CatalogContents, SUNDIAL_VERSION};
@@ -51,8 +52,8 @@ pub(crate) use items::{
     format_in_game_investment_stat, interpolate_investment_stat_display,
 };
 use items::{
-    GearKind, build_gear_type_options, build_socket_type_options, format_plug_label,
-    intern_socket_pools, sort_plug_options,
+    GearKind, SocketCarriers, build_gear_type_options, build_socket_type_carriers,
+    build_socket_type_options, format_plug_label, intern_socket_pools, sort_plug_options,
 };
 pub(crate) use items::{
     SUBCLASS_BUCKET_HASH, is_authorable_weapon_item, is_weapon_bucket, is_weapon_ornament_type_name,
@@ -267,6 +268,7 @@ pub(crate) struct Catalog {
     plug_pools: Vec<Vec<u64>>,
     socket_type_options: HashMap<u16, Vec<u64>>,
     socket_and_gear_type_options: HashMap<String, HashMap<u16, Vec<u64>>>,
+    socket_type_carriers: HashMap<String, HashMap<u16, SocketCarriers>>,
     gear_type_options: HashMap<String, Vec<u64>>,
     gear_kind_options: HashMap<GearKind, Vec<u64>>,
     cosmetic_socket_pools: HashSet<u32>,
@@ -305,7 +307,7 @@ impl CharacterInventoryCandidateBuckets {
             };
             for class_index in class_indices {
                 Self::push_unique(&mut buckets.including_dummy_items[*class_index], metadata);
-                if !crate::dummy_items::contains(*hash) {
+                if !crate::catalog::dummy_items::contains(*hash) {
                     Self::push_unique(&mut buckets.standard[*class_index], metadata);
                 }
             }
@@ -602,7 +604,7 @@ impl Catalog {
                 });
                 let catalog = Self::finish(cache.contents, cache_path, install.to_path_buf(), true);
                 // The file and its inflated copy are gone once parsed.
-                crate::memory::release_free_memory();
+                crate::system::memory::release_free_memory();
                 return Ok(catalog);
             }
         }
@@ -647,7 +649,7 @@ impl Catalog {
         });
         let catalog = Self::finish(cache.contents, cache_path, install.to_path_buf(), false);
         drop(encoded);
-        crate::memory::release_free_memory();
+        crate::system::memory::release_free_memory();
         Ok(catalog)
     }
 
@@ -697,6 +699,7 @@ impl Catalog {
         }
         let (socket_type_options, socket_and_gear_type_options) =
             build_socket_type_options(&items, &plug_pools, &names);
+        let socket_type_carriers = build_socket_type_carriers(&items);
         let (gear_type_options, gear_kind_options, cosmetic_socket_pools) =
             build_gear_type_options(&items, &plug_pools, &names, &type_names);
         let cosmetic_socket_types = items
@@ -816,6 +819,7 @@ impl Catalog {
             plug_pools,
             socket_type_options,
             socket_and_gear_type_options,
+            socket_type_carriers,
             gear_type_options,
             gear_kind_options,
             cosmetic_socket_pools,
@@ -853,7 +857,7 @@ impl Catalog {
                     "Weapon"
                 };
             }
-            match crate::account_contract::EQUIPMENT_SLOTS
+            match crate::account::contract::EQUIPMENT_SLOTS
                 .iter()
                 .find(|(_, _, bucket)| *bucket == item.bucket_hash)
             {
@@ -1190,7 +1194,7 @@ fn compatible(
         && (item.class_type == 3
             || item.class_type == class_type
             || (allow_cross_class_subclasses && item.bucket_hash == 3_284_755_031))
-        && (show_dummy_items || !crate::dummy_items::contains(item.hash))
+        && (show_dummy_items || !crate::catalog::dummy_items::contains(item.hash))
 }
 
 #[cfg(test)]

@@ -31,6 +31,7 @@ use std::{
 };
 use thumbnails::{Loaded, Origin, Thumbnail};
 pub(crate) use view::Browser;
+pub(crate) use view::{Abilities, Picked};
 
 struct Row {
     origin: Origin,
@@ -88,6 +89,13 @@ pub(crate) enum Selection {
 }
 
 impl Picker {
+    /// The shared browser opened on stock ability and attunement icons.
+    pub fn for_abilities() -> Self {
+        let mut picker = Self::for_purpose(Purpose::Perk);
+        picker.source = 4;
+        picker
+    }
+
     #[allow(clippy::field_reassign_with_default)] // Picker owns workers and implements Drop.
     pub fn for_purpose(purpose: Purpose) -> Self {
         let mut picker = Self::default();
@@ -269,11 +277,13 @@ impl Picker {
         sender
     }
 
+    /// The chosen icon at `size`, once loaded. Returns whether an icon is chosen.
     pub fn preview(
         &mut self,
         ui: &mut egui::Ui,
         packages: Option<&Path>,
         icon: Option<&Icon>,
+        size: f32,
     ) -> bool {
         let Some(icon) = icon else {
             return false;
@@ -322,7 +332,7 @@ impl Picker {
                 }
             }
         }
-        let size = egui::Vec2::splat(ui.spacing().interact_size.y);
+        let size = egui::Vec2::splat(size);
         if let Some((current, result)) = &self.preview
             && current == icon
         {

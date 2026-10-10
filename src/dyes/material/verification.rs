@@ -124,8 +124,8 @@ fn scope(code: &[u8], constants: &[[f32; 4]]) -> Vec<u8> {
 }
 
 /// The same serialized cubic material used by the native capture's timeline cases. Only the
-/// Windows GPU verification renders it.
-#[cfg(windows)]
+/// desktop GPU verification renders it.
+#[cfg(any(windows, target_os = "linux"))]
 pub(crate) fn timeline() -> (Animation, [[f32; 4]; 27]) {
     let code = [0x3C, 1, 0, 0x37, 0, 0x43, 9];
     let constants = [

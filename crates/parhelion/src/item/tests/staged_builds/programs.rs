@@ -5,7 +5,7 @@ use sundial::package_authoring::sandbox_perk::{
 };
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn private_graph_scopes_route_matching_fields_and_reject_the_wrong_asset() {
     use sundial::package_authoring::{
         runtime::*,
@@ -14,7 +14,7 @@ fn private_graph_scopes_route_matching_fields_and_reject_the_wrong_asset() {
             program::{Asset, Position},
         },
     };
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(&packages).unwrap();
     let globals = manager
         .read_tag(resolve_live_named_tag(&manager, "investment_globals", None).unwrap())
@@ -99,6 +99,8 @@ fn private_graph_scopes_route_matching_fields_and_reject_the_wrong_asset() {
                             })
                             .cloned()
                             .collect(),
+                        damage_type: None,
+                        rows: Vec::new(),
                         hud_status: None,
                     },
                     position: Position::Event,
@@ -168,9 +170,9 @@ fn assert_stock_graphs_unchanged(
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn authored_catalog_nodes_keep_private_allocation_stock_bytes_and_residency() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(&packages).unwrap();
     let globals_tag = resolve_live_named_tag(&manager, "investment_globals", None).unwrap();
     let globals = manager.read_tag(globals_tag).unwrap();
@@ -279,4 +281,146 @@ fn assert_compiled_catalog_node(manager: &PackageManager, program: &Program, pay
         assert_eq!(read_u64(payload, 0xA0).unwrap(), 1);
         assert_eq!(decoded.effects().next().unwrap().kind, 32);
     }
+}
+
+/// Each damage profile the graphs below `root` name, with the graph naming it, as the build finds
+/// them: graph, profile and damage type.
+fn damage_profiles(manager: &PackageManager, root: u32) -> Vec<(u32, u32, u8)> {
+    use sundial::package_authoring::{ability_damage, ability_palette};
+    ability_palette::ability_graphs(manager, root, crate::subclass::SPAWN_DEPTH)
+        .unwrap()
+        .into_iter()
+        .flat_map(|(graph, payload)| {
+            ability_damage::references(manager, graph, &payload)
+                .unwrap()
+                .into_iter()
+                .map(move |(place, profile)| (graph, place.graph, profile.mode))
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
+fn a_projectile_takes_its_own_damage_type_as_an_asset_and_in_a_slot() {
+    use sundial::package_authoring::{
+        ability_damage,
+        sandbox_perk::{
+            self,
+            entity::Selection,
+            program::{Asset, DamageMode, Position},
+        },
+    };
+    let packages = crate::test_support::stock_packages();
+    let manager = open_shadowkeep_package_manager(&packages).unwrap();
+    let globals = manager
+        .read_tag(resolve_live_named_tag(&manager, "investment_globals", None).unwrap())
+        .unwrap();
+    // A stock grenade projectile whose graphs name damage profiles, and a type none of them
+    // deal, so every profile is copied.
+    let projectile = [0x80B8_06CB, 0x80B8_0725, 0x80B8_0592]
+        .into_iter()
+        .find(|&graph| !damage_profiles(&manager, graph).is_empty())
+        .expect("a stock grenade projectile names damage profiles");
+    let stock_profiles = damage_profiles(&manager, projectile);
+    let dealt = stock_profiles
+        .iter()
+        .map(|(.., mode)| *mode)
+        .collect::<BTreeSet<_>>();
+    let mode = [
+        DamageMode::Arc,
+        DamageMode::Solar,
+        DamageMode::Void,
+        DamageMode::Kinetic,
+    ]
+    .into_iter()
+    .find(|mode| !dealt.contains(&mode.byte()))
+    .expect("a damage type the projectile does not deal");
+    // A stock action firing the projectile, as the scoping test builds one.
+    let mut stock = load_sandbox_perk_runtime_action(&manager, &globals, 421).unwrap();
+    let fires = |damage_type| Program {
+        trigger: Trigger::WeaponKill,
+        actions: vec![Action::Spawn {
+            asset: Asset {
+                graph: projectile,
+                damage_type,
+                ..Asset::default()
+            },
+            position: Position::Event,
+        }],
+        ..Program::default()
+    };
+    let compiled = sandbox_perk::program::compile(&manager, &fires(None)).unwrap();
+    stock.action_payload = compiled.payload;
+    stock.graphs = vec![sandbox_perk::SandboxPerkRuntimeGraphSource {
+        tag: TagHash(projectile),
+        action_offsets: vec![compiled.graph_offsets[0].unwrap()],
+        payload: manager.read_tag(TagHash(projectile)).unwrap(),
+    }];
+    let allocator = AppendedTagAllocator::new(PARHELION_ASSET_PACKAGE_ID, 0);
+    let typed = fires(Some(mode));
+    let slot = [Selection {
+        source_graph: projectile,
+        donor_graph: projectile,
+        damage_type: Some(mode),
+    }];
+    let routes = [
+        (
+            "a program's projectile asset",
+            custom_runtime::PrivateRuntimeEdits {
+                program: Some(&typed),
+                ..Default::default()
+            },
+        ),
+        (
+            "a stock effect's projectile slot",
+            custom_runtime::PrivateRuntimeEdits {
+                projectiles: &slot,
+                ..Default::default()
+            },
+        ),
+    ];
+    for (route, edits) in routes {
+        let mut tags = Vec::new();
+        clone_private_sandbox_perk_runtime(&manager, &stock, edits, allocator, &mut tags).unwrap();
+        // Every profile the stock tree names has one private copy dealing the type, under a
+        // tag of its own.
+        for (_, profile, _) in &stock_profiles {
+            let copies = tags
+                .iter()
+                .enumerate()
+                .filter(|(_, tag)| tag.template_tag == TagHash(*profile))
+                .collect::<Vec<_>>();
+            let [(ordinal, copy)] = copies.as_slice() else {
+                panic!(
+                    "{route}: profile 0x{profile:08X} is copied once, not {} times",
+                    copies.len()
+                );
+            };
+            let tag = allocator.assigned_tag(*ordinal, "test", "profile").unwrap();
+            assert_eq!(
+                ability_damage::profile(tag.0, &copy.payload).map(|profile| profile.mode),
+                Some(mode.byte()),
+                "{route}: the copy of profile 0x{profile:08X} deals {mode:?}"
+            );
+        }
+        // The action fires a private copy of the projectile, whose copied owners name the copies
+        // and no stock profile.
+        let private = tags
+            .iter()
+            .position(|tag| tag.template_tag == TagHash(projectile))
+            .map(|ordinal| allocator.assigned_tag(ordinal, "test", "graph").unwrap())
+            .unwrap_or_else(|| panic!("{route}: the projectile is copied"));
+        let action = &tags
+            .iter()
+            .find(|tag| tag.template_tag == stock.action_tag)
+            .unwrap_or_else(|| panic!("{route}: the action is copied"))
+            .payload;
+        let offset = stock.graphs[0].action_offsets[0];
+        assert_eq!(
+            u32::from_le_bytes(action[offset..offset + 4].try_into().unwrap()),
+            private.0,
+            "{route}: the action fires the private projectile"
+        );
+    }
+    assert_stock_graphs_unchanged(&manager, &stock);
 }

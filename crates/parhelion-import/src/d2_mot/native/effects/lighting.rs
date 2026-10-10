@@ -162,6 +162,8 @@ fn evaluation(lines: &[String], coefficients: &[String]) -> Result<bool> {
     let color = red
         .strip_suffix(".x")
         .context("irradiance red destination")?;
+    let (clamp_destination, clamp_expression) =
+        assignment(&lines[4]).context("irradiance clamp assignment")?;
     ensure!(
         lines[0].trim()
             == format!(
@@ -172,7 +174,8 @@ fn evaluation(lines: &[String], coefficients: &[String]) -> Result<bool> {
             )
             && lines[2].trim() == format!("{color}.y = dot({}, {normal});", coefficients[1])
             && lines[3].trim() == format!("{color}.z = dot({}, {normal});", coefficients[2])
-            && lines[4].trim() == format!("{color}.xyz = max(float3(0,0,0), {color}.xyz);"),
+            && references(clamp_destination).len() == 3
+            && clamp_expression == format!("max(float3(0,0,0), {color}.xyz)"),
         "irradiance coefficient evaluation differs"
     );
     Ok(true)

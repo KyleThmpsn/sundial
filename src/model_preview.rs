@@ -6,6 +6,7 @@ use std::{collections::BTreeSet, path::Path};
 pub(crate) mod animation;
 pub(crate) mod appearance;
 pub(crate) mod assets;
+mod cloth;
 #[cfg(test)]
 mod compatibility_tests;
 mod decode;
@@ -13,6 +14,8 @@ mod effects;
 pub(crate) mod export;
 pub(crate) mod gpu;
 mod light;
+pub(crate) mod local;
+mod output;
 mod particle_material;
 mod particles;
 #[cfg(test)]
@@ -49,6 +52,7 @@ pub(crate) struct Model {
     pub(crate) motions: Vec<effects::Motion>,
     pub animation: Option<animation::Animation>,
     pub rigs: Vec<animation::Rig>,
+    cloth: Vec<cloth::Timeline>,
     pub animation_notice: Option<String>,
     /// Every clip the object can play, for the viewer's picker.
     pub clips: Vec<animation::Clip>,
@@ -96,7 +100,7 @@ pub struct SurfaceOverride {
 impl Model {
     /// Shared stored-pose, material motion and skeletal deformation for every renderer/export.
     pub(crate) fn pose(&self, seconds: f32) -> Option<animation::Deformed> {
-        if self.motions.is_empty() && self.rigs.is_empty() {
+        if self.motions.is_empty() && self.rigs.is_empty() && self.cloth.is_empty() {
             return self
                 .animation
                 .as_ref()
@@ -124,6 +128,9 @@ impl Model {
                 self.rigs.len() == 1 && rig.vertices.len() == self.vertices.len(),
             );
         }
+        for cloth in &self.cloth {
+            cloth.apply(seconds, &mut stored);
+        }
         Some(stored)
     }
 
@@ -131,11 +138,16 @@ impl Model {
         self.animation.is_some() || !self.rigs.is_empty()
     }
 
+    pub(crate) fn has_cloth(&self) -> bool {
+        !self.cloth.is_empty()
+    }
+
     pub(crate) fn animation_duration(&self) -> Option<f32> {
         self.animation
             .iter()
             .chain(self.rigs.iter().map(|r| &r.animation))
             .map(animation::Animation::duration)
+            .chain(self.cloth.iter().map(cloth::Timeline::duration))
             .reduce(f32::max)
     }
 
@@ -184,6 +196,18 @@ impl Model {
             })
     }
 
+    pub(crate) fn particle_simulation(&self) -> Option<&particles::simulation::Timeline> {
+        if !self.has_particle_material_study() || !self.particle_sources.is_empty() {
+            return None;
+        }
+        self.assets
+            .particles
+            .first()?
+            .simulation
+            .as_ref()
+            .filter(|simulation| self.triangles.len().saturating_mul(simulation.peak) <= 200_000)
+    }
+
     pub(crate) fn has_surface_mesh(&self) -> bool {
         self.triangles
             .iter()
@@ -204,7 +228,9 @@ const RESOURCE: u32 = 0x8080_9C36;
 const MODEL: u32 = 0x8080_73A5;
 const MAX_VERTICES: usize = 500_000;
 const MAX_TRIANGLES: usize = 500_000;
-pub(crate) const MAX_TEXTURES: usize = 24;
+// Vehicle assemblies can exceed the old 24-image count with ordinary surface materials.
+// Retained decoded bytes remain independently bounded in texture::retain/check_pending.
+pub(crate) const MAX_TEXTURES: usize = 256;
 
 /// What the reader is doing right now, for the waiting viewer.
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -227,15 +253,18 @@ pub(crate) struct Load {
 /// Returned when a load stops early. Callers discard it rather than showing it.
 pub(crate) const CANCELLED: &str = "The model load was cancelled.";
 
-/// Preview reads still running in any viewer. Each keeps package files open until it returns.
+/// Background package reads still running, such as a viewer's. Each keeps package files open
+/// until it returns.
 static PACKAGE_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Counts one preview read of the packages for as long as it is alive. Move it into the
-/// reading thread so it ends with the read, however the read ends.
-pub(crate) struct PackageRead(());
+/// Counts one background read of the packages for as long as it is alive, so an operation that
+/// replaces packages waits for it. Move it into the reading thread so it ends with the read,
+/// however the read ends.
+pub struct PackageRead(());
 
 impl PackageRead {
-    pub(crate) fn start() -> Self {
+    #[must_use]
+    pub fn start() -> Self {
         PACKAGE_READS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Self(())
     }
@@ -247,7 +276,7 @@ impl Drop for PackageRead {
     }
 }
 
-/// Whether a preview read of the packages is still running. Pausing a viewer stops it from
+/// Whether a background read of the packages is still running. Pausing a viewer stops it from
 /// starting new reads, but one already started finishes, so a package operation waits for this.
 pub(crate) fn package_reads_running() -> bool {
     PACKAGE_READS.load(std::sync::atomic::Ordering::SeqCst) != 0
@@ -311,23 +340,16 @@ fn load_with_manager(
     let entry = manager
         .get_entry(tag)
         .ok_or("The selected resource is missing")?;
+    if let Some(model) = decode::specialized(manager, tag, entry.reference, cancel, clip)? {
+        return Ok(model);
+    }
     let mut tags = BTreeSet::new();
     let mut resources = Vec::new();
     let mut components = Vec::new();
     let mut inventory = Inventory::default();
     let mut emitter_only = false;
+    let mut owners = Vec::new();
     match entry.reference {
-        0x8080_744A => {
-            let relation = checked(manager, tag, 0x8080_744A)?;
-            let entity = u32_at(&relation, 0x10)?;
-            if manager
-                .get_entry(entity)
-                .is_none_or(|e| e.reference != ENTITY)
-            {
-                return Err("This assignment does not point to a renderable object".into());
-            }
-            return load_with_manager(manager, entity, cancel, clip);
-        }
         MODEL => {
             tags.insert(tag);
         }
@@ -339,7 +361,7 @@ fn load_with_manager(
             components.push(bytes);
         }
         ENTITY => {
-            emitter_only = collect_entity_preview(
+            (emitter_only, owners) = collect_entity_preview(
                 manager,
                 tag,
                 cancel,
@@ -348,23 +370,6 @@ fn load_with_manager(
                 &mut components,
                 &mut inventory,
             )?;
-        }
-        // Map and prop geometry sits outside the entity family and reads its own tables.
-        class if statics::is_static(class) => {
-            cancel.say("Reading static mesh", 0, 0);
-            return statics::load(manager, tag);
-        }
-        terrain::TERRAIN => {
-            cancel.say("Reading terrain", 0, 0);
-            return terrain::load(manager, tag);
-        }
-        terrain::RESOURCE => {
-            let bytes = checked(manager, tag, terrain::RESOURCE)?;
-            cancel.say("Reading terrain", 0, 0);
-            return terrain::load(manager, u32_at(&bytes, 0x18)?);
-        }
-        light::SHADOWING_LIGHT | light::LIGHT_COLLECTION => {
-            return light::load(manager, tag);
         }
         PARTICLE_SYSTEM => {
             inventory.particle_systems.insert(tag);
@@ -385,110 +390,26 @@ fn load_with_manager(
         }
     }
     if tags.is_empty() {
-        let mut model = Model {
-            assets: if inventory.particle_systems.is_empty()
-                && inventory.sounds.is_empty()
-                && inventory.lights.is_empty()
-                && inventory.children.is_empty()
-                && inventory.components.is_empty()
-            {
-                assets::generic(manager, tag)?
-            } else {
-                assets::read(manager, tag, &inventory, cancel)?
-            },
-            ..Default::default()
-        };
-        model.clips = animation::clips(manager, &resources);
-        particles::collect_points(&mut model);
-        light::append(manager, &inventory.lights, &mut model);
-        return Ok(model);
+        return decode::empty(manager, tag, &inventory, &resources, cancel);
     }
-    let mut model = Model {
-        assets: assets::read(manager, tag, &inventory, cancel)?,
-        ..Default::default()
-    };
-    let total = tags.len();
-    for (done, tag) in tags.into_iter().enumerate() {
-        cancel.check()?;
-        cancel.say(
-            if total > 1 {
-                format!("Decoding mesh {} of {total}", done + 1)
-            } else {
-                "Decoding mesh".to_owned()
-            },
-            done,
-            total,
-        );
-        let component = components.iter().find(|bytes| {
-            pointer(bytes, 0x18)
-                .ok()
-                .and_then(|data| u32_at(bytes, data + 0x1DC).ok())
-                == Some(tag)
+    if owners.is_empty() {
+        owners.push(decode::Owner {
+            models: tags,
+            resources: 0..resources.len(),
+            components: 0..components.len(),
         });
-        let first_triangle = model.triangles.len();
-        let inputs = effects::inputs(component.map(Vec::as_slice), &components);
-        let cloth = component.is_some_and(|bytes| {
-            pointer(bytes, 0x18)
-                .ok()
-                .and_then(|data| data.checked_sub(4))
-                .and_then(|at| u32_at(bytes, at).ok())
-                == Some(0x8080_7286)
-        });
-        match decode::append(
-            manager,
-            tag,
-            component.map(Vec::as_slice),
-            &inputs,
-            &mut model,
-        ) {
-            Ok(()) => {
-                model.tags.push(tag);
-                if cloth {
-                    model.notices.push(
-                        "Cloth is shown in its stored pose. Live cloth simulation is not previewed."
-                            .into(),
-                    );
-                }
-                if emitter_only {
-                    model.triangle_emitter.resize(model.triangles.len(), false);
-                    model.triangle_emitter[first_triangle..].fill(true);
-                }
-            }
-            Err(error) if emitter_only => model.notices.push(format!(
-                "Particle geometry 0x{tag:08X} could not be drawn: {error}"
-            )),
-            Err(error) => return Err(error),
-        }
     }
-    if model.triangles.is_empty() {
-        model.clips = animation::clips(manager, &resources);
-        light::append(manager, &inventory.lights, &mut model);
-        if !model.triangles.is_empty() {
-            return Ok(model);
-        }
-        if emitter_only {
-            return Ok(model);
-        }
-        return Err("The model contains no supported triangles.".into());
-    }
-    if emitter_only {
-        model.particle_geometry = true;
-    }
-    particles::collect_points(&mut model);
-    cancel.say("Reading animation", total, total);
-    model.clips = animation::clips(manager, &resources);
-    match clip {
-        Some(tag) => match animation::load_clip(manager, &resources, &model, tag) {
-            Ok(animation) => model.animation = Some(animation),
-            Err(error) => model.animation_notice = Some(error),
-        },
-        None => match animation::load(manager, &resources, &model) {
-            Ok(animation) => model.animation = animation,
-            Err(error) => model.animation_notice = Some(error),
-        },
-    }
-    light::append(manager, &inventory.lights, &mut model);
-    Ok(model)
+    let mut model = decode::owners(
+        manager,
+        &owners,
+        &resources,
+        &components,
+        cancel,
+        clip,
+        emitter_only,
+    )?;
+    model.assets = assets::read(manager, tag, &inventory, cancel)?;
+    decode::finish(manager, model, &inventory, &resources, emitter_only)
 }
 
 fn collect_entity_preview(
@@ -499,9 +420,18 @@ fn collect_entity_preview(
     resources: &mut Vec<Vec<u8>>,
     components: &mut Vec<Vec<u8>>,
     inventory: &mut Inventory,
-) -> Result<bool, String> {
+) -> Result<(bool, Vec<decode::Owner>), String> {
     collect_entity(manager, tag, tags, resources, components, inventory)?;
     let has_own_model = !tags.is_empty();
+    let mut owners = Vec::new();
+    if has_own_model {
+        owners.push(decode::Owner {
+            models: tags.clone(),
+            resources: 0..resources.len(),
+            components: 0..components.len(),
+        });
+    }
+    let mut model_count = tags.len();
     // Effects, sequences and animation patterns can keep their visible parts in child entities.
     let mut visited = BTreeSet::from([tag]);
     let mut queue = vec![(tag, 0usize)];
@@ -516,6 +446,8 @@ fn collect_entity_preview(
                 continue;
             }
             let mut child_tags = BTreeSet::new();
+            let resource_start = resources.len();
+            let component_start = components.len();
             if collect_entity(
                 manager,
                 child,
@@ -528,17 +460,27 @@ fn collect_entity_preview(
             {
                 continue;
             }
-            if !has_own_model && tags.len() < MAX_CHILD_MODELS {
-                tags.extend(child_tags);
+            if !has_own_model && !child_tags.is_empty() && model_count < MAX_CHILD_MODELS {
+                child_tags = child_tags
+                    .into_iter()
+                    .take(MAX_CHILD_MODELS - model_count)
+                    .collect();
+                model_count += child_tags.len();
+                tags.extend(&child_tags);
+                owners.push(decode::Owner {
+                    models: child_tags,
+                    resources: resource_start..resources.len(),
+                    components: component_start..components.len(),
+                });
             }
             queue.push((child, depth + 1));
         }
     }
     if tags.is_empty() {
         tags.extend(assets::emitter_models(manager, inventory));
-        return Ok(!tags.is_empty());
+        return Ok((!tags.is_empty(), owners));
     }
-    Ok(false)
+    Ok((false, owners))
 }
 
 const MAX_CHILD_DEPTH: usize = 3;

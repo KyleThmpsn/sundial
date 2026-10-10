@@ -126,13 +126,13 @@ fn frame(
     viewport: egui::Vec2,
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
-    ctx.run(
+    ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport)),
             events,
             ..Default::default()
         },
-        |ctx| app.draw_runtime_donor_browser(ctx),
+        |ui| app.draw_runtime_donor_browser(ui),
     )
 }
 
@@ -187,15 +187,10 @@ fn click(ctx: &egui::Context, app: &mut PackageAuthoringApp, position: egui::Pos
 }
 
 #[test]
-fn incompatible_donors_never_apply_and_experimental_donors_require_opt_in() {
-    for experimental in [false, true] {
-        assert!(can_apply(DonorCompatibility::LowerRisk, experimental));
-        assert!(!can_apply(DonorCompatibility::Incompatible, experimental));
-        assert_eq!(
-            can_apply(DonorCompatibility::Experimental, experimental),
-            experimental
-        );
-    }
+fn incompatible_donors_never_apply_and_the_others_sort_by_risk() {
+    assert!(can_apply(DonorCompatibility::LowerRisk));
+    assert!(can_apply(DonorCompatibility::Experimental));
+    assert!(!can_apply(DonorCompatibility::Incompatible));
     assert!(
         status_rank(DonorCompatibility::LowerRisk) < status_rank(DonorCompatibility::Experimental)
     );
@@ -405,14 +400,14 @@ fn undo_restores_the_entire_previous_recipe_and_preserves_later_edits() {
         let ctx = egui::Context::default();
         let mut output = egui::FullOutput::default();
         let mut draw = |events| {
-            ctx.run(
+            ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, VIEWPORT)),
                     events,
                     ..Default::default()
                 },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| app.draw_runtime_donor_undo(ui));
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| app.draw_runtime_donor_undo(ui));
                 },
             )
         };
@@ -445,28 +440,10 @@ fn undo_restores_the_entire_previous_recipe_and_preserves_later_edits() {
 }
 
 #[test]
-fn experimental_apply_button_requires_the_explicit_checkbox() {
+fn experimental_donor_applies_with_the_apply_button() {
     let ctx = egui::Context::default();
     let mut app = app();
     app.runtime_donors.picker.as_mut().unwrap().selected = Some(EXPERIMENTAL);
-    let before = app.recipe.clone();
-    let output = settle(&ctx, &mut app, VIEWPORT);
-    click(&ctx, &mut app, label_rect(&output, "Apply Donor").center());
-    assert_eq!(
-        app.recipe, before,
-        "a saved experimental selection is not consent"
-    );
-    let output = settle(&ctx, &mut app, VIEWPORT);
-    click(
-        &ctx,
-        &mut app,
-        label_rect(&output, "Accept Crash Risk").center(),
-    );
-    assert!(app.runtime_donors.picker.as_ref().unwrap().experimental);
-    assert_eq!(
-        app.recipe, before,
-        "accepting the risk must not apply a donor"
-    );
     let output = settle(&ctx, &mut app, VIEWPORT);
     click(&ctx, &mut app, label_rect(&output, "Apply Donor").center());
     assert_eq!(
@@ -476,11 +453,10 @@ fn experimental_apply_button_requires_the_explicit_checkbox() {
 }
 
 #[test]
-fn rejected_donor_stays_unapplyable_even_with_the_crash_risk_accepted() {
+fn rejected_donor_stays_unapplyable() {
     let ctx = egui::Context::default();
     let mut app = app();
     let picker = app.runtime_donors.picker.as_mut().unwrap();
-    picker.experimental = true;
     picker.selected = Some(REJECTED);
     let before = app.recipe.clone();
     let output = settle(&ctx, &mut app, VIEWPORT);
@@ -822,7 +798,7 @@ fn effective_source_labels_expose_shared_owner_donors_despite_requested_baseline
     let key = app.runtime_graph_key();
     let mut output = egui::FullOutput::default();
     for _ in 0..3 {
-        output = ctx.run(
+        output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -830,8 +806,8 @@ fn effective_source_labels_expose_shared_owner_donors_despite_requested_baseline
                 )),
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     workbench_style(ui);
                     app.draw_runtime_component_row(
                         ui,
@@ -926,7 +902,7 @@ fn failed_runtime_graph_keeps_saved_donor_repair_controls_visible() {
         let before = app.recipe.clone();
         let mut output = egui::FullOutput::default();
         for _ in 0..3 {
-            output = ctx.run(
+            output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -934,8 +910,8 @@ fn failed_runtime_graph_keeps_saved_donor_repair_controls_visible() {
                     )),
                     ..Default::default()
                 },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         workbench_style(ui);
                         app.draw_gameplay_parts(ui, None);
                     });
@@ -949,7 +925,7 @@ fn failed_runtime_graph_keeps_saved_donor_repair_controls_visible() {
                 .any(|(text, _)| text.contains("Synthetic incompatible owner"))
         );
         assert!(labels.iter().any(|(text, _)| text == "Remove Saved Choice"));
-        assert!(labels.iter().any(|(text, _)| text == "Change…"));
+        assert!(labels.iter().any(|(text, _)| text == "Not Loaded"));
         assert_eq!(app.recipe, before);
         assert!(!app.runtime_donors.busy());
     }

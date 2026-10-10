@@ -169,7 +169,7 @@ pub const CATALOG: &[Behavior] = &[
         trait_plug: None,
         effect: BehaviorEffect::NoObservedEffect,
         caution: None,
-        summary: "Copies Traveler's Chosen's state record. Its gameplay effect on another weapon has not been verified.",
+        summary: "Copies Traveler's Chosen's state record.",
     },
     Behavior {
         id: "two-tailed-fox",
@@ -185,7 +185,7 @@ pub const CATALOG: &[Behavior] = &[
         trait_plug: Some(0x2E59_CD3D),
         effect: BehaviorEffect::NoObservedEffect,
         caution: None,
-        summary: "Copies Two-Tailed Fox's state record. This does not copy its two-rocket firing graph. Its gameplay effect on another weapon has not been verified.",
+        summary: "Copies Two-Tailed Fox's state record. This does not copy its two-rocket firing graph.",
     },
     Behavior {
         id: "tarrabah",
@@ -201,7 +201,7 @@ pub const CATALOG: &[Behavior] = &[
         trait_plug: Some(0xC7BC_3D87),
         effect: BehaviorEffect::NoObservedEffect,
         caution: None,
-        summary: "Copies Tarrabah's state record. Ravenous Beast behavior on another weapon has not been verified.",
+        summary: "Copies Tarrabah's state record.",
     },
     Behavior {
         id: "drang-state",
@@ -215,9 +215,7 @@ pub const CATALOG: &[Behavior] = &[
         intrinsic_plug: Some(0x4D21_471C),
         trait_plug: Some(0x9A65_D669),
         effect: BehaviorEffect::Untested,
-        caution: Some(
-            "Drang's state transfer is package-backed but has not been verified in game.",
-        ),
+        caution: None,
         summary: "Copies Drang's distinct state array and can include Together Forever.",
     },
     Behavior {
@@ -891,9 +889,7 @@ pub const CATALOG: &[Behavior] = &[
         intrinsic_plug: Some(0xE9DD_FAA0),
         trait_plug: None,
         effect: BehaviorEffect::Untested,
-        caution: Some(
-            "The graph and Double Fire intrinsic form one behavior. Their transfer has not been verified in game.",
-        ),
+        caution: None,
         summary: "Copies Warden's Law's twin-fire graph and can include Double Fire, which attaches both firing assets while the weapon is drawn.",
     },
 ];

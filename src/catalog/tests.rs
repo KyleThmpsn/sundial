@@ -22,9 +22,9 @@ fn component_descriptions_survive_cache_round_trip_without_using_item_flavor() {
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_INSTALL pointing to the supported Shadowkeep build"]
+#[ignore = "requires SUNDIAL_INSTALL pointing to the supported Shadowkeep build"]
 fn supported_shadowkeep_build_loads_collection_expression_contracts() {
-    let install = PathBuf::from(std::env::var("SUNDIAL_TEST_INSTALL").unwrap());
+    let install = PathBuf::from(std::env::var("SUNDIAL_INSTALL").unwrap());
     let temp = crate::test_support::TestDirectory::new("collection-expressions");
     let catalog =
         Catalog::load_or_scan_with_progress(&install, temp.0.join("catalog.json"), true, |_| {})
@@ -588,17 +588,17 @@ fn package_offsets_reject_underflow_and_out_of_bounds_reads() {
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_INSTALL pointing to the supported Shadowkeep build"]
+#[ignore = "requires SUNDIAL_INSTALL pointing to the supported Shadowkeep build"]
 fn supported_shadowkeep_build_loads_v13_equipment() {
-    let install = PathBuf::from(std::env::var("SUNDIAL_TEST_INSTALL").unwrap());
+    let install = PathBuf::from(std::env::var("SUNDIAL_INSTALL").unwrap());
     let temp = crate::test_support::TestDirectory::new("v13-equipment");
     let catalog =
         Catalog::load_or_scan_with_progress(&install, temp.0.join("catalog.json"), true, |_| {})
             .unwrap();
     let wheel = catalog
         .get_for_bucket(
-            crate::account_contract::EMOTE_COLLECTION_DEFINITION_HASH,
-            crate::account_contract::EMOTE_BUCKET_HASH,
+            crate::account::contract::EMOTE_COLLECTION_DEFINITION_HASH,
+            crate::account::contract::EMOTE_BUCKET_HASH,
         )
         .expect("emote collection must be an editable equipment definition");
     assert_eq!(wheel.sockets.len(), 4);
@@ -607,9 +607,9 @@ fn supported_shadowkeep_build_loads_v13_equipment() {
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_INSTALL pointing to the supported Shadowkeep build"]
+#[ignore = "requires SUNDIAL_INSTALL pointing to the supported Shadowkeep build"]
 fn installed_power_cap_table_survives_catalog_cache_roundtrip() {
-    let install = PathBuf::from(std::env::var("SUNDIAL_TEST_INSTALL").unwrap());
+    let install = PathBuf::from(std::env::var("SUNDIAL_INSTALL").unwrap());
     let temp = crate::test_support::TestDirectory::new("native-power-caps");
     let path = temp.0.join("catalog.json");
     let catalog =

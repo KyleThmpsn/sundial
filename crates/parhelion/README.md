@@ -46,6 +46,8 @@ If the new build leaves out an installed item or custom perk, Parhelion lists wh
 
 Parhelion checks that your selected items fit within the game's package limits before installation.
 
+Builds reuse the compiled parts of weapons and Subclass abilities you haven't changed, so the first build after updating Parhelion takes the longest.
+
 Check the build selection before each build. Opening a recipe doesn't automatically select it. **Include Default Weapons** is checked by default. Leave it checked to include all bundled weapons, or uncheck it to choose them individually.
 
 ## Making Weapons
@@ -56,7 +58,7 @@ Your weapon starts with the **base weapon**'s firing behavior, stats, and perks.
 
 On **Gameplay**, **Parts** lets you borrow behavior and firing parts from other weapons. **Firing Behavior**, **Barrel**, and **Magazine** can each use a different source while keeping your weapon's runtime. **Reload** swaps the whole runtime. On **Appearance**, **Animations** and **Actions** borrow whole animation profiles or individual actions. Test borrowed parts in game.
 
-The runtime donor picker groups choices under **Lower Risk**, **Experimental**, and **Rejected**. Experimental choices require **Accept Crash Risk**. Rejected choices explain why they cannot be used.
+The runtime donor picker groups choices under **Lower Risk**, **Experimental**, and **Rejected**. Rejected choices explain why they cannot be used.
 
 For runtime and inventory controls, turn on **Enable Experimental Features** under **Preferences… > Editor & Library**, then open **Technical** on **Gameplay**.
 
@@ -80,11 +82,13 @@ You can also write flavor text and a custom **Lore** tab on **Weapon**. Leave bo
 
 A **socket** is a slot for a perk or mod. The game calls these perks and mods **plugs**. Click a perk to replace it, or use **+ Add Choice** to add another option to that socket. Only one choice per socket is active at a time. Drag a choice by its handle to reorder it, or right-click it to make it the default. The first choice starts equipped. Dragging onto a choice in another socket replaces that destination choice and keeps the original in place.
 
+A perk picker lists the socket's current perk first, with its default right below it. **Plugs Offered**, beside the picker's search, sets which plugs it lists, from the perks your item lists for that socket to every plug in the game. Wider choices can list plugs that don't work in that socket, so test them in game.
+
 Use a socket's **… > Remove Socket** command to remove its choices and custom perk assignments. Other sockets keep their positions. For a removed base socket, click **Restore Socket** to bring back the base weapon's choices and role. Added sockets must be removed from last to first.
 
 ### Custom Perk Workbench
 
-A **custom perk** is one you author yourself rather than borrow from another weapon. Open **Custom Perk Workbench…** from the main Parhelion menu, or click **Use Custom Perk…** above the socket list. The window has three parts. **Custom Perks** on the left lists your saved perks and open drafts. The perk you are editing fills the middle. The footer applies it to a socket of the open item.
+A **custom perk** is one you author yourself rather than borrow from another weapon. Open **Custom Perk Workbench…** from the main Parhelion menu, or click a socket choice and use **Use Custom Perk…** in its picker. The window has three parts. **Custom Perks** on the left lists your saved perks and open drafts. The perk you are editing fills the middle. The footer applies it to a socket of the open item.
 
 Each effect is a card that says what starts it, what it does, and when it ends. You can use a stock effect exactly as the game has it, change one in place, or build one from scratch by combining triggers, conditions, actions, objects, and more. Behavior Parhelion has mapped appears under plain names. Behavior that is not mapped yet keeps the engine's own names, reachable from each item's menu. **Engine Catalog…** browses the behavior in the perks your game already has, covered under [Engine Catalog](#engine-catalog).
 
@@ -126,7 +130,7 @@ A perk that needs several events before it fires, such as three kills, uses the 
 An effect is a trigger plus what it does when that trigger fires. These are some the workbench names in plain words:
 
 - **Change Fired Projectile** swaps what the weapon shoots for something else entirely, such as another weapon's rounds, a missile, or an ability's projectile.
-- **Spawn an Object or Effect** and **Attach an Effect** put something in the world or keep it on a target for the duration.
+- **Spawn an Object or Effect** and **Attach an Effect** put something in the world or keep it on a target for the duration. An attached effect such as Devour or invisibility has its own **Attachment Length**. Type -1 for **Unlimited** so it never ends on its own.
 - **Generate Orbs of Light** drops a collectible orb at the kill or at the player, the way a Masterwork does.
 - **Adjust Ammo** and **Adjust Ammo by Capacity** add or remove rounds, either a fixed count or a share of the magazine.
 - **Reload from Reserves** refills the magazine without the reload.
@@ -230,7 +234,7 @@ The **New Item** menu beside **New Weapon** starts an armor piece, Sparrow, Ship
 
 Edit the name, description, icon, rarity, supported stats, and sockets. Gear can add sockets, remove the base's sockets, or give a socket another role, as weapons can. Gear keeps the base item's slot, model, and runtime behavior, and its page shows a preview of the base item's model. Armor also has **Energy Type** and **Energy Capacity** controls, and a **Class** picker that follows the base or can use **Titan**, **Hunter**, **Warlock**, or **Any Class**. Exotic gear requires an Exotic base. An Emblem's nameplate takes its banner, overlay, and background from another Emblem or your own image, and **Customize Colors** sets its colors.
 
-In Collections, authored armor appears on a **Project Sunrise** or **Dawn** page under **Armor** for each class it supports and joins that class's badge. Exotic armor also appears in **Exotics**. Sparrows, Ships, Ghost Shells, Emblems, and Shaders appear on a **Project Sunrise** or **Dawn** page under their kind. Each of these pages uses one node from the [Collections budget](#collections-placement). Sparrow Speed, Boost, and Durability are tooltip stats. Changing the displayed Speed alone does not make a Sparrow travel faster. Use **Driving Speed** instead, up to 10× the base's speed. **Summon Vehicle** makes a Sparrow summon another vehicle, such as a Pike or Interceptor.
+In Collections, authored armor appears on a **Project Sunrise** or **Dawn** page under **Armor** for each class it supports and joins that class's badge. Exotic armor also appears in **Exotics**. Sparrows, Ships, Ghost Shells, Emblems, and Shaders appear on a **Project Sunrise** or **Dawn** page under their kind. Each of these pages uses one node from the [Collections budget](#collections-placement). Sparrow Speed, Boost, and Durability are tooltip stats. Changing the displayed Speed alone does not make a Sparrow travel faster. Use **Driving Speed** instead, up to 10× the base's speed. **Summon Vehicle** makes a Sparrow summon another vehicle, such as a Pike or Interceptor. Its inventory icon then shows that vehicle's white HUD silhouette. Clear **Vehicle Icon** to keep the Sparrow's own art. **Inventory Model** sets what the inventory and inspect screens show: the Sparrow, the summoned vehicle, or nothing.
 
 Armor authoring will gain more options in future releases.
 
@@ -258,16 +262,20 @@ You can also build attunement paths node by node. Each node can come from any Su
 
 Each ability and node has its own page, with tabs marked once you change something:
 
-- **Ability** sets its name, description, and icon.
+- **Ability** sets its name, description, and icon. Imported artwork shows on the Subclass screen only.
 - **Perks** sets the perks it grants, including custom perks from the workbench. Right-click a stock perk and choose **Edit as Custom Perk…** to change it for this ability alone.
-- **Gameplay** holds the ability's **Charges**, **Recharge**, and own values, such as **Blink Distance** or **Airborne Jumps**. A node's **Ability Changes** sets what selecting it changes about the Subclass's abilities, such as an extra grenade charge. Each part the ability creates has a card with its timers, projectile flight, and buff amounts, and **Fires** swaps a projectile for another ability's.
-- **Visuals** holds **Effect Colors**, which changes the hue, saturation, and brightness of each color the ability's effects use, or all of them with **Set All**. **Colors From** copies another ability's colors, **Colorize** sets a single hue, and **Overall** adjusts everything it draws.
+- **Gameplay** holds the ability's **Charges**, **Recharge**, and own values, such as **Blink Distance** or **Airborne Jumps**. A node's **Ability Changes** sets what selecting it changes about the Subclass's abilities, such as an extra grenade charge. Each part the ability creates has a card with its timers, projectile flight, and buff amounts. A timer's **Duration** can be **Unlimited**. **Projectile** swaps a projectile for another ability's, or for any projectile in the game, such as a weapon's or an enemy's, under **All Projectiles**.
+- **Visuals** holds **Effect Colors**. **Overall** adjusts everything the ability draws, including trails, lights, and decals. Under it, each color the ability's effects use has its own hue, saturation, and brightness, and **Apply to Every Color** in a color's menu copies its values to the rest. **Colors From** copies another ability's colors, and **Colorize** sets a single hue. Every swatch shows its color with **Overall** applied, as it will look in game.
 
-Changes belong to that ability, so other abilities using the same stock data keep theirs. A Subclass's HUD colors can't currently be changed, since the game sets them from the damage type of its Super.
+Changes belong to that ability, so other abilities using the same stock data keep theirs.
+
+**Subclass Color** sets a shared color for tree nodes, ability tiles, and charge bars across all attunements, and each ability's **Color** can override it. Both offer **Arc**, **Solar**, and **Void**, the game's own colors, and take a typed or pasted hex code. **Donor Colors** restores the original theme. **Generated Icon**, beside the **Inventory Icon** label, draws the icon as the stock ones are: a diamond in the Subclass Color with a **Symbol** you pick from the artwork browser. **Symbol Size** scales the symbol. Icon edits don't recolor it, and an icon image of your own always wins.
 
 The Subclass's **Appearance** tab sets its **Screen Art**, the full-screen character picture shown for each attunement.
 
 **Class** sets which characters receive the Subclass and can equip it. **Any Class** adds it to every character and labels it **Guardian Subclass**. Choosing one class limits it to that class, even on another class's base. Installing equips the first authored Subclass on each character it reaches. Authored Subclasses have no Collections entry.
+
+**Damage Type Icon** sets the Arc, Solar, Void, or Kinetic icon shown beside the Subclass's name, in place of its base's. Its abilities keep their own damage types.
 
 Subclass authoring will gain more options in future releases as more of how Subclasses work is understood.
 

@@ -38,7 +38,7 @@ pub(super) fn entry_menu(
     ] {
         if ui.button(label).clicked() {
             action = Some(choice);
-            ui.close_menu();
+            ui.close();
         }
     }
     ui.separator();
@@ -48,7 +48,7 @@ pub(super) fn entry_menu(
     ] {
         if ui.button(label).clicked() {
             action = Some(choice);
-            ui.close_menu();
+            ui.close();
         }
     }
     if entry.bundled {
@@ -59,13 +59,13 @@ pub(super) fn entry_menu(
             .clicked()
         {
             action = Some(EntryAction::Restore);
-            ui.close_menu();
+            ui.close();
         }
     }
     ui.separator();
     if ui.button("Delete…").clicked() {
         action = Some(EntryAction::Delete);
-        ui.close_menu();
+        ui.close();
     }
     action
 }

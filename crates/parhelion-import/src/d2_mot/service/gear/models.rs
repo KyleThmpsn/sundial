@@ -115,6 +115,7 @@ fn carrier<'a>(part: &Value, template: &'a Value) -> Result<&'a Value> {
                 models
                     .iter()
                     .filter(|m| m["entity"] == parent["entity"])
+                    .filter(|m| m["cloth"] != true)
                     .filter_map(|m| m["owner"].as_str())
                     .collect::<BTreeSet<_>>()
                     .len()
@@ -200,6 +201,7 @@ pub(super) fn plan(
                 .context("native models")?
                 .iter()
                 .filter(|model| model["entity"] == parent["entity"])
+                .filter(|model| model["cloth"] != true)
                 .collect::<Vec<_>>()
         );
         carrier["parents"] = json!([parent]);

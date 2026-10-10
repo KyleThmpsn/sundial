@@ -60,9 +60,9 @@ fn adding_a_fixed_carrier_uses_the_proven_source_family() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn real_damage_conversion_keeps_legacy_modern_and_plug_carriers_distinct() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     let cases = [
         (
@@ -162,10 +162,10 @@ fn real_damage_conversion_keeps_legacy_modern_and_plug_carriers_distinct() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES; optionally exports trial recipes to PARHELION_DAMAGE_TRIAL_RECIPES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES; optionally exports trial recipes to PARHELION_DAMAGE_TRIAL_RECIPES"]
 fn real_independent_damage_preserves_placement_appearance_and_ammo() {
     use crate::recipe::RecipeDamageType;
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let mut recipes = Vec::new();
     for (name, hash, donor, element) in [
         (

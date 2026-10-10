@@ -97,15 +97,20 @@ impl PackageAuthoringApp {
         active
     }
 
-    /// Gameplay's Parts: every part of the weapon another weapon can supply, on one label column.
-    /// Behavior, Type Markers, Firing Behavior, Barrel and Magazine are always offered: each copies
-    /// one part into the weapon's own runtime. Reload swaps a whole runtime component, which can
-    /// crash the game, so it needs Experimental Features.
+    /// Gameplay's Parts card: every part of the weapon another weapon can supply, on one label
+    /// column. Runtime leads, since the rows under it follow it. Behavior, Type Markers, Firing
+    /// Behavior, Barrel and Magazine are always offered: each copies one part into the weapon's own
+    /// runtime. Reload swaps a whole runtime component, which can crash the game, so it needs
+    /// Experimental Features.
     pub(in crate::app) fn draw_gameplay_parts(
         &mut self,
         ui: &mut egui::Ui,
         donor: Option<&WeaponDonor>,
     ) {
+        crate::app::style::card(ui, |ui| self.draw_part_rows(ui, donor));
+    }
+
+    fn draw_part_rows(&mut self, ui: &mut egui::Ui, donor: Option<&WeaponDonor>) {
         let graph = self.current_runtime_graph();
         let graph = graph.as_deref();
         let current_key = self.runtime_graph_key();
@@ -117,10 +122,7 @@ impl PackageAuthoringApp {
             draw_donor_section_label_with_warning(
                 ui,
                 "Parts",
-                Some(
-                    "Parts of the weapon taken from other weapons. Each follows the base weapon \
-                     until another is chosen. Test in game.",
-                ),
+                Some("Parts taken from other weapons."),
                 mixed.then_some("Mixing runtime components can crash the game."),
             );
             if experimental {
@@ -128,6 +130,7 @@ impl PackageAuthoringApp {
             }
         });
         ui.add_space(2.0);
+        self.draw_runtime_part(ui, donor);
         self.draw_behavior_part(ui, donor);
         if self.recipe.kind.is_weapon() && donor.is_some() {
             // Type markers are the runtime's internal type names, so they sit in Technical. One
@@ -222,7 +225,7 @@ impl PackageAuthoringApp {
         let current_key = self.runtime_graph_key();
         let baseline_hash = self.runtime_component_baseline_hash(current_key.as_ref());
         let mut open = true;
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         let width = (screen.width() - 40.0).clamp(280.0, 820.0);
         let height = (screen.height() - 64.0).clamp(240.0, 640.0);
         egui::Window::new("Advanced Runtime Bindings")

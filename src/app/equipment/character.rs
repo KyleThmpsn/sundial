@@ -331,7 +331,7 @@ fn draw_character_ability_group(
             ui.set_width(width);
             ui.horizontal_wrapped(|ui| {
                 ui.label("Choose abilities and attunement in game.");
-                crate::ui_help::info(ui, "This settings version ignores saved ability choices.");
+                crate::ui::help::info(ui, "This settings version ignores saved ability choices.");
             });
         });
         return;

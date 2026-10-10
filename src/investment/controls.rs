@@ -4,7 +4,7 @@ use crate::app::authoring_bridge;
 use eframe::egui;
 use std::{hash::Hash, path::Path};
 
-pub use crate::ui_help::tooltip_title;
+pub use crate::ui::help::tooltip_title;
 pub use authoring_bridge::{
     AUTHORING_SOCKET_RESET_WIDTH, AuthoringItemHeader, WeaponChoiceFilter, authoring_button_width,
     authoring_socket_label_width, authoring_socket_reset_width,
@@ -12,8 +12,7 @@ pub use authoring_bridge::{
     draw_asset_choice_row, draw_asset_choice_row_plain, draw_authoring_info_icon,
     draw_authoring_item_header, draw_authoring_plug_safety_warning as draw_plug_safety_warning,
     draw_authoring_socket_label, draw_authoring_socket_reset, draw_authoring_tile,
-    draw_authoring_toolbar, draw_authoring_warning_icon, draw_plug_safety_selector,
-    show_plug_safety_warnings,
+    draw_authoring_toolbar, draw_authoring_warning_icon, show_plug_safety_warnings,
 };
 
 /// Consistent loading and build progress appearance across both applications.
@@ -35,11 +34,11 @@ pub struct CatalogLoadingView<'a> {
 /// Draws the centered loading surface used while Sundial-backed catalogs are unavailable.
 #[allow(clippy::cast_precision_loss)]
 pub fn draw_catalog_loading_view(
-    ctx: &egui::Context,
+    ui: &mut egui::Ui,
     logo: &egui::TextureHandle,
     view: CatalogLoadingView<'_>,
 ) {
-    egui::CentralPanel::default().show(ctx, |ui| {
+    egui::CentralPanel::default().show(ui, |ui| {
         let top_space = ((ui.available_height() - 440.0) / 2.0).max(16.0);
         ui.add_space(top_space);
         ui.vertical_centered(|ui| {
@@ -176,7 +175,7 @@ pub struct PlugChoicePickerButton<'a> {
 }
 
 /// Named selection context and trigger presentation for an authored socket choice.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub struct PlugChoicePickerOptions<'a> {
     pub preview: Option<&'a crate::ui::model_preview::Loadout>,
     pub donor_hash: u32,
@@ -185,7 +184,8 @@ pub struct PlugChoicePickerOptions<'a> {
     pub choice_index: usize,
     pub current_hash: Option<u32>,
     pub button: PlugChoicePickerButton<'a>,
-    pub mode: PlugSelectionMode,
+    /// The scope the picker offers plugs from, which its Plugs Offered dropdown changes.
+    pub mode: &'a mut PlugSelectionMode,
 }
 
 /// Fixed height shared with the native icon and description picker row.
@@ -219,6 +219,24 @@ impl InvestmentCatalog {
         self.catalog.texture_icon(ctx, tag)
     }
 
+    /// An item's inventory icon, read in the background on first use.
+    pub fn item_icon(&self, ctx: &egui::Context, hash: u32) -> Option<egui::TextureHandle> {
+        self.catalog.icon_texture(ctx, u64::from(hash))
+    }
+
+    /// What a plug scope offers on `item_hash`'s sockets, in Dawn's words for that item: for
+    /// Atonement Tau, Atonement Tau Plugs, Chest Armor Plugs, Same Socket Type, Chest Armor, All
+    /// Armor and All. Without one socket to name, the socket-type scope reads as each socket's own
+    /// type. An item the catalog lacks keeps the scope's own label.
+    #[must_use]
+    pub fn plug_scope_label(&self, mode: PlugSelectionMode, item_hash: u32) -> String {
+        match (mode, self.catalog.item(u64::from(item_hash))) {
+            (PlugSelectionMode::MatchingSocketType, _) => "Same Socket Type".to_owned(),
+            (mode, Some(item)) => mode.contextual_label(item, ""),
+            (mode, None) => mode.label().to_owned(),
+        }
+    }
+
     /// A subclass ability's icon, from the container its node display record names
     /// ([`SubclassSummary::entry_icons`](crate::investment::SubclassSummary::entry_icons)).
     pub fn subclass_icon(
@@ -248,7 +266,8 @@ impl InvestmentCatalog {
             .secondary_icon_texture(ctx, u64::from(emblem_hash), layer_offset)
     }
 
-    pub fn draw_perk_row_with_icon(
+    /// A perk in a list of perks: its icon, its name, and its description's first line under it.
+    pub fn draw_perk_card_row(
         &self,
         ui: &mut egui::Ui,
         hash: u32,
@@ -257,7 +276,7 @@ impl InvestmentCatalog {
         tooltip: PlugTooltip<'_>,
         icon: Option<IconOverride>,
     ) -> egui::Response {
-        authoring_bridge::draw_perk_row(ui, &self.catalog, hash, name, selected, tooltip, icon)
+        authoring_bridge::draw_perk_card_row(ui, &self.catalog, hash, name, selected, tooltip, icon)
     }
 
     pub fn draw_authoring_choice_row_with_icon(
@@ -321,8 +340,10 @@ impl InvestmentCatalog {
     ///
     /// `choice_index` is part of the persistent egui identity, so multiple ordered choices for
     /// one socket can keep independent popups and search state. The caller controls only compact
-    /// trigger content and an optional action drawn first in the popup. Return true from it
-    /// when the action should close the popup. Compatibility filtering and picker rows remain shared with Sundial.
+    /// trigger content and an optional action drawn at the right of the popup's controls. Return
+    /// true from it when the action should close the popup. Compatibility filtering, the Plugs Offered dropdown
+    /// and picker rows remain shared with Sundial. A scope picked from that dropdown is written to
+    /// `options.mode` and leaves the popup open.
     pub fn draw_supported_plug_choice_picker(
         &self,
         ui: &mut egui::Ui,
@@ -373,7 +394,7 @@ impl InvestmentCatalog {
     pub fn draw_weapon_donor_header_picker<'a>(
         &self,
         ui: &mut egui::Ui,
-        scope: impl Hash,
+        scope: impl Hash + std::fmt::Debug,
         query: &mut String,
         candidates: impl IntoIterator<Item = &'a WeaponDonorSummary>,
         options: WeaponDonorPickerOptions<'_>,
@@ -406,7 +427,7 @@ impl InvestmentCatalog {
     pub fn draw_weapon_donor_dropdown_picker<'a>(
         &self,
         ui: &mut egui::Ui,
-        scope: impl Hash,
+        scope: impl Hash + std::fmt::Debug,
         query: &mut String,
         candidates: impl IntoIterator<Item = &'a WeaponDonorSummary>,
         options: WeaponDonorPickerOptions<'_>,
@@ -439,7 +460,7 @@ impl InvestmentCatalog {
         &self,
         ui: &mut egui::Ui,
         trigger: egui::Response,
-        scope: impl Hash,
+        scope: impl Hash + std::fmt::Debug,
         query: &mut String,
         candidates: impl IntoIterator<Item = &'a WeaponDonorSummary>,
         options: WeaponDonorPickerOptions<'_>,
@@ -472,7 +493,7 @@ impl InvestmentCatalog {
     pub fn draw_weapon_choice_filters(
         &self,
         ui: &mut egui::Ui,
-        id_salt: impl Hash + Clone,
+        id_salt: impl Hash + std::fmt::Debug + Clone,
         weapons: &[u32],
         filter: &mut WeaponChoiceFilter,
     ) -> bool {
@@ -490,7 +511,7 @@ impl InvestmentCatalog {
     pub fn draw_weapon_appearance_picker<'a>(
         &self,
         ui: &mut egui::Ui,
-        scope: impl Hash,
+        scope: impl Hash + std::fmt::Debug,
         query: &mut String,
         candidates: impl IntoIterator<Item = &'a WeaponDonorSummary>,
         options: WeaponDonorPickerOptions<'_>,

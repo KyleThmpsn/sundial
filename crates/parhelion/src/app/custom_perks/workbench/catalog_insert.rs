@@ -90,7 +90,7 @@ impl Request {
             role: self.placement.label().into(),
             kind: self.node.kind,
             stock_perk: self.stock_perk,
-            native_sha256: format!("{:X}", Sha256::digest(&self.node.bytes)),
+            native_sha256: hex::encode_upper(Sha256::digest(&self.node.bytes)),
             client_build: sundial::package_authoring::sandbox_perk::nodes::CLIENT_BUILD.into(),
         });
         *recipe = changed;

@@ -11,7 +11,7 @@ fn collectible_table(programs: &[&[(u8, u16)]]) -> Vec<u8> {
         if tokens.is_empty() {
             continue; // Native empty descriptor has zero count and pointer.
         }
-        while data.len() % 16 != 0 {
+        while !data.len().is_multiple_of(16) {
             data.push(0);
         }
         let header = data.len();
@@ -21,7 +21,7 @@ fn collectible_table(programs: &[&[(u8, u16)]]) -> Vec<u8> {
         for (opcode, operand) in *tokens {
             data.extend_from_slice(&synthetic_numeric_instruction(*opcode, *operand));
         }
-        while (data.len() - header + NESTED_ARRAY_TRAILER.len()) % 16 != 0 {
+        while !(data.len() - header + NESTED_ARRAY_TRAILER.len()).is_multiple_of(16) {
             data.push(0);
         }
         data.extend_from_slice(&NESTED_ARRAY_TRAILER);

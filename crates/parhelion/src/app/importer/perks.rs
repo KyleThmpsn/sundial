@@ -3,12 +3,53 @@ use super::*;
 use crate::app::socket_editor;
 use crate::perk::import::{self, Request};
 
-const SOURCE_PLUG: u32 = 2_077_819_806;
 type Choice = (u16, u16, u32, u16);
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Source {
+    #[default]
+    KineticTremors,
+    EagerEdge,
+}
+
+impl Source {
+    fn name(self) -> &'static str {
+        match self {
+            Self::KineticTremors => "Kinetic Tremors",
+            Self::EagerEdge => "Eager Edge",
+        }
+    }
+
+    fn plug(self) -> u32 {
+        match self {
+            Self::KineticTremors => 0xE7F42379,
+            Self::EagerEdge => 2_077_819_806,
+        }
+    }
+
+    fn supports(self, family: &str) -> bool {
+        match self {
+            Self::EagerEdge => family == "Sword",
+            Self::KineticTremors => matches!(
+                family,
+                "Auto Rifle"
+                    | "Pulse Rifle"
+                    | "Submachine Gun"
+                    | "Scout Rifle"
+                    | "Hand Cannon"
+                    | "Sidearm"
+                    | "Sniper Rifle"
+                    | "Shotgun"
+                    | "Bow"
+            ),
+        }
+    }
+}
 
 #[derive(Default)]
 pub(super) struct Picker {
     open: bool,
+    source: Source,
     selected: Option<Choice>,
     notice: String,
     failed: bool,
@@ -26,6 +67,14 @@ impl PackageAuthoringApp {
             .clicked()
         {
             self.importer.perks.open = true;
+            self.importer.perks.source = if self
+                .current_donor()
+                .is_some_and(|donor| donor.summary.type_name == "Sword")
+            {
+                Source::EagerEdge
+            } else {
+                Source::KineticTremors
+            };
             self.importer.perks.selected = None;
             self.importer.perks.notice.clear();
         }
@@ -35,7 +84,13 @@ impl PackageAuthoringApp {
         let (Some(donor), Some(catalog)) = (self.current_donor(), self.catalog.as_ref()) else {
             return Vec::new();
         };
-        if !self.recipe.kind.is_weapon() || donor.summary.type_name != "Sword" {
+        if !self.recipe.kind.is_weapon()
+            || !self
+                .importer
+                .perks
+                .source
+                .supports(&donor.summary.type_name)
+        {
             return Vec::new();
         }
         let mut choices = Vec::new();
@@ -82,13 +137,6 @@ impl PackageAuthoringApp {
         if !self.importer.perks.open {
             return;
         }
-        let choices = self.modern_perk_choices();
-        if !choices
-            .iter()
-            .any(|(choice, _)| Some(*choice) == self.importer.perks.selected)
-        {
-            self.importer.perks.selected = choices.first().map(|(choice, _)| *choice);
-        }
         let idle = self.importer_idle();
         let mut open = true;
         let mut start = false;
@@ -97,13 +145,31 @@ impl PackageAuthoringApp {
             .default_width(470.0)
             .resizable(false)
             .show(ctx, |ui| {
-                ui.heading("Eager Edge");
+                egui::ComboBox::from_id_salt("modern-perk-source")
+                    .selected_text(self.importer.perks.source.name())
+                    .show_ui(ui, |ui| {
+                        for source in [Source::KineticTremors, Source::EagerEdge] {
+                            ui.selectable_value(&mut self.importer.perks.source, source, source.name());
+                        }
+                    });
+                let choices = self.modern_perk_choices();
+                if !choices.iter().any(|(choice, _)| Some(*choice) == self.importer.perks.selected) {
+                    self.importer.perks.selected = choices.first().map(|(choice, _)| *choice);
+                }
                 ui.label(format!("Weapon: {}", self.recipe.name));
-                ui.label("Imports the modern package controller with its private lunge and sword profile dependencies.");
-                ui.label("This is an experimental candidate. Swing consumption and the source status record still need verification.");
+                match self.importer.perks.source {
+                    Source::KineticTremors => {
+                        ui.label("Imports sustained-hit activation, repeated shockwaves and supported source visual layers.");
+                        ui.label("This experimental candidate uses approximate damage and fixed hit placement. Frame thresholds and some effects differ from the modern perk. Gameplay still needs verification.");
+                    }
+                    Source::EagerEdge => {
+                        ui.label("Imports the modern controller with its private lunge and sword profile dependencies.");
+                        ui.label("This is an experimental candidate. Swing consumption and the source status record still need verification.");
+                    }
+                }
                 ui.add_space(8.0);
                 if choices.is_empty() {
-                    ui.label("Choose a sword recipe with an available native trait choice.");
+                    ui.label("Choose a supported weapon with an available native trait choice.");
                 } else {
                     let selected = choices.iter()
                         .find(|(choice, _)| Some(*choice) == self.importer.perks.selected)
@@ -162,8 +228,9 @@ impl PackageAuthoringApp {
         };
         let recipe = self.recipe.clone();
         let packages = self.packages.clone();
+        let source_plug = self.importer.perks.source.plug();
         let profile_key = sundial::package_authoring::fnv1_name_hash(&format!(
-            "{}.modern-perk.{SOURCE_PLUG:08X}.{socket}.{choice}",
+            "{}.modern-perk.{source_plug:08X}.{socket}.{choice}",
             recipe.namespace,
         ));
         let (sender, receiver) = mpsc::channel();
@@ -177,13 +244,13 @@ impl PackageAuthoringApp {
                 native_packages: &packages,
                 output: &output,
                 recipe: &recipe,
-                plug_hash: SOURCE_PLUG,
+                plug_hash: source_plug,
                 socket_index: socket,
                 choice_index: choice,
                 source_plug_hash: plug,
                 source_perk_index: perk,
                 profile_key,
-                name: "Eager Edge",
+                name: "",
             });
             let _ = sender.send(Event::PerkPrepared(Box::new(Prepared { packages, result })));
             ctx.request_repaint();
@@ -203,7 +270,7 @@ impl PackageAuthoringApp {
                 self.recipe_dirty = true;
                 self.invalidate_results();
                 self.importer.perks.notice =
-                    "Eager Edge candidate applied. Save and build the draft to stage its packages."
+                    "Perk candidate applied. Save and build the draft to stage its packages."
                         .into();
                 self.importer.perks.failed = false;
             }

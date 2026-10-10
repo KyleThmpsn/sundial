@@ -291,11 +291,9 @@ pub(crate) fn resize(source: &RgbaImage, width: u32, height: u32) -> RgbaImage {
     for pixel in resized.pixels_mut() {
         let alpha = u32::from(pixel[3]);
         for channel in &mut pixel.0[..3] {
-            *channel = if alpha == 0 {
-                0
-            } else {
-                ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8
-            };
+            *channel = (u32::from(*channel) * 255 + alpha / 2)
+                .checked_div(alpha)
+                .map_or(0, |value| value.min(255) as u8);
         }
     }
     resized

@@ -91,54 +91,55 @@ impl Job {
                 break;
             }
         }
-        if self.cursor == self.records.len() && self.review.is_none() {
-            if let (Some(before), Some(after)) = (
+        if self.cursor == self.records.len()
+            && self.review.is_none()
+            && let (Some(before), Some(after)) = (
                 collection_state_snapshot(&self.source),
                 collection_state_snapshot(&self.candidate),
-            ) {
-                let conflicts = self
-                    .accepted
-                    .iter()
-                    .filter_map(|index| {
-                        verify(&after, catalog, &self.records[*index], self.complete)
-                            .err()
-                            .map(|reason| (*index, reason))
-                    })
-                    .collect::<Vec<_>>();
-                if !conflicts.is_empty() {
-                    for (index, reason) in conflicts {
-                        self.excluded.insert(index);
-                        self.conflicts.push(Issue {
-                            name: display_name(&self.records[index], catalog),
-                            reason,
-                        });
-                    }
-                    // Rebuild every effect, including score and rewards, from the source.
-                    // Retry capacity failures because excluded rewards may have occupied slots.
-                    self.candidate = self.source.clone();
-                    self.cursor = 0;
-                    self.accepted.clear();
-                    self.issues.clear();
-                    return false;
+            )
+        {
+            let conflicts = self
+                .accepted
+                .iter()
+                .filter_map(|index| {
+                    verify(&after, catalog, &self.records[*index], self.complete)
+                        .err()
+                        .map(|reason| (*index, reason))
+                })
+                .collect::<Vec<_>>();
+            if !conflicts.is_empty() {
+                for (index, reason) in conflicts {
+                    self.excluded.insert(index);
+                    self.conflicts.push(Issue {
+                        name: display_name(&self.records[index], catalog),
+                        reason,
+                    });
                 }
-                self.changing = self
+                // Rebuild every effect, including score and rewards, from the source.
+                // Retry capacity failures because excluded rewards may have occupied slots.
+                self.candidate = self.source.clone();
+                self.cursor = 0;
+                self.accepted.clear();
+                self.issues.clear();
+                return false;
+            }
+            self.changing = self
+                .accepted
+                .iter()
+                .filter(|index| {
+                    verify(&before, catalog, &self.records[**index], self.complete).is_err()
+                })
+                .count();
+            self.review = Some(super::super::impact::Review::build(
+                &before,
+                &after,
+                catalog,
+                &self
                     .accepted
                     .iter()
-                    .filter(|index| {
-                        verify(&before, catalog, &self.records[**index], self.complete).is_err()
-                    })
-                    .count();
-                self.review = Some(super::super::impact::Review::build(
-                    &before,
-                    &after,
-                    catalog,
-                    &self
-                        .accepted
-                        .iter()
-                        .map(|index| self.records[*index].hash)
-                        .collect(),
-                ));
-            }
+                    .map(|index| self.records[*index].hash)
+                    .collect(),
+            ));
         }
         self.cursor == self.records.len()
     }

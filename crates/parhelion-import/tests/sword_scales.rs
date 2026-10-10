@@ -72,9 +72,9 @@ fn modern_sword_angular_scales_follow_package_rows() -> Result<(), Box<dyn std::
         serde_json::to_vec_pretty(&json!({
             "source_owner": "80C378E1",
             "source_owner_class": "80809B06",
-            "source_sha256": format!("{:x}", Sha256::digest(&owner.0)),
+            "source_sha256": hex::encode(Sha256::digest(&owner.0)),
             "other_two_row_owner": "80C3FDDE",
-            "other_owner_sha256": format!("{:x}", Sha256::digest(&other.0)),
+            "other_owner_sha256": hex::encode(Sha256::digest(&other.0)),
             "source_component": 12,
             "source_near_input": 4,
             "source_far_input": 5,

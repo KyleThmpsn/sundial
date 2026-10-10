@@ -60,10 +60,9 @@ fn ornament_appearance_spec(namespace: &str) -> WeaponCloneSpec {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn real_ornament_resolves_as_an_icon_donor_with_its_own_container() {
-    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-        .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages");
+    let packages = crate::test_support::stock_packages();
     let sources = crate::item::sources::load_project_sources(Path::new(&packages))
         .expect("clean stock sources should load");
 
@@ -106,16 +105,14 @@ fn real_ornament_resolves_as_an_icon_donor_with_its_own_container() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn real_ornament_model_and_icon_survive_resolution_and_build() {
-    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-        .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages");
-    let packages = PathBuf::from(packages);
+    let packages = crate::test_support::stock_packages();
     let sources = crate::item::sources::load_project_sources(&packages)
         .expect("clean stock sources should load");
     let spec = ornament_appearance_spec("parhelion.ornament-appearance.integration");
 
-    let resolved = resolve::resolve_project_weapons(&sources, &[spec.clone()])
+    let resolved = resolve::resolve_project_weapons(&sources, std::slice::from_ref(&spec))
         .expect("an ornament icon donor should resolve");
     let ornament = crate::item::donors::resolve_icon_donor(
         &sources,
@@ -186,10 +183,10 @@ fn real_ornament_model_and_icon_survive_resolution_and_build() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES and PARHELION_SHADER_UNLOCK_OUTPUT"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
 fn crafted_exotics_and_borrowed_exotic_appearances_accept_later_shaders() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-    let output = PathBuf::from(std::env::var_os("PARHELION_SHADER_UNLOCK_OUTPUT").unwrap());
+    let packages = crate::test_support::stock_packages();
+    let output = crate::test_support::artifact_dir("shader-unlock");
     assert!(!output.exists(), "Use a fresh artifact directory");
     let mut exotic = ornament_appearance_spec("parhelion.shader-ready-exotic.integration");
     exotic.icon_donor = None;

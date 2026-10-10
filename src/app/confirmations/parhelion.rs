@@ -41,11 +41,11 @@ impl SundialApp {
 fn introduction(ctx: &egui::Context) -> Option<bool> {
     let mut decision = None;
     let response = egui::Modal::new("enable_parhelion_confirmation".into()).show(ctx, |ui| {
-        ui.set_width(560.0_f32.min((ctx.screen_rect().width() - 48.0).max(240.0)));
+        ui.set_width(560.0_f32.min((ctx.content_rect().width() - 48.0).max(240.0)));
         ui.heading("Before You Enable Parhelion");
         ui.add_space(8.0);
         egui::ScrollArea::vertical()
-            .max_height((ctx.screen_rect().height() - 180.0).max(120.0))
+            .max_height((ctx.content_rect().height() - 180.0).max(120.0))
             .show(ui, |ui| {
                 ui.label("Parhelion builds custom weapons from stock stats, perks, behavior and appearances. It is experimental. Test every build in game.");
                 ui.add_space(10.0);

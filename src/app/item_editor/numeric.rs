@@ -9,7 +9,7 @@ const MAXIMUM_STORED_ITEM_POWER: i64 = 2_147_483_640;
 
 pub(crate) fn draw_level_and_quantity(
     ui: &mut egui::Ui,
-    scope: impl Hash,
+    scope: impl Hash + std::fmt::Debug,
     fields: NumericItemFields,
 ) -> Vec<ItemEditorAction> {
     ui.push_id(scope, |ui| {

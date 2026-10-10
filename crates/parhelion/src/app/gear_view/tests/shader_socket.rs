@@ -7,7 +7,7 @@ fn sockets(
     donor: &WeaponDonor,
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
-    let output = ctx.run(
+    let output = ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -16,8 +16,8 @@ fn sockets(
             events,
             ..Default::default()
         },
-        |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 workbench_style(ui);
                 app.draw_socket_columns_panel(ui, Some(donor));
             });
@@ -34,10 +34,10 @@ fn tap(ctx: &egui::Context, app: &mut PackageAuthoringApp, donor: &WeaponDonor, 
 }
 
 #[test]
-#[ignore = "Requires PARHELION_DEFAULT_WEAPONS_PACKAGES and a fresh PARHELION_SHADER_SOCKET_ARTIFACTS directory"]
+#[ignore = "Requires SUNDIAL_INSTALL and a fresh SUNDIAL_TEST_ARTIFACTS directory"]
 fn a_created_shader_is_selected_saved_and_built_with_its_weapon() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_DEFAULT_WEAPONS_PACKAGES").unwrap());
-    let output = PathBuf::from(std::env::var_os("PARHELION_SHADER_SOCKET_ARTIFACTS").unwrap());
+    let packages = crate::test_support::install().join("packages");
+    let output = crate::test_support::artifact_dir("shader-socket");
     let output = sundial::package_authoring::resolve_path_for_comparison(&output).unwrap();
     let install =
         sundial::package_authoring::resolve_path_for_comparison(packages.parent().unwrap())

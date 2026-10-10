@@ -1,4 +1,6 @@
 //! Focused policy and regression tests for the inventory page feature.
+mod profile;
+mod recovery;
 
 #[test]
 fn blocked_transfer_rows_are_readable_but_never_clickable_or_focusable() {
@@ -32,13 +34,13 @@ fn blocked_transfer_rows_are_readable_but_never_clickable_or_focusable() {
                     },
                 ]
             };
-            let _ = context.run(
+            let _ = context.run_ui(
                 egui::RawInput {
                     events,
                     ..Default::default()
                 },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         let response = draw_character_transfer_destination(ui, &destination);
                         position = response.rect.center();
                         assert_eq!(response.sense.is_focusable(), enabled);

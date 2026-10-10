@@ -377,7 +377,7 @@ impl SundialApp {
                                         allow_cross_class_subclasses,
                                     )
                                     .filter(|definition| {
-                                        crate::account_contract::definition_available(
+                                        crate::account::contract::definition_available(
                                             definition.hash,
                                             self.document.supports_emote_collection(),
                                         )

@@ -26,7 +26,7 @@ pub(super) fn canonical_single_flag_program(
             .with_semantics(NUMERIC_FLAG_INSTRUCTION, authored_flag)
             .serialized,
     );
-    while (program.len() + NESTED_ARRAY_TRAILER.len()) % 16 != 0 {
+    while !(program.len() + NESTED_ARRAY_TRAILER.len()).is_multiple_of(16) {
         program.push(0);
     }
     program.extend_from_slice(&NESTED_ARRAY_TRAILER);
@@ -676,7 +676,7 @@ pub(crate) fn patch_project_acquired_count_programs(
             u64::try_from(layout.count + authored_flags.len() * 2)
                 .map_err(|_| invalid("Project acquired-count length does not fit u64"))?,
         )?;
-        while data.len() % 16 != 0 {
+        while !data.len().is_multiple_of(16) {
             data.push(0);
         }
         let new_header = data.len();

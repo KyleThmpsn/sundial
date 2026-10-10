@@ -1,17 +1,21 @@
-//! UI save orchestration; persistence transactions live in workspace_save.
+//! UI save orchestration. The transaction across the workspace's sources lives in `sources`.
+
+pub(in crate::app) mod sources;
+#[cfg(test)]
+mod tests;
+
 use super::account_validation::validate_new_account_catalog_issues;
 use super::account_workspace::WorkspaceDocument;
 use super::preferences::normalized_automatic_backup_limit;
-use super::save_support::{SaveAction, settings_save_note};
 use super::settings::{
-    backups_path, create_adjacent_backup, repair_known_ability_pairs, validate_workspace_document,
-    verify_workspace_source_unchanged,
+    SaveJsonResult, backups_path, create_adjacent_backup, repair_known_ability_pairs,
+    validate_workspace_document, verify_workspace_source_unchanged,
 };
-use super::workspace_save::save_changed_sources;
 use super::{ConfirmationDialog, SundialApp, has_save_work, platform};
 use crate::backups::prune_automatic_backups;
 use crate::persistence::json_account::ensure_schema_v8_preferences;
 use eframe::egui;
+use sources::save_changed_sources;
 
 impl SundialApp {
     pub(super) fn save_sources(&mut self) -> bool {
@@ -359,5 +363,39 @@ impl SundialApp {
                 true,
             ),
         }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum SaveAction {
+    Save,
+    SaveAndExit,
+}
+
+pub(super) fn settings_save_note(result: &SaveJsonResult) -> String {
+    let limit = settings_size_label(result.size_limit_bytes);
+    let mut note = if result.compacted {
+        format!(
+            " Compacted to {} bytes to fit the {limit} limit.",
+            result.encoded_bytes,
+        )
+    } else {
+        String::new()
+    };
+    if let Some(warning) = &result.durability_warning {
+        note.push(' ');
+        note.push_str(warning);
+        note.push('.');
+    }
+    note
+}
+
+pub(super) fn settings_size_label(bytes: usize) -> String {
+    const KIB: usize = 1024;
+    const MIB: usize = 1024 * KIB;
+    if bytes.is_multiple_of(MIB) {
+        format!("{} MiB", bytes / MIB)
+    } else {
+        format!("{} KiB", bytes / KIB)
     }
 }

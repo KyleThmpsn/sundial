@@ -26,7 +26,7 @@ impl Serialize for NativeMap {
     }
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 enum View {
     Kinds,
     Assets,
@@ -92,8 +92,8 @@ impl EngineCatalog {
             .default_size(egui::vec2(980.0, 640.0))
             .min_width(560.0)
             .min_height(360.0)
-            .max_width((ctx.screen_rect().width() - 40.0).max(560.0))
-            .max_height((ctx.screen_rect().height() - 64.0).max(360.0))
+            .max_width((ctx.content_rect().width() - 40.0).max(560.0))
+            .max_height((ctx.content_rect().height() - 64.0).max(360.0))
             .show(ctx, |ui| {
                 crate::app::style::perk_workbench_style(ui);
                 if !experimental {
@@ -127,7 +127,7 @@ impl EngineCatalog {
                         crate::app::style::more_menu(ui, "Catalog", |ui| {
                             if ui.button("Scan Details…").clicked() {
                                 self.scan_details = true;
-                                ui.close_menu();
+                                ui.close();
                             }
                             if ui
                                 .add_enabled(
@@ -137,7 +137,7 @@ impl EngineCatalog {
                                 .clicked()
                             {
                                 self.export_map(browser.discovery, ctx);
-                                ui.close_menu();
+                                ui.close();
                             }
                         });
                     }
@@ -369,7 +369,7 @@ impl EngineCatalog {
                 {
                     copy = selected;
                     if matches!(location, kinds::UseLocation::Menu) {
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
                 let inspect_label = match location {
@@ -383,7 +383,7 @@ impl EngineCatalog {
                 {
                     inspect = selected.map(usize::from);
                     if matches!(location, kinds::UseLocation::Menu) {
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
             };

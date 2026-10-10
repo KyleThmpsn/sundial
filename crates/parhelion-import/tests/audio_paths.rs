@@ -98,7 +98,7 @@ fn automated_paths_survive_complete_bank_conversion() -> Result<()> {
         let file = format!("{name}.bnk");
         fs::write(output.join(&file), &converted.bytes)?;
         report.push(json!({"source":name,"native":row["native"],"file":file,
-                          "sha256":format!("{:x}",Sha256::digest(&converted.bytes)),
+                          "sha256":hex::encode(Sha256::digest(&converted.bytes)),
                           "path_bytes":len,"source_objects":original.len(),
                           "native_objects":rows.len()}));
     }

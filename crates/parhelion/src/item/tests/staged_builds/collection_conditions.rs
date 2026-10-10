@@ -3,9 +3,9 @@ use super::*;
 mod donor_variants;
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn real_weapons_with_non_single_flag_acquisition_build() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let sources = sources::load_project_sources(&packages).unwrap();
     let mut weapons = affected_weapons(&sources);
     assert!(!weapons.is_empty());

@@ -327,10 +327,9 @@ pub(super) fn float_slider(
                         .fixed_decimals(1),
                 )
                 .changed()
+                && let Some(current) = FiniteF64::new(current)
             {
-                if let Some(current) = FiniteF64::new(current) {
-                    replacement = Some(command(key, AccountSettingValue::Decimal(current)));
-                }
+                replacement = Some(command(key, AccountSettingValue::Decimal(current)));
             }
         } else {
             ui.colored_label(ui.visuals().error_fg_color, "Invalid value");

@@ -439,7 +439,7 @@ pub(super) fn equipped_item_snapshots<D: NativeAccountDocument>(
     character_index: usize,
 ) -> Result<Vec<EquippedItemSnapshot>, String> {
     let character = character(document, character_index)?;
-    Ok(crate::account_contract::ALL_EQUIPMENT_SLOTS
+    Ok(crate::account::contract::ALL_EQUIPMENT_SLOTS
         .iter()
         .filter_map(|&(slot, slot_label, bucket_hash)| {
             character

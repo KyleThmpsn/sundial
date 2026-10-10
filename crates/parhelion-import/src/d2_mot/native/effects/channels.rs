@@ -1,7 +1,9 @@
 //! Preserve named, live object inputs when a source model needs additional controls.
 use super::*;
 use std::collections::BTreeSet;
+mod defaults;
 mod scoped;
+pub(super) use defaults::{material_program, validate_material_fallbacks};
 
 #[derive(Clone, PartialEq, Eq)]
 struct Channel {
@@ -219,7 +221,7 @@ fn declarations(
 fn source_input(owner: &Payload, hash: &str) -> Result<Option<usize>> {
     let instance = owner.pointer(16)?;
     ensure!(
-        instance >= 4 && owner.u32(instance - 4)? == 0x80806D8A,
+        instance >= 4 && matches!(owner.u32(instance - 4)?, 0x80806D8A | 0x80806D5B),
         "source object owner differs"
     );
     let inputs = owner.array(instance + 0x180, 48, Some(0x80809590))?;
@@ -242,7 +244,12 @@ fn source_input(owner: &Payload, hash: &str) -> Result<Option<usize>> {
     Ok(None)
 }
 
-fn required_source_channels(source: &Source, model: &Value) -> Result<BTreeSet<String>> {
+fn required_source_channels(
+    source: &Source,
+    model: &Value,
+    owner: &Payload,
+    objects: &BTreeMap<String, u8>,
+) -> Result<BTreeSet<String>> {
     let mut needed = BTreeSet::new();
     for material in model["materials"]
         .as_array()
@@ -254,7 +261,7 @@ fn required_source_channels(source: &Source, model: &Value) -> Result<BTreeSet<S
         }
         let material = source.raw(tag)?;
         for base in [0x70, 0x2B0] {
-            let code = array_bytes(&material, base + 0x20, 1)?;
+            let (code, _) = material_program(&material, base, owner, objects)?;
             for op in program::parse(&code)? {
                 if op.op == 0x5C {
                     needed.insert(hex::encode_upper(op.args));
@@ -280,7 +287,7 @@ fn source_channels(
         let owner = source.raw(model["owner"].as_str().unwrap())?;
         let entity = source.raw(model["entity"].as_str().context("source entity")?)?;
         let connections = entity.array(0x18, 56, Some(0x80809A8F))?;
-        for hash in required_source_channels(source, model)? {
+        for hash in required_source_channels(source, model, &owner, objects)? {
             if objects.contains_key(&hash) {
                 continue;
             }
@@ -535,14 +542,25 @@ fn static_channel(hash: &str, channel: &mut Channel) -> Result<()> {
     Ok(())
 }
 
-fn input_allocation(
+pub(super) fn input_allocation(
     p: &mut Payload,
     descriptor: usize,
     before: usize,
     after: usize,
 ) -> Result<usize> {
-    let mut changed = 0;
-    for row in p.array(descriptor, 40, Some(0x80808852))? {
+    fn visit(
+        p: &mut Payload,
+        row: usize,
+        before: usize,
+        after: usize,
+        seen: &mut std::collections::BTreeSet<usize>,
+    ) -> Result<usize> {
+        ensure!(
+            seen.len() < 1024 && seen.insert(row),
+            "Native input allocation repeats a schema record"
+        );
+        p.bytes::<40>(row)?;
+        let mut changed = 0;
         if p.u32(row + 16)? == 0x80809788 {
             ensure!(
                 p.u32(row)? == 0xFC3956AD && p.u32(row + 20)? as usize == before,
@@ -551,11 +569,30 @@ fn input_allocation(
             put(&mut p.0, row + 20, &u32::try_from(after)?.to_le_bytes())?;
             changed += 1;
         }
-        if p.u64(row + 24)? != 0 {
-            changed += input_allocation(p, row + 24, before, after)?;
+        // A cloth allocation inherits its ordinary model fields through this
+        // relative schema pointer. Its own child array can be empty.
+        if p.u64(row + 8)? != 0 {
+            let inherited = p.pointer(row + 8)?;
+            ensure!(
+                inherited >= 4 && p.u32(inherited - 4)? == 0x80808852,
+                "Native inherited allocation schema differs"
+            );
+            changed += visit(p, inherited, before, after, seen)?;
         }
+        for child in p.array(row + 24, 40, Some(0x80808852))? {
+            changed += visit(p, child, before, after, seen)?;
+        }
+        Ok(changed)
     }
-    Ok(changed)
+    visit(
+        p,
+        descriptor
+            .checked_sub(24)
+            .context("Input allocation root")?,
+        before,
+        after,
+        &mut std::collections::BTreeSet::new(),
+    )
 }
 
 /// Existing owner input and link records give the record layout for channels a

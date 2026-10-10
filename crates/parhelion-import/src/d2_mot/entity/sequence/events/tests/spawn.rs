@@ -227,8 +227,8 @@ fn spawn_package_oracle() -> anyhow::Result<()> {
         artifacts.push((
             format!("{source_tag}-{from:X}-{native_tag}"),
             emitted.0[to..to + 224].to_vec(),
-            format!("{:x}", Sha256::digest(&source.0)),
-            format!("{:x}", Sha256::digest(&native.0)),
+            hex::encode(Sha256::digest(&source.0)),
+            hex::encode(Sha256::digest(&native.0)),
         ));
     }
     let catalog: serde_json::Value =
@@ -272,7 +272,7 @@ fn spawn_package_oracle() -> anyhow::Result<()> {
     let mut rows = Vec::new();
     for (key, bytes, source_sha256, native_sha256) in artifacts {
         fs::write(output.join(format!("{key}.bin")), &bytes)?;
-        rows.push(serde_json::json!({"key":key,"bytes":bytes.len(),"sha256":format!("{:x}",Sha256::digest(&bytes)),"source_owner_sha256":source_sha256,"native_owner_sha256":native_sha256}));
+        rows.push(serde_json::json!({"key":key,"bytes":bytes.len(),"sha256":hex::encode(Sha256::digest(&bytes)),"source_owner_sha256":source_sha256,"native_owner_sha256":native_sha256}));
     }
     fs::write(
         output.join("report.json"),

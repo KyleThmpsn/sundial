@@ -228,24 +228,24 @@ impl PackageAuthoringApp {
                 .with_title("D2 Importer")
                 .with_inner_size([980.0, 740.0])
                 .with_min_inner_size([680.0, 520.0]),
-            |ctx, class| {
-                if ctx.input(|input| input.viewport().close_requested()) {
+            |ui, class| {
+                if ui.input(|input| input.viewport().close_requested()) {
                     self.importer.open = false;
                     self.importer.read_requested = false;
                 }
-                if class == egui::ViewportClass::Embedded {
+                if class == egui::ViewportClass::EmbeddedWindow {
                     let mut open = self.importer.open;
                     egui::Window::new("D2 Importer")
                         .open(&mut open)
                         .default_size([980.0, 740.0])
                         .resizable(true)
-                        .show(ctx, |ui| self.draw_importer_contents(ui));
+                        .show(ui, |ui| self.draw_importer_contents(ui));
                     self.importer.open = open;
                     if !open {
                         self.importer.read_requested = false;
                     }
                 } else {
-                    egui::CentralPanel::default().show(ctx, |ui| self.draw_importer_contents(ui));
+                    egui::CentralPanel::default().show(ui, |ui| self.draw_importer_contents(ui));
                 }
             },
         );
@@ -424,20 +424,20 @@ impl PackageAuthoringApp {
         style::workbench_style(ui);
         let idle = self.importer_idle();
         self.importer.browser.refresh(&self.importer.weapons);
-        egui::TopBottomPanel::top("d2-importer-header")
+        egui::Panel::top("d2-importer-header")
             .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)))
-            .show_inside(ui, |ui| self.draw_importer_header(ui, idle));
+            .show(ui, |ui| self.draw_importer_header(ui, idle));
         if !self.importer.weapons.is_empty()
             || self.importer.busy()
             || self.importer.outcome.is_some()
         {
-            egui::TopBottomPanel::bottom("d2-importer-actions")
+            egui::Panel::bottom("d2-importer-actions")
                 .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)))
-                .show_inside(ui, |ui| self.draw_importer_footer(ui, idle));
+                .show(ui, |ui| self.draw_importer_footer(ui, idle));
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 6)))
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 if self.importer.settings.modern_packages.is_none() {
                     self.draw_importer_welcome(ui, idle);
                 } else if let Some(error) = self
@@ -467,8 +467,7 @@ impl PackageAuthoringApp {
             match &self.importer.settings.modern_packages {
                 Some(path) => {
                     let shown = path.display().to_string();
-                    ui.add(egui::Label::new(&shown).truncate())
-                        .on_hover_text(shown);
+                    ui.add(egui::Label::new(&shown).truncate());
                 }
                 None => {
                     ui.label(egui::RichText::new("Choose a Source Folder").weak());

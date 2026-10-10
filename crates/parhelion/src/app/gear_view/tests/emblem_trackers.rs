@@ -6,7 +6,7 @@ fn panel(
     app: &mut PackageAuthoringApp,
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
-    let output = ctx.run(
+    let output = ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -15,8 +15,8 @@ fn panel(
             events,
             ..Default::default()
         },
-        |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 app.draw_emblem_trackers(ui);
             });
         },
@@ -71,10 +71,10 @@ fn categories(bytes: &[u8]) -> Vec<u16> {
 }
 
 #[test]
-#[ignore = "Requires PARHELION_DEFAULT_WEAPONS_PACKAGES and a fresh PARHELION_GEAR_ARTIFACTS directory"]
+#[ignore = "Requires SUNDIAL_INSTALL and a fresh SUNDIAL_TEST_ARTIFACTS directory"]
 fn tracker_choices_go_from_the_emblem_page_to_native_packages() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_DEFAULT_WEAPONS_PACKAGES").unwrap());
-    let output = PathBuf::from(std::env::var_os("PARHELION_GEAR_ARTIFACTS").unwrap());
+    let packages = crate::test_support::install().join("packages");
+    let output = crate::test_support::artifact_dir("gear");
     assert!(!output.exists(), "Use a fresh artifact directory");
     fs::create_dir_all(&output).unwrap();
     let stock = crate::test_support::catalog(packages.parent().unwrap()).unwrap();

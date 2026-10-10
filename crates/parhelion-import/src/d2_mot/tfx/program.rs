@@ -27,7 +27,8 @@ pub fn parse(data: &[u8]) -> Result<Vec<Instruction<'_>>> {
         let op = data[at];
         at += 1;
         let (native, size, arity) = match op {
-            5..=7 => (op, 0, 1),
+            // IsZero is unary. The multiply and add aliases at 5 and 6 are binary.
+            7 => (op, 0, 1),
             1..=15 => (op, 0, 2),
             0x13..=0x16 => (op - 3, 0, 3),
             0x18..=0x23 => (op - 3, 0, 1),

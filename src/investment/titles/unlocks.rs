@@ -5,7 +5,7 @@ use crate::package_runtime::reader::PackageManager;
 use tiger_pkg::TagHash;
 
 use crate::{
-    investment_schema::{
+    investment::schema::{
         ROOT_UNLOCK_FLAG_BANK_TABLE_SLOT, ROOT_UNLOCK_FLAG_DEFINITION_TABLE_SLOT,
         UNLOCK_FLAG_DEFINITION_ROW_CLASS, UNLOCK_FLAG_DEFINITION_ROW_SIZE,
         investment_root_table_tag,

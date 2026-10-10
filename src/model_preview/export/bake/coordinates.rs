@@ -8,6 +8,10 @@ pub(super) struct Coordinates {
 }
 
 impl Coordinates {
+    pub fn matrix(&self) -> [[f32; 3]; 2] {
+        self.matrix
+    }
+
     pub fn read(model: &Model, triangle: usize) -> Result<Option<Self>, String> {
         let indices = model.triangles[triangle];
         let mut primary = indices.map(|i| model.uvs[i as usize]);

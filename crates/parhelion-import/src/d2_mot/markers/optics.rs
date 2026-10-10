@@ -8,7 +8,7 @@ use std::{fs, path::Path};
 
 /// Source model input endpoints keyed by the source component tag and input hash,
 /// holding the composed model's symbol, its native input hash and its component index.
-pub(in crate::d2_mot::markers) type ModelInputs = BTreeMap<(u32, u64), (String, u64, u32)>;
+pub(crate) type ModelInputs = BTreeMap<(u32, u64), (String, u64, u32)>;
 
 fn source_parts(source: &Path) -> Result<BTreeMap<(u64, u64), Payload>> {
     let report: Value = serde_json::from_slice(&fs::read(source.join("report.json"))?)?;

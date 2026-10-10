@@ -89,6 +89,8 @@ pub(super) fn dyes_with_overrides(
 #[derive(Clone, Copy, Default)]
 pub(super) struct Bindings<'a> {
     pub(in crate::model_preview) color_override: Option<[f32; 3]>,
+    pub(in crate::model_preview) emission_override: Option<[f32; 3]>,
+    pub(in crate::model_preview) ambient_override: Option<f32>,
     base_gain: Option<[f32; 3]>,
     base_metal: Option<f32>,
     paint: Option<[f32; 2]>,
@@ -291,6 +293,8 @@ impl<'a> Bindings<'a> {
             sampling: None,
             footprints: None,
             color_override: None,
+            emission_override: None,
+            ambient_override: None,
             skip_normal: false,
             base_gain: None,
             base_metal: None,
@@ -538,6 +542,9 @@ impl<'a> Bindings<'a> {
         if let Some(color) = self.color_override {
             surface.albedo = color;
         }
+        if let Some(emission) = self.emission_override {
+            surface.emission = emission;
+        }
         let mut normal = geometric;
         if let (Some(map), Some(basis)) = (map, basis) {
             // Applied one after the other, as they always were, so the preview stays exact.
@@ -546,7 +553,8 @@ impl<'a> Bindings<'a> {
             normal = basis.apply(map.packed);
         }
         let tint = self.apply_iridescence(uv, normal, &mut surface);
-        Some(light(surface, normal, scene, tint))
+        let ambient = self.ambient_override.unwrap_or(surface.ao);
+        Some(light(surface, normal, scene, tint, ambient))
     }
 
     /// The GPU preview's iridescence: the lookup row the dye names, read along the row by view
@@ -573,6 +581,7 @@ impl<'a> Bindings<'a> {
             lod: [0.0, f32::MAX],
             u: AddressMode::Clamp,
             v: AddressMode::Clamp,
+            w: AddressMode::Clamp,
             border: [0.0; 4],
         };
         let rows = lookup.size[1].max(1) as f32;
@@ -691,7 +700,13 @@ fn saturate(value: f32) -> f32 {
 }
 
 /// `tint` colours the highlight, as an odd iridescence row does.
-fn light(sample: Sample, mut n: [f32; 3], scene: super::render::Scene, tint: [f32; 3]) -> [f32; 3] {
+fn light(
+    sample: Sample,
+    mut n: [f32; 3],
+    scene: super::render::Scene,
+    tint: [f32; 3],
+    ambient: f32,
+) -> [f32; 3] {
     // Two-sided studio lighting with a broad fill and a roughness-dependent highlight.
     // Kept independent of native game environments; the viewer's own exposure is applied last.
     if n[2] > 0.0 {
@@ -716,12 +731,25 @@ fn light(sample: Sample, mut n: [f32; 3], scene: super::render::Scene, tint: [f3
     // Occlusion darkens the fill and reflected environment, not the key light.
     std::array::from_fn(|i| {
         let base = sample.albedo[i];
-        let specular = mix(0.04, base, sample.metal);
-        let diffuse = base * (1.0 - sample.metal) * (scene.fill * sample.ao + scene.key * diffuse);
-        let reflection = tint[i] * specular * (surroundings * sample.ao + highlight * 2.0)
-            + fresnel * 0.18 * sample.ao;
+        let specular = mix(mix(0.04, base, sample.metal), 1.0, fresnel);
+        let diffuse = base
+            * (1.0 - sample.metal)
+            * (1.0 - specular)
+            * (scene.fill * ambient + scene.key * diffuse);
+        let reflection =
+            tint[i] * specular * (scene.fill * surroundings * sample.ao + scene.key * highlight);
         (diffuse + reflection + sample.emission[i]) * scene.exposure
     })
+}
+
+/// Light the decoded native surface using the preview's studio and exposure.
+pub(in crate::model_preview) fn shade_surface(
+    sample: Sample,
+    normal: [f32; 3],
+    scene: super::render::Scene,
+    ambient: f32,
+) -> [f32; 3] {
+    light(sample, normal, scene, [1.0; 3], ambient)
 }
 
 /// The least roughness the key light's highlight shows with, standing for the light's size.

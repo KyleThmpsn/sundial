@@ -20,6 +20,37 @@ impl PreferencesPage {
 }
 
 impl PackageAuthoringApp {
+    pub(super) fn apply_preview_preferences(&self, ctx: &egui::Context) {
+        sundial::ui::model_preview::set_options(
+            ctx,
+            sundial::ui::model_preview::Options {
+                show_fps: self.show_preview_fps,
+                play_animations: self.play_preview_animations,
+            },
+        );
+    }
+
+    pub(super) fn draw_preview_preferences(&mut self, ui: &mut egui::Ui) -> bool {
+        preference_heading(ui, "Model Previews");
+        let mut changed = ui
+            .checkbox(&mut self.show_preview_fps, "Show Preview FPS")
+            .on_hover_text("Show a small frame rate counter in model previews.")
+            .changed();
+        changed |= ui
+            .checkbox(
+                &mut self.play_preview_animations,
+                "Play Preview Animations by Default",
+            )
+            .on_hover_text(
+                "Start embedded previews playing. Use Play or Pause on a preview to change it.",
+            )
+            .changed();
+        if changed {
+            self.apply_preview_preferences(ui.ctx());
+        }
+        changed
+    }
+
     pub(super) fn draw_preferences_window(&mut self, ctx: &egui::Context) {
         if !self.preferences_open {
             return;
@@ -27,7 +58,7 @@ impl PackageAuthoringApp {
         let mut open = true;
         let mut done = false;
         let available =
-            (ctx.screen_rect().size() - egui::vec2(48.0, 48.0)).max(egui::vec2(320.0, 260.0));
+            (ctx.content_rect().size() - egui::vec2(48.0, 48.0)).max(egui::vec2(320.0, 260.0));
         egui::Window::new("Parhelion Preferences")
             .id(egui::Id::new("parhelion-preferences"))
             .collapsible(false)
@@ -92,6 +123,10 @@ impl PackageAuthoringApp {
     }
 
     fn draw_editor_library_preferences(&mut self, ui: &mut egui::Ui) {
+        if self.draw_preview_preferences(ui) {
+            self.save_workbench_preferences();
+        }
+        ui.add_space(12.0);
         preference_heading(ui, "Experimental");
         #[cfg(feature = "d2-model-importer")]
         self.draw_importer_preference(ui);
@@ -166,7 +201,7 @@ impl PackageAuthoringApp {
             preference_heading(ui, "Build Files");
             ui.label("Game Packages · Selected in Sundial");
             draw_preference_path(ui, &self.packages);
-            let mut changed = path_row(
+            let mut changed = fields::path_row(
                 ui,
                 "Staging Folder",
                 &mut self.staging,
@@ -180,7 +215,7 @@ impl PackageAuthoringApp {
                 .changed();
             ui.add_space(12.0);
             preference_heading(ui, "Package Backups");
-            changed |= path_row(
+            changed |= fields::path_row(
                 ui,
                 "Backup Folder",
                 &mut self.backup_root,
@@ -213,7 +248,7 @@ impl PackageAuthoringApp {
                 .on_hover_text("Saves the built recipes with each backup.")
                 .changed();
             if backups_changed {
-                self.save_backup_preferences();
+                self.save_workbench_preferences();
             }
             if changed {
                 self.invalidate_results();
@@ -257,11 +292,10 @@ impl PackageAuthoringApp {
             .show(ctx, |ui| {
                 workbench_style(ui);
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(format!("{} recent events · newest first", self.log.len()));
-                    sundial::investment::draw_authoring_info_icon(
-                        ui,
-                        format!("Latest {ACTIVITY_LOG_CAPACITY} events. Times in UTC."),
-                    );
+                    ui.label(format!("{} recent events · newest first", self.log.len()))
+                        .on_hover_text(format!(
+                            "Latest {ACTIVITY_LOG_CAPACITY} events. Times in UTC"
+                        ));
                     if ui.button("Copy Log").clicked() {
                         ui.ctx().copy_text(self.activity_log_text());
                     }

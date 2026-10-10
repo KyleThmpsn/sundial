@@ -515,8 +515,13 @@ fn preview_color(alpha: u8, actual: [u8; 4], expected: [f32; 3], landmark: usize
     }
     for i in [1, 2] {
         let extra = [0.0, 6.0 / 255.0, 0.1];
+        // The head-on dielectric fixture reflects four percent of the fill. Its remaining
+        // diffuse light preserves these independently calculated material color differences.
         assert!(
-            (linear(actual[i]) - linear(actual[0]) - (expected[i] - expected[0] + extra[i])).abs()
+            (linear(actual[i])
+                - linear(actual[0])
+                - (0.96 * (expected[i] - expected[0]) + extra[i]))
+                .abs()
                 < 0.02,
             "Alpha {alpha}, detail {landmark}, time {seconds}: {actual:?}, expected {expected:?}"
         );
@@ -564,7 +569,8 @@ fn native_paint_preserves_stage_order_selected_dyes_boundaries_and_exports() {
         );
     }
     let temporary = tempfile::tempdir().unwrap();
-    let configured = std::env::var_os("SUNDIAL_FIDELITY_OUTPUT");
+    let configured =
+        crate::test_support::artifacts("fidelity").map(std::path::PathBuf::into_os_string);
     let out = configured
         .as_deref()
         .map(Path::new)
@@ -604,10 +610,12 @@ fn native_paint_preserves_stage_order_selected_dyes_boundaries_and_exports() {
                         ..Default::default()
                     },
                     render::Scene {
+                        filmic: false,
+                        bloom: false,
                         key: 0.0,
                         fill: 1.0,
                         background: [0; 3],
-                        ..Default::default()
+                        ..render::Scene::unit_exposure()
                     },
                     [320, 240],
                     seconds,

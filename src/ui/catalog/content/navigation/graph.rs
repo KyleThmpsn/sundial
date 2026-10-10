@@ -233,7 +233,7 @@ fn node_line(ui: &egui::Ui, text: &str, width: f32) -> String {
         ui.visuals().text_color(),
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width(width);
-    ui.fonts(|fonts| fonts.layout_job(job))
+    ui.fonts_mut(|fonts| fonts.layout_job(job))
         .rows
         .first()
         .map_or_else(String::new, |row| row.text())

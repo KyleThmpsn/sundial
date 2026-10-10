@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-pub(crate) use crate::account_contract::{
+pub(crate) use crate::account::contract::{
     CHARACTER_INVENTORY_CAPACITY, DISMANTLE_REWARDS_SCHEMA_VERSION, EQUIPMENT_FLAGS_SCHEMA_VERSION,
     FILTERED_DISMANTLE_REWARD_CAPACITY, FILTERED_DISMANTLE_REWARDS_SCHEMA_VERSION,
     INVENTORY_FLAG_LOCKED, INVENTORY_SCHEMA_VERSION, LEGACY_DISMANTLE_REWARD_CAPACITY,
@@ -65,33 +65,33 @@ impl SchemaMode {
 
     pub(crate) const fn supports_emote_collection(self) -> bool {
         match self.version() {
-            Some(version) => crate::account_contract::supports_emote_collection(version),
+            Some(version) => crate::account::contract::supports_emote_collection(version),
             None => false,
         }
     }
 
     pub(crate) const fn item_flag_mask(self) -> u8 {
-        crate::account_contract::item_flag_mask(match self.version() {
+        crate::account::contract::item_flag_mask(match self.version() {
             Some(version) => version,
             None => 0,
         })
     }
 
     pub(crate) const fn supports_masterwork_flags(self) -> bool {
-        self.item_flag_mask() & crate::account_contract::INVENTORY_FLAG_MASTERWORK != 0
+        self.item_flag_mask() & crate::account::contract::INVENTORY_FLAG_MASTERWORK != 0
     }
 
     pub(crate) const fn uses_subclass_plug_abilities(self) -> bool {
         match self.version() {
-            Some(version) => crate::account_contract::uses_subclass_plug_abilities(version),
+            Some(version) => crate::account::contract::uses_subclass_plug_abilities(version),
             None => false,
         }
     }
 
     pub(crate) const fn equipment_slots(
         self,
-    ) -> &'static [crate::account_contract::EquipmentSlotContract] {
-        crate::account_contract::equipment_slots_for_schema(match self.version() {
+    ) -> &'static [crate::account::contract::EquipmentSlotContract] {
+        crate::account::contract::equipment_slots_for_schema(match self.version() {
             Some(version) => version,
             None => 0,
         })
@@ -259,4 +259,4 @@ pub(in crate::persistence::json_account::inventory) fn read_only_schema_error(
 }
 
 #[cfg(test)]
-pub(crate) use crate::account_contract::LEGACY_PROFILE_ITEM_CAPACITY;
+pub(crate) use crate::account::contract::LEGACY_PROFILE_ITEM_CAPACITY;

@@ -9,7 +9,12 @@ pub(super) const LEVELS: usize = 10;
 
 pub(super) fn pixel(slot: usize, level: usize, hdr: bool) -> [f32; 4] {
     if hdr && slot == 0 {
-        return [if level % 2 == 0 { 2.0 } else { 0.5 }, 0.25, 1.0, 1.0];
+        return [
+            if level.is_multiple_of(2) { 2.0 } else { 0.5 },
+            0.25,
+            1.0,
+            1.0,
+        ];
     }
     let value = match slot {
         0 => [40 + level as u8 * 17, 176 - level as u8 * 11, 96, 255],

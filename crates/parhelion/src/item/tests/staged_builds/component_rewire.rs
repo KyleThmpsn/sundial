@@ -264,9 +264,9 @@ fn verify(
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn rewired_component_donors_stage_the_tables_the_rewire_builds() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     let source = open_manager(&packages).unwrap();
     // Host type, donor type: a hand cannon's Firing Behavior on a sidearm and the reverse, and an
@@ -299,10 +299,8 @@ fn rewired_component_donors_stage_the_tables_the_rewire_builds() {
     .expect("the rewired component batch builds");
     let view = staged_view(&packages, ".parhelion-component-rewire-", &bundle);
     let staged = open_manager(&view.path().join("packages")).unwrap();
-    let out = std::env::var_os("PARHELION_REWIRE_OUT").map_or_else(
-        || std::env::temp_dir().join("parhelion-component-rewire"),
-        PathBuf::from,
-    );
+    let out = crate::test_support::artifacts("component-rewire")
+        .unwrap_or_else(|| std::env::temp_dir().join("parhelion-component-rewire"));
     fs::create_dir_all(&out).unwrap();
     let mut report = String::from("# Component Rewire E2E\n\n");
     for case in &cases {

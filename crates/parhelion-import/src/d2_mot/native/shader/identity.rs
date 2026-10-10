@@ -63,7 +63,7 @@ pub struct Catalog {
 }
 
 fn digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn key(header: &[u8], code: &[u8]) -> [u8; 32] {

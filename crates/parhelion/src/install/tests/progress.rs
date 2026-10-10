@@ -78,10 +78,9 @@ fn progress_follows_the_verified_transaction_and_reports_every_installed_file() 
         assert_eq!(
             {
                 use sha2::Digest as _;
-                format!(
-                    "{:X}",
-                    sha2::Sha256::digest(&fixture.staged_bytes[&artifact.file_name])
-                )
+                hex::encode_upper(sha2::Sha256::digest(
+                    &fixture.staged_bytes[&artifact.file_name],
+                ))
             },
             artifact.sha256
         );

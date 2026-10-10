@@ -40,13 +40,13 @@ fn launcher_is_compact_lazy_and_only_its_owner_follows_selection() {
     let owner = egui::Id::new("source");
     let draw = |events| {
         let mut rect = egui::Rect::NOTHING;
-        let _ = ctx.run(
+        let _ = ctx.run_ui(
             egui::RawInput {
                 events,
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     rect = launcher(ui, owner, Some(request(1))).rect;
                 });
             },
@@ -113,7 +113,7 @@ fn viewer_survives_the_source_tab_and_escape_closes_without_reopening() {
     };
     // No source UI is drawn. The host alone keeps the viewer alive.
     for _ in 0..2 {
-        let _ = ctx.run(egui::RawInput::default(), show);
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| show(ui));
     }
     {
         let preview = state.lock().unwrap();
@@ -123,7 +123,7 @@ fn viewer_survives_the_source_tab_and_escape_closes_without_reopening() {
             "a model without geometry has no texture"
         );
     }
-    let _ = ctx.run(
+    let _ = ctx.run_ui(
         egui::RawInput {
             events: vec![egui::Event::Key {
                 key: egui::Key::Escape,
@@ -134,13 +134,13 @@ fn viewer_survives_the_source_tab_and_escape_closes_without_reopening() {
             }],
             ..Default::default()
         },
-        show,
+        |ui| show(ui),
     );
     let preview = state.lock().unwrap();
     assert!(!preview.open);
     assert!(preview.texture.is_none() && preview.model.is_none() && preview.request.is_none());
     drop(preview);
-    let _ = ctx.run(egui::RawInput::default(), show);
+    let _ = ctx.run_ui(egui::RawInput::default(), |ui| show(ui));
     assert!(!state.lock().unwrap().open);
 }
 
@@ -168,21 +168,21 @@ fn paused_viewer_starts_no_reads_and_short_layouts_keep_the_canvas_inside() {
         request: Some(request(1)),
         ..Default::default()
     };
-    let _ = ctx.run(egui::RawInput::default(), |ctx| {
-        egui::CentralPanel::default().show(ctx, |ui| preview.draw_request(ui));
+    let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+        egui::CentralPanel::default().show(ui, |ui| preview.draw_request(ui));
     });
     assert!(preview.pending.is_none());
     preview.paused = false;
     preview.selection = Some(request(1).selection);
     preview.model = Some(Arc::new(Model::default()));
     for size in [egui::vec2(360.0, 320.0), egui::vec2(720.0, 560.0)] {
-        let _ = ctx.run(
+        let _ = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     let bottom = ui.max_rect().bottom();
                     preview.draw_request(ui);
                     assert!(ui.min_rect().bottom() <= bottom + 1.0);
@@ -192,5 +192,7 @@ fn paused_viewer_starts_no_reads_and_short_layouts_keep_the_canvas_inside() {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 mod desktop;
+
+mod rotation;

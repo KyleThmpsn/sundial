@@ -133,7 +133,7 @@ mod tests {
         let mut importer = ImageImport::default();
         let mut draft = WeaponIconEdit::default();
         for _ in 0..2 {
-            let _ = context.run(
+            let _ = context.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -141,8 +141,8 @@ mod tests {
                     )),
                     ..Default::default()
                 },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         let right = ui.max_rect().right();
                         assert!(!importer.draw(ui, &mut draft, true));
                         assert!(ui.min_rect().right() <= right + 1.0);

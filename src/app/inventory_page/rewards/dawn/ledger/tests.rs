@@ -49,9 +49,9 @@ fn opening_an_over_cap_reward_does_not_edit_its_quantity() {
     let ctx = egui::Context::default();
     for _ in 0..3 {
         let mut edit = None;
-        let _ = ctx.run(Default::default(), |ctx| {
+        let _ = ctx.run_ui(Default::default(), |ui| {
             egui::CentralPanel::default()
-                .show(ctx, |ui| quantity(ui, &catalog, &debt, true, &mut edit));
+                .show(ui, |ui| quantity(ui, &catalog, &debt, true, &mut edit));
         });
         assert!(edit.is_none());
     }

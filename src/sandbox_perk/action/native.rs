@@ -186,10 +186,9 @@ impl Graph {
             } else if let Some(node) = nodes::EFFECTS
                 .iter()
                 .find(|n| n.class == block.class && n.observed())
+                && (block.count.is_some() || block.bytes[0] != node.kind || block.bytes[1] > 1)
             {
-                if block.count.is_some() || block.bytes[0] != node.kind || block.bytes[1] > 1 {
-                    return Err("Invalid native effect header.".into());
-                }
+                return Err("Invalid native effect header.".into());
             }
             if block.class != 0 {
                 let stride = schema::record(block.class)?.size;

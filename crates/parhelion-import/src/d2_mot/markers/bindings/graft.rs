@@ -1,61 +1,36 @@
-//! Compose native component registrations without depending on the weapon donor
-//! to already contain the component. Lookup carriers provide format metadata only.
+//! Compose native component registrations and rebuild their lookup chains.
 use super::*;
 use crate::d2_mot::{markers::optics::ModelInputs, reader::Reader};
-use std::{
-    collections::BTreeSet,
-    sync::{Mutex, OnceLock},
-};
+use std::collections::BTreeSet;
 
 /// A selector entry: its priority, whether the closure template supplies it,
 /// and its row index in that payload's interface groups.
 type Entry = (i32, bool, usize);
 
-fn compatible(entity: &Payload, candidate: &Payload, required: &BTreeSet<u32>) -> bool {
-    let Ok(g) = groups(candidate) else {
-        return false;
-    };
-    required.iter().all(|key| g.rows.contains_key(key))
-        && entity.bytes::<4>(0x88).ok() == candidate.bytes::<4>(0x88).ok()
-        && entity.bytes::<24>(0x90).ok() == candidate.bytes::<24>(0x90).ok()
-}
-
-fn lookup(reader: &Reader, entity: &Payload, required: &BTreeSet<u32>) -> Result<Payload> {
-    // Cached payloads supply only keys, lookup seeds and bucket metadata. No
-    // asset reference or component payload is carried from this format cache.
-    static CACHE: OnceLock<Mutex<Vec<Payload>>> = OnceLock::new();
-    let mut cache = CACHE
-        .get_or_init(Mutex::default)
-        .lock()
-        .map_err(|_| anyhow::anyhow!("component lookup cache poisoned"))?;
-    if let Some(found) = cache.iter().find(|p| compatible(entity, p, required)) {
-        return Ok(found.clone());
-    }
-    let mut candidates = reader
-        .manager
-        .lookup
-        .tag32_entries_by_pkg
-        .iter()
-        .flat_map(|(&pkg, entries)| {
-            entries
-                .iter()
-                .enumerate()
-                .filter(|(_, e)| e.reference == 0x80809C0F)
-                .map(move |(i, _)| tiger_pkg::TagHash::new(pkg, i as u16))
-        })
-        .collect::<Vec<_>>();
-    candidates.sort_unstable_by_key(|tag| tag.0);
-    for tag in candidates {
-        let Ok(bytes) = reader.manager.read_tag(tag) else {
-            continue;
-        };
-        let payload = Payload(bytes);
-        if compatible(entity, &payload, required) {
-            cache.push(payload.clone());
-            return Ok(payload);
+fn lookup(seed: u32, definitions: &[(u32, u32)]) -> Result<Vec<u8>> {
+    let capacity = definitions
+        .len()
+        .checked_mul(2)
+        .and_then(|n| n.max(2).checked_next_power_of_two())
+        .context("Component lookup capacity overflow")?;
+    ensure!(capacity <= 65536, "Component lookup exceeds native bounds");
+    let mut slots = vec![(u32::MAX, 0u32); capacity];
+    for &(key, packed) in definitions {
+        // Archived native consumer 0x9EBF80. The sign bit belongs to the
+        // collision chain, so copying it from an old key placement is invalid.
+        let mixed = (seed ^ key).wrapping_add(key.wrapping_shl(4));
+        let mixed = (mixed ^ (mixed >> 10)).wrapping_mul(0x81);
+        let mut at = (mixed ^ (mixed >> 13)) as usize & (capacity - 1);
+        while slots[at].0 != u32::MAX {
+            slots[at].1 |= 0x80000000;
+            at = (at + 1) & (capacity - 1);
         }
+        slots[at] = (key, packed & 0x7FFFFFFF);
     }
-    anyhow::bail!("no native lookup layout covers the composed component interfaces")
+    Ok(slots
+        .into_iter()
+        .flat_map(|(key, value)| [key.to_le_bytes(), value.to_le_bytes()].concat())
+        .collect())
 }
 
 /// Append the closure's component rows after the entity's own. Returns the new
@@ -87,7 +62,7 @@ fn components(
 }
 
 /// Collect one interface key's entries from the entity and the closure, sorted by
-/// descending priority, with the interface's aggregation flags.
+/// descending priority.
 fn entries(
     key: u32,
     entity: &Payload,
@@ -95,7 +70,7 @@ fn entries(
     template: &Payload,
     source: &Groups,
     owners: &BTreeMap<u32, String>,
-) -> Result<(Vec<Entry>, u32)> {
+) -> Result<Vec<Entry>> {
     let mut entries = Vec::new();
     if let Some((_, group)) = current.rows.get(&key) {
         for &i in group {
@@ -109,20 +84,8 @@ fn entries(
             }
         }
     }
-    let flags = current
-        .rows
-        .get(&key)
-        .or_else(|| source.rows.get(&key))
-        .context("composed interface flags")?
-        .0;
-    if entries.iter().any(|e| e.1) && current.rows.contains_key(&key) {
-        ensure!(
-            flags == source.rows[&key].0,
-            "composed interface aggregation flags differ"
-        );
-    }
     entries.sort_by_key(|entry| std::cmp::Reverse(entry.0));
-    Ok((entries, flags))
+    Ok(entries)
 }
 
 /// Copy the closure's events whose endpoints are composed components or model
@@ -181,8 +144,8 @@ fn events(
 
 /// Add a validated component closure and its native event wiring. The map names
 /// private payload symbols. It includes every internal endpoint of the closure.
-pub(in crate::d2_mot::markers) fn insert(
-    reader: &Reader,
+pub(crate) fn insert(
+    _reader: &Reader,
     entity: &mut Payload,
     patches: &mut Vec<Value>,
     template: &Payload,
@@ -203,7 +166,20 @@ pub(in crate::d2_mot::markers) fn insert(
         }
     }
     ensure!(expected > 0, "component closure has no interfaces");
-    let layout = lookup(reader, entity, &required)?;
+    let (mut masks, _) = copy(entity, &entity.array(0x78, 2, Some(0x80800006))?, 2, &[])?;
+    let mask_offset = masks.len() / 2;
+    let (extra_masks, _) = copy(
+        template,
+        &template.array(0x78, 2, Some(0x80800006))?,
+        2,
+        &[],
+    )?;
+    let source_mask_count = extra_masks.len() / 2;
+    masks.extend(extra_masks);
+    ensure!(
+        masks.len() / 2 <= i16::MAX as usize,
+        "Component condition masks exceed native bounds"
+    );
     let indices = components(entity, patches, template, owners)?;
     let mut resources = Vec::new();
     let mut descriptors = Vec::new();
@@ -211,18 +187,12 @@ pub(in crate::d2_mot::markers) fn insert(
     let mut descriptor_refs = Vec::new();
     let mut slots = Vec::new();
     let mut added = 0;
-    for row in layout.array(0x48, 8, Some(0x80809C25))? {
-        let key = layout.u32(row)?;
-        if key == u32::MAX || !required.contains(&key) {
-            slots.extend(u32::MAX.to_le_bytes());
-            slots.extend(0u32.to_le_bytes());
-            continue;
-        }
-        let (entries, flags) = entries(key, entity, &current, template, &source, owners)?;
+    for key in required {
+        let entries = entries(key, entity, &current, template, &source, owners)?;
         let start = descriptors.len() / 24;
         let count = entries.len();
         ensure!(
-            count > 0 && count < 32768 && start + count < 65536,
+            count > 0 && start + count <= i16::MAX as usize,
             "composed selector overflow"
         );
         for (_, extra, i) in entries {
@@ -245,6 +215,18 @@ pub(in crate::d2_mot::markers) fn insert(
                 (r, d, rr, dr)
             };
             if extra {
+                let conditions = u32::from_le_bytes(r[..4].try_into()?);
+                if conditions >> 16 != 0 {
+                    let word = (conditions & 0xFFFF) as usize;
+                    ensure!(
+                        word < source_mask_count,
+                        "Component condition mask exceeds source"
+                    );
+                    r[..4].copy_from_slice(
+                        &((conditions & 0xFFFF0000) | u32::try_from(word + mask_offset)?)
+                            .to_le_bytes(),
+                    );
+                }
                 r[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
                 d[..4].copy_from_slice(&u32::MAX.to_le_bytes());
                 added += 1;
@@ -260,8 +242,7 @@ pub(in crate::d2_mot::markers) fn insert(
             resources.extend(r);
             descriptors.extend(d);
         }
-        slots.extend(key.to_le_bytes());
-        slots.extend((flags | ((count as u32) << 16) | start as u32).to_le_bytes());
+        slots.push((key, ((count as u32) << 16) | start as u32));
     }
     ensure!(added == expected, "composed lookup dropped an interface");
     append(
@@ -282,11 +263,9 @@ pub(in crate::d2_mot::markers) fn insert(
         &descriptors,
         &descriptor_refs,
     )?;
+    let slots = lookup(entity.u32(0x40)?, &slots)?;
     append(entity, patches, 0x48, 8, 0x80809C25, &slots, &[])?;
-    let (buckets, _) = copy(&layout, &layout.array(0x78, 2, Some(0x80800006))?, 2, &[])?;
-    append(entity, patches, 0x78, 2, 0x80800006, &buckets, &[])?;
-    entity.0[0x40..0x48].copy_from_slice(&layout.bytes::<8>(0x40)?);
-    entity.0[0x8c..0x90].copy_from_slice(&layout.bytes::<4>(0x8c)?);
+    append(entity, patches, 0x78, 2, 0x80800006, &masks, &[])?;
     events(entity, patches, template, owners, &indices, inputs)?;
     groups(entity)?;
     Ok(())

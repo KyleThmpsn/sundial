@@ -61,4 +61,47 @@ impl Picker {
         }));
         receiver
     }
+
+    /// The perk icon `selection` stands for: artwork as it is, or a stock perk's own icon
+    /// texture, which takes a read of the packages. The perk picker embeds a file from disk
+    /// before it is selected, so a file stands for none.
+    pub fn icon(
+        &mut self,
+        selection: Selection,
+        packages: &Path,
+        catalog: Option<&InvestmentCatalog>,
+        ctx: &egui::Context,
+    ) -> Receiver<Result<Icon, String>> {
+        let (sender, receiver) = mpsc::channel();
+        let hash = match selection {
+            Selection::Icon(icon) => {
+                let _ = sender.send(Ok(icon));
+                return receiver;
+            }
+            Selection::Local(_) => {
+                let _ = sender.send(Err("Choose artwork from the list".to_owned()));
+                return receiver;
+            }
+            Selection::Perk(hash) => hash,
+        };
+        let container = catalog.and_then(|catalog| catalog.weapon_icon_container(hash));
+        let packages = packages.to_owned();
+        let purpose = self.purpose;
+        let repaint = ctx.clone();
+        self.workers.push(thread::spawn(move || {
+            let result = (|| {
+                let container =
+                    tiger_pkg::TagHash(container.ok_or("This perk has no readable icon")?);
+                let manager =
+                    sundial::package_authoring::open_shadowkeep_package_manager(&packages)?;
+                let tag = package_icons::primary_texture(&manager, container)?;
+                // Read as the build reads it, so a texture it cannot use is refused now.
+                package_icons::load_for(&manager, tag, purpose)?;
+                Ok(Icon::Texture { tag: tag.0.into() })
+            })();
+            let _ = sender.send(result);
+            repaint.request_repaint();
+        }));
+        receiver
+    }
 }

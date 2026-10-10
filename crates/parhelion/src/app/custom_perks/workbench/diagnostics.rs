@@ -32,8 +32,9 @@ impl Workbench {
             effect: recipe.effects[position].source_perk_index,
             action: None,
             native: None,
+            native_field: None,
         };
-        let mut issues = preflight::check(recipe, self.item_kind)
+        let mut issues = preflight::check(recipe)
             .into_iter()
             .map(|issue| validation::Issue {
                 message: issue.effect.map_or(issue.message.clone(), |index| {
@@ -65,16 +66,7 @@ impl Workbench {
                     });
                 }
             }
-            for message in [
-                self.discovery
-                    .perk_issue(effect.source_perk_index)
-                    .map(str::to_owned),
-                validation::counter_issue(effect.program.as_ref()),
-                validation::choice_issue(effect.program.as_ref()),
-            ]
-            .into_iter()
-            .flatten()
-            {
+            if let Some(message) = self.discovery.perk_issue(effect.source_perk_index) {
                 let issue = validation::Issue {
                     message: format!("Effect {}: {message}", position + 1),
                     location: Some(location(position)),
@@ -86,6 +78,9 @@ impl Workbench {
                 {
                     issues.push(issue);
                 }
+            }
+            for check in validation::native_checks(effect.program.as_ref()) {
+                issues.push(validation::located_check(recipe, position, check));
             }
         }
         self.diagnostic_cache = Some(Cache {
@@ -114,8 +109,8 @@ impl Workbench {
                 ui.heading(&recipe.name);
                 ui.label(format!("Runtime Budget: {} of {} Effects Active", recipe.effects.len().min(crate::perk::SANDBOX_PERK_CAPACITY), recipe.effects.len()));
                 ui.weak(format!("Destination: {}", self.item_kind.label()));
-                ui.label("Blocking problems prevent attachment. Warnings describe runtime limits or behavior that still needs verification.");
-                if issues.is_empty() { ui.label("No authoring problems found. Gameplay has not been verified by these checks."); }
+                ui.label("Blocking problems prevent attachment. Warnings describe inactive selections and runtime limits.");
+                if issues.is_empty() { ui.label("No problems found."); }
                 for (index, issue) in issues.iter().enumerate() {
                     ui.push_id(index, |ui| {
                         ui.separator();
