@@ -18,6 +18,8 @@ use sundial::package_authoring::ability_tint::ability_tints;
 
 /// A swatch's size on the page.
 const SWATCH: egui::Vec2 = egui::vec2(128.0, 14.0);
+/// Colors From's width, which a tint row keeps empty so every row's menu and reset line up.
+const COLORS_FROM_WIDTH: f32 = 200.0;
 
 /// One palette an ability draws with: its stock pixels and how many effect uses reach it.
 pub(super) struct Loaded {
@@ -406,6 +408,18 @@ fn effects(count: usize) -> String {
 /// The values a color row's controls set: hue, saturation, brightness and whether it colorizes.
 type Adjustment = (i16, u16, u16, bool);
 
+/// Colors From's place while the stock palettes load or fail to: `text`, as wide as the picker
+/// so the controls after it keep their column.
+fn colors_from_placeholder(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let size = egui::vec2(COLORS_FROM_WIDTH, ui.spacing().interact_size.y);
+    let layout = egui::Layout::left_to_right(egui::Align::Center);
+    ui.allocate_ui_with_layout(size, layout, |ui| {
+        ui.set_width(COLORS_FROM_WIDTH);
+        ui.weak(text)
+    })
+    .inner
+}
+
 /// Gives every palette and tint of `found` one row's values, each palette keeping where its colors
 /// come from.
 fn give_every_color(
@@ -745,7 +759,8 @@ impl PackageAuthoringApp {
             let Some(edit) = edits.tint(tint.rgb) else {
                 continue;
             };
-            let (next, apply) = Self::draw_tint(ui, tint, (edit, several), grade);
+            let column = !found.palettes.is_empty();
+            let (next, apply) = Self::draw_tint(ui, tint, (edit, several, column), grade);
             if let Some(next) = next {
                 changed.get_or_insert_with(|| edits.clone()).set_tint(next);
             }
@@ -761,12 +776,12 @@ impl PackageAuthoringApp {
 
     /// One tint's chip, its stock color then as the game draws it, with its own change and
     /// `grade`, and its controls. With `several` colors it has a reset of its own and a menu
-    /// holding Apply to Every Color. Returns its change once one of them moves, and whether Apply
-    /// to Every Color was chosen.
+    /// holding Apply to Every Color, after the palettes' Colors From `column` when there is one.
+    /// Returns its change once one of them moves, and whether Apply to Every Color was chosen.
     fn draw_tint(
         ui: &mut egui::Ui,
         tint: &LoadedTint,
-        (edit, several): (TintEdit, bool),
+        (edit, several, column): (TintEdit, bool, bool),
         grade: EffectGrade,
     ) -> (Option<TintEdit>, bool) {
         let mut next = edit;
@@ -800,6 +815,9 @@ impl PackageAuthoringApp {
                 grade.colorize,
             );
             if several {
+                if column {
+                    ui.add_space(COLORS_FROM_WIDTH + ui.spacing().item_spacing.x);
+                }
                 every = row_menu(ui, "Tint");
                 if !edit.is_stock() && detail::reset_icon(ui) {
                     next = TintEdit {
@@ -873,11 +891,11 @@ impl PackageAuthoringApp {
         let stock = match page.colors.stock.clone() {
             Some(Ok(stock)) => stock,
             Some(Err(error)) => {
-                ui.weak(OWN).on_hover_text(error);
+                colors_from_placeholder(ui, OWN).on_hover_text(error);
                 return from;
             }
             None => {
-                ui.weak(OWN);
+                colors_from_placeholder(ui, OWN);
                 return from;
             }
         };
@@ -890,7 +908,7 @@ impl PackageAuthoringApp {
         let mut chosen = from;
         let salt = ("subclass-colors-from", own);
         egui::ComboBox::from_id_salt(salt)
-            .width(200.0)
+            .width(COLORS_FROM_WIDTH)
             .truncate()
             .selected_text(from.map_or_else(|| OWN.to_owned(), label))
             .show_ui(ui, |ui| {

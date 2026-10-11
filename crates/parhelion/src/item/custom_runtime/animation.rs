@@ -107,9 +107,6 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedAn
     {
         clips.push((tag(clip, "native")?, payload(graph, &clip["file"])?));
     }
-    if clips.is_empty() {
-        return Ok(None);
-    }
     let states = if first_person["state_conversion"]["status"] == "source_states" {
         let section = &first_person["state_conversion"];
         Some(ImportedStates {
@@ -213,6 +210,9 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedAn
             })
             .transpose()?,
     };
+    if result.clips.is_empty() && result.extra_clips.is_empty() {
+        return Ok(None);
+    }
     if let Some(bank) = &result.converted_bank {
         use parhelion_import::d2_mot::{
             payload::Payload, rig_convert::animation::first_person::dispatch,
@@ -668,7 +668,10 @@ pub(in crate::item) fn author(
             "Authored runtime entity keeps a stale attachment owner reference",
         ));
     }
-    Ok((animation.clips.len(), attachment_tag))
+    Ok((
+        animation.clips.len() + animation.extra_clips.len(),
+        attachment_tag,
+    ))
 }
 
 #[cfg(test)]

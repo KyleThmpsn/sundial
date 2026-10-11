@@ -349,7 +349,7 @@ fn read_donor_tag(
     })?;
     if payload.len() != expected_size || entry.file_size as usize != expected_size {
         return Err(invalid(format!(
-            "Lunar icon donor tag {tag} is {} bytes (entry declares {}); expected {expected_size}",
+            "Lunar icon donor tag {tag} is {} bytes (entry declares {}). Expected {expected_size}",
             payload.len(),
             entry.file_size
         )));
@@ -467,7 +467,7 @@ fn render_card(
     let expected_size = width as usize * height as usize * 4;
     if donor.len() != expected_size {
         return Err(invalid(format!(
-            "Lunar badge donor pixel buffer is {} bytes; expected {expected_size}",
+            "Lunar badge donor pixel buffer is {} bytes. Expected {expected_size}",
             donor.len()
         )));
     }

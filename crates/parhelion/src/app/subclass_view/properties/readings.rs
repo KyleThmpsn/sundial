@@ -120,6 +120,7 @@ pub(super) fn movement_field<'a>(
             .max_decimals(3),
         Unit::Mode => egui::DragValue::new(value)
             .range(0.0..=1.0)
+            .clamp_existing_to_range(false)
             .fixed_decimals(0),
     }
 }
@@ -158,6 +159,8 @@ pub(super) fn movement_hint(label: &str) -> &'static str {
     }
 }
 
+/// A movement mode as its two choices side by side across the tile, the current one selected.
+/// Returns the mode picked.
 pub(super) fn movement_mode(
     ui: &mut egui::Ui,
     salt: impl std::hash::Hash + std::fmt::Debug,
@@ -165,17 +168,27 @@ pub(super) fn movement_mode(
     label: &str,
     current: f32,
 ) -> Option<f32> {
-    let mut selected = if current == 0.0 { 0_u8 } else { 1 };
-    let before = selected;
-    let response = egui::ComboBox::from_id_salt(salt)
-        .width(width)
-        .selected_text(if selected == 0 { "Direct" } else { "Blend" })
-        .show_ui(ui, |ui| {
-            ui.selectable_value(&mut selected, 0, "Direct");
-            ui.selectable_value(&mut selected, 1, "Blend");
-        });
-    style::named_control(response.response, label);
-    (selected != before).then_some(f32::from(selected))
+    const GAP: f32 = 4.0;
+    let selected = u8::from(current != 0.0);
+    let size = egui::vec2((width - GAP) / 2.0, ui.spacing().interact_size.y);
+    ui.push_id(salt, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = GAP;
+            let mut picked = None;
+            for (mode, name) in [(0_u8, "Direct"), (1, "Blend")] {
+                let button = egui::Button::new(name)
+                    .selected(mode == selected)
+                    .min_size(size);
+                let response = style::named_control(ui.add(button), format!("{label}: {name}"));
+                if response.clicked() && mode != selected {
+                    picked = Some(f32::from(mode));
+                }
+            }
+            picked
+        })
+        .inner
+    })
+    .inner
 }
 
 /// An amount a modifier adds, with its sign.

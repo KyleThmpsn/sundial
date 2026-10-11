@@ -1383,6 +1383,12 @@ fn build_material(
         }
         put(&mut mat, 32, &(0x80u32 | blend as u32).to_le_bytes())?;
     }
+    // Both renderer tables use rasterizer 1 for two-sided solid geometry.
+    // The high bit selects that state instead of the draw's inherited culling.
+    // Preserve this source override independently of the native blend/depth state.
+    if material.u8(0x32)? == 0x81 {
+        mat[0x22] = 0x81;
+    }
     for at in [24, 28] {
         // These source atlases are fixed resident resources. The gear
         // scope otherwise replaces their explicit pixel bindings.

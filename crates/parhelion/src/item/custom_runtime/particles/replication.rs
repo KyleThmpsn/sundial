@@ -1,7 +1,11 @@
 //! Validate imported replication references before assigning package identities.
 use super::*;
 
-fn target<'a>(nodes: &'a [Node], node: &Node, offset: usize) -> AuthoringResult<&'a Node> {
+pub(super) fn target<'a>(
+    nodes: &'a [Node],
+    node: &Node,
+    offset: usize,
+) -> AuthoringResult<&'a Node> {
     let mut patches = node.patches.iter().filter(|(at, _)| *at == offset);
     let Some((_, symbol)) = patches.next() else {
         return Err(invalid("Imported projectile replication is incomplete"));

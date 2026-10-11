@@ -11,11 +11,11 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
   - Each ability's page has **Ability**, **Perks**, **Gameplay**, and **Visuals** tabs, marked once you change something.
   - **Change Icon…** opens an icon browser that starts with **Ability Icons** from every class and can search **All Icons**.
   - Right-click a stock perk and choose **Edit as Custom Perk…** to change it for this ability alone.
-  - Add up to four **Extra Charges** to any ability, including Rifts, and change **Recharge Rate**. **Ability Changes** sets what an ability or node changes about the Subclass's other abilities, such as an extra grenade charge.
+  - Add up to four **Extra Charges** to any ability, including Rifts, and change **Recharge Rate**. **Changes While Equipped** sets what an ability or node changes about the Subclass's other abilities, such as an extra grenade charge.
   - **Find Properties** searches every value an ability has.
   - **Always Active** shows a Subclass's **Base Movement** and **Stat Passives**.
   - Moving an ability to another node or basing it on another one keeps the edits that still apply.
-  - **Gameplay** shows a card for each part an ability creates, with controls for timers, projectile flight and tracking, damage taken, buffs, invisibility, Super energy use, and Barricade and Rift health. Finer values sit in a closed **More** section.
+  - **Gameplay** shows a card for each part an ability creates, named for what it changes, such as Invisibility Effect. Its controls cover timers, projectile flight and tracking, damage taken, buffs, invisibility, Super energy use, and Barricade and Rift health, in groups such as **Flight**, **Collision**, and **Health**. Similar parts, such as Towering Barricade's four barricades, share one card. Finer values sit in a closed **More** section.
   - **Projectile** swaps an ability's projectile for any other in the game, including weapons' and enemies', such as a Skip Grenade that fires Axion Bolt seekers. The new projectile has its own speed, gravity, and **Damage Type**.
   - **Blink Distance**, **Airborne Jumps**, **Vertical Impulse**, and **Directional Impulse** tune Blink, Hunter jumps, lifts, and glides.
   - **Damage Type** changes supported projectile, detonation, and lingering-area damage, such as a Solar Axion Bolt. Effects keep their colors, so pair it with **Visuals**.
@@ -49,7 +49,7 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 ### Custom Perks
 
 - **New > Mod** authors a mod on its own, with a custom perk offered in every socket of its type, such as every weapon's mod socket. **Offer Everywhere** does the same for a custom perk on an item you build, as Shaders are offered.
-- **Change Weapon Properties** lets a perk change a weapon's own properties, such as rounds per burst, rate of fire, spread, damage, magazine size, and reload time. Set simultaneous pellets with **Pellets per Shot** under **Gameplay > Barrel Settings**.
+- **Change Weapon Properties** lets a perk change a weapon's own properties, such as bullets per shot, rate of fire, spread, damage, magazine size, and reload time. Set the pellets each bullet fires with **Pellets per Bullet** under **Gameplay > Barrel Settings**.
 - **Change an Ability Property** can set or add to an ability's own values, such as a grenade's blast radius, with **Add Property…**.
 - **On a Specific Ability** and **Ends on a Specific Ability** can name any Subclass ability.
 - A value can scale with your **Intellect**, **Discipline**, or **Strength** tier, as the game's own stat bonuses do.
@@ -57,13 +57,15 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 - Attached effects such as Devour and invisibility can have their own **Attachment Length**, or never end on their own with **Unlimited**.
 - HUD statuses such as Arc Shield can show your own **HUD Name** and **HUD Image**, or another status's **HUD Icon**.
 - A projectile a perk fires can have its own **Damage Type**.
+- **Run a Game Script** names its targets as **This Item**, **You**, **Triggering Weapon**, or **Other Combatant**, the same choices attachments use.
 
 ### Weapons
 
 - **Firing Behavior**, **Barrel**, and **Magazine** on **Gameplay** can each come from a different weapon and no longer need Experimental Features. Borrowed pellet barrels keep their full spread pattern.
 - **Gameplay** shows **Parts** and **Barrel Settings** side by side. **Runtime**, formerly **Firing & Runtime Baseline**, is now the first part.
-- **Barrel Settings** on **Gameplay** adds **Pellets per Shot**, **Spread**, and **Pattern** without Experimental Features or a Barrel donor. Choose **Filled Circle**, **Ring**, or **Custom**, then edit each ring's pellet count, inner and outer radius, rotation, and randomness beside a preview. Each value can restore the selected Barrel's own.
-- **Projectile** on **Gameplay** tunes what a weapon fires, such as a rocket's speed and gravity. Other weapons that fire the same projectile keep theirs. Weapons that hit instantly show **Hitscan** for **Speed**.
+- **Barrel Settings** on **Gameplay** adds **Pellets per Bullet**, **Spread**, and **Pattern** without Experimental Features or a Barrel donor. Choose **Filled Circle**, **Ring**, or **Custom**, then edit each ring's pellet count, inner and outer radius, rotation, and randomness beside a preview. **Random Rotation** turns off the new angle each bullet's pattern takes, so a pattern such as a level row stays level. Each value can restore the selected Barrel's own.
+- **Bullets per Shot** sets how many bullets one pull fires, each with every pellet. On pulse rifles, sidearms, and rocket launchers it follows **Rounds Per Minute**, such as **3 at 390 RPM**.
+- **Projectile** on **Gameplay** tunes what a weapon fires, such as a rocket's speed and gravity, on any weapon that fires one, including shotguns and fusion rifles. Other weapons that fire the same projectile keep theirs.
 - **Animations** on **Appearance** can come from another weapon. Its **Actions** borrow single actions, such as **Hip Fire** or **Holster**, from another frame. **Reload Animation** can borrow other reloads on compatible rigs, including Submachine Guns, Grenade Launchers, and Bows.
 - A weapon with another type's appearance now takes that type's name, Collections page, and HUD icon. A **Keep … Type** checkbox on **Appearance**, such as **Keep Scout Rifle Type**, keeps the base weapon's.
 - **Appearance** warns when a Sword appearance is used on another type or a model will play the base weapon's animations, and **Rounds Per Minute** warns when another type's runtime changes its fire rates.
@@ -81,7 +83,7 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 - Weapons show how many perk effects their default perks use, against the game's limit of 16.
 - More perk properties have names instead of numbers, such as **Damage**, **Blast Radius**, and **Magazine Size**.
 - **Perk Diagnostics…** lists the problems that keep a perk from working.
-- **Technical Build** now also shows the rig, moved markers, and animation sources, and flags when the recipe has changed since the build.
+- **Technical Build** now also shows the rig, moved markers, and animation sources, flags when the recipe has changed since the build, and names about 1,040 of the game's native fields, up from 277.
 - **Find All Uses** in the **Engine Catalog** lists everything that uses a resource.
 - **Resync Account** shows its progress, then the Collections and inventory changes it made and anything it couldn't add.
 - Leaving a recipe with unsaved changes now offers to save them.
@@ -109,6 +111,7 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 - Fixed Dawn installs and uninstalls sometimes bringing back removed items or changing account data they didn't list.
 - Fixed Dawn installs leaving saved rolls on sockets a weapon no longer has.
 - Fixed Dawn Collections sync adding a duplicate unlock row, which made Sundial refuse the account, or changing an account whose database layout Sundial doesn't support.
+- Fixed viewing a socket's plug set or other technical fields changing their saved value when the installed game has fewer rows.
 - Minor UI fixes and adjustments.
 
 ## Sundial
@@ -148,6 +151,7 @@ Model previews in Sundial and Parhelion support more models and reproduce more o
 - Fixed wider perk picker scopes listing shaders and ornaments on sockets that aren't cosmetic.
 - Fixed quests, bounties, currencies, and consumables in a character's inventory reading as not valid for the character.
 - Fixed swapping a Subclass offering every item instead of other Subclasses.
+- Fixed saving asking you to close Destiny 2 after it had already closed.
 - Fixed Dawn settings refusing to save when a character held more than 135 unequipped items.
 - Fixed Dawn saves overwriting changes another tool made after the account was loaded. Sundial now asks you to reload.
 - Fixed Dawn account saves and Collections sync leaving an empty database when the account file disappears during the operation.
@@ -155,6 +159,7 @@ Model previews in Sundial and Parhelion support more models and reproduce more o
 - Fixed **Armor Stats** running several searches at once when goals changed quickly.
 - Fixed the Linux installer writing through a link already at the launcher's location.
 - Fixed two security issues in the XML parsing that Linux accessibility uses.
+- Fixed opening a page rewriting saved values outside a field's range, such as a game setting, an item's quantity, or a progression value.
 - Minor UI fixes and adjustments.
 
 Sundial v0.4.1 and newer can update to v0.6 in the app. Older releases should install v0.6 manually.

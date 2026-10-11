@@ -1,6 +1,7 @@
 //! Gameplay Barrel controls, read from the same composed owner the build edits.
 use super::*;
 use crate::item::BarrelDefaults;
+use crate::weapon::burst::{Column, ROUNDS_PER_MINUTE_HASH};
 mod controls;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -95,8 +96,14 @@ fn read_defaults(source: &Source) -> Read {
         .overrides
         .to_compiler()
         .map_err(|error| error.to_string())?;
-    crate::item::barrel_defaults(&manager, &entity.payload, &overrides, &splices)
-        .map_err(|error| error.to_string())
+    crate::item::barrel_defaults(
+        &manager,
+        &entity.payload,
+        entity.weapon_translation_group_hash,
+        &overrides,
+        &splices,
+    )
+    .map_err(|error| error.to_string())
 }
 
 impl PackageAuthoringApp {
@@ -104,29 +111,7 @@ impl PackageAuthoringApp {
         let Some(key) = self.runtime_graph_key() else {
             return Ok(None);
         };
-        let splices = self
-            .recipe
-            .overrides
-            .component_splices
-            .iter()
-            .map(|splice| {
-                let item = splice
-                    .donor
-                    .item_hash
-                    .parse_u32()
-                    .map_err(|error| error.to_string())?;
-                let binding = splice
-                    .binding_hash
-                    .parse_u32()
-                    .map_err(|error| error.to_string())?;
-                let pattern = self
-                    .donor_summaries
-                    .iter()
-                    .find(|donor| donor.hash == item)
-                    .and_then(|donor| donor.weapon_pattern_index);
-                Ok((binding, pattern, item))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+        let splices = self.component_splice_list()?;
         Ok(Some(Source {
             packages: self.packages.clone(),
             key,
@@ -140,10 +125,23 @@ impl PackageAuthoringApp {
         }))
     }
 
-    pub(in crate::app) fn draw_barrel_controls(&mut self, ui: &mut egui::Ui) {
-        if !self.recipe.kind.is_weapon() {
-            return;
+    /// The Barrel Settings card, for a weapon. `donor` holds the stats the weapon is built with.
+    pub(in crate::app) fn draw_barrel_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        donor: Option<&WeaponDonor>,
+    ) {
+        if self.recipe.kind.is_weapon() {
+            crate::app::style::card(ui, |ui| self.draw_barrel_settings(ui, donor));
         }
+    }
+
+    /// Barrel Settings' contents, in the card its caller draws.
+    pub(in crate::app) fn draw_barrel_settings(
+        &mut self,
+        ui: &mut egui::Ui,
+        donor: Option<&WeaponDonor>,
+    ) {
         let defaults = match self.barrel_source() {
             Ok(Some(source)) => self.barrel_controls.poll(
                 ui.ctx(),
@@ -153,36 +151,87 @@ impl PackageAuthoringApp {
             Ok(None) => Some(Ok(None)),
             Err(error) => Some(Err(error)),
         };
+        let burst = match &defaults {
+            Some(Ok(Some(defaults))) => defaults
+                .bullets_per_shot
+                .as_ref()
+                .and_then(|column| stock_burst(column, &self.recipe.overrides, donor)),
+            _ => None,
+        };
+        let custom = egui::Id::new(("barrel-custom-pattern", self.recipe_panel_scope()));
         let saved = &mut self.recipe.overrides.barrel;
-        crate::app::style::card(ui, |ui| {
-            ui.horizontal(|ui| {
-                draw_donor_section_label(
-                    ui,
-                    "Barrel Settings",
-                    Some("Pellets, spread and pattern of each shot."),
-                );
-                if saved.is_some() {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if crate::app::style::reset_icon(ui, "Reset Barrel") {
-                            *saved = None;
-                        }
-                    });
-                }
-            });
-            match defaults {
-                Some(Ok(Some(defaults))) => {
-                    ui.push_id("barrel-controls", |ui| controls::draw(ui, saved, &defaults));
-                }
-                Some(Ok(None)) => {
-                    ui.weak("Choose a base weapon with a supported Barrel.");
-                }
-                Some(Err(error)) => {
-                    ui.colored_label(ui.visuals().warn_fg_color, error);
-                }
-                None => {
-                    ui.weak("Loading…");
-                }
+        ui.horizontal(|ui| {
+            draw_donor_section_label(
+                ui,
+                "Barrel Settings",
+                Some("Pellets, spread and pattern of each shot."),
+            );
+            if saved.is_some() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if crate::app::style::reset_icon(ui, "Reset Barrel") {
+                        *saved = None;
+                        ui.data_mut(|data| data.remove::<bool>(custom));
+                    }
+                });
             }
         });
+        match defaults {
+            Some(Ok(Some(defaults))) => {
+                ui.push_id("barrel-controls", |ui| {
+                    controls::draw(ui, saved, &defaults, custom, burst.as_ref());
+                });
+            }
+            Some(Ok(None)) => {
+                ui.weak("Choose a base weapon with a supported Barrel.");
+            }
+            Some(Err(error)) => {
+                ui.colored_label(ui.visuals().warn_fg_color, error);
+            }
+            None => {
+                ui.weak("Loading…");
+            }
+        }
     }
+}
+
+/// The bullets per shot the weapon fires as built, from `column` at the stat `donor` and
+/// `overrides` give it where the bullets follow one. None where the weapon lacks that stat, so its
+/// bullets are unknown.
+fn stock_burst(
+    column: &Column,
+    overrides: &WeaponRecipeOverrides,
+    donor: Option<&WeaponDonor>,
+) -> Option<controls::Burst> {
+    if let Some(bullets) = column.fixed() {
+        return Some(controls::Burst {
+            bullets,
+            follows: None,
+        });
+    }
+    let hash = column.stat?;
+    let stat = donor?
+        .investment_stats
+        .iter()
+        .find(|stat| stat.definition_hash == Some(hash))?;
+    if overrides
+        .removed_investment_stats
+        .contains(&stat.definition_index)
+    {
+        return None;
+    }
+    let value = overrides
+        .investment_stats
+        .iter()
+        .find(|value| value.definition_index == stat.definition_index)
+        .map_or(stat.value, |value| value.value);
+    let shown = stat.in_game_display_value(value);
+    let reading = if hash == ROUNDS_PER_MINUTE_HASH {
+        format!("{shown} RPM")
+    } else {
+        format!("{} {shown}", stat.name)
+    };
+    Some(controls::Burst {
+        bullets: column.at(value),
+        follows: Some((stat.name.clone(), reading)),
+    })
 }

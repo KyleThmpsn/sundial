@@ -1068,7 +1068,7 @@ impl PackageAuthoringApp {
                 label: "Type Markers",
                 hint: "The weapon type the runtime names, such as pulse_rifle, with its frame key \
                        and type label. Replaces the base weapon's own. The behavior, values and \
-                       rig stay. Test in game."
+                       rig stay."
                     .into(),
                 value: &value,
                 chosen,
@@ -1289,7 +1289,7 @@ impl PackageAuthoringApp {
                 hint: "First-person animations: how the weapon is held, fired, reloaded and \
                        equipped. Another weapon type's brings its whole rig, including how that \
                        type fires, such as a pulse rifle's burst. The base weapon's own type keeps \
-                       its rig. Test in game."
+                       its rig."
                     .into(),
                 value: &value,
                 chosen,
@@ -1443,7 +1443,7 @@ impl PackageAuthoringApp {
             .show_header(ui, |ui| {
                 ui.weak("Actions").on_hover_text(
                     "Single actions played from another frame's animations. The rest follow \
-                     Animations. Test in game",
+                     Animations",
                 );
                 if mixed > 0 {
                     ui.weak(format!("{mixed} Mixed"));

@@ -44,7 +44,13 @@ pub(super) fn table_drag_value_ranged(
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
             ui.set_min_size(egui::vec2(width, TABLE_CELL_HEIGHT));
-            ui.add_enabled(enabled, egui::DragValue::new(value).speed(1.0).range(range))
+            ui.add_enabled(
+                enabled,
+                egui::DragValue::new(value)
+                    .speed(1.0)
+                    .range(range)
+                    .clamp_existing_to_range(false),
+            )
         },
     )
     .inner

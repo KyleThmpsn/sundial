@@ -443,10 +443,10 @@ fn native_optional_regions_have_capacity_one_and_skip_inactive_storage() {
 }
 
 #[test]
-fn projectile_pool_curve_state_uses_the_full_element_offsets() {
+fn projectile_pool_curve_state_uses_the_actual_element_offsets() {
     let mut data = vec![0; 0x210];
-    data[0x194..0x198].copy_from_slice(&3.25_f32.to_le_bytes());
-    data[0x1D1] = 1;
+    data[0x184..0x188].copy_from_slice(&3.25_f32.to_le_bytes());
+    data[0x1C1] = 1;
     let mut registry = Registry::new().unwrap();
     let decoded = walk(
         &data,
@@ -457,12 +457,19 @@ fn projectile_pool_curve_state_uses_the_full_element_offsets() {
         |handle| registry.record(handle, |_| Err("Unexpected schema".into())),
     );
     assert!(decoded.issues.is_empty(), "{:?}", decoded.issues);
-    assert!(decoded.fields.iter().any(|f| f.schema_offset == 0x194
+    assert!(decoded.fields.iter().any(|f| f.schema_offset == 0x184
         && f.label == "Curve Travel Distance"
         && f.value == "3.25 (0x40500000)"));
-    assert!(decoded.fields.iter().any(|f| f.schema_offset == 0x1D1
+    assert!(decoded.fields.iter().any(|f| f.schema_offset == 0x1C1
         && f.label == "Distance Curve Enabled"
         && f.value == "true"));
+    // The runtime query point and saved velocity bytes native code rewrites carry no curve name.
+    assert!(
+        !decoded
+            .fields
+            .iter()
+            .any(|f| matches!(f.schema_offset, 0x194 | 0x1D1) && f.label.contains("Curve"))
+    );
     assert!(labels::native_fields(0x8080_37BA, 0x200).is_err());
 }
 

@@ -245,7 +245,9 @@ pub(crate) fn destiny_is_running() -> Result<bool, String> {
             .position(|character| *character == 0)
             .unwrap_or(entry.szExeFile.len());
         let executable = String::from_utf16_lossy(&entry.szExeFile[..length]);
-        if executable.eq_ignore_ascii_case("destiny2.exe") {
+        // A game that has exited stays listed with no threads while another program, such as
+        // a launcher or crash reporter, still holds a handle to it.
+        if executable.eq_ignore_ascii_case("destiny2.exe") && entry.cntThreads > 0 {
             found = true;
             break;
         }

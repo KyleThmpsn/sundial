@@ -645,7 +645,8 @@ impl WeaponRecipe {
                 "Only an emblem can select stat tracker categories".into(),
             ));
         }
-        let spec = WeaponCloneSpec {
+        #[allow(unused_mut)]
+        let mut spec = WeaponCloneSpec {
             kind: self.kind,
             namespace: self.namespace.clone(),
             donor_item_hash: parse_recipe_hash("donor.item_hash", &self.donor.item_hash)?,
@@ -721,6 +722,12 @@ impl WeaponRecipe {
             },
             overrides: self.overrides.to_compiler()?,
         };
+        #[cfg(feature = "d2-model-importer")]
+        if let Some(icon) =
+            crate::imported::artwork::available(self).map_err(RecipeError::Validation)?
+        {
+            spec.overrides.icon_edit.imported_image = Some(icon);
+        }
         spec.validate()?;
         Ok(spec)
     }

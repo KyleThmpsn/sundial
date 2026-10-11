@@ -542,58 +542,7 @@ fn static_channel(hash: &str, channel: &mut Channel) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn input_allocation(
-    p: &mut Payload,
-    descriptor: usize,
-    before: usize,
-    after: usize,
-) -> Result<usize> {
-    fn visit(
-        p: &mut Payload,
-        row: usize,
-        before: usize,
-        after: usize,
-        seen: &mut std::collections::BTreeSet<usize>,
-    ) -> Result<usize> {
-        ensure!(
-            seen.len() < 1024 && seen.insert(row),
-            "Native input allocation repeats a schema record"
-        );
-        p.bytes::<40>(row)?;
-        let mut changed = 0;
-        if p.u32(row + 16)? == 0x80809788 {
-            ensure!(
-                p.u32(row)? == 0xFC3956AD && p.u32(row + 20)? as usize == before,
-                "native owner input allocation differs"
-            );
-            put(&mut p.0, row + 20, &u32::try_from(after)?.to_le_bytes())?;
-            changed += 1;
-        }
-        // A cloth allocation inherits its ordinary model fields through this
-        // relative schema pointer. Its own child array can be empty.
-        if p.u64(row + 8)? != 0 {
-            let inherited = p.pointer(row + 8)?;
-            ensure!(
-                inherited >= 4 && p.u32(inherited - 4)? == 0x80808852,
-                "Native inherited allocation schema differs"
-            );
-            changed += visit(p, inherited, before, after, seen)?;
-        }
-        for child in p.array(row + 24, 40, Some(0x80808852))? {
-            changed += visit(p, child, before, after, seen)?;
-        }
-        Ok(changed)
-    }
-    visit(
-        p,
-        descriptor
-            .checked_sub(24)
-            .context("Input allocation root")?,
-        before,
-        after,
-        &mut std::collections::BTreeSet::new(),
-    )
-}
+pub(super) use crate::presentation::channel::input_allocation;
 
 /// Existing owner input and link records give the record layout for channels a
 /// native donor does not already expose. A donor without object channel inputs

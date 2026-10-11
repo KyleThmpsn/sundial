@@ -1131,13 +1131,13 @@ pub(super) fn author_subclass(
     capture::write(ctx, &output, "gear-subclass-path");
     click(ctx, app, section_tab(&output, "Gameplay"));
     let output = settle_icons(ctx, app);
-    for text in ["Ability Changes", "Add Change"] {
+    for text in ["Changes While Equipped", "Add Change"] {
         find(&output, text, |drawn, _| {
             drawn.strip_suffix(" •").unwrap_or(drawn) == text
         });
     }
     capture::write(ctx, &output, "gear-subclass-path-gameplay");
-    // Add Change opens its form under the node's Ability Changes chips, which Cancel closes.
+    // Add Change opens its form under the node's Changes While Equipped chips, which Cancel closes.
     click(
         ctx,
         app,
@@ -1462,7 +1462,7 @@ pub(super) fn author_ability(
     find(
         &output,
         "active abilities can change other abilities",
-        |text, _| text == "Ability Changes",
+        |text, _| text == "Changes While Equipped",
     );
     // Its Technical part, closed until opened and marked for the grenade's values, loads the
     // grenade's entity, counts the edit among its fields, then lists the graphs the grenade

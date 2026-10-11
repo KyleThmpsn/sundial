@@ -38,7 +38,12 @@ impl SundialApp {
         let original = (level, title);
         let mut selection = None;
         super::ui::field_label(ui, "Level", label_width);
-        ui.add_enabled(editable, egui::DragValue::new(&mut level).range(0..=255));
+        ui.add_enabled(
+            editable,
+            egui::DragValue::new(&mut level)
+                .range(0..=255)
+                .clamp_existing_to_range(false),
+        );
         ui.end_row();
         super::ui::field_label(ui, "Title", label_width);
         ui.horizontal(|ui| {

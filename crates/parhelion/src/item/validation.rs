@@ -668,7 +668,7 @@ pub(super) fn validate_raw_payload_patch_shapes(
             .any(|patch| ITEM_DEFINITION_RAW_SUBTARGETS.contains(&patch.target))
     {
         return Err(invalid(
-            "Raw gameplay-definition patches cannot be mixed with named item-block patches; choose one coordinate space so final bytes are unambiguous",
+            "Raw gameplay-definition patches cannot be mixed with named item-block patches. Choose one coordinate space so final bytes are unambiguous",
         ));
     }
     for (patch_index, patch) in patches.iter().enumerate() {

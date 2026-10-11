@@ -21,6 +21,8 @@ impl WeaponRecipe {
             )));
         }
         recipe.canonicalize_investment_stats();
+        #[cfg(feature = "d2-model-importer")]
+        crate::imported::artwork::apply(&mut recipe).map_err(RecipeError::Validation)?;
         recipe.validate()?;
         Ok(recipe)
     }
@@ -29,6 +31,8 @@ impl WeaponRecipe {
         self.validate()?;
         let mut canonical = self.clone();
         canonical.canonicalize_investment_stats();
+        #[cfg(feature = "d2-model-importer")]
+        crate::imported::artwork::apply(&mut canonical).map_err(RecipeError::Validation)?;
         #[cfg(feature = "d2-model-importer")]
         if crate::imported::kind(canonical.kind).is_some()
             && canonical.overrides.imported_graph.is_some()
@@ -50,6 +54,9 @@ impl WeaponRecipe {
         right.canonicalize_investment_stats();
         #[cfg(feature = "d2-model-importer")]
         for recipe in [&mut left, &mut right] {
+            if crate::imported::artwork::apply(recipe).is_err() {
+                return false;
+            }
             if crate::imported::kind(recipe.kind).is_some()
                 && let Some(reference) = &mut recipe.overrides.imported_graph
             {

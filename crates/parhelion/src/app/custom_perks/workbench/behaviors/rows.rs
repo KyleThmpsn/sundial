@@ -72,7 +72,7 @@ fn attaches(program: &Program, graph: u32) -> bool {
 pub(super) fn weapon_properties_row(program: &Program, asset: Result<Asset, &'static str>) -> Row {
     use sundial::package_authoring::sandbox_perk::program::AttachmentTarget;
     let title = recipes::WEAPON_PROPERTIES;
-    let detail = "Changes burst length, firing speed, spread width, damage, magazine size and more. Rows start with no effect. Set simultaneous pellets with Pellets per Shot under Gameplay's Barrel Settings.";
+    let detail = "Changes bullets per shot, firing speed, spread width, damage, magazine size and more. Rows start with no effect. Set simultaneous pellets with Pellets per Bullet under Gameplay's Barrel Settings.";
     let (reason, action) = if program.actions.len() >= ACTION_LIMIT {
         (
             "This effect already holds the most actions a program can run.",

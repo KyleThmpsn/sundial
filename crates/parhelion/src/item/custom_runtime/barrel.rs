@@ -9,6 +9,11 @@ use sundial::package_authoring::entity::{
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BarrelDefaults {
     pub pattern: Option<spread::Pattern>,
+    /// The bullets one pull fires at each stat tier, when the stat translator keeps them in the
+    /// one column this setting writes. None where that column holds 0, which is not offered.
+    pub bullets_per_shot: Option<crate::weapon::burst::Column>,
+    /// Whether each bullet's pattern takes a random angle in the selected Barrel.
+    pub random_rotation: bool,
 }
 
 fn binding(entity: &[u8]) -> AuthoringResult<Option<WeaponComponentBinding>> {
@@ -27,9 +32,11 @@ fn binding(entity: &[u8]) -> AuthoringResult<Option<WeaponComponentBinding>> {
 
 /// Apply component defaults and explicit low-level edits without depending on an unrelated
 /// firing graph. These are the same mutation functions the full build uses before these controls.
+/// `group` is the gameplay pattern's translation group, which picks the stat translator's table.
 pub(crate) fn barrel_defaults(
     manager: &PackageManager,
     entity: &[u8],
+    group: u32,
     overrides: &WeaponCloneOverrides,
     splices: &[(u32, Vec<u8>)],
 ) -> AuthoringResult<Option<BarrelDefaults>> {
@@ -77,8 +84,16 @@ pub(crate) fn barrel_defaults(
         return Ok(None);
     };
     let owner = read(manager, binding.owner_tag, allocator, &tags)?;
+    // A translator this setting cannot read leaves Bullets per Shot out, rather than the Barrel's
+    // other settings.
+    let bullets_per_shot = crate::weapon::burst::read(manager, &entity, group)
+        .ok()
+        .flatten()
+        .map(|burst| burst.column);
     Ok(Some(BarrelDefaults {
         pattern: spread::read_pattern(&owner, binding).map_err(invalid)?,
+        bullets_per_shot,
+        random_rotation: spread::read_random_rotation(&owner, binding).map_err(invalid)?,
     }))
 }
 
@@ -89,14 +104,21 @@ pub(super) fn apply(
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<()> {
-    let Some(edits) = edits.filter(|edits| !edits.is_empty()) else {
+    let Some(edits) =
+        edits.filter(|edits| edits.shapes_pattern() || edits.random_rotation.is_some())
+    else {
         return Ok(());
     };
     let binding = binding(entity)?.ok_or_else(|| invalid("This weapon has no Barrel to edit"))?;
     let mut owner = read(manager, binding.owner_tag, allocator, tags)?;
-    let inherited = spread::read_pattern(&owner, binding).map_err(invalid)?;
-    let pattern = edits.resolve(inherited.as_ref()).map_err(invalid)?;
-    spread::write_pattern(&mut owner, binding, &pattern).map_err(invalid)?;
+    if edits.shapes_pattern() {
+        let inherited = spread::read_pattern(&owner, binding).map_err(invalid)?;
+        let pattern = edits.resolve(inherited.as_ref()).map_err(invalid)?;
+        spread::write_pattern(&mut owner, binding, &pattern).map_err(invalid)?;
+    }
+    if let Some(enabled) = edits.random_rotation {
+        spread::write_random_rotation(&mut owner, binding, enabled).map_err(invalid)?;
+    }
     if let Some(index) = private_index(binding.owner_tag, allocator, tags)? {
         tags[index].payload = owner;
     } else {

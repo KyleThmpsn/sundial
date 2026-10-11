@@ -37,7 +37,7 @@ const WEAPON_CONTROLLER: i64 = 0;
 const SPREAD: i64 = 39;
 const RANGE: i64 = 9;
 
-/// The rows an author sets on the template: rounds per burst doubled instead of added to, triple
+/// The rows an author sets on the template: bullets per shot doubled instead of added to, triple
 /// damage, and a
 /// Weapon Controller row retargeted to the Barrel's Spread, which the template has no row for,
 /// multiplied by 2.5. Then two rows added: Spread multiplied by 2 and three more magazine rounds.
@@ -63,7 +63,7 @@ impl Authored {
         };
         let burst = row_for(
             modifiers::BARREL_COMPONENT,
-            modifiers::BARREL_ROUNDS_PER_BURST[0],
+            modifiers::BARREL_BULLETS_PER_SHOT[0],
         );
         let damage = row_for(modifiers::BARREL_COMPONENT, 32);
         let retargeted = row_for(WEAPON_CONTROLLER, RANGE);

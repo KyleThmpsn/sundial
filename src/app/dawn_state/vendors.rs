@@ -131,10 +131,18 @@ pub(super) fn draw(
                     let hash = progression_hash(catalog, row.vendor);
                     inspector::definition_context_menu(&vendor, "Inspect Definition", hash);
                     ui.push_id((row.position, "points"), |ui| {
-                        ui.add(egui::DragValue::new(&mut row.points).range(0..=i32::MAX))
+                        ui.add(
+                            egui::DragValue::new(&mut row.points)
+                                .range(0..=i32::MAX)
+                                .clamp_existing_to_range(false),
+                        )
                     });
                     ui.push_id((row.position, "rewards"), |ui| {
-                        ui.add(egui::DragValue::new(&mut row.rewards).range(0..=i32::MAX))
+                        ui.add(
+                            egui::DragValue::new(&mut row.rewards)
+                                .range(0..=i32::MAX)
+                                .clamp_existing_to_range(false),
+                        )
                     })
                     .inner
                     .on_hover_text("Lifetime packages already claimed, not pending rewards.");

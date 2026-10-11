@@ -7,8 +7,6 @@ pub(crate) mod animation;
 pub(crate) mod appearance;
 pub(crate) mod assets;
 mod cloth;
-#[cfg(test)]
-mod compatibility_tests;
 mod decode;
 mod effects;
 pub(crate) mod export;

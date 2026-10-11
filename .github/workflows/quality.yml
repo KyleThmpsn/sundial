@@ -115,25 +115,16 @@ jobs:
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/upstream' }}
 
-      - name: Lint Sundial and Parhelion Windows Targets
-        run: cargo clippy --release --workspace --all-targets --locked -- -D warnings
+      # Linux covers the release configuration. Windows builds once with the importer, which
+      # releases leave out, so its integration code and synthetic tests run on every change.
+      # Tests that need private game data stay ignored here.
+      - name: Lint Sundial and Parhelion with the D2 Model Importer
+        run: cargo clippy --release --workspace --all-targets --locked --features sundial-suite/d2-model-importer -- -D warnings
 
-      - name: Test Sundial and Parhelion on Windows
+      - name: Test Sundial and Parhelion with the D2 Model Importer
         run: |
           Remove-Item -LiteralPath target/cargo-timings/cargo-timing.html -ErrorAction SilentlyContinue
-          cargo test --release --workspace --locked --timings
-
-      # Releases leave the importer out, but its integration code and synthetic tests are linted
-      # and run on every change rather than on one branch name. Tests that need private game
-      # data stay ignored here.
-      - name: Lint Parhelion with the D2 Model Importer
-        run: cargo clippy --release --locked -p parhelion --all-targets --features d2-model-importer -- -D warnings
-
-      - name: Test Parhelion with the D2 Model Importer
-        run: cargo test --release --locked -p parhelion --features d2-model-importer
-
-      - name: Check the Suite with the D2 Model Importer
-        run: cargo check --release --locked -p sundial-suite --features d2-model-importer
+          cargo test --release --workspace --locked --timings --features sundial-suite/d2-model-importer
 
       - name: Upload Build Timings
         if: always()

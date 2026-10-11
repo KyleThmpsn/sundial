@@ -60,6 +60,7 @@ pub(super) fn percent(
             [width, ui.spacing().interact_size.y],
             egui::DragValue::new(&mut next)
                 .range(minimum..=1000)
+                .clamp_existing_to_range(false)
                 .speed(5.0)
                 .suffix("%"),
         );

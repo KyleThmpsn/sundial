@@ -8,10 +8,11 @@ use sundial::package_authoring::entity::{
 
 const MOVEMENT: u32 = 0x0437_756D;
 
+/// `group` is the content group the weapon's pattern selects.
 pub(super) fn fit(
     manager: &PackageManager,
     entity: &mut [u8],
-    imported: Option<TagHash>,
+    (imported, group): (Option<TagHash>, Option<u32>),
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<()> {
@@ -28,37 +29,94 @@ pub(super) fn fit(
             "Final weapon must have exactly one Barrel to determine its pellet count",
         ));
     };
-    let owner = read(manager, barrel.owner_tag, allocator, tags)?;
-    let pellets = barrel_pellets(&owner, *barrel)
+    let mut barrel_owner = read(manager, barrel.owner_tag, allocator, tags)?;
+    let pellets = barrel_pellets(&barrel_owner, *barrel)
         .map_err(|error| invalid(format!("Final Barrel: {error}")))?;
     if pellets <= 1 {
         return Ok(());
     }
     let mut content =
         crate::weapon::behavior::content_with(entity, |tag| read(manager, tag, allocator, tags))?;
-    let mut graphs = BTreeMap::<u32, Vec<usize>>::new();
+    // Each graph with its content slots and its Barrel slots, so a graph both name grows once.
+    let mut graphs = BTreeMap::<u32, (Vec<usize>, Vec<usize>)>::new();
     // A perk can select another variant. Each firing slot in this private content owner must fit.
     for &block in &content.blocks {
         let slot = block + 0xF0;
         let graph = read_u32(&content.owner, slot)?;
         if graph != 0 && graph != u32::MAX {
-            graphs.entry(graph).or_default().push(slot);
+            graphs.entry(graph).or_default().0.push(slot);
         }
     }
+    // A weapon whose content block names no graph fires its Barrel's, so that graph must fit too.
+    for (slot, graph) in
+        sundial::package_authoring::entity::barrel::projectile_slots(&barrel_owner, *barrel)
+            .map_err(|error| invalid(format!("Final Barrel: {error}")))?
+    {
+        if let Some(graph) = graph {
+            graphs.entry(graph).or_default().1.push(slot);
+        }
+    }
+    // The Barrel's graph fires only where the selected block names none. Elsewhere it stands in
+    // for a variant only a perk selects, so one that cannot grow is left as it is.
+    let barrel_fires = !crate::weapon::behavior::selected_block_fires(&content, group)?;
     let mut changed = false;
-    for (graph, slots) in graphs {
+    let mut barrel_changed = false;
+    for (graph, (slots, barrel_slots)) in graphs {
         if imported.is_some_and(|tag| tag.0 == graph) {
             return Err(invalid(
                 "Pellet barrels with imported firing graphs are not supported by the final trajectory-pool check.",
             ));
         }
-        let private = fit_graph(manager, graph, pellets, allocator, tags)
-            .map_err(|error| invalid(format!("Final firing graph 0x{graph:08X}: {error}")))?;
-        if private.0 != graph {
-            for slot in slots {
-                write_u32(&mut content.owner, slot, private.0)?;
+        let first = tags.len();
+        let private = match fit_graph(manager, graph, pellets, allocator, tags) {
+            Ok(private) => private,
+            Err(_) if slots.is_empty() && !barrel_fires => {
+                tags.truncate(first);
+                continue;
             }
-            changed = true;
+            Err(error) => {
+                return Err(invalid(format!(
+                    "Final firing graph 0x{graph:08X}: {error}"
+                )));
+            }
+        };
+        if private.0 != graph {
+            for slot in &slots {
+                write_u32(&mut content.owner, *slot, private.0)?;
+            }
+            for slot in &barrel_slots {
+                write_u32(&mut barrel_owner, *slot, private.0)?;
+            }
+            changed |= !slots.is_empty();
+            barrel_changed |= !barrel_slots.is_empty();
+        }
+    }
+    if barrel_changed {
+        // Two private copies of one shared owner would each drop the other's edits.
+        if barrel.owner_tag == content.owner_tag {
+            return Err(invalid(
+                "The Barrel shares its owner with the weapon content, so its projectile cannot fit the pellets.",
+            ));
+        }
+        if let Some(index) = private_index(barrel.owner_tag, allocator, tags)? {
+            tags[index].payload = barrel_owner;
+        } else {
+            let private =
+                allocator.assigned_tag(tags.len(), "Final Barrel", "runtime component owner")?;
+            retarget_weapon_component_owner_payload(
+                &mut barrel_owner,
+                entity,
+                barrel.owner_tag,
+                private.0,
+            )
+            .map_err(invalid)?;
+            retarget_weapon_component_owner(entity, barrel.owner_tag, private.0)
+                .map_err(invalid)?;
+            tags.push(NewTagSpec {
+                template_tag: TagHash(barrel.owner_tag),
+                payload: barrel_owner,
+                storage: crate::NewTagStorageMode::InheritTemplate,
+            });
         }
     }
     if !changed {

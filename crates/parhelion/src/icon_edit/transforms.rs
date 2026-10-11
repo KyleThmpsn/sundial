@@ -136,7 +136,7 @@ impl WeaponIconEdit {
         }
         if self.rotation_quarter_turns % 2 == 1 && width != height {
             return Err(invalid(format!(
-                "A 90° or 270° icon rotation requires a square texture; this layer is {width}×{height}"
+                "A 90° or 270° icon rotation requires a square texture. This layer is {width}×{height}"
             )));
         }
         if self.is_identity() {

@@ -199,12 +199,12 @@ fn identify(
     // Item indices and unlock compact addresses are append-only authoring contracts.
     for (stock, current) in stock_items.iter().zip(&items) {
         if stock != current {
-            return Err("A stock item index row changed; automatic cleanup is unsafe".into());
+            return Err("A stock item index row changed. Automatic cleanup is unsafe".into());
         }
     }
     for (stock, current) in stock_unlocks.iter().zip(&unlocks) {
         if stock.get(..8) != current.get(..8) {
-            return Err("A stock unlock identity changed; automatic cleanup is unsafe".into());
+            return Err("A stock unlock identity changed. Automatic cleanup is unsafe".into());
         }
     }
     let hash = |row: &[u8]| read_u32(row, 0).map_err(|e| e.to_string());

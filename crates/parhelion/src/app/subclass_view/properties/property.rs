@@ -661,11 +661,13 @@ pub(super) const MORE: [SettingKind; 19] = [
     SettingKind::EnergyFloor,
 ];
 
-/// Whether a value sits in its card's closed More section.
+/// Whether a value sits in its card's closed More section. The offsets and scaling the game adds to
+/// a setting, such as Max Spawns Offset, wait there in Adjustments.
 pub(super) fn more(property: &Property) -> bool {
     use sundial::package_authoring::ability_settings::NativeProperty;
 
-    matches!(&property.value, Value::Setting(settings) if MORE.contains(&settings[0].kind))
+    (matches!(&property.value, Value::Setting(_)) && Group::of(property) == Group::Adjustments)
+        || matches!(&property.value, Value::Setting(settings) if MORE.contains(&settings[0].kind))
         || matches!(&property.value, Value::Setting(settings) if matches!(settings[0].kind,
             SettingKind::Native(native) if !matches!(native,
                 NativeProperty::StartingHealth

@@ -102,6 +102,7 @@ fn private_graph_scopes_route_matching_fields_and_reject_the_wrong_asset() {
                         damage_type: None,
                         rows: Vec::new(),
                         hud_status: None,
+                        script: None,
                     },
                     position: Position::Event,
                 })

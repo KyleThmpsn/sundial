@@ -73,6 +73,7 @@ fn native_pickups_and_world_objects_spawn_without_becoming_weapon_patterns() {
             damage_type: None,
             rows: Vec::new(),
             hud_status: None,
+            script: None,
         };
         let mut program = Program {
             trigger: Trigger::WeaponKill,
@@ -189,6 +190,7 @@ fn every_authorable_catalog_kind_has_a_checked_compiler_path() {
         damage_type: None,
         rows: Vec::new(),
         hud_status: None,
+        script: None,
     };
     let mut conditions = BTreeSet::new();
     let mut effects = BTreeSet::new();

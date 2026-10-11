@@ -1,7 +1,7 @@
 //! A projectile component's trajectory pool: one row for each trajectory a shot can have in flight
 //! at once. A weapon fires one trajectory per pellet, and the client's row lookup (exe+CED7A0)
 //! returns no row for an index past the pool, which it then reads through. A graph whose pool is
-//! smaller than its host's pellets per shot therefore faults on the second pellet. Stock graphs
+//! smaller than its host's pellets per bullet therefore faults on the second pellet. Stock graphs
 //! that fire pellets carry 15 rows (Legend of Acrius, Lord of Wolves), and every graph that fires
 //! one round carries 1.
 //!
@@ -35,6 +35,20 @@ const INSTANCE_SIZE: usize = 0x48;
 /// Within a row: its typed reference to its handle, and its pointer back to the instance.
 const ROW_HANDLE: usize = 0x00;
 const ROW_INSTANCE: usize = 0x10;
+/// Within a row: the typed pointers its class declares, to objects the row owns. A launcher's or
+/// fusion rifle's row owns a `808037BD` at +0x50, after the rows in the instance region.
+const ROW_OBJECTS: [usize; 2] = [0x50, 0x60];
+
+/// An object the last row owns, which each new row gets a copy of.
+struct Owned {
+    /// Where the row names it.
+    slot: usize,
+    start: usize,
+    class: u32,
+    size: usize,
+    /// The bytes each copy takes: its type marker, then the object, to a 16-byte boundary.
+    block: usize,
+}
 
 /// Where an owner keeps one instance's pool.
 struct Pool {
@@ -64,9 +78,10 @@ pub fn projectile_trajectory_capacity(
 
 /// Gives the projectile instance at `instance` room for `capacity` trajectories, in a private copy
 /// of its owner whose `graph` entity names it as `owner_tag`. New rows copy the last one, each
-/// with a handle of its own in a new handle array. Every typed reference past the inserted rows,
-/// in the owner and in the graph, follows the bytes it names. A pool that already has room is
-/// left alone, and an owner holding any other reference across the instance region is refused.
+/// with a handle of its own in a new handle array and a copy of every object the last row owns,
+/// placed after the new rows. Every typed reference past the inserted rows, in the owner and in
+/// the graph, follows the bytes it names. A pool that already has room is left alone, and an owner
+/// holding any other reference across the instance region is refused.
 pub fn grow_projectile_trajectories(
     graph: &mut [u8],
     owner_tag: u32,
@@ -93,7 +108,10 @@ pub fn grow_projectile_trajectories(
     {
         return Err("The projectile owner's instance region is not laid out as expected".into());
     }
-    let delta = (capacity - pool.count) * ROW_SIZE;
+    let owned = owned_objects(owner, owner_tag, cut - ROW_SIZE, cut, definition)?;
+    let block = owned.iter().map(|object| object.block).sum::<usize>();
+    let added = capacity - pool.count;
+    let delta = added * (ROW_SIZE + block);
     let moved = |offset: usize| {
         if offset >= cut {
             offset + delta
@@ -104,11 +122,23 @@ pub fn grow_projectile_trajectories(
 
     let typed = typed_references(owner, owner_tag);
     let tail = target(owner, TAIL_POINTER)?;
-    let crossing = crossing_pointers(owner, &typed, cut)?;
-    if let Some((at, _)) = crossing
-        .iter()
-        .find(|(at, _)| ![DEFINITION_POINTER, TAIL_POINTER].contains(at) && *at < tail)
-    {
+    let mut crossing = crossing_pointers(owner, &typed, cut)?;
+    // The instance size is a length, which can read like a pointer past the rows.
+    crossing.retain(|(at, _)| *at != INSTANCE_SIZE);
+    let row_object = |at: usize| {
+        (pool.rows..cut).contains(&at) && ROW_OBJECTS.contains(&((at - pool.rows) % ROW_SIZE))
+    };
+    // A row's class declares its pointers: the one back to its instance and those to the objects
+    // it owns. Any other word in a row is data, such as Agenda 5's distance curve flag at +0x1C1,
+    // which reads like a pointer past the rows and must be copied as it is, not moved.
+    crossing.retain(|&(at, _)| {
+        !(pool.rows..cut).contains(&at)
+            || row_object(at)
+            || (at - pool.rows) % ROW_SIZE == ROW_INSTANCE
+    });
+    if let Some((at, _)) = crossing.iter().find(|(at, _)| {
+        ![DEFINITION_POINTER, TAIL_POINTER].contains(at) && !row_object(*at) && *at < tail
+    }) {
         return Err(format!(
             "The projectile owner has another reference across its instance region at 0x{at:X}"
         ));
@@ -117,8 +147,19 @@ pub fn grow_projectile_trajectories(
     let template = owner[cut - ROW_SIZE..cut].to_vec();
     let mut grown = Vec::with_capacity(owner.len() + delta + (capacity + 2) * HANDLE_SIZE);
     grown.extend_from_slice(&owner[..cut]);
-    for _ in pool.count..capacity {
+    for _ in 0..added {
         grown.extend_from_slice(&template);
+    }
+    for index in 0..added {
+        let row = cut + index * ROW_SIZE;
+        for object in &owned {
+            let at = grown.len() + object.block - object.size.next_multiple_of(16);
+            grown.resize(grown.len() + object.block, 0);
+            write_u32(&mut grown, at - 4, object.class)?;
+            grown[at..at + object.size]
+                .copy_from_slice(&owner[object.start..object.start + object.size]);
+            write_relative_pointer(&mut grown, row + object.slot, at)?;
+        }
     }
     grown.extend_from_slice(&owner[cut..]);
     for &at in &typed {
@@ -187,6 +228,57 @@ pub fn grow_projectile_trajectories(
     }
     *owner = grown;
     Ok(())
+}
+
+/// The objects the row at `row` owns through its declared typed pointers: each in the instance
+/// region after the rows, and free of pointers and references of its own, so a copy needs no
+/// fixing. Any other object is refused.
+fn owned_objects(
+    owner: &[u8],
+    owner_tag: u32,
+    row: usize,
+    cut: usize,
+    definition: usize,
+) -> Result<Vec<Owned>, String> {
+    let mut registry = crate::package_runtime::references::schema::Registry::new()?;
+    let mut owned = Vec::new();
+    for slot in ROW_OBJECTS {
+        if read_u64(owner, row + slot)? == 0 {
+            continue;
+        }
+        let start = target(owner, row + slot)?;
+        let class = read_u32(
+            owner,
+            start.checked_sub(4).ok_or("Object has no type marker")?,
+        )?;
+        let size = registry
+            .record(class, |_| {
+                Err("A trajectory row owns an object of unknown size".into())
+            })?
+            .size;
+        let refused =
+            || format!("A trajectory row owns an object 0x{class:08X} that cannot be copied");
+        if class == ARRAY_MARKER || start < cut || start + size > definition || start % 16 != 0 {
+            return Err(refused());
+        }
+        let free = (start..start + size).step_by(8).all(|at| {
+            let typed = read_u32(owner, at) == Ok(owner_tag)
+                && read_u32(owner, at + 4).is_ok_and(|class| class & 0xFFFF_0000 == 0x8080_0000);
+            let pointer = target(owner, at).is_ok_and(|named| named % 8 == 0);
+            !typed && !pointer
+        });
+        if !free {
+            return Err(refused());
+        }
+        owned.push(Owned {
+            slot,
+            start,
+            class,
+            size,
+            block: (16 + size).next_multiple_of(16),
+        });
+    }
+    Ok(owned)
 }
 
 fn pool(owner: &[u8], owner_tag: u32, instance: usize) -> Result<Pool, String> {

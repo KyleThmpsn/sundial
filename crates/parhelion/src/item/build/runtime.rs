@@ -309,9 +309,37 @@ pub(super) fn author_entities(
     Ok(authored_pattern_global_ids)
 }
 
+/// Whether the recipe asks for anything on the runtime entity beyond the donor's own.
+fn recipe_runtime_edits(donor: &resolve::ResolvedWeapon) -> bool {
+    let overrides = &donor.weapon.overrides;
+    overrides
+        .sparrow
+        .as_ref()
+        .is_some_and(crate::vehicle::Sparrow::has_changes)
+        || donor.appearance_rig_donor.is_some()
+        || donor.animation_pattern_source.is_some()
+        || !donor.animation_action_sources.is_empty()
+        || donor.pinned_appearance.is_some()
+        || donor.type_marker_pattern_source.is_some()
+        || overrides.ammo_type.is_some()
+        || !overrides.runtime_values.is_empty()
+        || overrides.projectile.is_some()
+        || overrides.barrel.is_some()
+        || overrides.sword_profile.is_some()
+        || !donor.component_splice_sources.is_empty()
+        || !overrides.runtime_resource_patches.is_empty()
+        || !overrides.additional_behaviors.is_empty()
+        || overrides
+            .raw_payload_patches
+            .iter()
+            .any(|patch| patch.target == WeaponRawPayloadTarget::RuntimeWeaponEntity)
+}
+
 /// The authored runtime entity for one weapon, or `None` when its donor has no pattern row.
 /// Runtime edits are compiled onto the pattern donor's entity, and the entity is appended as a
 /// new tag with its assignment row.
+// The importer adds its own runtime parts to this one orchestration.
+#[cfg_attr(feature = "d2-model-importer", allow(clippy::cognitive_complexity))]
 fn author_entity(
     authoring: EntityAuthoring<'_, '_, '_>,
     donor: &resolve::ResolvedWeapon,
@@ -350,12 +378,6 @@ fn author_entity(
         .filter(|component| Some(component.pattern_item_hash) != pattern_source_hash)
         .collect::<Vec<_>>();
     component_donors.sort_by_key(|component| component.binding_hash);
-    let runtime_entity_patches = donor
-        .weapon
-        .overrides
-        .raw_payload_patches
-        .iter()
-        .any(|patch| patch.target == WeaponRawPayloadTarget::RuntimeWeaponEntity);
     let hud_key = resolved_hud_key(
         manager,
         stock_sandbox_patterns,
@@ -363,49 +385,25 @@ fn author_entity(
         donor,
     )?;
     #[cfg(feature = "d2-model-importer")]
+    let imported = ImportedRuntime::load(donor, imported_reads)?;
+    #[cfg(feature = "d2-model-importer")]
+    let imported_edits = imported.any();
+    #[cfg(not(feature = "d2-model-importer"))]
+    let imported_edits = false;
+    #[cfg(feature = "d2-model-importer")]
     let ImportedRuntime {
         animation: mut imported_animation,
         audio: imported_audio,
         extensions: imported_extensions,
-        particles: imported_particles,
+        particles: mut imported_particles,
         equipment: equipment_animation,
         crosshair: imported_crosshair,
-    } = ImportedRuntime::load(donor, imported_reads)?;
-    #[cfg(not(feature = "d2-model-importer"))]
-    let imported_animation: Option<()> = None;
+    } = imported;
     let vehicle_settings = donor.weapon.overrides.sparrow.as_ref();
-    let has_runtime_edits = vehicle_settings.is_some_and(crate::vehicle::Sparrow::has_changes)
-        || imported_animation.is_some()
-        || {
-            #[cfg(feature = "d2-model-importer")]
-            {
-                imported_audio.is_some()
-                    || equipment_animation.is_some()
-                    || imported_particles.is_some()
-                    || !imported_extensions.is_empty()
-                    || imported_crosshair.is_some()
-            }
-            #[cfg(not(feature = "d2-model-importer"))]
-            {
-                false
-            }
-        }
-        || donor.appearance_rig_donor.is_some()
-        || donor.animation_pattern_source.is_some()
-        || !donor.animation_action_sources.is_empty()
-        || donor.pinned_appearance.is_some()
-        || donor.type_marker_pattern_source.is_some()
+    let has_runtime_edits = recipe_runtime_edits(donor)
+        || imported_edits
         || !component_donors.is_empty()
-        || hud_key.is_some()
-        || donor.weapon.overrides.ammo_type.is_some()
-        || !donor.weapon.overrides.runtime_values.is_empty()
-        || donor.weapon.overrides.projectile.is_some()
-        || donor.weapon.overrides.barrel.is_some()
-        || donor.weapon.overrides.sword_profile.is_some()
-        || !donor.component_splice_sources.is_empty()
-        || !donor.weapon.overrides.runtime_resource_patches.is_empty()
-        || !donor.weapon.overrides.additional_behaviors.is_empty()
-        || runtime_entity_patches;
+        || hud_key.is_some();
     if !has_runtime_edits {
         return reuse_stock_entity(
             stock_entity_assignments,
@@ -528,8 +526,20 @@ fn author_entity(
     // The fired graph names imported particle systems by symbol, so they take their
     // own asset group before the graph is authored.
     #[cfg(feature = "d2-model-importer")]
-    let particle_symbols = match &imported_particles {
+    let particle_symbols = match &mut imported_particles {
         Some(particles) => {
+            particles.prepare_runtime(
+                manager,
+                runtime_overrides
+                    .fired_graph
+                    .as_ref()
+                    .and_then(|fired| fired.imported.as_deref()),
+                &pattern_entity,
+                groups.own.or(groups.selected).unwrap_or(0),
+                runtime_overrides
+                    .behavior_projectile_speed
+                    .unwrap_or(crate::weapon::behavior::DEFAULT_PROJECTILE_SPEED_BOOST),
+            )?;
             let (symbols, eager) = particles.author(manager, assets.packages)?;
             assets.placed.extend(eager);
             assets
@@ -539,6 +549,15 @@ fn author_entity(
         }
         None => BTreeMap::new(),
     };
+    #[cfg(feature = "d2-model-importer")]
+    if let Some(assets) = &imported_particles {
+        assets.apply_presentation(
+            manager,
+            pattern_entity_tag,
+            &mut pattern_entity,
+            &particle_symbols,
+        )?;
+    }
     #[cfg(feature = "d2-model-importer")]
     let extended_overrides = {
         let mut overrides = runtime_overrides.clone();
@@ -604,7 +623,7 @@ fn author_entity(
     // A moved rig makes the pattern row name the appearance's weapon type, and the stat
     // translator converts by that type. The base weapon's conversion is put back, so the
     // appearance changes how the weapon looks and not its fire rate.
-    let stat_patches = match (
+    let mut stat_patches = match (
         donor.appearance_rig_donor,
         donor.gear_art_pattern_source,
         donor.runtime_pattern_source,
@@ -617,6 +636,22 @@ fn author_entity(
         )?,
         _ => Vec::new(),
     };
+    // Bullets per Shot is the translator column every Barrel bullet input copies, in the gameplay
+    // pattern's table, whose arrays a moved rig's row is pointed at too.
+    if let Some(bullets) = donor
+        .weapon
+        .overrides
+        .barrel
+        .as_ref()
+        .and_then(|barrel| barrel.bullets_per_shot)
+    {
+        stat_patches.extend(crate::weapon::burst::patches(
+            manager,
+            &pattern_entity,
+            pattern_source.weapon_translation_group_hash,
+            bullets,
+        )?);
+    }
     let with_stats;
     let runtime_overrides = if stat_patches.is_empty() {
         runtime_overrides
@@ -831,6 +866,16 @@ struct ImportedRuntime {
 
 #[cfg(feature = "d2-model-importer")]
 impl ImportedRuntime {
+    /// Whether the recipe imports anything onto the runtime entity.
+    fn any(&self) -> bool {
+        self.animation.is_some()
+            || self.audio.is_some()
+            || self.equipment.is_some()
+            || self.particles.is_some()
+            || !self.extensions.is_empty()
+            || self.crosshair.is_some()
+    }
+
     /// Reads each part from `donor`'s imported graph, all empty for a weapon without one.
     fn load(
         donor: &resolve::ResolvedWeapon,

@@ -432,59 +432,48 @@ pub(super) fn append_private_program_runtime(
         let asset = program
             .asset(*index)
             .ok_or_else(|| invalid("A compiled asset has no authored component settings."))?;
-        // A guided program's HUD status without settings joins its action's asset edits below.
-        // The native form has no per-action edits, so its asset takes the private copy here.
-        let native_status = program.native.is_some() && asset.hud_status.is_some();
-        if asset.values.is_empty()
-            && asset.damage_type.is_none()
-            && asset.rows.is_empty()
-            && !native_status
-        {
-            sundial::package_authoring::sandbox_perk::entity::residency::inspect(
-                manager,
-                asset.graph,
-            )
-            .map_err(invalid)?;
+        let Some(graph) = private_asset(manager, program, asset, allocator, tags)? else {
             continue;
-        }
-        // A HUD status of the project's own joins the copy the settings make. A damage type
-        // reaches the damage profiles of the graphs below the asset too, so that copy is of the
-        // tree, each graph leading to a retyped profile copied with it.
-        let status = super::hud_status::value_copy_patches(manager, asset)?;
-        // Rows added to the asset's modifiers grow its copy's records.
-        let appends =
-            super::modifier_rows::appends(manager, asset.graph, &asset.values, &asset.rows)?;
-        let mut grown = BTreeMap::new();
-        if !appends.is_empty() {
-            grown.insert(asset.graph, appends.clone());
-        }
-        let graph = match asset.damage_type {
-            Some(mode) => {
-                let mut patches =
-                    damage::retyped(manager, (asset.graph, mode.byte()), allocator, tags)?;
-                patches.entry(asset.graph).or_default().extend(status);
-                append_private_graph_tree(
-                    manager,
-                    TagHash(asset.graph),
-                    &asset.values,
-                    &patches,
-                    &grown,
-                    allocator,
-                    tags,
-                )?
-            }
-            None => append_private_patched_graph(
-                manager,
-                TagHash(asset.graph),
-                &asset.values,
-                &status,
-                &appends,
-                allocator,
-                tags,
-            )?,
         };
         for &offset in offsets {
             write_u32(&mut compiled.payload, offset, graph.0)?;
+        }
+    }
+    // A graph a behavior script names takes its private copy in a private copy of the script,
+    // which the program's Run a Game Script effects then run. A script whose graphs are all
+    // unedited stays the stock one.
+    for script in &compiled.scripts {
+        let mut payload = read_tag(manager, TagHash(script.tag), "behavior script")?;
+        let mut edited = false;
+        for (index, lanes) in &script.assets {
+            let asset = program
+                .asset(*index)
+                .ok_or_else(|| invalid("A compiled script asset has no authored settings."))?;
+            let Some(graph) = private_asset(manager, program, asset, allocator, tags)? else {
+                continue;
+            };
+            for &lane in lanes {
+                write_u32(&mut payload, lane, graph.0)?;
+            }
+            edited = true;
+        }
+        if !edited {
+            continue;
+        }
+        let private =
+            allocator.assigned_tag(tags.len(), "Private behavior script", "behavior script")?;
+        tags.push(NewTagSpec {
+            template_tag: TagHash(script.tag),
+            payload,
+            storage: crate::NewTagStorageMode::InheritTemplate,
+        });
+        for &operand in &script.operands {
+            if read_u32(&compiled.payload, operand)? != script.tag {
+                return Err(invalid(
+                    "A Run a Game Script effect changed its script during compilation",
+                ));
+            }
+            write_u32(&mut compiled.payload, operand, private.0)?;
         }
     }
     // A HUD status of the project's own on an asset without settings joins its action's asset
@@ -562,6 +551,65 @@ pub(super) fn append_private_program_runtime(
     });
     tags.extend(residency);
     Ok(action)
+}
+
+/// The private copy of `asset`'s graph that its settings, HUD status, damage type and added
+/// modifier rows make, or None when it has none of them and the stock graph stays.
+fn private_asset(
+    manager: &PackageManager,
+    program: &sundial::package_authoring::sandbox_perk::program::Program,
+    asset: &sundial::package_authoring::sandbox_perk::program::Asset,
+    allocator: AppendedTagAllocator,
+    tags: &mut Vec<NewTagSpec>,
+) -> AuthoringResult<Option<TagHash>> {
+    // A guided program's HUD status without settings joins its action's asset edits below.
+    // The native form has no per-action edits, so its asset takes the private copy here.
+    let native_status = program.native.is_some() && asset.hud_status.is_some();
+    if asset.values.is_empty()
+        && asset.damage_type.is_none()
+        && asset.rows.is_empty()
+        && !native_status
+    {
+        sundial::package_authoring::sandbox_perk::entity::residency::inspect(manager, asset.graph)
+            .map_err(invalid)?;
+        return Ok(None);
+    }
+    // A HUD status of the project's own joins the copy the settings make. A damage type
+    // reaches the damage profiles of the graphs below the asset too, so that copy is of the
+    // tree, each graph leading to a retyped profile copied with it.
+    let status = super::hud_status::value_copy_patches(manager, asset)?;
+    // Rows added to the asset's modifiers grow its copy's records.
+    let appends = super::modifier_rows::appends(manager, asset.graph, &asset.values, &asset.rows)?;
+    let mut grown = BTreeMap::new();
+    if !appends.is_empty() {
+        grown.insert(asset.graph, appends.clone());
+    }
+    let graph = match asset.damage_type {
+        Some(mode) => {
+            let mut patches =
+                damage::retyped(manager, (asset.graph, mode.byte()), allocator, tags)?;
+            patches.entry(asset.graph).or_default().extend(status);
+            append_private_graph_tree(
+                manager,
+                TagHash(asset.graph),
+                &asset.values,
+                &patches,
+                &grown,
+                allocator,
+                tags,
+            )?
+        }
+        None => append_private_patched_graph(
+            manager,
+            TagHash(asset.graph),
+            &asset.values,
+            &status,
+            &appends,
+            allocator,
+            tags,
+        )?,
+    };
+    Ok(Some(graph))
 }
 
 /// The native callback must resolve settings in this authored action, after the

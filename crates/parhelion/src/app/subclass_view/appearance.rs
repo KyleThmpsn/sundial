@@ -135,6 +135,10 @@ fn draw_tile(
     )
 }
 
+/// The pictures in the order the subclass tree shows its attunements, as the Attunements tabs
+/// list them. `ArtPart::ALL` is the native order.
+const DISPLAY_PARTS: [ArtPart; 3] = [ArtPart::Top, ArtPart::Middle, ArtPart::Bottom];
+
 impl PackageAuthoringApp {
     /// Whether the Appearance tab's stock pictures, the base's and the taken one, have loaded.
     #[cfg(test)]
@@ -228,9 +232,9 @@ impl PackageAuthoringApp {
         };
         let mut picked = None;
         let rows: Vec<&[ArtPart]> = if side_by_side {
-            vec![&ArtPart::ALL]
+            vec![&DISPLAY_PARTS]
         } else {
-            ArtPart::ALL.chunks(1).collect()
+            DISPLAY_PARTS.chunks(1).collect()
         };
         for row in rows {
             ui.horizontal(|ui| {
@@ -341,7 +345,7 @@ impl PackageAuthoringApp {
                         choice = Some(None);
                     }
                     for (hash, name) in &subclasses {
-                        for taken in ArtPart::ALL {
+                        for taken in DISPLAY_PARTS {
                             let label = format!("{name} · {}", taken.label());
                             if !query.is_empty() && !label.to_lowercase().contains(&query) {
                                 continue;

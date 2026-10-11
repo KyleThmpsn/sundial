@@ -4,7 +4,7 @@ use super::*;
 /// Whose firing pattern a weapon uses when a borrowed plug changes how many rounds it fires.
 ///
 /// A stock plug's burst change is an addition written for its own weapon type. Graviton Lance's
-/// Black Hole always attaches an entity that takes one round from the barrel's Rounds per Burst,
+/// Black Hole always attaches an entity that takes one round from the barrel's Bullets per Shot,
 /// which turns a pulse rifle's three into Graviton's two. An auto rifle fires one, so the same plug
 /// left Arc Lance, Graviton on Arc Logic, with none and it could not fire at all. Every weapon type
 /// that fires one round per pull failed the same way, and Bastion's Saint's Fists takes four.
@@ -24,7 +24,7 @@ pub enum BehaviorFiring {
     Weapon,
 }
 
-/// Rounds one pull of the trigger fires before any perk changes it, for a weapon of this type.
+/// Bullets one pull of the trigger fires before any perk changes it, for a weapon of this type.
 ///
 /// The packages keep this in a channel the weapon's content programs write, which Parhelion does
 /// not evaluate, so the figures come from the stock perks that change it, read against the burst
@@ -39,7 +39,7 @@ pub enum BehaviorFiring {
 ///
 /// Lord of Wolves may be an exception: it shares the pulse rifles' stat translation group, so it
 /// can start from three rather than a shotgun's one.
-fn base_rounds_per_burst(type_name: &str) -> f32 {
+fn base_bullets_per_shot(type_name: &str) -> f32 {
     match type_name.trim() {
         "Pulse Rifle" => 3.0,
         "Fusion Rifle" => 7.0,
@@ -84,7 +84,7 @@ impl FiringRecord {
         use sundial::package_authoring::runtime::modifiers;
         self.component == modifiers::BARREL_COMPONENT
             && self.input == input
-            && modifiers::BARREL_ROUNDS_PER_BURST.contains(&input)
+            && modifiers::BARREL_BULLETS_PER_SHOT.contains(&input)
     }
 
     /// Whether the record changes how quickly the barrel fires.
@@ -178,7 +178,7 @@ fn firing_record(graph: u32, fields: &ModifierFields<'_>) -> Option<FiringRecord
     let input = number(&input.value)?;
     let component = number(&component.value)?;
     let fires = component == modifiers::BARREL_COMPONENT
-        && (modifiers::BARREL_ROUNDS_PER_BURST.contains(&input)
+        && (modifiers::BARREL_BULLETS_PER_SHOT.contains(&input)
             || modifiers::BARREL_FIRE_TIMING.contains(&input));
     if !fires && component != modifiers::MAGAZINE_COMPONENT {
         return None;
@@ -311,7 +311,7 @@ fn firing_edits(
     sundial::package_authoring::runtime::WeaponRuntimeValueOverride,
 )> {
     use sundial::package_authoring::runtime::{
-        WeaponRuntimeValue, WeaponRuntimeValueOverride, modifiers::BARREL_ROUNDS_PER_BURST,
+        WeaponRuntimeValue, WeaponRuntimeValueOverride, modifiers::BARREL_BULLETS_PER_SHOT,
     };
     let records = perks
         .iter()
@@ -328,7 +328,7 @@ fn firing_edits(
         }
     }
     if landing.firing == BehaviorFiring::Behavior {
-        for input in BARREL_ROUNDS_PER_BURST {
+        for input in BARREL_BULLETS_PER_SHOT {
             let lane = (0..records.len())
                 .filter(|index| records[*index].1.in_burst_lane(input))
                 .collect::<Vec<_>>();
@@ -446,7 +446,7 @@ pub(crate) fn firing_variants(
             .zip(source.as_deref().map(str::trim));
         let bases = match overrides.behavior_firing {
             BehaviorFiring::Behavior => types
-                .map(|(host, source)| (base_rounds_per_burst(host), base_rounds_per_burst(source))),
+                .map(|(host, source)| (base_bullets_per_shot(host), base_bullets_per_shot(source))),
             BehaviorFiring::Weapon => Some((1.0, 1.0)),
         };
         let Some((host_base, source_base)) = bases else {

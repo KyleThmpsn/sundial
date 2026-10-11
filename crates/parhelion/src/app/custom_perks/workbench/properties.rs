@@ -580,7 +580,11 @@ impl Properties {
                     if inputs.is_empty() {
                         let mut input = i64::from(row.input);
                         if ui
-                            .add(egui::DragValue::new(&mut input).range(0..=255))
+                            .add(
+                                egui::DragValue::new(&mut input)
+                                    .range(0..=255)
+                                    .clamp_existing_to_range(false),
+                            )
                             .changed()
                         {
                             row.input = input as i16;

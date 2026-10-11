@@ -75,7 +75,7 @@ fn texture(source: &mut Reader, native: &mut Reader, g: &mut Graph, tag: u32) ->
     put(&mut header, 14, &h.bytes::<8>(34)?)?;
     header[23] = 1;
     put(&mut header, 36, &u32::MAX.to_le_bytes())?;
-    crate::d2_mot::texture::resident(&mut header, size)?;
+    crate::tiger::texture::resident(&mut header, size)?;
     g.add(
         &format!("{name}-data"),
         data_tag,
@@ -141,7 +141,7 @@ pub fn build(
             textures.iter().any(|x| x.0 == 1),
             textures.len() == 1,
         );
-        let (code, warnings) = crate::d2_mot::native::shader::compile(&text, false)?;
+        let (code, warnings) = crate::tiger::shader::compile(&text, false)?;
         fs::write(g.root.join(format!("{shader}.hlsl")), text)?;
         fs::write(g.root.join(format!("{shader}.log")), warnings)?;
         let shader_tag = shell.u32(0x2c8)?;

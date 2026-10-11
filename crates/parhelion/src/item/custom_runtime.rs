@@ -126,6 +126,16 @@ pub(crate) fn preflight_runtime_edits(
 /// readers of a typed pointer check before reading the array's count and element class.
 const ARRAY_MARKER: u32 = 0x8080_9FBD;
 
+/// The writes the recipe's component splices make, as the build makes them, for an editor that
+/// must see what a spliced component brings.
+pub(crate) fn splice_writes(
+    manager: &PackageManager,
+    entity: &[u8],
+    splices: &[(u32, Vec<u8>)],
+) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+    component_splice_edits(manager, entity, splices, &mut Vec::new())
+}
+
 /// The writes and appends that copy each spliced component from its donor onto the weapon's own
 /// objects. See `sundial::package_authoring::entity::plan_component_splice`.
 fn component_splice_edits(
@@ -436,7 +446,14 @@ pub(super) fn author_runtime_edits(
                 "An imported weapon fires a projectile of its own, so it cannot take Projectile values.",
             ));
         }
-        projectile_patches(manager, entity, projectile, &mut patches, allocator, tags)?;
+        projectile_patches(
+            manager,
+            entity,
+            projectile,
+            (&mut patches, &spliced),
+            allocator,
+            tags,
+        )?;
     }
     if let Some(ammo) = overrides.ammo_type {
         patches.extend(crate::weapon::ammo::patches(manager, entity, ammo)?);
@@ -472,7 +489,13 @@ pub(super) fn author_runtime_edits(
         &overrides.raw_payload_patches,
     )?;
     barrel::apply(manager, entity, overrides.barrel.as_ref(), allocator, tags)?;
-    firing::fit(manager, entity, projectile, allocator, tags)?;
+    firing::fit(
+        manager,
+        entity,
+        (projectile, groups.selected),
+        allocator,
+        tags,
+    )?;
     validate_weapon_entity(entity).map_err(invalid)
 }
 
@@ -1009,15 +1032,19 @@ fn widen_trajectory_pool(
     Ok(())
 }
 
-/// Points every variant block that fires `edits.graph` at a private copy of that graph, with
-/// its values and the graphs below it they change. A graft naming the graph with a launch speed
-/// or a wider trajectory pool gives the copy both, except a field the values set on the graph
-/// itself. Refuses values for a graph no block fires once `patches` apply.
+/// Points every variant block and Barrel slot that fires `edits.graph` at a private copy of that
+/// graph, with its values and the graphs below it they change. A graft naming the graph with a
+/// launch speed or a wider trajectory pool gives the copy both, except a field the values set on
+/// the graph itself. Refuses values for a graph nothing fires once `patches` and the splice writes
+/// in `spliced` apply.
 fn projectile_patches(
     manager: &PackageManager,
     entity: &[u8],
     edits: &crate::weapon::projectile::Edits,
-    patches: &mut Vec<WeaponRuntimeResourcePatch>,
+    (patches, spliced): (
+        &mut Vec<WeaponRuntimeResourcePatch>,
+        &[WeaponRuntimeResourcePatch],
+    ),
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<()> {
@@ -1025,7 +1052,7 @@ fn projectile_patches(
         return Ok(());
     }
     let graph = edits.graph;
-    let slots = crate::weapon::behavior::fired_slots(manager, entity, patches)?
+    let slots = crate::weapon::behavior::fired_slots(manager, entity, patches, spliced)?
         .into_iter()
         .filter(|slot| slot.graph == Some(graph))
         .collect::<Vec<_>>();

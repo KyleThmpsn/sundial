@@ -18,7 +18,7 @@ pub use model::{
 };
 pub(crate) use model::{SubclassBuildDetails, SubclassEntryBuild, WeaponBuildDetails};
 mod custom_runtime;
-pub(crate) use custom_runtime::{BarrelDefaults, barrel_defaults};
+pub(crate) use custom_runtime::{BarrelDefaults, barrel_defaults, splice_writes};
 mod emission;
 mod hud_status;
 pub(crate) use hud_status::{StockStatus, shown_statuses, stock_statuses};
@@ -566,7 +566,7 @@ fn apply_custom_plug_stats(data: &mut Vec<u8>, overrides: &[(u16, i32)]) -> Auth
     // This is a runtime compatibility guard, not the native array's format limit.
     if count > SUNRISE_STAT_CONTRIBUTION_CAPACITY {
         return Err(invalid(
-            "Custom perk stat edits exceed Sunrise's 16-contribution definition cache; reduce the number of added stats",
+            "Custom perk stat edits exceed Sunrise's 16-contribution definition cache. Reduce the number of added stats",
         ));
     }
     *data = authored;
@@ -592,7 +592,7 @@ fn set_weapon_stats(
     };
     if class != ITEM_INVESTMENT_STAT_ROW_CLASS || count > 256 {
         return Err(invalid(format!(
-            "Investment-stat array has class 0x{class:08X} and {count} rows; expected 0x{ITEM_INVESTMENT_STAT_ROW_CLASS:08X} with at most 256 rows"
+            "Investment-stat array has class 0x{class:08X} and {count} rows. Expected 0x{ITEM_INVESTMENT_STAT_ROW_CLASS:08X} with at most 256 rows"
         )));
     }
     let rows_end = rows

@@ -1,6 +1,8 @@
 //! Real Gameplay input, recipe reload and donor lifecycle, written before the controls.
 //! Failures: controls hidden by Technical, edits lost on save, stale async donor defaults,
 //! edits accumulating while rendering, inaccessible numeric fields, and reset retaining edits.
+//! Bullets per Shot: hidden where Rounds Per Minute picks it, read from the wrong tier, ignoring the
+//! recipe's own Rounds Per Minute, still naming the stat once set, or saving the stat's own value.
 use super::*;
 use crate::app::custom_perks::workbench::tests::capture;
 use crate::test_support::driver::{accessible, control, label, tap};
@@ -32,11 +34,27 @@ fn frame(
     output
 }
 
+/// The Bullets per Shot field as painted: its value, then the stat's reading while a stat picks
+/// it, as in 3 at 390 RPM.
+fn bullets_reading(output: &egui::FullOutput) -> String {
+    let painted = text(output);
+    let lines = painted.lines().collect::<Vec<_>>();
+    let at = lines
+        .iter()
+        .position(|line| *line == "Bullets per Shot")
+        .expect("the Bullets per Shot tile");
+    let value = lines[at + 1];
+    match lines.get(at + 2) {
+        Some(stat) if stat.starts_with(" at ") => format!("{value}{stat}"),
+        _ => value.to_owned(),
+    }
+}
+
 fn ready(ctx: &egui::Context, app: &mut PackageAuthoringApp) -> egui::FullOutput {
     let start = Instant::now();
     loop {
         let output = frame(ctx, app, Vec::new());
-        if accessible(&output, "Pellets per Shot").is_some() {
+        if accessible(&output, "Pellets per Bullet").is_some() {
             return output;
         }
         assert!(
@@ -82,6 +100,7 @@ fn number(ctx: &egui::Context, app: &mut PackageAuthoringApp, name: &str, value:
 
 #[test]
 #[ignore = "requires SUNDIAL_STOCK_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
+#[allow(clippy::cognitive_complexity)]
 fn gameplay_barrel_controls_edit_reload_change_donor_and_reset() {
     let packages = crate::test_support::stock_packages();
     let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
@@ -114,7 +133,7 @@ fn gameplay_barrel_controls_edit_reload_change_donor_and_reset() {
     let output = ready(&ctx, &mut app);
     assert!(!text(&output).contains("Technical"));
     assert!(app.recipe.overrides.barrel.is_none());
-    number(&ctx, &mut app, "Pellets per Shot", "8");
+    number(&ctx, &mut app, "Pellets per Bullet", "8");
     number(&ctx, &mut app, "Spread", "50");
     let edits = app
         .recipe
@@ -146,6 +165,7 @@ fn gameplay_barrel_controls_edit_reload_change_donor_and_reset() {
     for (name, source) in [
         ("barrel_controls.rs", include_str!("barrel_controls.rs")),
         ("barrel.rs", include_str!("../runtime_view/barrel.rs")),
+        ("burst.rs", include_str!("../../weapon/burst.rs")),
         (
             "controls.rs",
             include_str!("../runtime_view/barrel/controls.rs"),
@@ -169,7 +189,7 @@ fn gameplay_barrel_controls_edit_reload_change_donor_and_reset() {
         }),
     );
     ready(&ctx, &mut app);
-    number(&ctx, &mut app, "Pellets per Shot", "6");
+    number(&ctx, &mut app, "Pellets per Bullet", "6");
     click(&ctx, &mut app, "Custom");
     assert_eq!(
         app.recipe
@@ -203,6 +223,58 @@ fn gameplay_barrel_controls_edit_reload_change_donor_and_reset() {
             .is_none()
     );
     capture::write(&ctx, &ready(&ctx, &mut app), "barrel-controls-reset");
+    // A pulse rifle's stat table gives 4 rounds at the lowest Rounds Per Minute tier and 3 above it.
+    let pulse = named("Bygones");
+    app.recipe =
+        WeaponRecipe::new_weapon_for_donor("parhelion.barrel-ui.pulse", pulse.hash, &pulse.name)
+            .unwrap();
+    let output = ready(&ctx, &mut app);
+    assert_eq!(
+        bullets_reading(&output),
+        "3 at 390 RPM",
+        "{}",
+        text(&output)
+    );
+    let rate = app
+        .current_donor()
+        .unwrap()
+        .investment_stats
+        .iter()
+        .find(|stat| stat.definition_hash == Some(0xFF66_4809))
+        .expect("Rounds Per Minute")
+        .definition_index;
+    app.recipe
+        .overrides
+        .investment_stats
+        .push(WeaponStatOverride {
+            definition_index: rate,
+            value: 0,
+        });
+    let output = ready(&ctx, &mut app);
+    let reading = bullets_reading(&output);
+    assert!(
+        reading.starts_with("4 at ") && reading.ends_with(" RPM"),
+        "{reading}"
+    );
+    number(&ctx, &mut app, "Bullets per Shot", "5");
+    assert_eq!(
+        app.recipe
+            .overrides
+            .barrel
+            .as_ref()
+            .and_then(|edits| edits.bullets_per_shot),
+        Some(5)
+    );
+    let output = ready(&ctx, &mut app);
+    assert!(!text(&output).lines().any(|line| line.starts_with(" at ")));
+    capture::write(&ctx, &output, "barrel-controls-pulse");
+    let pulse_recipe = output_dir.join("pulse-recipe.json");
+    app.recipe.save_json(&pulse_recipe).unwrap();
+    number(&ctx, &mut app, "Bullets per Shot", "4");
+    assert!(
+        app.recipe.overrides.barrel.is_none(),
+        "the stat's own bullets save nothing"
+    );
     let executable = std::env::current_exe().unwrap();
     let revision = std::process::Command::new("git")
         .args(["rev-parse", "HEAD"])

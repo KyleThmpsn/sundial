@@ -33,7 +33,7 @@ pub(in crate::item) fn replace_weapon_sandbox_perk_index(
         .collect::<Vec<_>>();
     let [row] = matches.as_slice() else {
         return Err(invalid(format!(
-            "Source finished sandbox-perk index {source} occurs {} times; exactly one is required",
+            "Source finished sandbox-perk index {source} occurs {} times. Exactly one is required",
             matches.len()
         )));
     };

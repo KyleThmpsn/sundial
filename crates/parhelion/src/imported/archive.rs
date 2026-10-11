@@ -26,6 +26,8 @@ const MAX_FILES: usize = 1024;
 struct Reference {
     sha256: String,
     #[serde(default)]
+    converter_revision: Option<u32>,
+    #[serde(default)]
     attachments: Vec<GraphReference>,
     embedded_assets: Assets,
 }
@@ -229,6 +231,12 @@ pub(crate) fn expand(document: &mut Value) -> Result<(), String> {
         return Err("Cached item assets must stay inside their cache folder".into());
     }
     let converter_revision = parhelion_import::manifest_converter_revision(&directory);
+    if reference
+        .converter_revision
+        .is_some_and(|revision| revision != converter_revision)
+    {
+        return Err("Embedded item converter revision differs from its pinned graph".into());
+    }
     let restored = GraphReference {
         directory,
         sha256: reference.sha256,

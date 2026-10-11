@@ -265,10 +265,7 @@ fn combat_profile_name(
             let width =
                 ui.available_width() - ui.spacing().interact_size.y - ui.spacing().item_spacing.x;
             let named = ui.allocate_ui(egui::vec2(width, 0.0), field_name).inner;
-            draw_authoring_warning_icon(
-                ui,
-                "Experimental slot and damage type pair. Test in game.",
-            );
+            draw_authoring_warning_icon(ui, "No stock weapon pairs this slot and damage type.");
             named
         })
         .inner

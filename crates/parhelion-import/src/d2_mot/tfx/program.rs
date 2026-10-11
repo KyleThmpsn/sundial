@@ -1,6 +1,6 @@
 //! Checked Renegades-to-Shadowkeep material-expression lowering.
 //! Opcode identities follow Charm's TfxBytecode_EoF and TfxBytecode_BL.
-use crate::d2_mot::{payload::Payload, reader::write_json};
+use crate::d2_mot::reader::write_json;
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 use std::{
@@ -384,43 +384,7 @@ pub fn lower(data: &[u8], b: &Bindings) -> Result<Lowered> {
     Ok(result)
 }
 
-pub fn object_channel_map(payload: &[u8]) -> Result<BTreeMap<String, u8>> {
-    let p = Payload(payload.to_vec());
-    let instance = p.pointer(16)?;
-    ensure!(
-        instance >= 4 && p.u32(instance - 4)? == 0x808072B8,
-        "native model owner type differs"
-    );
-    // PushObjectChannel addresses the model's ordered inputs. The independent
-    // channel-bank declaration order and vector-storage indices both differ.
-    let inputs = p.array(instance + 0x120, 96, Some(0x80809788))?;
-    ensure!(
-        inputs.len() <= 256,
-        "native object input count exceeds byte indices"
-    );
-    let mut result = BTreeMap::new();
-    for (index, input) in inputs.iter().copied().enumerate() {
-        ensure!(
-            p.u32(input + 4)? == 0x80809789,
-            "native channel input link type differs"
-        );
-        let link = usize::try_from(p.u64(input + 8)?)?;
-        ensure!(
-            p.u32(link)? == p.u32(input)?
-                && p.u32(link + 4)? == 0x80809788
-                && p.u64(link + 8)? == input as u64
-                && p.u64(link + 24)? == 0x808097C1,
-            "native channel input lacks reciprocal vector property"
-        );
-        ensure!(
-            result
-                .insert(format!("{:08X}", p.u32(link + 32)?), u8::try_from(index)?)
-                .is_none(),
-            "duplicate native object channel"
-        );
-    }
-    Ok(result)
-}
+pub use crate::tiger::channel::object_channel_map;
 
 fn read(path: &Path) -> Result<Value> {
     let bytes = fs::read(path)?;

@@ -2,36 +2,6 @@
 use super::*;
 use crate::model_preview::animation::Deformed;
 
-#[derive(Default)]
-#[cfg(test)]
-pub(super) struct Cache(Option<Sample>);
-
-#[cfg(test)]
-struct Sample {
-    model: Arc<Model>,
-    seconds: u32,
-    pose: Option<Arc<Deformed>>,
-}
-
-#[cfg(test)]
-impl Cache {
-    pub fn sample(&mut self, model: &Arc<Model>, seconds: f32) -> Option<Arc<Deformed>> {
-        if let Some(sample) = &self.0
-            && Arc::ptr_eq(&sample.model, model)
-            && sample.seconds == seconds.to_bits()
-        {
-            return sample.pose.clone();
-        }
-        let pose = model.pose(seconds).map(Arc::new);
-        self.0 = Some(Sample {
-            model: model.clone(),
-            seconds: seconds.to_bits(),
-            pose: pose.clone(),
-        });
-        pose
-    }
-}
-
 pub(super) fn same(left: &Option<Arc<Deformed>>, right: &Option<Arc<Deformed>>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => Arc::ptr_eq(left, right),

@@ -230,7 +230,8 @@ pub mod ability_tint {
 /// Settings of an ability's parts that their native readers act on, such as a region's recovery.
 pub mod ability_settings {
     pub use crate::ability::settings::{
-        Codec, Kind, Lane, NativeProperty, Setting, Unit, discover, validate_values,
+        Codec, Creation, Kind, Lane, NativeProperty, Setting, Unit, creations, discover,
+        validate_values,
     };
 }
 
@@ -307,7 +308,7 @@ pub mod entity {
         WEAPON_MAGAZINE_COMPONENT_KEY, WEAPON_RELOAD_COMPONENT_KEY,
         WEAPON_STAT_TRANSLATOR_COMPONENT_KEY, WEAPON_TRIGGER_CHARGE_COMPONENT_KEY,
         WEAPON_TRIGGER_COMPONENT_KEY, WeaponComponentBinding, append_weapon_entity_assignment,
-        barrel_pellets, coupled_weapon_component_bindings, extend_weapon_components,
+        barrel, barrel_pellets, coupled_weapon_component_bindings, extend_weapon_components,
         extend_weapon_components_detaching, graft_weapon_component_binding,
         graft_weapon_component_bindings, graft_weapon_component_bindings_or_rewire,
         graft_weapon_component_bindings_with, grow_projectile_trajectories, owner,

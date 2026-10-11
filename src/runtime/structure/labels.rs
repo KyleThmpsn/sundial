@@ -93,7 +93,8 @@ fn declared_fields(schema: u32) -> (usize, &'static [NativeField]) {
                 (0xF4, Float32, "Default Health Regeneration Duration"),
             ],
         ),
-        // Per-region alternatives used when neither numeric-input flag is set.
+        // Per-region values used when neither numeric-input flag is set, as in every stock
+        // ability region.
         // B8A950 selects the depleted delay using the actual region fraction.
         0x8080_4C5F => (
             0x50,
@@ -172,15 +173,17 @@ fn declared_fields(schema: u32) -> (usize, &'static [NativeField]) {
                 (12, Float32, "Curve End Distance"),
             ],
         ),
-        // CF4B50..CF4B6A walks the 0x210-byte pool. CF4C55 passes element +10
-        // through D03800 into CFC000 and its curve consumers. Their +184/+1C1
-        // therefore mean element +194/+1D1. CEC5AE..CEC5BB sets the enable
-        // flag from the presence of definition +C8's curve configuration.
+        // CF4B50..CF4B6A walks the 0x210-byte pool from its sixteen-byte marker, and CF4C55
+        // passes the actual element through D03800 into CFC000, so the curve consumers' +184
+        // and +1C1 are element +184 and +1C1. CEC5AE..CEC5BB stores the flag from the presence
+        // of definition +C8's curve configuration at marker-based +1D1, which is element +1C1.
+        // Element +194 is a lane of the runtime query point at +190 and +1D1 a byte of the
+        // saved velocity at +1D0. Native code rewrites both, so neither is named.
         0x8080_37BA => (
             0x210,
             &[
-                (0x194, Float32, "Curve Travel Distance"),
-                (0x1D1, Boolean, "Distance Curve Enabled"),
+                (0x184, Float32, "Curve Travel Distance"),
+                (0x1C1, Boolean, "Distance Curve Enabled"),
             ],
         ),
         _ => (0, &[]),
@@ -190,6 +193,12 @@ fn declared_fields(schema: u32) -> (usize, &'static [NativeField]) {
 /// Whether a declared field leads on a card. A flag word does not: its established bits are
 /// controls of their own, and the word itself waits under More Properties.
 pub(super) fn proven(schema: u32, offset: usize) -> bool {
+    // B8B6F5, B8BA45 and B8BEFD read the health fallbacks only for a region whose flags hold 0x2
+    // or 0x4. All 82 used regions of the 73 stock ability health components have both clear, so
+    // there the regions' own values apply and the fallbacks wait under More Properties.
+    if schema == 0x8080_4B8A {
+        return false;
+    }
     match declared_fields(schema)
         .1
         .iter()

@@ -8,7 +8,11 @@ pub(super) const INSTANCE: u32 = 0x8080_3889;
 pub(super) const DEFINITION: u32 = 0x8080_3865;
 const PATTERN: u32 = 0x8080_888D;
 const RING: u32 = 0x8080_888F;
-const SPREAD: usize = 0xE60;
+pub(super) const SPREAD: usize = 0xE60;
+/// The byte after the spread pointer. When it is set, the firing code (client 86657, `0x40C887`
+/// calling `0x40BB40`) draws one angle in [0, 2 pi) for each bullet and adds it to every ring's
+/// rotation, so the pattern turns from bullet to bullet. Stock Barrels hold 0 or 1.
+const RANDOM_ROTATION: usize = 8;
 
 pub(super) struct Spread {
     pub slot: usize,
@@ -101,7 +105,7 @@ impl Spread {
     }
 }
 
-/// Pellets per shot in the final Barrel. A null spread fires one, malformed data is an error.
+/// Pellets per bullet in the final Barrel. A null spread fires one, malformed data is an error.
 pub fn barrel_pellets(owner: &[u8], binding: WeaponComponentBinding) -> Result<u16, String> {
     Spread::read(owner, binding).map(|spread| spread.pattern.map_or(1, |pattern| pattern.pellets))
 }
@@ -174,7 +178,7 @@ impl Pattern {
             total += u32::from(ring.pellets);
         }
         if !(1..=0x7FFF).contains(&total) {
-            return Err("Pellets per shot must be between 1 and 32767".into());
+            return Err("Pellets per bullet must be between 1 and 32767".into());
         }
         Ok(total as u16)
     }
@@ -295,6 +299,22 @@ pub fn write_pattern(
     write_bytes(&mut edited, 0, &length.to_le_bytes())?;
     *owner = edited;
     Ok(())
+}
+
+/// Whether each bullet's pattern takes a random angle.
+pub fn read_random_rotation(owner: &[u8], binding: WeaponComponentBinding) -> Result<bool, String> {
+    let slot = Spread::read(owner, binding)?.slot;
+    Ok(bytes_at::<1>(owner, slot + RANDOM_ROTATION)?[0] != 0)
+}
+
+/// Sets whether each bullet's pattern takes a random angle, leaving the pattern as it is.
+pub fn write_random_rotation(
+    owner: &mut [u8],
+    binding: WeaponComponentBinding,
+    enabled: bool,
+) -> Result<(), String> {
+    let slot = Spread::read(owner, binding)?.slot;
+    write_bytes(owner, slot + RANDOM_ROTATION, &[u8::from(enabled)])
 }
 
 fn aligned(length: usize) -> Result<usize, String> {

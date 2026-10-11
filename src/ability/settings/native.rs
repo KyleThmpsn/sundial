@@ -147,8 +147,8 @@ impl Property {
     }
     pub const fn label(self) -> &'static str {
         match self {
-            Self::MinimumActivationDelay => "Minimum Activation Delay",
-            Self::MaximumActivationDelay => "Maximum Activation Delay",
+            Self::MinimumActivationDelay => "Minimum Creation Delay",
+            Self::MaximumActivationDelay => "Maximum Creation Delay",
             Self::MinimumCycleDuration => "Minimum Cycle Duration",
             Self::MaximumCycleDuration => "Maximum Cycle Duration",
             Self::RepeatCount => "Repeat Count",
@@ -195,8 +195,8 @@ impl Property {
     }
     pub const fn hint(self) -> &'static str {
         match self {
-            Self::MinimumActivationDelay => "Shortest delay before this group",
-            Self::MaximumActivationDelay => "Longest delay before this group",
+            Self::MinimumActivationDelay => "Shortest wait before the part is created",
+            Self::MaximumActivationDelay => "Longest wait before the part is created",
             Self::MinimumCycleDuration => "Shortest countdown holding a cycle",
             Self::MaximumCycleDuration => "Longest countdown holding a cycle",
             Self::RepeatCount => {
@@ -232,10 +232,10 @@ impl Property {
             Self::MinimumSpawnDelay => "Earliest deferred attachment attempt",
             Self::MaximumSpawnDelay => "Latest sampled attachment deadline",
             Self::MinimumPartDuration => {
-                "Minimum cleanup delay for this existing timed child. Other events can remove it sooner."
+                "Shortest time before the part is cleaned up. Other events can remove it sooner."
             }
             Self::MaximumPartDuration => {
-                "Maximum cleanup delay for this existing timed child. This may control a visual effect."
+                "Longest time before the part is cleaned up. This may control a visual effect."
             }
             Self::EffectPriority => {
                 "Priority within a conflicting effect group. Used only when Effect Group is not zero."
@@ -507,6 +507,63 @@ pub(crate) fn fields(
         )
     })?;
     Ok(reader.fields)
+}
+
+/// What a creating group or node of an effect flow makes. Its settings sit in `body`. A group
+/// makes every graph its kind-15 nodes name, and a node the one it names.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Creation {
+    pub owner_tag: u32,
+    pub body: u32,
+    pub graphs: Vec<u32>,
+}
+
+/// The creations of `graph`'s effect flows (`808084E9`). A flow that does not read has none.
+pub fn creations(manager: &PackageManager, graph: &WeaponRuntimeGraph) -> Vec<Creation> {
+    let roots = graph
+        .resources
+        .iter()
+        .flat_map(|resource| {
+            std::iter::once(&resource.instance)
+                .chain(resource.definition.iter())
+                .map(move |root| (resource.owner_tag, root))
+        })
+        .chain(
+            graph
+                .owners
+                .iter()
+                .flat_map(|owner| owner.roots.iter().map(move |root| (owner.owner_tag, root))),
+        );
+    let mut seen = std::collections::BTreeSet::new();
+    let mut found = Vec::new();
+    for (owner, root) in roots {
+        if root.schema != 0x8080_84E9 || !seen.insert((owner, root.owner_offset)) {
+            continue;
+        }
+        let (Ok(data), Ok(registry)) = (manager.read_tag(TagHash(owner)), Registry::new()) else {
+            continue;
+        };
+        let mut reader = Reader {
+            manager,
+            data: &data,
+            root,
+            binding: 0,
+            index: 0,
+            registry,
+            fields: Vec::new(),
+        };
+        let Ok(made) = reader.creations() else {
+            continue;
+        };
+        found.extend(made.into_iter().filter_map(|(body, graphs)| {
+            Some(Creation {
+                owner_tag: owner,
+                body: u32::try_from(body).ok()?,
+                graphs,
+            })
+        }));
+    }
+    found
 }
 
 struct Reader<'a> {

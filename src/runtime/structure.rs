@@ -19,7 +19,8 @@ const MAX_FIELDS: usize = 65_536;
 
 /// A name a native consumer proves for this field of `schema`.
 /// Whether a field leads on a card: a named field, except a flag word, whose established bits
-/// are controls of their own while the word waits under More Properties.
+/// are controls of their own while the word waits under More Properties, and the health
+/// fallbacks stock ability regions never read.
 pub(super) fn proven(schema: u32, offset: u32) -> bool {
     labels::proven(schema, offset as usize)
 }

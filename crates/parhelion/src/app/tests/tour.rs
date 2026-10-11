@@ -37,7 +37,9 @@ fn settle(
         );
         custom_perks::workbench::tests::capture::record(&output);
         let rendered = text(&output);
+        // Gameplay's Barrel Settings and projectile cards read in the background as "Loading…".
         let busy = rendered.contains("Reading\u{2026}")
+            || rendered.contains("Loading\u{2026}")
             || rendered.contains("Loading Model")
             || rendered.contains("Checking the rig")
             || rendered.contains("Reading runtime components");

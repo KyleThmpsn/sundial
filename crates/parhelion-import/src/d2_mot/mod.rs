@@ -24,7 +24,7 @@ pub(crate) fn is_source_limit(error: &anyhow::Error) -> bool {
     error.downcast_ref::<SourceLimit>().is_some()
 }
 pub mod arrays;
-mod audio;
+pub(crate) use crate::tiger::audio;
 pub use audio::bank::{
     Bank as ConvertedAudioBank, Namespace as AudioNamespace, lower as lower_audio_bank,
     lower_with_settings as lower_audio_bank_with_settings, settings::Settings as AudioSettings,
@@ -36,8 +36,8 @@ pub use audio::transcode::{mix_pcm, normalize_pcm_wem, pcm_bank_template};
 pub use audio::{prepare as prepare_audio, prepare_clip_events, prepare_sounds, sound_assets};
 pub mod artwork;
 pub mod crosshair;
-mod graph;
-pub mod markers;
+use crate::graph;
+pub use crate::tiger::markers;
 pub use graph::{GraphReference, manifest_converter_revision};
 
 pub mod assets;
@@ -50,22 +50,22 @@ pub mod dye_bundle;
 pub mod dyes;
 pub mod entity;
 pub mod extract;
-pub mod geometry;
+pub use crate::tiger::geometry;
 pub mod icon;
 pub mod kept_parts;
 pub mod localization;
 pub mod mapping;
 pub mod ornaments;
 pub mod particles;
-pub mod payload;
+pub use crate::tiger::payload;
 pub mod plated;
 pub mod profile;
-pub mod reader;
-pub mod rig;
+pub use crate::tiger::reader;
+pub use crate::tiger::rig;
 pub mod rig_convert;
-pub mod shadowkeep;
-mod skinning;
-pub mod texture;
+pub use crate::tiger::shadowkeep;
+pub(crate) use crate::tiger::skinning;
+pub use crate::tiger::texture;
 
 pub(crate) mod compatibility;
 pub mod service;

@@ -1271,7 +1271,7 @@ fn validate_source_artifacts_unchanged(
 ) -> Result<(), String> {
     if before != after {
         return Err(
-            "Stock source packages changed while the weapon project was being compiled; discard this staging run and build again"
+            "Stock source packages changed while the weapon project was being compiled. Discard this staging run and build again"
                 .to_owned(),
         );
     }

@@ -1295,7 +1295,7 @@ pub fn namespace_for_weapon_name(name: &str) -> Result<String, RecipeError> {
     let max_slug_length = 64 - PARHELION_NAMESPACE_PREFIX.len();
     if slug.len() > max_slug_length {
         return Err(RecipeError::Validation(format!(
-            "Weapon name produces a namespace longer than 64 characters; shorten it to at most {max_slug_length} ASCII letters or digits"
+            "Weapon name produces a namespace longer than 64 characters. Shorten it to at most {max_slug_length} ASCII letters or digits"
         )));
     }
     Ok(format!("{PARHELION_NAMESPACE_PREFIX}{slug}"))

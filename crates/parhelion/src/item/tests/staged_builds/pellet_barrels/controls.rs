@@ -136,7 +136,7 @@ fn saved_barrel_controls_emit_geometry_and_capacity_without_changing_stock() {
             Some(Edits {
                 pellets: Some(18),
                 spread_scale_bits: Some(0.5_f32.to_bits()),
-                rings: None,
+                ..Default::default()
             }),
         ),
         make(
@@ -178,7 +178,7 @@ fn saved_barrel_controls_emit_geometry_and_capacity_without_changing_stock() {
             Some(Edits {
                 pellets: Some(7),
                 spread_scale_bits: Some(2.0_f32.to_bits()),
-                rings: None,
+                ..Default::default()
             }),
         ),
     ]
@@ -299,7 +299,7 @@ fn saved_barrel_controls_emit_geometry_and_capacity_without_changing_stock() {
                         without_pool.push(graph);
                         continue;
                     }
-                    let (capacity, _) = pool(&manager, graph);
+                    let (capacity, ..) = pool(&manager, graph);
                     assert!(capacity >= total as usize);
                     capacities.insert(graph, capacity);
                 }

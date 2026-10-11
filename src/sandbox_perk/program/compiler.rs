@@ -29,6 +29,19 @@ pub struct Compiled {
     pub graph_offsets: Vec<Option<usize>>,
     /// Editable asset index and every relocated tag lane that references it.
     pub asset_offsets: Vec<(usize, Vec<usize>)>,
+    /// Behavior scripts whose graphs the program edits, each copied privately by the build.
+    pub scripts: Vec<ScriptCopy>,
+}
+
+/// A behavior script a Run a Game Script effect runs, with edited graphs. `operands` are the
+/// action's lanes naming the script, and `assets` pairs each edited asset's index with the
+/// lanes in the script's own payload that name its graph, as the script's declared reference
+/// fields place them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScriptCopy {
+    pub tag: u32,
+    pub operands: Vec<usize>,
+    pub assets: Vec<(usize, Vec<usize>)>,
 }
 
 /// The activation trigger as the compiler emits it, reused by effects that nest it.
@@ -202,6 +215,7 @@ fn assemble_records(program: &Program, label_mask: LabelMask) -> Result<Compiled
             })
             .collect(),
         graph_offsets,
+        scripts: Vec::new(),
     })
 }
 

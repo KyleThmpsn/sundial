@@ -728,13 +728,18 @@ impl PackageAuthoringApp {
             return changed;
         }
         let mut changed = self.draw_ability_card(ui, (summary, entry), edits, page, loaded);
-        if let Some(edited) = self.draw_ability_changes(
-            ui,
-            (base, abilities),
-            (summary, entry, place),
-            changed.as_ref().unwrap_or(edits),
-            page,
-        ) {
+        // A node's changes are what it does, so they lead. An active ability's own values lead
+        // instead, and what equipping it changes elsewhere follows its parts.
+        let node = matches!(place, Place::Node(..));
+        if node
+            && let Some(edited) = self.draw_ability_changes(
+                ui,
+                (base, abilities),
+                (summary, entry, place),
+                changed.as_ref().unwrap_or(edits),
+                page,
+            )
+        {
             changed = Some(edited);
         }
         match &tree {
@@ -756,6 +761,17 @@ impl PackageAuthoringApp {
         }
         if tree.is_some() {
             ui.add_space(8.0);
+        }
+        if !node
+            && let Some(edited) = self.draw_ability_changes(
+                ui,
+                (base, abilities),
+                (summary, entry, place),
+                changed.as_ref().unwrap_or(edits),
+                page,
+            )
+        {
+            changed = Some(edited);
         }
         if let Some(edited) = self.draw_technical(
             ui,
@@ -859,9 +875,9 @@ impl PackageAuthoringApp {
         let edited = !edits.modifiers.is_empty() || !edits.removed_modifiers.is_empty();
         let active = summary.is_some_and(|summary| summary.entry_rows.contains_key(&entry));
         let title = if edited {
-            "Ability Changes •"
+            "Changes While Equipped •"
         } else {
-            "Ability Changes"
+            "Changes While Equipped"
         };
         let section = egui::CollapsingHeader::new(title)
             .id_salt(("ability-changes", place))
@@ -870,7 +886,7 @@ impl PackageAuthoringApp {
                 style::card(ui, |ui| {
                     let reset = ui
                         .horizontal(|ui| {
-                            ui.weak("Changes applied while this choice is selected.");
+                            ui.weak("What equipping this changes about the Subclass's abilities.");
                             edited && reset_icon(ui)
                         })
                         .inner;
@@ -891,7 +907,7 @@ impl PackageAuthoringApp {
                 })
             });
         if edited {
-            style::named_control(section.header_response, "Ability Changes, Changed");
+            style::named_control(section.header_response, "Changes While Equipped, Changed");
         }
         ui.add_space(8.0);
         section.body_returned.flatten()

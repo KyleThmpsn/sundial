@@ -1071,6 +1071,10 @@ fn save_imported_recipe(
         }
         let mut updated = baseline.clone();
         updated.overrides.imported_graph = recipe.overrides.imported_graph.clone();
+        if updated.icon_donor.is_none() && updated.overrides.icon_edit.imported_image.is_none() {
+            updated.overrides.icon_edit.imported_image =
+                recipe.overrides.icon_edit.imported_image.clone();
+        }
         if let (Some(next), Some(previous)) = (
             &mut updated.overrides.imported_graph,
             &baseline.overrides.imported_graph,

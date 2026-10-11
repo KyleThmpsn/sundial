@@ -419,6 +419,16 @@ pub(crate) fn secondary(visuals: &egui::Visuals) -> egui::Color32 {
     }
 }
 
+/// A muted orange for a state worth noticing that is not a problem, such as a value another
+/// setting turns off. Quieter than a warning and still 4.5:1 or better on the card fills.
+pub(crate) fn muted_warning(visuals: &egui::Visuals) -> egui::Color32 {
+    if visuals.dark_mode {
+        egui::Color32::from_rgb(201, 142, 78)
+    } else {
+        egui::Color32::from_rgb(150, 88, 24)
+    }
+}
+
 /// The narrowest a value tile gets before its line holds one fewer.
 const TILE_MIN_WIDTH: f32 = 150.0;
 /// The widest a value tile gets. A wide pane keeps four readable tiles and its spare room,
@@ -469,6 +479,7 @@ fn name_line(
     width: f32,
     (label, hint): (&str, &str),
     restore: Restore<'_>,
+    status: Option<(&str, &str)>,
 ) -> (egui::Response, bool) {
     if !hint.is_empty() {
         let id = ui.id().with(HINT);
@@ -497,6 +508,15 @@ fn name_line(
                 }
                 Restore::To(original) => self::restore(ui, label, original),
             };
+            // A state beside the name, at its size, so it adds no line and the field stays level
+            // with its neighbours'.
+            if let Some((text, hover)) = status {
+                let text = egui::RichText::new(text)
+                    .size(12.0)
+                    .color(muted_warning(ui.visuals()));
+                ui.add(egui::Label::new(text).selectable(false))
+                    .on_hover_text(hover);
+            }
             let name = ui
                 .with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     let text = egui::RichText::new(label).size(12.0);
@@ -593,7 +613,7 @@ pub(crate) fn field_name(
         Restore::Nothing
     };
     let width = ui.available_width();
-    name_line(ui, width, (label, hint), restore)
+    name_line(ui, width, (label, hint), restore, None)
 }
 
 /// A field's name whose way back names the base's value, as a stock tile's does: `original` is
@@ -606,7 +626,7 @@ pub(crate) fn stock_field_name(
 ) -> (egui::Response, bool) {
     let restore = original.map_or(Restore::Nothing, Restore::To);
     let width = ui.available_width();
-    name_line(ui, width, (label, hint), restore)
+    name_line(ui, width, (label, hint), restore, None)
 }
 
 /// One value: its name, small, over the control. Reset sits beside the name once the value
@@ -629,7 +649,7 @@ pub(crate) fn tile<R>(
     } else {
         Restore::Nothing
     };
-    tile_with(ui, (width, salt), (label, hint), restore, control)
+    tile_with(ui, (width, salt), (label, hint), restore, None, control)
 }
 
 /// A tile whose way back names the original value: `original` is that value as the field reads
@@ -642,7 +662,20 @@ pub(crate) fn stock_tile<R>(
     control: impl FnOnce(&mut egui::Ui) -> R,
 ) -> (R, bool) {
     let restore = original.map_or(Restore::Nothing, Restore::To);
-    tile_with(ui, (width, salt), (label, hint), restore, control)
+    tile_with(ui, (width, salt), (label, hint), restore, None, control)
+}
+
+/// A stock tile with a state beside its name, such as Inactive, with what it means on hover.
+pub(crate) fn stock_tile_marked<R>(
+    ui: &mut egui::Ui,
+    (width, salt): (f32, impl std::hash::Hash + std::fmt::Debug),
+    (label, hint): (&str, &str),
+    original: Option<&str>,
+    status: Option<(&str, &str)>,
+    control: impl FnOnce(&mut egui::Ui) -> R,
+) -> (R, bool) {
+    let restore = original.map_or(Restore::Nothing, Restore::To);
+    tile_with(ui, (width, salt), (label, hint), restore, status, control)
 }
 
 /// The shortest length a timer's length field gives. Zero or less ends a timer at once, unless
@@ -679,10 +712,11 @@ fn tile_with<R>(
     (width, salt): (f32, impl std::hash::Hash + std::fmt::Debug),
     name: (&str, &str),
     restore: Restore<'_>,
+    status: Option<(&str, &str)>,
     control: impl FnOnce(&mut egui::Ui) -> R,
 ) -> (R, bool) {
     tile_column(ui, (width, salt), |ui| {
-        let (_, reset) = name_line(ui, width, name, restore);
+        let (_, reset) = name_line(ui, width, name, restore, status);
         (control(ui), reset)
     })
 }
@@ -816,6 +850,57 @@ pub(crate) fn card<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> 
             content(ui)
         })
         .inner
+}
+
+/// Cards side by side that end at one height: each reaches the tallest card's height from the
+/// frame before, so a line of cards has one bottom edge.
+pub(crate) struct CardLine {
+    id: egui::Id,
+    height: f32,
+    tallest: f32,
+}
+
+impl CardLine {
+    pub(crate) fn new(ui: &egui::Ui, salt: impl std::hash::Hash + std::fmt::Debug) -> Self {
+        let id = ui.id().with(salt);
+        let height = ui
+            .ctx()
+            .data(|data| data.get_temp::<f32>(id))
+            .unwrap_or(0.0);
+        Self {
+            id,
+            height,
+            tallest: 0.0,
+        }
+    }
+
+    /// One card of the line.
+    pub(crate) fn card<R>(
+        &mut self,
+        ui: &mut egui::Ui,
+        content: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> R {
+        card(ui, |ui| {
+            let inner = content(ui);
+            let drawn = ui.min_rect();
+            self.tallest = self.tallest.max(drawn.height());
+            // Measured from the card's top. `set_min_height` would add the height below what is
+            // already drawn.
+            ui.expand_to_include_rect(egui::Rect::from_min_size(
+                drawn.min,
+                egui::vec2(0.0, self.height),
+            ));
+            inner
+        })
+    }
+
+    /// Keeps this frame's tallest card for the next, after the line's last card.
+    pub(crate) fn finish(self, ctx: &egui::Context) {
+        if (self.tallest - self.height).abs() > 0.5 {
+            ctx.data_mut(|data| data.insert_temp(self.id, self.tallest));
+            ctx.request_repaint();
+        }
+    }
 }
 
 /// A quiet explanation under a heading or a control. Reads after the control, never

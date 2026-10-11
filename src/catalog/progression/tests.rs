@@ -768,7 +768,7 @@ fn milestone_objectives_reject_an_impossible_phase_count() {
     assert!(
         milestone_objective_indices(&row, 0, 1_000)
             .unwrap_err()
-            .contains("expected at most 6")
+            .contains("Expected at most 6")
     );
 }
 

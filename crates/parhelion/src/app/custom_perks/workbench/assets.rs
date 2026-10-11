@@ -1017,6 +1017,7 @@ impl Browser<'_> {
                         damage_type: None,
                         rows: Vec::new(),
                         hud_status: None,
+                        script: None,
                     });
                 }
                 asset_details(

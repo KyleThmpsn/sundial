@@ -1462,6 +1462,14 @@ impl Program {
         if self.actions.len() > 16 {
             return Err("A custom effect can contain up to 16 actions.".into());
         }
+        if self
+            .actions
+            .iter()
+            .filter_map(Action::asset)
+            .any(|asset| asset.script.is_some())
+        {
+            return Err("Only a complete native program edits the graphs a script names.".into());
+        }
         self.validate_asset_patches()?;
         for record in self.auxiliary.iter().chain(
             self.policy

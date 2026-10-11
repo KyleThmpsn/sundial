@@ -14,20 +14,7 @@ fn put(p: &mut [u8], o: usize, v: &[u8]) -> Result<()> {
         .copy_from_slice(v);
     Ok(())
 }
-pub(crate) fn add(
-    out: &Path,
-    nodes: &mut Vec<Value>,
-    symbol: &str,
-    template: u32,
-    data: &[u8],
-    reference: Option<&str>,
-    patches: Vec<Value>,
-) -> Result<()> {
-    let file = format!("{symbol}.bin");
-    fs::write(out.join(&file), data)?;
-    nodes.push(json!({"symbol":symbol,"template":template,"file":file,"reference":reference,"patches":patches}));
-    Ok(())
-}
+pub(crate) use crate::graph::add;
 fn patch(offset: usize, symbol: &str) -> Value {
     json!({"offset":offset,"symbol":symbol})
 }

@@ -396,7 +396,7 @@ pub(super) fn check_game_before_recovery(
     })?;
     if game_is_running {
         return Err(InstallError::validation(
-            "The game is running; close it before recovering an interrupted package installation",
+            "The game is running. Close it before recovering an interrupted package installation",
         ));
     }
     Ok(())
@@ -444,7 +444,7 @@ pub(super) fn recover_pending_transaction(
             if !matches!(fs::symlink_metadata(&target_path), Err(error) if error.kind() == io::ErrorKind::NotFound)
             {
                 return Err(InstallError::validation(
-                    "A removed package reappeared during uninstall recovery; no overwrite was attempted",
+                    "A removed package reappeared during uninstall recovery. No overwrite was attempted",
                 ));
             }
         } else {

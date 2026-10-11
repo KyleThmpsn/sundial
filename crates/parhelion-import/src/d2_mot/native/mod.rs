@@ -8,8 +8,8 @@ mod contracts;
 pub mod effects;
 mod mesh;
 pub mod projectile;
-pub(crate) mod shader;
-pub mod vertex_input;
+pub(crate) use crate::tiger::shader;
+pub use crate::tiger::vertex_input;
 pub use shader::buffer::{
     Assets as MaterialBufferAssets, Buffer as MaterialBuffer, Receipt as MaterialBufferReceipt,
     Template as MaterialBufferTemplate,

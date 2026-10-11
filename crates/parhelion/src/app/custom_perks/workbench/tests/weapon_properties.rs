@@ -186,7 +186,7 @@ fn change_weapon_properties_goes_from_the_picker_to_the_card() {
         output = frame(&ctx, &mut workbench, &mut program, &packages, vec![]);
     }
     let text = painted_text(&output);
-    for name in ["Rounds per Burst", "Magazine Size", "Time Between Shots"] {
+    for name in ["Bullets per Shot", "Magazine Size", "Time Between Shots"] {
         assert!(text.contains(name), "{name} on the card:\n{text}");
     }
     for stock in ["0.38", "0.95", "0.75"] {

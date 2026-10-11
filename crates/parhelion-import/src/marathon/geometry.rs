@@ -87,7 +87,7 @@ pub fn read(r: &mut Reader, entries: &[Value]) -> Result<Mesh> {
                         .get(start..start + count)
                         .context("draw outside buffer")?;
                     let faces = match b.u16(part + 6)? {
-                        5 => crate::d2_mot::geometry::triangles(
+                        5 => crate::tiger::geometry::triangles(
                             values,
                             p.0.len() / 24,
                             if width == 2 { 65535 } else { u32::MAX },
@@ -174,176 +174,23 @@ pub fn read(r: &mut Reader, entries: &[Value]) -> Result<Mesh> {
     ensure!(!out.groups.is_empty(), "no render geometry");
     Ok(out)
 }
-pub struct Encoded {
-    pub header: Vec<u8>,
-    pub streams: [Vec<u8>; 3],
-    pub patches: Vec<Value>,
-}
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "Preserve the audited converter while integrating the legacy rendering pipeline."
-)]
+pub use crate::presentation::geometry::Encoded;
 pub fn encode(mesh: &Mesh, native: &Payload, native_mesh: usize) -> Result<Encoded> {
-    let lo = std::array::from_fn::<_, 3, _>(|a| {
-        mesh.positions
-            .iter()
-            .map(|p| p[a])
-            .fold(f32::INFINITY, f32::min)
-    });
-    let hi = std::array::from_fn::<_, 3, _>(|a| {
-        mesh.positions
-            .iter()
-            .map(|p| p[a])
-            .fold(f32::NEG_INFINITY, f32::max)
-    });
-    let center = std::array::from_fn::<_, 3, _>(|a| (lo[a] + hi[a]) / 2.);
-    let scale = (0..3)
-        .map(|a| (hi[a] - lo[a]) / 2.)
-        .fold(0.000001, f32::max);
-    let ulo = std::array::from_fn::<_, 2, _>(|a| {
-        mesh.attributes
-            .iter()
-            .map(|p| p[a])
-            .fold(f32::INFINITY, f32::min)
-    });
-    let uhi = std::array::from_fn::<_, 2, _>(|a| {
-        mesh.attributes
-            .iter()
-            .map(|p| p[a])
-            .fold(f32::NEG_INFINITY, f32::max)
-    });
-    let us = std::array::from_fn::<_, 2, _>(|a| ((uhi[a] - ulo[a]) / 2.).max(0.000001));
-    let uc = std::array::from_fn::<_, 2, _>(|a| (uhi[a] + ulo[a]) / 2.);
-    let quant = |v: f32| ((v * 32767.).round().clamp(-32767., 32767.) as i16).to_le_bytes();
-    let mut positions = vec![];
-    let mut attributes = vec![];
-    let mut indices = vec![];
-    for (v, a) in mesh.positions.iter().zip(&mesh.attributes) {
-        for i in 0..3 {
-            positions.extend(quant((v[i] - center[i]) / scale));
-        }
-        positions.extend(0u16.to_le_bytes());
-        for i in 0..2 {
-            attributes.extend(quant((a[i] - uc[i]) / us[i]));
-        }
-        for v in &a[2..] {
-            attributes.extend(quant(*v));
-        }
-        attributes.extend([0; 4]);
-    }
-    let mut records = vec![];
-    let mut patches = vec![
-        json!({"offset":0xb0,"symbol":"positions-header"}),
-        json!({"offset":0xb4,"symbol":"attributes-header"}),
-        json!({"offset":0xc0,"symbol":"indices-header"}),
-    ];
-    let mut ranges = vec![0u16];
-    for stage in 0..23 {
-        if stage == 0 || stage == 3 {
-            for (mat, faces) in &mesh.groups {
-                let mut rec = vec![0u8; 32];
-                put(&mut rec, 0, &u32::MAX.to_le_bytes())?;
-                put(&mut rec, 4, &u16::MAX.to_le_bytes())?;
-                put(&mut rec, 6, &5u16.to_le_bytes())?;
-                put(&mut rec, 8, &(indices.len() as u32 / 2).to_le_bytes())?;
-                put(&mut rec, 12, &(faces.len() as u32 * 4).to_le_bytes())?;
-                put(&mut rec, 16, &(faces.len() as u32).to_le_bytes())?;
-                // These static assemblies use the donors' base variant and
-                // native opaque weapon flags, rather than an absent variant.
-                put(&mut rec, 20, &0u16.to_le_bytes())?;
-                put(&mut rec, 22, &(records.len() as u16).to_le_bytes())?;
-                put(&mut rec, 24, &5u16.to_le_bytes())?;
-                rec[26] = 0;
-                rec[27] = 0;
-                rec[28] = 0x7f;
-                // The native draw iterator advances by this group length.
-                // Zero leaves it on the first record indefinitely.
-                rec[29] = 1;
-                let symbol = if stage == 0 {
-                    format!("material-{mat:08X}")
-                } else {
-                    "material-shadow".into()
-                };
-                patches.push(json!({"offset":0x150+records.len()*32,"symbol":symbol}));
-                records.push(rec);
-                for face in faces {
-                    for i in face {
-                        indices.extend(i.to_le_bytes());
-                    }
-                    indices.extend(u16::MAX.to_le_bytes());
-                }
-            }
-        }
-        ranges.push(u16::try_from(records.len())?);
-    }
-    let mut h = vec![0; 0x150 + records.len() * 32];
-    put(&mut h, 0, &native.bytes::<160>(0)?)?;
-    let len = h.len() as u64;
-    put(&mut h, 0, &len.to_le_bytes())?;
-    put(&mut h, 16, &1u64.to_le_bytes())?;
-    put(&mut h, 24, &(0xa0i64 - 24).to_le_bytes())?;
-    put(&mut h, 0x40, &1u32.to_le_bytes())?;
-    for (a, value) in center.iter().enumerate() {
-        put(&mut h, 0x50 + a * 4, &scale.to_le_bytes())?;
-        put(&mut h, 0x60 + a * 4, &value.to_le_bytes())?;
-    }
-    put(&mut h, 0x6c, &scale.to_le_bytes())?;
-    let radius = mesh
-        .positions
-        .iter()
-        .map(|p| {
-            (0..3)
-                .map(|a| (p[a] - center[a]).powi(2))
-                .sum::<f32>()
-                .sqrt()
-        })
-        .fold(0f32, f32::max)
-        + scale / 32767.;
-    for offset in [0x20, 0x24, 0x8c] {
-        put(&mut h, offset, &radius.to_le_bytes())?;
-    }
-    for (a, value) in center.iter().enumerate() {
-        put(&mut h, 0x80 + a * 4, &value.to_le_bytes())?;
-    }
-    for a in 0..2 {
-        put(&mut h, 0x70 + a * 4, &us[a].to_le_bytes())?;
-        put(&mut h, 0x78 + a * 4, &uc[a].to_le_bytes())?;
-    }
-    put(&mut h, 0x9c, &0x80809fbdu32.to_le_bytes())?;
-    put(&mut h, 0xa0, &1u64.to_le_bytes())?;
-    put(&mut h, 0xa8, &0x80807378u64.to_le_bytes())?;
-    put(&mut h, 0xb0, &native.bytes::<136>(native_mesh)?)?;
-    for o in [0xb0, 0xb4, 0xb8, 0xc0] {
-        put(&mut h, o, &u32::MAX.to_le_bytes())?;
-    }
-    put(&mut h, 0xc8, &(records.len() as u64).to_le_bytes())?;
-    put(&mut h, 0xd0, &(0x140i64 - 0xd0).to_le_bytes())?;
-    for (i, n) in ranges.iter().enumerate() {
-        put(&mut h, 0xd8 + i * 2, &n.to_le_bytes())?;
-    }
-    for i in 0..23 {
-        put(
-            &mut h,
-            0x108 + i * 2,
-            &(if [0, 3].contains(&i) {
-                139u16
-            } else {
-                u16::MAX
-            })
-            .to_le_bytes(),
-        )?;
-    }
-    put(&mut h, 0x13c, &0x80809fbdu32.to_le_bytes())?;
-    put(&mut h, 0x140, &(records.len() as u64).to_le_bytes())?;
-    put(&mut h, 0x148, &0x8080737eu64.to_le_bytes())?;
-    for (i, r) in records.iter().enumerate() {
-        put(&mut h, 0x150 + i * 32, r)?;
-    }
-    Ok(Encoded {
-        header: h,
-        streams: [positions, attributes, indices],
-        patches,
-    })
+    crate::presentation::geometry::encode(
+        &crate::presentation::geometry::Mesh {
+            positions: mesh.positions.clone(),
+            attributes: mesh.attributes.clone(),
+            groups: mesh
+                .groups
+                .iter()
+                .map(|(m, f)| (*m, f.iter().map(|f| f.map(u32::from)).collect()))
+                .collect(),
+            weights: Vec::new(),
+            bones: 1,
+        },
+        native,
+        native_mesh,
+    )
 }
 
 #[cfg(test)]
@@ -374,11 +221,24 @@ mod tests {
             ],
             groups: vec![(123, vec![[0, 1, 2]])],
         };
+        // A native carrier has an opaque body record, including its activation group.
+        let mut carrier = vec![0; 0x170];
+        carrier[0xc8..0xd0].copy_from_slice(&1u64.to_le_bytes());
+        carrier[0xd0..0xd8].copy_from_slice(&0x70u64.to_le_bytes());
+        carrier[0x140..0x148].copy_from_slice(&1u64.to_le_bytes());
+        carrier[0x148..0x14c].copy_from_slice(&0x8080737eu32.to_le_bytes());
+        for stage in 1..24 {
+            carrier[0xb0 + 40 + stage * 2..0xb0 + 42 + stage * 2]
+                .copy_from_slice(&1u16.to_le_bytes());
+        }
+        carrier[0x15c..0x160].copy_from_slice(&3u32.to_le_bytes());
+        carrier[0x160..0x164].copy_from_slice(&1u32.to_le_bytes());
+        carrier[0x16d] = 1;
         let Encoded {
             header: bytes,
             streams,
             patches,
-        } = encode(&mesh, &Payload(vec![0; 0x150]), 0xb0).unwrap();
+        } = encode(&mesh, &Payload(carrier), 0xb0).unwrap();
         let h = Payload(bytes);
         let p = Payload(streams[0].clone());
         let a = Payload(streams[1].clone());

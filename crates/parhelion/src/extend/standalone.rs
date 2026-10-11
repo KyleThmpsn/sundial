@@ -132,7 +132,7 @@ fn build_standalone_package_from(
     let block_count = packing.block_count;
     if block_count == 0 || block_count > MAX_BLOCK_COUNT {
         return Err(AuthoringError::InvalidInput(format!(
-            "Standalone package {package_id:04X} needs {block_count} blocks; the supported range is 1..={MAX_BLOCK_COUNT}"
+            "Standalone package {package_id:04X} needs {block_count} blocks. The supported range is 1..={MAX_BLOCK_COUNT}"
         )));
     }
     // Wwise bypasses package decompression. Every block touched by a medium,

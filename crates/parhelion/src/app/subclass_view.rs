@@ -9,7 +9,7 @@
 //! heads with its icon, its name and the stock one it is based on, whose choices open over the
 //! page, then its sections as tabs: Ability (name, description, icon), Perks (the perks it
 //! grants), Gameplay (its Ability card of charges, recharge, parameters and its own values, a
-//! node's Ability Changes, what it spawns, and a closed Technical section with raw values) and
+//! node's Changes While Equipped, what it spawns, and a closed Technical section with raw values) and
 //! Visuals.
 use super::*;
 use crate::app::style;

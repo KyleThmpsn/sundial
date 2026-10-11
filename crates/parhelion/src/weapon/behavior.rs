@@ -25,7 +25,7 @@ use std::collections::BTreeSet;
 use crate::tag_payload::{read_u32 as u32_at, read_u64 as u64_at};
 use crate::{AuthoringResult, error::invalid, item::WeaponRuntimeResourcePatch};
 use sundial::package_authoring::PackageManager;
-use sundial::package_authoring::entity::weapon_component_bindings;
+use sundial::package_authoring::entity::{WEAPON_BARREL_COMPONENT_KEY, weapon_component_bindings};
 use sundial::package_authoring::sandbox_perk::program::{
     NativeAssetResourceAppend, NativeAssetResourcePatch,
 };
@@ -597,8 +597,8 @@ pub struct FiredParticle {
 }
 
 /// Names `graph` as the firing graph of every variant block in the weapon's content owner,
-/// the ones a perk selects included, as the ammunition edits do. The graph carries its own
-/// launch speed, so no boost applies.
+/// the ones a perk selects included, as the ammunition edits do. Imported private
+/// carriers have already been fitted to the host's launch input before allocation.
 pub(crate) fn fired_graph_patches(
     manager: &PackageManager,
     entity: &[u8],
@@ -622,9 +622,10 @@ pub(crate) fn fired_graph_patches(
         .collect()
 }
 
-/// One variant block's firing graph slot once a build's patches apply: the graph it names, and
-/// the patch that names it there, if one does.
+/// One firing graph slot once a build's patches apply: the graph it names, and the patch that names
+/// it there, if one does. A slot is a variant block's or the Barrel's.
 pub(crate) struct FiredSlot {
+    binding: u32,
     offset: u32,
     pub(crate) graph: Option<u32>,
     pub(crate) patch: Option<usize>,
@@ -634,7 +635,7 @@ impl FiredSlot {
     /// The patch that names `graph` in this slot.
     pub(crate) fn naming(&self, graph: u32) -> WeaponRuntimeResourcePatch {
         WeaponRuntimeResourcePatch {
-            binding_hash: BINDING,
+            binding_hash: self.binding,
             resource_index: 0,
             offset: self.offset,
             bytes: graph.to_le_bytes().to_vec(),
@@ -646,44 +647,115 @@ impl FiredSlot {
 }
 
 /// The firing graph slot of every variant block in the weapon's content owner, the ones a perk
-/// selects included, with `patches` applied.
+/// selects included, and the Barrel's projectile slots, with `patches` applied. `copied` holds the
+/// writes a component splice makes, which a Barrel splice makes into the Barrel's slots too.
 pub(crate) fn fired_slots(
     manager: &PackageManager,
     entity: &[u8],
     patches: &[WeaponRuntimeResourcePatch],
+    copied: &[WeaponRuntimeResourcePatch],
 ) -> AuthoringResult<Vec<FiredSlot>> {
+    let slot = |binding: u32, offset: u32, stored: Option<u32>| {
+        let patch = patches.iter().position(|patch| {
+            (patch.binding_hash, patch.resource_index, patch.offset) == (binding, 0, offset)
+        });
+        let graph = match patch {
+            Some(index) => u32_at(&patches[index].bytes, 0).ok(),
+            None => stored,
+        }
+        .filter(|tag| *tag != 0 && *tag != u32::MAX);
+        FiredSlot {
+            binding,
+            offset,
+            graph,
+            patch,
+        }
+    };
     let content = content(manager, entity)?;
-    content
+    let mut slots = content
         .blocks
         .iter()
         .map(|&block| {
             let offset = slot_offset(block + GRAPH_OFFSET, content.resource)?;
-            let patch = patches.iter().position(|patch| {
-                (patch.binding_hash, patch.resource_index, patch.offset) == (BINDING, 0, offset)
+            Ok(slot(BINDING, offset, host_graph(&content, block)))
+        })
+        .collect::<AuthoringResult<Vec<_>>>()?;
+    for (offset, graph) in barrel_slots(manager, entity, copied) {
+        slots.push(slot(WEAPON_BARREL_COMPONENT_KEY, offset, graph));
+    }
+    Ok(slots)
+}
+
+/// The Barrel's projectile slots, as offsets from its resource, with the graph each names once the
+/// splice writes in `copied` apply. None for a weapon without one supported Barrel the package set
+/// can read.
+fn barrel_slots(
+    manager: &PackageManager,
+    entity: &[u8],
+    copied: &[WeaponRuntimeResourcePatch],
+) -> Vec<(u32, Option<u32>)> {
+    let Ok(barrels) = weapon_component_bindings(entity, WEAPON_BARREL_COMPONENT_KEY) else {
+        return Vec::new();
+    };
+    let [barrel] = barrels.as_slice() else {
+        return Vec::new();
+    };
+    let Ok(owner) = manager.read_tag(TagHash(barrel.owner_tag)) else {
+        return Vec::new();
+    };
+    let resource = barrel.resource_offset as usize;
+    sundial::package_authoring::entity::barrel::projectile_slots(&owner, *barrel)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(at, graph)| {
+            let offset = u32::try_from(at.checked_sub(resource)?).ok()?;
+            let spliced = copied.iter().find_map(|write| {
+                let start = write.offset;
+                let within = offset.checked_sub(start)? as usize;
+                (write.binding_hash == WEAPON_BARREL_COMPONENT_KEY
+                    && write.resource_index == 0
+                    && within + 4 <= write.bytes.len())
+                .then(|| u32_at(&write.bytes, within).ok())
+                .flatten()
             });
-            let graph = match patch {
-                Some(index) => u32_at(&patches[index].bytes, 0).ok(),
-                None => host_graph(&content, block),
-            }
-            .filter(|tag| *tag != 0 && *tag != u32::MAX);
-            Ok(FiredSlot {
-                offset,
-                graph,
-                patch,
-            })
+            let graph = match spliced {
+                Some(tag) => (tag != 0 && tag != u32::MAX).then_some(tag),
+                None => graph,
+            };
+            Some((offset, graph))
         })
         .collect()
 }
 
-/// The graph that the block `group` selects fires, found as the build finds that block, if it
-/// names one.
+/// The graph the weapon fires: the one the block `group` selects names, found as the build finds
+/// that block, else the Barrel's own, which a weapon whose block names none fires. `copied` holds
+/// the recipe's splice writes, which can bring another weapon's Barrel projectile.
 pub(crate) fn fired_graph(
     manager: &PackageManager,
     entity: &[u8],
     group: u32,
+    copied: &[WeaponRuntimeResourcePatch],
 ) -> AuthoringResult<Option<u32>> {
     let content = content(manager, entity)?;
-    Ok(host_graph(&content, block_for_group(&content, group)?))
+    if let Some(graph) = host_graph(&content, block_for_group(&content, group)?) {
+        return Ok(Some(graph));
+    }
+    Ok(barrel_slots(manager, entity, copied)
+        .into_iter()
+        .find_map(|(_, graph)| graph))
+}
+
+/// Whether the block `group` selects names a firing graph of its own, which then fires in place of
+/// the Barrel's.
+pub(crate) fn selected_block_fires(content: &Content, group: Option<u32>) -> AuthoringResult<bool> {
+    let block = match group {
+        Some(group) => block_for_group(content, group)?,
+        None => *content
+            .blocks
+            .first()
+            .ok_or_else(|| invalid("Weapon content owner has no variant block"))?,
+    };
+    Ok(host_graph(content, block).is_some())
 }
 
 /// The block naming exactly this content group, with no fallback to the first block.
@@ -738,15 +810,15 @@ fn own_patches(
             });
         }
     }
-    if graph
-        && let Some(tag) = host_graph(content, own)
-        && host_graph(content, block) != Some(tag)
-    {
+    // A base whose own block names no graph fires its Barrel's, so the selected block goes back to
+    // naming none too. Left as it is, the other weapon's graph would fire in the Barrel's place.
+    if graph && host_graph(content, own) != host_graph(content, block) {
+        let slot = u32_at(&content.owner, own + GRAPH_OFFSET)?;
         patches.push(WeaponRuntimeResourcePatch {
             binding_hash: BINDING,
             resource_index: 0,
             offset: slot_offset(block + GRAPH_OFFSET, content.resource)?,
-            bytes: tag.to_le_bytes().to_vec(),
+            bytes: slot.to_le_bytes().to_vec(),
             graph_values: Vec::new(),
             graph_removals: Vec::new(),
             graph_trajectories: None,

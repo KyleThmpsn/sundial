@@ -1,8 +1,8 @@
 //! Private presentation closure for source firing sounds.
 use super::*;
 
-/// Firing events keyed by the presentation chain they patch: pattern owner, parent and root.
-type PresentationGroups<'a> = BTreeMap<(u32, u32, u32), Vec<&'a Value>>;
+/// Firing events keyed by owner, parent, root and direct-entity layout.
+type PresentationGroups<'a> = BTreeMap<(u32, u32, u32, bool), Vec<&'a Value>>;
 
 /// The firing events grouped by the presentation chain they patch.
 fn presentation_groups(audio: &ImportedAudio) -> AuthoringResult<PresentationGroups<'_>> {
@@ -14,6 +14,7 @@ fn presentation_groups(audio: &ImportedAudio) -> AuthoringResult<PresentationGro
                 hex(&presentation["owner"], "presentation owner")?,
                 hex(&presentation["parent"], "presentation parent")?,
                 hex(&presentation["root"], "presentation root")?,
+                presentation["direct_entity"].as_bool().unwrap_or(false),
             ))
             .or_default()
             .push(event);
@@ -46,6 +47,65 @@ fn live_owner(
     Ok(existing)
 }
 
+fn root(
+    manager: &PackageManager,
+    parent: u32,
+    entity: u32,
+    direct: bool,
+) -> AuthoringResult<Vec<u8>> {
+    if direct && parent != entity {
+        return Err(invalid(
+            "Direct firing presentation has different entity links",
+        ));
+    }
+    stock(
+        manager,
+        entity,
+        if direct { 0x80809C0F } else { 0x80803ADC },
+        "presentation root",
+    )
+}
+
+fn validate_slot(
+    root: &[u8],
+    direct: bool,
+    slot: usize,
+    entity: u32,
+    root_tag: u32,
+) -> AuthoringResult<()> {
+    let matches = if direct {
+        slot == 0 && entity == root_tag
+    } else {
+        word(root, 0x18 + slot * 0x10)? == entity
+    };
+    if !matches {
+        return Err(invalid("Firing presentation slot changed"));
+    }
+    Ok(())
+}
+
+fn patch_parent(
+    owner: &mut [u8],
+    events: &[&Value],
+    parent: u32,
+    private: u32,
+) -> AuthoringResult<()> {
+    let mut patched = BTreeSet::new();
+    for event in events {
+        let at = event["native_presentation"]["parent_offset"]
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or_else(|| invalid("Presentation parent offset missing"))?;
+        if patched.insert(at) {
+            if word(owner, at)? != parent {
+                return Err(invalid("Presentation parent link changed"));
+            }
+            put(owner, at, private)?;
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn author(
     manager: &PackageManager,
@@ -57,10 +117,10 @@ pub(super) fn author(
     asset_tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<usize> {
     let mut count = 0;
-    for ((pattern_owner, parent_tag, root_tag), events) in presentation_groups(audio)? {
+    for ((pattern_owner, parent_tag, root_tag, direct), events) in presentation_groups(audio)? {
         let start = tags.len();
         let asset_start = asset_tags.len();
-        let mut root = stock(manager, root_tag, 0x80803ADC, "presentation root")?;
+        let mut root = root(manager, parent_tag, root_tag, direct)?;
         let mut remap = BTreeMap::new();
         let mut owners = BTreeMap::<(u32, u32), Vec<u8>>::new();
         let mut links = BTreeSet::new();
@@ -78,9 +138,7 @@ pub(super) fn author(
                 .filter(|n| *n < 6)
                 .ok_or_else(|| invalid("Firing presentation slot missing"))?
                 as usize;
-            if word(&root, 0x18 + slot * 0x10)? != entity_tag {
-                return Err(invalid("Firing presentation slot changed"));
-            }
+            validate_slot(&root, direct, slot, entity_tag, root_tag)?;
             links.insert((slot, entity_tag));
             let owner = match owners.entry((entity_tag, owner_tag)) {
                 std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
@@ -139,80 +197,87 @@ pub(super) fn author(
             )?;
             remap.insert(entity_tag, private);
             for (slot, old) in &links {
-                if *old == entity_tag {
+                if !direct && *old == entity_tag {
                     put(&mut root, 0x18 + slot * 0x10, private)?;
                 }
             }
         }
-        let private_root = append(
-            manager,
-            allocator,
-            tags,
-            root_tag,
-            root,
-            crate::NewTagStorageMode::InheritTemplate,
-            "presentation root",
-        )?;
-        remap.insert(root_tag, private_root);
-        let mut parent = stock(manager, parent_tag, PARENT_CLASS, "presentation parent")?;
-        if word(&parent, 16)? != root_tag {
-            return Err(invalid("Presentation root link changed"));
-        }
-        put(&mut parent, 16, private_root)?;
-        let private_parent = append(
-            manager,
-            allocator,
-            tags,
-            parent_tag,
-            parent,
-            crate::NewTagStorageMode::InheritTemplate,
-            "presentation parent",
-        )?;
-        remap.insert(parent_tag, private_parent);
-        let private_companion =
-            allocator.assigned_tag(tags.len(), "Imported audio", "presentation companion")?;
-        let (template, payload) = stock_companion(manager, parent_tag)?;
-        remap.insert(template.0, private_companion.0);
-        let mut dependencies = BTreeSet::new();
-        for index in start..tags.len() {
-            dependencies.insert(
-                allocator
-                    .assigned_tag(index, "Imported audio", "presentation dependency")?
-                    .0,
-            );
-        }
-        for index in asset_start..asset_tags.len() {
-            dependencies.insert(
-                assets
-                    .assigned_tag(index, "Imported audio", "sound dependency")?
-                    .0,
-            );
-        }
-        dependencies.insert(private_companion.0);
-        let payload = clone_scoped_dependencies(
-            (
-                &payload,
+        let private_parent = if direct {
+            *remap
+                .get(&root_tag)
+                .ok_or_else(|| invalid("Direct firing entity was not authored"))?
+        } else {
+            let private_root = append(
+                manager,
+                allocator,
+                tags,
+                root_tag,
+                root,
+                crate::NewTagStorageMode::InheritTemplate,
+                "presentation root",
+            )?;
+            remap.insert(root_tag, private_root);
+            let mut parent = stock(manager, parent_tag, PARENT_CLASS, "presentation parent")?;
+            if word(&parent, 16)? != root_tag {
+                return Err(invalid("Presentation root link changed"));
+            }
+            put(&mut parent, 16, private_root)?;
+            let private_parent = append(
+                manager,
+                allocator,
+                tags,
+                parent_tag,
+                parent,
+                crate::NewTagStorageMode::InheritTemplate,
+                "presentation parent",
+            )?;
+            remap.insert(parent_tag, private_parent);
+            let private_companion =
+                allocator.assigned_tag(tags.len(), "Imported audio", "presentation companion")?;
+            let (template, payload) = stock_companion(manager, parent_tag)?;
+            remap.insert(template.0, private_companion.0);
+            let mut dependencies = BTreeSet::new();
+            for index in start..tags.len() {
+                dependencies.insert(
+                    allocator
+                        .assigned_tag(index, "Imported audio", "presentation dependency")?
+                        .0,
+                );
+            }
+            for index in asset_start..asset_tags.len() {
+                dependencies.insert(
+                    assets
+                        .assigned_tag(index, "Imported audio", "sound dependency")?
+                        .0,
+                );
+            }
+            dependencies.insert(private_companion.0);
+            let payload = clone_scoped_dependencies(
+                (
+                    &payload,
+                    LoadingOwner {
+                        owner: TagHash(parent_tag),
+                        companion: template,
+                    },
+                ),
                 LoadingOwner {
-                    owner: TagHash(parent_tag),
-                    companion: template,
+                    owner: TagHash(private_parent),
+                    companion: private_companion,
                 },
-            ),
-            LoadingOwner {
-                owner: TagHash(private_parent),
-                companion: private_companion,
-            },
-            &dependencies.into_iter().map(TagHash).collect::<Vec<_>>(),
-            &[],
-        )?;
-        append(
-            manager,
-            allocator,
-            tags,
-            template.0,
-            payload,
-            crate::NewTagStorageMode::InheritTemplate,
-            "presentation companion",
-        )?;
+                &dependencies.into_iter().map(TagHash).collect::<Vec<_>>(),
+                &[],
+            )?;
+            append(
+                manager,
+                allocator,
+                tags,
+                template.0,
+                payload,
+                crate::NewTagStorageMode::InheritTemplate,
+                "presentation companion",
+            )?;
+            private_parent
+        };
         // HUD and runtime edits may already have cloned this component. Apply
         // the presentation link to the live private owner so those edits survive.
         let entity = Payload(pattern.to_vec());
@@ -233,19 +298,7 @@ pub(super) fn author(
                 "presentation pattern owner",
             )?
         };
-        let mut patched = BTreeSet::new();
-        for event in &events {
-            let at = event["native_presentation"]["parent_offset"]
-                .as_u64()
-                .and_then(|n| usize::try_from(n).ok())
-                .ok_or_else(|| invalid("Presentation parent offset missing"))?;
-            if patched.insert(at) {
-                if word(&owner, at)? != parent_tag {
-                    return Err(invalid("Presentation parent link changed"));
-                }
-                put(&mut owner, at, private_parent)?;
-            }
-        }
+        patch_parent(&mut owner, &events, parent_tag, private_parent)?;
         if let Some(ordinal) = existing {
             tags[ordinal].payload = owner;
             continue;

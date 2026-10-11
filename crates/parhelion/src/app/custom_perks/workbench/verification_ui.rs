@@ -66,7 +66,6 @@ impl Window {
         let mut open = true;
         egui::Window::new("Gameplay Verification").id(egui::Id::new("perk-verification"))
             .open(&mut open).default_width(720.0).default_height(620.0).vscroll(true).show(ctx, |ui| {
-                ui.label("Record observations for this exact perk, destination, and compiled package set. Compilation and package checks do not establish gameplay behavior.");
                 if self.busy() { ui.horizontal(|ui| { ui.spinner(); ui.label("Checking staged recipes and package hashes…"); }); }
                 ui.add_enabled_ui(!self.busy(), |ui| {
                     ui.horizontal_wrapped(|ui| {
@@ -84,7 +83,7 @@ impl Window {
                     let current = record.matches(recipe) && record.destination_kind == kind;
                     ui.heading(&record.recipe.name);
                     ui.weak(format!("Recipe SHA-256: {}", record.recipe_sha256));
-                    if !current { ui.colored_label(ui.visuals().warn_fg_color, "This record belongs to an earlier configuration. Start a new record to test the current perk."); }
+                    if !current { ui.colored_label(ui.visuals().warn_fg_color, "Recorded for an earlier configuration."); }
                     let before_build = (record.client_build.clone(), record.runtime_build.clone());
                     ui.add_enabled_ui(current, |ui| {
                         ui.horizontal(|ui| { ui.label("Client Build"); ui.text_edit_singleline(&mut record.client_build); });
@@ -118,7 +117,7 @@ impl Window {
                             self.saved = None;
                         }
                         let can_record = record.selected_destination.is_some() && !record.packages.is_empty() && !record.client_build.trim().is_empty() && !record.runtime_build.trim().is_empty();
-                        if !can_record { ui.weak("Bind the staged build, choose the tested destination, and enter both build versions before recording results."); }
+                        if !can_record { ui.weak("Needs a staged build, a destination and both build versions."); }
                         ui.add_enabled_ui(can_record, |ui| {
                             for observation in &mut record.observations {
                                 ui.separator();

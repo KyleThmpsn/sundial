@@ -31,8 +31,6 @@ mod pose;
 mod resolve;
 mod resource;
 mod upload;
-#[cfg(all(test, any(windows, target_os = "linux")))]
-mod verification;
 
 /// Set once at start-up from `CreationContext::gl`.
 pub fn set_available(available: bool) {
@@ -63,15 +61,6 @@ pub(crate) struct Frame {
 pub(crate) struct Shared(Arc<Mutex<State>>, Arc<jobs::Queue>);
 
 impl Shared {
-    #[cfg(test)]
-    pub fn pose(
-        &self,
-        model: &Arc<Model>,
-        seconds: f32,
-    ) -> Option<Arc<super::animation::Deformed>> {
-        self.0.lock().ok()?.poses.sample(model, seconds)
-    }
-
     /// Successful model paint callbacks, excluding upload work and software fallback.
     pub fn completed_frames(&self) -> u64 {
         self.0.lock().map_or(0, |state| state.completed_frames)
@@ -117,12 +106,6 @@ struct State {
     model: Option<Uploaded>,
     target: Option<Target>,
     preparation: upload::Preparation,
-    #[cfg(test)]
-    poses: pose::Cache,
-    #[cfg(all(test, any(windows, target_os = "linux")))]
-    legacy_order: bool,
-    #[cfg(all(test, any(windows, target_os = "linux")))]
-    metrics: verification::measure::Metrics,
 }
 
 struct Uniforms {
@@ -351,25 +334,14 @@ impl State {
             }
             let (program, uniforms) = self.program.as_ref().expect("prepared program");
             let uploaded = self.model.as_mut().expect("prepared model");
-            #[cfg(all(test, any(windows, target_os = "linux")))]
-            let started = std::time::Instant::now();
-            let mut _pose_uploaded = pose::upload(gl, uploaded, frame);
+            pose::upload(gl, uploaded, frame);
             let deformed = frame.animate && frame.pose.is_none() && uploaded.deformation.is_some();
             if deformed {
-                _pose_uploaded |=
-                    uploaded
-                        .deformation
-                        .as_mut()
-                        .unwrap()
-                        .sample(gl, &frame.model, frame.seconds);
-            }
-            #[cfg(all(test, any(windows, target_os = "linux")))]
-            {
-                self.metrics = verification::measure::Metrics {
-                    pose_upload: started.elapsed(),
-                    pose_uploaded: _pose_uploaded,
-                    ..Default::default()
-                };
+                uploaded
+                    .deformation
+                    .as_mut()
+                    .unwrap()
+                    .sample(gl, &frame.model, frame.seconds);
             }
             if self.target.as_ref().is_none_or(|t| t.size != size) {
                 if let Some(old) = self.target.take() {
@@ -507,40 +479,15 @@ impl State {
             if frame.style == Style::Wireframe {
                 gl.polygon_mode(glow::FRONT_AND_BACK, glow::LINE);
             }
-            #[cfg(all(test, any(windows, target_os = "linux")))]
-            let started = std::time::Instant::now();
-            #[cfg(all(test, any(windows, target_os = "linux")))]
-            let use_legacy = self.legacy_order;
-            #[cfg(not(all(test, any(windows, target_os = "linux"))))]
-            let use_legacy = false;
-            let _sorted = if use_legacy {
-                false
-            } else {
-                match order::update(gl, uniforms, uploaded, frame, target) {
-                    Ok(sorted) => sorted,
-                    Err(error) => {
-                        self.fallback = Some((
-                            frame.model.clone(),
-                            format!("Software rendering is active. {error}"),
-                        ));
-                        gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
-                        return false;
-                    }
-                }
-            };
-            #[cfg(all(test, any(windows, target_os = "linux")))]
-            let legacy = use_legacy.then(|| verification::legacy::groups(uploaded, frame));
-            let groups = uploaded.ordering.groups(frame.style, &uploaded.groups);
-            #[cfg(all(test, any(windows, target_os = "linux")))]
-            let groups = legacy.as_deref().unwrap_or(groups);
-            #[cfg(all(test, any(windows, target_os = "linux")))]
-            {
-                self.metrics.ordering = started.elapsed();
-                self.metrics.sorted = _sorted
-                    || legacy
-                        .as_ref()
-                        .is_some_and(|groups| matches!(groups, std::borrow::Cow::Owned(_)));
+            if let Err(error) = order::update(gl, uniforms, uploaded, frame, target) {
+                self.fallback = Some((
+                    frame.model.clone(),
+                    format!("Software rendering is active. {error}"),
+                ));
+                gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
+                return false;
             }
+            let groups = uploaded.ordering.groups(frame.style, &uploaded.groups);
             let study = frame.style == Style::Textured && frame.scene.particle_study;
             let split = if study {
                 groups
@@ -556,7 +503,7 @@ impl State {
                 groups.len()
             };
             let remaining = study.then(|| groups[split..].to_vec());
-            let mut _draws = draw::groups(
+            draw::groups(
                 gl,
                 uniforms,
                 uploaded,
@@ -565,8 +512,6 @@ impl State {
                 &groups[..split],
                 draw::Pass::Color,
             );
-            #[cfg(all(test, any(windows, target_os = "linux")))]
-            drop(legacy);
             if study {
                 if let Err(error) = particle::paint(
                     gl,
@@ -590,7 +535,7 @@ impl State {
                 gl.use_program(Some(*program));
                 gl.bind_vertex_array(Some(uploaded.vao));
                 gl.enable(glow::DEPTH_TEST);
-                let calls = draw::groups(
+                draw::groups(
                     gl,
                     uniforms,
                     uploaded,
@@ -599,7 +544,6 @@ impl State {
                     remaining.as_deref().unwrap_or_default(),
                     draw::Pass::Color,
                 );
-                _draws = [_draws[0] + calls[0], _draws[1] + calls[1]];
                 if let Err(error) = particle::paint(
                     gl,
                     uploaded,
@@ -619,11 +563,6 @@ impl State {
                     gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
                     return false;
                 }
-            }
-            #[cfg(all(test, any(windows, target_os = "linux")))]
-            {
-                self.metrics.draw_calls = _draws[0];
-                self.metrics.indexed_calls = _draws[1];
             }
             gl.polygon_mode(glow::FRONT_AND_BACK, glow::FILL);
             gl.disable(glow::FRAMEBUFFER_SRGB);

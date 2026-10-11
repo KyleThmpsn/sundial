@@ -432,7 +432,7 @@ pub(super) fn read_rgba8_texture_pair(
     })?;
     if header.len() != TEXTURE_HEADER_SIZE {
         return Err(invalid(format!(
-            "Weapon icon texture header {header_tag} decoded to {} bytes; expected {TEXTURE_HEADER_SIZE}",
+            "Weapon icon texture header {header_tag} decoded to {} bytes. Expected {TEXTURE_HEADER_SIZE}",
             header.len()
         )));
     }

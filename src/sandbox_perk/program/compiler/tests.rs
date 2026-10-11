@@ -107,6 +107,7 @@ fn draft_keeps_component_overrides_and_refuses_to_merge_distinct_edits() {
         damage_type: None,
         hud_status: None,
         rows: Vec::new(),
+        script: None,
     };
     let program = Program {
         actions: vec![Action::Pattern {
@@ -428,6 +429,7 @@ fn an_always_active_program_ends_on_its_event_key() {
             damage_type: None,
             rows: Vec::new(),
             hud_status: None,
+            script: None,
         })],
         ..Program::default()
     };
@@ -670,6 +672,7 @@ fn every_typed_action_writes_the_stock_retained_byte() {
         damage_type: None,
         rows: Vec::new(),
         hud_status: None,
+        script: None,
     };
     let kill = Activation::Kill {
         trigger: Trigger::WeaponKill,
@@ -793,6 +796,7 @@ fn attach_technical_fields_are_written_verbatim() {
             damage_type: None,
             rows: Vec::new(),
             hud_status: None,
+            script: None,
         },
         mode: AttachmentTarget::OtherCombatant,
         keys: [0x4113_6E32, 0x95E7_400C],

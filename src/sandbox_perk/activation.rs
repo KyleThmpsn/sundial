@@ -197,7 +197,7 @@ pub fn with_activation(
 
 fn validate_outlaw(action_tag: u32, source: &[u8]) -> Result<[usize; 2], String> {
     let invalid = || {
-        "Activation conditions currently require the mapped stock Outlaw action (build 86657); this source is unsupported or has changed.".to_owned()
+        "Activation conditions currently require the mapped stock Outlaw action (build 86657). This source is unsupported or has changed.".to_owned()
     };
     if action_tag != OUTLAW_ACTION
         || source.len() != 1782

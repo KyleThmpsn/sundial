@@ -3,9 +3,13 @@
 use super::*;
 use crate::app::subclass_view::GraphCards;
 
-/// What decides the graph a weapon fires: the runtime it reads, or the graph a requested
-/// behavior brings in place of its own.
-type Firing = (Option<RuntimeGraphKey>, Option<u32>);
+/// What decides the graph a weapon fires: the runtime it reads with the recipe's component
+/// splices, as binding, donor pattern and donor item, or the graph a requested behavior brings in
+/// place of its own.
+type Firing = (
+    Option<(RuntimeGraphKey, Vec<(u32, Option<u16>, u32)>)>,
+    Option<u32>,
+);
 
 /// The projectile a firing fires, or `None` for a graph that is not a projectile.
 type Fired = Result<Option<u32>, String>;
@@ -61,16 +65,34 @@ impl FiredProjectile {
 /// The projectile a weapon fires: the graph a requested behavior brings, else the one the block
 /// its runtime selects names, as the build finds it.
 fn read_fired(packages: &Path, (key, requested): &Firing) -> Fired {
+    use sundial::package_authoring::runtime::{
+        load_weapon_runtime_entity_at_pattern_index_with_manager,
+        load_weapon_runtime_entity_with_manager,
+    };
     use sundial::package_authoring::sandbox_perk::entity::{Kind, kind};
     let manager = open_shadowkeep_package_manager(packages)?;
     let graph = match (requested, key) {
         (Some(graph), _) => Some(*graph),
-        (None, Some(key)) => {
+        (None, Some((key, splices))) => {
             let source = crate::runtime::load_effective_runtime_entity(&manager, key)?;
+            let donors = splices
+                .iter()
+                .map(|&(binding, pattern, item)| {
+                    let donor = if let Some(pattern) = pattern {
+                        load_weapon_runtime_entity_at_pattern_index_with_manager(&manager, pattern)?
+                    } else {
+                        load_weapon_runtime_entity_with_manager(&manager, item)?
+                    };
+                    Ok((binding, donor.payload))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let copied = crate::item::splice_writes(&manager, &source.payload, &donors)
+                .map_err(|error| error.to_string())?;
             crate::weapon::behavior::fired_graph(
                 &manager,
                 &source.payload,
                 source.weapon_content_group_hash,
+                &copied,
             )
             .map_err(|error| error.to_string())?
         }
@@ -84,10 +106,17 @@ fn read_fired(packages: &Path, (key, requested): &Firing) -> Fired {
 }
 
 impl PackageAuthoringApp {
-    /// Gameplay's Projectile section, once the projectile the weapon fires has been read. A weapon
-    /// that fires none, or whose imported model brings its own, has none.
+    /// Gameplay's Projectile section, including the imported carrier's launch adaptation.
     pub(in crate::app) fn draw_fired_projectile(&mut self, ui: &mut egui::Ui) {
-        if !self.recipe.kind.is_weapon() || self.recipe.overrides.fired_graph.is_some() {
+        if !self.recipe.kind.is_weapon() {
+            return;
+        }
+        if let Some(fired) = &self.recipe.overrides.fired_graph {
+            if fired.imported.is_some() {
+                ui.add_space(8.0);
+                draw_donor_section_label(ui, "Projectile", None);
+                crate::app::donor_view::draw_projectile_speed(ui, &mut self.recipe.overrides);
+            }
             return;
         }
         let behaviors = self
@@ -99,7 +128,11 @@ impl PackageAuthoringApp {
             .collect::<Vec<_>>();
         let firing = match crate::weapon::behavior::requested_graphs(&behaviors).first() {
             Some(graph) => (None, Some(*graph)),
-            None => (self.runtime_graph_key(), None),
+            None => (
+                self.runtime_graph_key()
+                    .map(|key| (key, self.component_splice_sources())),
+                None,
+            ),
         };
         let packages = self.packages.clone();
         // The installer replaces the packages a read would open.

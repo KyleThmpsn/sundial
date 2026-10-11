@@ -1,15 +1,14 @@
-//! Barrel Settings: value tiles, the pattern's rings as a table, and a polar schematic beside
-//! them, sharing the compiler's geometry resolution.
+//! Barrel Settings: a polar schematic beside value tiles and the pattern's rings as a table,
+//! sharing the compiler's geometry resolution.
 use super::*;
 use crate::app::style::{self, named_control};
-use crate::weapon::barrel::{Edits, Pattern, Ring};
+use crate::weapon::barrel::{Edits, MAX_BULLETS_PER_SHOT, Pattern, Ring};
 
 /// The schematic's side.
 const PREVIEW: f32 = 150.0;
-/// The narrowest the tiles get with the schematic beside them.
-const TILES_MIN_WIDTH: f32 = 320.0;
-/// The narrowest the ring table gets with the schematic beside it.
-const TABLE_MIN_WIDTH: f32 = 420.0;
+/// The narrowest the values get with the schematic beside them, which holds the ring table, so
+/// the layout does not change when the rings appear.
+const VALUES_MIN_WIDTH: f32 = 420.0;
 /// Space between the pattern's choices.
 const CHOICE_SPACING: f32 = 4.0;
 
@@ -47,7 +46,23 @@ const RING_COLUMNS: [(&str, &str); 5] = [
     ),
 ];
 
-pub(super) fn draw(ui: &mut egui::Ui, saved: &mut Option<Edits>, defaults: &BarrelDefaults) {
+/// Bullets per Shot as the weapon fires it, and the stat that picks it, by name and in-game
+/// reading, while one does.
+pub(super) struct Burst {
+    pub(super) bullets: u16,
+    pub(super) follows: Option<(String, String)>,
+}
+
+/// `custom` remembers, for the recipe on screen, that the author picked Custom, since rings equal
+/// to a preset would otherwise read as that preset. `bullets` is the weapon's Bullets per Shot,
+/// where it offers one.
+pub(super) fn draw(
+    ui: &mut egui::Ui,
+    saved: &mut Option<Edits>,
+    defaults: &BarrelDefaults,
+    custom: egui::Id,
+    bullets: Option<&Burst>,
+) {
     let mut edits = saved.clone().unwrap_or_default();
     let before = edits.clone();
     let inherited = defaults.pattern.as_ref();
@@ -58,51 +73,72 @@ pub(super) fn draw(ui: &mut egui::Ui, saved: &mut Option<Edits>, defaults: &Barr
             return;
         }
     };
-    // The values beside the schematic when both fit, the schematic under them otherwise.
+    // The schematic beside the values when both fit, under them otherwise. Its square is placed
+    // first and painted last, so it shows this frame's edits.
     let gap = ui.spacing().item_spacing.x * 2.0;
-    let needed = if edits.rings.is_some() {
-        TABLE_MIN_WIDTH
-    } else {
-        TILES_MIN_WIDTH
-    };
-    let resolved = if ui.available_width() >= needed + gap + PREVIEW {
+    let resolved = if ui.available_width() >= PREVIEW + gap + VALUES_MIN_WIDTH {
         ui.horizontal_top(|ui| {
-            let width = ui.available_width() - gap - PREVIEW;
+            let square = preview_square(ui);
+            ui.add_space(gap - ui.spacing().item_spacing.x);
+            let width = ui.available_width();
             ui.allocate_ui_with_layout(
                 egui::vec2(width, 0.0),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
                     ui.set_width(width);
-                    values(ui, &mut edits, (inherited, &pattern));
+                    values(
+                        ui,
+                        &mut edits,
+                        (inherited, &pattern),
+                        (custom, defaults.random_rotation),
+                        bullets,
+                    );
                 },
             );
-            ui.add_space(gap - ui.spacing().item_spacing.x);
-            schematic(ui, &edits, inherited)
+            schematic(ui, square, &edits, inherited)
         })
         .inner
     } else {
-        values(ui, &mut edits, (inherited, &pattern));
-        schematic(ui, &edits, inherited)
+        values(
+            ui,
+            &mut edits,
+            (inherited, &pattern),
+            (custom, defaults.random_rotation),
+            bullets,
+        );
+        let square = preview_square(ui);
+        schematic(ui, square, &edits, inherited)
     };
     if resolved && edits != before {
         *saved = (!edits.is_empty()).then_some(edits);
     }
 }
 
-/// Pellets per Shot, Spread and Pattern as tiles, and the rings under them once they are set.
+/// Pellets per Bullet, Bullets per Shot where the weapon keeps it in one place, Spread and Pattern
+/// as tiles, and the rings under them once they are set. `bullets` is the weapon's own.
 fn values(
     ui: &mut egui::Ui,
     edits: &mut Edits,
     (inherited, pattern): (Option<&Pattern>, &Pattern),
+    (custom, rotation): (egui::Id, bool),
+    bullets: Option<&Burst>,
 ) {
     let inherited_count = inherited.map_or(1, |pattern| total(&pattern.rings));
+    // Without a pattern the firing code skips the spread, so its rotation does nothing.
+    let patterned = inherited.is_some() || edits.shapes_pattern();
     let choices = choice_width(ui);
     style::tiles(ui, |ui, width| {
         draw_count(ui, width, edits, pattern, inherited_count);
+        if let Some(burst) = bullets {
+            draw_bullets(ui, width, edits, burst);
+        }
         draw_spread(ui, width, edits);
         // A preset takes the count this frame set.
         let current = edits.resolve(inherited).unwrap_or_else(|_| pattern.clone());
-        draw_shape(ui, choices.max(width), edits, &current);
+        draw_shape(ui, (choices.max(width), custom), edits, &current);
+        if patterned {
+            draw_rotation(ui, width, edits, rotation);
+        }
     });
     let changed = edits.rings.as_mut().and_then(|rings| {
         ui.add_space(4.0);
@@ -130,14 +166,14 @@ fn draw_count(
         ui,
         (width, "barrel-pellets"),
         (
-            "Pellets per Shot",
-            "Pellets fired at once, shared across the rings",
+            "Pellets per Bullet",
+            "Pellets each bullet fires, shared across the rings",
         ),
         original.as_deref(),
         |ui| {
             let field = egui::DragValue::new(&mut count).range(1..=32767).speed(1.0);
             let size = egui::vec2(width, ui.spacing().interact_size.y);
-            named_control(ui.add_sized(size, field), "Pellets per Shot").changed()
+            named_control(ui.add_sized(size, field), "Pellets per Bullet").changed()
         },
     );
     if changed {
@@ -145,6 +181,47 @@ fn draw_count(
     } else if reset {
         let _ = edits.set_pellets(inherited_count);
         edits.pellets = None;
+    }
+}
+
+/// Bullets per Shot: how many bullets one pull fires, each with every pellet, from `burst`, the
+/// weapon's own. While a stat picks them, the field says which value of it does, as in 3 at 450
+/// RPM, and a set value holds at every value of that stat.
+fn draw_bullets(ui: &mut egui::Ui, width: f32, edits: &mut Edits, burst: &Burst) {
+    let stock = burst.bullets;
+    let mut bullets = edits.bullets_per_shot.unwrap_or(stock);
+    let original = edits.bullets_per_shot.map(|_| stock.to_string());
+    let hint = match &burst.follows {
+        Some((stat, _)) => {
+            format!("Bullets one pull fires, each with every pellet. {stat} sets it until changed")
+        }
+        None => "Bullets one pull fires, each with every pellet".to_owned(),
+    };
+    let reading = burst
+        .follows
+        .as_ref()
+        .filter(|_| edits.bullets_per_shot.is_none())
+        .map(|(_, reading)| format!(" at {reading}"));
+    let (changed, reset) = style::stock_tile(
+        ui,
+        (width, "barrel-bullets"),
+        ("Bullets per Shot", hint.as_str()),
+        original.as_deref(),
+        |ui| {
+            let mut field = egui::DragValue::new(&mut bullets)
+                .range(1..=MAX_BULLETS_PER_SHOT)
+                .speed(0.1);
+            if let Some(reading) = reading {
+                field = field.suffix(reading);
+            }
+            let size = egui::vec2(width, ui.spacing().interact_size.y);
+            named_control(ui.add_sized(size, field), "Bullets per Shot").changed()
+        },
+    );
+    if changed {
+        edits.bullets_per_shot = (bullets != stock).then_some(bullets);
+    } else if reset {
+        edits.bullets_per_shot = None;
     }
 }
 
@@ -217,9 +294,21 @@ fn choice_width(ui: &egui::Ui) -> f32 {
 }
 
 /// Pattern: the Barrel's own rings, a preset, or rings of the author's, side by side. Custom
-/// starts from the rings the weapon has now, and editing a preset's ring makes it Custom.
-fn draw_shape(ui: &mut egui::Ui, width: f32, edits: &mut Edits, pattern: &Pattern) {
-    let current = shape_of(edits.rings.as_deref());
+/// starts from the rings the weapon has now and stays picked, though they match a preset, until
+/// another is. Editing a preset's ring makes it Custom.
+fn draw_shape(
+    ui: &mut egui::Ui,
+    (width, custom): (f32, egui::Id),
+    edits: &mut Edits,
+    pattern: &Pattern,
+) {
+    let picked_custom = ui
+        .data(|data| data.get_temp::<bool>(custom))
+        .unwrap_or(false);
+    let current = match edits.rings.as_deref() {
+        Some(_) if picked_custom => Shape::Custom,
+        rings => shape_of(rings),
+    };
     let (picked, reset) = style::tile(
         ui,
         width,
@@ -246,14 +335,53 @@ fn draw_shape(ui: &mut egui::Ui, width: f32, edits: &mut Edits, pattern: &Patter
             .inner
         },
     );
+    let Some(picked) = (if reset { Some(Shape::Barrel) } else { picked }) else {
+        return;
+    };
     let count = total(&pattern.rings);
-    match picked {
-        _ if reset => edits.rings = None,
-        Some(Shape::Barrel) => edits.rings = None,
-        Some(Shape::Circle) => edits.rings = Some(preset(count, 0.0)),
-        Some(Shape::Ring) => edits.rings = Some(preset(count, 1.0)),
-        Some(Shape::Custom) => edits.rings = Some(pattern.rings.clone()),
-        None => {}
+    edits.rings = match picked {
+        Shape::Barrel => None,
+        Shape::Circle => Some(preset(count, 0.0)),
+        Shape::Ring => Some(preset(count, 1.0)),
+        Shape::Custom => Some(edits.rings.clone().unwrap_or_else(|| pattern.rings.clone())),
+    };
+    ui.data_mut(|data| data.insert_temp(custom, picked == Shape::Custom));
+}
+
+/// Random Rotation: whether each bullet's pattern takes a new angle, the selected Barrel's own
+/// `stock` setting until changed. Off keeps a pattern such as a level row level.
+fn draw_rotation(ui: &mut egui::Ui, width: f32, edits: &mut Edits, stock: bool) {
+    let current = edits.random_rotation.unwrap_or(stock);
+    let (picked, reset) = style::tile(
+        ui,
+        width,
+        "barrel-rotation",
+        "Random Rotation",
+        "A new pattern angle for each bullet",
+        edits.random_rotation.is_some(),
+        |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = CHOICE_SPACING;
+                let mut picked = None;
+                for (value, label) in [(true, "On"), (false, "Off")] {
+                    let selected = value == current;
+                    if ui
+                        .add(egui::Button::new(label).selected(selected))
+                        .clicked()
+                        && !selected
+                    {
+                        picked = Some(value);
+                    }
+                }
+                picked
+            })
+            .inner
+        },
+    );
+    if reset {
+        edits.random_rotation = None;
+    } else if let Some(value) = picked {
+        edits.random_rotation = (value != stock).then_some(value);
     }
 }
 
@@ -397,27 +525,35 @@ fn remove_ring(ui: &mut egui::Ui, index: usize) -> bool {
     .inner
 }
 
-/// The schematic of the edited pattern, or why it does not resolve. Returns whether it resolved.
-fn schematic(ui: &mut egui::Ui, edits: &Edits, inherited: Option<&Pattern>) -> bool {
+/// The schematic's square, named for a screen reader, with what it shows on its hover.
+fn preview_square(ui: &mut egui::Ui) -> egui::Rect {
+    let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(PREVIEW), egui::Sense::hover());
+    named_control(response, "Pattern Preview").on_hover_text(
+        "Reference circle is 100% spread. Wider patterns scale to fit. Exact placement varies",
+    );
+    rect
+}
+
+/// The edited pattern drawn into `rect`, or why it does not resolve, wrapped to the square.
+/// Returns whether it resolved.
+fn schematic(ui: &egui::Ui, rect: egui::Rect, edits: &Edits, inherited: Option<&Pattern>) -> bool {
     match edits.resolve(inherited) {
         Ok(pattern) => {
             let spread = f32::from_bits(edits.spread_scale_bits.unwrap_or(1.0_f32.to_bits()));
-            preview(ui, &pattern, spread);
+            paint_pattern(ui, rect, &pattern, spread);
             true
         }
         Err(error) => {
-            ui.colored_label(ui.visuals().warn_fg_color, error);
+            let color = ui.visuals().warn_fg_color;
+            let font = egui::TextStyle::Body.resolve(ui.style());
+            let galley = ui.painter().layout(error, font, color, rect.width());
+            ui.painter().galley(rect.min, galley, color);
             false
         }
     }
 }
 
-fn preview(ui: &mut egui::Ui, pattern: &Pattern, factor: f32) {
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(PREVIEW, PREVIEW), egui::Sense::hover());
-    named_control(response, "Pattern Preview").on_hover_text(
-        "Reference circle is 100% spread. Wider patterns scale to fit. Exact placement varies",
-    );
+fn paint_pattern(ui: &egui::Ui, rect: egui::Rect, pattern: &Pattern, factor: f32) {
     let painter = ui.painter_at(rect);
     let center = rect.center();
     let factor = if f32::from_bits(pattern.scale_bits) == 0.0 {

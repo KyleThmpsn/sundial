@@ -1,6 +1,7 @@
 //! Attach translated cloth to independent native float models and components.
 use super::*;
 use crate::d2_mot::{cloth as solver, reader::Reader};
+mod activation;
 mod component;
 mod definition;
 mod render;
@@ -84,6 +85,9 @@ pub(super) fn build(
             "Multiple meshes in one cloth model need separate buffer binding validation"
         );
         let model = c.source.raw(source_tag)?;
+        let source_owner = c
+            .source
+            .raw(entry["owner"].as_str().context("Cloth source owner")?)?;
         ensure!(
             model.array(16, 128, Some(0x80806EC5))?.len() == 1,
             "Multi-mesh cloth requires separate binding validation"
@@ -139,7 +143,7 @@ pub(super) fn build(
             model_tag,
             &model_template,
         )?;
-        component::build(c, &mut reader, &name, &template)?;
+        component::build(c, &mut reader, &name, &template, &source_owner)?;
         evidence.push(json!({"source_model":source_tag,"model":format!("{name}-model"),"definition":format!("{name}-definition"),"solver":format!("{name}-solver"),"simulation_converted":true,"float_vertices":vertices,"conversion":translated.report,"gameplay_verified":false}));
     }
     // The merged geometry remains the checked skinning source. Only its draws

@@ -201,7 +201,7 @@ pub(in crate::item) fn set_weapon_plug_damage_type(
     let damage_lanes = weapon_damage_socket_lanes(data)?;
     let [(lane, row)] = damage_lanes.as_slice() else {
         return Err(invalid(
-            "Plug-driven damage requires exactly one native type-68 carrier lane in the gameplay definition; Parhelion will not repurpose a disabled, mod, or unrelated socket",
+            "Plug-driven damage requires exactly one native type-68 carrier lane in the gameplay definition. Parhelion will not repurpose a disabled, mod, or unrelated socket",
         ));
     };
     let lane = *lane;
@@ -359,7 +359,7 @@ pub(in crate::item) fn apply_weapon_slot_and_damage(
             (ModernDamageType::Kinetic, _) => {
                 if !weapon_damage_socket_lanes(data)?.is_empty() {
                     return Err(invalid(
-                        "The gameplay definition carries elemental damage through a type-68 socket; removing that carrier for Kinetic damage is not package-proven",
+                        "The gameplay definition carries elemental damage through a type-68 socket. Removing that carrier for Kinetic damage is not package-proven",
                     ));
                 }
                 set_weapon_fixed_damage_type(
@@ -386,7 +386,7 @@ pub(in crate::item) fn apply_weapon_slot_and_damage(
             ) => {
                 if !weapon_damage_socket_lanes(data)?.is_empty() {
                     return Err(invalid(
-                        "The gameplay definition already has a type-68 elemental carrier; adding a parent damage marker would duplicate the carrier",
+                        "The gameplay definition already has a type-68 elemental carrier. Adding a parent damage marker would duplicate the carrier",
                     ));
                 }
                 set_weapon_fixed_damage_type(

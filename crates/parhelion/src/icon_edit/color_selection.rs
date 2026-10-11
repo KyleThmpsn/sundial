@@ -214,8 +214,8 @@ pub(super) fn draw_controls(
                 });
                 let mut by_hue = replacement.hue_range_degrees.is_some();
                 if ui
-                    .checkbox(&mut by_hue, "Match every shade of this hue")
-                    .on_hover_text("Artwork shades one color from dark to bright, which spreads it out in color range. Matching the hue takes the whole surface at once, and each pixel keeps its own brightness.")
+                    .checkbox(&mut by_hue, "Match Every Shade")
+                    .on_hover_text("Recolors every shade of this hue at once. Each pixel keeps its brightness.")
                     .changed()
                 {
                     replacement.hue_range_degrees = by_hue.then_some(DEFAULT_HUE_RANGE_DEGREES);

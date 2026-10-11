@@ -152,6 +152,7 @@ fn shared_owner_source(flavor: u32) -> Arc<WeaponRuntimeEntitySource> {
         item_hash: flavor,
         pattern_global_id_hash: flavor + 0x1000,
         weapon_content_group_hash: flavor + 0x2000,
+        weapon_translation_group_hash: flavor + 0x4000,
         entity_tag: flavor + 0x3000,
         payload: data,
     })

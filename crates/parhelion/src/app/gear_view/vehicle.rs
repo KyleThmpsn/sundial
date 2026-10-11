@@ -146,8 +146,10 @@ impl PackageAuthoringApp {
                 }
             }
             #[cfg(feature = "d2-model-importer")]
-            if self.recipe.overrides.imported_graph.is_some() && edited.summon != Summon::Sparrow {
-                ui.colored_label(ui.visuals().error_fg_color, "Alternate summoning requires a native base without an imported appearance.");
+            if let Some(graph) = &self.recipe.overrides.imported_graph
+                && let Ok(Some(entity)) = edited.summon.entity()
+                && let Err(error) = graph.validate_vehicle(entity) {
+                ui.colored_label(ui.visuals().error_fg_color, error.to_string());
             }
         });
         if edited != original {
@@ -181,40 +183,21 @@ fn cards(
     };
     let mut choose_projectile = false;
     for (line, kinds) in [0, 1, 2, 3].chunks(count).enumerate() {
-        // The tallest card's height from the frame before, which the others on its line take.
-        let id = ui.id().with(("vehicle-card-line", count, line));
-        let height = ui
-            .ctx()
-            .data(|data| data.get_temp::<f32>(id))
-            .unwrap_or(0.0);
-        let mut tallest = 0.0_f32;
+        let mut cards = style::CardLine::new(ui, ("vehicle-card-line", count, line));
         ui.columns(count, |columns| {
             for (&kind, column) in kinds.iter().zip(columns.iter_mut()) {
-                style::card(column, |ui| {
-                    match kind {
-                        0 => sections::driving(ui, settings, hover),
-                        1 => sections::handling(ui, settings),
-                        2 => sections::durability(ui, settings),
-                        _ => {
-                            choose_projectile =
-                                sections::weapons(ui, settings, armed, projectile_label);
-                        }
+                cards.card(column, |ui| match kind {
+                    0 => sections::driving(ui, settings, hover),
+                    1 => sections::handling(ui, settings),
+                    2 => sections::durability(ui, settings),
+                    _ => {
+                        choose_projectile =
+                            sections::weapons(ui, settings, armed, projectile_label);
                     }
-                    let drawn = ui.min_rect();
-                    tallest = tallest.max(drawn.height());
-                    // Measured from the card's top. `set_min_height` would add the height below
-                    // what is already drawn.
-                    ui.expand_to_include_rect(egui::Rect::from_min_size(
-                        drawn.min,
-                        egui::vec2(0.0, height),
-                    ));
                 });
             }
         });
-        if (tallest - height).abs() > 0.5 {
-            ui.ctx().data_mut(|data| data.insert_temp(id, tallest));
-            ui.ctx().request_repaint();
-        }
+        cards.finish(ui.ctx());
     }
     choose_projectile
 }

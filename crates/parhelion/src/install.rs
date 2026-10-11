@@ -813,7 +813,7 @@ fn check_game_before_validation(request: &InstallRequest) -> Result<(), InstallE
     })?;
     if game_is_running {
         return Err(InstallError::validation(
-            "The game is running; close it before installing authored packages",
+            "The game is running. Close it before installing authored packages",
         ));
     }
     Ok(())
@@ -824,7 +824,7 @@ fn check_game_immediately_before_commit(request: &InstallRequest) -> Result<(), 
         .map_err(|error| format!("Could not recheck whether the game is running: {error}"))?;
     if game_is_running {
         return Err(
-            "The game started during installation preflight; no package files were changed"
+            "The game started during installation preflight. No package files were changed"
                 .to_owned(),
         );
     }

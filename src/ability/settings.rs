@@ -38,6 +38,7 @@ mod lanes;
 pub use lanes::{Codec, Lane};
 pub(crate) mod native;
 pub use native::Property as NativeProperty;
+pub use native::{Creation, creations};
 mod validation;
 pub use validation::validate_values;
 
@@ -805,6 +806,37 @@ pub struct Setting {
 }
 
 impl Setting {
+    /// The one graph this setting's creating group or node makes, when it makes exactly one. Its
+    /// timing then belongs with that graph, as a delay before it appears or its lifetime.
+    #[must_use]
+    pub fn created_graph(&self, creations: &[Creation]) -> Option<u32> {
+        if !matches!(
+            self.kind,
+            Kind::Native(
+                NativeProperty::MinimumActivationDelay
+                    | NativeProperty::MaximumActivationDelay
+                    | NativeProperty::MinimumCycleDuration
+                    | NativeProperty::MaximumCycleDuration
+                    | NativeProperty::RepeatCount
+                    | NativeProperty::MinimumPartDuration
+                    | NativeProperty::MaximumPartDuration
+            )
+        ) {
+            return None;
+        }
+        let body = self
+            .field
+            .owner_offset
+            .checked_sub(self.field.locator.value_offset)?;
+        let creation = creations
+            .iter()
+            .find(|creation| creation.owner_tag == self.owner_tag && creation.body == body)?;
+        match creation.graphs.as_slice() {
+            [graph] => Some(*graph),
+            _ => None,
+        }
+    }
+
     /// Absolute start of the individual scalar, even when it shares an opaque field.
     #[must_use]
     pub fn offset(&self) -> u32 {

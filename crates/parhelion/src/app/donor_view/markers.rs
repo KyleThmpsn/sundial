@@ -271,7 +271,7 @@ impl PackageAuthoringApp {
         let placed = !overrides.marker_offsets.is_empty() || overrides.held_offset_um != [0; 3];
         ui.horizontal(|ui| {
             ui.strong("Placement")
-                .on_hover_text("Where the model sits in the hand. Test in game");
+                .on_hover_text("Where the model sits in the hand");
             if placed {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     crate::app::style::more_menu(ui, "Placement", |ui| {

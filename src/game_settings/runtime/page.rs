@@ -240,7 +240,7 @@ pub(super) fn draw_field(
                 ui.label(field.label);
                 let mut number = value.as_u64().unwrap_or(min);
                 requested = ui
-                    .add(egui::DragValue::new(&mut number).range(min..=max))
+                    .add(egui::DragValue::new(&mut number).range(min..=max).clamp_existing_to_range(false))
                     .changed();
                 value = Value::from(number);
             }

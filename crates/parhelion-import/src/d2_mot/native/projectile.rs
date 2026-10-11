@@ -1,6 +1,6 @@
 //! Source projectile controllers assembled for Shadowkeep through checked native
 //! implementation envelopes. Compatibility substitutions are part of the output receipt.
-pub(crate) mod assets;
+pub(crate) use crate::tiger::projectile as assets;
 pub(crate) mod compatibility;
 mod resources;
 
@@ -20,7 +20,6 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
     path::Path,
 };
 

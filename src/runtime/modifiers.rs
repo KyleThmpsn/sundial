@@ -30,9 +30,10 @@ pub const MAGAZINE_COMPONENT: i64 = 1;
 pub const BARREL_COMPONENT: i64 = 2;
 /// The Abilities interface, the one component whose records read the ability slot.
 pub const ABILITIES_COMPONENT: i64 = 9;
-/// Barrel inputs that set rounds in a burst sequence. Simultaneous pellets are stored in
-/// the Barrel's spread pattern separately from these numeric inputs.
-pub const BARREL_ROUNDS_PER_BURST: [i64; 4] = [22, 23, 24, 25];
+/// Barrel inputs that set how many bullets one pull fires, which the stat translators publish as
+/// `bullets_per_shot`. Each bullet fires every pellet of the Barrel's spread pattern, which is
+/// stored separately from these numeric inputs.
+pub const BARREL_BULLETS_PER_SHOT: [i64; 4] = [22, 23, 24, 25];
 /// Barrel inputs that set how quickly the weapon fires: Rate of Fire 1 to 4 in shots per second,
 /// then Time Between Shots 1 and 2 in seconds.
 pub const BARREL_FIRE_TIMING: [i64; 6] = [0, 1, 2, 3, 4, 5];
@@ -68,7 +69,7 @@ pub fn field_meaning(schema: u32, offset: u32) -> Option<FieldMeaning> {
             ],
         ),
         INPUT_OFFSET => (
-            "Numeric input within the selected component.\nBarrel: Rounds per Burst changes the number of successive rounds. Spread changes the pattern's width. Pellets fired together in one shot are controlled by the barrel's spread pattern, separately from these inputs.\nHealth and Shields: 0 = Shield Capacity, 1 = Shield Regeneration Delay, 2 = Shield Regeneration Duration, 3 = Health Capacity, 4 = Health Regeneration Delay, 5 = Health Regeneration Duration. Delays and durations are in seconds before player scaling. Halving a positive duration doubles the regeneration rate. A final duration at or below 0.0001 stops that update.\nAbilities: input 0 participates in recharge, input 1 in activation cost, input 2 in active energy usage and input 4 controls the activation lockout. Input 6 scales targeting only on a compatible melee or selected-profile controller. It is a factor, not a distance or a universal ability input.\nOther components have different input tables. Player Stats and Weapon Stats consume both bytes, while other mapped categories consume the low byte. Do not transfer input names between components.",
+            "Numeric input within the selected component.\nBarrel: Bullets per Shot changes how many bullets one pull fires. Spread changes the pattern's width. Pellets per Bullet comes from the barrel's spread pattern, separately from these inputs.\nHealth and Shields: 0 = Shield Capacity, 1 = Shield Regeneration Delay, 2 = Shield Regeneration Duration, 3 = Health Capacity, 4 = Health Regeneration Delay, 5 = Health Regeneration Duration. Delays and durations are in seconds before player scaling. Halving a positive duration doubles the regeneration rate. A final duration at or below 0.0001 stops that update.\nAbilities: input 0 participates in recharge, input 1 in activation cost, input 2 in active energy usage and input 4 controls the activation lockout. Input 6 scales targeting only on a compatible melee or selected-profile controller. It is a factor, not a distance or a universal ability input.\nOther components have different input tables. Player Stats and Weapon Stats consume both bytes, while other mapped categories consume the low byte. Do not transfer input names between components.",
             &[],
         ),
         // CA2830's exact dispatch table resolves these interfaces. Unknown
@@ -155,14 +156,14 @@ pub fn unread(schema: u32, offset: u32, value: i64) -> bool {
 ///   Aggressive Frame, Spinning Up, Lightning Rounds and Onslaught.
 /// - Time Between Shots falls under the same perks: Desperado ("increases your rate of fire")
 ///   subtracts 0.23 and Thunderer multiplies by 0.35.
-/// - Rounds per Burst: the four-round, five-round and three-round burst perks add exactly the
+/// - Bullets per Shot: the four-round, five-round and three-round burst perks add exactly the
 ///   rounds their descriptions give.
 /// - Accuracy 1 to 6 fall under Opening Shot, Eye of the Storm and Firmly Planted ("more
 ///   accurate"). Hip-Fire Accuracy rises with Freehand Grip, Hip-Fire Grip and Payday ("hip fire
 ///   accuracy"). Airborne Accuracy falls under Icarus Grip ("accuracy while airborne") and Tome
 ///   of Dawn ("holds you in midair").
 /// - Damage is the damage of one shot. The Rounds Per Minute stat sets it beside Rate of Fire
-///   and Rounds per Burst, and it falls as the rate rises: 22 to 13.4 across auto rifles, 16 to
+///   and Bullets per Shot, and it falls as the rate rises: 22 to 13.4 across auto rifles, 16 to
 ///   11 across submachine guns, 38.2 to 27.5 across scout rifles, 77 to 38 across hand cannons.
 ///   Shotguns and fusion rifles divide a total by their pellets or bolts, and Impact sets it for
 ///   bows and grenade launchers. Rampage, Kill Clip, Impetus and High-Impact Reserves multiply
@@ -275,10 +276,10 @@ pub fn input_choices(component: i64) -> &'static [(i64, &'static str)] {
             (14, "Accuracy 5"),
             (15, "Accuracy 6"),
             (16, "Airborne Accuracy"),
-            (22, "Rounds per Burst"),
-            (23, "Rounds per Burst 2"),
-            (24, "Rounds per Burst 3"),
-            (25, "Rounds per Burst 4"),
+            (22, "Bullets per Shot"),
+            (23, "Bullets per Shot 2"),
+            (24, "Bullets per Shot 3"),
+            (25, "Bullets per Shot 4"),
             (30, "Hip-Fire Accuracy"),
             (31, "Hip-Fire Accuracy 2"),
             (32, "Damage"),
@@ -361,9 +362,7 @@ pub fn input_choices(component: i64) -> &'static [(i64, &'static str)] {
 #[must_use]
 pub const fn input_hint(component: i64, input: i64) -> Option<&'static str> {
     match (component, input) {
-        (2, 22..=25) => Some(
-            "Successive rounds in a burst. Pellets fired together are set separately by the barrel.",
-        ),
+        (2, 22..=25) => Some("Bullets one pull fires. Pellets per Bullet is set on the Barrel."),
         (2, 39) => {
             Some("Width of the shot pattern. The number of pellets fired together stays the same.")
         }

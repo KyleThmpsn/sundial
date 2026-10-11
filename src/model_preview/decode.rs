@@ -178,6 +178,7 @@ fn append_stages(
     let mut normal_materials = std::collections::BTreeMap::new();
     let mut surface_materials = std::collections::BTreeMap::new();
     let mut loaded = std::collections::BTreeMap::new();
+    let mut skin_offsets = std::collections::BTreeMap::new();
     let plate = optional_texture(
         component
             .map(|c| texture::albedo(manager, c, model))
@@ -391,6 +392,12 @@ fn append_stages(
                 (offset, count, primitive),
                 attributes,
                 model,
+            )?;
+            effects::native::remap_skin(
+                manager,
+                material.as_ref().ok().copied(),
+                &mut skin_offsets,
+                &mut model.weights[read.0..],
             )?;
             pending
                 .as_mut()

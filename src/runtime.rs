@@ -376,6 +376,8 @@ pub struct WeaponRuntimeEntitySource {
     pub pattern_global_id_hash: u32,
     /// Selects this item's variant inside a shared weapon-content component.
     pub weapon_content_group_hash: u32,
+    /// Selects which of the stat translator's tables converts this item's stats.
+    pub weapon_translation_group_hash: u32,
     pub entity_tag: u32,
     pub payload: Vec<u8>,
 }
@@ -629,6 +631,7 @@ fn entity_from_assignments(
         item_hash: pattern.item_hash,
         pattern_global_id_hash: pattern.pattern_global_id_hash,
         weapon_content_group_hash: pattern.weapon_content_group_hash,
+        weapon_translation_group_hash: pattern.weapon_translation_group_hash,
         entity_tag: entity_tag.0,
         payload: entity,
     })

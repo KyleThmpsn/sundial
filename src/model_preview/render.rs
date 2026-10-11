@@ -105,6 +105,7 @@ pub(crate) fn image(model: &Model, camera: Camera, size: [usize; 2]) -> ColorIma
         0.0,
         None,
         16,
+        false,
     )
 }
 
@@ -126,6 +127,7 @@ pub(crate) fn animated_image(
         seconds,
         None,
         16,
+        false,
     )
 }
 
@@ -151,6 +153,7 @@ pub(crate) fn styled_image(
         seconds,
         None,
         16,
+        false,
     )
 }
 
@@ -179,6 +182,29 @@ pub(crate) fn preview_image(
         seconds,
         Some(overrides),
         workers,
+        false,
+    )
+}
+
+/// Native surface coverage on a transparent background for inventory artwork.
+pub(crate) fn transparent_image(model: &Model, camera: Camera, size: usize) -> ColorImage {
+    let scene = Scene {
+        background: [0; 3],
+        bloom: false,
+        ..Scene::default()
+    };
+    let pose = model.pose(0.0);
+    frame(
+        model,
+        camera,
+        scene,
+        [size; 2],
+        pose.as_ref(),
+        Style::Textured,
+        0.0,
+        None,
+        16,
+        true,
     )
 }
 
@@ -238,9 +264,19 @@ pub(crate) const RADIUS_SCALE: f32 = 0.43;
 /// volumes also stay outside the fit. Inspection modes retain their geometry. Models
 /// without triangles use their particle sources. Empty when there is neither.
 pub(crate) fn drawn_bounds(model: &Model, style: Style) -> ([f32; 3], [f32; 3]) {
+    surface_bounds(model, style, false)
+}
+
+/// Artwork must fit transparent surfaces such as blades as well as opaque geometry.
+pub(crate) fn artwork_bounds(model: &Model) -> ([f32; 3], [f32; 3]) {
+    surface_bounds(model, Style::Textured, true)
+}
+
+fn surface_bounds(model: &Model, style: Style, include_effects: bool) -> ([f32; 3], [f32; 3]) {
     let hide_light = model.has_surface_mesh();
     let hide_emitter = style == Style::Textured && model.has_object_mesh();
-    let hide_effect = style == Style::Textured
+    let hide_effect = !include_effects
+        && style == Style::Textured
         && (0..model.triangles.len()).any(|index| {
             !super::effects::transparent(model, index)
                 && !model.triangle_light.get(index).copied().unwrap_or(false)
@@ -385,6 +421,7 @@ fn frame(
     seconds: f32,
     overrides: Option<&[super::SurfaceOverride]>,
     workers: usize,
+    transparent_background: bool,
 ) -> ColorImage {
     let vertices = pose.map_or(model.vertices.as_slice(), |p| p.positions.as_slice());
     let source_normals = pose.map_or(model.normals.as_slice(), |p| p.normals.as_slice());
@@ -396,7 +433,14 @@ fn frame(
         scene.background[1],
         scene.background[2],
     );
-    let mut image = ColorImage::filled([width, height], background);
+    let mut image = ColorImage::filled(
+        [width, height],
+        if transparent_background {
+            Color32::TRANSPARENT
+        } else {
+            background
+        },
+    );
     if model.triangles.is_empty() && model.particle_sources.is_empty() {
         return image;
     }
@@ -404,7 +448,11 @@ fn frame(
     let material_study =
         style == Style::Textured && scene.particle_study && model.has_particle_material_study();
     let hide_emitter = style == Style::Textured && model.has_object_mesh() && !material_study;
-    let bounds = drawn_bounds(model, if material_study { Style::Solid } else { style });
+    let bounds = if transparent_background {
+        artwork_bounds(model)
+    } else {
+        drawn_bounds(model, if material_study { Style::Solid } else { style })
+    };
     let (low, high) = bounds;
     let bind_center = std::array::from_fn(|axis| (low[axis] + high[axis]) * 0.5);
     let center = pose.map_or(bind_center, |p| p.framing_center(bind_center));
@@ -608,6 +656,7 @@ fn frame(
     let mut depth = vec![f32::INFINITY; width * (last - first)];
     let background = super::output::background(scene, style);
     let mut linear_pixels = vec![background; width * (last - first)];
+    let mut coverage = vec![0.0f32; width * (last - first)];
     let has_effects = style == Style::Textured
         && (0..model.triangles.len()).any(|i| super::effects::transparent(model, i));
     let mut opaque_depth = Vec::new();
@@ -622,9 +671,10 @@ fn frame(
             scale,
         });
         std::thread::scope(|scope| {
-            for (band, (pixels, depth)) in linear_pixels
+            for (band, ((pixels, depth), coverage)) in linear_pixels
                 .chunks_mut(rows * width)
                 .zip(depth.chunks_mut(rows * width))
+                .zip(coverage.chunks_mut(rows * width))
                 .enumerate()
             {
                 let (prepared, dyes, particle_material, effect_frames) =
@@ -646,6 +696,7 @@ fn frame(
                             Band {
                                 pixels,
                                 depth,
+                                coverage,
                                 width,
                                 top,
                                 bottom,
@@ -694,15 +745,58 @@ fn frame(
             scale,
         );
     }
-    super::output::apply(&mut linear_pixels, [width, last - first], scene, style);
-    for (pixel, linear) in image.pixels[first * width..last * width]
-        .iter_mut()
-        .zip(linear_pixels)
-    {
-        let rgb = linear.map(super::shader::encode);
-        *pixel = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
-    }
+    finish_pixels(
+        &mut image.pixels[first * width..last * width],
+        &mut linear_pixels,
+        &coverage,
+        [width, last - first],
+        scene,
+        style,
+        transparent_background,
+    );
     image
+}
+
+fn finish_pixels(
+    pixels: &mut [Color32],
+    linear_pixels: &mut [[f32; 3]],
+    coverage: &[f32],
+    size: [usize; 2],
+    scene: Scene,
+    style: Style,
+    transparent_background: bool,
+) {
+    if transparent_background {
+        for (pixel, alpha) in linear_pixels.iter_mut().zip(coverage) {
+            if *alpha > 0.0 {
+                *pixel = pixel.map(|value| value / alpha);
+            }
+        }
+    }
+    super::output::apply(linear_pixels, size, scene, style);
+    for ((pixel, linear), coverage) in pixels.iter_mut().zip(linear_pixels).zip(coverage) {
+        let mut rgb = linear.map(super::shader::encode);
+        *pixel = if transparent_background {
+            // Tiny inventory artwork needs readable energy surfaces over a bright rarity
+            // plate. This export increases coverage and chroma without changing materials
+            // or opaque model details. Zero coverage stays transparent.
+            let alpha = coverage.clamp(0.0, 1.0);
+            let peak = f32::from(*rgb.iter().max().unwrap());
+            rgb = rgb.map(|v| {
+                (peak - (peak - f32::from(v)) * (1.0 + 0.75 * (1.0 - alpha)))
+                    .round()
+                    .clamp(0.0, 255.0) as u8
+            });
+            Color32::from_rgba_unmultiplied(
+                rgb[0],
+                rgb[1],
+                rgb[2],
+                ((1.0 - (1.0 - alpha).powi(6)) * 255.0).round() as u8,
+            )
+        } else {
+            Color32::from_rgb(rgb[0], rgb[1], rgb[2])
+        };
+    }
 }
 
 /// Explicit sprite study using synthetic placement and drift. This does not evaluate
@@ -793,6 +887,7 @@ fn draw_particles(
 struct Band<'a> {
     pixels: &'a mut [[f32; 3]],
     depth: &'a mut [f32],
+    coverage: &'a mut [f32],
     width: usize,
     top: usize,
     bottom: usize,
@@ -1011,12 +1106,23 @@ fn raster(
                 };
                 let base = band.pixels[index];
                 band.pixels[index] = std::array::from_fn(|i| base[i] * (1.0 - color[3]) + color[i]);
+                // Additive light has zero blend alpha. Give exported artwork
+                // enough coverage to retain its emitted RGB on any background.
+                let alpha =
+                    color[3].max(color[..3].iter().copied().fold(0.0f32, f32::max).min(1.0));
+                band.coverage[index] = band.coverage[index] * (1.0 - alpha) + alpha;
                 continue;
             }
             if let Some(particle) = particle_material {
                 let color = particle.sample(uv, exposure);
                 let base = band.pixels[index];
                 band.pixels[index] = std::array::from_fn(|i| base[i] + color[i] / 255.0);
+                let alpha = color[..3]
+                    .iter()
+                    .map(|v| *v / 255.0)
+                    .fold(0.0f32, f32::max)
+                    .clamp(0.0, 1.0);
+                band.coverage[index] = band.coverage[index] * (1.0 - alpha) + alpha;
                 continue;
             }
             if !material.covers(uv) {
@@ -1046,6 +1152,7 @@ fn raster(
                 + band.scene.key * super::shader::normal::dot(geometric, key).abs().min(1.0);
             {
                 band.depth[index] = z;
+                band.coverage[index] = 1.0;
                 band.pixels[index] = if style == Style::Wireframe {
                     let near_edge = [a, b, c]
                         .iter()

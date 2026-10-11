@@ -1,6 +1,8 @@
 //! An ability's tree of graphs and the cards that stand for them, loaded off the UI
 //! thread with the projectiles a swap can choose.
 use super::*;
+use std::path::PathBuf;
+use sundial::package_authoring::sandbox_perk::entity::catalog::{self, Catalog};
 
 /// One graph of the ability's tree and what it shows.
 pub(super) struct Node {
@@ -9,8 +11,10 @@ pub(super) struct Node {
     pub(super) projectile: bool,
     /// Whether only its spawner's ability bank names it, so it spawns only when a key selects it.
     pub(super) alternative: bool,
-    /// Its kind in plain words.
+    /// Its name, from [`names`].
     pub(super) name: String,
+    /// What it is, such as Object or Effect, from its object type.
+    pub(super) kind: String,
     pub(super) properties: Vec<Property>,
 }
 
@@ -29,6 +33,10 @@ pub(super) struct Card {
     /// Whether only a bank names its graphs, or those of a card above it, so they spawn only when
     /// a perk or node selects them.
     pub(super) alternative: bool,
+    /// What its graphs are, such as Object or Effect.
+    pub(super) kind: String,
+    /// The card it nests under, by index.
+    pub(super) above: Option<usize>,
     pub(super) properties: Vec<Property>,
 }
 
@@ -211,7 +219,10 @@ pub(super) fn load_donors(
 
 pub(super) fn load(packages: &Path, entity: u32) -> Load {
     let manager = open_shadowkeep_package_manager(packages)?;
+    let objects = catalog::cached_only(packages).ok().flatten();
     let mut nodes = Vec::new();
+    let mut labels = Vec::new();
+    let mut created = Vec::new();
     let mut parents = BTreeMap::new();
     let mut damage = BTreeSet::new();
     let mut seen = BTreeSet::new();
@@ -230,24 +241,59 @@ pub(super) fn load(packages: &Path, entity: u32) -> Load {
         if let Ok(profiles) = ability_damage::references(&manager, tag, &payload) {
             damage.extend(profiles.into_iter().map(|(_, profile)| profile.mode));
         }
-        let name = match parent {
-            Some(_) => graph_name(&payload),
-            None if payload.get(OBJECT_TYPE) == Some(&PROJECTILE) => "Projectile".to_owned(),
-            None => "Ability".to_owned(),
+        let (properties, creates) = properties_of(&manager, tag, &payload);
+        created.extend(
+            creates
+                .into_iter()
+                .map(|(target, property)| (tag, target, property)),
+        );
+        let label = match parent {
+            Some(_) => Label::Part {
+                native: native_name(&manager, packages, objects.as_deref(), tag),
+                subject: subject(&properties),
+                kind: kind_name(&payload),
+            },
+            None if payload.get(OBJECT_TYPE) == Some(&PROJECTILE) => Label::Root("Projectile"),
+            None => Label::Root("Ability"),
         };
+        let kind = match &label {
+            Label::Part { kind, .. } => kind.0.clone(),
+            Label::Root(name) => (*name).to_owned(),
+        };
+        labels.push(label);
         nodes.push(Node {
             tag,
             parent,
             projectile: direct && payload.get(OBJECT_TYPE) == Some(&PROJECTILE),
             alternative,
-            name,
-            properties: properties_of(&manager, tag, &payload),
+            name: String::new(),
+            kind,
+            properties,
         });
         if depth < SPAWN_DEPTH {
             for (child, banked, direct) in children(&manager, tag, &payload)? {
                 queue.push_back((child, Some(tag), alternative || banked, direct, depth + 1));
             }
         }
+    }
+    for (index, name) in names(&nodes, &labels, &parents).into_iter().enumerate() {
+        nodes[index].name = name;
+    }
+    // The timing of a part goes on its card, so a spawner that only creates it has no card of its
+    // own. A part beyond the walk keeps its timing on its spawner's card.
+    let mut moved = BTreeSet::new();
+    for (spawner, target, property) in created {
+        let at = nodes
+            .iter()
+            .position(|node| node.tag == target)
+            .or_else(|| nodes.iter().position(|node| node.tag == spawner));
+        if let Some(at) = at {
+            nodes[at].properties.push(property);
+            moved.insert(at);
+        }
+    }
+    for at in moved {
+        nodes[at].properties = merge(std::mem::take(&mut nodes[at].properties));
     }
     Ok(Tree {
         cards: cards(nodes, &parents),
@@ -323,26 +369,339 @@ pub(super) fn children(
     Ok(found)
 }
 
-/// A graph's kind in plain words: an Object for a placed prop, an Effect for one that rides on a
-/// player. The card sits on its ability's page, so the kind is enough, and native names can read
-/// as an enemy's. The component that sets it apart is left to its tiles, which show what it
-/// changes.
-pub(super) fn graph_name(payload: &[u8]) -> String {
+/// What names one graph of the tree. A part's name can depend on the parts it creates, so names
+/// are given once the whole tree is read.
+enum Label {
+    /// The ability itself, or the projectile it is.
+    Root(&'static str),
+    Part {
+        native: Option<String>,
+        subject: Option<String>,
+        /// Its kind, with the component that sets it apart when it has one.
+        kind: (String, Option<String>),
+    },
+}
+
+impl Label {
+    /// What a part is for, by its own name, or by its own tiles when its kind leaves that unsaid.
+    fn about(&self) -> Option<&str> {
+        match self {
+            Self::Part {
+                native,
+                subject,
+                kind: (kind, _),
+            } => native.as_deref().or_else(|| {
+                subject
+                    .as_deref()
+                    .filter(|subject| names_part(kind, subject))
+            }),
+            Self::Root(_) => None,
+        }
+    }
+}
+
+/// Each graph's name. A part with a name of its own keeps it. A part whose kind says nothing of
+/// what it does, an effect, emitter or object, is named for what its tiles are for, as an
+/// Invisibility Effect, else for what every part below it is for, as an emitter that only creates
+/// invisibility is an Invisibility Emitter. Any other kind, such as a projectile, is what it is,
+/// whatever its tiles touch: a grenade's projectile with health tiles is not a Health Projectile.
+/// A part with none of these keeps its kind and the component that sets it apart.
+fn names(nodes: &[Node], labels: &[Label], parents: &BTreeMap<u32, u32>) -> Vec<String> {
+    let below = |above: u32, mut at: u32| {
+        while let Some(&parent) = parents.get(&at) {
+            if parent == above {
+                return true;
+            }
+            at = parent;
+        }
+        false
+    };
+    labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| match label {
+            Label::Root(name) => (*name).to_owned(),
+            Label::Part {
+                native: Some(native),
+                ..
+            } => native.clone(),
+            Label::Part {
+                subject: Some(subject),
+                kind: (kind, _),
+                ..
+            } if names_part(kind, subject) => format!("{subject} {kind}"),
+            Label::Part {
+                kind: (kind, component),
+                ..
+            } if !generic(kind) => component
+                .as_ref()
+                .map_or_else(|| kind.clone(), |component| format!("{kind} · {component}")),
+            Label::Part {
+                kind: (kind, component),
+                ..
+            } => {
+                let tag = nodes[index].tag;
+                // Only a name every part below it agrees on, so an emitter that creates
+                // different things is not named for one of them.
+                let mut created = nodes
+                    .iter()
+                    .zip(labels)
+                    .skip(index + 1)
+                    .filter(|(node, _)| below(tag, node.tag))
+                    .filter_map(|(_, label)| label.about());
+                let first = created.next();
+                let created = first.filter(|first| created.all(|other| other == *first));
+                match (created, component) {
+                    (Some(created), _) => format!("{created} {kind}"),
+                    (None, Some(component)) => format!("{kind} · {component}"),
+                    (None, None) => kind.clone(),
+                }
+            }
+        })
+        .collect()
+}
+
+/// Whether a part's kind leaves what it does unsaid, so its tiles or its parts name it.
+fn generic(kind: &str) -> bool {
+    matches!(kind, "Effect" | "Emitter" | "Object" | "System" | "Entity")
+}
+
+/// Whether `subject` names a part of `kind`. Damage taken on an effect a player wears is what the
+/// effect does, but on an object it is how hard the object is to break, as health is, so a
+/// barricade is not a Damage Taken Object.
+fn names_part(kind: &str, subject: &str) -> bool {
+    generic(kind) && !(kind == "Object" && subject == "Damage Taken")
+}
+
+/// A part's own name: the HUD status it shows, else the native name the object catalog has for
+/// it. A native name can come from a folder the asset shares with enemies, so the status, which
+/// is what the player sees, comes first.
+fn native_name(
+    manager: &PackageManager,
+    packages: &Path,
+    objects: Option<&Catalog>,
+    tag: u32,
+) -> Option<String> {
+    let shown = crate::item::shown_statuses(manager, tag).unwrap_or_default();
+    if !shown.is_empty()
+        && let Some(names) = status_names(manager, packages)
+        && let Some(name) = shown.iter().find_map(|hash| names.get(hash))
+    {
+        return Some(name.clone());
+    }
+    objects
+        .and_then(|objects| objects.entries.iter().find(|entry| entry.graph == tag))
+        .filter(|entry| entry.label_rank() == 0)
+        .map(|entry| entry.label())
+}
+
+/// A part's kind in plain words, Object for a placed prop and Effect for one that rides on a
+/// player, with the component that sets it apart. An unnamed Status Icon tells the reader
+/// nothing, so it is left out.
+fn kind_name(payload: &[u8]) -> (String, Option<String>) {
     let described = describe(payload).unwrap_or_else(|_| "Part".to_owned());
-    let kind = described.split(" · ").next().unwrap_or(&described);
-    match kind {
+    let (kind, component) = described
+        .split_once(" · ")
+        .map_or((described.as_str(), None), |(kind, component)| {
+            (kind, Some(component))
+        });
+    let kind = match kind {
         "Prop" => "Object",
         "Hop-On" => "Effect",
         other => other,
+    };
+    (
+        kind.to_owned(),
+        component
+            .filter(|component| *component != "Status Icon")
+            .map(str::to_owned),
+    )
+}
+
+/// What most of a part's tiles are for, the first of equals. Timers and delays say nothing about
+/// what a part does, so a part with only those has none. Neither does health, which says how much
+/// a part takes before it breaks, as anything that can be hurt has.
+fn subject(properties: &[Property]) -> Option<String> {
+    let mut counts = Vec::<(String, usize)>::new();
+    for subject in properties
+        .iter()
+        .filter_map(tile_subject)
+        .filter(|subject| subject != "Health")
+    {
+        match counts.iter_mut().find(|(each, _)| *each == subject) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((subject, 1)),
+        }
     }
-    .to_owned()
+    // `max_by_key` keeps the last of equals, so reversed it keeps the first.
+    counts
+        .into_iter()
+        .rev()
+        .max_by_key(|(_, count)| *count)
+        .map(|(subject, _)| subject)
+}
+
+/// What one tile is for, in a word or two.
+fn tile_subject(property: &Property) -> Option<String> {
+    use sundial::package_authoring::ability_settings::{Kind as K, NativeProperty as Native};
+    let subject = match &property.value {
+        Value::Setting(settings) => match settings.first()?.kind {
+            K::DamageBreakThreshold
+            | K::SuppressionTime
+            | K::MovementThreshold
+            | K::IgnoreMovement
+            | K::RetireOnRemoval
+            | K::RetirementDelay
+            | K::DisruptionGracePeriod
+            | K::DamageBreakResponse
+            | K::StrengthLoss => "Invisibility",
+            K::OwnerDamageOnly
+            | K::SourceFilter
+            | K::InvertSourceFilter
+            | K::IncomingDamage
+            | K::ConditionalDamage => "Damage Taken",
+            K::HealthScale
+            | K::RecoveryDelay
+            | K::DepletedRecoveryDelay
+            | K::RecoveryTime
+            | K::Native(Native::StartingHealth) => "Health",
+            K::QueryScale
+            | K::SearchDelay
+            | K::SearchRange
+            | K::IncludeSelf
+            | K::Native(Native::TargetingRange) => "Targeting",
+            K::AcquisitionScale
+            | K::TargetLimit
+            | K::SpawnChance
+            | K::SpawnCount
+            | K::GenerationLimit
+            | K::SpawnLimit
+            | K::AcquisitionScaleOffset
+            | K::SpawnCountOffset
+            | K::GenerationLimitOffset
+            | K::SpawnLimitOffset => "Spawning",
+            K::TrackingStrength
+            | K::DistanceTracking
+            | K::BounceTracking
+            | K::TrackingVariation
+            | K::TrackingSpeed
+            | K::FastThrowTracking
+            | K::TurnRateOffset
+            | K::TurnRate
+            | K::LeadTimeLimit
+            | K::LeadDistanceLimit
+            | K::SteeringAxisThreshold
+            | K::TargetLead
+            | K::ProximityRange
+            | K::MinimumProximityTime
+            | K::MaximumProximityTime
+            | K::Native(Native::TrackingSpeedChange) => "Tracking",
+            K::EnergyCost
+            | K::RequiredEnergy
+            | K::ActivationEnergy
+            | K::ActiveEnergyRate
+            | K::EndingEnergyCost
+            | K::RechargeDelay
+            | K::MinimumActivationEnergy
+            | K::EnergyFloor
+            | K::Native(
+                Native::RechargeScale
+                | Native::ActivationCostScale
+                | Native::ActiveEnergyScale
+                | Native::ActivationLockout,
+            ) => "Energy",
+            K::ImpulseHoldTime
+            | K::FallSpeedThreshold
+            | K::ImpulseRampTime
+            | K::ImpulseFadeTime
+            | K::VerticalBias => "Movement",
+            _ => return None,
+        },
+        Value::Field(_) if property.hint == "Invisibility" => "Invisibility",
+        Value::Movement(_) => "Movement",
+        // A modifier's tile is named for the stat it changes, numbered where stats repeat.
+        Value::Amount { .. } => return Some(unnumbered(&property.label).to_owned()),
+        _ => return None,
+    };
+    Some(subject.to_owned())
+}
+
+/// A tile label without the number that tells repeats apart, as "Move Speed 2" is "Move Speed".
+fn unnumbered(label: &str) -> &str {
+    match label.rsplit_once(' ') {
+        Some((stat, number))
+            if !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            stat
+        }
+        _ => label,
+    }
+}
+
+/// The stock HUD statuses' names by hash. They sit in every string bank, so they are read once
+/// for each package folder and kept for every later tree.
+fn status_names(manager: &PackageManager, packages: &Path) -> Option<Arc<BTreeMap<u32, String>>> {
+    type CachedNames = (PathBuf, Arc<BTreeMap<u32, String>>);
+    static KEPT: std::sync::Mutex<Option<CachedNames>> = std::sync::Mutex::new(None);
+    let mut kept = KEPT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((folder, names)) = kept.as_ref()
+        && folder == packages
+    {
+        return Some(Arc::clone(names));
+    }
+    let names = Arc::new(
+        crate::item::stock_statuses(manager)
+            .ok()?
+            .into_iter()
+            .map(|status| (status.hash, status.name))
+            .collect::<BTreeMap<_, _>>(),
+    );
+    *kept = Some((packages.to_owned(), Arc::clone(&names)));
+    Some(names)
+}
+
+/// Each setting as a property: on this graph's card, or with the graph a part it creates uses,
+/// since its timing belongs on that part's card.
+fn place_settings(
+    manager: &PackageManager,
+    graph: &sundial::package_authoring::runtime::WeaponRuntimeGraph,
+    tag: u32,
+    settings: Vec<Setting>,
+    found: &mut Vec<Property>,
+) -> Vec<(u32, Property)> {
+    let creations = ability_settings::creations(manager, graph);
+    let mut created = Vec::new();
+    for setting in settings {
+        let target = setting
+            .created_graph(&creations)
+            .filter(|target| *target != tag);
+        let property = Property {
+            label: setting.kind.label().to_owned(),
+            hint: setting.kind.hint().to_owned(),
+            stock: setting.stock(),
+            value: Value::Setting(vec![setting]),
+        };
+        match target {
+            Some(target) => created.push((target, property)),
+            None => found.push(property),
+        }
+    }
+    created
 }
 
 /// What a graph shows: how it flies, its timers that run out, its effects' modifiers whose input
-/// is named, and its invisibility. Its bank's values are the Ability card's parameters.
-pub(super) fn properties_of(manager: &PackageManager, tag: u32, payload: &[u8]) -> Vec<Property> {
+/// is named, and its invisibility. Its bank's values are the Ability card's parameters. The
+/// timing of a part it creates, its delay before the part appears and the part's lifetime, comes
+/// apart with that part's graph, since it belongs on that part's card.
+pub(super) fn properties_of(
+    manager: &PackageManager,
+    tag: u32,
+    payload: &[u8],
+) -> (Vec<Property>, Vec<(u32, Property)>) {
     let Ok(mut graph) = load_weapon_runtime_graph_for_entity(manager, 0, 0, tag, payload) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     graph.scope_fields();
     let is_bank = sundial::package_authoring::ability_modifier::is_bank;
@@ -371,14 +730,7 @@ pub(super) fn properties_of(manager: &PackageManager, tag: u32, payload: &[u8]) 
         .iter()
         .map(|setting| setting.field.locator.clone())
         .collect::<Vec<_>>();
-    for setting in settings {
-        found.push(Property {
-            label: setting.kind.label().to_owned(),
-            hint: setting.kind.hint().to_owned(),
-            stock: setting.stock(),
-            value: Value::Setting(vec![setting]),
-        });
-    }
+    let created = place_settings(manager, &graph, tag, settings, &mut found);
     // A timer is an upper lifetime bound, including immediate and unlimited stock timers.
     // A timer that scales an input before adding seconds has no single length: its seconds are
     // an offset, which can be negative, and its input has a coefficient.
@@ -460,7 +812,7 @@ pub(super) fn properties_of(manager: &PackageManager, tag: u32, payload: &[u8]) 
             _ => {}
         }
     }
-    merge(found)
+    (merge(found), created)
 }
 
 /// A flight value's name on its projectile's card.
@@ -624,6 +976,8 @@ pub(super) fn cards(nodes: Vec<Node>, parents: &BTreeMap<u32, u32>) -> Vec<Card>
             graphs: vec![(node.tag, node.parent)],
             projectile,
             alternative: node.alternative,
+            kind: node.kind,
+            above: None,
             properties: node.properties,
         };
         let signature = card.signature();
@@ -663,6 +1017,7 @@ pub(super) fn cards(nodes: Vec<Node>, parents: &BTreeMap<u32, u32>) -> Vec<Card>
             let (depth, alternative) = (cards[parent].depth, cards[parent].alternative);
             cards[index].depth = depth + 1;
             cards[index].alternative |= alternative;
+            cards[index].above = Some(parent);
         }
     }
     // Names that repeat are numbered, the cards that always spawn apart from the alternatives.

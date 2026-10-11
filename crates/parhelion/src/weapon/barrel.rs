@@ -1,9 +1,13 @@
 //! Permanent controls applied to the final private Barrel, before projectile capacity fitting.
 pub use sundial::package_authoring::entity::spread::{Pattern, Ring};
 
+/// The most bullets one pull may fire.
+pub const MAX_BULLETS_PER_SHOT: u16 = 64;
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Edits {
+    /// Pellets each bullet fires, the total of the pattern's rings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pellets: Option<u16>,
     /// Multiplier relative to the final Barrel's native spread scale, with 1 as unchanged.
@@ -12,11 +16,27 @@ pub struct Edits {
     /// Absolute ring geometry. None keeps the selected Barrel's shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rings: Option<Vec<Ring>>,
+    /// Bullets one pull of the trigger fires, each with the whole pattern. Written where the
+    /// weapon's stat translator gives every Barrel bullet input its value.
+    #[serde(
+        default,
+        alias = "rounds_per_burst",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub bullets_per_shot: Option<u16>,
+    /// Whether each bullet's pattern takes a random angle. None keeps the selected Barrel's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub random_rotation: Option<bool>,
 }
 
 impl Edits {
     pub fn is_empty(&self) -> bool {
-        self.pellets.is_none() && self.spread_scale_bits.is_none() && self.rings.is_none()
+        !self.shapes_pattern() && self.bullets_per_shot.is_none() && self.random_rotation.is_none()
+    }
+
+    /// Whether the edits change the Barrel's pattern: its pellets, spread or rings.
+    pub fn shapes_pattern(&self) -> bool {
+        self.pellets.is_some() || self.spread_scale_bits.is_some() || self.rings.is_some()
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -24,7 +44,15 @@ impl Edits {
             .pellets
             .is_some_and(|count| !(1..=0x7FFF).contains(&count))
         {
-            return Err("Pellets per shot must be between 1 and 32767".into());
+            return Err("Pellets per bullet must be between 1 and 32767".into());
+        }
+        if self
+            .bullets_per_shot
+            .is_some_and(|bullets| !(1..=MAX_BULLETS_PER_SHOT).contains(&bullets))
+        {
+            return Err(format!(
+                "Bullets per shot must be between 1 and {MAX_BULLETS_PER_SHOT}"
+            ));
         }
         let scale = f32::from_bits(self.spread_scale_bits.unwrap_or(1.0_f32.to_bits()));
         if !scale.is_finite() || scale < 0.0 {
@@ -37,7 +65,7 @@ impl Edits {
             }
             .validate()?;
             if self.pellets.is_some_and(|pellets| pellets != count) {
-                return Err("The pattern's rings must add up to Pellets per Shot".into());
+                return Err("The pattern's rings must add up to Pellets per Bullet".into());
             }
         }
         Ok(())
@@ -63,7 +91,7 @@ impl Edits {
     /// The total control retains a custom pattern's proportions and updates its saved total.
     pub fn set_pellets(&mut self, pellets: u16) -> Result<(), String> {
         if !(1..=0x7FFF).contains(&pellets) {
-            return Err("Pellets per shot must be between 1 and 32767".into());
+            return Err("Pellets per bullet must be between 1 and 32767".into());
         }
         if let Some(rings) = &mut self.rings {
             redistribute(rings, pellets)?;

@@ -29,7 +29,7 @@ const DORNROSCHEN: u32 = 0xE783_140A;
 const INTRINSIC_SOCKET: usize = 0;
 const BARREL: i64 = 2;
 const MAGAZINE: i64 = 1;
-const ROUNDS_PER_BURST: &[i64] = &[22, 23, 24, 25];
+const BULLETS_PER_SHOT: &[i64] = &[22, 23, 24, 25];
 const RATE_OF_FIRE: &[i64] = &[0, 1, 2, 3];
 const TIME_BETWEEN_SHOTS: &[i64] = &[4, 5];
 
@@ -217,7 +217,7 @@ fn cases(catalog: &InvestmentCatalog) -> Vec<Case> {
             stock_plug: BLACK_HOLE,
             private: true,
             lanes: vec![
-                (BARREL, ROUNDS_PER_BURST, 1.0),
+                (BARREL, BULLETS_PER_SHOT, 1.0),
                 (BARREL, TIME_BETWEEN_SHOTS, 1.25),
             ],
             ammo_left_alone: true,
@@ -233,7 +233,7 @@ fn cases(catalog: &InvestmentCatalog) -> Vec<Case> {
             stock_plug: BLACK_HOLE,
             private: true,
             lanes: vec![
-                (BARREL, ROUNDS_PER_BURST, 0.0),
+                (BARREL, BULLETS_PER_SHOT, 0.0),
                 (BARREL, TIME_BETWEEN_SHOTS, 1.0),
             ],
             ammo_left_alone: true,
@@ -265,7 +265,7 @@ fn cases(catalog: &InvestmentCatalog) -> Vec<Case> {
             ),
             stock_plug: SAINTS_FISTS,
             private: true,
-            lanes: vec![(BARREL, ROUNDS_PER_BURST, 2.0), (BARREL, RATE_OF_FIRE, 0.0)],
+            lanes: vec![(BARREL, BULLETS_PER_SHOT, 2.0), (BARREL, RATE_OF_FIRE, 0.0)],
             ammo_left_alone: true,
         },
         // On another fusion rifle every one of those figures is the right size already.
@@ -305,7 +305,7 @@ fn cases(catalog: &InvestmentCatalog) -> Vec<Case> {
             stock_plug: BLACK_HOLE,
             private: true,
             lanes: vec![
-                (BARREL, ROUNDS_PER_BURST, 1.0),
+                (BARREL, BULLETS_PER_SHOT, 1.0),
                 (BARREL, TIME_BETWEEN_SHOTS, 1.25),
             ],
             ammo_left_alone: true,

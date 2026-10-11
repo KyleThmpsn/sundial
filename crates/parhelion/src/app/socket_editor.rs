@@ -806,7 +806,7 @@ pub(super) fn draw_numeric_program_editor(
             ui.end_row();
             let program_len = program.len();
             for (index, instruction) in program.iter_mut().enumerate() {
-                ui.add(egui::DragValue::new(&mut instruction.opcode).range(1..=27))
+                ui.add(egui::DragValue::new(&mut instruction.opcode).range(1..=27).clamp_existing_to_range(false))
                     .on_hover_text(
                         "RPN opcode: 1 flag, 2 NOT, 3 OR, 4 AND, 5 NOR, 6/9 NE, 7 NAND, 8 EQ, 10 value, 11 constant, 12 shared pool, 13–21 comparison/arithmetic, 22 numeric coercion, 24–27 hash/bitwise.",
                     );
@@ -1085,7 +1085,11 @@ fn draw_plug_set_rows(
             column.reusable_plug_set_index = enabled.then_some(donor_reusable.unwrap_or(0));
         }
         if let Some(index) = &mut column.reusable_plug_set_index {
-            ui.add(egui::DragValue::new(index).range(0..=plug_set_max));
+            ui.add(
+                egui::DragValue::new(index)
+                    .range(0..=plug_set_max)
+                    .clamp_existing_to_range(false),
+            );
             ui.weak(format!("{plug_set_count} installed rows"));
         }
     });
@@ -1108,7 +1112,11 @@ fn draw_plug_set_rows(
             }
         }
         if let Some(index) = &mut column.randomized_plug_set_index {
-            ui.add(egui::DragValue::new(index).range(0..=plug_set_max));
+            ui.add(
+                egui::DragValue::new(index)
+                    .range(0..=plug_set_max)
+                    .clamp_existing_to_range(false),
+            );
             ui.weak(format!("{plug_set_count} installed rows"));
         }
     });

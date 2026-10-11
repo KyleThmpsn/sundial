@@ -256,6 +256,7 @@ fn graph_node(
     n: &Value,
     spec: Option<&WeaponCloneSpec>,
     repaired: &mut BTreeMap<String, Vec<u8>>,
+    manager: &sundial::package_authoring::PackageManager,
 ) -> AuthoringResult<linking::Node> {
     let name = n["symbol"]
         .as_str()
@@ -293,11 +294,22 @@ fn graph_node(
         )
         .map_err(|error| invalid(format!("Imported marker set {name}: {error}")))?;
     }
-    let mut node = linking::Node::new(name, template, payload);
-    for p in n["patches"]
+    let mut patches = n["patches"]
         .as_array()
         .ok_or_else(|| invalid("Fixups missing"))?
+        .clone();
+    if !is_companion
+        && manager
+            .get_entry(TagHash(template))
+            .is_some_and(|entry| entry.reference == 0x80809c36)
+        && let Some(fixed) = parhelion_import::tiger::instance::repair(&payload, &patches)
+            .map_err(|error| invalid(format!("Imported component {name}: {error:#}")))?
     {
+        payload = fixed.payload;
+        patches = fixed.patches;
+    }
+    let mut node = linking::Node::new(name, template, payload);
+    for p in &patches {
         let offset = p["offset"]
             .as_u64()
             .ok_or_else(|| invalid("Offset missing"))? as usize;
@@ -354,9 +366,9 @@ fn apply_one(
         .ok_or_else(|| invalid("Asset nodes missing"))?;
     let mut nodes = Vec::with_capacity(json_nodes.len());
     let mut repaired = parhelion_import::d2_mot::native::vertex_input::repair(&graph, folder)
-        .map_err(|e| invalid(format!("Imported vertex inputs: {e:#}")))?;
+        .map_err(|e| invalid(format!("Imported model bindings: {e:#}")))?;
     for n in json_nodes {
-        nodes.push(graph_node(folder, n, spec, &mut repaired)?);
+        nodes.push(graph_node(folder, n, spec, &mut repaired, manager)?);
     }
     let extra_bounds = if graph["ornament_icon_png"].is_string() {
         8

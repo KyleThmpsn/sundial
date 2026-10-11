@@ -25,7 +25,13 @@ pub(super) struct Picker {
 pub(super) struct Prepared {
     baseline: WeaponRecipe,
     packages: PathBuf,
-    result: Result<(GraphReference, WeaponDonorReference), String>,
+    result: Result<PreparedModel, String>,
+}
+
+struct PreparedModel {
+    graph: GraphReference,
+    donor: WeaponDonorReference,
+    icon: Option<crate::icon_edit::ImportedIcon>,
 }
 
 fn source_hash(recipe: &WeaponRecipe) -> Option<u32> {
@@ -334,7 +340,7 @@ impl PackageAuthoringApp {
         self.importer.models.notice.clear();
         let ctx = ctx.clone();
         thread::spawn(move || {
-            let result = (|| -> Result<(GraphReference, WeaponDonorReference), String> {
+            let result = (|| -> Result<PreparedModel, String> {
                 let root = data_root()?;
                 let mut recipe = model.recipe;
                 if let Some(donor) = donor {
@@ -414,7 +420,15 @@ impl PackageAuthoringApp {
                     graph =
                         GraphReference::new(&folder, target).map_err(|error| error.to_string())?;
                 }
-                Ok((graph, recipe.presentation_donor.unwrap_or(recipe.donor)))
+                let _ = sender.send(Event::Progress(0, "Preparing inventory icon…".into()));
+                ctx.request_repaint();
+                let icon =
+                    crate::imported::artwork::for_model(&baseline, &recipe, &graph, &native)?;
+                Ok(PreparedModel {
+                    graph,
+                    donor: recipe.presentation_donor.unwrap_or(recipe.donor),
+                    icon,
+                })
             })();
             let _ = sender.send(Event::ModelPrepared(Box::new(Prepared {
                 baseline,
@@ -427,11 +441,12 @@ impl PackageAuthoringApp {
 
     pub(super) fn finish_imported_model(&mut self, prepared: Prepared) {
         let (notice, failed) = match prepared.result {
-            Ok((graph, donor))
+            Ok(PreparedModel { graph, donor, icon })
                 if self.recipe == prepared.baseline && self.packages == prepared.packages =>
             {
                 self.recipe.set_presentation_donor(Some(donor));
                 self.recipe.overrides.imported_graph = Some(graph);
+                self.recipe.overrides.icon_edit.imported_image = icon;
                 // An imported model keeps its own materials, which shader glow does not support.
                 self.recipe.overrides.shader_glow = false;
                 self.recipe_dirty = true;

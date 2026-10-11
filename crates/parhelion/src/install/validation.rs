@@ -540,7 +540,7 @@ pub(super) fn validate_direct_package_set(
     expected_names.sort_unstable();
     if package_names.iter().map(String::as_str).collect::<Vec<_>>() != expected_names {
         return Err(InstallError::validation(format!(
-            "The staging directory package files do not match the recipe-selected manifest set; found {}",
+            "The staging directory package files do not match the recipe-selected manifest set. Found {}",
             package_names.join(", ")
         )));
     }

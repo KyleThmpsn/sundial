@@ -819,12 +819,12 @@ impl WeaponCloneSpec {
             }
             sparrow.validate().map_err(invalid)?;
             #[cfg(feature = "d2-model-importer")]
-            if self.overrides.imported_graph.is_some()
-                && sparrow.summon != crate::vehicle::Summon::Sparrow
+            if let Some(graph) = &self.overrides.imported_graph
+                && let Some(entity) = sparrow.summon.entity().map_err(invalid)?
             {
-                return Err(invalid(
-                    "Alternate vehicle summoning requires a native Sparrow base without an imported appearance",
-                ));
+                graph
+                    .validate_vehicle(entity)
+                    .map_err(|error| invalid(error.to_string()))?;
             }
         }
         if self.overrides.shader_glow && self.kind != ItemKind::Weapon {

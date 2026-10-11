@@ -46,6 +46,7 @@ pub(super) fn action_of(
         damage_type: None,
         rows: Vec::new(),
         hud_status: None,
+        script: None,
     };
     match effect.kind {
         1 => Ok(Action::Attach {

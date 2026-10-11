@@ -7,19 +7,12 @@ pub(super) fn runtime_registry() -> Result<&'static RuntimeRegistry, String> {
         .map_err(Clone::clone)
 }
 
+/// The client's whole definition table for build 86657.20.08.23.1800.d2_rc: all 20,410 records
+/// its binding slots reach, each as `[handle, definition hash, base, size, members, native
+/// layout]`, read from the running client's module image (SHA-256 74c5f6fa2d65bb24…).
 pub(super) fn build_runtime_registry() -> Result<RuntimeRegistry, String> {
-    let mut records = serde_json::from_str::<Vec<RegistryRecord>>(include_str!("schema.json"))
-        .map_err(|error| format!("Embedded weapon runtime schema is invalid: {error}"))?;
-    records.extend(
-        serde_json::from_str::<Vec<RegistryRecord>>(include_str!("projectile_schema.json"))
-            .map_err(|error| format!("Embedded projectile runtime schema is invalid: {error}"))?,
-    );
-    // Include the registered component families and their reflected member types.
-    // Weapon-only roots miss secondary projectile, enemy and ability components.
-    records.extend(
-        serde_json::from_str::<Vec<RegistryRecord>>(include_str!("component_schema.json"))
-            .map_err(|error| format!("Embedded component runtime schema is invalid: {error}"))?,
-    );
+    let records = serde_json::from_str::<Vec<RegistryRecord>>(include_str!("schema.json"))
+        .map_err(|error| format!("Embedded runtime schema is invalid: {error}"))?;
     if records.len() < 900 {
         return Err(format!(
             "Embedded weapon runtime schema is incomplete ({} records)",

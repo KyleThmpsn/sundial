@@ -673,7 +673,7 @@ pub(in crate::catalog) fn scan_ability_displays(
     let (table_count, table_rows, _) = array_at(&table_index, 8)?;
     if table_count < STOCK_ABILITY_DISPLAY_TABLE_COUNT {
         return Err(format!(
-            "Subclass ability display table has {table_count} rows; expected at least {STOCK_ABILITY_DISPLAY_TABLE_COUNT}"
+            "Subclass ability display table has {table_count} rows. Expected at least {STOCK_ABILITY_DISPLAY_TABLE_COUNT}"
         ));
     }
 

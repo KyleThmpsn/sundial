@@ -125,7 +125,9 @@ impl NativeProgram {
     /// Existing entries for other resource slots are retained while still referenced.
     pub fn sync_assets(&mut self) -> Result<(), String> {
         let resources = self.resources()?;
-        self.assets.retain(|asset| resources.contains(&asset.graph));
+        // A script's graph stays while an effect still runs the script.
+        self.assets
+            .retain(|asset| resources.contains(&asset.script.unwrap_or(asset.graph)));
         let graph = Graph::read(&self.graph.emit()?, 0, action::ACTION_ROOT_CLASS)?;
         for block in &graph.blocks {
             let offset = if block.class == 0x80803E42 {
@@ -141,7 +143,10 @@ impl NativeProgram {
             if let Some(offset) = offset {
                 let graph = crate::package_payload::u32_at(&block.bytes, offset)?;
                 if !matches!(graph, 0 | u32::MAX)
-                    && !self.assets.iter().any(|asset| asset.graph == graph)
+                    && !self
+                        .assets
+                        .iter()
+                        .any(|asset| asset.graph == graph && asset.script.is_none())
                 {
                     self.assets.push(Asset {
                         graph,
@@ -178,9 +183,14 @@ impl NativeProgram {
         let resources = self.resources()?;
         let mut used = BTreeSet::new();
         for asset in &self.assets {
+            // A script's graph is referenced through the script, which an effect must run. That
+            // the script names the graph is checked against the packages when the action compiles.
             if matches!(asset.graph, 0 | u32::MAX)
-                || !resources.contains(&asset.graph)
-                || !used.insert(asset.graph)
+                || asset
+                    .script
+                    .is_some_and(|script| matches!(script, 0 | u32::MAX))
+                || !resources.contains(&asset.script.unwrap_or(asset.graph))
+                || !used.insert((asset.graph, asset.script))
             {
                 return Err("Program component edits need a unique, referenced entity.".into());
             }

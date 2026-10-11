@@ -73,6 +73,68 @@ impl Kind {
     }
 }
 
+/// The paired initial and reset values in one native Projectile Movement owner.
+/// Symbolic imported owners may use their declared placeholder as `owner_tag`.
+pub struct Stored {
+    kind: Kind,
+    offsets: [usize; 2],
+    original: f32,
+}
+
+impl Stored {
+    pub fn read(kind: Kind, owner: &[u8], owner_tag: u32, instance: usize) -> Result<Self, String> {
+        use crate::package_payload::{u32_at, u64_at};
+        if instance < 4
+            || u32_at(owner, instance - 4)? != 0x8080_3B73
+            || u32_at(owner, instance)? != owner_tag
+            || u32_at(owner, instance + 4)? != 0x8080_388F
+        {
+            return Err("Projectile Movement has an unsupported stored instance".into());
+        }
+        let definition = usize::try_from(u64_at(owner, instance + 8)?)
+            .map_err(|_| "Projectile definition offset overflow")?;
+        if definition < 4 || u32_at(owner, definition - 4)? != 0x8080_388F {
+            return Err("Projectile Movement has an unsupported stored definition".into());
+        }
+        let (initial, reset) = kind.offsets();
+        let offsets = [
+            instance.checked_add(initial as usize),
+            definition.checked_add(reset as usize),
+        ];
+        let offsets = [
+            offsets[0].ok_or("Projectile initial offset overflow")?,
+            offsets[1].ok_or("Projectile reset offset overflow")?,
+        ];
+        let original = f32::from_bits(u32_at(owner, offsets[0])?);
+        kind.validate(original)?;
+        if original.to_bits() != u32_at(owner, offsets[1])? {
+            return Err("Projectile initial and reset values disagree".into());
+        }
+        Ok(Self {
+            kind,
+            offsets,
+            original,
+        })
+    }
+
+    pub fn original(&self) -> f32 {
+        self.original
+    }
+
+    pub fn write(&self, owner: &mut [u8], value: f32) -> Result<(), String> {
+        self.kind.validate(value)?;
+        for offset in self.offsets {
+            if crate::package_payload::u32_at(owner, offset)? != self.original.to_bits() {
+                return Err("Stored projectile value changed before writing".into());
+            }
+        }
+        for offset in self.offsets {
+            owner[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Lane {
     field: WeaponRuntimeField,

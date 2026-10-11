@@ -110,7 +110,12 @@ impl PackageAuthoringApp {
         crate::app::style::card(ui, |ui| self.draw_part_rows(ui, donor));
     }
 
-    fn draw_part_rows(&mut self, ui: &mut egui::Ui, donor: Option<&WeaponDonor>) {
+    /// The Parts card's contents, in the card its caller draws.
+    pub(in crate::app) fn draw_part_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        donor: Option<&WeaponDonor>,
+    ) {
         let graph = self.current_runtime_graph();
         let graph = graph.as_deref();
         let current_key = self.runtime_graph_key();

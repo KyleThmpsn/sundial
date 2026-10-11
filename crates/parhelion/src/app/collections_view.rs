@@ -83,35 +83,9 @@ impl PackageAuthoringApp {
         let custom_capacity = NODE_CAPACITY - BASE_NODE_COUNT;
         let selected_used = budget.used();
         let installed_used = BASE_NODE_COUNT + installed_nodes.len();
-        ui.add(
-            sundial::investment::progress_bar(custom_used as f32 / custom_capacity as f32)
-                .desired_width(220.0)
-                .text(format!(
-                    "{custom_used} / {custom_capacity} Custom Nodes Used"
-                )),
-        );
-        let label = if selected_used > NODE_CAPACITY {
-            egui::RichText::new(format!(
-                "{} Selected Build Nodes Over Limit",
-                selected_used - NODE_CAPACITY
-            ))
-            .color(ui.visuals().error_fg_color)
-        } else if installed_used > NODE_CAPACITY {
-            egui::RichText::new(format!(
-                "{} Installed Nodes Over Limit",
-                installed_used - NODE_CAPACITY
-            ))
-            .color(ui.visuals().error_fg_color)
-        } else if used > NODE_CAPACITY {
-            egui::RichText::new("Selected Build Fits After Replacement")
-                .color(ui.visuals().weak_text_color())
-        } else {
-            egui::RichText::new(format!("{} Nodes Available", NODE_CAPACITY - used))
-                .color(ui.visuals().weak_text_color())
-        };
         let selected_new = selected_nodes.difference(&installed_nodes).count();
         let stock = crate::progression::STOCK_PRESENTATION_NODE_COUNT;
-        ui.label(label).on_hover_text(format!(
+        let detail = format!(
             "{used} / {NODE_CAPACITY} nodes\nStock: {stock}\n{}: {}\nInstalled custom: {}\nNew in selected build: {selected_new}\nSelected build custom: {} ({} badge, {} page)",
             self.presentation_editor.branding().name(),
             BASE_NODE_COUNT - stock,
@@ -119,7 +93,44 @@ impl PackageAuthoringApp {
             selected_nodes.len(),
             budget.badges * 4,
             budget.pages + budget.gear_pages
-        ));
+        );
+        ui.add(
+            sundial::investment::progress_bar(custom_used as f32 / custom_capacity as f32)
+                .desired_width(220.0)
+                .text(format!(
+                    "{custom_used} / {custom_capacity} Custom Nodes Used"
+                )),
+        )
+        .on_hover_text(&detail);
+        // The bar says how many are left, so a line beside it appears only when the build does not
+        // simply fit.
+        let status = if selected_used > NODE_CAPACITY {
+            Some(
+                egui::RichText::new(format!(
+                    "{} Selected Build Nodes Over Limit",
+                    selected_used - NODE_CAPACITY
+                ))
+                .color(ui.visuals().error_fg_color),
+            )
+        } else if installed_used > NODE_CAPACITY {
+            Some(
+                egui::RichText::new(format!(
+                    "{} Installed Nodes Over Limit",
+                    installed_used - NODE_CAPACITY
+                ))
+                .color(ui.visuals().error_fg_color),
+            )
+        } else if used > NODE_CAPACITY {
+            Some(
+                egui::RichText::new("Selected Build Fits After Replacement")
+                    .color(ui.visuals().weak_text_color()),
+            )
+        } else {
+            None
+        };
+        if let Some(status) = status {
+            ui.label(status).on_hover_text(&detail);
+        }
         if !included {
             let mut with_draft = custom_node_hashes(members.into_iter().chain([current]));
             gear_entries.push(current_gear);

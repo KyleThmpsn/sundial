@@ -109,7 +109,6 @@ impl Workbench {
                 ui.heading(&recipe.name);
                 ui.label(format!("Runtime Budget: {} of {} Effects Active", recipe.effects.len().min(crate::perk::SANDBOX_PERK_CAPACITY), recipe.effects.len()));
                 ui.weak(format!("Destination: {}", self.item_kind.label()));
-                ui.label("Blocking problems prevent attachment. Warnings describe inactive selections and runtime limits.");
                 if issues.is_empty() { ui.label("No problems found."); }
                 for (index, issue) in issues.iter().enumerate() {
                     ui.push_id(index, |ui| {
@@ -125,8 +124,9 @@ impl Workbench {
                     });
                 }
                 ui.separator();
-                ui.heading("Consolidate Compatible Actions");
-                ui.label("Combine actions only when their trigger and lifetime match. Moved actions run after the destination's actions. Separate events, policies, component edits, and shared state keep their own effects.");
+                ui.heading("Consolidate Compatible Actions").on_hover_text(
+                    "Combines actions with the same trigger and lifetime. Moved actions run after the destination's.",
+                );
                 if recipe.effects.len() >= 2 {
                     self.consolidation.0 = self.consolidation.0.min(recipe.effects.len() - 1);
                     self.consolidation.1 = self.consolidation.1.min(recipe.effects.len() - 1);

@@ -64,7 +64,6 @@ pub(super) fn graph_values(
     };
     // Clamp before anything is measured against it, so a hand-typed figure above the sentinel can
     // neither reach hitscan nor lower a graph that already reads more than the clamp allows.
-    let boost = boost.min(HITSCAN_SPEED - 1.0);
     let mut draft = Vec::new();
     for parameter in projectile_speeds(manager, graph, &payload)? {
         let base = parameter.original();
@@ -72,7 +71,7 @@ pub(super) fn graph_values(
         // Stopping at the boost is what spares a graph that came from a frame supplying no launch
         // speed of its own, the sentinel included. Ending at the base keeps this sound on a base
         // large enough to overflow the product.
-        let raised = (base * boost).min(boost).max(base);
+        let raised = raised_speed(base, boost);
         // Nothing to write when the speed does not move, and no private clone is appended for it.
         if raised <= base {
             continue;
@@ -83,7 +82,7 @@ pub(super) fn graph_values(
 }
 
 /// Whether a weapon's own firing graph launches something rather than hitting instantly.
-pub(super) fn launches_its_own(manager: &PackageManager, graph: u32) -> bool {
+pub(crate) fn launches_its_own(manager: &PackageManager, graph: u32) -> bool {
     let Ok(payload) = manager.read_tag(TagHash(graph)) else {
         return false;
     };
@@ -92,6 +91,15 @@ pub(super) fn launches_its_own(manager: &PackageManager, graph: u32) -> bool {
             .iter()
             .any(|parameter| parameter.original() < HITSCAN_SPEED)
     })
+}
+
+/// Shared by borrowed graphs and imported private projectile carriers.
+pub(crate) fn raised_speed(base: f32, boost: f32) -> f32 {
+    if boost.is_nan() || boost <= 1.0 {
+        return base;
+    }
+    let boost = boost.min(HITSCAN_SPEED - 1.0);
+    (base * boost).min(boost).max(base)
 }
 
 /// The projectile launch-speed parameters an entity's runtime graph exposes, if any.

@@ -15,6 +15,7 @@ mod opaque;
 mod program;
 mod resource;
 mod shade;
+mod skinning;
 mod surface;
 mod vertex;
 
@@ -29,6 +30,7 @@ pub(in crate::model_preview) use opaque::intensity::ambient as ambient_visibilit
 pub(in crate::model_preview) use opaque::intensity::decode as decode_intensity;
 pub(in crate::model_preview) use opaque::{LegacyNormal, load_normal, load_opaque};
 pub(in crate::model_preview) use shade::{Depth, Pixel, sample, sample_with_ambient};
+pub(in crate::model_preview) use skinning::apply as remap_skin;
 pub(in crate::model_preview) use surface::{load as load_surface, sample as sample_surface};
 pub(in crate::model_preview) use vertex::{Input, Varyings};
 

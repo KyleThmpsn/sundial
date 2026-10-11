@@ -1029,7 +1029,7 @@ pub(super) fn append_item_hash_index_row(
     }
     let [(target_index, donor_row)] = source.as_slice() else {
         return Err(invalid(format!(
-            "Item hash-index donor 0x{source_hash:08X} occurs {} times; exactly one is required",
+            "Item hash-index donor 0x{source_hash:08X} occurs {} times. Exactly one is required",
             source.len()
         )));
     };

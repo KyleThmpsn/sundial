@@ -1,6 +1,12 @@
 //! Link converted equipment clips without changing shared character or stock runtime assets.
 use super::*;
-use parhelion_import::d2_mot::payload::Payload;
+use parhelion_import::tiger::payload::Payload;
+
+struct Rig {
+    original: (u32, Vec<u8>),
+    converted: Vec<u8>,
+    relocation: Option<(usize, usize)>,
+}
 
 pub(in crate::item) struct EquipmentAnimation {
     entity: (u32, Vec<u8>),
@@ -9,6 +15,8 @@ pub(in crate::item) struct EquipmentAnimation {
     converted_bank: Vec<u8>,
     consumers: Vec<(u32, Vec<u8>)>,
     clips: Vec<(u32, Vec<u8>)>,
+    rigs: Vec<Rig>,
+    preserve_timing: bool,
 }
 
 impl EquipmentAnimation {
@@ -60,6 +68,26 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<EquipmentA
     if consumers.is_empty() {
         return Err(invalid("Equipment animation has no clip-bank consumers"));
     }
+    let rigs = section["rigs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|rig| {
+            let relocation = if rig["relocation"].is_null() {
+                None
+            } else {
+                Some(
+                    serde_json::from_value::<(usize, usize)>(rig["relocation"].clone())
+                        .map_err(|e| invalid(format!("Equipment rig relocation: {e}")))?,
+                )
+            };
+            Ok(Rig {
+                original: (tag(rig, "owner")?, payload(graph, &rig["original_file"])?),
+                converted: payload(graph, &rig["file"])?,
+                relocation,
+            })
+        })
+        .collect::<AuthoringResult<Vec<_>>>()?;
     Ok(Some(EquipmentAnimation {
         entity: (
             tag(section, "runtime_entity")?,
@@ -73,10 +101,20 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<EquipmentA
         converted_bank: payload(graph, &files["converted_bank"])?,
         consumers,
         clips,
+        rigs,
+        preserve_timing: section["preserve_timing"] == true,
     }))
 }
 
 fn validate_bank(animation: &EquipmentAnimation) -> AuthoringResult<()> {
+    if animation.preserve_timing {
+        if animation.bank.1 != animation.converted_bank {
+            return Err(invalid(
+                "Equipment animation changed a retained native bank",
+            ));
+        }
+        return Ok(());
+    }
     let mut expected = animation.bank.1.clone();
     let (count, _, clips, class) = array_at(&expected, 8)?;
     let (descriptors, _, rows, descriptor_class) = array_at(&expected, 0x68)?;
@@ -164,6 +202,11 @@ pub(in crate::item) fn author(
                 "Imported equipment clip changed its native trigger name",
             ));
         }
+        if animation.preserve_timing && read_u16(&original, 0x13C)? != read_u16(bytes, 0x13C)? {
+            return Err(invalid(
+                "Equipment animation changed a retained native frame count",
+            ));
+        }
         use sha2::Digest;
         let key = (CLIP_CLASS, sha2::Sha256::digest(bytes).into());
         let private = if let Some(private) = cache.get(&key) {
@@ -237,5 +280,80 @@ pub(in crate::item) fn author(
             storage: crate::NewTagStorageMode::InheritTemplate,
         });
     }
+    author_rigs(manager, animation, entity, allocator, tags)?;
     validate_weapon_entity(entity).map_err(invalid)
+}
+
+fn author_rigs(
+    manager: &PackageManager,
+    animation: &EquipmentAnimation,
+    entity: &mut [u8],
+    allocator: AppendedTagAllocator,
+    tags: &mut Vec<NewTagSpec>,
+) -> AuthoringResult<()> {
+    let mut seen = BTreeSet::new();
+    for rig in &animation.rigs {
+        if !seen.insert(rig.original.0) {
+            return Err(invalid("Equipment rig owner is repeated"));
+        }
+        stock(
+            manager,
+            &rig.original,
+            RESOURCE_OWNER_CLASS,
+            "equipment rig",
+        )?;
+        let original = Payload(rig.original.1.clone());
+        let converted = Payload(rig.converted.clone());
+        let before = original.pointer(24).map_err(|e| invalid(e.to_string()))?;
+        let after = converted.pointer(24).map_err(|e| invalid(e.to_string()))?;
+        let class = original
+            .u32(before - 4)
+            .map_err(|e| invalid(e.to_string()))?;
+        if converted
+            .u32(after - 4)
+            .map_err(|e| invalid(e.to_string()))?
+            != class
+        {
+            return Err(invalid("Equipment rig changed its native resource class"));
+        }
+        match (class, rig.relocation) {
+            (0x80808546, Some((cut, delta)))
+                if delta > 0
+                    && delta.is_multiple_of(32)
+                    && cut.checked_add(8) == Some(before)
+                    && before.checked_add(delta) == Some(after) =>
+            {
+                parhelion_import::d2_mot::rig_convert::validate_native_instance(&rig.converted)
+                    .map_err(|e| invalid(format!("Equipment skeleton: {e:#}")))?;
+                parhelion_import::tiger::animation::rig::rebase_entity(
+                    entity,
+                    &original,
+                    rig.original.0,
+                    cut,
+                    delta,
+                )
+                .map_err(|e| invalid(format!("Equipment skeleton pointers: {e:#}")))?;
+            }
+            (0x80808F8F, None) if before == after => {
+                parhelion_import::d2_mot::rig_convert::animation::first_person::controls::validate(
+                    &rig.converted,
+                )
+                .map_err(|e| invalid(format!("Equipment controls: {e:#}")))?;
+            }
+            _ => return Err(invalid("Equipment rig has an unsupported relocation")),
+        }
+        let private = allocator
+            .assigned_tag(tags.len(), "Equipment animation", "rig")?
+            .0;
+        let mut bytes = rig.converted.clone();
+        retarget_weapon_component_owner_payload(&mut bytes, entity, rig.original.0, private)
+            .map_err(invalid)?;
+        retarget_weapon_component_owner(entity, rig.original.0, private).map_err(invalid)?;
+        tags.push(NewTagSpec {
+            template_tag: TagHash(rig.original.0),
+            payload: bytes,
+            storage: crate::NewTagStorageMode::InheritTemplate,
+        });
+    }
+    Ok(())
 }

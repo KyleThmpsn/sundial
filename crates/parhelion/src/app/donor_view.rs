@@ -158,6 +158,9 @@ impl PackageAuthoringApp {
         let overrides = &self.recipe.overrides;
         // Behavior has its own dropdown on the Weapon tab, so the note leaves it out.
         let mut parts = Vec::new();
+        if overrides.weapon_pattern_index.is_some() {
+            parts.push("Runtime");
+        }
         if overrides.type_marker_donor.is_some() {
             parts.push("Type Markers");
         }
@@ -296,9 +299,15 @@ impl PackageAuthoringApp {
                         ui.weak("Art-Variant Index");
                         ui.end_row();
                         for (index, row) in rows.iter_mut().enumerate() {
-                            ui.add(egui::DragValue::new(&mut row.character_class).range(-1..=2));
                             ui.add(
-                                egui::DragValue::new(&mut row.arrangement).range(0..=u16::MAX - 1),
+                                egui::DragValue::new(&mut row.character_class)
+                                    .range(-1..=2)
+                                    .clamp_existing_to_range(false),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut row.arrangement)
+                                    .range(0..=u16::MAX - 1)
+                                    .clamp_existing_to_range(false),
                             );
                             if ui.button("×").on_hover_text("Remove art row").clicked() {
                                 remove = Some(index);
@@ -1144,7 +1153,7 @@ impl PackageAuthoringApp {
             .filter(|_| slot_changed && self.recipe.presentation_donor.is_none())
             .map(|(gameplay, target)| {
                 format!(
-                    "Keeps the base {} model in {}. Test in game.",
+                    "Keeps the base {} model in {}.",
                     gameplay.type_name,
                     target.label(),
                 )
@@ -1482,7 +1491,7 @@ fn behavior_tooltip(
     if let Some(caution) = entry.caution {
         sections.push(caution.to_owned());
     }
-    sections.push("Perk text describes the original weapon. Test in game.".into());
+    sections.push("Perk text describes the original weapon.".into());
     sections.join("\n\n")
 }
 
@@ -1585,7 +1594,7 @@ pub(super) fn draw_unique_behavior_control(
     const BEHAVIOR: &str = "Another weapon's built-in behavior: the projectile it fires, its \
                             behavior record and firing values, and the intrinsic and trait perks \
                             that drive them. Replaces the base weapon's own. Stats, type markers \
-                            and animations stay. Test in game.";
+                            and animations stay.";
     let hint = crate::app::style::destiny_text(
         ui,
         selected.map_or_else(
@@ -1675,7 +1684,7 @@ pub(super) fn draw_unique_behavior_details(
         draw_unique_behavior_firing(ui, overrides);
     }
     if entry.launches_projectiles() {
-        draw_unique_behavior_projectile_speed(ui, overrides);
+        draw_projectile_speed(ui, overrides);
     }
     ui.weak(entry.summary);
 }
@@ -1719,7 +1728,7 @@ fn draw_unique_behavior_firing(
 /// supplies almost nothing to multiply and the borrowed rounds crawl. A source whose own
 /// multiplier already exceeds this figure came from a frame that supplies nothing either, so it
 /// is left alone.
-fn draw_unique_behavior_projectile_speed(
+pub(super) fn draw_projectile_speed(
     ui: &mut egui::Ui,
     overrides: &mut crate::recipe::WeaponRecipeOverrides,
 ) {
@@ -1734,12 +1743,12 @@ fn draw_unique_behavior_projectile_speed(
             egui::DragValue::new(&mut boost)
                 .speed(0.05)
                 .max_decimals(3)
-                .range(1.0..=9_998.0)
+                .range(1.0..=9_998.0).clamp_existing_to_range(false)
                 .suffix(" \u{d7}"),
         );
         let changed = response.changed();
         crate::app::style::named_control(response, "Projectile Speed Multiplier").on_hover_text(
-            "Speeds up the behavior's projectiles when this weapon normally fires instantly. A faster source speed is kept. No safe maximum is known, so raise it gradually and test in game.",
+            "Speeds up borrowed or imported projectiles when this weapon normally fires instantly. A faster source speed is kept.",
         );
         if changed {
             overrides.behavior_projectile_speed_bits = Some(boost.to_bits());
@@ -1752,6 +1761,8 @@ fn draw_unique_behavior_projectile_speed(
 fn draw_part_note(ui: &mut egui::Ui, note: &str, link: &str) -> bool {
     ui.horizontal_wrapped(|ui| {
         ui.weak(note);
+        // The link moves to the next line whole rather than breaking across two.
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
         ui.link(link).clicked()
     })
     .inner

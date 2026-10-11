@@ -4,6 +4,7 @@
 use super::imports::Inputs;
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+mod projectile;
 mod replication;
 
 struct Node {
@@ -19,12 +20,91 @@ pub(in crate::item) struct ImportedParticles {
     nodes: Vec<Node>,
     projectile: Option<String>,
     attachments: BTreeSet<String>,
+    presentation: Option<Presentation>,
+}
+
+struct Presentation {
+    entity: u32,
+    components: Vec<PresentationComponent>,
+}
+
+struct PresentationComponent {
+    source_owner: u32,
+    owner: String,
+    class: u32,
+}
+
+fn presentation_number(part: &serde_json::Value, field: &str) -> AuthoringResult<u32> {
+    part[field]
+        .as_u64()
+        .and_then(|number| u32::try_from(number).ok())
+        .filter(|number| ![0, u32::MAX].contains(number))
+        .ok_or_else(|| invalid(format!("Imported runtime presentation lacks {field}")))
+}
+
+fn presentation_component(
+    part: &serde_json::Value,
+    nodes: &[Node],
+    required_class: Option<u32>,
+) -> AuthoringResult<PresentationComponent> {
+    let source_owner = presentation_number(part, "source_owner")?;
+    let class = match required_class {
+        Some(class) => class,
+        None => presentation_number(part, "class")?,
+    };
+    if class & 0xffff0000 != 0x80800000 {
+        return Err(invalid("Imported runtime component lacks its native class"));
+    }
+    let owner = part["owner"]
+        .as_str()
+        .filter(|symbol| !symbol.is_empty())
+        .ok_or_else(|| invalid("Imported runtime component lacks its owner"))?
+        .to_owned();
+    let node = nodes
+        .iter()
+        .find(|node| node.symbol == owner)
+        .ok_or_else(|| invalid("Imported runtime component owner is absent"))?;
+    if node.template != source_owner || node.reference.is_some() {
+        return Err(invalid(
+            "Imported runtime component does not match its source template",
+        ));
+    }
+    Ok(PresentationComponent {
+        source_owner,
+        owner,
+        class,
+    })
+}
+
+fn presentation(part: &serde_json::Value, nodes: &[Node]) -> AuthoringResult<Presentation> {
+    let entity = presentation_number(part, "source_entity")?;
+    let mut components = vec![presentation_component(part, nodes, Some(0x808072bd))?];
+    if let Some(entries) = part.get("components") {
+        for entry in entries
+            .as_array()
+            .ok_or_else(|| invalid("Imported runtime components are not an array"))?
+        {
+            let component = presentation_component(entry, nodes, None)?;
+            if components.iter().any(|existing| {
+                existing.source_owner == component.source_owner || existing.owner == component.owner
+            }) {
+                return Err(invalid("Imported runtime component is duplicated"));
+            }
+            components.push(component);
+        }
+    }
+    Ok(Presentation { entity, components })
 }
 
 pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedParticles>> {
     let value = graph.value();
     let mut nodes = Vec::new();
-    for section in ["particles", "projectile", "attachments"] {
+    for section in [
+        "particles",
+        "projectile",
+        "attachments",
+        "runtime_presentation",
+    ] {
         if let Some(part) = value.get(section) {
             if part["installable"] != true {
                 return Err(invalid(format!(
@@ -132,10 +212,15 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedPa
             }
         }
     }
+    let presentation = value
+        .get("runtime_presentation")
+        .map(|part| presentation(part, &result))
+        .transpose()?;
     let assets = ImportedParticles {
         nodes: result,
         projectile,
         attachments,
+        presentation,
     };
     if let Some(root) = &assets.projectile {
         assets.projectile(root)?;
@@ -147,6 +232,140 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedPa
 }
 
 impl ImportedParticles {
+    /// Include older graphs' mutable arrays in the native loader's instance copy.
+    fn repair_instances(&mut self, manager: &PackageManager) -> AuthoringResult<()> {
+        for node in &mut self.nodes {
+            if manager
+                .get_entry(TagHash(node.template))
+                .is_none_or(|entry| entry.reference != 0x80809c36)
+            {
+                continue;
+            }
+            let patches = node
+                .patches
+                .iter()
+                .map(|(offset, symbol)| serde_json::json!({"offset":offset,"symbol":symbol}))
+                .collect::<Vec<_>>();
+            if let Some(fixed) = parhelion_import::tiger::instance::repair(&node.payload, &patches)
+                .map_err(|error| {
+                    invalid(format!("Imported component {}: {error:#}", node.symbol))
+                })?
+            {
+                node.payload = fixed.payload;
+                node.patches = fixed
+                    .patches
+                    .into_iter()
+                    .map(|patch| {
+                        Ok((
+                            usize::try_from(
+                                patch["offset"]
+                                    .as_u64()
+                                    .ok_or_else(|| invalid("Repaired component offset missing"))?,
+                            )
+                            .map_err(|_| invalid("Repaired component offset overflow"))?,
+                            patch["symbol"]
+                                .as_str()
+                                .ok_or_else(|| invalid("Repaired component symbol missing"))?
+                                .to_owned(),
+                        ))
+                    })
+                    .collect::<AuthoringResult<_>>()?;
+            }
+        }
+        Ok(())
+    }
+    /// Apply prepared components only to the exact native vehicle they were retargeted for.
+    pub(in crate::item) fn apply_presentation(
+        &self,
+        manager: &PackageManager,
+        source_entity: TagHash,
+        entity: &mut [u8],
+        symbols: &BTreeMap<String, TagHash>,
+    ) -> AuthoringResult<()> {
+        let Some(presentation) = &self.presentation else {
+            return Ok(());
+        };
+        if source_entity.0 != presentation.entity {
+            return Err(invalid(
+                "Imported appearance was prepared for a different summoned vehicle. Reimport it for this vehicle.",
+            ));
+        }
+        for component in &presentation.components {
+            self.apply_component(manager, entity, symbols, component)?;
+        }
+        Ok(())
+    }
+
+    fn apply_component(
+        &self,
+        manager: &PackageManager,
+        entity: &mut [u8],
+        symbols: &BTreeMap<String, TagHash>,
+        component: &PresentationComponent,
+    ) -> AuthoringResult<()> {
+        let original = manager
+            .read_tag(TagHash(component.source_owner))
+            .map_err(|e| invalid(e.to_string()))?;
+        let original = parhelion_import::d2_mot::payload::Payload(original);
+        let resource = original.pointer(24).map_err(|e| invalid(e.to_string()))?;
+        if manager
+            .get_entry(TagHash(component.source_owner))
+            .is_none_or(|e| e.reference != 0x80809c36)
+            || original
+                .u32(
+                    resource
+                        .checked_sub(4)
+                        .ok_or_else(|| invalid("Invalid runtime component resource"))?,
+                )
+                .map_err(|e| invalid(e.to_string()))?
+                != component.class
+        {
+            return Err(invalid(
+                "Imported runtime owner does not match its native component class",
+            ));
+        }
+        let node = self
+            .nodes
+            .iter()
+            .find(|node| node.symbol == component.owner)
+            .ok_or_else(|| invalid("Imported runtime component payload is absent"))?;
+        let replacement = parhelion_import::d2_mot::payload::Payload(node.payload.clone());
+        let resource = replacement
+            .pointer(24)
+            .map_err(|e| invalid(e.to_string()))?;
+        if replacement
+            .u32(
+                resource
+                    .checked_sub(4)
+                    .ok_or_else(|| invalid("Invalid imported runtime resource"))?,
+            )
+            .map_err(|e| invalid(e.to_string()))?
+            != component.class
+        {
+            return Err(invalid(
+                "Imported runtime payload changes its component class",
+            ));
+        }
+        let before = parhelion_import::d2_mot::payload::Payload(entity.to_vec());
+        parhelion_import::d2_mot::entity::owner_slots(&before, &original, component.source_owner)
+            .map_err(|e| invalid(e.to_string()))?;
+        let target = symbols
+            .get(&component.owner)
+            .ok_or_else(|| invalid("Imported runtime owner was not allocated"))?;
+        sundial::package_authoring::entity::retarget_weapon_component_owner(
+            entity,
+            component.source_owner,
+            target.0,
+        )
+        .map_err(invalid)?;
+        parhelion_import::d2_mot::entity::reject_stale_owner(
+            &parhelion_import::d2_mot::payload::Payload(entity.to_vec()),
+            component.source_owner,
+        )
+        .map_err(|e| invalid(e.to_string()))?;
+        Ok(())
+    }
+
     /// A perk may bind only a declared attachment root from this group.
     pub(in crate::item) fn attachment(&self, symbol: &str) -> AuthoringResult<()> {
         let node = self
@@ -177,6 +396,11 @@ impl ImportedParticles {
     }
 
     pub(in crate::item) fn merge(&mut self, other: Self) -> AuthoringResult<()> {
+        if self.presentation.is_some() && other.presentation.is_some() {
+            return Err(invalid(
+                "More than one imported group supplies the vehicle appearance",
+            ));
+        }
         if self.projectile.is_some() && other.projectile.is_some() {
             return Err(invalid(
                 "More than one imported group supplies the fired projectile",
@@ -197,6 +421,7 @@ impl ImportedParticles {
         self.nodes.extend(other.nodes);
         self.attachments.extend(other.attachments);
         self.projectile = self.projectile.take().or(other.projectile);
+        self.presentation = self.presentation.take().or(other.presentation);
         Ok(())
     }
 

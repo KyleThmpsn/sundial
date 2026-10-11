@@ -122,36 +122,3 @@ fn scope(code: &[u8], constants: &[[f32; 4]]) -> Vec<u8> {
     bytes[..8].copy_from_slice(&len.to_le_bytes());
     bytes
 }
-
-/// The same serialized cubic material used by the native capture's timeline cases. Only the
-/// desktop GPU verification renders it.
-#[cfg(any(windows, target_os = "linux"))]
-pub(crate) fn timeline() -> (Animation, [[f32; 4]; 27]) {
-    let code = [0x3C, 1, 0, 0x37, 0, 0x43, 9];
-    let constants = [
-        [0.0; 4],
-        [0.0; 4],
-        [1.0, 0.0, -1.0, 0.0],
-        [0.0, 0.5, 1.5, 0.0],
-        [0.0, 0.5, 1.0, 1.5],
-    ];
-    let mut base = [[0.0; 4]; 27];
-    base[0] = [1.0, 1.0, 0.0, 0.0];
-    base[1] = base[0];
-    for offset in [9, 13] {
-        base[offset] = [0.2; 4];
-        base[offset + 1] = [1.0, 1.0, 1.0, 0.0];
-        base[offset + 2] = [-1.0, 0.0, 0.0, 0.0];
-        base[offset + 3] = [0.0, 1.0, 0.0, 1.0];
-    }
-    for offset in [17, 21] {
-        base[offset] = [0.2; 4];
-        base[offset + 1] = [0.0, 1.0, 0.0, 1.0];
-        base[offset + 2] = [0.0, 1.0, 0.0, 1.0];
-        base[offset + 3] = [1.0, 1.0, 1.0, 0.0];
-    }
-    let animation = source_animation(&scope(&code, &constants), &[], base)
-        .unwrap()
-        .unwrap();
-    (animation, base)
-}

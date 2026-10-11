@@ -414,7 +414,7 @@ fn load_profile_items(
         return Err(JsonProfileError::format(
             "/state/account/profile_items",
             format!(
-                "profile_items contains {} rows; maximum is {capacity}",
+                "profile_items contains {} rows. The maximum is {capacity}",
                 rows.len()
             ),
         ));
@@ -465,7 +465,7 @@ fn load_dismantle_rewards(
         return Err(JsonProfileError::format(
             "/state/account/dismantle_rewards",
             format!(
-                "dismantle_rewards contains {} rows; maximum is {capacity}",
+                "dismantle_rewards contains {} rows. The maximum is {capacity}",
                 rows.len()
             ),
         ));

@@ -339,23 +339,28 @@ impl PackageAuthoringApp {
         ui.heading("Gameplay")
             .on_hover_text("How the weapon fires and behaves, and the parts it takes from others");
         ui.add_space(6.0);
-        // Parts beside the Barrel's settings when both fit, the projectile's cards under them.
+        // Parts beside the Barrel's settings when both fit, one height, and the projectile's cards
+        // under them.
         let column = egui::Layout::top_down(egui::Align::Min);
-        if let Some(parts_width) = workbench_left_column_width(ui.available_width()) {
+        if let Some(parts_width) = workbench_left_column_width(ui.available_width())
+            && self.recipe.kind.is_weapon()
+        {
             let barrel_width = ui.available_width() - parts_width - ui.spacing().item_spacing.x;
+            let mut cards = style::CardLine::new(ui, "gameplay-parts-barrel");
             ui.horizontal_top(|ui| {
                 ui.allocate_ui_with_layout(egui::vec2(parts_width, 0.0), column, |ui| {
                     ui.set_width(parts_width);
-                    self.draw_gameplay_parts(ui, donor);
+                    cards.card(ui, |ui| self.draw_part_rows(ui, donor));
                 });
                 ui.allocate_ui_with_layout(egui::vec2(barrel_width, 0.0), column, |ui| {
                     ui.set_width(barrel_width);
-                    self.draw_barrel_controls(ui);
+                    cards.card(ui, |ui| self.draw_barrel_settings(ui, donor));
                 });
             });
+            cards.finish(ui.ctx());
         } else {
             self.draw_gameplay_parts(ui, donor);
-            self.draw_barrel_controls(ui);
+            self.draw_barrel_controls(ui, donor);
         }
         self.draw_fired_projectile(ui);
         if self.show_experimental_options {
@@ -644,7 +649,7 @@ impl PackageAuthoringApp {
         )
         .on_hover_text(
             "Shaders with an animated glow also light this weapon's glowing parts, such as sights \
-             and vents. Other parts stay as they are. Test in game",
+             and vents. Other parts stay as they are",
         )
         .on_disabled_hover_text("Imported models keep their own materials.");
     }

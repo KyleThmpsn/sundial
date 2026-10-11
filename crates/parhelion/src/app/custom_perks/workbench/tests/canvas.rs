@@ -224,6 +224,7 @@ fn program_recipe() -> PerkRecipe {
                 damage_type: None,
                 rows: Vec::new(),
                 hud_status: None,
+                script: None,
             }),
             Action::Spawn {
                 asset: Asset {
@@ -233,6 +234,7 @@ fn program_recipe() -> PerkRecipe {
                     damage_type: None,
                     rows: Vec::new(),
                     hud_status: None,
+                    script: None,
                 },
                 position: Position::Event,
             },

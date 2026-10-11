@@ -21,6 +21,11 @@ pub struct Asset {
     /// array, written after the graph's records in a private copy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rows: Vec<ModifierRow>,
+    /// The behavior script that names this graph, for a graph a complete program reaches only
+    /// through a Run a Game Script effect. The build edits a private copy of the graph and names
+    /// it in a private copy of the script, which that effect then runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<u32>,
 }
 
 /// One modifier row added to an attachment: the component interface and the input within it
@@ -49,7 +54,7 @@ fn is_no_ability(ability: &i16) -> bool {
 }
 
 impl ModifierRow {
-    /// A row that leaves its input alone: nothing added to the Barrel's first Rounds per Burst
+    /// A row that leaves its input alone: nothing added to the Barrel's first Bullets per Shot
     /// lane.
     #[must_use]
     pub const fn neutral() -> Self {

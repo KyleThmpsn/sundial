@@ -81,9 +81,10 @@ fn visibility_contract(code: &Code) -> bool {
     };
     z.code == 54
         && literal(&z.operands[1], 2, 0.0)
-        && ((y.code == 56
-            && !y.saturate
-            && (literal(&y.operands[1], 1, 0.5) || literal(&y.operands[2], 1, 0.5)))
+        && ((y.code == 54 && literal(&y.operands[1], 1, 0.5))
+            || (y.code == 56
+                && !y.saturate
+                && (literal(&y.operands[1], 1, 0.5) || literal(&y.operands[2], 1, 0.5)))
             || opaque::intensity::recover_surface(code))
 }
 

@@ -56,6 +56,16 @@ const COMMON_INPUTS: &[(u8, &str)] = &[
     (255, "None"),
 ];
 
+/// The objects EC0AA0 resolves a target byte to. 0 is the owner's own object (+2C) and 1 the
+/// linked actor (EC06E0). With an event, ECD110 reads 2 and 3 from the event's +10 and +14,
+/// whose stock users name them below. Without one, EC0B4F..EC0B57 return -1 for anything but 0.
+const TARGETS: &[(u8, &str)] = &[
+    (0, "This Item"),
+    (1, "You"),
+    (2, "Triggering Weapon"),
+    (3, "Other Combatant"),
+];
+
 /// This does not infer selector meanings from a field's numeric representation.
 pub fn contract(class: u32, field: &Field) -> ValueContract {
     let mut result = ValueContract {
@@ -123,12 +133,25 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
         // of the Sky on the ally a Noble Round reaches.
         (0x80803E44..=0x80803E46, 2) => {
             result.description = "Who receives the attachment. This Item is the weapon or armor carrying the perk. Triggering Weapon is the weapon a draw, reload or aiming event comes from, such as the Sidearm an armor perk buffs when you draw it. Other Combatant is the enemy you hit or killed, or the one who hit you.";
-            result.choices = &[
-                (0, "This Item"),
-                (1, "You"),
-                (2, "Triggering Weapon"),
-                (3, "Other Combatant"),
-            ];
+            result.choices = TARGETS;
+        }
+        // Kind 48's activation, 108CB70, resolves +2, +3 and +4 through the same EC0AA0. It
+        // returns before running the script when the first or second is -1 (108CC0C,
+        // 108CC19), which any value but 0 or 1 gives without an event. 108CC95 adds the first
+        // to the runner's recipients, and the second and third travel as its context words.
+        (0x80802D0A, 2..=4) => {
+            result.description = match field.offset {
+                2 => {
+                    "Who the script is run for. Triggering Weapon and Other Combatant come from the event that started the effect, such as a kill, and stop the script when there is none."
+                }
+                3 => {
+                    "A second object the script can read. Triggering Weapon and Other Combatant come from the event that started the effect, and stop the script when there is none."
+                }
+                _ => {
+                    "A third object the script can read. Triggering Weapon and Other Combatant come from the event that started the effect, and pass nothing when there is none."
+                }
+            };
+            result.choices = TARGETS;
         }
         // 108B605..108B7E7 tests only empty versus nonempty, not the key's identity.
         (0x80803E45, 0x18) => {

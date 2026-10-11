@@ -822,7 +822,7 @@ fn validate_shared_tag_enrollments(
         .ok_or_else(|| validation("Candidate shared-tag count overflowed"))?;
     if candidate_layout.shared_tag_enrollment_count() != expected_count {
         return Err(validation(format!(
-            "Candidate shared-tag table has {} rows; expected {expected_count}",
+            "Candidate shared-tag table has {} rows. Expected {expected_count}",
             candidate_layout.shared_tag_enrollment_count()
         )));
     }

@@ -48,6 +48,55 @@ impl Reader<'_> {
             .collect()
     }
 
+    /// The graph a creating node names, when it is one: a kind-15 node, whose creation path
+    /// (`40C0A0`) loads the graph from +0x74.
+    fn created(&self, node: &Child) -> Result<Option<u32>, String> {
+        if node.class != 0x8080_8881
+            || node.source != 0x8080_8880
+            || bytes_at::<1>(self.data, node.at + 0x30)?[0] != 15
+        {
+            return Ok(None);
+        }
+        let graph = u32_at(self.data, node.at + 0x74)?;
+        Ok((graph != 0 && graph != u32::MAX).then_some(graph))
+    }
+
+    /// What each creating group and creating node of this root makes, by where its settings sit:
+    /// a group, the graphs of the kind-15 nodes it selects, and a node, the graph it names.
+    pub(super) fn creations(&mut self) -> Result<Vec<(usize, Vec<u32>)>, String> {
+        let root = self.root.owner_offset as usize;
+        let source = self.pair(root, 0x8080_84E9, 0x8080_84D7)?;
+        let groups = self.children(root + 0x158, source + 0xA0)?;
+        let nodes = self.children(root + 0x168, source + 0xB0)?;
+        let mut found = Vec::new();
+        for group in groups.iter().flatten() {
+            if !matches!(
+                (group.class, group.source),
+                (0x8080_93D7, 0x8080_93D6) | (0x8080_93D9, 0x8080_93D8)
+            ) {
+                continue;
+            }
+            let mut graphs = Vec::new();
+            for selector in self.array(group.at + 0x38, 0x8080_93FB)? {
+                let word = u32_at(self.data, selector)?;
+                if word & 0xFF == 1
+                    && let Some(Some(node)) = nodes.get((word >> 16) as usize)
+                    && let Some(graph) = self.created(node)?
+                    && !graphs.contains(&graph)
+                {
+                    graphs.push(graph);
+                }
+            }
+            found.push((group.at, graphs));
+        }
+        for node in nodes.iter().flatten() {
+            if let Some(graph) = self.created(node)? {
+                found.push((node.at, vec![graph]));
+            }
+        }
+        Ok(found)
+    }
+
     pub(super) fn creator(&mut self) -> Result<(), String> {
         let root = self.root.owner_offset as usize;
         let source = self.pair(root, 0x8080_84E9, 0x8080_84D7)?;

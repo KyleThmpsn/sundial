@@ -24,7 +24,7 @@ pub(super) fn draw(
                 }
             });
             egui::Grid::new(("mission-fields",mission.hash)).spacing([16.0,6.0]).show(ui,|ui| {
-                ui.label("Progress");ui.add(egui::DragValue::new(&mut mission.progress).range(0..=i32::MAX));ui.end_row();
+                ui.label("Progress");ui.add(egui::DragValue::new(&mut mission.progress).range(0..=i32::MAX).clamp_existing_to_range(false));ui.end_row();
                 ui.label("Activity Index");ui.label(mission.activity.to_string());ui.end_row();
                 ui.label("Checkpoint");ui.label(format!("{:08X}",mission.checkpoint));ui.end_row();
                 ui.label("Slice Set");ui.label(mission.slice.to_string());ui.end_row();

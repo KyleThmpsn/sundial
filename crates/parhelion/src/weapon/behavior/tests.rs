@@ -605,11 +605,11 @@ fn every_launching_source_is_recorded() {
 }
 
 /// The sources offering a firing pattern are a measurement too: each one's own plugs are read
-/// from the packages, perk by perk, for a change to the barrel's Rounds per Burst.
+/// from the packages, perk by perk, for a change to the barrel's Bullets per Shot.
 #[test]
 #[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn every_burst_source_is_recorded() {
-    use sundial::package_authoring::runtime::modifiers::BARREL_ROUNDS_PER_BURST;
+    use sundial::package_authoring::runtime::modifiers::BARREL_BULLETS_PER_SHOT;
     use sundial::package_authoring::{open_shadowkeep_package_manager, resolve_live_named_tag};
     let path = crate::test_support::stock_packages();
     let manager = open_shadowkeep_package_manager(&path).unwrap();
@@ -627,7 +627,7 @@ fn every_burst_source_is_recorded() {
                 .filter_map(|perk| perk_firing(&manager, &globals, perk).unwrap())
                 .flat_map(|perk| perk.records)
                 .any(|record| {
-                    BARREL_ROUNDS_PER_BURST
+                    BARREL_BULLETS_PER_SHOT
                         .iter()
                         .any(|lane| record.in_burst_lane(*lane))
                 })

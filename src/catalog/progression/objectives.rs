@@ -9,7 +9,7 @@ pub(super) fn milestone_objective_indices(
         .map_err(|_| "Milestone phase count is too large")?;
     if phase_count > MILESTONE_MAX_PHASES {
         return Err(format!(
-            "Milestone has {phase_count} phases; expected at most {MILESTONE_MAX_PHASES}"
+            "Milestone has {phase_count} phases. Expected at most {MILESTONE_MAX_PHASES}"
         ));
     }
 

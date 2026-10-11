@@ -201,20 +201,20 @@ pub(crate) fn marker_set_appends(
 /// The stat translator's per-type keys: at +0x10 the FNV-1 of a type name matched against the
 /// row's translation group (hand_cannon, sidearm, or the rifle translator's auto, pulse, scout and
 /// smg), then three values of that type's own.
-const TRANSLATOR_KEY_CLASS: u32 = 0x8080_38C7;
-const TRANSLATOR_KEY_SIZE: usize = 0x28;
-const TRANSLATOR_KEY_HASH: usize = 0x10;
+pub(super) const TRANSLATOR_KEY_CLASS: u32 = 0x8080_38C7;
+pub(super) const TRANSLATOR_KEY_SIZE: usize = 0x28;
+pub(super) const TRANSLATOR_KEY_HASH: usize = 0x10;
 /// Each type's conversion, in the keys' order: three arrays (translations, the routing entries
 /// that write each output to a component input, and a third), one 16-byte descriptor each.
-const TRANSLATOR_TABLE_CLASS: u32 = 0x8080_3975;
-const TRANSLATOR_TABLE_SIZE: usize = 0x30;
+pub(super) const TRANSLATOR_TABLE_CLASS: u32 = 0x8080_3975;
+pub(super) const TRANSLATOR_TABLE_SIZE: usize = 0x30;
 
 /// Patches that make the stat translator convert stats as the base weapon's type when the
 /// appearance's rig moves across.
 ///
 /// The translator keeps one table per weapon type, and the authored pattern row names the
 /// appearance's type once its rig moves, so a hand cannon wearing a sidearm's rig fired at sidearm
-/// rates and a pulse rifle wearing a hand cannon lost its burst, since Rounds per Burst converts
+/// rates and a pulse rifle wearing a hand cannon lost its burst, since Bullets per Shot converts
 /// through the same table. The appearance type's table entry is pointed at the base type's arrays and takes the
 /// base type's values. Every key keeps its hash and place, so however the client finds a key, it
 /// still finds it. The patched translator is a private copy.
@@ -305,7 +305,7 @@ pub(crate) fn stat_table_patches(
 }
 
 /// The one native array of `class` in the translator owner: its row count and first row.
-fn translator_array(owner: &[u8], class: u32) -> AuthoringResult<(usize, usize)> {
+pub(super) fn translator_array(owner: &[u8], class: u32) -> AuthoringResult<(usize, usize)> {
     let mut found = None;
     for descriptor in (0..owner.len().saturating_sub(16)).step_by(8) {
         let Ok((count, rows, found_class)) =

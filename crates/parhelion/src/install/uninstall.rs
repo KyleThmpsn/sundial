@@ -217,7 +217,7 @@ pub(super) fn uninstall_inner(
     if let Some(cleanup) = &plan.cleanup {
         if prepare_account_cleanup(plan).map_err(InstallError::validation)? != *cleanup {
             return Err(after_backup(
-                "Account data changed since review; review again".into(),
+                "Account data changed since review. Review again".into(),
             ));
         }
         record.account_cleanup = Some(account::prepare(cleanup, &plan.target, &backup)?);
@@ -265,7 +265,7 @@ pub(super) fn uninstall_inner(
             });
             let message = match recovered {
                 Ok(RecoveryOutcome::Recovered { .. }) => format!(
-                    "Uninstall failed; the original custom package set was restored. {error}"
+                    "Uninstall failed. The original custom package set was restored. {error}"
                 ),
                 Ok(_) => format!(
                     "The operation reached a terminal state, but finalization reported an error. Review the current package set before continuing. {error}"
@@ -368,7 +368,7 @@ fn verify_plan(plan: &UninstallPlan) -> Result<(), InstallError> {
     let current = preview_uninstall(&plan.target)?;
     if current.artifacts != plan.artifacts || current.stock != plan.stock {
         return Err(InstallError::validation(
-            "Packages changed since the uninstall review. Review the current set again; no files were removed.",
+            "Packages changed since the uninstall review. Review the current set again. No files were removed.",
         ));
     }
     Ok(())

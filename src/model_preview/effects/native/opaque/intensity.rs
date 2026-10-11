@@ -52,9 +52,13 @@ fn encoder<'a>(code: &'a Code, encoded: Value<'a>) -> Option<Value<'a>> {
         || !value(affine, at, lane, 2).number(1.0 / 13.0)
         || !value(affine, at, lane, 3).number(7.0 / 13.0)
     {
-        return None;
+        return folded_encoder(code, encoded);
     }
-    let (log, at, lane) = value(affine, at, lane, 1).node(code)?;
+    log_power(code, value(affine, at, lane, 1))
+}
+
+fn log_power<'a>(code: &'a Code, logarithm: Value<'a>) -> Option<Value<'a>> {
+    let (log, at, lane) = logarithm.node(code)?;
     if log.code != 47 || log.saturate {
         return None;
     }
@@ -69,6 +73,42 @@ fn encoder<'a>(code: &'a Code, encoded: Value<'a>) -> Option<Value<'a>> {
     } else {
         None
     }
+}
+
+/// A nonnegative source lets the compiler remove the encoder's lower clamp.
+/// Keep the exact logarithm, affine constants and upper clamp, then prove that bound.
+fn folded_encoder<'a>(code: &'a Code, encoded: Value<'a>) -> Option<Value<'a>> {
+    let (minimum, at, lane) = encoded.node(code)?;
+    if minimum.code != 51 || minimum.saturate || !value(minimum, at, lane, 2).number(1.0) {
+        return None;
+    }
+    let (multiply, at, lane) = value(minimum, at, lane, 1).node(code)?;
+    if multiply.code != 56 || multiply.saturate || !value(multiply, at, lane, 2).number(1.0 / 13.0)
+    {
+        return None;
+    }
+    let (add, at, lane) = value(multiply, at, lane, 1).node(code)?;
+    if add.code != 0 || add.saturate || !value(add, at, lane, 2).number(7.0) {
+        return None;
+    }
+    let power = log_power(code, value(add, at, lane, 1))?;
+    nonnegative(code, power, 0).then_some(power)
+}
+
+fn nonnegative(code: &Code, source: Value<'_>, depth: usize) -> bool {
+    if source.operand.kind == 4 && source.operand.modifier == 0 {
+        let number = f32::from_bits(source.operand.literal[source.operand.lanes[source.lane]]);
+        return number.is_finite() && number >= 0.0;
+    }
+    if depth >= 16 {
+        return false;
+    }
+    source.node(code).is_some_and(|(row, at, lane)| {
+        row.code == 52
+            && !row.saturate
+            && (nonnegative(code, value(row, at, lane, 1), depth + 1)
+                || nonnegative(code, value(row, at, lane, 2), depth + 1))
+    })
 }
 
 fn visibility(code: &Code, ambient: Value<'_>) -> bool {
@@ -130,7 +170,10 @@ pub(in crate::model_preview::effects::native) fn recover_surface(code: &Code) ->
     let Some((condition, at, lane)) = value(row, at, 1, 1).node(code) else {
         return false;
     };
-    if condition.code != 49 || condition.saturate || !value(condition, at, lane, 1).number(0.00001)
+    if condition.code != 49
+        || condition.saturate
+        || !(value(condition, at, lane, 1).number(0.00001)
+            || value(condition, at, lane, 1).number(0.0))
     {
         return false;
     }

@@ -18,6 +18,7 @@ pub use crate::model_preview::{
 pub mod chooser;
 mod details;
 mod fps;
+pub mod icon;
 mod image_job;
 mod options;
 pub use options::{Options, set_options};

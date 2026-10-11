@@ -1,5 +1,5 @@
 //! What an ability or node changes about the abilities of its subclass while it is selected, as
-//! the Ability Changes chips: the keys its stock pool applies, each removable, then its own, then
+//! the Changes While Equipped chips: the keys its stock pool applies, each removable, then its own, then
 //! Add Change, which puts one together in a form under them: the ability, what to change, and the
 //! value.
 use super::*;

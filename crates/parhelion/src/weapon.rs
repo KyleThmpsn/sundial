@@ -6,6 +6,7 @@ pub(crate) mod ammo;
 pub(crate) mod animations;
 pub mod barrel;
 pub mod behavior;
+pub(crate) mod burst;
 pub(crate) mod crosshair;
 pub(crate) mod glow;
 pub(crate) mod lenders;

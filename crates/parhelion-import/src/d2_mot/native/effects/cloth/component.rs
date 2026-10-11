@@ -36,9 +36,11 @@ pub(super) fn build(
     reader: &mut Reader,
     name: &str,
     template: &Payload,
+    source: &Payload,
 ) -> Result<()> {
     let symbol = format!("{name}-owner");
     let mut owner = template.clone();
+    activation::translate(source, &c.graph.read(&format!("{name}-model"))?, &mut owner)?;
     let instance = owner.pointer(16)?;
     let resource = owner.pointer(24)?;
     let parent = instance + 0x100;

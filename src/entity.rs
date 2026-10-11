@@ -11,6 +11,7 @@ mod lookup;
 pub use compose::{
     extend_weapon_components, extend_weapon_components_detaching, remove_weapon_components,
 };
+pub mod barrel;
 pub mod owner;
 mod rewire;
 mod splice;
@@ -350,7 +351,7 @@ pub fn weapon_component_binding(
     let mut bindings = weapon_component_bindings(entity, binding_hash)?;
     if bindings.len() != 1 {
         return Err(format!(
-            "Weapon component binding 0x{binding_hash:08X} selects {} resources; a resource index is required",
+            "Weapon component binding 0x{binding_hash:08X} selects {} resources. A resource index is required",
             bindings.len()
         ));
     }

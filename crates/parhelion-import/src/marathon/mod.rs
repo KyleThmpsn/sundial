@@ -21,73 +21,18 @@ pub fn apply_recipe_text(recipe: &mut Value) -> Result<()> {
 
 mod geometry;
 mod material;
-use crate::d2_mot::{
+use crate::tiger::{
     payload::Payload,
     reader::{Reader, outside, write_json},
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{fs, path::Path};
 
 fn hash(v: &Value, k: &str) -> Result<u32> {
-    crate::d2_mot::profile::hash(v, k)
+    crate::graph::hash(v, k)
 }
-fn put(b: &mut [u8], o: usize, v: &[u8]) -> Result<()> {
-    b.get_mut(o..o + v.len())
-        .context("native write outside payload")?
-        .copy_from_slice(v);
-    Ok(())
-}
-fn append(b: &mut Vec<u8>, o: usize, class: u64, rows: &[u8], stride: usize) -> Result<()> {
-    ensure!(
-        stride > 0 && rows.len().is_multiple_of(stride),
-        "array stride mismatch"
-    );
-    if rows.is_empty() {
-        return put(b, o, &[0; 16]);
-    }
-    let h = (b.len() + 19) & !15;
-    b.resize(h - 4, 0);
-    b.extend(0x80809fbdu32.to_le_bytes());
-    b.extend((rows.len() as u64 / stride as u64).to_le_bytes());
-    b.extend(class.to_le_bytes());
-    b.extend(rows);
-    put(b, o, &(rows.len() as u64 / stride as u64).to_le_bytes())?;
-    put(b, o + 8, &(h as i64 - o as i64 - 8).to_le_bytes())?;
-    let len = b.len() as u64;
-    put(b, 0, &len.to_le_bytes())
-}
-struct Graph {
-    root: PathBuf,
-    nodes: Vec<Value>,
-}
-impl Graph {
-    fn add(
-        &mut self,
-        symbol: &str,
-        template: u32,
-        data: &[u8],
-        reference: Option<&str>,
-        patches: Vec<Value>,
-    ) -> Result<()> {
-        ensure!(
-            !self.nodes.iter().any(|n| n["symbol"] == symbol),
-            "duplicate graph symbol"
-        );
-        crate::d2_mot::bundle::add(
-            &self.root,
-            &mut self.nodes,
-            symbol,
-            template,
-            data,
-            reference,
-            patches,
-        )
-    }
-}
+use crate::presentation::{Graph, append, put};
 #[expect(
     clippy::cognitive_complexity,
     reason = "Preserve the audited converter while integrating the legacy rendering pipeline."
@@ -203,11 +148,11 @@ fn build(source: &mut Reader, native: &mut Reader, entry: &Value, root: &Path) -
     let old_entity = native.tag(entity_tag, Some(0x80809c0f))?;
     let mut entity = old_entity.0.clone();
     let mut ep = vec![];
-    for o in crate::d2_mot::entity::owner_slots(&old_entity, &original, owner_tag)? {
+    for o in crate::tiger::entity::owner_slots(&old_entity, &original, owner_tag)? {
         put(&mut entity, o, &u32::MAX.to_le_bytes())?;
         ep.push(json!({"offset":o,"symbol":"owner"}));
     }
-    crate::d2_mot::entity::reject_stale_owner(&Payload(entity.clone()), owner_tag)?;
+    crate::tiger::entity::reject_stale_owner(&Payload(entity.clone()), owner_tag)?;
     g.add("entity", entity_tag, &entity, None, ep)?;
     let mut parent_bytes = native.tag(parent_tag, None)?.0.clone();
     put(&mut parent_bytes, 16, &u32::MAX.to_le_bytes())?;
@@ -255,22 +200,53 @@ pub fn prepare(plan: &Path, packages: &Path, native_packages: &Path, out: &Path)
     )?;
     ensure!(!out.exists(), "Marathon output already exists");
     let plan: Value = serde_json::from_slice(&fs::read(plan)?)?;
-    let mut source = Reader::marathon(packages, &out.join("source"))?;
-    let mut native = Reader::new(native_packages, &out.join("native"), false)?;
+    fs::create_dir_all(out.parent().context("Marathon output parent")?)?;
+    let temporary = tempfile::Builder::new()
+        .prefix("marathon-native-")
+        .tempdir_in(out.parent().unwrap())?;
+    let working = temporary.path();
+    let mut source = Reader::marathon(packages, &working.join("source"))?;
+    let mut native = Reader::new(native_packages, &working.join("native"), false)?;
     let mut reports = vec![];
-    for entry in plan.as_array().context("Marathon plan entries")? {
+    let entries = plan
+        .as_array()
+        .filter(|entries| !entries.is_empty())
+        .context("Marathon plan is empty")?;
+    let mut slugs = std::collections::BTreeSet::new();
+    for entry in entries {
         let slug = entry["slug"].as_str().context("output slug")?;
         ensure!(
-            slug.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+            !slug.is_empty()
+                && slug.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+                && slugs.insert(slug),
             "invalid output slug"
         );
         let report = build(
             &mut source,
             &mut native,
             entry,
-            &out.join(slug).join("graph"),
+            &working.join(slug).join("graph"),
         )
         .with_context(|| format!("building {slug}"))?;
+        let settings = entry
+            .get("icon")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or_default();
+        crate::graph::record_converter_revision(&working.join(slug).join("graph"))?;
+        crate::artwork::prepare(&working.join(slug).join("graph"), native_packages, settings)?;
+        if let Some(recipe) = entry.get("recipe") {
+            let mut recipe = recipe.clone();
+            apply_recipe_text(&mut recipe)?;
+            let directory = working.join(slug).join("graph");
+            let item = hash(&recipe["identity"], "item_hash")?;
+            let mut reference = crate::GraphReference::new(&directory, item)?;
+            crate::artwork::apply(&mut recipe, &directory)?;
+            reference.directory = out.join(slug).join("graph");
+            recipe["overrides"]["imported_graph"] = serde_json::to_value(reference)?;
+            write_json(&working.join(slug).join("weapon.parhelion.json"), &recipe)?;
+        }
         eprintln!(
             "{slug}: {} vertices, {} triangles",
             report["vertices"], report["triangles"]
@@ -279,6 +255,8 @@ pub fn prepare(plan: &Path, packages: &Path, native_packages: &Path, out: &Path)
     }
     source.finish()?;
     native.finish()?;
-    write_json(&out.join("report.json"), &json!(reports))?;
+    write_json(&working.join("report.json"), &json!(reports))?;
+    ensure!(!out.exists(), "Marathon output appeared concurrently");
+    fs::rename(working, &out)?;
     Ok(json!({"output":out,"weapons":reports.len()}))
 }

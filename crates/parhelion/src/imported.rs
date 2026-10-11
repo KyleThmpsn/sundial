@@ -1,6 +1,7 @@
 //! Reusable source assets shared by gear editing, portable recipes and native emission.
 use crate::ItemKind;
 pub(crate) mod archive;
+pub(crate) mod artwork;
 pub(crate) mod preview;
 
 pub(crate) fn source_icon(
