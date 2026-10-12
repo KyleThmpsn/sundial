@@ -267,9 +267,10 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
         // Auto Rifle, Pulse Rifle, Scout Rifle, Sidearm and Submachine Gun Scavengers sit on
         // 1; the Fusion Rifle, Grenade Launcher, Shotgun and Sniper Rifle Scavengers, which
         // all read "Special ammo", sit on 2; and the Rocket Launcher, Sword and Machine Gun
-        // Scavengers, with Lead from Gold, sit on 4.
+        // Scavengers, with Lead from Gold, sit on 4. The checker 107C760 skips this test when
+        // the byte is zero (107C767..107C76D), so no bits set accepts any ammunition.
         (0x80803DFB, 9) => {
-            result.description = "Which ammunition the pickup carried. Each bit is named by a stock perk that sets it alone, and a value with several bits accepts any of those types.";
+            result.description = "Which ammunition the pickup carried. Each bit is named by a stock perk that sets it alone, and a value with several bits accepts any of those types. With none set, any ammunition passes.";
             result.choices = &[(1, "Primary"), (2, "Special"), (4, "Heavy")];
             result.bitmask = true;
         }
@@ -459,6 +460,12 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
                 (8, "Jump"),
                 (128, "Class Ability"),
             ];
+            result.bitmask = true;
+        }
+        // Kind 28 tests its byte against 1 shifted by the event's first integer (1080840). Its
+        // two stock nodes set 0x08 and 0x3C, and what that integer counts is not established.
+        (0x80803DE0, 8) => {
+            result.description = "Which bits the event's index may select. The event selects one bit, and only bits 0 to 7 can match.";
             result.bitmask = true;
         }
         // A one-byte damage type record nested in kill, damage and accumulator conditions.

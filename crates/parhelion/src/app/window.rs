@@ -78,6 +78,7 @@ impl PackageAuthoringUtility for Parhelion {
         }
         self.app.show_plug_safety_warnings = sundial::investment::show_plug_safety_warnings();
         self.app.initialize_storage();
+        self.app.upgrade.request();
         self.app.plug_selection_mode = sundial::investment::default_plug_selection_mode();
         self.app.show_experimental_options = preferences.show_parhelion_experimental_options;
         self.app.preferences_changed = false;
@@ -113,6 +114,7 @@ impl PackageAuthoringUtility for Parhelion {
                     viewport_context,
                     self.app.install_receiver.is_some()
                         || self.app.uninstall.busy()
+                        || self.app.upgrade.busy()
                         || self.app.catalog_is_loading(),
                 );
                 let close_requested =

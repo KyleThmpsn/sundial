@@ -144,8 +144,6 @@ const STATUSES: [DonorCompatibility; 3] = [
     DonorCompatibility::Incompatible,
 ];
 
-const MIXING_WARNING: &str = "Component mixing can crash the game.";
-
 fn status_label(status: DonorCompatibility) -> &'static str {
     match status {
         DonorCompatibility::LowerRisk => "Lower Risk",
@@ -910,39 +908,13 @@ impl PackageAuthoringApp {
     }
 }
 
-/// The donor the component comes from now, with the crash warning on the same line when it
-/// fits and under it when it does not.
+/// The donor the component comes from now.
 fn draw_header(ui: &mut egui::Ui, sources: &str) {
     let secondary = crate::app::style::secondary(ui.visuals());
-    let warn = ui.visuals().warn_fg_color;
-    let font_id = egui::TextStyle::Body.resolve(ui.style());
-    let text_width = |text: &str| {
-        ui.painter()
-            .layout_no_wrap(text.to_owned(), font_id.clone(), warn)
-            .size()
-            .x
-    };
-    let fits = text_width("Current Source")
-        + text_width(sources)
-        + text_width(MIXING_WARNING)
-        + ui.spacing().item_spacing.x * 2.0
-        + 24.0
-        <= ui.available_width();
-    if fits {
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Current Source").color(secondary));
-            ui.label(sources);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.colored_label(warn, MIXING_WARNING);
-            });
-        });
-    } else {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("Current Source").color(secondary));
-            ui.label(sources);
-        });
-        ui.colored_label(warn, MIXING_WARNING);
-    }
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new("Current Source").color(secondary));
+        ui.label(sources);
+    });
 }
 
 /// A status tab's name and how many donors it holds. The count is in the secondary colour except

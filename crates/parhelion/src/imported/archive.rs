@@ -253,6 +253,17 @@ pub(crate) fn expand(document: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Leaves out the embedded assets of a recipe that is only listed. Lists and searches of saved
+/// recipes read names, icons and sockets, never the model, and restoring decodes and hashes
+/// every embedded payload twice.
+pub(crate) fn skip(document: &mut Value) {
+    if let Some(graph) = document.pointer_mut("/overrides/imported_graph")
+        && graph.get("embedded_assets").is_some()
+    {
+        *graph = Value::Null;
+    }
+}
+
 /// The existing graph fingerprint, including repeated references in manifest order.
 fn content_pin(graph: &str, ordered: &[String], files: &BTreeMap<String, Vec<u8>>) -> String {
     let mut digest = Sha256::new();

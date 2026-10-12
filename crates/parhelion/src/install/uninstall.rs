@@ -4,17 +4,19 @@ use sundial::package_authoring::account::AuthoredAccountCleanup;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UninstallPlan {
-    target: PathBuf,
-    artifacts: Vec<ArtifactMetadata>,
-    stock: Vec<ArtifactMetadata>,
-    cleanup: Option<AuthoredAccountCleanup>,
-    cleanup_error: Option<String>,
+    pub(super) target: PathBuf,
+    pub(super) artifacts: Vec<ArtifactMetadata>,
+    pub(super) stock: Vec<ArtifactMetadata>,
+    pub(super) cleanup: Option<AuthoredAccountCleanup>,
+    pub(super) cleanup_error: Option<String>,
+    pub(super) mod_folder: Option<loader::Folder>,
 }
 
 impl UninstallPlan {
     #[cfg(test)]
     pub(crate) fn preview_fixture() -> Self {
         Self {
+            mod_folder: None,
             target: PathBuf::from("C:/Example Game/packages"),
             artifacts: AUTHORED_PACKAGES
                 .iter()
@@ -69,6 +71,19 @@ pub struct UninstallReport {
 /// Read-only review. Unknown signatures, aliases and incomplete sets fail closed.
 pub fn preview_uninstall(packages: &Path) -> Result<UninstallPlan, InstallError> {
     let target = canonical_packages_directory(packages)?;
+    let install = target
+        .parent()
+        .ok_or_else(|| InstallError::validation("Missing game root"))?;
+    sundial::package_authoring::mod_content::ensure_readable(install)
+        .map_err(InstallError::validation)?;
+    if sundial::package_authoring::mod_content::directory(install).exists() {
+        return loader::preview_uninstall(&target);
+    }
+    preview_legacy(&target)
+}
+
+pub(super) fn preview_legacy(packages: &Path) -> Result<UninstallPlan, InstallError> {
+    let target = canonical_packages_directory(packages)?;
     validate_target_package_chain(&target)?;
     let mut artifacts = Vec::new();
     for profile in all_authored_packages() {
@@ -90,6 +105,7 @@ pub fn preview_uninstall(packages: &Path) -> Result<UninstallPlan, InstallError>
         .map(|name| snapshot(&target, name))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(UninstallPlan {
+        mod_folder: None,
         target,
         artifacts,
         stock,
@@ -112,7 +128,9 @@ pub fn preview_uninstall_with_account_cleanup(
     Ok(plan)
 }
 
-fn prepare_account_cleanup(plan: &UninstallPlan) -> Result<AuthoredAccountCleanup, String> {
+pub(super) fn prepare_account_cleanup(
+    plan: &UninstallPlan,
+) -> Result<AuthoredAccountCleanup, String> {
     let (hashes, unlocks) = identities::installed_identities(&plan.target)?;
     sundial::package_authoring::account::preview_authored_account_cleanup(
         plan.target.parent().ok_or("Missing game root")?,
@@ -138,6 +156,12 @@ pub fn uninstall_custom_packages(
     backup_root: &Path,
     check: GameRunningCheck,
 ) -> Result<UninstallReport, InstallError> {
+    if plan.mod_folder.is_some() {
+        return loader::uninstall_with_observer(plan, backup_root, check, &mut |_| {});
+    }
+    if loader::selected(&plan.target, sundial::package_authoring::installed_runtime)? {
+        return loader::uninstall_legacy(plan, backup_root, check);
+    }
     uninstall_inner(
         plan,
         backup_root,
@@ -176,6 +200,15 @@ pub(super) fn uninstall_inner(
         ));
     }
     let sunrise = validate_sunrise_build_cache_with(&plan.target, runtime_snapshot_check)?;
+    if sunrise
+        .runtime
+        .uses_mod_loader()
+        .map_err(InstallError::validation)?
+    {
+        return Err(InstallError::validation(
+            "The runtime changed to the mod loader during removal review. Review the installation again",
+        ));
+    }
     let headers = validate_package_header_caches(&plan.target)?;
     fs::create_dir_all(&root).map_err(|error| InstallError::validation(error.to_string()))?;
     let root = canonical_directory(&root, "uninstall backup root")?;
@@ -366,7 +399,10 @@ fn commit_removal(
 
 fn verify_plan(plan: &UninstallPlan) -> Result<(), InstallError> {
     let current = preview_uninstall(&plan.target)?;
-    if current.artifacts != plan.artifacts || current.stock != plan.stock {
+    if current.artifacts != plan.artifacts
+        || current.stock != plan.stock
+        || current.mod_folder != plan.mod_folder
+    {
         return Err(InstallError::validation(
             "Packages changed since the uninstall review. Review the current set again. No files were removed.",
         ));

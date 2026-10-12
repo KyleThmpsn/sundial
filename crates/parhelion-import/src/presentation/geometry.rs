@@ -14,14 +14,6 @@ pub struct Encoded {
     pub streams: [Vec<u8>; 3],
     pub patches: Vec<Value>,
 }
-pub fn encode(mesh: &Mesh, native: &Payload, native_mesh: usize) -> Result<Encoded> {
-    encode_with_stages(mesh, native, native_mesh, &Default::default())
-}
-
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "Preserve the audited converter while integrating the legacy rendering pipeline."
-)]
 pub fn encode_with_stages(
     mesh: &Mesh,
     native: &Payload,
@@ -32,6 +24,41 @@ pub fn encode_with_stages(
         stages.values().all(|stage| matches!(stage, 0 | 7)),
         "Unsupported surface stage"
     );
+    encode_passes(mesh, native, native_mesh, stages, true)
+}
+
+/// Keep explicitly supplied surface, decal, shadow, transparent, depth and reticle
+/// records. Source backends own pass selection and material translation.
+pub fn encode_source_passes(
+    mesh: &Mesh,
+    native: &Payload,
+    native_mesh: usize,
+    stages: &std::collections::BTreeMap<u32, u8>,
+) -> Result<Encoded> {
+    ensure!(
+        mesh.groups.iter().all(|(key, _)| stages.contains_key(key)),
+        "Source draw has no native stage"
+    );
+    ensure!(
+        stages
+            .values()
+            .all(|stage| matches!(stage, 0 | 1 | 3 | 7 | 12 | 16)),
+        "Unsupported source presentation pass"
+    );
+    encode_passes(mesh, native, native_mesh, stages, false)
+}
+
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "Encode the complete native model and its cross-referenced streams together."
+)]
+fn encode_passes(
+    mesh: &Mesh,
+    native: &Payload,
+    native_mesh: usize,
+    stages: &std::collections::BTreeMap<u32, u8>,
+    automatic_shadows: bool,
+) -> Result<Encoded> {
     ensure!(
         !mesh.positions.is_empty() && mesh.positions.len() == mesh.attributes.len(),
         "Missing or mismatched native vertices"
@@ -110,7 +137,12 @@ pub fn encode_with_stages(
         attributes.extend([0; 4]);
     }
     let mut records = vec![];
-    let visibility_group = crate::tiger::draws::body_group(native, native_mesh)?;
+    let visibility_group =
+        if !automatic_shadows && !stages.is_empty() && stages.values().all(|stage| *stage == 16) {
+            crate::tiger::draws::stage_group(native, native_mesh, 16)?
+        } else {
+            crate::tiger::draws::body_group(native, native_mesh)?
+        };
     let mut patches = vec![
         json!({"offset":0xb0,"symbol":"positions-header"}),
         json!({"offset":0xb4,"symbol":"attributes-header"}),
@@ -118,10 +150,12 @@ pub fn encode_with_stages(
     ];
     let mut ranges = vec![0u16];
     for stage in 0..23 {
-        if [0, 3, 7].contains(&stage) {
+        if [0, 1, 3, 7, 12, 16].contains(&stage) {
             for (mat, faces) in &mesh.groups {
                 let surface_stage = usize::from(*stages.get(mat).unwrap_or(&0));
-                if stage != surface_stage && !(stage == 3 && surface_stage == 0) {
+                if stage != surface_stage
+                    && !(automatic_shadows && stage == 3 && surface_stage == 0)
+                {
                     continue;
                 }
                 let mut rec = vec![0u8; 32];
@@ -142,7 +176,12 @@ pub fn encode_with_stages(
                 put(
                     &mut rec,
                     24,
-                    &(if stage == 7 { 21u16 } else { 5u16 }).to_le_bytes(),
+                    &(match stage {
+                        1 => 39u16,
+                        7 | 16 => 21,
+                        _ => 5,
+                    })
+                    .to_le_bytes(),
                 )?;
                 rec[26] = 0;
                 rec[27] = 0;
@@ -150,7 +189,7 @@ pub fn encode_with_stages(
                 // The native draw iterator advances by this group length.
                 // Zero leaves it on the first record indefinitely.
                 rec[29] = 1;
-                let symbol = if stage != 3 {
+                let symbol = if stage != 3 || !automatic_shadows {
                     format!("material-{mat:08X}")
                 } else {
                     "material-shadow".into()

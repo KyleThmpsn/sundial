@@ -5,20 +5,24 @@ mod audio;
 mod behavior;
 mod cache;
 mod gltf;
+mod hud;
 mod material;
 mod model;
 mod native;
 mod native_marker;
 mod native_material;
+mod paint;
+pub use paint::{Paint, PaintMask};
 mod object;
 mod projectile;
 mod resource;
 mod rig;
+mod vehicle;
 
 pub use animation::first_person::Options as FirstPersonOptions;
 pub use animation::native::Binding as AnimationBinding;
 pub use audio::Options as AudioOptions;
-pub use native::{ImportRequest, Optic, Sights, prepare};
+pub use native::{DriverPose, ImportRequest, Optic, OpticView, Reticle, Sights, prepare};
 
 use anyhow::{Context, Result, ensure};
 pub use cache::Tag;
@@ -31,7 +35,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const REVISION: u32 = 3;
+pub const REVISION: u32 = 4;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]

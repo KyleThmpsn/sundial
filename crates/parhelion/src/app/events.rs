@@ -39,6 +39,8 @@ impl TimedBuildProgress {
 }
 
 pub(super) enum BuildWorkerEvent {
+    /// The included recipes could not be loaded or checked, so no build ran.
+    Blocked(String),
     Progress(TimedBuildProgress),
     Finished {
         result: Result<BuildReport, BuildFailure>,

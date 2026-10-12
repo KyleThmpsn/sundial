@@ -68,9 +68,16 @@ fn mapped_gameplay_values_edit_only_their_native_lanes() {
 
 #[test]
 fn range_and_mask_edits_preserve_adjacent_native_bits() {
-    for (kind, offset, expected_format, bits) in [
-        (34, 0x18, fields::Format::Float, (-0.0f32).to_bits()),
-        (9, 8, fields::Format::Mask32, 0x80000001),
+    // Kind 9's mask is the one byte its checker reads, so the three bytes after it keep
+    // whatever they hold.
+    for (kind, offset, expected_format, value) in [
+        (
+            34,
+            0x18,
+            fields::Format::Float,
+            (-0.0f32).to_bits().to_le_bytes().to_vec(),
+        ),
+        (9, 8, fields::Format::Byte, vec![0x81]),
     ] {
         let class = nodes::condition(kind).unwrap().class;
         let mut graph = Graph::read(
@@ -82,17 +89,19 @@ fn range_and_mask_edits_preserve_adjacent_native_bits() {
         if kind == 34 {
             graph.blocks[0].bytes[0x1C..0x20].copy_from_slice(&0x7FC12345u32.to_le_bytes());
         }
+        if kind == 9 {
+            graph.blocks[0].bytes[9..12].copy_from_slice(&[0xA5, 0x5A, 0xC3]);
+        }
         let mut expected = graph.clone();
-        expected.blocks[0].bytes[offset..offset + 4].copy_from_slice(&bits.to_le_bytes());
+        expected.blocks[0].bytes[offset..offset + value.len()].copy_from_slice(&value);
         let field = fields::describe(class)
             .unwrap()
             .into_iter()
             .find(|f| f.offset == offset)
             .unwrap();
         assert_eq!(field.format, expected_format);
-        field
-            .write(&mut graph.blocks[0], 0, &bits.to_le_bytes())
-            .unwrap();
+        assert_eq!(field.width, value.len());
+        field.write(&mut graph.blocks[0], 0, &value).unwrap();
         assert_eq!(graph, expected);
         assert_eq!(
             Graph::read(&graph.emit().unwrap(), 0, class).unwrap(),
@@ -650,13 +659,14 @@ fn promoted_condition_defaults_carry_the_stock_event_bytes() {
 #[test]
 fn ability_slot_bits_and_radar_range_are_named_from_the_perks_that_set_them() {
     use crate::sandbox_perk::program::NativeNode;
-    // Kind 9's slot mask is a 32-bit field whose named bits follow kind 8's numbering.
+    // Kind 9's slot mask is the one byte its checker reads, and its named bits follow kind
+    // 8's numbering.
     let fields = super::fields::describe(0x8080_3E00).unwrap();
     let mask = fields
         .iter()
         .find(|field| field.offset == 8)
         .expect("kind 9's slot mask is described");
-    assert_eq!(mask.format, super::fields::Format::Mask32);
+    assert_eq!((mask.format, mask.width), (super::fields::Format::Byte, 1));
     assert_eq!(
         super::fields::contract(0x8080_3E00, mask).choices.to_vec(),
         vec![

@@ -4,6 +4,39 @@ use crate::tiger::payload::Payload;
 pub mod compiled;
 pub mod links;
 use anyhow::{Result, ensure};
+
+/// Generated component classes have resource identities outside the built-in
+/// class range. Recognize their checked root pair instead of guessing from bits.
+pub(crate) fn root_reference(owner: &Payload, class: u32, offset: u64) -> Result<bool> {
+    let instance = owner.pointer(16)?;
+    let definition = usize::try_from(owner.u64(instance + 8)?)?;
+    let instance_class = owner.u32(
+        instance
+            .checked_sub(4)
+            .ok_or_else(|| anyhow::anyhow!("Component instance has no class prefix"))?,
+    )?;
+    let definition_class = owner.u32(
+        definition
+            .checked_sub(4)
+            .ok_or_else(|| anyhow::anyhow!("Component definition has no class prefix"))?,
+    )?;
+    if ![
+        (instance as u64, instance_class),
+        (definition as u64, definition_class),
+    ]
+    .contains(&(offset, class))
+    {
+        return Ok(false);
+    }
+    ensure!(
+        owner.u32(instance + 4)? == definition_class
+            && owner.u32(definition + 4)? == instance_class
+            && owner.u64(definition + 8)? == instance as u64,
+        "Component root reference has a nonreciprocal pair"
+    );
+    Ok(true)
+}
+
 pub fn owner_slots(entity: &Payload, owner: &Payload, source: u32) -> Result<Vec<usize>> {
     let bindings = entity.array(16, 12, Some(0x80809C04))?;
     let roots = bindings
@@ -19,7 +52,8 @@ pub fn owner_slots(entity: &Payload, owner: &Payload, source: u32) -> Result<Vec
         if !roots.contains(&offset) {
             let class = entity.u32(offset + 4)?;
             ensure!(
-                class & 0xffff0000 == 0x80800000,
+                class & 0xffff0000 == 0x80800000
+                    || root_reference(owner, class, entity.u64(offset + 8)?)?,
                 "owner occurrence at {offset:X} is not a typed resource pointer"
             );
             let target = usize::try_from(entity.u64(offset + 8)?)?;

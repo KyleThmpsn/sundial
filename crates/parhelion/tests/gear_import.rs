@@ -49,6 +49,7 @@ fn gear_imports_keep_their_family_and_art_variants_through_staging()
         parhelion_import::d2_mot::reader::outside(&output, native.parent().ok_or("Native root")?)?;
     assert!(!output.exists(), "Use a fresh artifact directory");
     fs::create_dir_all(&output)?;
+    let selectors = art_selector_oracle(&native, &modern, &output)?;
     let catalog = InvestmentCatalog::load_with_cache_path(
         native.parent().ok_or("Native root")?,
         &output.join("catalog-cache.json"),
@@ -300,7 +301,7 @@ fn gear_imports_keep_their_family_and_art_variants_through_staging()
             );
             let offset = *art_rows.get(index).ok_or("Art index is unregistered")?;
             assert!(!registered_keys(&metadata, offset)?.is_empty());
-            verify_art_layout(&metadata, offset, source, &mut assignments)?;
+            verify_art_layout(&metadata, offset, source, &selectors, &mut assignments)?;
         }
         for &key in assignments.values() {
             assert!(
@@ -452,6 +453,7 @@ fn verify_art_layout(
     data: &Payload,
     row: usize,
     source: &Value,
+    selectors: &BTreeMap<u64, u64>,
     assignments: &mut BTreeMap<u32, u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut compare = |expected: &Value, actual: u32| -> Result<(), Box<dyn std::error::Error>> {
@@ -482,7 +484,10 @@ fn verify_art_layout(
         let slot = data.pointer(at)?;
         assert_eq!(
             data.u64(slot)?,
-            expected["selector"].as_u64().ok_or("Source selector")?
+            *selectors
+                .get(&expected["selector"].as_u64().ok_or("Source selector")?)
+                .ok_or("Source selector has no independent native placement evidence")?,
+            "Imported artwork occupies a different slot from shared shipped artwork"
         );
         let entries = data.array(slot + 8, 4, None)?;
         let expected_entries = expected["assignments"]
@@ -498,6 +503,90 @@ fn verify_art_layout(
         }
     }
     Ok(())
+}
+
+/// The same shipped assignment keys establish placement independently of the converter.
+/// Raw metadata and every paired key remain alongside the staged package readback.
+fn art_selector_oracle(
+    native: &std::path::Path,
+    modern: &std::path::Path,
+    output: &std::path::Path,
+) -> Result<BTreeMap<u64, u64>, Box<dyn std::error::Error>> {
+    let mut tables = Vec::new();
+    for (name, packages, modern) in [("native", native, false), ("modern", modern, true)] {
+        let mut reader = Reader::new(packages, &output.join(format!("{name}-art-oracle")), modern)?;
+        let tag = if modern {
+            let tags = reader.classes(0x808055CE);
+            assert_eq!(tags.len(), 1, "Source art metadata is ambiguous");
+            tags[0]
+        } else {
+            let globals = reader
+                .manager
+                .lookup
+                .named_tags
+                .iter()
+                .find(|t| t.name == "investment_globals")
+                .ok_or("Native investment globals")?
+                .hash
+                .0;
+            reader.tag(globals, None)?.u32(16 + 66 * 16)?
+        };
+        let data = reader.tag(tag, None)?;
+        let mut placements = BTreeMap::<u32, BTreeSet<u64>>::new();
+        for row in data.array(8, 32, None)? {
+            for at in data.array(row + 16, 8, None)? {
+                let slot = data.pointer(at)?;
+                let selector = data.u64(slot)?;
+                for at in data.array(slot + 8, 4, None)? {
+                    let key = data.u32(at)?;
+                    if ![0, u32::MAX, 0x811C9DC5].contains(&key) {
+                        placements.entry(key).or_default().insert(selector);
+                    }
+                }
+            }
+        }
+        assert!(
+            !placements.is_empty(),
+            "Required {name} art corpus is empty"
+        );
+        tables.push(placements);
+        reader.finish()?;
+    }
+    let mut selectors = BTreeMap::new();
+    let mut evidence = Vec::new();
+    for (&key, source) in &tables[1] {
+        let Some(native) = tables[0].get(&key) else {
+            continue;
+        };
+        assert_eq!(
+            source.len(),
+            1,
+            "Shared source artwork has ambiguous placement"
+        );
+        assert_eq!(
+            native.len(),
+            1,
+            "Shared native artwork has ambiguous placement"
+        );
+        let source = *source.first().ok_or("Source placement")?;
+        let native = *native.first().ok_or("Native placement")?;
+        if let Some(previous) = selectors.insert(source, native) {
+            assert_eq!(
+                previous, native,
+                "Shared artwork disagrees on slot translation"
+            );
+        }
+        evidence.push(json!({"assignment":key,"source":source,"native":native}));
+    }
+    assert!(
+        !evidence.is_empty(),
+        "No shared artwork establishes native placements"
+    );
+    fs::write(
+        output.join("art-selector-oracle.json"),
+        serde_json::to_vec_pretty(&json!({"selectors":selectors,"assignments":evidence}))?,
+    )?;
+    Ok(selectors)
 }
 
 fn verify_nameplate(

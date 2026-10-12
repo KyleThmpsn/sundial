@@ -241,7 +241,7 @@ pub(super) fn emit_packages(
         host_new_tags,
     } = emission;
     // Private copies past the private perk-runtime package's table go to standalone packages of
-    // their own, from the top of the authored range down.
+    // their own, from the top of the build's window down.
     let (private_perk_runtime_new_tags, private_runtime_overflow) =
         crate::appended_tags::AppendedTagAllocator::private_runtime(
             private_perk_runtime_append_start,
@@ -331,8 +331,8 @@ pub(super) fn emit_packages(
     packages.host(host, expected_host_count);
     let mut asset_packages = asset_packages;
     name_audio_media(&mut asset_packages);
-    let assets_end = usize::from(crate::package_profile::PARHELION_ASSET_PACKAGE_ID)
-        + asset_packages.packages.len();
+    let assets_end =
+        usize::from(crate::package_profile::window().base) + asset_packages.packages.len();
     let assets = plan_assets(&mut packages, asset_packages)?;
     let private_runtime_overflow =
         plan_private_runtime_overflow(&mut packages, assets_end, private_runtime_overflow)?;
@@ -638,7 +638,7 @@ fn plan_private_runtime_overflow(
     for (id, tags) in overflow {
         if usize::from(id) < assets_end {
             return Err(validation(
-                "The build's private copies and assets need more packages than the authored range holds",
+                "The build's private copies and assets need more packages than the free authored ids hold",
             ));
         }
         planned.push(packages.standalone(crate::asset_packages::AssetPackage {

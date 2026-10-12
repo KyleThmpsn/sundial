@@ -103,7 +103,9 @@ pub(super) fn assemble(
                 "source_procedural_adapter":graph["source_procedural_adapter"],
                 "resting_source_procedures":graph["resting_source_procedures"],
                 "native_components":graph["native_components"],
-                "runtime_material_draws":graph["source_runtime_material_draws"]});
+                "runtime_material_draws":graph["source_runtime_material_draws"],
+                "unsupported_material_draws":graph["source_unsupported_material_draws"],
+                "material_limitations":graph["material_limitations"]});
             for stage in [0, 1, 3, 7, 9, 12, 14, 16] {
                 let field = format!("source_stage_{stage}_adapter");
                 evidence[&field] = graph[&field].clone();
@@ -120,6 +122,11 @@ pub(super) fn assemble(
     let native_rows = native["art_rows"].as_array().context("native art rows")?;
     let mut rows = Vec::new();
     for row in source_rows {
+        for slot in row["slots"].as_array().context("source art slots")? {
+            crate::d2_mot::artwork::native_selector(
+                slot["selector"].as_u64().context("source art selector")?,
+            )?;
+        }
         let template = native_rows
             .iter()
             .find(|native| native["class"] == row["class"])
@@ -133,9 +140,10 @@ pub(super) fn assemble(
     let primary = registrations.first().context("converted gear parts")?["parent"].clone();
     Ok(
         json!({"kind":source.family(),"item_hash":item,"native_item":donor,
+        "converter_revision":crate::graph::CONVERTER_REVISION,
         "source_item":source.hash,"source_name":source.name,"source_type":source.weapon_type,
         "source_bucket":source.bucket_hash,"source_class":source.class_type,
-        "nodes":nodes,"parent":primary,"gear_art":{"rows":rows,"parts":registrations},
+        "nodes":nodes,"parent":primary,"gear_art":{"selector_format":"modern","rows":rows,"parts":registrations},
         "rendering":rendering,"installable":true,"gameplay_verified":false}),
     )
 }

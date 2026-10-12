@@ -8,6 +8,62 @@ pub(crate) const PARHELION_ASSET_PATCH_ID: u16 = 0;
 pub(crate) const PARHELION_ASSET_FILE_NAME: &str = "w64_parhelion_assets_0aa0_0.pkg";
 pub(crate) const PRIVATE_PERK_RUNTIME_PACKAGE_ID: u16 = 0x01BB;
 pub(crate) const PRIVATE_PERK_RUNTIME_EXPECTED_ENTRY_COUNT: usize = 6_468;
+
+/// The authored package ids one build uses. Its asset packages count up from `base`, and its
+/// private runtime overflow counts down from `top`. Sunrise's mod loader loads one package per
+/// id, so there the window skips ids an installed package or another mod already holds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Window {
+    pub base: u16,
+    pub top: u16,
+}
+
+impl Window {
+    pub(crate) const FULL: Self = Self {
+        base: PARHELION_ASSET_PACKAGE_ID,
+        top: MAX_AUTHORED_STANDALONE_PACKAGE_ID,
+    };
+
+    /// The longest run of authored ids that `taken` leaves free, the lowest of equal runs.
+    pub(crate) fn avoiding(taken: &BTreeSet<u16>) -> Option<Self> {
+        let mut best: Option<Self> = None;
+        let mut base = None;
+        for id in MIN_AUTHORED_STANDALONE_PACKAGE_ID..=MAX_AUTHORED_STANDALONE_PACKAGE_ID {
+            if taken.contains(&id) {
+                base = None;
+                continue;
+            }
+            let base = *base.get_or_insert(id);
+            if best.is_none_or(|best| id - base > best.top - best.base) {
+                best = Some(Self { base, top: id });
+            }
+        }
+        best
+    }
+}
+
+static WINDOW: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(
+    ((PARHELION_ASSET_PACKAGE_ID as u32) << 16) | MAX_AUTHORED_STANDALONE_PACKAGE_ID as u32,
+);
+
+/// The window the current build uses, [`Window::FULL`] until a build for a mod loader install
+/// narrows it.
+pub(crate) fn window() -> Window {
+    let packed = WINDOW.load(std::sync::atomic::Ordering::Relaxed);
+    Window {
+        base: (packed >> 16) as u16,
+        top: packed as u16,
+    }
+}
+
+/// Sets the window before a build plans its packages. Every authored id the build places reads
+/// it, so one build keeps one window throughout.
+pub(crate) fn set_window(window: Window) {
+    WINDOW.store(
+        (u32::from(window.base) << 16) | u32::from(window.top),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
 /// A stock chain's content generation: the content build and revision its last stock patch
 /// carries, which an overlay must extend.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -409,6 +465,7 @@ pub(crate) fn authored_packages_for_file_names<'a>(
     file_names: impl IntoIterator<Item = &'a str>,
 ) -> Result<Vec<AuthoredPackage>, String> {
     let mut selected = BTreeSet::new();
+    let mut assets = false;
     for file_name in file_names {
         let Some(profile) = authored_package_for_file_name(file_name) else {
             return Err(format!("Unrecognized authored package {file_name:?}"));
@@ -416,10 +473,13 @@ pub(crate) fn authored_packages_for_file_names<'a>(
         if !selected.insert(profile.file_name) {
             return Err(format!("Duplicate authored package {file_name:?}"));
         }
+        assets |= is_authored_standalone_package_id(profile.package_id);
     }
+    // The first asset package sits where the build's window begins, which is not always 0AA0.
     let missing = AUTHORED_PACKAGES
         .iter()
         .filter(|profile| profile.required_output && !selected.contains(profile.file_name))
+        .filter(|profile| !(assets && is_authored_standalone_package_id(profile.package_id)))
         .map(|profile| profile.file_name)
         .collect::<Vec<_>>();
     if !missing.is_empty() {

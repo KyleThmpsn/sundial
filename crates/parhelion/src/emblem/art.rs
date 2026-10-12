@@ -162,7 +162,7 @@ pub(crate) fn author(
     nodes: &mut Vec<NewTagSpec>,
     references: &mut Vec<NewTagReferenceOverride>,
 ) -> AuthoringResult<TagHash> {
-    let package = crate::package_profile::PARHELION_ASSET_PACKAGE_ID;
+    let package = crate::package_profile::window().base;
     let allocator = crate::appended_tags::AppendedTagAllocator::new(package, 0);
     let mut container = crate::icon_edit::read_icon_container(manager, nameplate.template)?;
     let banner_offset = NameplatePart::Banner.layer_offset();

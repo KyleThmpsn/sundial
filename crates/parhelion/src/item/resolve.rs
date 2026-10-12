@@ -331,7 +331,7 @@ fn resolve_project_weapon(
     }
     if weapon.overrides.hud_icon.is_some() && runtime_pattern_source.is_none() {
         return Err(invalid(
-            "HUD icon authoring requires an active weapon sandbox pattern",
+            "HUD icon authoring requires an active runtime pattern",
         ));
     }
     let authored_inventory_slot = weapon

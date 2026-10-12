@@ -4,6 +4,16 @@ pub mod source;
 
 pub const EMPTY: u32 = 0x811C9DC5;
 
+/// Translate a modern art selector using shared shipped assignment identities.
+/// Source inspection retains its original values. Only native placement uses this mapping.
+pub fn native_selector(modern: u64) -> Result<u64> {
+    match modern {
+        0..=5 | 9..=12 => Ok(modern),
+        17..=22 => Ok(modern + 4),
+        _ => anyhow::bail!("Modern artwork selector {modern} has no validated Shadowkeep mapping"),
+    }
+}
+
 /// Retain native selector and array layouts, but display the complete graph once, in the slot
 /// of the donor part that hosts it. Native attachment assignments would add donor geometry, so
 /// every other slot is emptied, except slots holding a `kept` key: a private donor part that

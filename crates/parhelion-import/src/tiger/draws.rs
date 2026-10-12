@@ -21,11 +21,18 @@ pub const DRAW_INDEX: usize = 22;
 /// zero is not a universal base group. Sum the highest-detail opaque primitive counts
 /// so a small accessory or a repeated lower-detail body cannot select the group.
 pub fn body_group(model: &Payload, mesh: usize) -> Result<u16> {
+    stage_group(model, mesh, 0).context("Native opaque body group")
+}
+
+/// The dominant highest-detail visibility group of one native draw stage.
+pub fn stage_group(model: &Payload, mesh: usize, stage: u8) -> Result<u16> {
+    ensure!(stage < 23, "Native draw stage is outside its range table");
     let parts = model.array(mesh + 24, 32, Some(0x8080737E))?;
-    let start = usize::from(model.u16(mesh + 40)?);
-    let end = usize::from(model.u16(mesh + 42)?);
+    let field = mesh + 40 + usize::from(stage) * 2;
+    let start = usize::from(model.u16(field)?);
+    let end = usize::from(model.u16(field + 2)?);
     let mut groups = std::collections::BTreeMap::<u16, u64>::new();
-    for &part in parts.get(start..end).context("Invalid opaque draw range")? {
+    for &part in parts.get(start..end).context("Invalid native draw range")? {
         // Native LOD categories are coverage sets. These include level zero,
         // including carriers whose geometry spans several detail levels.
         if !matches!(model.u8(part + 27)?, 0..=3 | 10) {
@@ -34,7 +41,7 @@ pub fn body_group(model: &Payload, mesh: usize) -> Result<u16> {
         let group = model.u16(part + 20)?;
         ensure!(
             group <= i16::MAX as u16,
-            "Invalid native body visibility group"
+            "Invalid native draw visibility group"
         );
         *groups.entry(group).or_default() += u64::from(model.u32(part + 16)?);
     }
@@ -42,13 +49,13 @@ pub fn body_group(model: &Payload, mesh: usize) -> Result<u16> {
         .values()
         .copied()
         .max()
-        .context("No native opaque body group")?;
-    ensure!(largest > 0, "Empty native opaque body group");
+        .context("No native draw visibility group")?;
+    ensure!(largest > 0, "Empty native draw visibility group");
     let mut candidates = groups.into_iter().filter(|(_, count)| *count == largest);
-    let group = candidates.next().context("Missing native body group")?.0;
+    let group = candidates.next().context("Missing native draw group")?.0;
     ensure!(
         candidates.next().is_none(),
-        "Ambiguous native body visibility group"
+        "Ambiguous native draw visibility group"
     );
     Ok(group)
 }

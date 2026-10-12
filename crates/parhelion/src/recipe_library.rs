@@ -231,7 +231,7 @@ impl RecipeLibrary {
 
         let mut scan = RecipeLibraryScan::default();
         for path in paths {
-            match WeaponRecipe::load_json(&path) {
+            match WeaponRecipe::load_listing(&path) {
                 Ok(recipe) => scan.entries.push(RecipeLibraryEntry {
                     // Read first, while the fields below have not yet moved out of the recipe.
                     art: crate::icon_art::Art::of(&recipe),
@@ -644,7 +644,8 @@ impl RecipeLibrary {
             }) {
                 continue;
             }
-            let existing = WeaponRecipe::load_json(&path).map_err(|error| {
+            // Names and identities only, so an embedded model is not restored for each recipe.
+            let existing = WeaponRecipe::load_listing(&path).map_err(|error| {
                 format!(
                     "Could not verify recipe identity uniqueness because {} is invalid: {error}",
                     path.display()

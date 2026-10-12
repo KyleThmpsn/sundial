@@ -38,6 +38,7 @@ pub struct Object {
     pub first_person: Vec<Branch>,
     pub variants: Vec<Variant>,
     pub attachments: Vec<Value>,
+    pub functions: Vec<Value>,
     pub gameplay: Value,
 }
 
@@ -102,7 +103,7 @@ impl Object {
             }
         }
         let mut first_person = Vec::new();
-        let gameplay = match tag.group.as_str() {
+        let mut gameplay = match tag.group.as_str() {
             "weap" => {
                 cache.meta(at, 0x4b8)?;
                 for row in cache.block(at + 0x3b8, 32)? {
@@ -137,10 +138,27 @@ impl Object {
             "vehi" => vehicle(cache, at)?,
             _ => json!({"kind":"attachment"}),
         };
+        if tag.group == "vehi"
+            && let Some(model) = &model
+        {
+            gameplay["rigid_body"] = super::vehicle::body(cache, model)?;
+        }
         let attachments = cache.block(at+0x104, 32)?.into_iter().map(|r| Ok(json!({
             "tag":cache.reference(r,None)?, "marker":cache.string_id(cache.u32(r+16)?)?,
             "primary_scale":cache.string_id(cache.u32(r+24)?)?, "secondary_scale":cache.string_id(cache.u32(r+28)?)?
         }))).collect::<Result<Vec<_>>>()?;
+        let functions = cache.block(at + 0xec, 0x40)?.into_iter().map(|r| {
+            let interpolation = cache.block(r + 0x30, 0x18)?.into_iter().map(|p| Ok(json!({
+                "mode":cache.u32(p)?,"travel_seconds":cache.f32(p+4)?,
+                "acceleration":cache.f32(p+8)?,"spring_k":cache.f32(p+12)?,
+                "spring_c":cache.f32(p+16)?,"fraction":cache.f32(p+20)?
+            }))).collect::<Result<Vec<_>>>()?;
+            Ok(json!({"flags":cache.u32(r)?,"input":cache.string_id(cache.u32(r+4)?)?,
+                "output":cache.string_id(cache.u32(r+8)?)?,"turn_off_with":cache.string_id(cache.u32(r+12)?)?,
+                "ranged":cache.string_id(cache.u32(r+16)?)?,"minimum":cache.f32(r+20)?,
+                "mapping":super::vehicle::function(cache,r+24)?,"scale_by":cache.string_id(cache.u32(r+44)?)?,
+                "interpolation":interpolation}))
+        }).collect::<Result<Vec<_>>>()?;
         Ok(Self {
             tag: tag.clone(),
             default_variant: cache.string_id(cache.u32(at + 0x60)?)?,
@@ -149,6 +167,7 @@ impl Object {
             first_person,
             variants,
             attachments,
+            functions,
             gameplay,
         })
     }
@@ -191,6 +210,12 @@ fn vehicle(c: &Cache, at: usize) -> Result<Value> {
     {
         for row in c.block(at + 0x4d0 + i * 12, stride)? {
             let mut p = json!({"kind":name,"metadata_offset":row});
+            p.as_object_mut().unwrap().extend(
+                super::vehicle::controls(c, name, row)?
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            );
             if let Some(speed) = match name {
                 "alien_scout" => Some(8),
                 "alien_fighter" => Some(0x14),
@@ -205,6 +230,8 @@ fn vehicle(c: &Cache, at: usize) -> Result<Value> {
     }
     Ok(
         json!({"kind":"vehicle","weapons":weapons,"seats":seats,"physics":physics,
+        "flags":c.u32(at+0x4cc)?,"tricks":super::vehicle::tricks(c,at)?,
+        "contacts":super::vehicle::contacts(c,at)?,
         "gravity_scale":c.f32(at+0x5ac)?,"boost_peak_power":c.f32(at+0x480)?,
         "boost_recharge_rate":c.f32(at+0x490)?,"boost_recharge_delay_seconds":c.f32(at+0x494)?}),
     )

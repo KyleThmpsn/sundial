@@ -4,6 +4,7 @@ mod channels;
 mod cloth;
 pub mod constants;
 pub mod controller;
+mod coverage;
 mod decals;
 mod dyemap;
 mod emission;
@@ -186,7 +187,6 @@ fn build_family(
             progress(format!("Converting source {label} ({} of 8)…", index + 7));
             source::auxiliary(context, prepared, stage)?;
         }
-        context.graph.manifest["attachment_adapter"]["omitted_stages"] = json!([]);
         context.graph.manifest["source_shader_adapter"] = json!({"stages":[0,1,3,7,9,12,14,16],"source_compute_skinning":"converted to native vertex skinning with validated bone indices","source_shader_equations_retained":context.graph.manifest["native_forward_lighting"].is_null(),"source_material_equations_retained":context.graph.manifest["material_base_fallbacks"].as_array().is_none_or(Vec::is_empty),"implementation":"Rust","gameplay_verified":false});
         context.graph.manifest["appearance"] =
             json!("Source geometry and shader equations using native rendering bindings");
@@ -275,6 +275,7 @@ fn apply_with_progress(
     build_family(&mut context, prepared, family, progress)?;
     if family == "source-all" {
         cloth::build(&mut context, prepared, progress)?;
+        coverage::record(&mut context, progress)?;
     }
     context.draws.write(&mut context.graph)?;
     layout::finish(&mut context.graph)?;
@@ -292,7 +293,7 @@ fn apply_with_progress(
         skinning::write(&mut context)?;
     }
     for (symbol, bytes) in
-        super::vertex_input::repair(&context.graph.manifest, &context.graph.root)?
+        crate::tiger::material::repair(&context.graph.manifest, &context.graph.root)?
     {
         context.graph.write(&symbol, &bytes)?;
     }

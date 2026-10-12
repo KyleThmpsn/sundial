@@ -457,14 +457,13 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn start_build(&mut self) {
-        let snapshot = match self.save_edits_for_build().and_then(|()| self.snapshot()) {
-            Ok(snapshot) => snapshot,
+        let inputs = match self
+            .save_edits_for_build()
+            .and_then(|()| self.build_ready())
+        {
+            Ok(()) => self.build_inputs(),
             Err(error) => {
-                self.latest_build = Some(Err(error.clone()));
-                self.build_blocker = None;
-                self.build_status_open = true;
-                self.log
-                    .push(LogEntry::error(format!("Build blocked: {error}")));
+                self.block_build(error);
                 return;
             }
         };
@@ -478,6 +477,17 @@ impl PackageAuthoringApp {
         self.build_activity = build_status::Activity::default();
         self.install_status = build_status::InstallStatus::default();
         thread::spawn(move || {
+            // Loading and checking the included recipes reads each embedded model in full.
+            let snapshot = inputs.request().and_then(BatchBuildSnapshot::new);
+            // The window releases package access by dropping its catalog, so this copy goes first.
+            drop(inputs);
+            let snapshot = match snapshot {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    let _ = sender.send(BuildWorkerEvent::Blocked(error));
+                    return;
+                }
+            };
             let result = build_and_stage_snapshot_reporting(&snapshot, |progress| {
                 let _ = sender.send(BuildWorkerEvent::Progress(
                     TimedBuildProgress::from_progress(progress, started),
@@ -529,6 +539,13 @@ impl PackageAuthoringApp {
                 }
             };
             match event {
+                BuildWorkerEvent::Blocked(error) => {
+                    self.build_progress = None;
+                    self.build_started = None;
+                    self.build_receiver = None;
+                    self.block_build(error);
+                    return;
+                }
                 BuildWorkerEvent::Progress(progress) => {
                     if let Some(message) = self.build_activity.build(&progress) {
                         self.log.push(LogEntry::info(message));
@@ -590,6 +607,15 @@ impl PackageAuthoringApp {
                 }
             }
         }
+    }
+
+    /// No build ran: the error shows where the build's result would.
+    fn block_build(&mut self, error: String) {
+        self.log
+            .push(LogEntry::error(format!("Build blocked: {error}")));
+        self.latest_build = Some(Err(error));
+        self.build_blocker = None;
+        self.build_status_open = true;
     }
 
     pub(super) fn build_elapsed(&self, now: Instant) -> Duration {
@@ -875,7 +901,11 @@ impl PackageAuthoringApp {
                 self.log.push(LogEntry::info(format!(
                     "Installed {} authored packages to {}. Backup: {}. {}. {}",
                     report.artifacts.len(),
-                    report.target_packages_directory.display(),
+                    report
+                        .mod_directory
+                        .as_deref()
+                        .unwrap_or(&report.target_packages_directory)
+                        .display(),
                     report.backup_directory.display(),
                     cache_status,
                     header_cache_status,
@@ -907,6 +937,9 @@ impl PackageAuthoringApp {
                     self.log.push(LogEntry::error(format!(
                         "Packages installed, but old backups could not be removed: {error}"
                     )));
+                }
+                for overlap in &report.mod_overlaps {
+                    self.log.push(LogEntry::info(overlap.as_str()));
                 }
                 self.latest_install = Some(Ok(report));
                 self.install_receiver = None;

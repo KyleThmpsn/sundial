@@ -1,4 +1,5 @@
 //! Append local controls without renumbering a carrier's physics and attachment bones.
+mod section;
 use crate::{
     presentation::{append, put},
     tiger::payload::Payload,
@@ -68,7 +69,59 @@ pub fn rebase_entity(
     Ok(())
 }
 
-fn skeleton(original: &Payload, tag: u32, bones: &[Bone]) -> Result<(Payload, usize, usize)> {
+fn validate_map(
+    original: &Payload,
+    poses: &[usize],
+    ranges: &[usize],
+    object: &[u8],
+    section_map: &[u8],
+    bone_map: &[u8],
+) -> Result<()> {
+    let count = section_map.len() / 2;
+    let fk_count = poses.len();
+    let mut mapped = std::collections::BTreeSet::new();
+    let mut procedural = std::collections::BTreeSet::new();
+    for bone in 0..count {
+        let section = u16::from_le_bytes(section_map[bone * 2..bone * 2 + 2].try_into()?);
+        let index = u16::from_le_bytes(bone_map[bone * 2..bone * 2 + 2].try_into()?) as usize;
+        if section == 0 {
+            let &pose = poses
+                .get(index)
+                .context("FK bone maps outside its section")?;
+            ensure!(
+                mapped.insert(index)
+                    && original.0[pose..pose + 32] == object[bone * 32..bone * 32 + 32],
+                "FK section repeats a slot or differs from its object bind pose"
+            );
+        } else {
+            let &range = ranges
+                .get(index)
+                .context("Procedural bone maps outside its range")?;
+            // Preserve the checked one-bone procedural record without changing
+            // its indices. More complex range layouts need their own adapter.
+            ensure!(
+                section == u16::MAX
+                    && procedural.insert(index)
+                    && original.u16(range)? as usize == bone
+                    && original.u16(range + 2)? as usize == bone
+                    && original.u16(range + 4)? == 1
+                    && original.u16(range + 6)? == 0,
+                "Unsupported procedural bone range"
+            );
+        }
+    }
+    ensure!(
+        mapped.len() == fk_count && procedural.len() == ranges.len(),
+        "Skeleton has unused FK or procedural slots"
+    );
+    Ok(())
+}
+
+fn skeleton(
+    original: &Payload,
+    tag: u32,
+    bones: &[Bone],
+) -> Result<(Payload, usize, usize, usize)> {
     let base = original.pointer(24)?;
     let instance = original.pointer(16)?;
     ensure!(
@@ -82,23 +135,36 @@ fn skeleton(original: &Payload, tag: u32, bones: &[Bone]) -> Result<(Payload, us
     );
     let section = sections[0];
     let poses = original.array(section + 0x20, 32, Some(0x80809F75))?;
-    let count = poses.len();
+    let fk_count = poses.len();
+    let mut hierarchy = rows(original, base + 0x80, 16, 0x80808A08)?;
+    let count = hierarchy.len() / 16;
     let added = bones.len();
     ensure!(
-        count > 0 && added > 0 && count + added <= 256,
+        fk_count > 0 && count >= fk_count && added > 0 && count + added <= 256,
         "Extended rig exceeds native geometry palette limits"
     );
     let cut = poses.last().context("Empty FK poses")? + 32;
+    let ranges = original.array(instance + 0x40, 8, Some(0x80808A06))?;
     ensure!(
-        cut + 8 == base && instance + usize::try_from(original.u64(0x48)?)? == base,
-        "FK instance has trailing state that needs a separate relocation rule"
+        instance + usize::try_from(original.u64(0x48)?)? == base
+            && original.u32(base + 0xE8)? as usize == ranges.len(),
+        "FK instance span or procedural count differs"
     );
-    // Section ranges describe non-FK procedural slots on other rigs.
-    ensure!(
-        original.u64(instance + 0x40)? == 0,
-        "Procedural FK ranges require a separate animation adapter"
-    );
-    let mut hierarchy = rows(original, base + 0x80, 16, 0x80808A08)?;
+    if let (Some(&first), Some(&last)) = (ranges.first(), ranges.last()) {
+        ensure!(
+            first >= cut + 20
+                && last + 16 == base
+                && original.0[cut..first - 20].iter().all(|v| *v == 0)
+                && original.u32(first - 20)? == 0x80809FBD
+                && original.0[last + 8..base - 4].iter().all(|v| *v == 0),
+            "FK procedural state has an unsupported placement"
+        );
+    } else {
+        ensure!(
+            cut + 8 == base,
+            "FK instance has unsupported trailing state"
+        );
+    }
     let mut object = rows(original, base + 0x90, 32, 0x80809F75)?;
     let mut inverse = rows(original, base + 0xA0, 32, 0x80809F75)?;
     let mut section_map = rows(original, base + 0xB0, 2, 0x80800006)?;
@@ -107,24 +173,25 @@ fn skeleton(original: &Payload, tag: u32, bones: &[Bone]) -> Result<(Payload, us
         hierarchy.len() == count * 16
             && object.len() == count * 32
             && inverse.len() == count * 32
-            && section_map == vec![0; count * 2]
-            && bone_map
-                == (0..count as u16)
-                    .flat_map(u16::to_le_bytes)
-                    .collect::<Vec<_>>(),
-        "FK section does not map directly to its complete skeleton"
+            && section_map.len() == count * 2
+            && bone_map.len() == count * 2,
+        "FK skeleton arrays have different bone counts"
     );
-    ensure!(
-        poses
-            .iter()
-            .enumerate()
-            .all(|(i, &at)| original.0[at..at + 32] == object[i * 32..i * 32 + 32]),
-        "FK instance differs from its object bind pose"
-    );
+    validate_map(original, &poses, &ranges, &object, &section_map, &bone_map)?;
     let schemas = original.array(base + 0xD8, 24, Some(0x80808549))?;
     ensure!(
-        schemas.len() == 1 && original.u32(schemas[0] + 16)? as usize == count,
+        schemas.len() == 1 && original.u32(schemas[0] + 16)? as usize == fk_count,
         "FK section schema differs"
+    );
+    let split = count != fk_count;
+    ensure!(
+        original.u32(section + 0x30)? == 0
+            && original.u32(schemas[0] + 20)? == 0
+            && (!split
+                || (count == fk_count + 1
+                    && ranges.len() == 1
+                    && original.u16(ranges[0])? as usize == fk_count)),
+        "FK extension requires a contiguous section and an optional trailing procedural bone"
     );
     let mut names = std::collections::BTreeSet::new();
     for row in hierarchy.chunks_exact(16) {
@@ -151,15 +218,34 @@ fn skeleton(original: &Payload, tag: u32, bones: &[Bone]) -> Result<(Payload, us
         extra.extend(&transform);
         object.extend(transform);
         inverse.extend(floats(&bone.inverse)?);
-        section_map.extend(0i16.to_le_bytes());
-        bone_map.extend((index as i16).to_le_bytes());
+        section_map.extend(i16::from(split).to_le_bytes());
+        bone_map.extend((if split { offset } else { fk_count + offset } as i16).to_le_bytes());
     }
-    let delta = extra.len();
+    // A section copies a contiguous global bone range. It cannot be extended
+    // across a retained procedural bone, even if the lookup maps are compact.
+    let extra_section = if split {
+        Some(section::prepare(original, section, cut, &extra, count)?)
+    } else {
+        None
+    };
+    let insertion = extra_section
+        .as_ref()
+        .map_or(extra.as_slice(), |s| s.bytes.as_slice());
+    let delta = insertion.len();
     let mut out = original.0.clone();
-    out.splice(cut..cut, extra);
+    out.splice(cut..cut, insertion.iter().copied());
     for field in [24, 0x38] {
         let target = original.pointer(field)?;
         ensure!(target >= cut, "FK header pointer is outside moved metadata");
+        put(
+            &mut out,
+            field,
+            &((target + delta - field) as i64).to_le_bytes(),
+        )?;
+    }
+    if !ranges.is_empty() {
+        let field = instance + 0x48;
+        let target = original.pointer(field)?;
         put(
             &mut out,
             field,
@@ -201,21 +287,25 @@ fn skeleton(original: &Payload, tag: u32, bones: &[Bone]) -> Result<(Payload, us
             )?;
         }
     }
-    put(
-        &mut out,
-        section + 0x20,
-        &((count + added) as u64).to_le_bytes(),
-    )?;
-    put(
-        &mut out,
-        poses[0] - 16,
-        &((count + added) as u64).to_le_bytes(),
-    )?;
-    put(
-        &mut out,
-        schemas[0] + delta + 16,
-        &((count + added) as u32).to_le_bytes(),
-    )?;
+    if let Some(extra) = extra_section {
+        extra.finish(&mut out, original, base + delta, schemas[0], instance)?;
+    } else {
+        put(
+            &mut out,
+            section + 0x20,
+            &((fk_count + added) as u64).to_le_bytes(),
+        )?;
+        put(
+            &mut out,
+            poses[0] - 16,
+            &((fk_count + added) as u64).to_le_bytes(),
+        )?;
+        put(
+            &mut out,
+            schemas[0] + delta + 16,
+            &((fk_count + added) as u32).to_le_bytes(),
+        )?;
+    }
     for (field, class, stride, data) in [
         (0x80, 0x80808A08, 16, hierarchy),
         (0x90, 0x80809F75, 32, object),
@@ -225,7 +315,7 @@ fn skeleton(original: &Payload, tag: u32, bones: &[Bone]) -> Result<(Payload, us
     ] {
         append(&mut out, base + delta + field, class, &data, stride)?;
     }
-    Ok((Payload(out), count, cut))
+    Ok((Payload(out), count, cut, delta))
 }
 
 fn controls(original: &Payload, count: usize, bones: &[Bone]) -> Result<Payload> {
@@ -318,11 +408,11 @@ pub fn extend(
     control: &Payload,
     bones: &[Bone],
 ) -> Result<Extension> {
-    let (skeleton, count, cut) = skeleton(original, tag, bones)?;
+    let (skeleton, count, cut, delta) = skeleton(original, tag, bones)?;
     Ok(Extension {
         skeleton,
         controls: controls(control, count, bones)?,
         original_bones: count,
-        relocation: (cut, bones.len() * 32),
+        relocation: (cut, delta),
     })
 }

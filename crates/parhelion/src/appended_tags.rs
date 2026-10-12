@@ -1,10 +1,7 @@
 use sundial::package_authoring::is_valid_package_tag;
 use tiger_pkg::TagHash;
 
-use crate::package_profile::{
-    MAX_AUTHORED_STANDALONE_PACKAGE_ID, PRIVATE_PERK_RUNTIME_PACKAGE_ID,
-    is_authored_standalone_package_id,
-};
+use crate::package_profile::{PRIVATE_PERK_RUNTIME_PACKAGE_ID, is_authored_standalone_package_id};
 use crate::{AuthoringError, AuthoringResult};
 
 pub(crate) const MAX_PACKAGE_ENTRY_COUNT: usize = 8192;
@@ -35,11 +32,11 @@ impl AppendedTagAllocator {
 
     /// Where a build's private runtime goes: the private perk-runtime package's table after its
     /// historical high-water mark `start`, then fresh standalone packages from the top of the
-    /// authored range down. The asset packages count up from its bottom, so the two meet only
-    /// once the range is spent.
-    pub(crate) const fn private_runtime(start: usize) -> Self {
+    /// build's window down. The asset packages count up from its bottom, so the two meet only
+    /// once the window is spent.
+    pub(crate) fn private_runtime(start: usize) -> Self {
         Self::new(PRIVATE_PERK_RUNTIME_PACKAGE_ID, start)
-            .overflowing_into(MAX_AUTHORED_STANDALONE_PACKAGE_ID)
+            .overflowing_into(crate::package_profile::window().top)
     }
 
     /// This allocation, continuing past its package's last entry in standalone package `top`, then

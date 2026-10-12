@@ -1,6 +1,34 @@
-//! Source driver attachments translated into the carrier's retained bone frames.
+//! Source driver attachments bound to their translated skeleton frames.
 use super::*;
 use crate::tiger::entity;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DriverPose {
+    /// Native metres along the source seat's X forward, Y left and Z up axes.
+    pub translation: [f32; 3],
+    /// Rotation about local Y. Negative values raise the rider's forward axis.
+    pub pitch_degrees: f32,
+}
+
+impl DriverPose {
+    fn apply(&self, source: ([f32; 3], [f32; 4])) -> Result<([f32; 3], [f32; 4])> {
+        ensure!(
+            self.translation
+                .iter()
+                .all(|v| v.is_finite() && v.abs() <= 1.)
+                && self.pitch_degrees.is_finite()
+                && self.pitch_degrees.abs() <= 90.,
+            "Driver pose exceeds its supported position or pitch range"
+        );
+        let radians = self.pitch_degrees.to_radians() * 0.5;
+        let rotation = [0., radians.sin(), 0., radians.cos()];
+        Ok((
+            rig::point(&rig::transform(source.0, source.1), self.translation, true),
+            rig::quaternion(product(source.1, rotation))?,
+        ))
+    }
+}
 
 fn product(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     [
@@ -11,19 +39,32 @@ fn product(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     ]
 }
 
-fn marker(model: &model::Model, name: &str) -> Result<([f32; 3], [f32; 4])> {
-    let markers = model
-        .markers
-        .iter()
-        .filter(|marker| {
-            marker.name == name && marker.region.is_none() && marker.permutation.is_none()
-        })
-        .collect::<Vec<_>>();
+pub(super) fn selected_marker<'a>(
+    model: &'a model::Model,
+    name: &str,
+) -> Result<&'a model::Marker> {
+    let mut markers = Vec::new();
+    for marker in model.markers.iter().filter(|marker| marker.name == name) {
+        if model.marker_selected(marker)? {
+            markers.push(marker);
+        }
+    }
     ensure!(
         markers.len() == 1,
-        "Source driver marker {name} is absent or ambiguous"
+        "Source vehicle marker {name} is absent or ambiguous"
     );
-    let marker = markers[0];
+    Ok(markers[0])
+}
+
+pub(super) fn marker(model: &model::Model, name: &str) -> Result<([f32; 3], [f32; 4])> {
+    let marker = selected_marker(model, name)?;
+    marker_pose(model, marker)
+}
+
+pub(super) fn marker_pose(
+    model: &model::Model,
+    marker: &model::Marker,
+) -> Result<([f32; 3], [f32; 4])> {
     let mut position = marker.translation;
     let mut orientation = marker.rotation;
     if let Some(bone) = marker.bone {
@@ -46,11 +87,44 @@ fn marker(model: &model::Model, name: &str) -> Result<([f32; 3], [f32; 4])> {
     Ok((position, rig::quaternion(orientation)?))
 }
 
+pub(super) fn frame(
+    bones: &Value,
+    bone: usize,
+    source: ([f32; 3], [f32; 4]),
+) -> Result<([f32; 3], [f32; 4])> {
+    let inverse = bones["bones"][bone]["inverse_object_transform"]
+        .as_array()
+        .context("Native vehicle marker inverse transform")?;
+    ensure!(
+        inverse.len() == 8,
+        "Native vehicle inverse transform length"
+    );
+    let values = inverse
+        .iter()
+        .map(|v| {
+            v.as_f64()
+                .map(|n| n as f32)
+                .context("Native vehicle inverse transform number")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ensure!(
+        values.iter().all(|v| v.is_finite()) && (values[7] - 1.).abs() < 0.00001,
+        "Scaled native vehicle marker frames are unsupported"
+    );
+    let q = rig::quaternion(values[..4].try_into()?)?;
+    let transform = rig::transform(values[4..7].try_into()?, q);
+    Ok((
+        rig::point(&transform, source.0, true),
+        rig::quaternion(product(q, source.1))?,
+    ))
+}
+
 fn rewrite(
     owner: &mut Payload,
     definition: usize,
     bones: &Value,
     source: ([f32; 3], [f32; 4]),
+    source_bone: Option<usize>,
     entry: bool,
 ) -> Result<Vec<Value>> {
     let (offset, stride, class) = if entry {
@@ -65,27 +139,9 @@ fn rewrite(
     );
     let mut report = Vec::new();
     for row in rows {
-        let bone = usize::try_from(owner.u32(row + 4)?)?;
-        let inverse = bones["bones"][bone]["inverse_object_transform"]
-            .as_array()
-            .context("Native driver marker inverse transform")?;
-        ensure!(inverse.len() == 8, "Native driver inverse transform length");
-        let values = inverse
-            .iter()
-            .map(|v| {
-                v.as_f64()
-                    .map(|n| n as f32)
-                    .context("Native driver inverse transform number")
-            })
-            .collect::<Result<Vec<_>>>()?;
-        ensure!(
-            values.iter().all(|v| v.is_finite()) && (values[7] - 1.).abs() < 0.00001,
-            "Scaled native driver marker frames are unsupported"
-        );
-        let q = rig::quaternion(values[..4].try_into()?)?;
-        let transform = rig::transform(values[4..7].try_into()?, q);
-        let position = rig::point(&transform, source.0, true);
-        let orientation = rig::quaternion(product(q, source.1))?;
+        let bone = source_bone.unwrap_or(usize::try_from(owner.u32(row + 4)?)?);
+        let (position, orientation) = frame(bones, bone, source)?;
+        put(&mut owner.0, row + 4, &u32::try_from(bone)?.to_le_bytes())?;
         for (index, value) in orientation
             .into_iter()
             .chain(position)
@@ -106,6 +162,7 @@ pub(super) fn build(
     graph: &mut Graph,
     scene: &Scene,
     bones: &Value,
+    pose: Option<&DriverPose>,
     bytes: &mut [u8],
     patches: &mut Vec<Value>,
 ) -> Result<Option<Value>> {
@@ -156,8 +213,23 @@ pub(super) fn build(
             .as_str()
             .context("Source driver marker name")?;
         ensure!(!name.is_empty(), "Source driver marker name is empty");
-        let source = marker(&scene.models[0].model, name)?;
-        report.push(json!({"role":field,"source":name,"markers":rewrite(&mut owner, definition, bones, source, entry)?}));
+        let model = &scene.models[0].model;
+        let source_bone = bones["source_bone_first"]
+            .as_u64()
+            .map(|first| -> Result<usize> {
+                Ok(match selected_marker(model, name)?.bone {
+                    Some(bone) => usize::try_from(first)?
+                        .checked_add(bone)
+                        .context("Source driver bone overflow")?,
+                    None => 0,
+                })
+            })
+            .transpose()?;
+        let mut source = marker(model, name)?;
+        if !entry && let Some(pose) = pose {
+            source = pose.apply(source)?;
+        }
+        report.push(json!({"role":field,"source":name,"markers":rewrite(&mut owner, definition, bones, source, source_bone, entry)?}));
     }
     let mut relocations = Vec::new();
     for at in (0..owner.0.len().saturating_sub(3)).step_by(4) {
@@ -179,7 +251,7 @@ pub(super) fn build(
     entity::reject_stale_owner(&Payload(bytes.to_vec()), tag)?;
     Ok(Some(
         json!({"source_owner":tag,"owner":"driver-seat","class":0x80803d7du32,
-        "markers":report,"gameplay_verified":false,
+        "markers":report,"pose_adjustment":pose,"gameplay_verified":false,
         "limits":["The native driver pose and seat policies are retained. Passenger seats are not translated."]}),
     ))
 }

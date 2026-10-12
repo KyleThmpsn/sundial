@@ -1,6 +1,8 @@
 //! Workbench preferences and a separate, read-only activity log.
 use super::*;
 
+mod builds;
+
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub(super) enum PreferencesPage {
     #[default]
@@ -189,90 +191,6 @@ impl PackageAuthoringApp {
             .clicked()
         {
             self.reset_catalog_load();
-        }
-    }
-
-    fn draw_build_backup_preferences(&mut self, ui: &mut egui::Ui) {
-        let editable = self.package_preferences_editable();
-        if !editable {
-            ui.label("Locked during a build, installation or review.");
-        }
-        ui.add_enabled_ui(editable, |ui| {
-            preference_heading(ui, "Build Files");
-            ui.label("Game Packages · Selected in Sundial");
-            draw_preference_path(ui, &self.packages);
-            let mut changed = fields::path_row(
-                ui,
-                "Staging Folder",
-                &mut self.staging,
-                "Each build gets its own folder here.",
-            );
-            changed |= ui
-                .checkbox(
-                    &mut self.ignore_installed,
-                    "Build from a Temporary Stock Package View",
-                )
-                .changed();
-            ui.add_space(12.0);
-            preference_heading(ui, "Package Backups");
-            changed |= fields::path_row(
-                ui,
-                "Backup Folder",
-                &mut self.backup_root,
-                "Replaced packages are backed up here.",
-            );
-            let mut backups_changed = false;
-            ui.horizontal_wrapped(|ui| {
-                backups_changed |= ui
-                    .checkbox(&mut self.limit_package_backups, "Keep Last")
-                    .changed();
-                let retention = named_control(
-                    ui.add_enabled(
-                        self.limit_package_backups,
-                        egui::DragValue::new(&mut self.package_backup_retention)
-                            .range(1..=MAX_PACKAGE_BACKUP_RETENTION),
-                    ),
-                    "Package backups to keep",
-                );
-                // Saves when a drag or text edit ends.
-                backups_changed |= retention.drag_stopped()
-                    || retention.lost_focus()
-                    || (retention.changed() && !retention.dragged() && !retention.has_focus());
-                ui.label("automatic package backups");
-            });
-            backups_changed |= ui
-                .checkbox(
-                    &mut self.backup_recipe_snapshots,
-                    "Include Recipe Snapshots in Package Backups",
-                )
-                .on_hover_text("Saves the built recipes with each backup.")
-                .changed();
-            if backups_changed {
-                self.save_workbench_preferences();
-            }
-            if changed {
-                self.invalidate_results();
-            }
-        });
-        ui.add_space(12.0);
-        preference_heading(ui, "Installed Custom Packages");
-        ui.label("Removes installed custom packages, and optionally their items and progression. Backed up first.");
-        if ui
-            .add_enabled(
-                editable
-                    && !self.has_background_work()
-                    && !self.perk_workbench.editing()
-                    && self.icon_editor.is_none()
-                    && !self.presentation_editor.editing()
-                    && !self.build_status_open,
-                egui::Button::new("Uninstall Custom Packages…"),
-            )
-            .on_disabled_hover_text(
-                "Finish the current operation and close its review window first.",
-            )
-            .clicked()
-        {
-            self.start_uninstall_review(false);
         }
     }
 

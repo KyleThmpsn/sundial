@@ -1,7 +1,7 @@
 //! A native PCM event that selects one complete recording per trigger.
 use super::*;
 
-fn node(w: &mut Write, parent: u32, bus: u32, gain: Option<f32>) {
+fn node(w: &mut Write, parent: u32, bus: u32, gain: Option<f32>, voice_limit: u16, global: bool) {
     // Native v113 common node fields, without effects, auxiliary sends or RTPCs.
     w.bytes.extend([0; 3]);
     w.u32(bus); // The selected native output bus stays in the global namespace.
@@ -16,7 +16,18 @@ fn node(w: &mut Write, parent: u32, bus: u32, gain: Option<f32>) {
     w.u8(0); // No randomized properties.
     w.u8(if parent == 0 { 0xc1 } else { 0xc0 }); // Nonspatial root, inherited children.
     w.u8(0);
-    w.bytes.extend([0, 1, 0, 0, 0, 0]); // Native voice limits and virtual queue settings.
+    // Override the actor parent at the container. Bit 2 selects a global limit.
+    // Kill the oldest voice at the limit. Child variations inherit the shared limit.
+    w.bytes.extend([
+        if voice_limit > 0 {
+            8 | if global { 4 } else { 0 }
+        } else {
+            0
+        },
+        1,
+    ]);
+    w.u16(voice_limit);
+    w.bytes.extend([0, 0]);
     w.u32(0); // States.
     w.u16(0); // RTPCs.
 }
@@ -31,7 +42,36 @@ fn append(hirc: &mut Write, kind: u8, payload: Write) -> Result<()> {
 impl Bank {
     /// Build v113 event 1 with one random choice per trigger on an explicit native bus.
     /// This does not supply spatial attenuation, environment switching or source pitch curves.
-    pub fn one_shot(media: &[u32], output_bus: u32, gain_db: f32) -> Result<Self> {
+    pub fn one_shot(
+        media: &[u32],
+        output_bus: u32,
+        gain_db: f32,
+        voice_limit: u16,
+    ) -> Result<Self> {
+        Self::shot(media, output_bus, gain_db, voice_limit, false)
+    }
+
+    /// Share the private container's voice limit across transient game objects.
+    pub fn one_shot_global(
+        media: &[u32],
+        output_bus: u32,
+        gain_db: f32,
+        voice_limit: u16,
+    ) -> Result<Self> {
+        Self::shot(media, output_bus, gain_db, voice_limit, true)
+    }
+
+    fn shot(
+        media: &[u32],
+        output_bus: u32,
+        gain_db: f32,
+        voice_limit: u16,
+        global: bool,
+    ) -> Result<Self> {
+        ensure!(
+            (1..=1000).contains(&voice_limit),
+            "Invalid one-shot voice limit"
+        );
         ensure!(
             !media.is_empty() && media.len() <= 4096,
             "Invalid one-shot variation count"
@@ -55,12 +95,19 @@ impl Bank {
             sound.reference(*medium, Kind::Media);
             sound.reference(*medium, Kind::MediaSize);
             sound.u8(0);
-            node(&mut sound, 3, 0, None);
+            node(&mut sound, 3, 0, None, 0, false);
             append(&mut hirc, 2, sound)?;
         }
         let mut random = Write::default();
         random.reference(3, Kind::Object);
-        node(&mut random, 0, output_bus, Some(gain_db));
+        node(
+            &mut random,
+            0,
+            output_bus,
+            Some(gain_db),
+            voice_limit,
+            global,
+        );
         random.u16(1); // One loop.
         random.bytes.extend([0; 22]); // Step random, no transitions or continuous playback.
         random.u32(count);

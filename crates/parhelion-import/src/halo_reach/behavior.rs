@@ -328,11 +328,46 @@ impl Read<'_> {
     }
 }
 
+fn pitch_parameters(c: &Cache, parameters: &[usize], index: i16) -> Result<Value> {
+    if index == -1 {
+        return Ok(Value::Null);
+    }
+    let parameter = *parameters
+        .get(usize::try_from(index)?)
+        .context("Sound pitch parameters outside gestalt")?;
+    Ok(json!({"raw":hex::encode(c.meta(parameter,16)?),
+        "natural_pitch_cents":c.i16(parameter)?,"word_1":c.i16(parameter+2)?,
+        "bend_bounds_cents":[c.i16(parameter+4)?,c.i16(parameter+6)?],
+        "maximum_gain_pitch_bounds_cents":[c.i16(parameter+8)?,c.i16(parameter+10)?],
+        "playback_pitch_bounds_cents":[c.i16(parameter+12)?,c.i16(parameter+14)?]}))
+}
+
+fn pitch_name(c: &Cache, names: &[usize], index: i16) -> Result<Value> {
+    if index == -1 {
+        return Ok(Value::Null);
+    }
+    let name = *names
+        .get(usize::try_from(index)?)
+        .context("Sound pitch name outside gestalt")?;
+    Ok(json!(c.string_id(c.u32(name)?)?))
+}
+
 fn sound(c: &Cache, tag: &Tag) -> Result<Value> {
     let at = tag.address()?;
     let gestalt = c.only("ugh!")?.address()?;
+    let class_tag = c.only("sncl")?;
+    let classes = c.block(class_tag.address()?, 0xd4)?;
+    let class = *classes
+        .get(usize::from(c.u8(at + 2)?))
+        .context("Sound class outside global table")?;
+    let limits = json!({"source":class_tag,"maximum_per_tag":c.i16(class)?,
+        "maximum_per_object_per_tag":c.i16(class+2)?,"maximum_per_class":c.i16(class+4)?,
+        "maximum_per_object_per_class":c.i16(class+6)?,"preemption_ms":c.i32(class+8)?,
+        "internal_flags":c.u16(class+12)?,"flags":c.u16(class+14)?});
     let pitches = c.block(gestalt + 0x4c, 12)?;
     let permutations = c.block(gestalt + 0x58, 24)?;
+    let names = c.block(gestalt + 0x28, 4)?;
+    let parameters = c.block(gestalt + 0x40, 16)?;
     let first = usize::try_from(c.i16(at + 6)?)?;
     let count = usize::from(c.u8(at + 3)?);
     ensure!(
@@ -351,7 +386,11 @@ fn sound(c: &Cache, tag: &Tag) -> Result<Value> {
         for &r in &permutations[start..start + count] {
             variants.push(json!({"fsb_info":c.u32(r+20)?,"source_samples":c.u32(r+4)?,"skip_fraction_encoded":c.i16(r+2)?,"gain_encoded":c.u8(r+14)? as i8,"raw":hex::encode(c.meta(r,24)?)}));
         }
-        ranges.push(json!({"raw":hex::encode(c.meta(row,12)?),"variants":variants}));
+        ranges.push(
+            json!({"raw":hex::encode(c.meta(row,12)?),"variants":variants,
+            "name":pitch_name(c,&names,c.i16(row)?)?,
+            "parameters":pitch_parameters(c,&parameters,c.i16(row+2)?)?}),
+        );
     }
     let playback = c.i16(at + 14)?;
     let playback = if playback < 0 {
@@ -364,7 +403,8 @@ fn sound(c: &Cache, tag: &Tag) -> Result<Value> {
         json!({"raw":hex::encode(c.meta(r,0x54)?),"skip_fraction":c.f32(r+4)?,"gain_db":c.f32(r+0x2c)?,"gain_variance_db":c.f32(r+0x30)?,"pitch_bounds":[c.i16(r+0x34)?,c.i16(r+0x36)?],"first_person_gain_db":c.f32(r+0x50)?})
     };
     Ok(
-        json!({"class":c.u8(at+2)?,"flags":c.u16(at)?,"bank_suffix":c.string_id(c.u32(at+0x30)?)?,"pitch_ranges":ranges,"playback":playback}),
+        json!({"class":c.u8(at+2)?,"flags":c.u16(at)?,"bank_suffix":c.string_id(c.u32(at+0x30)?)?,"pitch_ranges":ranges,"playback":playback,
+            "playback_limits":limits,"promotion_index":c.u8(at+0x12)? as i8,"custom_playback_index":c.u8(at+0x13)? as i8}),
     )
 }
 
@@ -419,7 +459,25 @@ pub(super) fn read(cache: &Cache, scene: &super::Scene) -> Result<Value> {
                     ],
                 )?;
                 reader.block_links(at + 0x2c, 0x48, &[(4, "detail")])?;
-                json!({"tracks":cache.block(at+0x20,0xb0)?.into_iter().map(|r|cache.meta(r,0xb0).map(hex::encode)).collect::<Result<Vec<_>>>()?})
+                let tracks = cache.block(at + 0x20, 0xb0)?;
+                let controls = tracks.iter().map(|&r| {
+                    let mut track = json!({"name":cache.string_id(cache.u32(r)?)?,
+                        "flags":cache.u16(r+4)?,"output_effect":cache.u16(r+6)?,"gain_db":cache.f32(r+8)?,
+                        "layer":cache.u16(r+0x9c)?,"layer_flags":cache.u16(r+0x9e)?});
+                    for (name,offset) in [("start",0xc),("loop",0x1c),("end",0x2c),("alternate_loop",0x3c),
+                        ("alternate_end",0x4c),("transition_in",0x5c),("transition_out",0x6c)] {
+                        track[name] = serde_json::to_value(cache.reference(r+offset,Some("snd!"))?)?;
+                    }
+                    for (name,offset) in [("fade_in",0x7c),("fade_out",0x84),("alternate_crossfade",0x8c),
+                        ("alternate_fade_out",0x94),("layer_fade_in",0xa0),("layer_fade_out",0xa8)] {
+                        track[name] = json!({"seconds":cache.f32(r+offset)?,"mode":cache.u32(r+offset+4)?});
+                    }
+                    Ok(track)
+                }).collect::<Result<Vec<_>>>()?;
+                json!({"flags":cache.u32(at)?,"distance_bounds_source":cache.floats::<2>(at+0xc)?,
+                    "class":cache.u16(at+0x18)?,"master_marker_track":cache.string_id(cache.u32(at+0x1c)?)?,
+                    "tracks":tracks.into_iter().map(|r|cache.meta(r,0xb0).map(hex::encode)).collect::<Result<Vec<_>>>()?,
+                    "track_controls":controls})
             }
             "frms" => {
                 reader.block_links(at, 20, &[(0, "animation_sound")])?;

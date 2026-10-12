@@ -4,6 +4,7 @@
 //! implementation. Registration rows come from an entity which actually owns that template.
 //! Every provider is resolved through its reciprocal definition in the converted payload.
 //! Connection rows are supplied by the typed cross-version linker.
+pub mod authored;
 pub mod replication;
 
 use super::links::NativeRows;
@@ -243,6 +244,22 @@ pub fn emit(
     components: &[Component<'_>],
     connections: &NativeRows,
 ) -> Result<Payload> {
+    emit_authored(template, components, connections, &BTreeMap::new())
+}
+
+/// Assemble stock components and native implementations with explicit provider contracts.
+pub fn emit_authored(
+    template: &Payload,
+    components: &[Component<'_>],
+    connections: &NativeRows,
+    authored: &BTreeMap<u32, Vec<authored::Provider<'_>>>,
+) -> Result<Payload> {
+    ensure!(
+        authored
+            .keys()
+            .all(|owner| components.iter().any(|component| component.owner == *owner)),
+        "Authored provider table names an absent component"
+    );
     ensure!(
         !components.is_empty() && components.len() < 0xFFFF,
         "invalid compiled component count"
@@ -258,7 +275,11 @@ pub fn emit(
     let mut groups = BTreeMap::new();
     let mut owners = Vec::new();
     for (ordinal, component) in components.iter().enumerate() {
-        registrations(component, ordinal, &mut masks, &mut groups)?;
+        if let Some(providers) = authored.get(&component.owner) {
+            authored::registrations(component, ordinal, providers, &mut masks, &mut groups)?;
+        } else {
+            registrations(component, ordinal, &mut masks, &mut groups)?;
+        }
         let mut row = vec![0; 12];
         row[..4].copy_from_slice(&component.owner.to_le_bytes());
         owners.push(row);

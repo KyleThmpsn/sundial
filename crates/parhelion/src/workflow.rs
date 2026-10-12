@@ -300,6 +300,11 @@ fn plan_snapshot_naming(
     progress: &mut impl FnMut(BuildProgress),
     failed: &mut Option<String>,
 ) -> Result<PlannedSnapshot, String> {
+    // Every authored id the build places reads this window, so it is chosen before planning.
+    crate::package_profile::set_window(
+        crate::install::package_window(&snapshot.request.package_directory)
+            .map_err(|error| error.to_string())?,
+    );
     progress(BuildProgress::artifact(
         BuildPhase::InspectingSource,
         "Checking Recipes",
@@ -866,7 +871,10 @@ impl PackageSource {
         package_directory: &Path,
         ignored_authored_files: &[String],
     ) -> Result<Self, String> {
-        if ignored_authored_files.is_empty() {
+        let managed = package_directory.parent().is_some_and(|install| {
+            sundial::package_authoring::mod_content::directory(install).exists()
+        });
+        if ignored_authored_files.is_empty() && !managed {
             return Ok(Self::Direct(package_directory.to_path_buf()));
         }
         FilteredPackageView::create(package_directory, ignored_authored_files).map(Self::Filtered)

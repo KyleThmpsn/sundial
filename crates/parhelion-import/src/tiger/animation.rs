@@ -1,6 +1,7 @@
 //! Native FK extensions and clip channels shared by source importers.
 pub mod clip;
 pub mod control;
+pub mod layer;
 pub mod pose;
 pub mod rig;
 pub mod state;

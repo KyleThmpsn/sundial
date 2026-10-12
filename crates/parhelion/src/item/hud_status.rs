@@ -10,7 +10,7 @@
 use super::*;
 use crate::{
     NewTagReference, NewTagReferenceOverride, appended_tags::AppendedTagAllocator,
-    package_profile::PARHELION_ASSET_PACKAGE_ID, tag_payload::read_u16,
+    tag_payload::read_u16,
 };
 use sundial::package_authoring::sandbox_perk::program::{
     Asset, HudStatus, NativeAssetPatch, NativeAssetResourcePatch, Program,
@@ -378,7 +378,7 @@ pub(super) fn author_images<'a>(
         return Ok(layers);
     }
     let stock = stock(manager)?;
-    let allocator = AppendedTagAllocator::new(PARHELION_ASSET_PACKAGE_ID, 0);
+    let allocator = AppendedTagAllocator::new(crate::package_profile::window().base, 0);
     for (asset, status) in assets {
         let Some(image) = &status.image else {
             continue;

@@ -16,6 +16,7 @@ pub(crate) mod index_cache;
 pub(crate) mod installation;
 pub mod labels;
 pub(crate) mod loading;
+pub mod mods;
 pub(crate) mod parallel;
 pub(crate) mod reader;
 pub(crate) mod references;
@@ -120,6 +121,23 @@ impl RuntimeSnapshot {
 
     pub fn dll_sha256(&self) -> &str {
         &self.dll_sha256
+    }
+
+    /// Version from the exact module represented by this snapshot. Older recovery records
+    /// remain readable because the version is derived from the recorded module identity.
+    pub fn uses_mod_loader(&self) -> Result<bool, String> {
+        let bytes = fs::read(&self.module_path).map_err(|error| error.to_string())?;
+        if hex::encode(Sha256::digest(&bytes)) != self.dll_sha256 {
+            return Err("The selected runtime DLL changed after review".into());
+        }
+        let Some((brand, version)) = runtime_version(&bytes) else {
+            // from_verified_module is also used by explicit offline integration hosts.
+            return Ok(false);
+        };
+        if brand != self.brand.name() {
+            return Err("The runtime brand differs from its recorded identity".into());
+        }
+        Ok(self.brand == RuntimeBrand::Sunrise && runtime_version_at_least(&version, &[0, 6]))
     }
 }
 
@@ -284,6 +302,9 @@ pub(crate) fn runtime_version_at_least(version: &str, minimum: &[u64]) -> bool {
 
 pub(crate) fn validate_package_authoring_runtime(install: &Path) -> Result<(), String> {
     let runtime = installed_runtime(install)?;
+    if runtime.uses_mod_loader()? {
+        return verify_installed_runtime(install, &runtime);
+    }
     let bytes = fs::read(runtime.module_path()).map_err(|error| {
         format!(
             "Could not read the installed runtime DLL {}: {error}",
@@ -325,6 +346,16 @@ fn contains_bytes(bytes: &[u8], needle: &[u8]) -> bool {
 }
 
 pub(crate) fn open_shadowkeep_packages(install: &Path) -> Result<PackageManager, String> {
+    let view = mods::View::open(install)?;
+    let source = view.as_ref().map_or(install, mods::View::install);
+    let mut manager = open_stock_shadowkeep_packages(source)?;
+    if let Some(view) = view {
+        manager.retain_view(view);
+    }
+    Ok(manager)
+}
+
+fn open_stock_shadowkeep_packages(install: &Path) -> Result<PackageManager, String> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         linux::open_shadowkeep_packages(install)

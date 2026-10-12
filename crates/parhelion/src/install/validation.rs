@@ -19,16 +19,8 @@ pub(super) fn validate_request_with_progress(
     ));
     check_game_before_validation(request)?;
 
-    let staged_run_directory = canonical_directory(&request.staged_run_directory, "staging run")?;
-    let target_packages_directory =
-        canonical_packages_directory(&request.target_packages_directory)?;
-    if path_is_within(&target_packages_directory, &staged_run_directory)
-        || path_is_within(&staged_run_directory, &target_packages_directory)
-    {
-        return Err(InstallError::validation(
-            "The staging and target packages directories cannot be equal or nested inside one another",
-        ));
-    }
+    let (staged_run_directory, target_packages_directory, backup_root) =
+        validate_request_paths(request)?;
     let target_packages_directory =
         sundial::package_authoring::validate_shadowkeep_packages_directory(
             &target_packages_directory,
@@ -40,17 +32,6 @@ pub(super) fn validate_request_with_progress(
         ))
     })?;
 
-    let backup_root = resolve_path_for_comparison(&request.backup_root).map_err(|error| {
-        InstallError::validation(format!(
-            "Could not resolve backup root {}: {error}",
-            request.backup_root.display()
-        ))
-    })?;
-    if path_is_within(&backup_root, &target_packages_directory) {
-        return Err(InstallError::validation(
-            "The backup root must be outside the target packages directory",
-        ));
-    }
     if !(1..=MAX_PACKAGE_BACKUP_RETENTION).contains(&request.package_backup_retention) {
         return Err(InstallError::validation(format!(
             "Package backup retention must be between 1 and {MAX_PACKAGE_BACKUP_RETENTION}"
@@ -135,6 +116,33 @@ pub(super) fn validate_request_with_progress(
         sunrise_build_cache,
         package_header_caches,
     })
+}
+
+pub(super) fn validate_request_paths(
+    request: &InstallRequest,
+) -> Result<(PathBuf, PathBuf, PathBuf), InstallError> {
+    let staged_run_directory = canonical_directory(&request.staged_run_directory, "staging run")?;
+    let target_packages_directory =
+        canonical_packages_directory(&request.target_packages_directory)?;
+    if path_is_within(&target_packages_directory, &staged_run_directory)
+        || path_is_within(&staged_run_directory, &target_packages_directory)
+    {
+        return Err(InstallError::validation(
+            "The staging and target packages directories cannot be equal or nested inside one another",
+        ));
+    }
+    let backup_root = resolve_path_for_comparison(&request.backup_root).map_err(|error| {
+        InstallError::validation(format!(
+            "Could not resolve backup root {}: {error}",
+            request.backup_root.display()
+        ))
+    })?;
+    if path_is_within(&backup_root, &target_packages_directory) {
+        return Err(InstallError::validation(
+            "The backup root must be outside the target packages directory",
+        ));
+    }
+    Ok((staged_run_directory, target_packages_directory, backup_root))
 }
 
 fn find_obsolete_artifacts(

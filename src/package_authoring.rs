@@ -6,7 +6,8 @@ use std::{
     process::Command,
 };
 
-pub use crate::package_runtime::reader::PackageManager;
+pub use crate::package_runtime::mods as mod_content;
+pub use crate::package_runtime::reader::{PackageManager, initialize_source_decoder};
 pub use crate::package_runtime::{RuntimeBrand, RuntimeSnapshot};
 use eframe::egui;
 
@@ -526,6 +527,19 @@ pub fn installed_runtime(install: &Path) -> Result<RuntimeSnapshot, String> {
 /// Confirms that runtime precedence, location, and DLL bytes still match a prior snapshot.
 pub fn verify_installed_runtime(install: &Path, expected: &RuntimeSnapshot) -> Result<(), String> {
     crate::package_runtime::verify_installed_runtime(install, expected)
+}
+
+/// Atomically moves a staged file or directory without replacing a concurrent destination.
+pub fn move_authoring_path(source: &Path, destination: &Path) -> Result<(), String> {
+    crate::package_runtime::installation::move_without_replacing(source, destination).map_err(
+        |error| {
+            format!(
+                "Could not publish {} at {}: {error}",
+                source.display(),
+                destination.display()
+            )
+        },
+    )
 }
 
 /// Checks that the selected installation advertises the runtime hooks required by authoring.

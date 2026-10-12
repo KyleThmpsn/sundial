@@ -11,6 +11,7 @@ See Sundial's [Compatibility](../../README.md#compatibility) section for support
 - [Getting Started](#getting-started)
 - [Making Weapons](#making-weapons)
   - [Stats and Power](#stats-and-power)
+  - [Barrel Settings](#barrel-settings)
   - [Perks and Sockets](#perks-and-sockets)
   - [Custom Perk Workbench](#custom-perk-workbench)
   - [Finding Triggers, Actions, and Objects](#finding-triggers-actions-and-objects)
@@ -19,10 +20,12 @@ See Sundial's [Compatibility](../../README.md#compatibility) section for support
   - [Conditions](#conditions)
   - [Organizing Effects](#organizing-effects)
   - [Engine Catalog](#engine-catalog)
-  - [Unique Weapon Behavior](#unique-weapon-behavior)
+  - [Borrowing Weapon Behavior](#borrowing-weapon-behavior)
   - [Ornaments, Icons and Shaders](#ornaments-icons-and-shaders)
   - [Collections Placement](#collections-placement)
 - [Making Other Items](#making-other-items)
+  - [Vehicles](#vehicles)
+- [Making Mods](#making-mods)
 - [Making Shaders](#making-shaders)
 - [Making Subclasses](#making-subclasses)
 - [Bundled Custom Weapons and Perks](#bundled-custom-weapons-and-perks)
@@ -78,6 +81,14 @@ You can also write flavor text and a custom **Lore** tab on **Weapon**. Leave bo
 
 **Power Cap** sets the weapon's infusion limit. Current Power is a separate thing and is edited in Sundial, not here.
 
+### Barrel Settings
+
+**Barrel Settings** on **Gameplay** controls how many pellets each bullet fires and how they spread. Set **Pellets per Bullet** and **Spread**, then choose a **Pattern**: **Filled Circle**, **Ring**, or **Custom**. A custom pattern lists each ring's pellet count, inner and outer radius, rotation, and randomness beside a preview. **Random Rotation** turns the pattern to a new angle for each bullet. Turn it off to keep a pattern, such as a level row, at the same angle every shot.
+
+**Bullets per Shot** sets how many bullets fire with each trigger pull. On pulse rifles, sidearms, and rocket launchers, the weapon's **Rounds Per Minute** decides it.
+
+Extra pellets are confirmed working on Fusion Rifles, Shotguns, Pulse Rifles, Auto Rifles, Scout Rifles, Submachine Guns, Sniper Rifles, Grenade Launchers, Sidearms, and Hand Cannons. On Rocket Launchers, the extra rockets collide with each other as soon as they're fired.
+
 ### Perks and Sockets
 
 A **socket** is a slot for a perk or mod. The game calls these perks and mods **plugs**. Click a perk to replace it, or use **+ Add Choice** to add another option to that socket. Only one choice per socket is active at a time. Drag a choice by its handle to reorder it, or right-click it to make it the default. The first choice starts equipped. Dragging onto a choice in another socket replaces that destination choice and keeps the original in place.
@@ -103,13 +114,13 @@ To create and use a custom perk:
 
 Saving a perk and applying it are separate. **Save to Library** updates the saved perk. **Apply to Weapon** copies the current perk into the chosen socket choice, and later edits to the saved perk do not change that copy. Use **Save as New Perk** in the perk's menu to experiment without replacing the saved original. When a perk cannot be applied, the footer says why, such as an action with no object chosen, and **Show Problem** opens the card that needs it.
 
-The workbench keeps open drafts between sessions, marked **Draft** until you save them. **Use Effect Summary** under the description writes a starting description from the effects. **Copy Test Plan** in the perk's menu copies an in-game checklist built from the perk's triggers, actions, and timing. **Perk Diagnostics…** lists every problem found in the perk, and **Gameplay Verification…** keeps your in-game test results with the exact perk you tested.
+The workbench keeps open drafts between sessions, marked **Draft** until you save them. **Use Effect Summary** under the description writes a starting description from the effects. **Copy Test Plan** in the perk's menu copies an in-game checklist built from the perk's triggers, actions, and timing. **Perk Diagnostics…** lists problems that can keep the perk from working. It won't catch everything, but it can flag some issues before you build.
 
 Use **Import…** and **Export…** in the library menu to share perk files. **Restore Default Custom Perks…** puts the bundled examples back and backs up any you changed.
 
 To reuse a saved perk on another item, click a socket choice there and choose **Use Custom Perk…**. The picker also lists perks embedded in your recipes and copies the chosen one into this recipe. A custom perk is included in a build only when a selected item uses it. Once installed, it appears like any other plug in Sundial's plug picker.
 
-A perk can only do what the weapon it sits on supports. If a perk depends on a reload, a magazine, or a firing behavior your weapon doesn't have, it does nothing. [Unique Weapon Behavior](#unique-weapon-behavior) covers the other half of that problem, where the behavior lives in the weapon rather than the perk.
+A perk can only do what the weapon it sits on supports. If a perk depends on a reload, a magazine, or a firing behavior your weapon doesn't have, it does nothing. [Borrowing Weapon Behavior](#borrowing-weapon-behavior) covers the other half of that problem, where the behavior lives in the weapon rather than the perk.
 
 Custom perk authoring is still early. Parhelion maps more of Destiny's perk system into plain controls over time, and some names or mappings may turn out to be incomplete or wrong.
 
@@ -140,6 +151,7 @@ An effect is a trigger plus what it does when that trigger fires. These are some
 - **Change Ability Energy** scales grenade, melee, or class ability energy, with an optional limit.
 - **Change Incoming Damage** raises or lowers the damage you take while the effect runs, the way Riven's Curse does.
 - **Change an Ability Property** sets or adds to an ability's own values, such as a grenade's blast radius. Use **Add Property…** to choose one.
+- **Change Weapon Properties** changes the weapon's own values while the effect runs, such as bullets per shot, rate of fire, spread, damage, magazine size, or reload time. Use **Add Row** for each property you change.
 
 Pair one with a trigger such as **On a Kill**, **On Precision Weapon Kill**, **On Reloading**, **On Firing This Weapon**, **On Taking Damage**, or **On a Game Event** for something like an Orb of Light being picked up.
 
@@ -177,7 +189,7 @@ Choose a kind to see what it does and which installed perks use it. An entry sho
 
 Use it to find behavior worth copying into a perk of your own, or to check what a stock perk really does before you borrow from it. The catalog reads your installed packages as you browse, so use **Retry Scan** if a scan reports an error.
 
-### Unique Weapon Behavior
+### Borrowing Weapon Behavior
 
 Some Exotics keep part of what makes them special in the weapon itself rather than in a perk. Hard Light's bouncing rounds, Malfeasance's embedded rounds, and Borealis's damage switching all work this way. **Behavior** copies that half onto the weapon you are building. Choose it on **Weapon** beside the damage type, or under **Parts** on **Gameplay**, where its options appear.
 
@@ -230,13 +242,28 @@ Placement is presentation only. It does not change ammo, stats, or gameplay.
 
 ## Making Other Items
 
-The **New Item** menu beside **New Weapon** starts an armor piece, Sparrow, Ship, Ghost Shell, Emblem, Shader, or Subclass from a stock base. Save it as a recipe and select it in **Items in This Build** before building. This section covers gear. Shaders and Subclasses have their own sections below.
+The **New Item** menu beside **New Weapon** starts an armor piece, Sparrow, Ship, Ghost Shell, Emblem, Shader, Mod, or Subclass from a stock base. Save it as a recipe and select it in **Items in This Build** before building. This section covers gear. Shaders, Mods, and Subclasses have their own sections below.
 
-Edit the name, description, icon, rarity, supported stats, and sockets. Gear can add sockets, remove the base's sockets, or give a socket another role, as weapons can. Gear keeps the base item's slot, model, and runtime behavior, and its page shows a preview of the base item's model. Armor also has **Energy Type** and **Energy Capacity** controls, and a **Class** picker that follows the base or can use **Titan**, **Hunter**, **Warlock**, or **Any Class**. Exotic gear requires an Exotic base. An Emblem's nameplate takes its banner, overlay, and background from another Emblem or your own image, and **Customize Colors** sets its colors.
+Edit the name, description, icon, rarity, supported stats, and sockets. Gear can add sockets, remove the base's sockets, or give a socket another role, as weapons can. Gear keeps the base item's slot, model, and runtime behavior, and its page shows a preview of the base item's model. Armor also has **Energy Type** and **Energy Capacity** controls, and a **Class** picker that follows the base or can use **Titan**, **Hunter**, **Warlock**, or **Any Class**. Exotic armor requires an Exotic base. Sparrows, Ships, Ghost Shells, Emblems, and Shaders can be Exotic on any base. An Emblem's nameplate takes its banner, overlay, and background from another Emblem or your own image, and **Customize Colors** sets its colors.
 
-In Collections, authored armor appears on a **Project Sunrise** or **Dawn** page under **Armor** for each class it supports and joins that class's badge. Exotic armor also appears in **Exotics**. Sparrows, Ships, Ghost Shells, Emblems, and Shaders appear on a **Project Sunrise** or **Dawn** page under their kind. Each of these pages uses one node from the [Collections budget](#collections-placement). Sparrow Speed, Boost, and Durability are tooltip stats. Changing the displayed Speed alone does not make a Sparrow travel faster. Use **Driving Speed** instead, up to 10× the base's speed. **Summon Vehicle** makes a Sparrow summon another vehicle, such as a Pike or Interceptor. Its inventory icon then shows that vehicle's white HUD silhouette. Clear **Vehicle Icon** to keep the Sparrow's own art. **Inventory Model** sets what the inventory and inspect screens show: the Sparrow, the summoned vehicle, or nothing.
+In Collections, authored armor appears on a **Project Sunrise** or **Dawn** page under **Armor** for each class it supports and joins that class's badge. Exotic armor also appears in **Exotics**. Sparrows, Ships, Ghost Shells, Emblems, and Shaders appear on a **Project Sunrise** or **Dawn** page under their kind. Each of these pages uses one node from the [Collections budget](#collections-placement).
 
 Armor authoring will gain more options in future releases.
+
+### Vehicles
+
+A Sparrow's page has a **Vehicle** editor with **Driving**, **Handling**, **Durability**, and **Weapons** cards. Values are set as a percentage of the vehicle's stock values.
+
+- **Driving Speed** sets how fast the Sparrow drives, up to 10× the base's speed. The **Speed** stat in its tooltip is display only. **Acceleration**, **Braking**, and **Boost Strength** can be set separately or together with **Match Speed**.
+- **Handling** adds better side dodges, air control, roll tricks, and faster summoning. **Durability** adjusts health and repair.
+- Armed vehicles can change **Weapon Damage** and **Firing Rate**, or fire another vehicle's projectiles.
+- **Summon Vehicle** makes a Sparrow summon another vehicle, such as a Pike, Interceptor, or Tank. Its inventory icon then shows that vehicle's white HUD silhouette. Clear **Vehicle Icon** to keep the Sparrow's own art.
+
+## Making Mods
+
+Choose **Mod** from the **New Item** menu to make a mod. A mod is a custom perk with no item of its own. Its **Type**, such as **Weapon Mod**, decides which sockets offer it, and its page lists the **Plug Sets** it joins. Once built and installed, it appears in every one of those sockets, such as every weapon's mod socket. Click **Edit Mod…** to change its effects in the Custom Perk Workbench.
+
+A custom perk on one of your items can be offered the same way. Turn on **Offer Everywhere** in the workbench and the perk appears in every socket of its type. It still needs to be on one item you build.
 
 ## Making Shaders
 
@@ -264,7 +291,7 @@ Each ability and node has its own page, with tabs marked once you change somethi
 
 - **Ability** sets its name, description, and icon. Imported artwork shows on the Subclass screen only.
 - **Perks** sets the perks it grants, including custom perks from the workbench. Right-click a stock perk and choose **Edit as Custom Perk…** to change it for this ability alone.
-- **Gameplay** holds the ability's **Charges**, **Recharge**, and own values, such as **Blink Distance** or **Airborne Jumps**. A node's **Ability Changes** sets what selecting it changes about the Subclass's abilities, such as an extra grenade charge. Each part the ability creates has a card with its timers, projectile flight, and buff amounts. A timer's **Duration** can be **Unlimited**. **Projectile** swaps a projectile for another ability's, or for any projectile in the game, such as a weapon's or an enemy's, under **All Projectiles**.
+- **Gameplay** holds the ability's **Charges**, **Recharge**, and own values, such as **Blink Distance** or **Airborne Jumps**. A node's **Changes While Equipped** sets what selecting it changes about the Subclass's abilities, such as an extra grenade charge. Each part the ability creates has a card with its timers, projectile flight, and buff amounts. A timer's **Duration** can be **Unlimited**. **Projectile** swaps a projectile for another ability's, or for any projectile in the game, such as a weapon's or an enemy's, under **All Projectiles**.
 - **Visuals** holds **Effect Colors**. **Overall** adjusts everything the ability draws, including trails, lights, and decals. Under it, each color the ability's effects use has its own hue, saturation, and brightness, and **Apply to Every Color** in a color's menu copies its values to the rest. **Colors From** copies another ability's colors, and **Colorize** sets a single hue. Every swatch shows its color with **Overall** applied, as it will look in game.
 
 Changes belong to that ability, so other abilities using the same stock data keep theirs.
@@ -423,7 +450,7 @@ With Destiny closed, open **Preferences… > Builds & Backups** and choose **Rec
 
 ### Why Doesn't This Perk Work on My Weapon?
 
-Perks can depend on a specific reload action, magazine size, or weapon behavior. Some perks won't work if your weapon doesn't have those mechanics. When the missing piece is the weapon rather than the perk, [Unique Weapon Behavior](#unique-weapon-behavior) can copy it across.
+Perks can depend on a specific reload action, magazine size, or weapon behavior. Some perks won't work if your weapon doesn't have those mechanics. When the missing piece is the weapon rather than the perk, [Borrowing Weapon Behavior](#borrowing-weapon-behavior) can copy it across.
 
 ### Why Aren't My Changes Showing?
 

@@ -471,7 +471,7 @@ fn convert_with_donor(
     let audio = &graph_manifest["audio"];
     write_json(
         &output.join("result.json"),
-        &json!({"recipe":recipe,"donor":donor["name"],"donor_hash":donor["hash"],"audio":audio,"source_audio_imported":false,"verified_profile":verified_profile,"gameplay_verified":false,"limitations":"Modern PCM media is prepared for named events with compatible native routing. Package authoring links those events through private Dawn soundbanks. Source-only and unnamed firing cues still need runtime routing. New conversions require an in-game test."}),
+        &json!({"recipe":recipe,"donor":donor["name"],"donor_hash":donor["hash"],"audio":audio,"source_audio_imported":false,"verified_profile":verified_profile,"gameplay_verified":false,"material_limitations":graph_manifest["material_limitations"],"limitations":"Modern PCM media is prepared for named events with compatible native routing. Package authoring links those events through private Dawn soundbanks. Source-only and unnamed firing cues still need runtime routing. New conversions require an in-game test."}),
     )?;
     Ok(Attempt::Prepared(recipe))
 }

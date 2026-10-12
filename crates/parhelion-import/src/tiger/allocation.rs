@@ -1,11 +1,12 @@
 //! Native allocation rows, child arrays and separately tagged indirect nodes.
-use super::{Payload, append_array, put};
+use super::payload::Payload;
+use crate::presentation::{append as append_array, put};
 use anyhow::{Context, Result};
 
 const CLASS: u32 = 0x80808852;
 const ROW_SIZE: usize = 40;
 
-pub(super) struct Row {
+pub(crate) struct Row {
     name: u32,
     class: u32,
     count: usize,
@@ -14,7 +15,7 @@ pub(super) struct Row {
 }
 
 impl Row {
-    pub(super) fn named(name: u32, class: u32, count: usize, children: Vec<Self>) -> Self {
+    pub(crate) fn named(name: u32, class: u32, count: usize, children: Vec<Self>) -> Self {
         Self {
             name,
             class,
@@ -25,7 +26,7 @@ impl Row {
     }
 
     /// An embedded expression's input array is reached through a separate allocation node.
-    pub(super) fn input(leaf: u32, count: usize) -> Self {
+    pub(crate) fn input(leaf: u32, count: usize) -> Self {
         let children = if count == 0 {
             Vec::new()
         } else {
@@ -34,13 +35,13 @@ impl Row {
         Self::named(0x811C9DC5, u32::MAX, 0, children)
     }
 
-    pub(super) fn indirect(name: u32, target: Self) -> Self {
+    pub(crate) fn indirect(name: u32, target: Self) -> Self {
         let mut row = Self::named(name, u32::MAX, 0, Vec::new());
         row.target = Some(Box::new(target));
         row
     }
 
-    pub(super) fn inputs(count: usize) -> Self {
+    pub(crate) fn inputs(count: usize) -> Self {
         Self::named(
             0x811C9DC5,
             u32::MAX,
@@ -54,7 +55,7 @@ impl Row {
     }
 
     /// Keep positional rows only when an element needs a nested allocation.
-    pub(super) fn elements(rows: Vec<Self>) -> Vec<Self> {
+    pub(crate) fn elements(rows: Vec<Self>) -> Vec<Self> {
         if rows.iter().all(|row| {
             row.name == 0x811C9DC5
                 && row.class == u32::MAX
@@ -68,7 +69,7 @@ impl Row {
         }
     }
 
-    pub(super) fn write(rows: &[Self], output: &mut Payload, field: usize) -> Result<()> {
+    pub(crate) fn write(rows: &[Self], output: &mut Payload, field: usize) -> Result<()> {
         let size = rows
             .len()
             .checked_mul(ROW_SIZE)

@@ -2685,6 +2685,7 @@ dependencies = [
  "resvg",
  "rfd",
  "rusqlite",
+ "same-file",
  "serde",
  "serde_json",
  "sha1",

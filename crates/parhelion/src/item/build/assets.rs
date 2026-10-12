@@ -127,7 +127,7 @@ pub(super) fn plan(
     let default_badge = branding.badge()?;
     let mut badge_icon_plan = crate::badge_icon::build_icon_plan(
         manager,
-        PARHELION_ASSET_PACKAGE_ID,
+        crate::package_profile::window().base,
         0,
         0,
         default_badge.as_ref(),
@@ -148,7 +148,7 @@ pub(super) fn plan(
     for (name, badge) in badges {
         let plan = crate::badge_icon::build_icon_plan_with_branding(
             manager,
-            PARHELION_ASSET_PACKAGE_ID,
+            crate::package_profile::window().base,
             0,
             badge_icon_plan.new_tags.len(),
             badge.icon.as_ref().or(default_badge.as_ref()),
@@ -222,7 +222,7 @@ pub(super) fn plan(
             dependencies
                 .into_iter()
                 .map(TagHash)
-                .filter(|tag| tag.pkg_id() != PARHELION_ASSET_PACKAGE_ID),
+                .filter(|tag| tag.pkg_id() != crate::package_profile::window().base),
         );
         AuthoringResult::Ok(container)
     };

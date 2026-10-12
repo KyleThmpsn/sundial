@@ -1,16 +1,21 @@
 use super::*;
 use crate::halo_reach::native_material::Lens;
+mod bore;
+mod scope;
 
 pub(super) struct Prepared {
     pub lenses: BTreeMap<u32, Lens>,
     bounds: Option<[[f32; 3]; 2]>,
     rear: [f32; 3],
     front: [f32; 3],
+    bore: Option<Value>,
+    separate: bool,
+    reticle: Reticle,
 }
 
 pub(super) fn select(
     entry: &ImportRequest,
-    mesh: &Mesh,
+    mesh: &mut Mesh,
     materials: &BTreeMap<u32, material::Material>,
 ) -> Result<Option<Prepared>> {
     ensure!(
@@ -26,7 +31,7 @@ pub(super) fn select(
 
 pub(super) fn prepare(
     config: &Optic,
-    mesh: &Mesh,
+    mesh: &mut Mesh,
     materials: &BTreeMap<u32, material::Material>,
 ) -> Result<Prepared> {
     ensure!(
@@ -44,27 +49,59 @@ pub(super) fn prepare(
             .with_context(|| format!("Optic source material {path} is absent"))
     };
     let aperture = resolve(&config.aperture)?;
-    let vertices = mesh
+    let mut faces = mesh
         .groups
         .iter()
         .filter(|(key, _)| *key == aperture)
-        .flat_map(|(_, faces)| faces.iter().flatten())
-        .map(|index| mesh.positions[*index as usize])
+        .flat_map(|(_, faces)| faces)
+        .map(|face| face.map(|index| mesh.positions[index as usize]))
         .collect::<Vec<_>>();
-    ensure!(!vertices.is_empty(), "Optic aperture has no drawn geometry");
-    let low = std::array::from_fn(|a| vertices.iter().map(|p| p[a]).fold(f32::INFINITY, f32::min));
-    let high = std::array::from_fn(|a| {
-        vertices
-            .iter()
-            .map(|p| p[a])
-            .fold(f32::NEG_INFINITY, f32::max)
-    });
-    let center = std::array::from_fn::<_, 3, _>(|a| (low[a] + high[a]) * 0.5);
     ensure!(
-        high[0] > low[0] && high[1] > low[1] && high[2] > low[2],
+        faces.len() >= 2,
+        "Optic aperture has insufficient drawn geometry"
+    );
+    let x = |face: &[[f32; 3]; 3]| face.iter().map(|p| p[0]).sum::<f32>() / 3.;
+    faces.sort_by(|a, b| x(a).total_cmp(&x(b)));
+    let split = (1..faces.len())
+        .max_by(|&a, &b| {
+            (x(&faces[a]) - x(&faces[a - 1])).total_cmp(&(x(&faces[b]) - x(&faces[b - 1])))
+        })
+        .context("Optic lens separation")?;
+    let bounds = |faces: &[[[f32; 3]; 3]]| {
+        let low = std::array::from_fn::<_, 3, _>(|a| {
+            faces
+                .iter()
+                .flatten()
+                .map(|p| p[a])
+                .fold(f32::INFINITY, f32::min)
+        });
+        let high = std::array::from_fn::<_, 3, _>(|a| {
+            faces
+                .iter()
+                .flatten()
+                .map(|p| p[a])
+                .fold(f32::NEG_INFINITY, f32::max)
+        });
+        [low, high]
+    };
+    let rear_bounds = bounds(&faces[..split]);
+    let front_bounds = bounds(&faces[split..]);
+    let gap = front_bounds[0][0] - rear_bounds[1][0];
+    ensure!(
+        gap > 2.
+            * (rear_bounds[1][0] - rear_bounds[0][0]).max(front_bounds[1][0] - front_bounds[0][0]),
+        "Optic aperture must have distinct rear and front lens surfaces"
+    );
+    let center = |b: [[f32; 3]; 2]| std::array::from_fn::<_, 3, _>(|a| (b[0][a] + b[1][a]) * 0.5);
+    let radius = |b: [[f32; 3]; 2]| (b[1][1] - b[0][1]).min(b[1][2] - b[0][2]) * 0.5;
+    let rear = center(rear_bounds);
+    let front = center(front_bounds);
+    let radii = [radius(rear_bounds), radius(front_bounds)];
+    ensure!(
+        radii.iter().all(|r| r.is_finite() && *r > 0.),
         "Degenerate sight aperture"
     );
-    let radius = ((high[1] - low[1]).min(high[2] - low[2])) * 0.5;
+    let direction = crate::halo_reach::rig::normalize(std::array::from_fn(|a| front[a] - rear[a]))?;
     let mut lenses = BTreeMap::new();
     for path in &config.lenses {
         let key = resolve(path)?;
@@ -73,9 +110,9 @@ pub(super) fn prepare(
                 .insert(
                     key,
                     Lens {
-                        center,
-                        rear: low[0],
-                        radius,
+                        center: rear,
+                        rear: rear_bounds[0][0],
+                        radius: radii[0],
                         reticle: key == aperture
                     }
                 )
@@ -83,11 +120,42 @@ pub(super) fn prepare(
             "Repeated optic lens material"
         );
     }
+    if config.view == OpticView::Separate {
+        let farthest = mesh
+            .positions
+            .iter()
+            .map(|p| (0..3).map(|a| (p[a] - rear[a]) * direction[a]).sum::<f32>())
+            .fold(f32::NEG_INFINITY, f32::max);
+        ensure!(farthest.is_finite(), "Separate scope has no source bounds");
+        let eye = std::array::from_fn(|a| rear[a] + direction[a] * (farthest + config.eye_relief));
+        return Ok(Prepared {
+            lenses: BTreeMap::new(),
+            bounds: Some(bounds(&faces)),
+            rear: eye,
+            front: std::array::from_fn(|a| eye[a] + direction[a] * 0.2),
+            bore: None,
+            separate: true,
+            reticle: config.reticle,
+        });
+    }
+    let opened = bore::open(
+        mesh,
+        &lenses,
+        rear,
+        front,
+        radii,
+        [rear_bounds[0][0], front_bounds[1][0]],
+    )?;
     Ok(Prepared {
         lenses,
-        bounds: Some([low, high]),
-        rear: [low[0] - config.eye_relief, center[1], center[2]],
-        front: [high[0], center[1], center[2]],
+        bounds: Some(bounds(&faces)),
+        rear: std::array::from_fn(|a| rear[a] - direction[a] * config.eye_relief),
+        front,
+        bore: Some(
+            json!({"rear_lens_bounds":rear_bounds,"front_lens_bounds":front_bounds,"rear_center":rear,"front_center":front,"radii":radii,"clearance":opened}),
+        ),
+        separate: false,
+        reticle: config.reticle,
     })
 }
 
@@ -137,6 +205,9 @@ pub(super) fn sights(config: &Sights, mesh: &Mesh) -> Result<Prepared> {
         bounds: None,
         rear: std::array::from_fn(|axis| config.rear[axis] - direction[axis] * config.eye_relief),
         front: config.front,
+        bore: None,
+        separate: false,
+        reticle: Reticle::default(),
     })
 }
 
@@ -204,6 +275,7 @@ pub(super) fn build(
         );
     }
     let mut entity = original_entity.clone();
+    let mut scope_report = None;
     let mut entity_patches = Vec::new();
     for (&tag, (symbol, original)) in &components {
         let schema = original.pointer(24)?;
@@ -218,7 +290,22 @@ pub(super) fn build(
             let model_tag = original.u32(schema + 0x1dc)?;
             let model = native.tag(model_tag, Some(0x808073a5))?;
             let model_symbol = format!("{symbol}-model");
-            g.add(&model_symbol, model_tag, &no_draws(&model)?.0, None, vec![])?;
+            if optic.separate {
+                ensure!(
+                    scope_report.is_none(),
+                    "Separate scope has multiple render components"
+                );
+                let inputs = crate::tiger::channel::object_channel_map(&original.0)?;
+                scope_report = Some(scope::build(
+                    native,
+                    g,
+                    &model_symbol,
+                    &inputs,
+                    optic.reticle,
+                )?);
+            } else {
+                g.add(&model_symbol, model_tag, &no_draws(&model)?.0, None, vec![])?;
+            }
             put(&mut payload.0, schema + 0x1dc, &u32::MAX.to_le_bytes())?;
             patches.push(json!({"offset":schema+0x1dc,"symbol":model_symbol}));
         }
@@ -263,9 +350,13 @@ pub(super) fn build(
     node["source_parent"] = json!(parent_tag);
     let assignment = hash(&parent, "assignment")?;
     let kept = json!({"assignment":assignment,"key":name_hash(&format!("reach-{item:08X}-optic")),"parent":"optic-parent"});
-    let report = json!({"source_entity":format!("{entity_tag:08X}"),"placement":parent["placement"],"aperture_bounds":optic.bounds,"rear":optic.rear,"front":optic.front,
-        "alignment":if optic.bounds.is_some() { "lens_aperture" } else { "iron_sights" },
+    ensure!(
+        !optic.separate || scope_report.is_some(),
+        "Separate scope has no render component"
+    );
+    let report = json!({"source_entity":format!("{entity_tag:08X}"),"placement":parent["placement"],"aperture_bounds":optic.bounds,"rear":optic.rear,"front":optic.front,"bore":optic.bore,"scope":scope_report,
+        "alignment":if optic.separate { "separate_view" } else if optic.bounds.is_some() { "lens_aperture" } else { "iron_sights" },
         "lens_materials":optic.lenses.keys().map(|key|format!("{key:08X}")).collect::<Vec<_>>(),"gameplay_verified":false,
-        "limits":"Object-space sight alignment. Lens optics use a simple illuminated aiming mark. Source scope overlays and magnification are not reproduced."});
+        "limits":if optic.separate { "A separate aiming camera and native reticle pass preserve the physical lens. The overlay uses an authored crosshair. Magnification remains the gameplay donor's. Aim transitions and the final view require gameplay acceptance." } else { "Object-space sight alignment. Lens optics use a simple illuminated aiming mark. Source scope overlays and magnification are not reproduced." }});
     Ok((kept, report))
 }

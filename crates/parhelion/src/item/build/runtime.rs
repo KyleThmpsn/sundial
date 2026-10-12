@@ -311,12 +311,18 @@ pub(super) fn author_entities(
 
 /// Whether the recipe asks for anything on the runtime entity beyond the donor's own.
 fn recipe_runtime_edits(donor: &resolve::ResolvedWeapon) -> bool {
-    let overrides = &donor.weapon.overrides;
-    overrides
+    donor
+        .weapon
+        .overrides
         .sparrow
         .as_ref()
         .is_some_and(crate::vehicle::Sparrow::has_changes)
-        || donor.appearance_rig_donor.is_some()
+        || weapon_runtime_edits(donor)
+}
+
+fn weapon_runtime_edits(donor: &resolve::ResolvedWeapon) -> bool {
+    let overrides = &donor.weapon.overrides;
+    donor.appearance_rig_donor.is_some()
         || donor.animation_pattern_source.is_some()
         || !donor.animation_action_sources.is_empty()
         || donor.pinned_appearance.is_some()
@@ -360,7 +366,7 @@ fn author_entity(
     } = authoring;
     // These inputs are needed only when imported runtime attachments are enabled.
     #[cfg(not(feature = "d2-model-importer"))]
-    let _ = (weapon_ordinal, assets, animation_cache);
+    let _ = (weapon_ordinal, animation_cache);
     let authored_pattern_source = donor
         .runtime_pattern_source
         .as_ref()
@@ -515,6 +521,19 @@ fn author_entity(
                 crate::weapon::animations::hold(manager, &entity)
             })
             .transpose()?,
+        // A moved rig's attachment row is the appearance's, so the block takes its hold class.
+        stance: donor
+            .appearance_rig_donor
+            .map(|_| {
+                crate::weapon::animations::stance(
+                    manager,
+                    &pattern_entity,
+                    donor
+                        .gear_art_pattern_source
+                        .map(|source| source.weapon_content_group_hash),
+                )
+            })
+            .transpose()?,
     };
     #[cfg(feature = "d2-model-importer")]
     crate::item::custom_runtime::extensions::author(
@@ -540,7 +559,8 @@ fn author_entity(
                     .behavior_projectile_speed
                     .unwrap_or(crate::weapon::behavior::DEFAULT_PROJECTILE_SPEED_BOOST),
             )?;
-            let (symbols, eager) = particles.author(manager, assets.packages)?;
+            let (symbols, eager) =
+                particles.author(manager, assets.packages, donor.weapon.identity.item_hash)?;
             assets.placed.extend(eager);
             assets
                 .particle_symbols
@@ -550,13 +570,57 @@ fn author_entity(
         None => BTreeMap::new(),
     };
     #[cfg(feature = "d2-model-importer")]
-    if let Some(assets) = &imported_particles {
+    let imported_runtime = if let Some(assets) = &imported_particles {
         assets.apply_presentation(
             manager,
             pattern_entity_tag,
             &mut pattern_entity,
             &particle_symbols,
-        )?;
+        )?
+    } else {
+        None
+    };
+    #[cfg(not(feature = "d2-model-importer"))]
+    let imported_runtime: Option<TagHash> = None;
+    if let Some(tag) = imported_runtime {
+        if vehicle_settings.is_some_and(crate::vehicle::Sparrow::runtime_changes)
+            || weapon_runtime_edits(donor)
+            || runtime_overrides.fired_graph.is_some()
+            || runtime_overrides
+                .behavior_projectile_speed
+                .is_some_and(|speed| {
+                    speed != crate::weapon::behavior::DEFAULT_PROJECTILE_SPEED_BOOST
+                })
+            || !component_grafts.is_empty()
+        {
+            return Err(invalid(
+                "This imported vehicle supplies its own controls. Carrier driving, durability and weapon overrides cannot be applied to it.",
+            ));
+        }
+        #[cfg(feature = "d2-model-importer")]
+        if imported_animation.is_some()
+            || imported_audio.is_some()
+            || equipment_animation.is_some()
+            || imported_crosshair.is_some()
+            || !imported_extensions.is_empty()
+        {
+            return Err(invalid(
+                "A complete imported vehicle must include its animation, audio and component extensions in its prepared graph.",
+            ));
+        }
+        if let Some(key) = hud_key {
+            crate::hud_icon::runtime::write_prepared_key(assets.packages, &pattern_entity, key)?;
+        }
+        retain_imported_runtime(assets.packages, tag, &pattern_entity)?;
+        // The prepared root already owns every component and its replication
+        // record. Weapon composition cannot read those pending asset owners.
+        *entity_assignments = append_weapon_entity_assignment(
+            std::mem::take(entity_assignments),
+            donor.weapon.identity.pattern_global_id_hash,
+            tag.0,
+        )
+        .map_err(invalid)?;
+        return Ok(Some(donor.weapon.identity.pattern_global_id_hash));
     }
     #[cfg(feature = "d2-model-importer")]
     let extended_overrides = {
@@ -815,18 +879,39 @@ fn author_entity(
         "Authored runtime weapon entity",
         "runtime weapon entity",
     )?;
+    weapon_runtime_new_tags.push(NewTagSpec {
+        template_tag: pattern_entity_tag,
+        payload: pattern_entity,
+        storage: crate::NewTagStorageMode::InheritTemplate,
+    });
     *entity_assignments = append_weapon_entity_assignment(
         std::mem::take(entity_assignments),
         donor.weapon.identity.pattern_global_id_hash,
         authored_entity_tag.0,
     )
     .map_err(invalid)?;
-    weapon_runtime_new_tags.push(NewTagSpec {
-        template_tag: pattern_entity_tag,
-        payload: pattern_entity,
-        storage: crate::NewTagStorageMode::InheritTemplate,
-    });
     Ok(Some(donor.weapon.identity.pattern_global_id_hash))
+}
+
+fn retain_imported_runtime(
+    packages: &crate::asset_packages::AssetPackages,
+    tag: TagHash,
+    entity: &[u8],
+) -> AuthoringResult<()> {
+    let placed = packages
+        .packages
+        .iter()
+        .find(|package| package.id == tag.pkg_id())
+        .and_then(|package| package.tags.get(tag.entry_index() as usize))
+        .ok_or_else(|| invalid("Imported vehicle runtime was not placed"))?;
+    if placed.payload != entity {
+        return Err(invalid(
+            "Runtime edits changed an imported vehicle's prepared component graph. Reimport the vehicle with those changes.",
+        ));
+    }
+    // Keep the identity owned by its private replication record. Copying this
+    // payload to a second entity would leave that back-reference behind.
+    Ok(())
 }
 
 /// Points `authored_pattern` at the stock runtime entity of `source_pattern`, for a weapon with
@@ -967,6 +1052,14 @@ fn resolved_hud_key(
     assignments: &[u8],
     donor: &resolve::ResolvedWeapon,
 ) -> AuthoringResult<Option<u32>> {
+    if donor.weapon.kind == ItemKind::Sparrow {
+        return Ok(donor
+            .weapon
+            .overrides
+            .hud_icon
+            .as_ref()
+            .map(|_| donor.weapon.identity.type_hash));
+    }
     if !donor.weapon.kind.is_weapon() {
         return Ok(None);
     }

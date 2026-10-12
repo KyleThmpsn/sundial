@@ -19,6 +19,7 @@ pub(super) struct Binding<'a> {
     pub objects: &'a BTreeMap<String, u8>,
     pub overrides: &'a BTreeMap<String, BTreeMap<String, [f32; 4]>>,
     pub lenses: &'a BTreeMap<u32, Lens>,
+    pub paint: &'a BTreeMap<u32, super::paint::Surface>,
 }
 
 #[derive(Clone)]
@@ -31,6 +32,7 @@ pub(super) struct Lens {
 
 const VERTEX: &str = r#"
 $SOURCE_PALETTE$
+$SHADOW_RESOURCE$
 cbuffer Object : register(b11) {float4 objectData[776];};
 cbuffer View : register(b12) {float4 viewData[14];};
 void main(float4 position:POSITION0,float4 weight:BLENDWEIGHT0,uint4 bone:BLENDINDICES0,float2 uv:TEXCOORD0,float4 normal:NORMAL0,float4 tangent:TANGENT0,
@@ -42,13 +44,14 @@ float3 n=normalize(float3(dot(r0.xyz,normal.xyz),dot(r1.xyz,normal.xyz),dot(r2.x
 float3 t=normalize(float3(dot(r0.xyz,tangent.xyz),dot(r1.xyz,tangent.xyz),dot(r2.xyz,tangent.xyz)));
 float3 relative=world-viewData[7].xyz;
 projected=viewData[0]*relative.x+viewData[1]*relative.y+viewData[2]*relative.z+viewData[13];
+$SHADOW_PROJECTION$
 o0=float4(n,saturate(objectData[7].w+saturate(objectData[7].z*n.z)));
 o1=float4(t,p.z);o2=float4(cross(n,t)*tangent.w,0);
 o3=(uv*objectData[6].xy+objectData[6].zw).xyxy;o4=p.xyz;
 }
 "#;
 
-fn program(
+pub(super) fn program(
     native: &mut Reader,
     g: &mut Graph,
     symbol: &str,
@@ -195,6 +198,83 @@ fn decimal_display(c: &Cache, pages: &mut Pages, material: &Material) -> Result<
     )))
 }
 
+struct TextureBindings {
+    bindings: Vec<(usize, String)>,
+    samples: BTreeMap<usize, String>,
+}
+
+fn textures(
+    c: &Cache,
+    pages: &mut Pages,
+    native: &mut Reader,
+    g: &mut Graph,
+    material: &Material,
+    paint: Option<&super::paint::Surface>,
+) -> Result<TextureBindings> {
+    let mut bindings = Vec::new();
+    let mut samples = BTreeMap::new();
+    for (slot, roles, normal, srgb) in [
+        (0, &["base_map", "base_map_m_0"][..], false, true),
+        (1, &["bump_map", "bump_map_m_0"][..], true, false),
+        (2, &["material_texture"][..], false, false),
+        (
+            3,
+            &["alpha_mask_map", "alpha_test_map", "alpha_map"][..],
+            false,
+            false,
+        ),
+        (
+            4,
+            &["self_illum_map", "meter_map"][..],
+            false,
+            material
+                .options
+                .get("self_illumination")
+                .is_none_or(|v| v != "3_channel_self_illum"),
+        ),
+        (5, &["detail_map"][..], false, true),
+        (6, &["noise_map_a"][..], false, false),
+        (7, &["noise_map_b"][..], false, false),
+        (8, &["palette"][..], false, true),
+        (9, &["change_color_map"][..], false, false),
+    ] {
+        if slot == 9
+            && paint.is_none_or(|paint| !matches!(paint.mask, super::paint::PaintMask::ChangeColor))
+        {
+            continue;
+        }
+        if let Some(mapping) = material.mapping(roles) {
+            let target = if paint.is_some() && slot >= 3 {
+                slot + 6
+            } else {
+                slot
+            };
+            bindings.push((target, texture(c, pages, native, g, mapping, normal, srgb)?));
+            samples.insert(slot, sample(slot, mapping));
+        }
+    }
+    Ok(TextureBindings { bindings, samples })
+}
+
+fn dye_tint(
+    paint: Option<&super::paint::Surface>,
+    samples: &BTreeMap<usize, String>,
+) -> Result<String> {
+    let tinting = if let Some(paint) = paint {
+        let mask = match paint.mask {
+            super::paint::PaintMask::Surface => "1.0".to_owned(),
+            super::paint::PaintMask::ChangeColor => format!(
+                "saturate(dot(({}).rgb,float3(1,1,1)))",
+                samples.get(&9).context("Source paint mask sample")?
+            ),
+        };
+        format!("albedo.rgb*=lerp(float3(1,1,1),max(dye[9].rgb,0),{mask});")
+    } else {
+        String::new()
+    };
+    Ok(tinting)
+}
+
 pub(super) fn build(
     c: &Cache,
     pages: &mut Pages,
@@ -231,44 +311,24 @@ pub(super) fn build(
     let vertex = VERTEX
         .replace("$SOURCE_PALETTE$", &lookup)
         .replace("$MOTION$", motion);
-    program(native, g, "vertex", shell.u32(0x48)?, &vertex, true)?;
+    program(
+        native,
+        g,
+        "vertex",
+        shell.u32(0x48)?,
+        &vertex
+            .replace("$SHADOW_RESOURCE$", "")
+            .replace("$SHADOW_PROJECTION$", ""),
+        true,
+    )?;
     let mut report = Vec::new();
     for (&key, material) in materials {
         let surface = surface::Surface::new(material, &binding, key);
+        let paint = binding.paint.get(&key);
         let display = decimal_display(c, pages, material)?;
         let animated = display.is_some();
         let display = display.unwrap_or_default();
-        let mut bindings = Vec::new();
-        let mut samples = BTreeMap::new();
-        for (slot, roles, normal, srgb) in [
-            (0, &["base_map", "base_map_m_0"][..], false, true),
-            (1, &["bump_map", "bump_map_m_0"][..], true, false),
-            (2, &["material_texture"][..], false, false),
-            (
-                3,
-                &["alpha_mask_map", "alpha_test_map", "alpha_map"][..],
-                false,
-                false,
-            ),
-            (
-                4,
-                &["self_illum_map", "meter_map"][..],
-                false,
-                material
-                    .options
-                    .get("self_illumination")
-                    .is_none_or(|v| v != "3_channel_self_illum"),
-            ),
-            (5, &["detail_map"][..], false, true),
-            (6, &["noise_map_a"][..], false, false),
-            (7, &["noise_map_b"][..], false, false),
-            (8, &["palette"][..], false, true),
-        ] {
-            if let Some(mapping) = material.mapping(roles) {
-                bindings.push((slot, texture(c, pages, native, g, mapping, normal, srgb)?));
-                samples.insert(slot, sample(slot, mapping));
-            }
-        }
+        let TextureBindings { bindings, samples } = textures(c, pages, native, g, material, paint)?;
         let base = samples
             .get(&0)
             .cloned()
@@ -316,15 +376,32 @@ pub(super) fn build(
         };
         let output = surface.output();
         let finish = surface.finish();
+        let declarations = (0..=9)
+            .map(|slot| {
+                let target = if paint.is_some() && slot >= 3 {
+                    slot + 6
+                } else {
+                    slot
+                };
+                format!("Texture2D<float4> Map{slot}:register(t{target});")
+            })
+            .collect::<String>();
+        let dye = paint.map_or_else(String::new, |paint| {
+            format!(
+                "cbuffer GearPaint:register(b{}) {{float4 dye[27];}};",
+                paint.slot
+            )
+        });
+        let tinting = dye_tint(paint, &samples)?;
         let text = format!(
             r#"
-Texture2D<float4> Map0:register(t0);Texture2D<float4> Map1:register(t1);Texture2D<float4> Map2:register(t2);Texture2D<float4> Map3:register(t3);Texture2D<float4> Map4:register(t4);Texture2D<float4> Map5:register(t5);
-Texture2D<float4> Map6:register(t6);Texture2D<float4> Map7:register(t7);Texture2D<float4> Map8:register(t8);
+{declarations}
+{dye}
 {display}
 SamplerState SurfaceSampler:register(s3);
 void main(float4 v0:TEXCOORD0,float4 v1:TEXCOORD1,float4 v2:TEXCOORD2,float4 v3:TEXCOORD3,float3 v4:TEXCOORD4,float4 position:SV_POSITION0,uint front:SV_isFrontFace0,
 {output}) {{
-float4 albedo={color};{clip}float3 n={normal};n=normalize(n.x*v1.xyz+n.y*v2.xyz+n.z*v0.xyz);
+float4 albedo={color};{tinting}{clip}float3 n={normal};n=normalize(n.x*v1.xyz+n.y*v2.xyz+n.z*v0.xyz);
 float3 emission={emission};float roughness={rough};{finish}
 }}
 "#
@@ -342,6 +419,12 @@ float3 emission={emission};float roughness={rough};{finish}
             &shell
         };
         let mut bytes = fresh_surface(envelope)?;
+        if let Some(paint) = paint {
+            for offset in [24, 28] {
+                let current = Payload(bytes.clone()).u32(offset)?;
+                put(&mut bytes, offset, &(current | paint.scopes).to_le_bytes())?;
+            }
+        }
         let mut fixed = Vec::new();
         for (slot, _) in &bindings {
             fixed.extend((*slot as u32).to_le_bytes());
@@ -370,7 +453,7 @@ float3 emission={emission};float roughness={rough};{finish}
         if animated {
             let input = *binding
                 .objects
-                .get("CAF915D8")
+                .get("32CC5402")
                 .context("Native current-magazine model input")?;
             expression.extend([0x4d, input, 0x43, 0]);
             bytes[0x33c] = 0x10;
@@ -408,9 +491,9 @@ float3 emission={emission};float roughness={rough};{finish}
             None,
             patches,
         )?;
-        report.push(json!({"source":material.tag,"source_properties":material.properties,"effective_constants":surface.constants,"options":material.options,"bound_textures":bindings,"albedo_color":tint,"emission_color":emission_tint,"emission_scale":emission_scale,"alpha":material.alpha_mode(),"native_stage":if surface.transparent() {7} else {0},"limits":["Opaque surfaces use the native deferred approximation. Transparent surfaces use premultiplied output. Decimal ammunition frame functions are bound to the live magazine input. Other source functions, activation events, plasma depth fading and layered overlays are not translated. Explicit overrides select a static appearance state."]}));
+        report.push(json!({"source":material.tag,"source_properties":material.properties,"effective_constants":surface.constants,"options":material.options,"bound_textures":bindings,"albedo_color":tint,"emission_color":emission_tint,"emission_scale":emission_scale,"alpha":material.alpha_mode(),"native_stage":if surface.transparent() {7} else {0},"paint":paint.map(|paint| json!({"channel":paint.channel+10,"mask":paint.mask,"constant_buffer":paint.slot,"scope_mask":paint.scopes,"method":"Native equipped dye color multiplied through the authored surface mask"})),"limits":["Opaque surfaces use the native deferred approximation. Transparent surfaces use premultiplied output. Decimal ammunition frame functions are bound to the live magazine input. Other source functions, activation events, plasma depth fading and layered overlays are not translated. Explicit overrides select a static appearance state."]}));
     }
-    shadow(native, g)?;
+    shadow(native, g, &vertex)?;
     Ok(report)
 }
 
@@ -438,8 +521,28 @@ fn fresh_surface(envelope: &Payload) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn shadow(native: &mut Reader, g: &mut Graph) -> Result<()> {
+fn shadow(native: &mut Reader, g: &mut Graph, vertex: &str) -> Result<()> {
     let template = native.tag(0x80ec271d, Some(0x808071e8))?;
+    // The native shadow pass supplies the light's atlas rectangle at t2.
+    // Its projection is distinct from the full-view surface projection even
+    // though both use the same object pose and view constants.
+    let vertex = vertex
+        .replace(
+            "$SHADOW_RESOURCE$",
+            "Texture2D<float4> ShadowAtlas : register(t2);",
+        )
+        .replace(
+            "$SHADOW_PROJECTION$",
+            "float4 atlas=ShadowAtlas.Load(int3(0,0,0));\nprojected.xy=projected.xy*atlas.zw+projected.w*float2(2*atlas.x+atlas.z-1,1-2*atlas.y-atlas.w);",
+        );
+    program(
+        native,
+        g,
+        "shadow-vertex",
+        template.u32(0x48)?,
+        &vertex,
+        true,
+    )?;
     // The donor's dissolve program reads weapon object channels. A projectile
     // has no such channel array, so retaining that program faults on its first
     // shadow draw. These imported surfaces have no translated dissolve state.
@@ -465,7 +568,7 @@ fn shadow(native: &mut Reader, g: &mut Graph) -> Result<()> {
         &bytes,
         None,
         vec![
-            json!({"offset":0x48,"symbol":"vertex"}),
+            json!({"offset":0x48,"symbol":"shadow-vertex"}),
             json!({"offset":0x2c8,"symbol":"shadow-pixel"}),
         ],
     )

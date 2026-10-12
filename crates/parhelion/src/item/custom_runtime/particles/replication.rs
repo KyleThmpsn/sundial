@@ -26,6 +26,12 @@ pub(super) fn validate_templates(
     root: &Node,
     manager: &PackageManager,
 ) -> AuthoringResult<()> {
+    if manager
+        .get_entry(TagHash(root.template))
+        .is_none_or(|entry| entry.reference != 0x80809C0F)
+    {
+        return Err(invalid("Replication root template is not a native entity"));
+    }
     let replication = target(nodes, root, 0x88)?;
     let class = |node: &Node, expected| {
         node.reference.is_none()
@@ -37,7 +43,7 @@ pub(super) fn validate_templates(
     if !class(replication, 0x80809BB6)
         || manager
             .get_entry(TagHash(replication.template))
-            .is_none_or(|entry| entry.file_type != 16)
+            .is_none_or(|entry| entry.file_type != 16 || entry.file_subtype != 0)
     {
         return Err(invalid(
             "Imported projectile replication template has the wrong class",
@@ -63,7 +69,46 @@ pub(super) struct Loading {
 }
 
 impl Loading {
+    pub fn all(
+        nodes: &[Node],
+        manager: &PackageManager,
+        required: &[&str],
+    ) -> AuthoringResult<Vec<Self>> {
+        let mut result = Vec::new();
+        for symbol in required {
+            let root = nodes
+                .iter()
+                .find(|node| node.symbol == *symbol)
+                .ok_or_else(|| invalid("Imported entity root is missing"))?;
+            let loading = Self::read(nodes, root, manager)?;
+            if !result
+                .iter()
+                .any(|previous: &Self| previous.owner == loading.owner)
+            {
+                result.push(loading);
+            }
+        }
+        // A complete runtime can contain another entity, such as a vehicle's
+        // projectile. Every replication owner needs its own enrolled companion.
+        for node in nodes {
+            if manager
+                .get_entry(TagHash(node.template))
+                .is_none_or(|entry| entry.file_type != 16 || entry.reference != 0x80809BB6)
+                || result.iter().any(|loading| loading.owner == node.symbol)
+            {
+                continue;
+            }
+            let root = target(nodes, node, 8)?;
+            if target(nodes, root, 0x88)?.symbol != node.symbol {
+                return Err(invalid("Replication owner and entity root disagree"));
+            }
+            result.push(Self::read(nodes, root, manager)?);
+        }
+        Ok(result)
+    }
+
     pub fn read(nodes: &[Node], root: &Node, manager: &PackageManager) -> AuthoringResult<Self> {
+        validate(nodes, root)?;
         validate_templates(nodes, root, manager)?;
         let replication = target(nodes, root, 0x88)?;
         let mut cache = crate::shared_tag_dependency_index::native::Companions::new();

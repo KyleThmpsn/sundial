@@ -6,6 +6,7 @@ Sundial edits accounts and settings for [Project Sunrise](https://github.com/sta
 
 - Edit characters, equipment, subclasses, and inventories.
 - Search weapons, armor, cosmetics, and perks.
+- Browse or search every item in the Inspector.
 - Inspect the definitions behind items, perks, and progression, with model previews.
 - Randomize loadouts and adjust armor stats.
 - Change game settings, progression, and Collections.
@@ -37,7 +38,7 @@ Close Destiny 2 before saving account changes, restoring backups, or installing 
 
 ## Parhelion
 
-Parhelion is an experimental item workbench bundled with Sundial. Build your own Destiny weapons by mixing weapon types, perks, stats, and appearance, including Exotics and combinations that wouldn't normally exist in the sandbox. It can also author custom perks, gear, Shaders, and Subclass abilities.
+Parhelion is an experimental item workbench bundled with Sundial. Build your own Destiny weapons by mixing weapon types, perks, stats, and appearance, including Exotics and combinations that wouldn't normally exist in the sandbox. It can also author custom perks and mods, armor, vehicles, Emblems, Shaders, and Subclass abilities.
 
 Parhelion creates its own Tiger-compatible packages in your existing installation without modifying existing packages. Enable it under **Preferences > Editing > Experimental**, then choose **Open Parhelion**. Some combinations may not work and can freeze or crash the game. Before using future Dawn versions with online support, uninstall custom packages or Dawn may report an error. Please [report any issues](https://github.com/kylethmpsn/sundial/issues) with your recipe and a description of what happens in-game.
 

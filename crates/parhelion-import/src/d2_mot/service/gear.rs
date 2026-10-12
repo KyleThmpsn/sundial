@@ -238,9 +238,23 @@ fn convert(
                 || part["resting_source_procedures"]["enabled"] == false
         })
         .count();
+    let material_limitations = graph["rendering"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|part| {
+            part["material_limitations"]
+                .as_array()
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
     let limitations = graph["limitations"]
         .as_array_mut()
         .context("Import details")?;
+    limitations.extend(material_limitations.into_iter().map(Value::String));
     if omitted > 0 {
         limitations.push(json!(format!(
             "{omitted} source draws require runtime material overrides and could not be converted."

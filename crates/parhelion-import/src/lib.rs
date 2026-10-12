@@ -11,5 +11,6 @@ pub mod preview;
 pub mod tiger;
 pub use graph::GraphReference;
 pub use graph::manifest_converter_revision;
+pub use graph::model_symbols;
 
 mod presentation;

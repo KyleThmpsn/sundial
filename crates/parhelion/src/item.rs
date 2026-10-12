@@ -194,10 +194,12 @@ use crate::appended_tags::AppendedTagAllocator;
 use crate::badge::SunriseBadgeGraphInput;
 use crate::error::{invalid, validation};
 use crate::extend::extended_overlay_append_start;
+#[cfg(test)]
+use crate::package_profile::PARHELION_ASSET_PACKAGE_ID;
 use crate::package_profile::{
     ACCOUNT_UNLOCK_BANK, COLLECTION_PACKAGE_ID, HOST_EXPECTED_ENTRY_COUNT, HOST_PACKAGE_ID,
-    LOCALIZATION_DONOR_TABLE_INDEX, PARHELION_ASSET_PACKAGE_ID,
-    PRIVATE_PERK_RUNTIME_EXPECTED_ENTRY_COUNT, PRIVATE_PERK_RUNTIME_PACKAGE_ID,
+    LOCALIZATION_DONOR_TABLE_INDEX, PRIVATE_PERK_RUNTIME_EXPECTED_ENTRY_COUNT,
+    PRIVATE_PERK_RUNTIME_PACKAGE_ID,
 };
 use crate::progression::{
     AuthoredCollectibleSpec, BLANK_LOCALIZED_REFERENCE_HASH, BLANK_LOCALIZED_REFERENCE_TABLE_INDEX,

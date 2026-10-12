@@ -47,9 +47,11 @@ impl Generation {
     ) -> Result<Self, String> {
         super::validation::decoder::ensure_initialized(target)?;
         if paths_equal(target, authored_directory) {
+            let manager = open_shadowkeep_package_manager(target)?;
+            let directory = manager.package_dir.clone();
             return Ok(Self {
-                manager: open_shadowkeep_package_manager(target)?,
-                directory: target.to_path_buf(),
+                manager,
+                directory,
                 view: None,
             });
         }

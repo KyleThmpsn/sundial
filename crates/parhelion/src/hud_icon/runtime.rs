@@ -27,20 +27,104 @@ fn content(manager: &PackageManager, entity: &[u8]) -> AuthoringResult<Content> 
         .map_err(|e| invalid(e.to_string()))?;
     let instance = usize::try_from(binding.resource_offset)
         .map_err(|_| invalid("Weapon content instance offset overflow"))?;
-    if u32_at(&owner, instance)? != binding.owner_tag || u32_at(&owner, instance + 4)? != 0x80803AC9
-    {
-        return Err(invalid(
-            "Weapon content definition must be typed within its owner",
-        ));
-    }
-    let definition = usize::try_from(u64_at(&owner, instance + 8)?)
-        .map_err(|_| invalid("Weapon content definition offset overflow"))?;
-    let properties = crate::weapon::ammo::property_offsets(&owner, definition)?;
+    let properties = properties(&owner, binding.owner_tag, instance)?;
     Ok(Content {
         owner,
         instance,
         properties,
     })
+}
+
+fn properties(owner: &[u8], tag: u32, instance: usize) -> AuthoringResult<Vec<usize>> {
+    if u32_at(owner, instance)? != tag || u32_at(owner, instance + 4)? != 0x80803AC9 {
+        return Err(invalid(
+            "HUD content definition must be typed within its owner",
+        ));
+    }
+    let definition = usize::try_from(u64_at(owner, instance + 8)?)
+        .map_err(|_| invalid("HUD content definition offset overflow"))?;
+    if u32_at(owner, definition)? != tag
+        || u32_at(owner, definition + 4)? != 0x80803ACB
+        || u64_at(owner, definition + 8)? != instance as u64
+    {
+        return Err(invalid("HUD content definition is not reciprocal"));
+    }
+    crate::weapon::ammo::property_offsets(owner, definition)
+}
+
+/// A complete prepared vehicle already owns its content in the pending private
+/// asset packages. Change its HUD key there before those packages are committed.
+pub(crate) fn write_prepared_key(
+    packages: &mut crate::asset_packages::AssetPackages,
+    entity: &[u8],
+    key: u32,
+) -> AuthoringResult<()> {
+    let bindings = weapon_component_bindings(entity, BINDING).map_err(invalid)?;
+    let [binding] = bindings.as_slice() else {
+        return Err(invalid(
+            "Vehicle HUD artwork requires one weapon-content component",
+        ));
+    };
+    if binding.concrete_class != 0x80803ACB {
+        return Err(invalid("Unsupported vehicle HUD content class"));
+    }
+    let tag = TagHash(binding.owner_tag);
+    let owner = packages
+        .packages
+        .iter_mut()
+        .find(|package| package.id == tag.pkg_id())
+        .and_then(|package| package.tags.get_mut(tag.entry_index() as usize))
+        .ok_or_else(|| invalid("Vehicle HUD content is not privately allocated"))?;
+    let instance = usize::try_from(binding.resource_offset)
+        .map_err(|_| invalid("Vehicle HUD content instance offset overflow"))?;
+    let fields = properties(&owner.payload, tag.0, instance)?;
+    for property in fields {
+        crate::tag_payload::write_u32(&mut owner.payload, property + 0xE0, key)?;
+    }
+    write_prepared_driver_keys(packages, entity, key)?;
+    Ok(())
+}
+
+/// The driver carries a separate vehicle silhouette key from weapon content.
+/// Keep that key private to the same complete vehicle assembly.
+fn write_prepared_driver_keys(
+    packages: &mut crate::asset_packages::AssetPackages,
+    entity: &[u8],
+    key: u32,
+) -> AuthoringResult<()> {
+    let (count, _, rows, class) = crate::tag_payload::array_at(entity, 16)?;
+    if class != 0x80809C04 || count == 0 {
+        return Err(invalid("Prepared vehicle component table differs"));
+    }
+    let mut drivers = 0;
+    for row in (0..count).map(|index| rows + index * 12) {
+        let tag = TagHash(u32_at(entity, row)?);
+        let owner = packages
+            .packages
+            .iter_mut()
+            .find(|package| package.id == tag.pkg_id())
+            .and_then(|package| package.tags.get_mut(tag.entry_index() as usize))
+            .ok_or_else(|| invalid("Vehicle component is not privately allocated"))?;
+        let instance = crate::tag_payload::relative_target(&owner.payload, 16)?;
+        if u32_at(&owner.payload, instance + 4)? != 0x80803D7D {
+            continue;
+        }
+        let definition = usize::try_from(u64_at(&owner.payload, instance + 8)?)
+            .map_err(|_| invalid("Vehicle driver definition offset overflow"))?;
+        if u32_at(&owner.payload, instance)? != tag.0
+            || u32_at(&owner.payload, definition)? != tag.0
+            || u32_at(&owner.payload, definition + 4)? != 0x808042AD
+            || u64_at(&owner.payload, definition + 8)? != instance as u64
+        {
+            return Err(invalid("Vehicle driver definition is not reciprocal"));
+        }
+        crate::tag_payload::write_u32(&mut owner.payload, definition + 0x288, key)?;
+        drivers += 1;
+    }
+    if drivers == 0 {
+        return Err(invalid("Prepared vehicle has no driver silhouette key"));
+    }
+    Ok(())
 }
 
 /// Each native variant's +10 key selects the appearance pattern's content group.

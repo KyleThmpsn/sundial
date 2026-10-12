@@ -475,7 +475,27 @@ fn append_package_summary(report: &mut String, install: &Path) {
             relevant.push(path);
         }
     }
+    // Sunrise 0.6 and later load Parhelion's packages from its mod folder, not this directory.
+    let managed = crate::package_runtime::mods::directory(install);
+    for folder in ["packages", "patches"] {
+        match fs::read_dir(managed.join(folder)) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(entry) if extension_eq(&entry.path(), "pkg") => {
+                            relevant.push(entry.path());
+                        }
+                        Ok(_) => {}
+                        Err(error) => read_errors.push(error.to_string()),
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => read_errors.push(error.to_string()),
+        }
+    }
     relevant.sort_by_key(|path| path_sort_key(path));
+    append_path(report, "parhelion_mod_directory", &managed);
     writeln!(report, "pkg_file_count = {package_count}").expect("writing to a String cannot fail");
     writeln!(report, "pkg_total_bytes = {package_bytes}").expect("writing to a String cannot fail");
     writeln!(

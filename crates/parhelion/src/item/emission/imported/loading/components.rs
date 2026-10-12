@@ -4,6 +4,68 @@ use super::*;
 use parhelion_import::d2_mot::payload::Payload;
 use sundial::package_authoring::sandbox_perk::entity::residency::owner_requirements;
 
+fn interface(
+    manager: &sundial::package_authoring::PackageManager,
+    nodes: &[Value],
+    symbols: &BTreeMap<String, TagHash>,
+    node: &Value,
+    payload: &Payload,
+    offset: usize,
+) -> AuthoringResult<TagHash> {
+    let patches = node["patches"]
+        .as_array()
+        .ok_or_else(|| invalid("Imported component fixups are missing"))?;
+    let matching = patches
+        .iter()
+        .filter(|patch| patch["offset"].as_u64() == Some(offset as u64))
+        .collect::<Vec<_>>();
+    let (helper, template) = match matching.as_slice() {
+        [] => {
+            let tag = TagHash(
+                payload
+                    .u32(offset)
+                    .map_err(|error| invalid(error.to_string()))?,
+            );
+            (tag, tag)
+        }
+        [patch] => {
+            let symbol = patch["symbol"]
+                .as_str()
+                .ok_or_else(|| invalid("Imported interface symbol is missing"))?;
+            let targets = nodes
+                .iter()
+                .filter(|target| target["symbol"] == symbol)
+                .collect::<Vec<_>>();
+            let [target] = targets.as_slice() else {
+                return Err(invalid("Imported interface target is absent or ambiguous"));
+            };
+            if !target["reference"].is_null() {
+                return Err(invalid(
+                    "Imported interface must preserve its native metadata class",
+                ));
+            }
+            let template = target["template"]
+                .as_u64()
+                .and_then(|tag| u32::try_from(tag).ok())
+                .ok_or_else(|| invalid("Imported interface template is missing"))?;
+            let helper = *symbols
+                .get(symbol)
+                .ok_or_else(|| invalid("Imported interface was not allocated"))?;
+            (helper, TagHash(template))
+        }
+        _ => return Err(invalid("Imported interface has overlapping fixups")),
+    };
+    if manager
+        .get_entry(template)
+        .is_none_or(|entry| entry.file_type != 8 || entry.reference != 0x80809C54)
+    {
+        return Err(invalid(format!(
+            "Imported interface requires unavailable native metadata {template}"
+        )));
+    }
+    Ok(helper)
+}
+
 pub(super) fn include(
     manager: &sundial::package_authoring::PackageManager,
     folder: &Path,
@@ -47,20 +109,14 @@ pub(super) fn include(
                 .array(0x58, 40, Some(0x80809C22))
                 .map_err(|error| invalid(format!("Imported entity {name}: {error:#}")))?
             {
-                let helper = TagHash(
-                    payload
-                        .u32(row + 32)
-                        .map_err(|error| invalid(error.to_string()))?,
-                );
-                if manager
-                    .get_entry(helper)
-                    .is_none_or(|entry| entry.file_type != 8 || entry.reference != 0x80809C54)
-                {
-                    return Err(invalid(format!(
-                        "Imported entity {name} requires an unavailable interface implementation {helper}"
-                    )));
-                }
-                required.insert(helper);
+                required.insert(interface(
+                    manager,
+                    nodes,
+                    symbols,
+                    node,
+                    &payload,
+                    row + 32,
+                )?);
             }
         }
         dependencies.insert(tag, required);

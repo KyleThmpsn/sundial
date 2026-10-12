@@ -239,7 +239,7 @@ impl Payloads {
         let mut additions = assets.perk_icon_dependencies.clone();
         for index in assets.hud_asset_start..self.badge_tag_count {
             additions.push(
-                AppendedTagAllocator::new(PARHELION_ASSET_PACKAGE_ID, 0).assigned_tag(
+                AppendedTagAllocator::new(crate::package_profile::window().base, 0).assigned_tag(
                     index,
                     "HUD dependency",
                     "HUD icon",

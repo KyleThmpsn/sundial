@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod linked;
+pub(crate) mod looping;
 mod one_shot;
 mod params;
 pub use linked::Namespace;

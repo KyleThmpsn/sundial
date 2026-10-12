@@ -77,6 +77,9 @@ const VALUE_RECORD_CLASS: u32 = 0x8080_3F26;
 const TYPE_MARKER_OFFSETS: [usize; 2] = [0x18, 0x30];
 /// The type marker that names the weapon type.
 pub(crate) const TYPE_NAME_OFFSET: usize = 0x30;
+/// The block's hold class, the key its first-person attachment row names at +0x68: `rifle`,
+/// `pistol` or a sword's. The third-person state table branches on these keys.
+const STANCE_OFFSET: usize = 0x14;
 
 /// What a grafted record was observed to do in game.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -240,6 +243,9 @@ pub(crate) struct ContentGroups {
     pub(crate) animations: Option<crate::weapon::animations::Profile>,
     /// The hold of a pinned appearance's own rig, which the kept rig's attachment takes.
     pub(crate) hold: Option<crate::weapon::animations::Hold>,
+    /// The hold class of the attachment row a moved rig brings. The block takes it, so a hand
+    /// cannon look on an auto rifle is held as a pistol rather than the base's rifle.
+    pub(crate) stance: Option<u32>,
 }
 
 /// What a set of behavior grafts compiles into.
@@ -247,6 +253,17 @@ pub(crate) struct ContentGroups {
 pub(crate) struct Grafted {
     pub(crate) patches: Vec<WeaponRuntimeResourcePatch>,
     pub(crate) appends: Vec<crate::item::WeaponRuntimeResourceAppend>,
+}
+
+fn selected_block(content: &Content, group: Option<u32>) -> AuthoringResult<usize> {
+    match group {
+        Some(group) => block_for_group(content, group),
+        None => content
+            .blocks
+            .first()
+            .copied()
+            .ok_or_else(|| invalid("Weapon content owner has no variant block")),
+    }
 }
 
 /// Builds the runtime patches that graft each behavior onto the weapon's own variant block.
@@ -279,14 +296,7 @@ pub(crate) fn patches(
         .map(|id| resolve_request(id, content.owner_tag))
         .collect::<AuthoringResult<Vec<_>>>()?;
     let mut appends = Vec::new();
-    let block = match groups.selected {
-        Some(group) => block_for_group(&content, group),
-        None => content
-            .blocks
-            .first()
-            .copied()
-            .ok_or_else(|| invalid("Weapon content owner has no variant block")),
-    };
+    let block = selected_block(&content, groups.selected);
     let block = match block {
         Ok(block) => block,
         Err(_) if !asked => return Ok(Grafted::default()),
@@ -449,6 +459,20 @@ pub(crate) fn patches(
         (None, None) => {}
     }
     let kind_block = kind.or(own_markers);
+    // The block names the same hold class as the attachment row, as every stock weapon does.
+    if let Some(stance) = groups.stance
+        && u32_at(&content.owner, block + STANCE_OFFSET)? != stance
+    {
+        patches.push(WeaponRuntimeResourcePatch {
+            binding_hash: BINDING,
+            resource_index: 0,
+            offset: slot_offset(block + STANCE_OFFSET, content.resource)?,
+            bytes: stance.to_le_bytes().to_vec(),
+            graph_values: Vec::new(),
+            graph_removals: Vec::new(),
+            graph_trajectories: None,
+        });
+    }
     // The base's labels still go on, so its perks key on them, whichever row 0 the block keeps.
     if !requested.is_empty() || kind_block.is_some() || own_labels.is_some() {
         let labels =
@@ -530,6 +554,18 @@ pub(crate) fn resolved_markers(
         u32_at(&content.owner, block + TYPE_MARKER_OFFSETS[0])?,
         u32_at(&content.owner, block + TYPE_MARKER_OFFSETS[1])?,
     ])
+}
+
+/// The hold class of the block `group` resolves to in `entity`'s content owner.
+#[cfg(test)]
+pub(crate) fn resolved_stance(
+    manager: &PackageManager,
+    entity: &[u8],
+    group: u32,
+) -> AuthoringResult<u32> {
+    let content = content(manager, entity)?;
+    let block = block_for_group(&content, group)?;
+    u32_at(&content.owner, block + STANCE_OFFSET)
 }
 
 /// The frame key `group`'s own block carries beside its type name, the first type marker.

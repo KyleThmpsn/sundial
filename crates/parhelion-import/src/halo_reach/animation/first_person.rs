@@ -1,6 +1,7 @@
 //! Fit explicit Reach first-person actions to a private native arm controller.
 mod carrier;
 mod motion;
+mod offset;
 mod source;
 use crate::{
     halo_reach::{Scene, cache::Cache},
@@ -19,9 +20,14 @@ use std::{
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Options {
+    #[serde(default)]
     pub arms_model: String,
     /// Native named state to absolute source clip, including its mode prefix.
+    #[serde(default)]
     pub actions: BTreeMap<String, String>,
+    /// Metres in the native grip parent's axes, applied only to absolute motion.
+    #[serde(default)]
+    pub held_offset: [f32; 3],
 }
 
 fn hash(name: &str) -> u32 {
@@ -68,11 +74,14 @@ pub(in crate::halo_reach) fn prepare(
     root: &Path,
 ) -> Result<Value> {
     ensure!(
-        scene.object.tag.group == "weap" && !options.actions.is_empty(),
-        "First-person arm translation requires weapon actions"
+        scene.object.tag.group == "weap"
+            && (!options.actions.is_empty() || options.held_offset != [0.; 3]),
+        "First-person arm translation requires weapon actions or a held offset"
     );
     let source_root = root.parent().context("Import root")?.join("source");
-    let source = source::Source::read(cache, scene, options, &source_root)?;
+    let source = (!options.actions.is_empty())
+        .then(|| source::Source::read(cache, scene, options, &source_root))
+        .transpose()?;
     let carrier::Carrier {
         runtime,
         attachment,
@@ -134,7 +143,9 @@ pub(in crate::halo_reach) fn prepare(
     let mut extras = Vec::new();
     let mut actions = Vec::new();
     let mut hands = Vec::new();
+    let grip = offset::grip(&rig, options.held_offset)?;
     for (action, source_clip) in &options.actions {
+        let source = source.as_ref().context("Source arm actions")?;
         let name = hash(action);
         let mut mapped = BTreeMap::new();
         for descriptor in animation::state::descriptors(&states, name)? {
@@ -160,13 +171,14 @@ pub(in crate::halo_reach) fn prepare(
             let source_frames =
                 source.clip(&source_root, source_clip, usize::from(clip.u16(0x13C)?))?;
             let motion::Translated { poses, hand_slots } =
-                motion::translate(&source, &source_frames, &rig, &clip)?;
+                motion::translate(source, &source_frames, &rig, &clip)?;
             if hands.is_empty() {
                 hands = hand_slots;
             } else {
                 ensure!(hands == hand_slots, "Native action hand maps disagree");
             }
             let converted = animation::clip::replace(&clip, &poses)?;
+            let converted = offset::apply(&converted, &rig, grip, options.held_offset)?;
             let marker = hash(&format!("reach/arms/{action}/{descriptor}/{source_clip}"));
             ensure!(
                 ![0, u32::MAX].contains(&marker) && markers.insert(marker),
@@ -191,6 +203,7 @@ pub(in crate::halo_reach) fn prepare(
             "Requested arm action names collide"
         );
     }
+    let clips = offset::clips(native, &bank, &rig, grip, options.held_offset, &mut files)?;
     let mut converted_bank = (*bank).clone();
     append(&mut converted_bank.0, 8, 0x80808F48, &clip_rows, 4)?;
     append(&mut converted_bank.0, 24, 0x80800007, &auxiliary, 2)?;
@@ -218,10 +231,10 @@ pub(in crate::halo_reach) fn prepare(
     }
     Ok(
         json!({"runtime_entity":runtime,"first_person_status":"linked","first_person":{
-            "attachment_owner":attachment,"entity":entity,"lookup_owner":lookup_tag,"bank":bank_tag,"files":files.names,"clips":[],"extra_clips":extras,"bank_consumers":consumer_rows,"rigs":[],
+            "attachment_owner":attachment,"entity":entity,"lookup_owner":lookup_tag,"bank":bank_tag,"files":files.names,"clips":clips,"extra_clips":extras,"bank_consumers":consumer_rows,"rigs":[],
             "pose_layers":{"owner":pose_owner,"tag":pose_tag,"file":layer_file,"template_file":layer_template},
             "state_conversion":{"status":"source_states","parameters":parameter_tag,"states":state_tag},
-            "arm_motion":{"actions":actions,"hand_slots":hands,"source_graph":source.graph["tag"],"arms_model":options.arms_model,"native_bones":rig.bind.len(),"native_controls":rig.controls.len()},
+            "arm_motion":{"actions":actions,"hand_slots":hands,"source_graph":source.as_ref().map(|s| &s.graph["tag"]),"arms_model":options.arms_model,"native_bones":rig.bind.len(),"native_controls":rig.controls.len(),"held_offset":options.held_offset,"grip_control":grip},
             "limits":["Source motion is fitted to native action duration and events. Native arm geometry, forearm IK and pose layers are retained. Source weapon subpart deformation is not translated. In-game playback remains unverified."]
         }}),
     )

@@ -153,7 +153,7 @@ pub(super) fn condition_facts(payload: &[u8], node: usize, kind: u8) -> Result<V
         ]),
         9 | 28 => Ok(vec![Fact::new(
             "Selected Bits",
-            FactValue::Mask(key(payload, node, 8)?.into()),
+            FactValue::Mask(byte(payload, node, 8)?.into()),
         )]),
         10 | 11 => Ok(vec![Fact::new(
             "Event Key",

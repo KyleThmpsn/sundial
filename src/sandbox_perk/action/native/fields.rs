@@ -785,7 +785,8 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
                 (0x144, 4, Key, "Target State"),
                 (0x148, 4, Key, "Remembered Target"),
             ],
-            9 | 28 => vec![(8, 4, Mask32, "Selected Bits")],
+            // The checkers read one byte and shift within it, so bits 8 and up never match.
+            9 | 28 => vec![(8, 1, Byte, "Selected Bits")],
             // The schema declares a resource reference at +10 and every stock value is a tag,
             // so the lane is read as one. It was declared a key before, which did not match
             // the resource format the describer already assigns and so never took effect.

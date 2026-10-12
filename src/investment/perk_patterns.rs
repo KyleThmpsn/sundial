@@ -99,7 +99,7 @@ mod tests {
             ..Default::default()
         };
         let catalog = InvestmentCatalog {
-            catalog: Catalog::for_test(
+            catalog: std::sync::Arc::new(Catalog::for_test(
                 vec![ItemDef {
                     hash: 1,
                     name: "Test Weapon".into(),
@@ -115,7 +115,7 @@ mod tests {
                     abilities: Default::default(),
                 }],
                 [(1, base), (101, default_plug), (102, optional_plug)].into(),
-            ),
+            )),
             authorable_weapon_stat_indices: Vec::new(),
         };
         let observations = catalog.perk_pattern_uses();

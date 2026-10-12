@@ -11,8 +11,27 @@ use crate::{
         reader::{Reader, write_json},
     },
 };
+mod inspection;
 mod optic;
 mod seat;
+mod vehicle;
+pub use seat::DriverPose;
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OpticView {
+    #[default]
+    Model,
+    Separate,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Reticle {
+    #[default]
+    Crosshair,
+    Rangefinder,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -23,6 +42,12 @@ pub struct Optic {
     pub lenses: Vec<String>,
     /// Camera distance behind the rear aperture, in native metres.
     pub eye_relief: f32,
+    /// A separate view preserves the physical glass and places aiming beyond the model.
+    #[serde(default)]
+    pub view: OpticView,
+    /// The authored overlay for a separate sight view.
+    #[serde(default)]
+    pub reticle: Reticle,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -45,6 +70,9 @@ pub struct ImportRequest {
     /// Explicit native vehicle entity. It must agree with the recipe's summon choice.
     #[serde(default)]
     pub runtime_entity: Option<u32>,
+    /// Authored correction in the source driver marker's local frame.
+    #[serde(default)]
+    pub driver_pose: Option<DriverPose>,
     /// An explicit native projectile carrier for a single visible source projectile.
     #[serde(default)]
     pub projectile_entity: Option<u32>,
@@ -60,6 +88,9 @@ pub struct ImportRequest {
     /// Explicit appearance state for source parameters whose events are not translated.
     #[serde(default)]
     pub material_overrides: BTreeMap<String, BTreeMap<String, [f32; 4]>>,
+    /// Explicit vehicle body and trim materials affected by an equipped shader.
+    #[serde(default)]
+    pub paint: BTreeMap<String, super::paint::Paint>,
     #[serde(default)]
     pub optic: Option<Optic>,
     /// Explicit iron sights for a source that has no lens aperture.
@@ -118,6 +149,18 @@ fn skeleton(native: &mut Reader, entity: u32, item: u32, palette: usize) -> Resu
         candidates = skeletons
             .iter()
             .filter(|s| s["bones"][0]["name_hash"] == handle)
+            .collect();
+    }
+    // Equipment art can use a prefix of its sole runtime skeleton. The model's
+    // palette bounds referenced joints, not the complete runtime hierarchy.
+    if candidates.is_empty() && skeletons.len() == 1 {
+        candidates = skeletons
+            .iter()
+            .filter(|s| {
+                s["bones"]
+                    .as_array()
+                    .is_some_and(|bones| palette > 1 && palette <= bones.len())
+            })
             .collect();
     }
     if let Some(first) = candidates.first() {
@@ -465,7 +508,7 @@ fn drawn_root(
     mesh: usize,
     skeleton: &Value,
 ) -> Result<Option<u8>> {
-    if model.u16(mesh + 88)? != 137 {
+    if !matches!(model.u16(mesh + 88)?, 137 | 139) {
         return Ok(None);
     }
     let header_tag = model.u32(mesh)?;
@@ -592,6 +635,53 @@ fn render_owner(
     Ok(original)
 }
 
+fn source_motion(
+    native: &mut Reader,
+    scene: &Scene,
+    entry: &ImportRequest,
+    root: &Path,
+    entity: u32,
+    projectile: bool,
+    bones: &mut Value,
+) -> Result<Option<super::animation::native::Bundle>> {
+    let wheel_motion = scene.object.gameplay["physics"]
+        .as_array()
+        .is_some_and(|rows| rows.iter().any(|row| row["kind"] == "human_jeep"));
+    if projectile
+        || entry.runtime_entity.is_none()
+        || (entry.animation_bindings.is_empty() && !wheel_motion)
+    {
+        return Ok(None);
+    }
+    ensure!(
+        entry.runtime_entity == Some(entity)
+            && entry.recipe["kind"] == "sparrow"
+            && entry.bone_aliases.is_empty(),
+        "Source animation bindings require an explicit vehicle runtime without bone aliases"
+    );
+    let motion =
+        super::animation::native::prepare(native, scene, entity, &entry.animation_bindings, root)?;
+    *bones = motion.skeleton.clone();
+    Ok(Some(motion))
+}
+
+fn motion_report(
+    graph: &mut Value,
+    motion: Option<super::animation::native::Bundle>,
+    equipment: bool,
+) {
+    let Some(motion) = motion else {
+        return;
+    };
+    if equipment {
+        graph["equipment_animation"] = motion.section;
+    }
+    graph["source_motion"] = motion.source_motion;
+    graph["limits"] = json!([
+        "Explicit source clips animate appended native vehicle bones at the carrier's retained timing. Source flight, passenger seats, animation state selection, events and root movement are not translated. In-game playback is unverified."
+    ]);
+}
+
 pub(super) fn build(
     cache: &cache::Cache,
     pages: &mut resource::Pages,
@@ -619,34 +709,18 @@ pub(super) fn build(
         },
         usize::try_from(header.u32(0x40)?)?,
     )?;
-    let motion = if !projectile && !entry.animation_bindings.is_empty() {
-        ensure!(
-            entry.runtime_entity == Some(entity_tag)
-                && entry.recipe["kind"] == "sparrow"
-                && entry.bone_aliases.is_empty(),
-            "Source animation bindings require an explicit vehicle runtime without bone aliases"
-        );
-        let motion = super::animation::native::prepare(
-            native,
-            scene,
-            entity_tag,
-            &entry.animation_bindings,
-            root,
-        )?;
-        bones = motion.skeleton.clone();
-        Some(motion)
-    } else {
-        None
-    };
+    let motion = source_motion(
+        native, scene, entry, root, entity_tag, projectile, &mut bones,
+    )?;
     if !projectile
-        && entry.runtime_entity.is_some()
+        && entry.recipe["kind"] == "sparrow"
         && motion.is_none()
         && let Some(root) = drawn_root(native, &header, row, &bones)?
     {
         bones["fallback_bone"] = json!(root);
     }
     let Assembly {
-        mesh,
+        mut mesh,
         materials,
         rig_report,
         palette,
@@ -655,7 +729,7 @@ pub(super) fn build(
         validate_material_overrides(&materials, &entry.material_overrides)?;
     }
     let optic = if !projectile {
-        optic::select(entry, &mesh, &materials)?
+        optic::select(entry, &mut mesh, &materials)?
     } else {
         None
     };
@@ -702,7 +776,15 @@ pub(super) fn build(
         Vec::new()
     };
     let driver_seat = if entry.runtime_entity.is_some() && !projectile {
-        seat::build(native, &mut g, scene, &bones, &mut entity, &mut patches)?
+        seat::build(
+            native,
+            &mut g,
+            scene,
+            &bones,
+            entry.driver_pose.as_ref(),
+            &mut entity,
+            &mut patches,
+        )?
     } else {
         None
     };
@@ -716,10 +798,22 @@ pub(super) fn build(
         .flat_map(|p| &p.textures)
         .any(|mapping| mapping.ammunition_place().is_some());
     let objects = if live_display {
-        crate::presentation::channel::inherit(native, &mut g, &[0xCAF915D8])?
+        crate::presentation::channel::inherit(native, &mut g, &[0x32CC5402])?
     } else {
         BTreeMap::new()
     };
+    ensure!(
+        entry.paint.is_empty() || entry.recipe["kind"] == "sparrow",
+        "Source paint currently requires Sparrow dye channels"
+    );
+    let paint = super::paint::prepare(
+        native,
+        &mut g,
+        &materials,
+        &entry.paint,
+        hash(&template, "item_tag")?,
+        item,
+    )?;
     let material_report = super::native_material::build(
         cache,
         pages,
@@ -732,9 +826,19 @@ pub(super) fn build(
             objects: &objects,
             overrides: &entry.material_overrides,
             lenses: &lenses,
+            paint: &paint.surfaces,
         },
     )?;
     let instance_layout = g.seal_instances()?;
+    let vehicle = if !projectile {
+        entry
+            .runtime_entity
+            .map(|_| vehicle::build(native, &mut g, scene, &bones, entry, cache))
+            .transpose()?
+            .flatten()
+    } else {
+        None
+    };
     if projectile {
         let graph = json!({"nodes":g.nodes,"source_owner":owner_tag,"source_entity":entity_tag,
             "instance_layout":instance_layout,
@@ -786,13 +890,7 @@ pub(super) fn build(
         graph["kept_parts"] = json!([kept]);
         graph["optic"] = report;
     }
-    if let Some(motion) = motion {
-        graph["equipment_animation"] = motion.section;
-        graph["source_motion"] = motion.source_motion;
-        graph["limits"] = json!([
-            "Explicit source clips animate appended native vehicle bones at the carrier's retained timing. Source flight, passenger seats, animation state selection, events and root movement are not translated. In-game playback is unverified."
-        ]);
-    }
+    motion_report(&mut graph, motion, vehicle.is_none());
     if entry.recipe["kind"] == "sparrow" {
         graph["kind"] = json!("sparrow");
         let mut rows = template["art_rows"]
@@ -803,11 +901,18 @@ pub(super) fn build(
             row["template_index"] = row["art_index"].clone();
         }
         let registrations = art_registrations(parents, item)?;
-        graph["gear_art"] = json!({"rows":rows,"parts":registrations});
-        graph["dyes"] = json!([]);
-        graph["dye_rows"] = json!([[], [], []]);
+        graph["gear_art"] =
+            json!({"selector_format":"shadowkeep","rows":rows,"parts":registrations});
+        graph["dyes"] = json!(paint.dyes);
+        graph["dye_rows"] = json!([[], paint.rows, []]);
+        graph["paint"] = json!(entry.paint);
     }
     runtime_presentation(&mut graph, entry.runtime_entity, owner_tag, driver_seat)?;
+    if let Some(vehicle) = vehicle {
+        graph["runtime_presentation"]["root"] = json!(vehicle::ROOT);
+        graph["vehicle"] = vehicle;
+        graph["limits"] = graph["vehicle"]["limits"].clone();
+    }
     repair(&graph, root)?;
     write_json(&root.join("asset-graph.json"), &graph)?;
     crate::graph::record_converter_revision(root)?;
@@ -831,7 +936,9 @@ fn runtime_presentation(
             !matches!(
                 node["symbol"].as_str(),
                 Some("parent" | "parent-companion" | "entity")
-            )
+            ) && !node["symbol"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("paint-"))
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -898,7 +1005,7 @@ fn buffers(
 }
 
 fn repair(graph: &Value, root: &Path) -> Result<()> {
-    for (symbol, bytes) in crate::tiger::vertex_input::repair(graph, root)? {
+    for (symbol, bytes) in crate::tiger::material::repair(graph, root)? {
         let node = graph["nodes"]
             .as_array()
             .unwrap()
@@ -952,6 +1059,12 @@ fn projectile_count(barrel: &Value, behavior: &Value) -> Result<i64> {
 
 fn recipe(entry: &ImportRequest, scene: &Scene, behavior: &Value) -> Result<(Value, Value)> {
     let mut recipe = entry.recipe.clone();
+    if recipe["kind"] == "sparrow" {
+        if recipe["overrides"].is_null() {
+            recipe["overrides"] = json!({});
+        }
+        recipe["overrides"]["rarity"] = json!("exotic");
+    }
     let Some(barrels) = scene.object.gameplay["barrels"].as_array() else {
         return Ok((recipe, json!({"status":"Native vehicle behavior retained"})));
     };
@@ -1013,6 +1126,11 @@ pub fn prepare(plan: &Path, maps: &Path, native_packages: &Path, output: &Path) 
             matches!(entry.recipe["kind"].as_str(), Some("weapon" | "sparrow")),
             "Reach recipes must be weapons or vehicles"
         );
+        ensure!(
+            entry.driver_pose.is_none()
+                || (entry.runtime_entity.is_some() && entry.recipe["kind"] == "sparrow"),
+            "A driver pose requires a vehicle runtime"
+        );
     }
     fs::create_dir_all(output.parent().context("Output parent")?)?;
     let temporary = tempfile::Builder::new()
@@ -1034,6 +1152,7 @@ pub fn prepare(plan: &Path, maps: &Path, native_packages: &Path, output: &Path) 
         write_json(&source.join("source.json"), &serde_json::to_value(&scene)?)?;
         let behavior = behavior::read(&cache, &scene)?;
         let (mut recipe, gameplay) = recipe(&entry, &scene, &behavior)?;
+        let hud = super::hud::prepare(&cache, &mut pages, &scene, &mut recipe, &source)?;
         write_json(&source.join("behavior.json"), &behavior)?;
         let projectiles = super::projectile::export(&cache, &mut pages, &behavior, &source)?;
         super::animation::export(&cache, &mut pages, &behavior, &scene, &source)?;
@@ -1050,7 +1169,17 @@ pub fn prepare(plan: &Path, maps: &Path, native_packages: &Path, output: &Path) 
             false,
         )
         .with_context(|| format!("Native Reach import {}", entry.slug))?;
+        inspection::build(
+            &cache,
+            &mut pages,
+            &mut native,
+            &scene,
+            &entry,
+            &root.join("graph"),
+            &mut graph,
+        )?;
         graph["source_gameplay"] = gameplay;
+        graph["source_hud"] = hud;
         if let Some(options) = &entry.first_person {
             graph["animation"] = super::animation::first_person::prepare(
                 &cache,

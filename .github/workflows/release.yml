@@ -17,7 +17,7 @@ jobs:
 
     steps:
       - name: Check Out Release Source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust 1.99
         run: |
@@ -56,7 +56,7 @@ jobs:
 
     steps:
       - name: Check Out Release Source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Require Quality for This Commit
         env:
@@ -81,7 +81,7 @@ jobs:
 
     steps:
       - name: Check Out Release Source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust 1.99
         shell: pwsh
@@ -105,7 +105,7 @@ jobs:
 
       - name: Upload Build Timings
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cargo-timings-release-${{ runner.os }}
           path: target/cargo-timings/cargo-timing.html
@@ -121,7 +121,7 @@ jobs:
         run: ./packaging/package-windows.ps1 -Version "${{ needs.validate-version.outputs.version }}"
 
       - name: Upload Windows Artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Sundial-windows-x86_64
           path: dist/*
@@ -133,7 +133,7 @@ jobs:
 
     steps:
       - name: Check Out Release Source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust 1.99
         run: |
@@ -170,7 +170,7 @@ jobs:
 
       - name: Upload Build Timings
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cargo-timings-release-${{ runner.os }}
           path: target/cargo-timings/cargo-timing.html
@@ -202,7 +202,7 @@ jobs:
           dpkg --compare-versions "${max_glibc#GLIBC_}" le 2.35
 
       - name: Upload Linux Artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Sundial-linux-x86_64
           path: dist/*
@@ -217,10 +217,10 @@ jobs:
 
     steps:
       - name: Check Out Release Notes
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download Verified Artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: Sundial-*
           path: dist

@@ -1,4 +1,4 @@
-use crate::d2_mot::payload::Payload;
+use crate::d2_mot::{artwork, payload::Payload};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{
@@ -638,9 +638,11 @@ fn audit_artwork(
         .flatten()
         .filter(|p| p["source_region"] == true)
     {
-        let selector = part["selector"]
-            .as_u64()
-            .context("source region selector")?;
+        let selector = artwork::native_selector(
+            part["selector"]
+                .as_u64()
+                .context("source region selector")?,
+        )?;
         let position = usize::try_from(
             part["position"]
                 .as_u64()

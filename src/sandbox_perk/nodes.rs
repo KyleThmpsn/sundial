@@ -302,8 +302,12 @@ pub fn plain_condition_title(kind: u8) -> Option<&'static str> {
         25 => "On Sprinting",
         26 => "When the Effect's Counter Is Reached",
         27 => "On Firing This Weapon",
-        29 => "On a Game Signal",
-        30 => "Ends on a Game Signal",
+        // A Duration component sends its definition's +9C key twice: method one (C9ADE0), run
+        // right after the entity is created, as kind 29, and method two (C9A0B0), its cleanup
+        // selector in every stock owner, as kind 30. The names follow the signal. Stock lists
+        // kind 30 for removal 448 times but also for activation (80BC2BB0) and rearm (80C19404).
+        29 => "When a Game Signal Starts",
+        30 => "When a Game Signal Ends",
         31 => "When All Requirements Are Met",
         // Kind 35 runs the general predicate, a state check, and then its nested condition.
         35 => "State Check with a Condition",

@@ -1171,8 +1171,8 @@ impl PackageAuthoringApp {
             .and_then(|hash| self.donor_summaries.iter().find(|donor| donor.hash == hash));
         // Which of the two cross-family paths the build takes is decided by trying the rig move,
         // so this follows the finished runtime scan rather than guessing. The Animations row says
-        // where the animations come from, so the warning only names the risk. It sits behind the
-        // heading's warning icon with the slot's.
+        // where the animations come from, so the warning only says which animations play. It sits
+        // behind the heading's warning icon with the slot's.
         let warning = current_summary
             .zip(gameplay_summary)
             .and_then(|(current, gameplay)| {
@@ -1186,15 +1186,17 @@ impl PackageAuthoringApp {
                     crate::capabilities::appearance_animations_differ(current, gameplay),
                     carried,
                 ) {
-                    (true, _, Some(true)) => Some("Different weapon type. The game can crash."),
+                    (true, _, Some(true)) => {
+                        Some("Different weapon type. Uses its own animations.")
+                    }
                     (true, _, Some(false)) => Some(
-                        "Different weapon type. Plays the base weapon's animations. Moving parts \
-                         stay still and the model can sit or aim wrong. The game can crash.",
+                        "Different weapon type. Plays the base weapon's animations, so moving \
+                         parts stay still.",
                     ),
-                    (false, true, Some(true)) => Some("Different rig. The game can crash."),
+                    (false, true, Some(true)) => Some("Different rig. Uses its own animations."),
                     (false, true, Some(false)) => Some(
-                        "Different rig. Plays the base weapon's animations. Moving parts stay \
-                         still and the model can sit or aim wrong. The game can crash.",
+                        "Different rig. Plays the base weapon's animations, so moving parts stay \
+                         still.",
                     ),
                     // While the rig is checked there is nothing to warn about yet.
                     (true, _, None) | (false, true, None) | (false, false, _) => None,

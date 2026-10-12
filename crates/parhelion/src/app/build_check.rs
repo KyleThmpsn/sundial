@@ -14,8 +14,14 @@ pub(super) struct Missing {
 }
 
 struct Job {
-    receiver: Receiver<Result<BTreeSet<u32>, String>>,
+    receiver: Receiver<Result<Items, String>>,
     worker: thread::JoinHandle<()>,
+}
+
+struct Items {
+    installed: BTreeSet<u32>,
+    /// The items the build set builds, its required shaders included.
+    included: BTreeSet<u32>,
 }
 
 #[derive(Default)]
@@ -45,8 +51,29 @@ impl PackageAuthoringApp {
         }
         let (sender, receiver) = mpsc::channel();
         let ctx = ctx.clone();
+        let inputs = self.build_inputs();
         let worker = thread::spawn(move || {
-            let _ = sender.send(crate::install::installed_item_hashes(&packages));
+            let result = crate::install::installed_item_hashes(&packages).map(|installed| {
+                // The build set's items come from its recipes, read here because a full read
+                // restores every embedded model.
+                let included = inputs
+                    .request()
+                    .map(|request| {
+                        request
+                            .recipes
+                            .iter()
+                            .filter_map(|recipe| recipe.identity.item_hash.parse_u32().ok())
+                            .collect::<BTreeSet<_>>()
+                    })
+                    .unwrap_or_default();
+                Items {
+                    installed,
+                    included,
+                }
+            });
+            // The window releases package access by dropping its catalog, so this copy goes first.
+            drop(inputs);
+            let _ = sender.send(result);
             ctx.request_repaint();
         });
         self.build_check.job = Some(Job { receiver, worker });
@@ -75,9 +102,12 @@ impl PackageAuthoringApp {
                 )));
                 self.start_build();
             }
-            Ok(installed) => {
+            Ok(Items {
+                installed,
+                included,
+            }) => {
                 self.installed.replace(installed.clone());
-                let missing = self.missing_from_build(&installed);
+                let missing = self.missing_from_build(&installed, &included);
                 if missing.is_empty() {
                     self.start_build();
                 } else {
@@ -88,17 +118,11 @@ impl PackageAuthoringApp {
     }
 
     /// The installed items a library recipe builds that no enabled recipe does.
-    fn missing_from_build(&self, installed: &BTreeSet<u32>) -> Vec<Missing> {
-        let included = self
-            .batch_request()
-            .map(|request| {
-                request
-                    .recipes
-                    .iter()
-                    .filter_map(|recipe| recipe.identity.item_hash.parse_u32().ok())
-                    .collect::<BTreeSet<_>>()
-            })
-            .unwrap_or_default();
+    fn missing_from_build(
+        &self,
+        installed: &BTreeSet<u32>,
+        included: &BTreeSet<u32>,
+    ) -> Vec<Missing> {
         let mut seen = BTreeSet::new();
         self.recipe_entries
             .iter()

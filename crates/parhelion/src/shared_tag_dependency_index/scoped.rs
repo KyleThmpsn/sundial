@@ -139,7 +139,7 @@ pub(crate) fn validate_asset_loading<'a>(
     Ok(())
 }
 
-fn deferred_owner(file_type: u8, class: u32) -> AuthoringResult<bool> {
+pub(crate) fn deferred_owner(file_type: u8, class: u32) -> AuthoringResult<bool> {
     if file_type != 16 {
         return Err(invalid("An asset loading index requires a type-16 owner"));
     }

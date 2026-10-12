@@ -4,6 +4,8 @@ use crate::{
     tiger::payload::Payload,
 };
 use anyhow::{Result, ensure};
+mod translation;
+pub use translation::translate;
 
 #[derive(Default)]
 struct Channel {
@@ -162,6 +164,25 @@ fn write(
     frames: usize,
     channels: &[Channel; 3],
 ) -> Result<()> {
+    let size_field = match pointer {
+        0x10 => 0x128,
+        0x18 => 0x12C,
+        _ => anyhow::bail!("Unsupported clip codec pointer"),
+    };
+    // Channel maps belong to the clip, outside the codec's serialized span.
+    for (kind, channel) in channels.iter().enumerate() {
+        let map = channel
+            .slots
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>();
+        append(out, maps + kind * 16, 0x8080000A, &map, 2)?;
+    }
+    if channels.iter().all(|channel| channel.slots.is_empty()) {
+        put(out, pointer, &[0; 8])?;
+        put(out, size_field, &[0; 4])?;
+        return Ok(());
+    }
     let base = (out.len() + 11) & !7;
     out.resize(base - 4, 0);
     out.extend(0x80808F73u32.to_le_bytes());
@@ -174,12 +195,6 @@ fn write(
             base + 2 + kind * 2,
             &u16::try_from(channel.slots.len())?.to_le_bytes(),
         )?;
-        let map = channel
-            .slots
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect::<Vec<_>>();
-        append(out, maps + kind * 16, 0x8080000A, &map, 2)?;
         let width = [1, 4, 3][kind];
         let mut data = Vec::new();
         for value in channel.values.chunks_exact(width) {
@@ -197,7 +212,15 @@ fn write(
             if kind == 0 { 4 } else { 16 },
         )?;
     }
+    let size = (out.len() - base + 11) & !7;
+    out.resize(base - 4 + size, 0);
+    put(out, size_field, &u32::try_from(size)?.to_le_bytes())?;
     Ok(())
+}
+
+/// Native weighted choices reserve the larger of the two pose codec spans.
+pub fn size(payload: &Payload) -> Result<u32> {
+    Ok(payload.u32(0x128)?.max(payload.u32(0x12C)?))
 }
 
 /// Decode one control pose, retaining the rig's defaults for absent channels.
@@ -286,6 +309,7 @@ pub fn extend(
     original: &Payload,
     old: usize,
     total: usize,
+    controls: &Payload,
     poses: Option<&[Vec<[f32; 8]>]>,
 ) -> Result<Payload> {
     ensure!(
@@ -328,7 +352,93 @@ pub fn extend(
     for at in [0x13E, 0x140] {
         put(&mut out, at, &(total as u16).to_le_bytes())?;
     }
+    groups(&mut out, controls, total)?;
     let size = out.len() as u64;
     put(&mut out, 0, &size.to_le_bytes())?;
     Ok(Payload(out))
+}
+
+/// Emit sparse local poses on an extended rig. Selected controls retain their
+/// rest scale and translation while their local quaternion changes.
+pub fn rotations(
+    original: &Payload,
+    total: usize,
+    controls: &Payload,
+    tracks: &std::collections::BTreeMap<usize, Vec<[f32; 8]>>,
+) -> Result<Payload> {
+    let frames = usize::from(original.u16(0x13C)?);
+    ensure!(
+        original.u64(0)? == original.0.len() as u64
+            && (1..=256).contains(&total)
+            && (2..=3600).contains(&frames)
+            && original.u64(0x108)? == 0
+            && original.u64(0x160)? == 0
+            && !tracks.is_empty(),
+        "Rotational overlay template differs"
+    );
+    let mut fixed: [Channel; 3] = Default::default();
+    let mut dynamic: [Channel; 3] = Default::default();
+    for (&slot, samples) in tracks {
+        ensure!(
+            slot < total && samples.len() == frames,
+            "Overlay control dimensions differ"
+        );
+        dynamic[1].slots.push(u16::try_from(slot)?);
+        fixed[0].slots.push(u16::try_from(slot)?);
+        fixed[0].values.push(samples[0][7]);
+        fixed[2].slots.push(u16::try_from(slot)?);
+        fixed[2].values.extend(&samples[0][4..7]);
+        for sample in samples {
+            let norm = sample[..4].iter().map(|v| v * v).sum::<f32>();
+            ensure!(
+                sample.iter().all(|v| v.is_finite())
+                    && (norm - 1.).abs() < 0.001
+                    && sample[7] > 0.
+                    && sample[4..] == samples[0][4..],
+                "Rotational pose is invalid or changes its rest translation or scale"
+            );
+            dynamic[1].values.extend(&sample[..4]);
+        }
+    }
+    let mut out = original.0.clone();
+    write(&mut out, 0x10, 0xA8, 1, &fixed)?;
+    write(&mut out, 0x18, 0xD8, frames, &dynamic)?;
+    put(&mut out, 0xA4, &u32::try_from(total - 1)?.to_le_bytes())?;
+    for field in [0x13E, 0x140] {
+        put(&mut out, field, &u16::try_from(total)?.to_le_bytes())?;
+    }
+    // The carrier's clip names do not describe this authored motion. Control
+    // groups must still match the target rig or the native mixer masks it out.
+    put(&mut out, 0x150, &[0; 16])?;
+    groups(&mut out, controls, total)?;
+    let size = out.len() as u64;
+    put(&mut out, 0, &size.to_le_bytes())?;
+    Ok(Payload(out))
+}
+
+fn groups(out: &mut Vec<u8>, controls: &Payload, total: usize) -> Result<()> {
+    let definition = controls.pointer(24)?;
+    ensure!(
+        controls.u32(definition - 4)? == 0x80808F8F,
+        "Clip groups require native rig controls"
+    );
+    let rows = controls.array(definition + 0x90, 8, Some(0x8080907F))?;
+    let mut data = Vec::with_capacity(rows.len() * 8);
+    let mut covered = 0usize;
+    let mut names = std::collections::BTreeSet::new();
+    for row in rows {
+        let count = controls.u32(row + 4)? as usize;
+        ensure!(
+            names.insert(controls.u32(row)?) && (1..=256).contains(&count),
+            "Clip control group is empty, repeated or too large"
+        );
+        covered += count;
+        data.extend_from_slice(&controls.0[row..row + 8]);
+    }
+    ensure!(
+        covered == total,
+        "Clip groups do not cover the target controls"
+    );
+    append(out, 0x170, 0x8080907F, &data, 8)?;
+    Ok(())
 }

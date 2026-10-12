@@ -7,7 +7,7 @@ pub(crate) mod runtime_state;
 mod workspace;
 pub(crate) use backup::archive_other_runtime;
 pub(crate) use defaults::SettingsResetPlan;
-use movement::move_without_replacing;
+pub(crate) use movement::move_without_replacing;
 pub(crate) use restore::{RuntimeRestorePlan, preview_runtime_restore, restore_runtime};
 
 use crate::game_settings::dawn::Runtime as DawnRuntime;

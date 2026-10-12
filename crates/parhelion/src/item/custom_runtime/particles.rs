@@ -3,7 +3,9 @@
 //! tag, its package reference and the tags of the nodes it names.
 use super::imports::Inputs;
 use super::*;
+use crate::tag_payload::read_u16;
 use std::collections::{BTreeMap, BTreeSet};
+mod audio;
 mod projectile;
 mod replication;
 
@@ -14,6 +16,7 @@ struct Node {
     reference: Option<String>,
     storage: crate::NewTagStorageMode,
     patches: Vec<(usize, String)>,
+    audio: audio::Metadata,
 }
 
 pub(in crate::item) struct ImportedParticles {
@@ -25,6 +28,7 @@ pub(in crate::item) struct ImportedParticles {
 
 struct Presentation {
     entity: u32,
+    root: Option<String>,
     components: Vec<PresentationComponent>,
 }
 
@@ -78,6 +82,30 @@ fn presentation_component(
 
 fn presentation(part: &serde_json::Value, nodes: &[Node]) -> AuthoringResult<Presentation> {
     let entity = presentation_number(part, "source_entity")?;
+    if let Some(root) = part.get("root") {
+        let root = root
+            .as_str()
+            .filter(|root| !root.is_empty())
+            .ok_or_else(|| invalid("Imported vehicle runtime lacks its root symbol"))?;
+        let node = nodes
+            .iter()
+            .find(|node| node.symbol == root)
+            .ok_or_else(|| invalid("Imported vehicle runtime root is absent"))?;
+        if node.template != entity
+            || node.reference.is_some()
+            || read_u16(&node.payload, 0x96)? != 15
+        {
+            return Err(invalid(
+                "Imported vehicle runtime root is not its declared vehicle",
+            ));
+        }
+        replication::validate(nodes, node)?;
+        return Ok(Presentation {
+            entity,
+            root: Some(root.to_owned()),
+            components: Vec::new(),
+        });
+    }
     let mut components = vec![presentation_component(part, nodes, Some(0x808072bd))?];
     if let Some(entries) = part.get("components") {
         for entry in entries
@@ -93,7 +121,11 @@ fn presentation(part: &serde_json::Value, nodes: &[Node]) -> AuthoringResult<Pre
             components.push(component);
         }
     }
-    Ok(Presentation { entity, components })
+    Ok(Presentation {
+        entity,
+        root: None,
+        components,
+    })
 }
 
 pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedParticles>> {
@@ -195,6 +227,8 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedPa
                 Some(_) => return Err(invalid("Imported asset has an unsupported storage mode")),
             },
             patches,
+            audio: serde_json::from_value(node.clone())
+                .map_err(|error| invalid(format!("Imported graph audio: {error}")))?,
         });
     }
     for node in &result {
@@ -279,21 +313,43 @@ impl ImportedParticles {
         &self,
         manager: &PackageManager,
         source_entity: TagHash,
-        entity: &mut [u8],
+        entity: &mut Vec<u8>,
         symbols: &BTreeMap<String, TagHash>,
-    ) -> AuthoringResult<()> {
+    ) -> AuthoringResult<Option<TagHash>> {
         let Some(presentation) = &self.presentation else {
-            return Ok(());
+            return Ok(None);
         };
         if source_entity.0 != presentation.entity {
             return Err(invalid(
                 "Imported appearance was prepared for a different summoned vehicle. Reimport it for this vehicle.",
             ));
         }
+        if let Some(root) = &presentation.root {
+            let node = self
+                .nodes
+                .iter()
+                .find(|node| node.symbol == *root)
+                .ok_or_else(|| invalid("Imported vehicle runtime root is absent"))?;
+            *entity = node.payload.clone();
+            for (offset, target) in &node.patches {
+                let tag = symbols
+                    .get(target)
+                    .ok_or_else(|| invalid("Imported vehicle dependency was not allocated"))?;
+                entity
+                    .get_mut(*offset..offset + 4)
+                    .ok_or_else(|| invalid("Imported vehicle reference exceeds its root"))?
+                    .copy_from_slice(&tag.0.to_le_bytes());
+            }
+            return symbols
+                .get(root)
+                .copied()
+                .map(Some)
+                .ok_or_else(|| invalid("Imported vehicle root was not allocated"));
+        }
         for component in &presentation.components {
             self.apply_component(manager, entity, symbols, component)?;
         }
-        Ok(())
+        Ok(None)
     }
 
     fn apply_component(
@@ -456,19 +512,19 @@ impl ImportedParticles {
         &self,
         manager: &PackageManager,
         packages: &mut crate::asset_packages::AssetPackages,
+        item: u32,
     ) -> AuthoringResult<(BTreeMap<String, TagHash>, Vec<TagHash>)> {
-        let loading = self
-            .projectile
+        let runtime = self
+            .presentation
             .as_ref()
-            .map(|symbol| {
-                let root = self
-                    .nodes
-                    .iter()
-                    .find(|node| node.symbol == *symbol)
-                    .ok_or_else(|| invalid("Imported projectile root is missing"))?;
-                replication::Loading::read(&self.nodes, root, manager)
-            })
-            .transpose()?;
+            .and_then(|presentation| presentation.root.as_ref());
+        let roots = self
+            .projectile
+            .iter()
+            .chain(runtime)
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let loading = replication::Loading::all(&self.nodes, manager, &roots)?;
         let mut bounds = self
             .nodes
             .iter()
@@ -490,6 +546,7 @@ impl ImportedParticles {
                 )?,
             );
         }
+        let mut audio = audio::bind(&self.nodes, &symbols, item)?;
         for node in &self.nodes {
             if node.storage != crate::NewTagStorageMode::InheritTemplate
                 && (node.reference.is_some()
@@ -502,7 +559,8 @@ impl ImportedParticles {
                 ));
             }
             let entity = self.projectile.as_deref() == Some(node.symbol.as_str())
-                || self.attachments.contains(&node.symbol);
+                || self.attachments.contains(&node.symbol)
+                || runtime == Some(&node.symbol);
             if entity
                 && manager
                     .get_entry(TagHash(node.template))
@@ -516,7 +574,9 @@ impl ImportedParticles {
                     node.template
                 )));
             }
-            let mut payload = node.payload.clone();
+            let mut payload = audio
+                .remove(&node.symbol)
+                .unwrap_or_else(|| node.payload.clone());
             for (offset, target) in &node.patches {
                 let slot = payload
                     .get_mut(*offset..offset + 4)
@@ -547,7 +607,7 @@ impl ImportedParticles {
                 storage: node.storage,
             });
         }
-        if let Some(loading) = loading {
+        for loading in loading {
             loading.append(&self.nodes, &symbols, package)?;
         }
         // Native replication allocations and their root are eager. The companion

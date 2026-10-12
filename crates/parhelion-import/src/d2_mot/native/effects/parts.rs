@@ -173,10 +173,11 @@ fn slot(
     if selector == 0 {
         return Ok(None);
     }
+    let native_selector = crate::d2_mot::artwork::native_selector(selector)?;
     let candidates = parents
         .iter()
         .filter(|parent| {
-            parent["placement"]["selector"].as_u64() == Some(selector)
+            parent["placement"]["selector"].as_u64() == Some(native_selector)
                 && parent["placement"]["position"].as_u64() == Some(position as u64)
         })
         .collect::<Vec<_>>();
@@ -222,6 +223,7 @@ fn write_nodes(
         node["symbol"] = json!(symbol);
         node["file"] = json!(format!("{symbol}.bin"));
         if name == "model" {
+            node["model"] = json!(true);
             node["patches"] = json!(patches);
         }
         for patch in node["patches"].as_array_mut().context("part patches")? {
@@ -287,12 +289,16 @@ pub(super) fn separate(
     let mut assigned = BTreeSet::new();
     let mut groups = Vec::new();
     let regions = variants::regions(source)?;
+    let native_regions = regions
+        .iter()
+        .map(|&selector| crate::d2_mot::artwork::native_selector(selector))
+        .collect::<Result<BTreeSet<_>>>()?;
     promote(g, source_parts, &regions)?;
     if let Some(kept) = g.manifest["kept_parts"].as_array_mut() {
         kept.retain(|part| {
             !part["placement"]["selector"]
                 .as_u64()
-                .is_some_and(|selector| regions.contains(&selector))
+                .is_some_and(|selector| native_regions.contains(&selector))
         });
     }
     g.manifest["source_art_regions"] = json!({"selectors":regions,"selection":"native region stat with source-ordered alternatives","gameplay_verified":false});
@@ -301,7 +307,7 @@ pub(super) fn separate(
             tag(&parent["assignment"]).ok().map(u64::from) == Some(host)
                 && parent["placement"]["selector"]
                     .as_u64()
-                    .is_some_and(|s| regions.contains(&s))
+                    .is_some_and(|s| native_regions.contains(&s))
         }),
         "source alternatives cannot replace the assembled body's art region"
     );
@@ -423,7 +429,7 @@ pub(super) fn separate(
         kept.retain(|part| {
             !part["placement"]["selector"]
                 .as_u64()
-                .is_some_and(|s| regions.contains(&s))
+                .is_some_and(|s| native_regions.contains(&s))
         });
     }
     g.manifest["source_art_regions"] = json!({"selectors":regions,"selection":"native region stat with source-ordered alternatives","gameplay_verified":false});

@@ -4,7 +4,34 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct Mesh {
     pub positions: Vec<[f32; 3]>,
     pub attributes: Vec<[f32; 10]>,
+    pub colors: Vec<[u8; 4]>,
     pub groups: Vec<(u32, Vec<[u16; 3]>)>,
+    pub surfaces: BTreeMap<u32, Surface>,
+    pub omitted: Vec<Value>,
+}
+
+pub struct Surface {
+    pub material: u32,
+    pub model: u32,
+    pub entity: u32,
+    pub stage: u8,
+    pub transform: [f32; 16],
+    pub scale: [f32; 3],
+    pub offset: [f32; 3],
+    pub has_colors: bool,
+}
+
+impl Surface {
+    pub fn native_stage(&self) -> u8 {
+        match self.stage {
+            0 => 0,
+            2 => 1,
+            4 => 3,
+            8 => 7,
+            13 => 12,
+            _ => unreachable!(),
+        }
+    }
 }
 fn transform(v: [f32; 3], m: &[f32; 16], point: bool) -> [f32; 3] {
     std::array::from_fn(|i| {
@@ -18,7 +45,10 @@ pub fn read(r: &mut Reader, entries: &[Value]) -> Result<Mesh> {
     let mut out = Mesh {
         positions: vec![],
         attributes: vec![],
+        colors: vec![],
         groups: vec![],
+        surfaces: BTreeMap::new(),
+        omitted: vec![],
     };
     for entry in entries {
         let tag = hash(entry, "model")?;
@@ -42,6 +72,25 @@ pub fn read(r: &mut Reader, entries: &[Value]) -> Result<Mesh> {
             let p = r.tag(r.reference(pt)?, None)?;
             let uv = r.tag(r.reference(ut)?, None)?;
             let ib = r.tag(r.reference(it)?, None)?;
+            let color_tag = b.u32(m + 20)?;
+            let colors = if [0, u32::MAX, 0x811c9dc5].contains(&color_tag) {
+                None
+            } else {
+                let h = r.tag(color_tag, None)?;
+                ensure!(
+                    h.u16(4)? == 4 && h.u16(6)? == 5,
+                    "Unsupported Marathon vertex-color format"
+                );
+                let data = r.tag(r.reference(color_tag)?, None)?;
+                ensure!(
+                    !data.0.is_empty()
+                        && data.0.len().is_multiple_of(4)
+                        && data.0.len() == h.u32(0)? as usize
+                        && data.0.len() / 4 <= p.0.len() / 24,
+                    "Invalid Marathon vertex-color buffer"
+                );
+                Some(data)
+            };
             ensure!(
                 p.0.len() == ph.u32(0)? as usize
                     && uv.0.len() == uh.u32(0)? as usize
@@ -66,21 +115,37 @@ pub fn read(r: &mut Reader, entries: &[Value]) -> Result<Mesh> {
             let parts = b.array(m + 32, 40, Some(0x808087D1))?;
             let mut selected = vec![];
             let mut seen = BTreeSet::new();
-            // Opaque base and inventory decals. Lighting and compute records repeat their ranges.
-            for stage in [0, 2] {
+            for stage in 0..25 {
+                let start = b.u16(m + 0x30 + stage * 2)? as usize;
+                let end = b.u16(m + 0x32 + stage * 2)? as usize;
+                let records = parts.get(start..end).context("part stage range")?;
+                if records.is_empty() {
+                    continue;
+                }
+                if ![0, 2, 4, 8, 13].contains(&stage) {
+                    let active = records
+                        .iter()
+                        .filter(|part| b.u8(**part + 33).is_ok_and(|lod| lod <= 3))
+                        .count();
+                    if active > 0 {
+                        out.omitted.push(json!({"model":format!("{tag:08X}"),"stage":stage,"draws":active,"reason":if stage == 24 { "Source skinning is replaced by the static native assembly" } else { "Source renderer pass has no native adapter" }}));
+                    }
+                    continue;
+                }
                 ensure!(
                     b.u8(m + 0x64 + stage)? == 7,
                     "unhandled Marathon input layout"
                 );
-                let start = b.u16(m + 0x30 + stage * 2)? as usize;
-                let end = b.u16(m + 0x32 + stage * 2)? as usize;
                 for &part in parts.get(start..end).context("part stage range")? {
                     if b.u8(part + 33)? > 3 {
                         continue;
                     }
                     let start = b.u32(part + 8)? as usize;
                     let count = b.u32(part + 12)? as usize;
-                    if !seen.insert((start, count)) {
+                    let material = b.u32(part)?;
+                    // Equal index ranges can carry different decal, shadow or
+                    // transparent work. Only an identical draw is redundant.
+                    if !seen.insert((stage, material, start, count)) {
                         continue;
                     }
                     let values = indices
@@ -102,81 +167,128 @@ pub fn read(r: &mut Reader, entries: &[Value]) -> Result<Mesh> {
                         }
                         n => anyhow::bail!("unhandled Marathon primitive {n} in {tag:08X}"),
                     };
-                    selected.push((b.u32(part)?, faces));
+                    if faces.is_empty() {
+                        continue;
+                    }
+                    let key =
+                        u32::try_from(out.surfaces.len()).context("Marathon material count")?;
+                    let scale = [b.f32(0xa0)?, b.f32(0xa4)?, b.f32(0xa8)?];
+                    let offset = [b.f32(0xb0)?, b.f32(0xb4)?, b.f32(0xb8)?];
+                    ensure!(
+                        scale.iter().all(|v| v.is_finite() && *v > 0.)
+                            && offset.iter().all(|v| v.is_finite()),
+                        "Invalid source model decode transform"
+                    );
+                    out.surfaces.insert(
+                        key,
+                        Surface {
+                            material,
+                            model: tag,
+                            entity: hash(entry, "entity")?,
+                            stage: stage as u8,
+                            transform: mat,
+                            scale,
+                            offset,
+                            has_colors: colors.is_some(),
+                        },
+                    );
+                    selected.push((key, faces));
                 }
             }
-            let used = selected
-                .iter()
-                .flat_map(|(_, f)| f.iter().flatten().copied())
-                .collect::<BTreeSet<_>>();
-            let base = out.positions.len();
-            ensure!(
-                base + used.len() < 65535,
-                "assembled model exceeds 16-bit vertex capacity"
-            );
-            let map = used
-                .iter()
-                .enumerate()
-                .map(|(i, v)| (*v, (base + i) as u16))
-                .collect::<BTreeMap<_, _>>();
-            for v in used {
-                let o = v as usize * 24;
-                // This adapter bakes bind-pose positions to native root zero. W is a
-                // skinning selector and does not change the stored XYZ coordinates.
-                let mut xyz = [0.; 3];
-                let mut normal = [0.; 3];
-                let mut tangent = [0.; 3];
-                let mut tex = [0.; 2];
-                for a in 0..3 {
-                    xyz[a] = (p.i16(o + a * 2)? as f32 / 32767.).max(-1.) * b.f32(0xa0 + a * 4)?
-                        + b.f32(0xb0 + a * 4)?;
-                    normal[a] = (p.i16(o + 8 + a * 2)? as f32 / 32767.).max(-1.);
-                    tangent[a] = (p.i16(o + 16 + a * 2)? as f32 / 32767.).max(-1.);
-                }
-                for (a, value) in tex.iter_mut().enumerate() {
-                    *value = (uv.i16(v as usize * 4 + a * 2)? as f32 / 32767.).max(-1.)
-                        * b.f32(0xc0 + a * 4)?
-                        + b.f32(0xc8 + a * 4)?;
-                }
-                xyz = transform(xyz, &mat, true);
-                normal = transform(normal, &mat, false);
-                tangent = transform(tangent, &mat, false);
-                ensure!(
-                    xyz.iter()
-                        .chain(normal.iter())
-                        .chain(tangent.iter())
-                        .chain(tex.iter())
-                        .all(|v| v.is_finite()),
-                    "nonfinite decoded vertex"
-                );
-                out.positions.push(xyz);
-                out.attributes.push([
-                    tex[0],
-                    tex[1],
-                    normal[0],
-                    normal[1],
-                    normal[2],
-                    p.i16(o + 14)? as f32 / 32767.,
-                    tangent[0],
-                    tangent[1],
-                    tangent[2],
-                    p.i16(o + 22)? as f32 / 32767.,
-                ]);
-            }
-            for (mat, faces) in selected {
-                if !faces.is_empty() {
-                    out.groups
-                        .push((mat, faces.iter().map(|f| f.map(|i| map[&i])).collect()));
-                }
-            }
+            append(&mut out, &b, &mat, &p, &uv, colors.as_deref(), selected)?;
         }
     }
     ensure!(!out.groups.is_empty(), "no render geometry");
     Ok(out)
 }
+type Draw = (u32, Vec<[u32; 3]>);
+
+fn append(
+    out: &mut Mesh,
+    b: &Payload,
+    mat: &[f32; 16],
+    p: &Payload,
+    uv: &Payload,
+    colors: Option<&Payload>,
+    selected: Vec<Draw>,
+) -> Result<()> {
+    let used = selected
+        .iter()
+        .flat_map(|(_, f)| f.iter().flatten().copied())
+        .collect::<BTreeSet<_>>();
+    let base = out.positions.len();
+    ensure!(
+        base + used.len() < 65535,
+        "assembled model exceeds 16-bit vertex capacity"
+    );
+    let map = used
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (*v, (base + i) as u16))
+        .collect::<BTreeMap<_, _>>();
+    for v in used {
+        let o = v as usize * 24;
+        // This adapter bakes bind-pose positions to native root zero. W is a
+        // skinning selector and does not change the stored XYZ coordinates.
+        let mut xyz = [0.; 3];
+        let mut normal = [0.; 3];
+        let mut tangent = [0.; 3];
+        let mut tex = [0.; 2];
+        for a in 0..3 {
+            xyz[a] = (p.i16(o + a * 2)? as f32 / 32767.).max(-1.) * b.f32(0xa0 + a * 4)?
+                + b.f32(0xb0 + a * 4)?;
+            normal[a] = (p.i16(o + 8 + a * 2)? as f32 / 32767.).max(-1.);
+            tangent[a] = (p.i16(o + 16 + a * 2)? as f32 / 32767.).max(-1.);
+        }
+        for (a, value) in tex.iter_mut().enumerate() {
+            *value = (uv.i16(v as usize * 4 + a * 2)? as f32 / 32767.).max(-1.)
+                * b.f32(0xc0 + a * 4)?
+                + b.f32(0xc8 + a * 4)?;
+        }
+        xyz = transform(xyz, mat, true);
+        normal = transform(normal, mat, false);
+        tangent = transform(tangent, mat, false);
+        ensure!(
+            xyz.iter()
+                .chain(normal.iter())
+                .chain(tangent.iter())
+                .chain(tex.iter())
+                .all(|v| v.is_finite()),
+            "nonfinite decoded vertex"
+        );
+        out.positions.push(xyz);
+        // The source vertex program clamps SV_VertexID to the last
+        // color row. Reordering the geometry must reorder that lookup.
+        out.colors.push(if let Some(colors) = colors {
+            colors.bytes::<4>((v as usize).min(colors.0.len() / 4 - 1) * 4)?
+        } else {
+            [0; 4]
+        });
+        out.attributes.push([
+            tex[0],
+            tex[1],
+            normal[0],
+            normal[1],
+            normal[2],
+            p.i16(o + 14)? as f32 / 32767.,
+            tangent[0],
+            tangent[1],
+            tangent[2],
+            p.i16(o + 22)? as f32 / 32767.,
+        ]);
+    }
+    for (mat, faces) in selected {
+        if !faces.is_empty() {
+            out.groups
+                .push((mat, faces.iter().map(|f| f.map(|i| map[&i])).collect()));
+        }
+    }
+    Ok(())
+}
+
 pub use crate::presentation::geometry::Encoded;
 pub fn encode(mesh: &Mesh, native: &Payload, native_mesh: usize) -> Result<Encoded> {
-    crate::presentation::geometry::encode(
+    crate::presentation::geometry::encode_source_passes(
         &crate::presentation::geometry::Mesh {
             positions: mesh.positions.clone(),
             attributes: mesh.attributes.clone(),
@@ -190,6 +302,11 @@ pub fn encode(mesh: &Mesh, native: &Payload, native_mesh: usize) -> Result<Encod
         },
         native,
         native_mesh,
+        &mesh
+            .surfaces
+            .iter()
+            .map(|(key, surface)| (*key, surface.native_stage()))
+            .collect(),
     )
 }
 
@@ -219,7 +336,27 @@ mod tests {
                 [1., 2., 0., 0., 1., 1., 1., 0., 0., 1.],
                 [-1., 1., 0., 0., 1., 1., 1., 0., 0., 1.],
             ],
-            groups: vec![(123, vec![[0, 1, 2]])],
+            colors: vec![[0; 4]; 3],
+            groups: vec![(123, vec![[0, 1, 2]]), (124, vec![[0, 1, 2]])],
+            surfaces: [(123, 0), (124, 4)]
+                .into_iter()
+                .map(|(key, stage)| {
+                    (
+                        key,
+                        Surface {
+                            material: key,
+                            model: 1,
+                            entity: 2,
+                            stage,
+                            transform: [0.; 16],
+                            scale: [1.; 3],
+                            offset: [0.; 3],
+                            has_colors: false,
+                        },
+                    )
+                })
+                .collect(),
+            omitted: vec![],
         };
         // A native carrier has an opaque body record, including its activation group.
         let mut carrier = vec![0; 0x170];

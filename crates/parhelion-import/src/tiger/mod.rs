@@ -1,5 +1,6 @@
 //! Shared Tiger package formats and Shadowkeep emission.
 //! Source-specific import workflows remain in their own backends.
+pub(crate) mod allocation;
 pub mod animation;
 pub mod audio;
 pub mod channel;
@@ -8,7 +9,9 @@ pub mod entity;
 pub mod geometry;
 pub mod instance;
 pub mod markers;
+pub mod material;
 pub mod payload;
+pub(crate) mod physics;
 pub(crate) mod projectile;
 pub mod reader;
 pub mod rig;

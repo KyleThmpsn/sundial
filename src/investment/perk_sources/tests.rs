@@ -50,7 +50,7 @@ fn provenance_includes_optional_plugs_without_claiming_default_usage() {
         ..Default::default()
     };
     let catalog = InvestmentCatalog {
-        catalog: Catalog::for_test(
+        catalog: std::sync::Arc::new(Catalog::for_test(
             vec![ItemDef {
                 hash: 1,
                 name: "Test Weapon".into(),
@@ -71,7 +71,7 @@ fn provenance_includes_optional_plugs_without_claiming_default_usage() {
                 (102, metadata(453)),
             ]
             .into(),
-        ),
+        )),
         authorable_weapon_stat_indices: Vec::new(),
     };
     let references = catalog.perk_sources();

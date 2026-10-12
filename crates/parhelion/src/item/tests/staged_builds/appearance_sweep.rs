@@ -367,6 +367,17 @@ fn rig(
             ));
         }
     }
+    // The block names the hold class of the attachment row the weapon wears, as stock blocks do.
+    let group = authored.weapon_content_group_hash;
+    let row = crate::weapon::animations::stance(staged, &authored.payload, Some(group))
+        .map_err(|error| format!("{error:?}"))?;
+    let block = crate::weapon::behavior::resolved_stance(staged, &authored.payload, group)
+        .map_err(|error| format!("{error:?}"))?;
+    if row != block {
+        return Err(format!(
+            "{kind} rig's block holds {block:08X}, its attachment row {row:08X}"
+        ));
+    }
     // With no Type Markers chosen, the block keeps the base weapon's type whichever rig it wears.
     let wanted =
         crate::weapon::behavior::markers(stock, &base.payload, base.weapon_content_group_hash)

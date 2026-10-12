@@ -18,6 +18,7 @@ pub(super) struct Node {
     pub reference: Option<String>,
     /// A cloned loading index for the named owner symbol, from that native parent's companion.
     pub companion: Option<Companion>,
+    pub storage: crate::NewTagStorageMode,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -71,6 +72,7 @@ impl Node {
             patches: Vec::new(),
             reference: None,
             companion: None,
+            storage: crate::NewTagStorageMode::InheritTemplate,
         }
     }
 
@@ -282,8 +284,13 @@ pub(super) fn materialize(
             });
         }
     }
-    let mut loading_groups =
-        crate::partition_loading_resources(&resources, &loading_owners, symbol(primary)?)?;
+    let eager = eager_loading_owners(manager, &nodes, &symbols)?;
+    let mut loading_groups = crate::shared_tag_dependency_index::partition::partition_with_eager(
+        &resources,
+        &loading_owners,
+        symbol(primary)?,
+        &eager,
+    )?;
     let owners: BTreeSet<_> = loading_groups.keys().copied().collect();
     let required: Vec<_> = loading_groups
         .iter()
@@ -304,7 +311,7 @@ pub(super) fn materialize(
         for tag in group {
             let committed = tag
                 .pkg_id()
-                .checked_sub(crate::package_profile::PARHELION_ASSET_PACKAGE_ID)
+                .checked_sub(crate::package_profile::window().base)
                 .and_then(|index| assets.packages.get(index as usize))
                 .is_some_and(|package| {
                     package.id == tag.pkg_id()
@@ -386,7 +393,7 @@ pub(super) fn materialize(
         prepared.push(NewTagSpec {
             template_tag: template,
             payload: data,
-            storage: crate::NewTagStorageMode::InheritTemplate,
+            storage: node.storage,
         });
         if let Some(target) = &node.reference {
             let ordinal = symbol(target)?.entry_index() as usize;
@@ -401,4 +408,28 @@ pub(super) fn materialize(
         symbols,
         package_index,
     })
+}
+
+fn eager_loading_owners(
+    manager: &sundial::package_authoring::PackageManager,
+    nodes: &[Node],
+    symbols: &BTreeMap<String, TagHash>,
+) -> AuthoringResult<BTreeSet<TagHash>> {
+    let mut eager = BTreeSet::new();
+    for companion in nodes.iter().filter_map(|node| node.companion.as_ref()) {
+        let owner = nodes
+            .iter()
+            .find(|node| node.symbol == companion.shared_owner)
+            .ok_or_else(|| invalid("Loading owner node is missing"))?;
+        let entry = manager
+            .get_entry(owner.template)
+            .ok_or_else(|| invalid("Loading owner template is missing"))?;
+        if !crate::shared_tag_dependency_index::scoped::deferred_owner(
+            entry.file_type,
+            entry.reference,
+        )? {
+            eager.insert(symbols[&owner.symbol]);
+        }
+    }
+    Ok(eager)
 }

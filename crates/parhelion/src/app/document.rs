@@ -69,17 +69,109 @@ impl PackageAuthoringApp {
         self.log = log;
     }
 
+    #[cfg(test)]
     pub(super) fn batch_request(&self) -> Result<BatchBuildRequest, String> {
-        if self.current_recipe_is_in_build()
-            && let Some((_, error)) = &self.invalid_weapon_name
+        self.build_inputs().request()
+    }
+
+    /// What a build reads from the window. The recipes load on the build's own thread, because a
+    /// full read restores every embedded model and held the window for seconds.
+    pub(super) fn build_inputs(&self) -> BuildInputs {
+        BuildInputs {
+            invalid_name: self
+                .invalid_weapon_name
+                .as_ref()
+                .map(|(_, error)| error.clone()),
+            open: self.recipe_path.clone().map(|path| OpenRecipe {
+                path,
+                recipe: self.recipe.clone(),
+                baseline: self.recipe_baseline.clone(),
+            }),
+            enabled: self.enabled_recipe_paths.clone(),
+            catalog: self.catalog.clone(),
+            library: self.recipe_library.clone(),
+            library_items: self
+                .recipe_entries
+                .iter()
+                .map(|entry| LibraryItem {
+                    hash: entry.identity_hash,
+                    name: entry.name.clone(),
+                    path: entry.path.clone(),
+                })
+                .collect(),
+            stock_weapons: self
+                .donor_summaries
+                .iter()
+                .map(|donor| donor.hash)
+                .collect(),
+            package_directory: self.packages.clone(),
+            staging_root: PathBuf::from(self.staging.trim()),
+            ignore_installed: self.ignore_installed,
+        }
+    }
+
+    /// A build waits for the catalog its checks read.
+    pub(super) fn build_ready(&self) -> Result<(), String> {
+        if self.catalog.is_none()
+            || self.catalog_receiver.is_some()
+            || self.catalog_worker.is_some()
+            || self.catalog_reload_pending
+        {
+            return Err("Wait for the weapon catalog to finish loading".to_owned());
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn snapshot(&self) -> Result<BatchBuildSnapshot, String> {
+        self.build_ready()?;
+        BatchBuildSnapshot::new(self.batch_request()?)
+    }
+}
+
+/// What a build reads from the window, so its recipes load and are checked away from it.
+pub(super) struct BuildInputs {
+    invalid_name: Option<String>,
+    open: Option<OpenRecipe>,
+    enabled: BTreeSet<PathBuf>,
+    catalog: Option<InvestmentCatalog>,
+    library: Option<RecipeLibrary>,
+    library_items: Vec<LibraryItem>,
+    stock_weapons: BTreeSet<u32>,
+    package_directory: PathBuf,
+    staging_root: PathBuf,
+    ignore_installed: bool,
+}
+
+/// The recipe open in the window, which builds as edited while its file still matches.
+struct OpenRecipe {
+    path: PathBuf,
+    recipe: WeaponRecipe,
+    baseline: WeaponRecipe,
+}
+
+/// A library recipe's item, for a recipe whose donor is another library weapon.
+struct LibraryItem {
+    hash: u32,
+    name: String,
+    path: PathBuf,
+}
+
+impl BuildInputs {
+    pub(super) fn request(&self) -> Result<BatchBuildRequest, String> {
+        if self
+            .open
+            .as_ref()
+            .is_some_and(|open| self.enabled.contains(&open.path))
+            && let Some(error) = &self.invalid_name
         {
             return Err(error.clone());
         }
-        let mut recipes = Vec::with_capacity(self.enabled_recipe_paths.len());
-        for path in &self.enabled_recipe_paths {
-            recipes.push(self.recipe_for_build(path)?);
+        let mut recipes = Vec::with_capacity(self.enabled.len());
+        for path in &self.enabled {
+            recipes.push(self.recipe(path)?);
         }
-        if let Some(library) = &self.recipe_library {
+        if let Some(library) = &self.library {
             let included = recipes
                 .iter()
                 .map(|recipe| {
@@ -108,7 +200,7 @@ impl PackageAuthoringApp {
             // Shader recipes cannot contain sockets, so these dependencies have no further
             // socket dependencies. Keep one copy even when several items select the shader.
             for entry in library.shader_entries(&referenced)? {
-                let recipe = self.recipe_for_build(&entry.path)?;
+                let recipe = self.recipe(&entry.path)?;
                 if recipe.kind != ItemKind::Shader
                     || recipe.identity.item_hash.parse_u32().ok() != Some(entry.identity_hash)
                 {
@@ -121,41 +213,42 @@ impl PackageAuthoringApp {
             }
         }
         Ok(BatchBuildRequest {
-            package_directory: self.packages.clone(),
-            staging_root: PathBuf::from(self.staging.trim()),
+            package_directory: self.package_directory.clone(),
+            staging_root: self.staging_root.clone(),
             ignore_installed_authored_overlays: self.ignore_installed,
             recipes,
         })
     }
 
     /// Explicit items and required shaders use the same draft and concurrent-change checks.
-    fn recipe_for_build(&self, path: &Path) -> Result<WeaponRecipe, String> {
-        let mut recipe = if self.recipe_path.as_deref() == Some(path) {
-            if let Some((_, error)) = &self.invalid_weapon_name {
-                return Err(error.clone());
+    fn recipe(&self, path: &Path) -> Result<WeaponRecipe, String> {
+        let mut recipe = match &self.open {
+            Some(open) if open.path == path => {
+                if let Some(error) = &self.invalid_name {
+                    return Err(error.clone());
+                }
+                let saved = WeaponRecipe::load_json(path).map_err(|error| {
+                    format!(
+                        "Could not check included recipe {}: {error}",
+                        path.display()
+                    )
+                })?;
+                if !saved.same_saved_content(&open.baseline) {
+                    return Err(format!(
+                        "{} changed on disk after you opened it. Reopen it before building. Export any unsaved draft first.",
+                        open.recipe.name
+                    ));
+                }
+                open.recipe.clone()
             }
-            let saved = WeaponRecipe::load_json(path).map_err(|error| {
-                format!(
-                    "Could not check included recipe {}: {error}",
-                    path.display()
-                )
-            })?;
-            if !saved.same_saved_content(&self.recipe_baseline) {
-                return Err(format!(
-                    "{} changed on disk after you opened it. Reopen it before building. Export any unsaved draft first.",
-                    self.recipe.name
-                ));
-            }
-            self.recipe.clone()
-        } else {
-            WeaponRecipe::load_json(path).map_err(|error| {
+            _ => WeaponRecipe::load_json(path).map_err(|error| {
                 format!("Could not load included recipe {}: {error}", path.display())
-            })?
+            })?,
         };
         if let Some(catalog) = self.catalog.as_ref() {
-            custom_perks::repair_socket_picks(self.recipe_library.as_ref(), catalog, &mut recipe)?;
+            custom_perks::repair_socket_picks(self.library.as_ref(), catalog, &mut recipe)?;
         }
-        self.rebase_library_donor(recipe)
+        self.rebase(recipe)
     }
 
     /// Rebuilds a recipe whose donor is a weapon from the library on that weapon's own recipe.
@@ -164,10 +257,7 @@ impl PackageAuthoringApp {
     /// so it cannot serve as a donor as it is. Its recipe can: the result keeps this recipe's
     /// identity and settings on top of the base recipe's stock donor and changes. A base that
     /// itself builds on a library weapon is followed the same way.
-    pub(super) fn rebase_library_donor(
-        &self,
-        recipe: WeaponRecipe,
-    ) -> Result<WeaponRecipe, String> {
+    fn rebase(&self, recipe: WeaponRecipe) -> Result<WeaponRecipe, String> {
         let mut current = recipe;
         let mut seen = Vec::new();
         loop {
@@ -177,18 +267,18 @@ impl PackageAuthoringApp {
             // An installed weapon is always itself. Authored identities are derived hashes and
             // nothing stops one from matching a real item, so the game's own tables win rather
             // than a recipe quietly building on something the reader never chose.
-            if self.donor_summaries.iter().any(|stock| stock.hash == donor) {
+            if self.stock_weapons.contains(&donor) {
                 return Ok(current);
             }
             let Some(entry) = self
-                .recipe_entries
+                .library_items
                 .iter()
-                .find(|entry| entry.identity_hash == donor && entry.identity_hash != 0)
+                .find(|entry| entry.hash == donor && entry.hash != 0)
             else {
                 return Ok(current);
             };
             if seen.contains(&donor)
-                || entry.identity_hash == current.identity.item_hash.parse_u32().unwrap_or_default()
+                || entry.hash == current.identity.item_hash.parse_u32().unwrap_or_default()
             {
                 return Err(format!(
                     "{} builds on itself through {}. Choose a stock weapon as its donor.",
@@ -210,18 +300,9 @@ impl PackageAuthoringApp {
             })?;
         }
     }
+}
 
-    pub(super) fn snapshot(&self) -> Result<BatchBuildSnapshot, String> {
-        if self.catalog.is_none()
-            || self.catalog_receiver.is_some()
-            || self.catalog_worker.is_some()
-            || self.catalog_reload_pending
-        {
-            return Err("Wait for the weapon catalog to finish loading".to_owned());
-        }
-        BatchBuildSnapshot::new(self.batch_request()?)
-    }
-
+impl PackageAuthoringApp {
     pub(super) fn save_edits_for_build(&mut self) -> Result<(), String> {
         if let Some((_, error)) = &self.invalid_weapon_name {
             return Err(error.clone());

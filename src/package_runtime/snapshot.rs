@@ -33,6 +33,19 @@ impl Snapshot {
                 metadata.modified().map_err(|error| error.to_string())?,
             ));
         }
+        if let Some(install) = packages.parent() {
+            for path in super::mods::files(install)? {
+                let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+                files.push((
+                    path.strip_prefix(install)
+                        .map_err(|e| e.to_string())?
+                        .as_os_str()
+                        .to_owned(),
+                    metadata.len(),
+                    metadata.modified().map_err(|e| e.to_string())?,
+                ));
+            }
+        }
         files.sort();
         Ok(Self {
             path: packages.canonicalize().map_err(|error| error.to_string())?,

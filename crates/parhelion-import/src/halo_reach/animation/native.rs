@@ -1,4 +1,5 @@
 //! Explicit source motion on appended native vehicle controls.
+mod wheel;
 use super::{codec::Motion, playback};
 use crate::{
     halo_reach::{Scene, rig},
@@ -13,6 +14,7 @@ use std::{
     fs,
     path::Path,
 };
+pub(in crate::halo_reach) use wheel::rotations;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -40,6 +42,7 @@ pub(in crate::halo_reach) struct Bundle {
     owners: Vec<Owner>,
     bank: (u32, Payload),
     clips: Vec<(u32, Payload)>,
+    layers: Vec<(u32, usize, u32, Payload)>,
 }
 
 fn multiply(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
@@ -264,6 +267,7 @@ pub(in crate::halo_reach) fn prepare(
         "Native root bind requires a separate source coordinate adapter"
     );
     let extended = animation::rig::extend(&fk, fk_tag, &controls, &source_bones(scene, count)?)?;
+    let clip_controls = extended.controls.clone();
     let mut skeleton = crate::tiger::rig::decode(
         &extended.skeleton,
         extended.skeleton.pointer(24)?,
@@ -347,13 +351,36 @@ pub(in crate::halo_reach) fn prepare(
             .transpose()?;
         clips.push((
             tag,
-            animation::clip::extend(&original, count, total, motion.as_deref())?,
+            animation::clip::extend(&original, count, total, &clip_controls, motion.as_deref())?,
         ));
     }
     ensure!(
         selected.is_empty(),
         "Requested native clip is outside the selected vehicle bank"
     );
+    let sizes = bank
+        .array(8, 4, Some(0x80808F48))?
+        .into_iter()
+        .map(|row| {
+            let tag = bank.u32(row)?;
+            let (_, clip) = clips
+                .iter()
+                .find(|(value, _)| *value == tag)
+                .context("Layer clip")?;
+            animation::clip::size(clip)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut layers = Vec::new();
+    for owner in &owners {
+        let definition = owner.converted.pointer(24)?;
+        if owner.converted.u32(definition - 4)? == 0x80803640 {
+            let field = definition + 0x11C;
+            let tag = owner.converted.u32(field)?;
+            let mut payload = (*reader.tag(tag, Some(0x808034EB))?).clone();
+            animation::layer::clip_sizes(&mut payload, &sizes)?;
+            layers.push((owner.tag, field, tag, payload));
+        }
+    }
     fs::create_dir_all(root.join("animation"))?;
     let save = |name: &str, payload: &Payload| -> Result<String> {
         let file = format!("animation/{name}.bin");
@@ -395,6 +422,7 @@ pub(in crate::halo_reach) fn prepare(
         owners,
         bank: (bank_tag, bank),
         clips,
+        layers,
     })
 }
 
@@ -418,6 +446,15 @@ impl Bundle {
             }
         }
         graph.add("motion-bank", self.bank.0, &bank, None, bank_patches)?;
+        for (_, _, tag, layer) in &self.layers {
+            graph.add(
+                &format!("motion-layers-{tag:08X}"),
+                *tag,
+                &layer.0,
+                None,
+                vec![],
+            )?;
+        }
         for owner in &self.owners {
             if let Some((cut, delta)) = owner.relocation {
                 animation::rig::rebase_entity(entity, &owner.original, owner.tag, cut, delta)?;
@@ -433,6 +470,15 @@ impl Bundle {
             if let Some(field) = owner.bank_field {
                 put(&mut payload, field, &u32::MAX.to_le_bytes())?;
                 owner_patches.push(json!({"offset":field,"symbol":"motion-bank"}));
+            }
+            for &(_, field, tag, _) in self
+                .layers
+                .iter()
+                .filter(|(tag, _, _, _)| *tag == owner.tag)
+            {
+                put(&mut payload, field, &u32::MAX.to_le_bytes())?;
+                owner_patches
+                    .push(json!({"offset":field,"symbol":format!("motion-layers-{tag:08X}")}));
             }
             graph.add(&owner.symbol, owner.tag, &payload, None, owner_patches)?;
             for at in crate::tiger::entity::owner_slots(&self.entity, &owner.original, owner.tag)? {

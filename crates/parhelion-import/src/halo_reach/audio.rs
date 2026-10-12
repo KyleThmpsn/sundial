@@ -318,15 +318,20 @@ pub(super) fn export(
 
 fn fire_sound(behavior: &Value) -> Result<Option<&Value>> {
     let edges = behavior["edges"].as_array().context("Behavior links")?;
-    let nodes = behavior["nodes"].as_object().context("Behavior nodes")?;
     let root = behavior["root"]["datum"]
         .as_u64()
         .context("Behavior root")?;
-    let mut queue = edges
+    let queue = edges
         .iter()
         .filter(|e| e["owner"] == root && e["role"] == "fire")
         .map(|e| e["tag"]["datum"].as_u64().context("Fire identity"))
         .collect::<Result<Vec<_>>>()?;
+    fire_sound_from(behavior, queue)
+}
+
+pub(super) fn fire_sound_from(behavior: &Value, mut queue: Vec<u64>) -> Result<Option<&Value>> {
+    let edges = behavior["edges"].as_array().context("Behavior edges")?;
+    let nodes = behavior["nodes"].as_object().context("Behavior nodes")?;
     let mut seen = BTreeSet::new();
     let mut sounds = Vec::new();
     while let Some(tag) = queue.pop() {
@@ -443,18 +448,31 @@ pub(super) fn native(
     let gain = sound["data"]["playback"]["gain_db"]
         .as_f64()
         .context("Source firing gain")? as f32;
-    let bank = crate::tiger::audio::bank::Bank::one_shot(&ids, output_bus, gain)?;
+    let limits = &sound["data"]["playback_limits"];
+    ensure!(
+        sound["data"]["promotion_index"] == -1 && sound["data"]["custom_playback_index"] == -1,
+        "Primary firing sound requires promotion or custom playback translation"
+    );
+    ensure!(
+        limits["preemption_ms"] == 0 && limits["maximum_per_object_per_class"] == 0,
+        "Primary firing sound requires timed preemption or shared class limits"
+    );
+    let voice_limit = limits["maximum_per_object_per_tag"]
+        .as_u64()
+        .filter(|v| (1..=16).contains(v))
+        .context("Invalid source per-object firing voice limit")? as u16;
+    let bank = crate::tiger::audio::bank::Bank::one_shot(&ids, output_bus, gain, voice_limit)?;
     fs::write(
         graph.join("audio/fire.bank.json"),
         serde_json::to_vec(&bank)?,
     )?;
-    let sound = json!({"source":sound["tag"],"source_playback":sound["data"]["playback"],"media":media,"media_ids":media,"bank":"00000001","event_id":"00000001","routing":"source_one_shot"});
+    let sound = json!({"source":sound["tag"],"source_playback":sound["data"]["playback"],"source_playback_limits":limits,"native_voice_limit":voice_limit,"media":media,"media_ids":media,"bank":"00000001","event_id":"00000001","routing":"source_one_shot"});
     Ok(
-        json!({"authoring_schema":3,"runtime_entity":rig["runtime_entity"],"matched_events":[],"firing_events":[{"sounds":[sound],"native_sounds":[native],"native_presentation":presentation,"mapping":"Source primary fire to unique native fire slot"}],"transcoded_media":files,"converted_banks":[{"source_tag":"00000001","file":"audio/fire.bank.json","version":113,"routing":"source_one_shot"}],"conversion_errors":[],"output_bus":output_bus,"limits":["Primary firing PCM, gain and variation count use one complete recording per native trigger. This explicit nonspatial route does not reproduce source attenuation, tails, pitch modulation, skip fractions or environment switches. Native trigger timing is retained."]}),
+        json!({"authoring_schema":3,"runtime_entity":rig["runtime_entity"],"matched_events":[],"firing_events":[{"sounds":[sound],"native_sounds":[native],"native_presentation":presentation,"mapping":"Source primary fire to unique native fire slot"}],"transcoded_media":files,"converted_banks":[{"source_tag":"00000001","file":"audio/fire.bank.json","version":113,"routing":"source_one_shot"}],"conversion_errors":[],"output_bus":output_bus,"limits":["Primary firing PCM, gain, variation count and the source per-object voice limit are translated. New triggers replace the oldest voice at that limit. This explicit nonspatial route does not reproduce cross-object class limits, source attenuation, tails, pitch modulation, skip fractions or environment switches. Native trigger timing is retained."]}),
     )
 }
 
-fn verify_bus(bank: &[u8], bus: u32) -> Result<()> {
+pub(super) fn verify_bus(bank: &[u8], bus: u32) -> Result<()> {
     let mut at = 0;
     let mut version = None;
     let mut found = false;

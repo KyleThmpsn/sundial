@@ -4,9 +4,9 @@
 //! interface metadata supplies native methods, never shifted source ordinals.
 use super::{append_array, array_bytes, procedural, put};
 use crate::d2_mot::{entity::links::Object, payload::Payload};
+use crate::tiger::allocation;
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
-mod allocation;
 pub(super) mod constants;
 pub mod damage;
 pub mod movement;

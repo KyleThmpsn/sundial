@@ -11,7 +11,8 @@ pub(in crate::item) fn source(
         .sparrow
         .as_ref()
         .is_some_and(crate::vehicle::Sparrow::has_changes);
-    if !(imported(spec) || vehicle)
+    let hud = spec.kind == ItemKind::Sparrow && spec.overrides.hud_icon.is_some();
+    if !(imported(spec) || vehicle || hud)
         || !matches!(
             spec.kind,
             ItemKind::GhostShell | ItemKind::Ship | ItemKind::Sparrow

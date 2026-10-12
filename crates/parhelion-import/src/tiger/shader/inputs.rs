@@ -46,6 +46,37 @@ pub struct Inspection {
     pub assembly: String,
 }
 
+/// Shader semantics also need matching hardware interpolator registers. A
+/// matching semantic name alone does not reconnect separately compiled stages.
+pub fn verify_linkage(vertex: &[u8], pixel: &[u8]) -> Result<()> {
+    Program::new(Stage::Vertex, vertex.to_vec())?;
+    Program::new(Stage::Pixel, pixel.to_vec())?;
+    let outputs = super::dxbc::signature(vertex, b"OSGN")?;
+    let inputs = super::dxbc::signature(pixel, b"ISGN")?;
+    let range = super::dxbc::chunk(pixel, b"ISGN")?.context("Pixel linkage signature")?;
+    let table = &pixel[range];
+    for (ordinal, (semantic, index, register, _)) in inputs.iter().enumerate() {
+        if semantic.eq_ignore_ascii_case("SV_IsFrontFace") {
+            continue;
+        }
+        let used = *table
+            .get(8 + ordinal * 24 + 21)
+            .context("Pixel linkage read mask")?;
+        if used == 0 && !semantic.eq_ignore_ascii_case("SV_Position") {
+            continue;
+        }
+        let (_, _, output_register, mask) = outputs
+            .iter()
+            .find(|(name, i, _, _)| name.eq_ignore_ascii_case(semantic) && i == index)
+            .with_context(|| format!("Vertex program does not produce {semantic}{index}"))?;
+        ensure!(
+            register == output_register && used & !*mask == 0,
+            "Vertex and pixel registers differ for {semantic}{index}"
+        );
+    }
+    Ok(())
+}
+
 fn identifier(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }

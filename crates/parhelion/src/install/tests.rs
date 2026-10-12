@@ -6,6 +6,7 @@ use tempfile::TempDir;
 mod account_replacement;
 mod caches;
 mod commit;
+mod loader;
 mod native_lifecycle;
 mod progress;
 mod recovery;

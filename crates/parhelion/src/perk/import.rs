@@ -402,7 +402,7 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
     outside(&output, native.parent().unwrap_or(&native)).map_err(error)?;
     fs::create_dir_all(&output).map_err(error)?;
     let manager = open_shadowkeep_package_manager(&native)?;
-    if manager.package_dir.canonicalize().map_err(error)? != native {
+    if manager.source_dir().canonicalize().map_err(error)? != native {
         return Err(
             "The native package reader did not open the requested package directory".into(),
         );

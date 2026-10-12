@@ -41,9 +41,12 @@ fn kept_parts(graph: &Value) -> AuthoringResult<Vec<Kept>> {
                     .to_owned(),
                 source_region: if part["source_region"] == true {
                     Some((
-                        part["selector"]
-                            .as_u64()
-                            .ok_or_else(|| invalid("Source art selector missing"))?,
+                        parhelion_import::d2_mot::artwork::native_selector(
+                            part["selector"]
+                                .as_u64()
+                                .ok_or_else(|| invalid("Source art selector missing"))?,
+                        )
+                        .map_err(|error| invalid(error.to_string()))?,
                         usize::try_from(
                             part["position"]
                                 .as_u64()
@@ -254,6 +257,7 @@ pub(super) fn apply(
 fn graph_node(
     folder: &Path,
     n: &Value,
+    model: bool,
     spec: Option<&WeaponCloneSpec>,
     repaired: &mut BTreeMap<String, Vec<u8>>,
     manager: &sundial::package_authoring::PackageManager,
@@ -279,7 +283,7 @@ fn graph_node(
         )
         .map_err(|e| invalid(e.to_string()))?
     };
-    if name == "model" || n["model"] == true {
+    if model {
         parhelion_import::d2_mot::audit::draws::declare_model_draw_indices(&mut payload)
             .map_err(|e| invalid(format!("Imported model draw indices: {e}")))?;
     }
@@ -309,6 +313,12 @@ fn graph_node(
         patches = fixed.patches;
     }
     let mut node = linking::Node::new(name, template, payload);
+    node.storage = match n["storage"].as_str() {
+        None => crate::NewTagStorageMode::InheritTemplate,
+        Some("audio_media") => crate::NewTagStorageMode::AudioMedia,
+        Some("audio_bank") => crate::NewTagStorageMode::AudioBank,
+        Some(_) => return Err(invalid("Unsupported imported asset storage")),
+    };
     for p in &patches {
         let offset = p["offset"]
             .as_u64()
@@ -365,11 +375,16 @@ fn apply_one(
         .as_array()
         .ok_or_else(|| invalid("Asset nodes missing"))?;
     let mut nodes = Vec::with_capacity(json_nodes.len());
-    let mut repaired = parhelion_import::d2_mot::native::vertex_input::repair(&graph, folder)
+    let mut repaired = parhelion_import::tiger::material::repair(&graph, folder)
         .map_err(|e| invalid(format!("Imported model bindings: {e:#}")))?;
+    let models = parhelion_import::model_symbols(&graph).map_err(|e| invalid(e.to_string()))?;
     for n in json_nodes {
-        nodes.push(graph_node(folder, n, spec, &mut repaired, manager)?);
+        let model = n["symbol"]
+            .as_str()
+            .is_some_and(|name| models.contains(name));
+        nodes.push(graph_node(folder, n, model, spec, &mut repaired, manager)?);
     }
+    loading::replication_companions(manager, directory, &mut nodes, companions)?;
     let extra_bounds = if graph["ornament_icon_png"].is_string() {
         8
     } else {

@@ -24,7 +24,7 @@ fn graph_bytes(root: &Path, graph: &Value, symbol: &str) -> Result<Payload> {
         .context("nodes")?
         .iter()
         .find(|node| node["symbol"] == symbol)
-        .context("missing graph node")?;
+        .with_context(|| format!("Missing graph node {symbol}"))?;
     Ok(Payload(fs::read(
         root.join(node["file"].as_str().context("node file")?),
     )?))
@@ -50,6 +50,7 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
     ensure!(!entries.is_empty(), "Empty required native corpus");
     let mut recipes = Vec::new();
     let mut evidence = Vec::new();
+    let mut stock = Reader::discovery(&native, &output.join("stock-readback"), false)?;
     for entry in entries {
         let path = PathBuf::from(entry["recipe"].as_str().context("prepared recipe")?);
         let recipe = WeaponRecipe::load_json(&path)?;
@@ -109,10 +110,10 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
                 "Requested arm motion was not linked"
             );
         }
-        verify_loaded_inputs(&reference.directory, &graph)?;
+        verify_loaded_inputs(&reference.directory, &graph, &mut stock)?;
         verify_sights(&reference.directory, &graph)?;
         verify_projectile_source(&path, &reference.directory, &graph)?;
-        verify_prepared_geometry(entry, &recipe, &path, &reference.directory, &graph)?;
+        verify_prepared_geometry(request, &recipe, &path, &reference.directory, &graph)?;
         fs::write(
             output.join(format!(
                 "{}.parhelion.json",
@@ -160,7 +161,6 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
         fs::copy(built.run_directory.join(&artifact.file_name), target)?;
     }
     let mut staged = Reader::new(&packages, &output.join("readback"), false)?;
-    let stock = Reader::discovery(&native, &output.join("stock-readback"), false)?;
     let globals = staged
         .manager
         .lookup
@@ -212,7 +212,13 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
             &barrel_witness,
         )?;
         verify_staged_motion(&mut staged, &stock, &graph, &runtime)?;
-        verify_staged_arms(&mut staged, &stock, &graph, &runtime)?;
+        verify_staged_arms(
+            &mut staged,
+            &mut stock,
+            &reference.directory,
+            &graph,
+            &runtime,
+        )?;
         verify_staged_vehicle(&mut staged, &recipe, &runtime, &barrel_witness)?;
         verify_staged_barrel(&mut staged, &recipe, &runtime, &barrel_witness)?;
     }
@@ -228,7 +234,8 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
 
 fn verify_staged_arms(
     staged: &mut Reader,
-    stock: &Reader,
+    stock: &mut Reader,
+    directory: &Path,
     graph: &Value,
     runtime: &Value,
 ) -> Result<()> {
@@ -259,6 +266,7 @@ fn verify_staged_arms(
             "Imported reload retained a stock routing table"
         );
     }
+    let held = verify_staged_held_clips(staged, stock, directory, graph, &bank)?;
     let mut receipts = Vec::new();
     for action in motion["actions"].as_array().context("Arm actions")? {
         let name = action["state"].as_str().context("Arm action name")?;
@@ -287,14 +295,61 @@ fn verify_staged_arms(
         ensure!(!linked.is_empty(), "Reload action has no clips");
         receipts.push(json!({"state":name,"clips":linked}));
     }
-    ensure!(!receipts.is_empty(), "Empty required arm motion");
+    ensure!(
+        !receipts.is_empty() || held > 0,
+        "Empty required arm motion"
+    );
     fs::write(
         staged.output.join(format!("arms-{owner:08X}.json")),
         serde_json::to_vec_pretty(
-            &json!({"lookup":owner,"bank":bank_tag,"states":states_tag,"actions":receipts,"gameplay_verified":false}),
+            &json!({"lookup":owner,"bank":bank_tag,"states":states_tag,"actions":receipts,"held_clips":held,"gameplay_verified":false}),
         )?,
     )?;
     Ok(())
+}
+
+fn verify_staged_held_clips(
+    staged: &mut Reader,
+    stock: &mut Reader,
+    directory: &Path,
+    graph: &Value,
+    bank: &Payload,
+) -> Result<usize> {
+    let motion = &graph["animation"]["first_person"];
+    let clips = motion["clips"].as_array().context("First-person clips")?;
+    if clips.is_empty() {
+        return Ok(0);
+    }
+    let original = stock.tag(
+        u32::try_from(motion["bank"].as_u64().context("Original bank")?)?,
+        Some(0x808036f6),
+    )?;
+    let prior = original.array(8, 4, Some(0x80808f48))?;
+    let current = bank.array(8, 4, Some(0x80808f48))?;
+    let mut checked = 0;
+    for clip in clips {
+        let original_tag = u32::try_from(clip["native"].as_u64().context("Native held clip")?)?;
+        let expected = fs::read(directory.join(clip["file"].as_str().context("Held clip file")?))?;
+        let mut found = 0;
+        for (index, &row) in prior.iter().enumerate() {
+            if original.u32(row)? != original_tag {
+                continue;
+            }
+            let tag = bank.u32(*current.get(index).context("Held clip slot disappeared")?)?;
+            ensure!(
+                stock.manager.get_entry(tiger_pkg::TagHash(tag)).is_none(),
+                "Held clip still modifies stock animation"
+            );
+            ensure!(
+                staged.tag(tag, Some(0x80808f49))?.0 == expected,
+                "Held clip was lost during emission"
+            );
+            found += 1;
+        }
+        ensure!(found > 0, "Held clip has no original bank reference");
+        checked += 1;
+    }
+    Ok(checked)
 }
 
 fn arm_routes(states: &Payload, bank: &Payload, name: &str) -> Result<Vec<(u32, u32)>> {
@@ -330,40 +385,66 @@ fn arm_routes(states: &Payload, bank: &Payload, name: &str) -> Result<Vec<(u32, 
     Ok(linked)
 }
 
-fn verify_loaded_inputs(root: &Path, graph: &Value) -> Result<()> {
+fn verify_loaded_inputs(root: &Path, graph: &Value, stock: &mut Reader) -> Result<()> {
     if graph["object_inputs"]
         .as_object()
         .is_none_or(|v| v.is_empty())
     {
         return Ok(());
     }
-    for (symbol, fields) in [
-        ("owner", &[(0x120, 96, 0x80809788)][..]),
-        (
-            "object-channels",
-            &[(0x50, 16, 0x80800090), (0x90, 16, 0x8080979C)][..],
-        ),
-    ] {
-        let stored = graph_bytes(root, graph, symbol)?;
-        let start = stored.pointer(16)?;
-        let end = stored.pointer(24)?;
-        // Shadowkeep copies this span, not the complete stored resource. Resolve the
-        // descriptors after the copy to exercise what binding and cleanup actually read.
-        let loaded = Payload(stored.0[start..end].to_vec());
-        if symbol == "object-channels" {
-            verify_channel_receivers(&stored, &loaded)?;
+    let owner = graph_bytes(root, graph, "owner")?;
+    let loaded = Payload(owner.0[owner.pointer(16)?..owner.pointer(24)?].to_vec());
+    ensure!(
+        !loaded.array(0x120, 96, Some(0x80809788))?.is_empty(),
+        "Loaded model input storage is empty"
+    );
+    let entity = graph_bytes(root, graph, "entity")?;
+    let entity_node = graph["nodes"]
+        .as_array()
+        .context("Graph nodes")?
+        .iter()
+        .find(|node| node["symbol"] == "entity")
+        .context("Graph entity")?;
+    let patches = entity_node["patches"]
+        .as_array()
+        .context("Entity patches")?;
+    let mut channels = 0;
+    for row in entity.array(16, 12, Some(0x80809c04))? {
+        // Follow the entity's actual bank, whether the import extended it or
+        // reused native inputs that already supply the requested material value.
+        let stored = if let Some(patch) = patches.iter().find(|p| p["offset"] == row) {
+            graph_bytes(
+                root,
+                graph,
+                patch["symbol"].as_str().context("Owner symbol")?,
+            )?
+        } else {
+            (*stock.tag(entity.u32(row)?, Some(0x80809c36))?).clone()
+        };
+        if stored.u32(stored.pointer(16)? - 4)? == 0x8080979f {
+            verify_loaded_channel(&stored)?;
+            channels += 1;
         }
-        for &(field, stride, class) in fields {
-            let rows = loaded.array(field, stride, Some(class))?;
-            ensure!(!rows.is_empty(), "Loaded {symbol} input storage is empty");
-            if class == 0x8080979C {
-                // Each pair starts unbound. Native unlink skips a handle of FFFFFFFF.
-                ensure!(
-                    rows.iter()
-                        .all(|row| loaded.0[*row..row + stride].iter().all(|v| *v == 255)),
-                    "Fresh channel state contains live cleanup handles"
-                );
-            }
+    }
+    ensure!(channels > 0, "Model inputs have no inherited channel bank");
+    Ok(())
+}
+
+fn verify_loaded_channel(stored: &Payload) -> Result<()> {
+    // Shadowkeep copies this span, not the complete stored resource. Resolve the
+    // descriptors after the copy to exercise what binding and cleanup actually read.
+    let loaded = Payload(stored.0[stored.pointer(16)?..stored.pointer(24)?].to_vec());
+    verify_channel_receivers(stored, &loaded)?;
+    for (field, class) in [(0x50, 0x80800090), (0x90, 0x8080979c)] {
+        let rows = loaded.array(field, 16, Some(class))?;
+        ensure!(!rows.is_empty(), "Loaded channel storage is empty");
+        if class == 0x8080979c {
+            // Each pair starts unbound. Native unlink skips a handle of FFFFFFFF.
+            ensure!(
+                rows.iter()
+                    .all(|row| loaded.0[*row..row + 16].iter().all(|v| *v == 255)),
+                "Fresh channel state contains live cleanup handles"
+            );
         }
     }
     Ok(())
@@ -427,10 +508,8 @@ fn verify_staged_motion(
     let Some(motion) = graph.get("source_motion") else {
         return Ok(());
     };
-    ensure!(
-        motion["bindings"].as_array().is_some_and(|v| !v.is_empty()),
-        "Requested source motion has no bindings"
-    );
+    // Source controls can receive phase-driven clips without replacing a named
+    // donor clip. Verify their emitted rig and reachable clip bank below.
     let component = |class: &str| -> Result<u32> {
         let matches = runtime["components"]
             .as_array()
@@ -727,10 +806,17 @@ fn verify_prepared_geometry(
             }
         }
     }
+    let clipped = entry["optic"]["aperture"].is_string() && entry["optic"]["view"] != "separate";
     ensure!(
-        positions.0.len() == expected.len() * 16,
+        positions.0.len() >= expected.len() * 16,
         "Native vertex loss"
     );
+    if !clipped {
+        ensure!(
+            positions.0.len() == expected.len() * 16,
+            "Unexpected vertices"
+        );
+    }
     for stage in [0, 7] {
         if model.u16(0xd8 + stage * 2)? != model.u16(0xda + stage * 2)? {
             ensure!(
@@ -742,6 +828,7 @@ fn verify_prepared_geometry(
     verify_skin(&positions, &model, &expected)?;
     let draws = model.array(0xc8, 32, Some(0x8080737e))?;
     let mut triangles = 0;
+    let mut visible_faces = std::collections::BTreeSet::new();
     for (ordinal, row) in draws.into_iter().enumerate() {
         let visible = [0, 7].into_iter().any(|stage| {
             (usize::from(model.u16(0xd8 + stage * 2).unwrap())
@@ -758,7 +845,7 @@ fn verify_prepared_geometry(
         for at in (start..start + count).step_by(4) {
             for corner in 0..3 {
                 ensure!(
-                    (indices.u32((at + corner) * 4)? as usize) < expected.len(),
+                    (indices.u32((at + corner) * 4)? as usize) < positions.0.len() / 16,
                     "Native face escapes vertices"
                 );
             }
@@ -768,13 +855,90 @@ fn verify_prepared_geometry(
             );
             if visible {
                 triangles += 1;
+                visible_faces.insert([
+                    indices.u32(at * 4)?,
+                    indices.u32((at + 1) * 4)?,
+                    indices.u32((at + 2) * 4)?,
+                ]);
             }
         }
     }
-    ensure!(
-        triangles as u64 == expected_source_triangles(&source)?,
-        "Native geometry coverage differs"
-    );
+    if clipped {
+        verify_scope_surroundings(&source, &entry["optic"]["aperture"], &visible_faces)?;
+    } else {
+        ensure!(
+            triangles as u64 == expected_source_triangles(&source)?,
+            "Native geometry coverage differs"
+        );
+    }
+    Ok(())
+}
+
+fn verify_scope_surroundings(
+    source: &Value,
+    aperture: &Value,
+    visible: &std::collections::BTreeSet<[u32; 3]>,
+) -> Result<()> {
+    let model = &source["models"][0]["model"];
+    let material = model["materials"]
+        .as_array()
+        .context("Source materials")?
+        .iter()
+        .position(|m| &m["tag"]["path"] == aperture)
+        .context("Configured aperture is absent")?;
+    let primitives = model["primitives"]
+        .as_array()
+        .context("Source primitives")?;
+    let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
+    for primitive in primitives.iter().filter(|p| p["material"] == material) {
+        for index in primitive["indices"].as_array().context("Lens indices")? {
+            let position =
+                &primitive["vertices"][index.as_u64().context("Lens index")? as usize]["position"];
+            for axis in 0..3 {
+                let value = position[axis].as_f64().context("Lens coordinate")?;
+                bounds[0][axis] = bounds[0][axis].min(value);
+                bounds[1][axis] = bounds[1][axis].max(value);
+            }
+        }
+    }
+    ensure!(bounds.iter().flatten().all(|v| v.is_finite()), "Empty lens");
+    bounds[0][0] -= 0.002;
+    bounds[1][0] += 0.002;
+    let mut first = 0u32;
+    let mut preserved = 0usize;
+    for primitive in primitives {
+        let vertices = primitive["vertices"]
+            .as_array()
+            .context("Source vertices")?;
+        for face in primitive["indices"]
+            .as_array()
+            .context("Source indices")?
+            .chunks_exact(3)
+        {
+            let indices = face
+                .iter()
+                .map(|v| v.as_u64().context("Vertex index"))
+                .collect::<Result<Vec<_>>>()?;
+            let outside = (0..3).any(|axis| {
+                let values = indices
+                    .iter()
+                    .map(|&i| vertices[i as usize]["position"][axis].as_f64().unwrap())
+                    .collect::<Vec<_>>();
+                values.iter().all(|&v| v < bounds[0][axis])
+                    || values.iter().all(|&v| v > bounds[1][axis])
+            });
+            if outside || primitive["material"] == material {
+                let expected = std::array::from_fn(|i| first + indices[i] as u32);
+                ensure!(
+                    visible.contains(&expected),
+                    "Geometry outside the optical aperture was removed"
+                );
+                preserved += 1;
+            }
+        }
+        first += u32::try_from(vertices.len())?;
+    }
+    ensure!(preserved > 0, "Empty required surrounding geometry");
     Ok(())
 }
 

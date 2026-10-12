@@ -637,7 +637,7 @@ fn load_saved(library: Option<&RecipeLibrary>) -> (Vec<AuthoredTemplate>, Vec<St
             Ok(scan) => {
                 warnings.extend(scan.errors);
                 for entry in scan.entries {
-                    match WeaponRecipe::load_json(&entry.path) {
+                    match WeaponRecipe::load_listing(&entry.path) {
                         Ok(recipe) => recipes.push(recipe),
                         Err(error) => warnings.push(error.to_string()),
                     }

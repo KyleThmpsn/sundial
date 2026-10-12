@@ -155,7 +155,7 @@ impl Layout {
     }
 }
 
-use FieldFormat::{Byte, Flag, Float, Key, Mask8, Mask32, Range};
+use FieldFormat::{Byte, Flag, Float, Key, Mask8, Range};
 
 const NONE: &[Field] = &[];
 const OPERATION: &[Field] = &[Field::new("Operation", 2, Byte)];
@@ -310,7 +310,9 @@ pub const EFFECT_LAYOUTS: &[Layout] = &[
 const EVENT_BYTE: &[Field] = &[Field::new("Event Byte", 8, Byte)];
 const EVENT_KEY: &[Field] = &[Field::new("Event Key", 8, Key)];
 const EVENT_KEY_AT_10: &[Field] = &[Field::new("Event Key", 0x10, Key)];
-const SELECTED_BITS: &[Field] = &[Field::new("Selected Bits", 8, Mask32)];
+// Kinds 9 and 28 test one byte against 1 shifted within an 8-bit register (107C490, 1080840),
+// so only bits 0 to 7 can match. Every stock node leaves +9 through +B zero.
+const SELECTED_BITS: &[Field] = &[Field::new("Selected Bits", 8, Mask8)];
 
 /// The scalar condition kinds. The first eight bytes of every condition are the header the
 /// compiler derives (probability, kind and ordinal), so no field maps them. Kinds 0, 1, 2,

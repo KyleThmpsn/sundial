@@ -100,7 +100,7 @@ pub const CONDITIONS: [NodeKind; 45] = [
         occurrences: 16,
         name: "Event Slot Mask",
         summary: "Selects a slot bit from an event integer and requires it in the node mask.",
-        evidence: "Tests node +8 against the bit selected by the event integer at +4.",
+        evidence: "Tests the byte at node +8 against 1 shifted by the event integer at +4, within one byte, so only bits 0 to 7 can match.",
         support: Support::Authorable,
     },
     NodeKind {
@@ -290,7 +290,7 @@ pub const CONDITIONS: [NodeKind; 45] = [
         occurrences: 2,
         name: "Event Mask",
         summary: "Selects a bit from an event integer and requires it in the node mask.",
-        evidence: "Tests node +8 against the bit selected by the first event integer.",
+        evidence: "Tests the byte at node +8 against 1 shifted by the first event integer, within one byte, so only bits 0 to 7 can match.",
         support: Support::Authorable,
     },
     NodeKind {
@@ -300,7 +300,7 @@ pub const CONDITIONS: [NodeKind; 45] = [
         occurrences: 29,
         name: "Event Key Match",
         summary: "Requires the event context value to equal the key on this node.",
-        evidence: "Compares the 32-bit event context value with the key stored at node +8.",
+        evidence: "Compares the 32-bit event context value with the key stored at node +8. The value is the key a Duration component sends right after its entity is created.",
         support: Support::Authorable,
     },
     NodeKind {
@@ -310,7 +310,7 @@ pub const CONDITIONS: [NodeKind; 45] = [
         occurrences: 449,
         name: "Event Key Match",
         summary: "Requires the event context value to equal the key on this node.",
-        evidence: "Compares the 32-bit event context value with the key stored at node +8. The compiler emits it as the ending condition of an always-active program, the shape 216 stock actions share.",
+        evidence: "Compares the 32-bit event context value with the key stored at node +8. The value is the key a Duration component sends from its cleanup. Stock lists it for removal 448 times and for activation and rearm once each. The compiler emits it as the ending condition of an always-active program, the shape 216 stock actions share.",
         support: Support::Authorable,
     },
     NodeKind {

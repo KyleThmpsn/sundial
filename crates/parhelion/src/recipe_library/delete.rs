@@ -17,7 +17,8 @@ impl RecipeLibrary {
         let target = self.confined_existing_path(path)?;
         let original = fs::read(&target)
             .map_err(|error| format!("Could not read recipe {}: {error}", path.display()))?;
-        let recipe = WeaponRecipe::from_json_str(
+        // Only the name is shown, so an embedded model is not restored.
+        let recipe = WeaponRecipe::from_json_listing(
             std::str::from_utf8(&original).map_err(|error| error.to_string())?,
         )
         .map_err(|error| format!("{}: {error}", path.display()))?;

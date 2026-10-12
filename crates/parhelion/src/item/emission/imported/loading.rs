@@ -2,6 +2,35 @@
 use super::*;
 mod components;
 
+pub(super) fn replication_companions(
+    manager: &sundial::package_authoring::PackageManager,
+    directory: &Path,
+    nodes: &mut Vec<linking::Node>,
+    companions: &mut linking::Companions,
+) -> AuthoringResult<()> {
+    let mut additions = Vec::new();
+    for node in nodes.iter() {
+        if manager.get_entry(node.template).is_none_or(|entry| {
+            entry.file_type != 16 || entry.file_subtype != 0 || entry.reference != 0x80809BB6
+        }) || nodes.iter().any(|candidate| {
+            candidate
+                .companion
+                .as_ref()
+                .is_some_and(|companion| companion.shared_owner == node.symbol)
+        }) {
+            continue;
+        }
+        let (template, _) =
+            linking::native_companion(directory, manager, node.template.0, companions)?;
+        let mut companion =
+            linking::Node::new(format!("{}-loading", node.symbol), template.0, Vec::new());
+        companion.companion = Some(linking::Companion::new(&node.symbol, node.template.0));
+        additions.push(companion);
+    }
+    nodes.extend(additions);
+    Ok(())
+}
+
 pub(super) fn include_native_resources(
     manager: &sundial::package_authoring::PackageManager,
     folder: &Path,

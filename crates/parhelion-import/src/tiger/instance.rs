@@ -3,6 +3,8 @@ use super::payload::Payload;
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 
+mod flight;
+
 fn put(bytes: &mut [u8], offset: usize, value: &[u8]) -> Result<()> {
     bytes
         .get_mut(offset..offset + value.len())
@@ -49,6 +51,12 @@ pub fn repair(owner: &[u8], patches: &[Value]) -> Result<Option<Repair>> {
             .checked_sub(4)
             .context("Component instance marker")?,
     )?;
+    if class == 0x80803CF2 {
+        return Ok((flight::repair(&mut payload)? != 0).then_some(Repair {
+            payload: payload.0,
+            patches: patches.to_vec(),
+        }));
+    }
     let Some(layout) = LAYOUTS.iter().find(|layout| layout.class == class) else {
         return Ok(None);
     };

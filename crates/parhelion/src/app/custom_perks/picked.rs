@@ -35,7 +35,8 @@ pub(in crate::app) fn resolve_picked_perk(
     let mut recipes = draft.cloned().into_iter().collect::<Vec<_>>();
     if let Some(scan) = scan {
         for entry in scan.entries {
-            let recipe = WeaponRecipe::load_json(&entry.path).map_err(|error| error.to_string())?;
+            let recipe =
+                WeaponRecipe::load_listing(&entry.path).map_err(|error| error.to_string())?;
             if draft.is_none_or(|draft| recipe.namespace != draft.namespace) {
                 recipes.push(recipe);
             }

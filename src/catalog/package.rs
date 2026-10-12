@@ -51,6 +51,19 @@ pub(super) fn install_fingerprint(install: &Path) -> Result<String, String> {
     for path in paths {
         hash_package_header(&mut digest, &path)?;
     }
+    for path in crate::package_runtime::mods::files(install)? {
+        digest.update(
+            path.strip_prefix(install)
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+                .as_bytes(),
+        );
+        if path.extension().is_some_and(|ext| ext == "pkg") {
+            hash_package_header(&mut digest, &path)?;
+        } else {
+            digest.update(fs::read(&path).map_err(|e| e.to_string())?);
+        }
+    }
     Ok(hex::encode(digest.finalize()))
 }
 

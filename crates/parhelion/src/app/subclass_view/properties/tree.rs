@@ -2,6 +2,7 @@
 //! thread with the projectiles a swap can choose.
 use super::*;
 use std::path::PathBuf;
+use sundial::package_authoring::entity::weapon_component_bindings;
 use sundial::package_authoring::sandbox_perk::entity::catalog::{self, Catalog};
 
 /// One graph of the ability's tree and what it shows.
@@ -9,7 +10,8 @@ pub(super) struct Node {
     pub(super) tag: u32,
     pub(super) parent: Option<u32>,
     pub(super) projectile: bool,
-    /// Whether only its spawner's ability bank names it, so it spawns only when a key selects it.
+    /// Whether it spawns only when something selects it: only its spawner's ability bank names
+    /// it, for a key to select, or only effect-flow groups behind a channel gate create it.
     pub(super) alternative: bool,
     /// Its name, from [`names`].
     pub(super) name: String,
@@ -30,8 +32,8 @@ pub(super) struct Card {
     /// Whether its graphs are projectiles another graph's components name, which a swap can
     /// replace.
     pub(super) projectile: bool,
-    /// Whether only a bank names its graphs, or those of a card above it, so they spawn only when
-    /// a perk or node selects them.
+    /// Whether only a bank or a gated effect flow makes its graphs, or those of a card above it, so
+    /// they spawn only with certain perks, nodes or states.
     pub(super) alternative: bool,
     /// What its graphs are, such as Object or Effect.
     pub(super) kind: String,
@@ -73,7 +75,7 @@ pub(in crate::app::subclass_view) struct Properties {
     pub(super) loading: Option<(u32, Receiver<Load>)>,
     pub(super) donors: Option<Donors>,
     pub(super) donor_loading: Option<Receiver<Donors>>,
-    /// Whether the cards that spawn only when a perk or node selects them show.
+    /// Whether the cards that spawn only with certain perks, nodes or states show.
     pub(super) show_alternatives: bool,
     /// Whether the Projectile browser lists every projectile in the engine catalog, weapons',
     /// vehicles' and enemies' included, rather than only the stock abilities' own.
@@ -177,7 +179,7 @@ pub(super) fn load_donors(
             let Ok(payload) = manager.read_tag(tiger_pkg::TagHash(tag)) else {
                 continue;
             };
-            let Ok(children) = children(&manager, tag, &payload) else {
+            let Ok(children) = children(&manager, tag, &payload, &BTreeSet::new()) else {
                 continue;
             };
             for (child, banked, _) in children {
@@ -241,7 +243,7 @@ pub(super) fn load(packages: &Path, entity: u32) -> Load {
         if let Ok(profiles) = ability_damage::references(&manager, tag, &payload) {
             damage.extend(profiles.into_iter().map(|(_, profile)| profile.mode));
         }
-        let (properties, creates) = properties_of(&manager, tag, &payload);
+        let (properties, creates, gated) = properties_of(&manager, tag, &payload);
         created.extend(
             creates
                 .into_iter()
@@ -271,7 +273,7 @@ pub(super) fn load(packages: &Path, entity: u32) -> Load {
             properties,
         });
         if depth < SPAWN_DEPTH {
-            for (child, banked, direct) in children(&manager, tag, &payload)? {
+            for (child, banked, direct) in children(&manager, tag, &payload, &gated)? {
                 queue.push_back((child, Some(tag), alternative || banked, direct, depth + 1));
             }
         }
@@ -334,14 +336,18 @@ pub(super) fn factor_field(value: &mut f64) -> egui::DragValue<'_> {
 }
 
 /// The graphs `tag` spawns, directly or through its impact tables, each once, those its own
-/// components name first, with whether only its ability bank names one and whether a component
-/// names it directly. A graph only the bank names is one the bank's rows spawn when a perk or
-/// node applies their key, such as Axion Bolt's alternative seekers, rather than the one it
-/// throws. The Projectile swap takes only a projectile named directly.
+/// components name first, with whether it spawns only when something selects it and whether a
+/// component names it directly. A graph only the bank names is one the bank's rows spawn when a
+/// perk or node applies their key, such as Axion Bolt's alternative seekers, rather than the one
+/// it throws. A graph named only in `gated`, the slots of effect-flow nodes behind a channel gate
+/// by owner and offset, spawns only once something sets that channel, as the stock rocket's
+/// detonation creates Cluster Bombs' bomblets. The Projectile swap takes only a projectile named
+/// directly.
 pub(super) fn children(
     manager: &PackageManager,
     tag: u32,
     payload: &[u8],
+    gated: &BTreeSet<(u32, u64)>,
 ) -> Result<Vec<(u32, bool, bool)>, String> {
     let is_bank = sundial::package_authoring::ability_modifier::is_bank;
     let mut found = Vec::<(u32, bool, bool)>::new();
@@ -356,7 +362,15 @@ pub(super) fn children(
         None => found.push((graph, banked, direct)),
     };
     for spawn in spawns(manager, tag, payload)? {
-        add(spawn.graph, is_bank(spawn.owner), true);
+        let slot = weapon_component_bindings(payload, spawn.binding_hash)?
+            .into_iter()
+            .find(|resource| {
+                resource.owner_tag == spawn.owner
+                    && resource.resource_index == usize::from(spawn.resource_index)
+            })
+            .map(|resource| resource.resource_offset + u64::from(spawn.offset));
+        let behind = slot.is_some_and(|slot| gated.contains(&(spawn.owner, slot)));
+        add(spawn.graph, is_bank(spawn.owner) || behind, true);
     }
     for place in tables(manager, tag, payload)? {
         for graph in table_graphs(manager, place.graph)? {
@@ -405,8 +419,14 @@ impl Label {
 /// Invisibility Effect, else for what every part below it is for, as an emitter that only creates
 /// invisibility is an Invisibility Emitter. Any other kind, such as a projectile, is what it is,
 /// whatever its tiles touch: a grenade's projectile with health tiles is not a Health Projectile.
-/// A part with none of these keeps its kind and the component that sets it apart.
+/// A part with none of these keeps its kind and the component that sets it apart. A projectile
+/// another part spawns is a Spawned Projectile, so it reads apart from the one the weapon fires or
+/// the ability throws, as a rocket's detonation projectiles do from the rocket.
 fn names(nodes: &[Node], labels: &[Label], parents: &BTreeMap<u32, u32>) -> Vec<String> {
+    let root = nodes.first().map(|node| node.tag);
+    let thrown = |at: u32| {
+        matches!(labels.first(), Some(Label::Root("Ability"))) && parents.get(&at) == root.as_ref()
+    };
     let below = |above: u32, mut at: u32| {
         while let Some(&parent) = parents.get(&at) {
             if parent == above {
@@ -433,9 +453,17 @@ fn names(nodes: &[Node], labels: &[Label], parents: &BTreeMap<u32, u32>) -> Vec<
             Label::Part {
                 kind: (kind, component),
                 ..
-            } if !generic(kind) => component
-                .as_ref()
-                .map_or_else(|| kind.clone(), |component| format!("{kind} · {component}")),
+            } if !generic(kind) => {
+                let kind = if kind == "Projectile" && !thrown(nodes[index].tag) {
+                    "Spawned Projectile"
+                } else {
+                    kind.as_str()
+                };
+                component.as_ref().map_or_else(
+                    || kind.to_owned(),
+                    |component| format!("{kind} · {component}"),
+                )
+            }
             Label::Part {
                 kind: (kind, component),
                 ..
@@ -665,17 +693,15 @@ fn status_names(manager: &PackageManager, packages: &Path) -> Option<Arc<BTreeMa
 /// Each setting as a property: on this graph's card, or with the graph a part it creates uses,
 /// since its timing belongs on that part's card.
 fn place_settings(
-    manager: &PackageManager,
-    graph: &sundial::package_authoring::runtime::WeaponRuntimeGraph,
+    creations: &[ability_settings::Creation],
     tag: u32,
     settings: Vec<Setting>,
     found: &mut Vec<Property>,
 ) -> Vec<(u32, Property)> {
-    let creations = ability_settings::creations(manager, graph);
     let mut created = Vec::new();
     for setting in settings {
         let target = setting
-            .created_graph(&creations)
+            .created_graph(creations)
             .filter(|target| *target != tag);
         let property = Property {
             label: setting.kind.label().to_owned(),
@@ -691,17 +717,17 @@ fn place_settings(
     created
 }
 
+/// Properties on this graph, properties on created graphs and gated creation slots.
+pub(super) type Discovered = (Vec<Property>, Vec<(u32, Property)>, BTreeSet<(u32, u64)>);
+
 /// What a graph shows: how it flies, its timers that run out, its effects' modifiers whose input
 /// is named, and its invisibility. Its bank's values are the Ability card's parameters. The
 /// timing of a part it creates, its delay before the part appears and the part's lifetime, comes
-/// apart with that part's graph, since it belongs on that part's card.
-pub(super) fn properties_of(
-    manager: &PackageManager,
-    tag: u32,
-    payload: &[u8],
-) -> (Vec<Property>, Vec<(u32, Property)>) {
+/// apart with that part's graph, since it belongs on that part's card. Last come the slots of
+/// its effect-flow nodes that create a part only behind a channel gate, by owner and offset.
+pub(super) fn properties_of(manager: &PackageManager, tag: u32, payload: &[u8]) -> Discovered {
     let Ok(mut graph) = load_weapon_runtime_graph_for_entity(manager, 0, 0, tag, payload) else {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), BTreeSet::new());
     };
     graph.scope_fields();
     let is_bank = sundial::package_authoring::ability_modifier::is_bank;
@@ -730,7 +756,13 @@ pub(super) fn properties_of(
         .iter()
         .map(|setting| setting.field.locator.clone())
         .collect::<Vec<_>>();
-    let created = place_settings(manager, &graph, tag, settings, &mut found);
+    let creations = ability_settings::creations(manager, &graph);
+    let gated = creations
+        .iter()
+        .filter(|creation| creation.gated)
+        .filter_map(|creation| Some((creation.owner_tag, u64::from(creation.slot?))))
+        .collect();
+    let created = place_settings(&creations, tag, settings, &mut found);
     // A timer is an upper lifetime bound, including immediate and unlimited stock timers.
     // A timer that scales an input before adding seconds has no single length: its seconds are
     // an offset, which can be negative, and its input has a coefficient.
@@ -812,7 +844,7 @@ pub(super) fn properties_of(
             _ => {}
         }
     }
-    (merge(found), created)
+    (merge(found), created, gated)
 }
 
 /// A flight value's name on its projectile's card.

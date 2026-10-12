@@ -91,7 +91,10 @@ fn unsupported_setting(spec: &WeaponCloneSpec) -> Option<&'static str> {
             overrides.collection_destination.is_some(),
             "a weapon Collections page",
         ),
-        (overrides.hud_icon.is_some(), "an ammo HUD icon"),
+        (
+            overrides.hud_icon.is_some() && spec.kind != ItemKind::Sparrow,
+            "an ammo HUD icon",
+        ),
         (overrides.base_sandbox_perks.is_some(), "base perks"),
         (overrides.trait_indices.is_some(), "item traits"),
         (overrides.max_stack_size.is_some(), "a stack size"),

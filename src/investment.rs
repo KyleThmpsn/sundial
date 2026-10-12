@@ -91,8 +91,10 @@ fn representative_perk_label_quality(
 }
 
 /// The same installed package catalog used by Sundial, exposed through an authoring-safe facade.
+/// Clones share one catalog, so background work can read the one the window holds.
+#[derive(Clone)]
 pub struct InvestmentCatalog {
-    catalog: Catalog,
+    catalog: std::sync::Arc<Catalog>,
     authorable_weapon_stat_indices: Vec<u16>,
 }
 
@@ -192,7 +194,7 @@ impl InvestmentCatalog {
             .filter(|definition_index| u8::try_from(*definition_index).is_ok())
             .collect();
         Ok(Self {
-            catalog,
+            catalog: std::sync::Arc::new(catalog),
             authorable_weapon_stat_indices,
         })
     }
@@ -1280,7 +1282,7 @@ mod tests {
     fn appended_socket_pools_follow_explicit_type_and_native_limit() {
         use crate::catalog::{ItemDef, SocketDef};
         let catalog = InvestmentCatalog {
-            catalog: Catalog::for_test(
+            catalog: std::sync::Arc::new(Catalog::for_test(
                 vec![ItemDef {
                     hash: 1,
                     name: "Test weapon".into(),
@@ -1296,7 +1298,7 @@ mod tests {
                     abilities: Default::default(),
                 }],
                 Default::default(),
-            ),
+            )),
             authorable_weapon_stat_indices: Vec::new(),
         };
         let pools = catalog.supported_plug_sets(1, &[None, Some(700)]).unwrap();

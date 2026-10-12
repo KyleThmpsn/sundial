@@ -688,7 +688,7 @@ pub(super) fn plain_action_summary(kind: u8) -> Option<&'static str> {
         42 => "Write the effect's counter, the value Count Needed is measured against.",
         // Kind 43: the Ace of Spades and Trinity Ghoul catalysts publish one, and Blessing
         // of the Sky another. What receives a given signal is not established.
-        43 => "Publish a named signal that On a Game Signal can listen for.",
+        43 => "Publish a named player event.",
         // Kind 47: all 112 stock perks that carry it belong to Transmat Effect items, one key
         // each, which is what the key identifies. The client code that reads the key has
         // not been traced.
@@ -785,12 +785,13 @@ pub(super) fn plain_condition_summary(kind: u8) -> Option<&'static str> {
         // and Under Pressure starting on one to Box Breathing and The Perfect Fifth ending.
         // Its mode can restrict it to a missed shot, as Mulligan and Reversal of Fortune do.
         27 => "Passes when a shot is fired, as Tap the Trigger starts and Box Breathing resets.",
-        // Kind 29: the signals on offer are the ones stock perks start on, such as standing
-        // near a Vex Relay.
-        29 => "Passes when a game signal fires, such as collecting a Warmind Cell.",
-        // Kind 30: an always-active effect ends on its own signal, and Relay Defender and
-        // Resistant Tether end on the signals they started on.
-        30 => "Ends the effect when a game signal fires, as Relay Defender does.",
+        // Kind 29: a Duration component sends its key when its entity is created. The signals
+        // on offer are the ones stock perks start on, such as standing near a Vex Relay.
+        29 => "Passes when a game signal starts, such as collecting a Warmind Cell.",
+        // Kind 30: the same key, sent from the Duration component's cleanup. Relay Defender
+        // and Resistant Tether start when a key's signal starts and end when it ends, and an
+        // always-active effect ends on its own.
+        30 => "Passes when a game signal ends, as Relay Defender's bonus does.",
         // Kind 38 reads back what Remember a Target by Name stored: Vengeance marks the
         // enemy that damaged it and then checks that the mark is still far away.
         38 => "Passes while a remembered target is farther away than the set distance.",

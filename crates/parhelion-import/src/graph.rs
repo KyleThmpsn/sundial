@@ -36,7 +36,35 @@ use sha2::{Digest, Sha256};
 /// Revision 19 preserves source cloth activation conditions for each body variant.
 /// Revision 20 carries primary firing audio through directly bound native presentations.
 /// It also translates supported Reach driver attachments into the retained carrier rig.
-pub const CONVERTER_REVISION: u32 = 20;
+/// Revision 21 translates modern artwork slots and records unsupported source material passes.
+/// Saved gear receives the slot correction during emission without repinning.
+/// Attachment model declarations also participate in vertex input and draw-index repairs.
+/// Revision 22 binds imported transparent emission to the native frame exposure component.
+/// Saved model shaders receive the same repair during emission without repinning.
+/// Revision 23 carries private Reach wheeled and authored flight component graphs.
+/// Revision 24 retains Marathon surface programs, authored inputs and explicit render passes.
+/// Revision 25 preserves vehicle presentation getters and physical initialization during
+/// contact replacement.
+/// Revision 26 activates authored vehicle motion after the carrier's setup callbacks.
+/// Revision 27 binds flight thrust and pitch to native unit inputs, corrects tail
+/// control direction and removes isolated carrier lighting from private vehicles.
+/// Vehicle attachments also follow the selected source region and permutation.
+/// Revision 28 carries private vehicle prompts and camera rails, removes selected
+/// secondary visual events, and binds wheel phases and compatible native maneuvers.
+/// Revision 29 clears the old object footprints when replacing vehicle visual
+/// events with smaller delays, preserving the native loader's complete stream.
+/// Revision 30 repairs vehicle input ownership, extended FK ranges and source
+/// engine audio, and carries the aligned weapon and arm presentation.
+/// Revision 31 adds separate optic views, source driver IK targets and boost
+/// ribbons. It also refreshes clip storage sizes, relocates generated component
+/// roots and translates source inertia, tire grip and flight damping surfaces.
+/// Revision 32 restores physical array envelopes around authored flight inputs.
+/// Older prepared flight components receive the bounded repair during emission.
+/// Revision 33 binds extended clip control groups, native ammunition and separate
+/// scope inputs, carries source HUD glyphs and collision hulls, and separates
+/// vehicle inspection art. Explicit paint, seat and firing audio adapters retain
+/// their native ownership and declared source boundaries.
+pub const CONVERTER_REVISION: u32 = 33;
 /// Imports from an earlier revision need importing again. Imports made before revisions were
 /// recorded count as revision 0.
 pub const MINIMUM_CONVERTER_REVISION: u32 = 0;
@@ -57,6 +85,32 @@ pub struct GraphReference {
 
 fn is_zero(value: &u32) -> bool {
     *value == 0
+}
+
+/// Every declared model, including attachments saved before nodes carried a model flag.
+/// Use declarations rather than symbol prefixes, which can also name buffers and materials.
+pub fn model_symbols(graph: &Value) -> Result<BTreeSet<&str>> {
+    let nodes = graph["nodes"].as_array().context("graph nodes missing")?;
+    let mut models = BTreeSet::new();
+    let mut symbols = BTreeSet::new();
+    for node in nodes {
+        let name = node["symbol"].as_str().context("graph symbol missing")?;
+        ensure!(symbols.insert(name), "duplicate graph symbol {name}");
+        if name == "model" || node["model"] == true {
+            models.insert(name);
+        }
+    }
+    for part in graph["source_parts"].as_array().into_iter().flatten() {
+        let name = part["model"]
+            .as_str()
+            .context("source part model missing")?;
+        ensure!(
+            symbols.contains(name),
+            "source part model {name} is missing"
+        );
+        models.insert(name);
+    }
+    Ok(models)
 }
 
 /// The importer revision a graph's manifest records, 0 when it records none.

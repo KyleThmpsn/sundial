@@ -10,8 +10,10 @@ use std::{
     },
 };
 use tiger_pkg::{GameVersion, Package, PackagePlatform, TagHash, Version};
+mod decoder;
 mod pool;
 mod trace;
+pub use decoder::initialize_source_decoder;
 
 static NEXT_READER: AtomicU64 = AtomicU64::new(1);
 // Reserve room for GUI, database, cache and metadata-index handles even on low-limit systems.
@@ -26,6 +28,7 @@ pub struct PackageManager {
     identity: u64,
     trace: Mutex<Option<trace::Reads>>,
     local: HashMap<u16, Vec<Arc<[u8]>>>,
+    view: Option<super::mods::View>,
 }
 impl PackageManager {
     pub fn new(
@@ -44,7 +47,18 @@ impl PackageManager {
             identity: NEXT_READER.fetch_add(1, Ordering::Relaxed),
             trace: Mutex::new(None),
             local: HashMap::new(),
+            view: None,
         })
+    }
+    pub(super) fn retain_view(&mut self, view: super::mods::View) {
+        self.view = Some(view);
+    }
+    /// The installation's packages directory this reader was opened for. With a Sunrise mod in
+    /// place, `package_dir` is a temporary view of it with the mod's packages added.
+    pub fn source_dir(&self) -> &Path {
+        self.view
+            .as_ref()
+            .map_or(self.package_dir.as_path(), super::mods::View::source)
     }
     pub fn read_tag(&self, tag: impl Into<TagHash>) -> Result<Vec<u8>, String> {
         let tag = tag.into();

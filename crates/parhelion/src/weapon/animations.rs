@@ -28,6 +28,10 @@ const HOLD: usize = 0x6A8;
 const HOLD_SIZE: usize = 0x20;
 /// Where a row names the first-person arms rig it plays on.
 const ARMS_RIG: usize = 0x78;
+/// Where a row names how the weapon is held: FNV-1 `rifle` for every two-handed gun, `pistol`
+/// for hand cannons and sidearms, and a sword's own key. Every stock content block repeats its
+/// row's at +0x14, 321 of the 322 stock rows that select both.
+const STANCE: usize = 0x68;
 /// The arms rig's animation lookup, and where its data names the parameter dictionary and the
 /// action state table.
 const LOOKUP_CLASS: u32 = 0x8080_344B;
@@ -125,6 +129,17 @@ pub(crate) fn profile(
         owner: attachment.owner_tag,
         keys: keys(&attachment, row)?,
     })
+}
+
+/// How `entity`'s first-person attachment row for content group `group` holds the weapon.
+pub(crate) fn stance(
+    manager: &PackageManager,
+    entity: &[u8],
+    group: Option<u32>,
+) -> AuthoringResult<u32> {
+    let attachment = attachment(manager, entity)?;
+    let row = row(&attachment, group)?;
+    read_u32(&attachment.owner, row + STANCE)
 }
 
 /// The hold transform `entity`'s first-person attachment stores. The rotation must be a unit

@@ -4,14 +4,22 @@ use super::*;
 pub fn recover_interrupted_install(
     request: &RecoveryRequest,
 ) -> Result<RecoveryOutcome, InstallError> {
-    let _lock = lock_installation(&request.target_packages_directory)?;
-    recover_interrupted_install_locked(request)
+    let lock = lock_installation(&request.target_packages_directory)?;
+    let outcome = recover_interrupted_install_locked(request)?;
+    lock.finish(request.game_running_check, request.runtime_snapshot_check)?;
+    Ok(outcome)
 }
 
 /// Caller holds the installation lock through recovery and any following mutation.
 pub(super) fn recover_interrupted_install_locked(
     request: &RecoveryRequest,
 ) -> Result<RecoveryOutcome, InstallError> {
+    if let Some(outcome) = loader::recover(request)? {
+        return Ok(outcome);
+    }
+    if let Some(outcome) = loader::recover_legacy_with_observer(request, &mut |_| {})? {
+        return Ok(outcome);
+    }
     let target_packages_directory =
         canonical_packages_directory(&request.target_packages_directory)?;
     let journal_path = target_packages_directory.join(INSTALL_TRANSACTION_FILE_NAME);

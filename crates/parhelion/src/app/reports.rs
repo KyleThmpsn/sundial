@@ -169,6 +169,9 @@ pub(super) fn draw_install_report(ui: &mut egui::Ui, report: &InstallReport) {
     if let Some(warning) = &report.backup_prune_warning {
         ui.colored_label(ui.visuals().warn_fg_color, warning);
     }
+    for overlap in &report.mod_overlaps {
+        ui.colored_label(ui.visuals().warn_fg_color, overlap);
+    }
     ui.add_space(6.0);
     egui::CollapsingHeader::new("Installation Details").show(ui, |ui| {
         path_row(ui, "Installed To", &report.target_packages_directory);

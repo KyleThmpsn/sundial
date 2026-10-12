@@ -35,9 +35,11 @@ fn pack(
 }
 
 fn package_id(index: usize) -> Option<u16> {
-    crate::package_profile::PARHELION_ASSET_PACKAGE_ID
+    let window = crate::package_profile::window();
+    window
+        .base
         .checked_add(u16::try_from(index).ok()?)
-        .filter(|id| *id <= crate::package_profile::MAX_AUTHORED_STANDALONE_PACKAGE_ID)
+        .filter(|id| *id <= window.top)
 }
 
 /// Records where each tag of `group` moves under `plan`, after checking each is where its cached

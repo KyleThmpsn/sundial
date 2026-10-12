@@ -4,7 +4,7 @@ use crate::{
     presentation::{Graph, put},
     tiger::{entity, markers, payload::Payload, reader::Reader},
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
 use serde_json::{Value, json};
 
 fn hash(name: &str) -> u32 {
@@ -52,17 +52,8 @@ pub(super) fn build(
     let mut converted = Vec::new();
     let mut report = Vec::new();
     for marker in &model.markers {
-        if let Some(region) = marker.region {
-            let region = model.regions.get(region).context("Marker region")?;
-            if let Some(permutation) = marker.permutation {
-                let permutation = region
-                    .permutations
-                    .get(permutation)
-                    .context("Marker permutation")?;
-                if model.selected.get(&region.name) != Some(&permutation.name) {
-                    continue;
-                }
-            }
+        if !model.marker_selected(marker)? {
+            continue;
         }
         let mut position = marker.translation;
         let mut orientation = marker.rotation;

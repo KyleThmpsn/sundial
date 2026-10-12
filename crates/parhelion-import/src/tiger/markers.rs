@@ -236,7 +236,7 @@ pub fn rewrite(payload: &Payload, source: &[Marker]) -> Result<(Payload, Plan)> 
         }
     }
     if !plan.added.is_empty() {
-        append(&mut out, &plan.added)?;
+        append(&mut out, &plan.added, None)?;
     }
     // The carrier's rows keep their names and order, followed by the added markers.
     let after = read_native(&out)?;
@@ -255,6 +255,24 @@ pub fn rewrite(payload: &Payload, source: &[Marker]) -> Result<(Payload, Plan)> 
         "marker rewrite changed the component's shape"
     );
     Ok((out, plan))
+}
+
+/// Append explicitly native skeletal marker groups after validating their target rig range.
+/// Repeated names preserve occurrence order, as native multi-emitter groups do.
+pub fn append_skeletal(payload: &Payload, source: &[Marker], bones: usize) -> Result<Payload> {
+    let carrier = read_native(payload)?;
+    let plan = plan(&carrier, source);
+    ensure!(
+        !source.is_empty()
+            && bones > 0
+            && bones <= usize::from(u16::MAX)
+            && plan.matched.is_empty(),
+        "Skeletal marker groups need new names and a supported rig"
+    );
+    let mut out = payload.clone();
+    append(&mut out, &plan.added, Some(bones))?;
+    read_native(&out)?;
+    Ok(out)
 }
 
 fn write_binding(row: &mut [u8], binding: [u32; 2]) -> Result<()> {
@@ -276,7 +294,7 @@ fn write_binding(row: &mut [u8], binding: [u32; 2]) -> Result<()> {
 /// The rows are followed by the sight-and-fire references, which point backwards into the
 /// component, so the array is not grown in place. The descriptor is repointed, the old rows
 /// stay as unreferenced bytes and every other offset in the component keeps its meaning.
-fn append(payload: &mut Payload, added: &[Carried]) -> Result<()> {
+fn append(payload: &mut Payload, added: &[Carried], bones: Option<usize>) -> Result<()> {
     let data = payload.pointer(0x18)?;
     let descriptor = data + NATIVE_DESCRIPTOR;
     let mut rows = Vec::new();
@@ -285,7 +303,16 @@ fn append(payload: &mut Payload, added: &[Carried]) -> Result<()> {
     }
     for marker in added {
         let mut row = [0u8; NATIVE.stride];
-        write_binding(&mut row, marker.binding)?;
+        if let Some(bones) = bones {
+            ensure!(
+                marker.binding[0] == 1 && usize::try_from(marker.binding[1])? < bones,
+                "Skeletal marker is outside its native rig"
+            );
+            row[..4].copy_from_slice(&marker.binding[0].to_le_bytes());
+            row[4..8].copy_from_slice(&marker.binding[1].to_le_bytes());
+        } else {
+            write_binding(&mut row, marker.binding)?;
+        }
         for (at, values) in [
             (NATIVE.orientation, marker.orientation),
             (NATIVE.position, marker.position),

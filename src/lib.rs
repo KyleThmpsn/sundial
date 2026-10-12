@@ -46,6 +46,7 @@ mod test_support;
 #[cfg(all(not(test), feature = "test-support"))]
 pub mod test_support {
     pub mod capture;
+    pub mod runtime;
 }
 pub mod ui;
 mod updates;

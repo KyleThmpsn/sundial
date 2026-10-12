@@ -323,6 +323,18 @@ pub(super) fn verify_committed(transaction: &InstallTransactionRecord) -> Result
     Ok(())
 }
 
+pub(super) fn verify_recovered(transaction: &InstallTransactionRecord) -> Result<(), InstallError> {
+    for record in transaction
+        .account_cleanup
+        .iter()
+        .chain(transaction.client_settings.iter())
+    {
+        let path = target_path(record, &transaction.target_packages_directory)?;
+        verify_source(record, &path, &record.original)?;
+    }
+    Ok(())
+}
+
 pub(in crate::install) fn recover_account(
     transaction: &InstallTransactionRecord,
     check: GameRunningCheck,

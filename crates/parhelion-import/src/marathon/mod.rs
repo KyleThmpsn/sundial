@@ -109,12 +109,6 @@ fn build(source: &mut Reader, native: &mut Reader, entry: &Value, root: &Path) -
         g.add(&hs, t, &h, Some(&ds), vec![])?;
         g.add(&ds, native.reference(t)?, &streams[i], Some(&hs), vec![])?;
     }
-    material::build(
-        source,
-        native,
-        &mut g,
-        mesh.groups.iter().map(|g| g.0).collect(),
-    )?;
     g.add("model", model_tag, &model_bytes, None, patches)?;
     let original = native.tag(owner_tag, Some(0x80809c36))?;
     let resource = original.pointer(24)?;
@@ -154,6 +148,7 @@ fn build(source: &mut Reader, native: &mut Reader, entry: &Value, root: &Path) -
     }
     crate::tiger::entity::reject_stale_owner(&Payload(entity.clone()), owner_tag)?;
     g.add("entity", entity_tag, &entity, None, ep)?;
+    let materials = material::build(source, native, &mut g, &mesh)?;
     let mut parent_bytes = native.tag(parent_tag, None)?.0.clone();
     put(&mut parent_bytes, 16, &u32::MAX.to_le_bytes())?;
     g.add(
@@ -168,7 +163,7 @@ fn build(source: &mut Reader, native: &mut Reader, entry: &Value, root: &Path) -
     let n = g.nodes.last_mut().unwrap();
     n["shared_owner"] = json!("parent");
     n["source_parent"] = json!(parent_tag);
-    let result = json!({"item_hash":hash(entry,"target_item")?,"art_key":hash(entry,"art_key")?,"native_item":hash(entry,"native_item")?,"native_assignment":hash(parent,"assignment")?,"source_model":entry["models"][0]["model"],"source_models":entry["models"],"source_owner":owner_tag,"source_entity":entity_tag,"native_model":model_tag,"model_slot":model_slot,"plates_slot":plates_slot,"parent":"parent","companion":"parent-companion","nodes":g.nodes,"native_draw_parts":mesh.groups.len()*2,"vertices":mesh.positions.len(),"triangles":mesh.groups.iter().map(|g|g.1.len()).sum::<usize>(),"appearance":"Marathon geometry and original base-color/normal textures with native Destiny surface shading","animation":"Static source assemblies attached to native weapon root. Native donor gameplay and whole-weapon animation.","installable":false});
+    let result = json!({"item_hash":hash(entry,"target_item")?,"art_key":hash(entry,"art_key")?,"native_item":hash(entry,"native_item")?,"native_assignment":hash(parent,"assignment")?,"source_model":entry["models"][0]["model"],"source_models":entry["models"],"source_owner":owner_tag,"source_entity":entity_tag,"native_model":model_tag,"model_slot":model_slot,"plates_slot":plates_slot,"parent":"parent","companion":"parent-companion","nodes":g.nodes,"native_draw_parts":mesh.groups.len(),"vertices":mesh.positions.len(),"triangles":mesh.groups.iter().filter(|(key,_)|matches!(mesh.surfaces[key].stage,0|2|8)).map(|g|g.1.len()).sum::<usize>(),"appearance":"Translated Marathon pixel programs, authored material inputs and native render passes","materials":materials,"omitted_passes":mesh.omitted,"animation":"Static source assemblies attached to native weapon root. Native donor gameplay and whole-weapon animation.","installable":false});
     write_json(&root.join("asset-graph.json"), &result)?;
     // Portable review mesh produced from exactly the geometry written to the graph.
     let mut obj = String::new();
@@ -180,7 +175,11 @@ fn build(source: &mut Reader, native: &mut Reader, entry: &Value, root: &Path) -
         obj.push_str(&format!("vn {} {} {}\n", a[2], a[3], a[4]));
     }
     for (mat, faces) in &mesh.groups {
-        obj.push_str(&format!("g {mat:08X}\n"));
+        let surface = &mesh.surfaces[mat];
+        obj.push_str(&format!(
+            "g {mat:08X}-{:08X}-stage-{}\n",
+            surface.material, surface.stage
+        ));
         for f in faces {
             obj.push_str(&format!(
                 "f {0}/{0}/{0} {1}/{1}/{1} {2}/{2}/{2}\n",

@@ -344,6 +344,59 @@ impl Cache {
             length - offset,
         )
     }
+
+    pub fn english(&self, owner: &Tag) -> Result<std::collections::BTreeMap<String, String>> {
+        ensure!(
+            owner.group == "unic",
+            "Localized owner is not a string table"
+        );
+        let globals = self.only("matg")?.address()?;
+        let count = self.u32(globals + 0x18)? as usize;
+        let size = self.u32(globals + 0x1c)? as usize;
+        ensure!(
+            count <= 1_000_000 && size <= MAX_METADATA,
+            "Localized strings exceed limits"
+        );
+        let mut file = File::open(&self.path)?;
+        let refs = file_range(
+            &mut file,
+            u64::from(
+                self.u32(globals + 0x20)?
+                    .wrapping_add(self.section_offsets[3]),
+            ),
+            count * 8,
+        )?;
+        let text = file_range(
+            &mut file,
+            u64::from(
+                self.u32(globals + 0x24)?
+                    .wrapping_add(self.section_offsets[3]),
+            ),
+            size,
+        )?;
+        let start = usize::from(self.u16(owner.address()? + 0x2c)?);
+        let length = usize::from(self.u16(owner.address()? + 0x2e)?);
+        ensure!(
+            start + length <= count,
+            "Localized owner exceeds its language table"
+        );
+        let mut result = std::collections::BTreeMap::new();
+        for row in refs[start * 8..(start + length) * 8].chunks_exact(8) {
+            let name = self.string_id(u32::from_le_bytes(row[..4].try_into().unwrap()))?;
+            let offset = u32::from_le_bytes(row[4..].try_into().unwrap()) as usize;
+            ensure!(
+                offset < text.len(),
+                "Localized string offset exceeds its table"
+            );
+            ensure!(
+                result
+                    .insert(name, c_string(&text[offset..])?.to_owned())
+                    .is_none(),
+                "Duplicate localized string name"
+            );
+        }
+        Ok(result)
+    }
 }
 
 fn c_string(data: &[u8]) -> Result<&str> {

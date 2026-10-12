@@ -7,6 +7,9 @@ struct Child {
     source: u32,
 }
 
+/// Settings offset, created graphs, optional graph field and whether creation is gated.
+pub(super) type Creation = (usize, Vec<u32>, Option<usize>, bool);
+
 impl Reader<'_> {
     fn children(&mut self, definition: usize, source: usize) -> Result<Vec<Option<Child>>, String> {
         let definitions = self.array(definition, 0x8080_93E6)?;
@@ -61,37 +64,110 @@ impl Reader<'_> {
         Ok((graph != 0 && graph != u32::MAX).then_some(graph))
     }
 
+    /// Whether a group runs its children only while a channel reads other than 0, a channel's
+    /// value until something sets it: its condition (`+0x48`) is a range (`808093ED`, minimum
+    /// `+4`, maximum `+8`, the flow's channel receiver `+0xC`) that leaves 0 out. The stock
+    /// rocket `80BBD121` passes its `detonation_*` channels to emitter `80BBD11C`, whose groups
+    /// creating bomblet `80BBD114` test receiver 3, channel `A026F207`, from `0.0001` to the
+    /// largest float. Cluster Bombs' action sets that channel to 1 while the weapon is drawn.
+    fn gated(&self, group: &Child) -> Result<bool, String> {
+        let relative = i64_at(self.data, group.at + 0x48)?;
+        if relative == 0 {
+            return Ok(false);
+        }
+        let at = relative_offset(group.at + 0x48, 0, relative)?;
+        if at < 4 || u32_at(self.data, at - 4)? != 0x8080_93ED {
+            return Ok(false);
+        }
+        let minimum = f32::from_bits(u32_at(self.data, at + 4)?);
+        let maximum = f32::from_bits(u32_at(self.data, at + 8)?);
+        Ok(!(minimum <= 0.0 && 0.0 <= maximum))
+    }
+
     /// What each creating group and creating node of this root makes, by where its settings sit:
-    /// a group, the graphs of the kind-15 nodes it selects, and a node, the graph it names.
-    pub(super) fn creations(&mut self) -> Result<Vec<(usize, Vec<u32>)>, String> {
+    /// a group, the graphs of the kind-15 nodes it selects, and a node, the graph it names. Each
+    /// comes with where a node names its graph, and whether it creates only behind a gate. A
+    /// group is behind one when its own condition is a gate or every group that selects it is
+    /// behind one, and a node when every group that selects it is.
+    pub(super) fn creations(&mut self) -> Result<Vec<Creation>, String> {
         let root = self.root.owner_offset as usize;
         let source = self.pair(root, 0x8080_84E9, 0x8080_84D7)?;
         let groups = self.children(root + 0x158, source + 0xA0)?;
         let nodes = self.children(root + 0x168, source + 0xB0)?;
-        let mut found = Vec::new();
-        for group in groups.iter().flatten() {
+        let mut own = vec![false; groups.len()];
+        let mut groups_by = vec![Vec::new(); groups.len()];
+        let mut nodes_by = vec![Vec::new(); nodes.len()];
+        let mut made = Vec::new();
+        // A group or selector of another kind could start anything, so it leaves no gate proven.
+        let mut known = true;
+        for (index, group) in groups.iter().enumerate() {
+            let Some(group) = group else {
+                continue;
+            };
             if !matches!(
                 (group.class, group.source),
                 (0x8080_93D7, 0x8080_93D6) | (0x8080_93D9, 0x8080_93D8)
             ) {
+                known = false;
                 continue;
             }
+            own[index] = self.gated(group)?;
             let mut graphs = Vec::new();
             for selector in self.array(group.at + 0x38, 0x8080_93FB)? {
                 let word = u32_at(self.data, selector)?;
-                if word & 0xFF == 1
-                    && let Some(Some(node)) = nodes.get((word >> 16) as usize)
-                    && let Some(graph) = self.created(node)?
-                    && !graphs.contains(&graph)
-                {
-                    graphs.push(graph);
+                let selected = (word >> 16) as usize;
+                match word & 0xFFFF {
+                    0 => {
+                        if let Some(by) = groups_by.get_mut(selected) {
+                            by.push(index);
+                        }
+                    }
+                    1 => {
+                        if let Some(by) = nodes_by.get_mut(selected) {
+                            by.push(index);
+                        }
+                        if let Some(Some(node)) = nodes.get(selected)
+                            && let Some(graph) = self.created(node)?
+                            && !graphs.contains(&graph)
+                        {
+                            graphs.push(graph);
+                        }
+                    }
+                    _ => known = false,
                 }
             }
-            found.push((group.at, graphs));
+            made.push((index, group.at, graphs));
         }
-        for node in nodes.iter().flatten() {
-            if let Some(graph) = self.created(node)? {
-                found.push((node.at, vec![graph]));
+        if !known {
+            own.fill(false);
+        }
+        // Each pass settles one more level of selection. A cycle no ungated group enters stays
+        // ungated.
+        let mut gated = own.clone();
+        for _ in 0..groups.len() {
+            let next = (0..groups.len())
+                .map(|index| {
+                    own[index]
+                        || (!groups_by[index].is_empty()
+                            && groups_by[index].iter().all(|&by| gated[by]))
+                })
+                .collect::<Vec<_>>();
+            if next == gated {
+                break;
+            }
+            gated = next;
+        }
+        let mut found = made
+            .into_iter()
+            .map(|(index, at, graphs)| (at, graphs, None, gated[index]))
+            .collect::<Vec<_>>();
+        for (index, node) in nodes.iter().enumerate() {
+            if let Some(node) = node
+                && let Some(graph) = self.created(node)?
+            {
+                let by = &nodes_by[index];
+                let behind = !by.is_empty() && by.iter().all(|&group| gated[group]);
+                found.push((node.at, vec![graph], Some(node.at + 0x74), behind));
             }
         }
         Ok(found)

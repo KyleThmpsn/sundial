@@ -63,6 +63,15 @@ pub(super) fn apply(
     graph: &Value,
     previous: &BTreeMap<u32, Vec<u8>>,
 ) -> AuthoringResult<Vec<ReplacementSpec>> {
+    // Saved D2 gear graphs predate the explicit format field. Reach rows already use
+    // native placements and must never pass through modern selector translation.
+    let modern = match graph["gear_art"].get("selector_format") {
+        Some(Value::String(format)) if format == "modern" => true,
+        Some(Value::String(format)) if format == "shadowkeep" => false,
+        None if graph["source"] == "halo_reach" => false,
+        None if graph["source_item"].as_u64().is_some() => true,
+        _ => return Err(invalid("Imported gear art selector format is unknown")),
+    };
     let item = word(&graph["item_hash"])?;
     let parts = graph["gear_art"]["parts"]
         .as_array()
@@ -132,6 +141,12 @@ pub(super) fn apply(
                 let selector = slot["selector"]
                     .as_u64()
                     .ok_or_else(|| invalid("Gear selector missing"))?;
+                let selector = if modern {
+                    parhelion_import::d2_mot::artwork::native_selector(selector)
+                        .map_err(|error| invalid(error.to_string()))?
+                } else {
+                    selector
+                };
                 let keys = slot["assignments"]
                     .as_array()
                     .ok_or_else(|| invalid("Gear alternatives missing"))?

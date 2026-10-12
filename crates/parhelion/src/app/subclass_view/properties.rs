@@ -627,7 +627,7 @@ fn variant_card(
             .on_hover_text("Parts of the same kind side by side. Each column edits its own part.");
         if first.alternative {
             ui.label(quiet(ui, "Alternative"))
-                .on_hover_text("Spawns only when a perk or node selects it");
+                .on_hover_text("Spawns only with certain perks, nodes or states");
         }
     });
     // The component a title names after its kind is the same for every variant, so a heading is
@@ -1260,7 +1260,7 @@ impl PackageAuthoringApp {
                     ui,
                     ("subclass-swapped-in", index),
                     tree,
-                    (card.depth, Some(*replacement)),
+                    (card.depth, Some(*replacement), show_alternatives),
                     &mut next.ability_values,
                 );
             }
@@ -1271,7 +1271,7 @@ impl PackageAuthoringApp {
                 &mut page.properties.show_alternatives,
                 format!("Show Alternatives ({alternatives})"),
             )
-            .on_hover_text("Parts that spawn only when a perk or node selects them");
+            .on_hover_text("Parts that spawn only with certain perks, nodes or states");
         }
         (next != *edits).then_some(next)
     }
@@ -1349,7 +1349,7 @@ fn lane_tile(ui: &mut egui::Ui, width: f32, index: usize, lane: &RowLane, edits:
 }
 
 /// A card's title, its graphs in the title's tooltip, and Alternative on a card that spawns only
-/// when a perk or node selects it. Where it comes from shows by its nesting.
+/// with certain perks, nodes or states. Where it comes from shows by its nesting.
 fn card_header(ui: &mut egui::Ui, card: &Card) {
     ui.horizontal(|ui| {
         let tags = card
@@ -1367,7 +1367,7 @@ fn card_header(ui: &mut egui::Ui, card: &Card) {
         }
         if card.alternative {
             ui.label(quiet(ui, "Alternative"))
-                .on_hover_text("Spawns only when a perk or node selects it");
+                .on_hover_text("Spawns only with certain perks, nodes or states");
         }
     });
 }
@@ -1406,14 +1406,27 @@ fn draw_tree_cards(
     ui: &mut egui::Ui,
     salt: impl std::hash::Hash + std::fmt::Debug + Copy,
     tree: &Tree,
-    (depth, skip): (usize, Option<u32>),
+    (depth, skip, alternatives): (usize, Option<u32>, bool),
     values: &mut Vec<WeaponRuntimeValueOverride>,
 ) {
     let skipped =
         |card: &Card| skip.is_some_and(|graph| card.graphs.iter().any(|(tag, _)| *tag == graph));
+    // An alternative shows on request, or once it holds an edit, on a card of its own.
+    let hidden = tree
+        .cards
+        .iter()
+        .map(|card| {
+            card.alternative
+                && !alternatives
+                && !card
+                    .properties
+                    .iter()
+                    .any(|property| property.is_modified(values))
+        })
+        .collect::<Vec<_>>();
     let groups = variant_groups(&tree.cards, |card| skipped(card) || card.alternative);
     for (index, card) in tree.cards.iter().enumerate() {
-        if skipped(card) || card.alternative || card.properties.is_empty() {
+        if skipped(card) || hidden[index] || card.properties.is_empty() {
             continue;
         }
         if let Some(group) = groups.iter().find(|group| group.contains(&index)) {
@@ -1474,7 +1487,23 @@ impl GraphCards {
     ) {
         match self.0.poll(ui.ctx(), packages, graph) {
             Some(Ok(tree)) => {
-                draw_tree_cards(ui, ("graph-cards", graph), &tree, (0, None), values);
+                let alternatives = &mut self.0.show_alternatives;
+                draw_tree_cards(
+                    ui,
+                    ("graph-cards", graph),
+                    &tree,
+                    (0, None, *alternatives),
+                    values,
+                );
+                let count = tree
+                    .cards
+                    .iter()
+                    .filter(|card| card.alternative && !card.properties.is_empty())
+                    .count();
+                if count > 0 {
+                    ui.checkbox(alternatives, format!("Show Alternatives ({count})"))
+                        .on_hover_text("Parts that spawn only with certain perks, nodes or states");
+                }
             }
             Some(Err(error)) => {
                 ui.colored_label(ui.visuals().warn_fg_color, "Properties unavailable.")

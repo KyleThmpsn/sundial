@@ -59,6 +59,25 @@ pub struct Model {
     pub primitives: Vec<Primitive>,
 }
 
+impl Model {
+    pub(super) fn marker_selected(&self, marker: &Marker) -> Result<bool> {
+        let Some(region) = marker.region else {
+            return Ok(true);
+        };
+        let region = self.regions.get(region).context("Marker region")?;
+        let selected = self.selected.get(&region.name);
+        if let Some(permutation) = marker.permutation {
+            let permutation = region
+                .permutations
+                .get(permutation)
+                .context("Marker permutation")?;
+            Ok(selected == Some(&permutation.name))
+        } else {
+            Ok(selected.is_some_and(|name| !name.is_empty()))
+        }
+    }
+}
+
 fn nullable(value: u8) -> Option<usize> {
     (value != 255).then_some(value as usize)
 }

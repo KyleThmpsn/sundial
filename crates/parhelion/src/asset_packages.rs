@@ -4,7 +4,7 @@ use crate::{
     appended_tags::MAX_PACKAGE_ENTRY_COUNT,
     error::{invalid, validation},
     format::{BLOCK_SIZE, MAX_BLOCK_COUNT},
-    package_profile::{MAX_AUTHORED_STANDALONE_PACKAGE_ID, PARHELION_ASSET_PACKAGE_ID},
+    package_profile::window,
 };
 
 pub(crate) struct AssetPackage {
@@ -104,10 +104,11 @@ fn choose(
             bounds,
         });
     }
+    let window = window();
     let id = u16::try_from(count)
         .ok()
-        .and_then(|n| PARHELION_ASSET_PACKAGE_ID.checked_add(n))
-        .filter(|id| *id <= MAX_AUTHORED_STANDALONE_PACKAGE_ID)
+        .and_then(|n| window.base.checked_add(n))
+        .filter(|id| *id <= window.top)
         .ok_or_else(|| invalid("The authored asset package id range is exhausted"))?;
     Ok(GroupPlan {
         package_index: count,
@@ -285,9 +286,10 @@ impl AssetPackages {
     }
 
     pub(crate) fn validate(&self) -> AuthoringResult<()> {
+        let base = usize::from(window().base);
         for (index, package) in self.packages.iter().enumerate() {
             let budget = Budget::for_lengths(package.tags.iter().map(|tag| tag.payload.len()))?;
-            if package.id as usize != PARHELION_ASSET_PACKAGE_ID as usize + index
+            if package.id as usize != base + index
                 || budget.entries == 0
                 || !budget.within_capacity()
             {
@@ -304,6 +306,7 @@ impl AssetPackages {
 mod tests {
     use super::*;
     use crate::NewTagStorageMode;
+    use crate::package_profile::PARHELION_ASSET_PACKAGE_ID;
     use tiger_pkg::TagHash;
 
     fn tag(size: usize) -> NewTagSpec {

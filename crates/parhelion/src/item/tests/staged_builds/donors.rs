@@ -490,6 +490,24 @@ fn real_cross_family_appearance_moves_the_rig_when_the_families_interchange() {
         weapon_art_arrangements(&donor).unwrap()[0].arrangement,
         "the geometry should be the appearance's, not the gameplay donor's"
     );
+    // The moved attachment row holds the weapon as a pistol, and the content block, which stays
+    // in the auto rifle's owner, names the same hold class rather than the base's rifle.
+    let authored = sundial::package_authoring::runtime::load_weapon_runtime_entity_with_manager(
+        &manager,
+        plan.item_hash,
+    )
+    .unwrap();
+    let group = authored.weapon_content_group_hash;
+    let pistol = 0x1356_9C00;
+    assert_eq!(
+        crate::weapon::animations::stance(&manager, &authored.payload, Some(group)).unwrap(),
+        pistol
+    );
+    assert_eq!(
+        crate::weapon::behavior::resolved_stance(&manager, &authored.payload, group).unwrap(),
+        pistol,
+        "the block should name the moved row's hold class"
+    );
 }
 
 /// A shotgun's model on an auto rifle's gameplay. The shotgun family places its skeleton's

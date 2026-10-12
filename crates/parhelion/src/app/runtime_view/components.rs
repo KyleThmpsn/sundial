@@ -100,8 +100,7 @@ impl PackageAuthoringApp {
     /// Gameplay's Parts card: every part of the weapon another weapon can supply, on one label
     /// column. Runtime leads, since the rows under it follow it. Behavior, Type Markers, Firing
     /// Behavior, Barrel and Magazine are always offered: each copies one part into the weapon's own
-    /// runtime. Reload swaps a whole runtime component, which can crash the game, so it needs
-    /// Experimental Features.
+    /// runtime. Reload swaps a whole runtime component, so it needs Experimental Features.
     pub(in crate::app) fn draw_gameplay_parts(
         &mut self,
         ui: &mut egui::Ui,
@@ -121,15 +120,8 @@ impl PackageAuthoringApp {
         let current_key = self.runtime_graph_key();
         let baseline_hash = self.runtime_component_baseline_hash(current_key.as_ref());
         let experimental = self.show_experimental_options;
-        // The crash warning shows only while another weapon's runtime component is swapped in.
-        let mixed = !self.recipe.runtime_component_donors.is_empty();
         ui.horizontal(|ui| {
-            draw_donor_section_label_with_warning(
-                ui,
-                "Parts",
-                Some("Parts taken from other weapons."),
-                mixed.then_some("Mixing runtime components can crash the game."),
-            );
+            draw_donor_section_label(ui, "Parts", Some("Parts taken from other weapons."));
             if experimental {
                 self.draw_runtime_donor_undo(ui);
             }

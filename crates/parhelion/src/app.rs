@@ -10,6 +10,7 @@ mod runtime_components;
 mod shell;
 mod technical_features;
 mod ui_state;
+mod upgrade;
 mod window;
 use activity_log::*;
 use events::*;
@@ -155,6 +156,7 @@ struct PackageAuthoringApp {
     replacement_receiver: Option<Receiver<Result<crate::install::ReplacementReview, String>>>,
     replacement_status: build_status::InstallStatus,
     uninstall: uninstall_view::UninstallUi,
+    upgrade: upgrade::UpgradeUi,
     catalog: Option<InvestmentCatalog>,
     /// Advances whenever a catalog is loaded or dropped.
     catalog_revision: u64,
@@ -344,6 +346,7 @@ impl Default for PackageAuthoringApp {
             replacement_receiver: None,
             replacement_status: build_status::InstallStatus::default(),
             uninstall: uninstall_view::UninstallUi::default(),
+            upgrade: upgrade::UpgradeUi::default(),
             catalog: None,
             catalog_revision: 0,
             catalog_receiver: None,
@@ -452,6 +455,7 @@ impl PackageAuthoringApp {
         self.draw_account_resync_window(ctx);
         self.poll_replacement_review();
         self.poll_uninstall();
+        self.poll_upgrade();
         self.refresh_installed(ctx);
         self.poll_runtime_donors();
         self.poll_technical_markers();
@@ -459,6 +463,19 @@ impl PackageAuthoringApp {
         self.marker_editor.poll();
         self.runtime_dependencies.poll();
         self.barrel_controls.poll_finished();
+        if self.upgrade.open || self.upgrade.busy() {
+            egui::CentralPanel::default().show(ui, |ui| {
+                if !self.upgrade.open {
+                    ui.spinner();
+                    ui.label("Checking Installation…");
+                }
+            });
+            if self.upgrade.open {
+                self.draw_upgrade_window(ctx);
+            }
+            ctx.request_repaint_after(Duration::from_millis(100));
+            return;
+        }
         if self.uninstall.open {
             egui::CentralPanel::default().show(ui, |_| {});
             self.draw_uninstall_window(ctx);
@@ -584,6 +601,7 @@ impl PackageAuthoringApp {
             return true;
         }
         self.uninstall.busy()
+            || self.upgrade.busy()
             || self.installed.busy()
             || self.library_state.busy()
             || self.build_receiver.is_some()

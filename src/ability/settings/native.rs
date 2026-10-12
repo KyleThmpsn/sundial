@@ -516,6 +516,11 @@ pub struct Creation {
     pub owner_tag: u32,
     pub body: u32,
     pub graphs: Vec<u32>,
+    /// Where a node names its graph in its owner. A group names none of its own.
+    pub slot: Option<u32>,
+    /// Whether it creates only while one of the flow's channels reads other than 0, as a rocket
+    /// detonation creates Cluster Bombs' bomblets only while that perk sets its channel.
+    pub gated: bool,
 }
 
 /// The creations of `graph`'s effect flows (`808084E9`). A flow that does not read has none.
@@ -555,11 +560,13 @@ pub fn creations(manager: &PackageManager, graph: &WeaponRuntimeGraph) -> Vec<Cr
         let Ok(made) = reader.creations() else {
             continue;
         };
-        found.extend(made.into_iter().filter_map(|(body, graphs)| {
+        found.extend(made.into_iter().filter_map(|(body, graphs, slot, gated)| {
             Some(Creation {
                 owner_tag: owner,
                 body: u32::try_from(body).ok()?,
                 graphs,
+                slot: slot.map(u32::try_from).transpose().ok()?,
+                gated,
             })
         }));
     }

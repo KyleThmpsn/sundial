@@ -7,7 +7,10 @@
 #[cfg(test)]
 mod tests;
 
+mod loader;
 mod recovery;
+pub(crate) use loader::package_window;
+pub use loader::{UpgradeReport, UpgradeReview, preview_upgrade, upgrade_installation};
 pub use recovery::recover_interrupted_install;
 use recovery::*;
 mod locking;
@@ -209,6 +212,7 @@ pub struct InvalidatedPackageHeaderCache {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstallReport {
+    pub mod_directory: Option<PathBuf>,
     pub manifest_schema: u32,
     pub staged_run_directory: PathBuf,
     pub target_packages_directory: PathBuf,
@@ -230,6 +234,8 @@ pub struct InstallReport {
     pub profile_sync: Option<Result<AuthoredProfileSyncReport, String>>,
     /// Authored subclasses and shaders added to the account after the transaction committed.
     pub item_grants: Option<Result<AuthoredGrantReport, String>>,
+    /// Entries another Sunrise mod also changes, and which mod's version the loader uses.
+    pub mod_overlaps: Vec<String>,
     /// Account updated as part of this backed-up replacement transaction.
     pub cleaned_account: Option<PathBuf>,
 }
@@ -484,7 +490,7 @@ pub fn resync_account(
     if game_running_check()? {
         return Err("Close Destiny 2 before resyncing the account".to_owned());
     }
-    let _lock = lock_installation(target_packages_directory).map_err(|error| error.to_string())?;
+    let lock = lock_installation(target_packages_directory).map_err(|error| error.to_string())?;
     // An interrupted install leaves its transaction record until the next install or uninstall
     // repairs the package set. The account is not written against a half-committed generation.
     if target_packages_directory
@@ -499,12 +505,18 @@ pub fn resync_account(
     let game_root = target_packages_directory
         .parent()
         .ok_or_else(|| "Installed package directory has no game root".to_owned())?;
+    sundial::package_authoring::mod_content::ensure_readable(game_root)?;
     let (hashes, unlocks) = identities::installed_identities(target_packages_directory)
         .map_err(|error| format!("No installed Parhelion generation to resync: {error}"))?;
     let grants = identities::installed_grants(target_packages_directory, &hashes)?;
     let profile_sync = synchronize_authored_collection_unlocks(game_root, &unlocks);
     let item_grants = (!grants.is_empty())
         .then(|| identities::grant_items(game_root, target_packages_directory, &grants));
+    lock.finish(
+        game_running_check,
+        sundial::package_authoring::installed_runtime,
+    )
+    .map_err(|error| error.to_string())?;
     Ok(AccountResyncReport {
         authored_unlocks: unlocks.len(),
         profile_sync,
@@ -523,20 +535,22 @@ pub fn install_staged_packages_with_progress(
     mut progress: impl FnMut(InstallProgress),
 ) -> Result<InstallReport, InstallError> {
     progress(InstallProgress::stage(InstallPhase::Checking));
-    let _lock = lock_installation(&request.target_packages_directory)?;
+    let lock = lock_installation(&request.target_packages_directory)?;
     recover_interrupted_install_locked(&RecoveryRequest {
         target_packages_directory: request.target_packages_directory.clone(),
         backup_root: request.backup_root.clone(),
         game_running_check: request.game_running_check,
         runtime_snapshot_check: request.runtime_snapshot_check,
     })?;
-    install_with_progress(
+    let report = install_with_progress(
         request,
         None,
         DEFAULT_CACHE_INVALIDATION_OPS,
         publish_package,
         &mut progress,
-    )
+    )?;
+    lock.finish(request.game_running_check, request.runtime_snapshot_check)?;
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -602,10 +616,27 @@ fn install_with_progress(
     replace: PackageReplace,
     progress: Observer<'_>,
 ) -> Result<InstallReport, InstallError> {
+    validation::validate_request_paths(request)?;
+    if loader::selected(
+        &request.target_packages_directory,
+        request.runtime_snapshot_check,
+    )? {
+        return loader::install_with_observer(request, progress, &mut |_| {});
+    }
     let _staged_run_lease =
         crate::workflow::staging_retention::lease_for_read(&request.staged_run_directory)
             .map_err(InstallError::validation)?;
     let validated = validation::validate_request_with_progress(request, progress)?;
+    if validated
+        .sunrise_build_cache
+        .runtime
+        .uses_mod_loader()
+        .map_err(InstallError::validation)?
+    {
+        return Err(InstallError::validation(
+            "The runtime changed to the mod loader during preflight. Review installation again",
+        ));
+    }
     let backup_directory = create_backup_directory(&validated.backup_root).map_err(|error| {
         InstallError::validation(format!("Could not create a package backup: {error}"))
     })?;
@@ -1204,6 +1235,7 @@ fn build_install_report(
         })
         .collect();
     InstallReport {
+        mod_directory: None,
         cleaned_account: validated
             .replacement_guard
             .as_ref()
@@ -1227,6 +1259,7 @@ fn build_install_report(
         invalidated_package_header_caches,
         profile_sync,
         item_grants,
+        mod_overlaps: Vec::new(),
     }
 }
 

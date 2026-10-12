@@ -91,17 +91,24 @@ fn prepare(
             return Err("Imported preview has duplicate symbols".into());
         }
     }
-    let mut repaired = crate::tiger::vertex_input::repair(graph, root)
+    let mut repaired = crate::tiger::material::repair(graph, root)
         .map_err(|e| format!("Imported model bindings: {e:#}"))?;
+    let models = crate::model_symbols(graph).map_err(|e| e.to_string())?;
     let entries = nodes
         .iter()
-        .map(|node| entry(node, root, &symbols, manager, &mut repaired))
+        .map(|node| {
+            let model = node["symbol"]
+                .as_str()
+                .is_some_and(|name| models.contains(name));
+            entry(node, model, root, &symbols, manager, &mut repaired)
+        })
         .collect::<Result<_, _>>()?;
     Ok((package, symbols, entries))
 }
 
 fn entry(
     node: &Value,
+    model: bool,
     root: &Path,
     symbols: &Symbols,
     manager: &PackageManager,
@@ -135,7 +142,7 @@ fn entry(
         fs::read(path).map_err(|e| e.to_string())?
     };
     if !companion {
-        if node["symbol"] == "model" || node["model"] == true {
+        if model {
             crate::tiger::draws::declare_model_draw_indices(&mut data)
                 .map_err(|e| e.to_string())?;
         }
