@@ -4,8 +4,11 @@ use crate::{halo_reach::rig::Bone, tiger::animation::pose::Pose};
 pub(super) struct Source {
     pub graph: Value,
     pub names: BTreeMap<String, usize>,
+    pub weapon: BTreeSet<String>,
     parents: Vec<Option<usize>>,
     bind: Vec<Pose>,
+    tracks: Vec<usize>,
+    scale: f32,
 }
 
 fn bind(bone: &Bone) -> Result<Pose> {
@@ -21,21 +24,79 @@ fn bind(bone: &Bone) -> Result<Pose> {
     ])
 }
 
+fn stationary(root: &Path, shared: &Value, member: &Value) -> Result<bool> {
+    if shared["movement_type"] == 0 && member["movement"] == 0 {
+        return Ok(true);
+    }
+    if shared["movement_type"] != 1 || member["movement"] != 1 {
+        return Ok(false);
+    }
+    // A declared dx/dy stream can contain no displacement. Keep the original
+    // root-motion boundary for nonzero values, including nonfinite samples.
+    let sizes = member["sizes"]
+        .as_array()
+        .context("Source motion section sizes")?;
+    ensure!(sizes.len() == 17, "Source motion section layout differs");
+    let offset = sizes[..4].iter().try_fold(0usize, |total, value| {
+        total
+            .checked_add(usize::try_from(
+                value.as_u64().context("Source motion section size")?,
+            )?)
+            .context("Source motion section overflow")
+    })?;
+    let size = usize::try_from(sizes[4].as_u64().context("Source root motion size")?)?;
+    let frames = usize::try_from(
+        shared["frames"]
+            .as_u64()
+            .context("Source root motion frames")?,
+    )?;
+    ensure!(
+        size == frames
+            .checked_mul(8)
+            .context("Source root motion size overflow")?,
+        "Source dx/dy stream does not cover its frames"
+    );
+    let bytes = fs::read(root.join(member["file"].as_str().context("Source motion resource")?))?;
+    let end = offset
+        .checked_add(size)
+        .context("Source root motion extent overflow")?;
+    Ok(bytes
+        .get(offset..end)
+        .context("Source root motion exceeds its resource")?
+        .chunks_exact(4)
+        .all(|v| f32::from_le_bytes(v.try_into().unwrap()) == 0.))
+}
+
 impl Source {
+    pub fn bind_objects(&self) -> Vec<Pose> {
+        self.objects(&self.bind)
+    }
+
+    fn objects(&self, locals: &[Pose]) -> Vec<Pose> {
+        let mut objects: Vec<Pose> = Vec::with_capacity(locals.len());
+        for (index, &local) in locals.iter().enumerate() {
+            objects.push(self.parents[index].map_or(local, |parent| objects[parent].then(local)));
+        }
+        objects
+    }
+
     pub fn read(cache: &Cache, scene: &Scene, options: &Options, root: &Path) -> Result<Self> {
         let arm_tag = cache.find("mode", &options.arms_model)?;
-        let arms = crate::halo_reach::model::read_bones(cache, arm_tag.address()?)?;
+        let mut arms = crate::halo_reach::model::read_bones(cache, arm_tag.address()?)?;
+        crate::halo_reach::native::scale::bones(&mut arms, scene.scale);
         let graphs: Vec<Value> = serde_json::from_slice(&fs::read(root.join("animations.json"))?)?;
         let mut candidates = Vec::new();
         for branch in &scene.object.first_person {
             let (Some(model), Some(animation)) = (&branch.model, &branch.animation) else {
                 continue;
             };
-            let weapon = crate::halo_reach::model::read_bones(cache, model.address()?)?;
+            let mut weapon = crate::halo_reach::model::read_bones(cache, model.address()?)?;
+            crate::halo_reach::native::scale::bones(&mut weapon, scene.scale);
             let Some(graph) = graphs.iter().find(|g| g["tag"]["datum"] == animation.datum) else {
                 continue;
             };
-            if let Some(source) = Self::bind_graph(graph, &arms, &weapon)? {
+            if let Some(mut source) = Self::bind_graph(graph, &arms, &weapon)? {
+                source.scale = scene.scale;
                 candidates.push(source);
             }
         }
@@ -57,30 +118,33 @@ impl Source {
         let bones = graph["skeleton"]
             .as_array()
             .context("Source arm skeleton")?;
-        if bones.len() != bindings.len()
-            || bones.iter().any(|b| {
-                b["name"]
-                    .as_str()
-                    .is_none_or(|name| !bindings.contains_key(name))
-            })
+        let graph_names = bones
+            .iter()
+            .map(|bone| bone["name"].as_str().context("Source arm bone name"))
+            .collect::<Result<BTreeSet<_>>>()?;
+        ensure!(graph_names.len() == bones.len(), "Repeated source arm bone");
+        if bindings
+            .keys()
+            .any(|name| !graph_names.contains(name.as_str()))
         {
             return Ok(None);
         }
         let mut names = BTreeMap::new();
         let mut poses = Vec::new();
         let mut parents = Vec::new();
+        let mut tracks = Vec::new();
         for (i, bone) in bones.iter().enumerate() {
             let name = bone["name"].as_str().context("Source arm bone name")?;
-            ensure!(
-                names.insert(name.to_owned(), i).is_none(),
-                "Repeated source arm bone"
-            );
             let parent = bone["parent"].as_i64().context("Source arm parent")?;
             ensure!(
                 parent >= -1 && parent < i as i64,
                 "Source arm rig is not parent-first"
             );
-            let source = bindings[name];
+            let Some(&source) = bindings.get(name) else {
+                // Auxiliary animation joints may have no model geometry. They
+                // are excluded only when no retained bone depends on them.
+                continue;
+            };
             let model_bones = if arms.iter().any(|b| b.name == name) {
                 arms
             } else {
@@ -97,20 +161,38 @@ impl Source {
                     || (name == "b_gun" && expected.is_none() && actual == Some("r_hand")),
                 "Source arm and model parents disagree for {name}"
             );
-            parents.push((parent >= 0).then_some(parent as usize));
+            parents.push(
+                actual
+                    .map(|name| {
+                        names
+                            .get(name)
+                            .copied()
+                            .context("Source arm parent is not bound")
+                    })
+                    .transpose()?,
+            );
+            names.insert(name.to_owned(), poses.len());
             poses.push(bind(source)?);
+            tracks.push(i);
         }
         Ok(Some(Self {
             graph: graph.clone(),
             names,
+            weapon: weapon.iter().map(|bone| bone.name.clone()).collect(),
             bind: poses,
             parents,
+            tracks,
+            scale: 1.,
         }))
     }
 
     fn channels(&self, motion: &super::super::codec::Motion) -> Result<Vec<Vec<Pose>>> {
         let mut channels = Vec::new();
-        for (track, &bind) in motion.tracks.iter().zip(&self.bind) {
+        for (&index, &bind) in self.tracks.iter().zip(&self.bind) {
+            let track = motion
+                .tracks
+                .get(index)
+                .context("Source arm motion track")?;
             ensure!(
                 [
                     track.rotation.len(),
@@ -123,14 +205,67 @@ impl Source {
             );
             channels.push(
                 (0..motion.frames)
-                    .map(|frame| sample(track, bind, frame))
+                    .map(|frame| sample(track, bind, frame, self.scale))
                     .collect::<Result<_>>()?,
             );
         }
         Ok(channels)
     }
 
+    pub fn action(&self, root: &Path, action: &Action, frames: usize) -> Result<Vec<Vec<Pose>>> {
+        let names = action.names(&self.graph)?;
+        if !matches!(action, Action::Sequence(_)) {
+            return self.clip(root, names[0], frames);
+        }
+        ensure!(
+            !names.is_empty() && names.len() <= 16 && frames > 0,
+            "Invalid source action sequence"
+        );
+        let clips = self.graph["clips"].as_array().context("Source arm clips")?;
+        let mut sequence = Vec::new();
+        for name in names {
+            let clip = clips
+                .iter()
+                .find(|c| c["name"] == name)
+                .context("Source sequence clip")?;
+            let count = usize::try_from(
+                clip["shared"][0]["frames"]
+                    .as_u64()
+                    .context("Source sequence duration")?,
+            )?;
+            sequence.extend(self.locals(root, name, count)?);
+        }
+        ensure!(!sequence.is_empty(), "Source action sequence is empty");
+        (0..frames)
+            .map(|frame| {
+                let time = if frames == 1 {
+                    0.
+                } else {
+                    frame as f32 * (sequence.len() - 1) as f32 / (frames - 1) as f32
+                };
+                let low = time.floor() as usize;
+                let high = (low + 1).min(sequence.len() - 1);
+                // Interpolate before hierarchy composition so a rotating parent does not
+                // shorten its children's offsets between source frames or clip boundaries.
+                let locals = sequence[low]
+                    .iter()
+                    .zip(&sequence[high])
+                    .map(|(&a, &b)| a.mix(b, time - low as f32))
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(self.objects(&locals))
+            })
+            .collect()
+    }
+
     pub fn clip(&self, root: &Path, name: &str, frames: usize) -> Result<Vec<Vec<Pose>>> {
+        Ok(self
+            .locals(root, name, frames)?
+            .iter()
+            .map(|locals| self.objects(locals))
+            .collect())
+    }
+
+    fn locals(&self, root: &Path, name: &str, frames: usize) -> Result<Vec<Vec<Pose>>> {
         let clips = self.graph["clips"]
             .as_array()
             .context("Source arm clips")?
@@ -151,10 +286,8 @@ impl Source {
         let shared = &variants[0];
         let member = super::super::playback::member(&self.graph, shared)?;
         ensure!(
-            shared["animation_type"] == 1
-                && shared["movement_type"] == 0
-                && member["movement"] == 0,
-            "Arm translation requires absolute source motion without root movement"
+            shared["animation_type"] == 1 && stationary(root, shared, member)?,
+            "Arm translation requires absolute source motion without root movement: {name}"
         );
         let file = member["motion"]["file"]
             .as_str()
@@ -162,27 +295,39 @@ impl Source {
         let motion: super::super::codec::Motion =
             serde_json::from_slice(&fs::read(root.join(file))?)?;
         ensure!(
-            motion.frames > 1 && frames > 1 && motion.tracks.len() == self.bind.len(),
+            motion.frames > 0
+                && frames > 0
+                && Some(motion.tracks.len()) == self.graph["skeleton"].as_array().map(Vec::len)
+                && shared["frames"].as_u64() == Some(motion.frames as u64),
             "Source arm motion dimensions disagree"
         );
         let channels = self.channels(&motion)?;
         let mut output = Vec::new();
         for frame in 0..frames {
-            let t = frame as f32 * (motion.frames - 1) as f32 / (frames - 1) as f32;
+            let t = if frames == 1 {
+                0.
+            } else {
+                frame as f32 * (motion.frames - 1) as f32 / (frames - 1) as f32
+            };
             let low = t.floor() as usize;
             let high = (low + 1).min(motion.frames - 1);
-            let mut objects = Vec::<Pose>::new();
-            for (i, values) in channels.iter().enumerate() {
-                let local = values[low].mix(values[high], t - low as f32)?;
-                objects.push(self.parents[i].map_or(local, |p| objects[p].then(local)));
-            }
-            output.push(objects);
+            output.push(
+                channels
+                    .iter()
+                    .map(|values| values[low].mix(values[high], t - low as f32))
+                    .collect::<Result<Vec<_>>>()?,
+            );
         }
         Ok(output)
     }
 }
 
-fn sample(track: &super::super::codec::Track, bind: Pose, frame: usize) -> Result<Pose> {
+fn sample(
+    track: &super::super::codec::Track,
+    bind: Pose,
+    frame: usize,
+    scale: f32,
+) -> Result<Pose> {
     let mut v = bind.0;
     if let Some(q) = track
         .rotation
@@ -195,7 +340,7 @@ fn sample(track: &super::super::codec::Track, bind: Pose, frame: usize) -> Resul
     } else {
         frame
     }) {
-        v[4..7].copy_from_slice(p);
+        v[4..7].copy_from_slice(&p.map(|v| v * scale));
     }
     if let Some(s) = track
         .scale

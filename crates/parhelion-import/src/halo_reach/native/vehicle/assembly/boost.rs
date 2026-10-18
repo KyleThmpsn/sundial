@@ -4,8 +4,10 @@ use crate::{
     halo_reach::{
         Scene,
         cache::{Cache, Tag},
+        effect::trail,
         model,
         native::seat,
+        resource::Pages,
     },
     presentation::append,
     tiger::markers,
@@ -19,7 +21,6 @@ pub(in crate::halo_reach::native::vehicle) struct Trails {
 
 struct Target {
     event: usize,
-    system_row: usize,
     system: u32,
     locator: usize,
 }
@@ -28,6 +29,7 @@ struct Attachment<'a> {
     source: Tag,
     scale: String,
     markers: Vec<&'a model::Marker>,
+    profiles: Vec<trail::Profile>,
 }
 
 fn attachments<'a>(cache: &Cache, scene: &'a Scene) -> Result<Vec<Attachment<'a>>> {
@@ -61,7 +63,7 @@ fn attachments<'a>(cache: &Cache, scene: &'a Scene) -> Result<Vec<Attachment<'a>
             "Source boost effect needs one marker group"
         );
         let name = cache.string_id(cache.u32(locations[0])?)?;
-        let mut contrails = 0;
+        let mut profiles = Vec::new();
         for event in cache.block(at + 0x2c, 0x40)? {
             for part in cache.block(event + 0x1c, 0x64)? {
                 if let Some(reference) = cache.reference(part + 0x14, None)?
@@ -71,11 +73,11 @@ fn attachments<'a>(cache: &Cache, scene: &'a Scene) -> Result<Vec<Attachment<'a>
                         cache.i16(part + 6)? == -1,
                         "Boost contrail selects a separate location"
                     );
-                    contrails += cache.block(reference.address()?, 0x280)?.len();
+                    profiles.extend(trail::read(cache, &reference)?);
                 }
             }
         }
-        ensure!(contrails > 0, "Source boost effect has no contrail");
+        ensure!(!profiles.is_empty(), "Source boost effect has no contrail");
         let model = &scene.models[0].model;
         let mut selected = Vec::new();
         for marker in model.markers.iter().filter(|marker| marker.name == name) {
@@ -91,6 +93,7 @@ fn attachments<'a>(cache: &Cache, scene: &'a Scene) -> Result<Vec<Attachment<'a>
             source: tag,
             scale: scale.to_owned(),
             markers: selected,
+            profiles,
         });
     }
     Ok(result)
@@ -141,91 +144,11 @@ fn targets(native: &mut Reader, payload: &Payload) -> Result<Vec<Target>> {
         );
         result.push(Target {
             event,
-            system_row,
             system,
             locator: usize::from(payload.u8(locators[0])?),
         });
     }
     Ok(result)
-}
-
-fn particle(
-    native: &mut Reader,
-    graph: &mut Graph,
-    target: &Target,
-    index: usize,
-    wingtip: bool,
-) -> Result<String> {
-    let system = native.tag(target.system, Some(0x80806e28))?;
-    let tag = system.u32(0)?;
-    let original = native.tag(tag, Some(0x80806e2c))?;
-    let mut payload = (*original).clone();
-    let constants = payload.array(0x60, 16, Some(0x80800090))?;
-    let mut values = constants
-        .iter()
-        .flat_map(|&at| payload.0[at..at + 16].iter().copied())
-        .collect::<Vec<_>>();
-    // The native ribbon supplies age, width and breakup. Its contact inputs are
-    // replaced by one so it remains independent of the removed hover contacts.
-    let constant = u8::try_from(constants.len())?;
-    for _ in 0..4 {
-        values.extend(1f32.to_le_bytes());
-    }
-    let colors = if wingtip {
-        [[0.58f32, 0.76, 1., 0.65], [0.35, 0.55, 0.95, 0.35]]
-    } else {
-        [[0.38, 0.22, 1., 1.], [0.18, 0.10, 0.95, 1.]]
-    };
-    for (row, color) in [12, 13].into_iter().zip(colors) {
-        for (axis, value) in color.into_iter().enumerate() {
-            put(&mut values, row * 16 + axis * 4, &value.to_le_bytes())?;
-        }
-    }
-    let code = payload.array(0x50, 1, Some(0x80800009))?;
-    let mut cursor = 0;
-    let mut replaced = 0;
-    while cursor < code.len() {
-        let op = payload.u8(code[cursor])?;
-        let width = match op {
-            0x22 | 0x34..=0x3b | 0x40..=0x47 => 2,
-            0x3e | 0x3f => 4,
-            1..=0x21 | 0x23..=0x33 | 0x3d | 0x49..=0x52 => 1,
-            _ => anyhow::bail!("Unsupported native boost particle instruction {op:02X}"),
-        };
-        ensure!(
-            cursor + width <= code.len(),
-            "Truncated native boost particle instruction"
-        );
-        if op == 0x47 {
-            ensure!(
-                payload.u8(code[cursor + 1])? < 4,
-                "Boost particle input is outside its table"
-            );
-            payload.0[code[cursor]] = 0x34;
-            payload.0[code[cursor + 1]] = constant;
-            replaced += 1;
-        }
-        cursor += width;
-    }
-    ensure!(
-        replaced == 4,
-        "Native boost particle input contract differs"
-    );
-    append(&mut payload.0, 0x60, 0x80800090, &values, 16)?;
-    put(&mut payload.0, 0x100, &[0; 16])?;
-    let symbol = format!("vehicle-boost-system-{index}");
-    let definition = format!("vehicle-boost-particle-{index}");
-    graph.add(&definition, tag, &payload.0, None, Vec::new())?;
-    let mut bytes = system.0.clone();
-    put(&mut bytes, 0, &u32::MAX.to_le_bytes())?;
-    graph.add(
-        &symbol,
-        target.system,
-        &bytes,
-        None,
-        vec![json!({"offset":0,"symbol":definition})],
-    )?;
-    Ok(symbol)
 }
 
 impl Assembly {
@@ -241,6 +164,7 @@ impl Assembly {
         bones: &Value,
         controls: &Value,
         cache: &Cache,
+        pages: &mut Pages,
         motion: &motion::Motion,
     ) -> Result<Trails> {
         let source = attachments(cache, scene)?;
@@ -262,8 +186,15 @@ impl Assembly {
         let original = self.payloads[&owner].clone();
         let definition = original.pointer(24)?;
         let nodes = original.array(definition + 0x158, 24, Some(0x808093e6))?;
-        let root = original.pointer(*nodes.first().context("Boost flow root")? + 16)?;
-        let children = original.array(root + 0x38, 4, Some(0x808093fb))?;
+        let entry = original.u32(definition + 0x2d0)?;
+        ensure!(entry & 0xffff == 0, "Boost flow entry is not a control");
+        let entry = original.pointer(
+            *nodes
+                .get((entry >> 16) as usize)
+                .context("Boost flow entry")?
+                + 16,
+        )?;
+        let children = original.array(entry + 0x38, 4, Some(0x808093fb))?;
         ensure!(
             children.len() == 1 && original.u16(children[0])? == 0,
             "Boost flow entry differs"
@@ -278,6 +209,31 @@ impl Assembly {
             original.u32(gate - 4)? == 0x808093cd && original.u32(gate + 0x60)? == 0,
             "Boost flow lacks its scalar entry gate"
         );
+        // Kind zero waits for a blocking child before advancing. Keep the native
+        // allocation and paired classes of an existing kind-one parallel control
+        // so both indefinitely repeating scalar gates receive updates.
+        let (root_index, root) = nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| {
+                let at = original.pointer(row + 16).ok()?;
+                (original.u32(at - 4).ok() == Some(0x808093d7)
+                    && original.u8(at + 0x30).ok() == Some(1))
+                .then_some((index, at))
+            })
+            .next()
+            .context("Boost flow lacks an allocated parallel control")?;
+        {
+            let payload = self.payloads.get_mut(&owner).unwrap();
+            put(&mut payload.0, root + 0x14, &0xffff00ffu32.to_le_bytes())?;
+            put(&mut payload.0, root + 0x18, &[0; 24])?;
+            put(&mut payload.0, root + 0x31, &[1, 0])?;
+            put(
+                &mut payload.0,
+                definition + 0x2d0,
+                &(u32::try_from(root_index)? << 16).to_le_bytes(),
+            )?;
+        }
         let input = *original
             .array(definition + 0x188, 40, Some(0x80809789))?
             .first()
@@ -403,11 +359,34 @@ impl Assembly {
             let wingtip = source.scale == "wingtips";
             let activation = if wingtip { cruise * 0.25 } else { threshold };
             let (gate_index, gate) = gates[index];
+            // Child completion and release follow the node's stored parent,
+            // not the array that scheduled it. Reparent both ends of this
+            // shortened path along with the root's child list.
+            put(
+                &mut payload.0,
+                gate + 0x14,
+                &(u32::try_from(root_index)? << 16).to_le_bytes(),
+            )?;
+            put(
+                &mut payload.0,
+                target.event + 0x14,
+                &(u32::try_from(gate_index)? << 16).to_le_bytes(),
+            )?;
+            // These source attachments last while their scalar gate is open.
+            // The carrier event otherwise expires after its stored one-second
+            // duration even though the gate remains qualified. Native flag 8
+            // suppresses that event timer. Parent retirement still stops it.
+            let flags = payload.u32(target.event + 0x18)? | 8;
+            put(&mut payload.0, target.event + 0x18, &flags.to_le_bytes())?;
             // Retain the native scalar gate and event lifecycle, with no dependency
             // on contact or impact branches removed by the new flight controller.
             put(&mut payload.0, gate + 0x58, &activation.to_le_bytes())?;
             put(&mut payload.0, gate + 0x5c, &f32::MAX.to_le_bytes())?;
             put(&mut payload.0, gate + 0x60, &0u32.to_le_bytes())?;
+            ensure!(
+                original.u8(gate + 0x32)? == 1,
+                "Native trail gate does not repeat after release"
+            );
             let ordinal = flow_events
                 .iter()
                 .position(|row| original.pointer(row + 16).ok() == Some(target.event))
@@ -417,11 +396,51 @@ impl Assembly {
             append(&mut payload.0, gate + 0x38, 0x808093fb, &child, 4)?;
             root_children.extend(0u16.to_le_bytes());
             root_children.extend(u16::try_from(gate_index)?.to_le_bytes());
-            let symbol = particle(native, graph, target, index, wingtip)?;
-            self.resource(owner, target.system_row + 16, symbol.clone())?;
+            // Particle-event instances store an allocated group handle. Each
+            // source profile gets its own system in that group's definition.
+            let mut systems = vec![0; source.profiles.len() * 24];
+            for row in systems.chunks_exact_mut(24) {
+                row[16..24].copy_from_slice(&[0xff; 8]);
+            }
+            let payload = self.payloads.get_mut(&owner).unwrap();
+            append(
+                &mut payload.0,
+                target.event + 0x40,
+                0x80806cc8,
+                &systems,
+                24,
+            )?;
+            let rows = payload.array(target.event + 0x40, 24, Some(0x80806cc8))?;
+            let speed = super::super::motion::number(controls, "forward_source_units_per_second")?
+                * scene.metres();
+            let mut profiles = Vec::new();
+            for (profile_index, (profile, row)) in source.profiles.iter().zip(rows).enumerate() {
+                append(
+                    &mut self.payloads.get_mut(&owner).unwrap().0,
+                    row,
+                    0x80800009,
+                    &[u8::try_from(target.locator)?],
+                    1,
+                )?;
+                let prefix = format!("vehicle-boost-{index}-{profile_index}");
+                let (symbol, profile) = trail::emit(
+                    cache,
+                    pages,
+                    native,
+                    graph,
+                    profile,
+                    target.system,
+                    &prefix,
+                    scene.metres(),
+                    speed,
+                )?;
+                self.resource(owner, row + 16, symbol.clone())?;
+                profiles.push(json!({"system":symbol,"profile":profile}));
+            }
             events.insert(target.event);
-            report.push(json!({"event":target.event,"system":symbol,"source":source.source,"scale":source.scale,"placements":placements,
-                "marker":format!("{name:08X}"),"locator":target.locator,"thrust_threshold":activation,"gate":gate}));
+            report.push(json!({"event":target.event,"profiles":profiles,"source":source.source,"scale":source.scale,"placements":placements,
+                "marker":format!("{name:08X}"),"locator":target.locator,"thrust_threshold":activation,"gate":gate,
+                "lifetime":"Active until the thrust gate closes or the owner retires"}));
         }
         append(
             &mut self.payloads.get_mut(&owner).unwrap().0,
@@ -440,8 +459,9 @@ impl Assembly {
         Ok(Trails {
             events: BTreeMap::from([(owner, events)]),
             report: json!({"owner":format!("{owner:08X}"),
-            "attachments":report,"thrust_threshold":threshold,"input":input,"gate":gate,"gameplay_verified":false,
-            "limits":["Native ribbons approximate source engine and wingtip contrails. Thrust gates are authored for the native controller. Exact source contrail shading and light volumes are not translated. Live visibility and release cleanup require gameplay acceptance."]}),
+            "attachments":report,"thrust_threshold":threshold,"input":input,"gate":gate,
+            "parallel_entry":root_index,"gameplay_verified":false,
+            "limits":["Source profiles and bitmaps use straight ribbon segments. Thrust gates are authored for the native controller. Historical bending and light volumes are not translated. Live visibility and release cleanup require gameplay acceptance."]}),
         })
     }
 }

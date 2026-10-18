@@ -368,6 +368,17 @@ pub const fn input_hint(component: i64, input: i64) -> Option<&'static str> {
         }
         (3, 1) => Some("Reload with rounds remaining"),
         (3, 2) => Some("Reload with an empty magazine"),
+        // Each player Movement input's numeric source names an 808045C9 constraint whose bounds
+        // F3C34D and F3C354 read, clamping the result after modifiers (F3C374). Stock bounds and
+        // bases agree on all three player graphs.
+        (5, 0) => Some("Stock 6.25. The game keeps it from 0.2 to 9"),
+        (5, 1 | 2) => Some("Stock 5.625. The game keeps it from 0.2 to 6"),
+        (5, 3) => Some("Stock 27.39. The game keeps it from 0.2 to 30"),
+        (5, 4) => Some("Stock 3.44. The game keeps it from 0.2 to 4"),
+        (5, 5 | 6) => Some("Stock 3.09. The game keeps it from 0.2 to 4"),
+        (5, 7) => Some("Already at the game's cap of 16, so only decreases take effect"),
+        (5, 8) => Some("Stock 3.25. The game keeps it from 0.2 to 5"),
+        (5, 9) => Some("Stock 7.2. The game keeps it from 0.2 to 14"),
         // EF8797 scales the melee target search with it, and F0A60D and F0A74B the lunge.
         (11, 3) => Some("Scales melee target search and lunge"),
         (13, 0..=2) => Some("Stat points, 10 per tier"),

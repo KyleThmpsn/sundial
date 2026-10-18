@@ -7,7 +7,7 @@ use crate::{
         reader::Reader,
     },
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use serde_json::json;
 use std::collections::BTreeMap;
 
@@ -15,12 +15,19 @@ pub(super) struct Bundle {
     tag: u32,
     entity: Payload,
     pub owners: BTreeMap<u32, Payload>,
+    templates: BTreeMap<u32, Payload>,
     pub allocations: BTreeMap<u32, (u32, Payload)>,
     pub resources: BTreeMap<u32, BTreeMap<usize, String>>,
+    external: BTreeMap<u32, Payload>,
     added: Vec<(u32, Payload)>,
+    rebuilt: bool,
 }
 
 impl Bundle {
+    pub fn entity(&self) -> &Payload {
+        &self.entity
+    }
+
     pub fn read(native: &mut Reader, tag: u32) -> Result<Self> {
         let entity = (*native.tag(tag, Some(0x80809c0f))?).clone();
         if entity.u32(0x88)? != u32::MAX {
@@ -40,14 +47,92 @@ impl Bundle {
             allocations.insert(owner, (allocation_tag, allocation));
         }
         ensure!(!owners.is_empty(), "Vehicle secondary entity is empty");
+        let links = links::Graph::read(&entity, false)?;
+        let mut external = BTreeMap::new();
+        for endpoint in links
+            .connections
+            .iter()
+            .chain(&links.named_connections)
+            .flat_map(|row| [&row.consumer, &row.provider])
+            .filter(|endpoint| endpoint.selector > 0xffff)
+        {
+            if let Some(object) = endpoint.object {
+                external.insert(
+                    object.owner,
+                    (*native.tag(object.owner, Some(0x80809c36))?).clone(),
+                );
+            }
+        }
+        let mut linked = external.clone();
+        linked.extend(owners.clone());
+        links.validate_owners(&linked)?;
         Ok(Self {
             tag,
             entity,
+            templates: owners.clone(),
             owners,
             allocations,
             resources: BTreeMap::new(),
+            external,
             added: Vec::new(),
+            rebuilt: false,
         })
+    }
+
+    /// Remove a presentation component only when no retained consumer uses it.
+    pub fn remove(&mut self, owner: u32) -> Result<()> {
+        ensure!(
+            self.owners.contains_key(&owner),
+            "Secondary component is absent"
+        );
+        let links = links::Graph::read(&self.entity, false)?;
+        for row in links.connections.iter().chain(&links.named_connections) {
+            ensure!(
+                !row.provider
+                    .object
+                    .is_some_and(|object| object.owner == owner)
+                    || row
+                        .consumer
+                        .object
+                        .is_some_and(|object| object.owner == owner),
+                "Removed secondary component supplies a retained consumer"
+            );
+        }
+        self.owners.remove(&owner);
+        self.allocations.remove(&owner);
+        self.resources.remove(&owner);
+        self.rebuilt = true;
+        Ok(())
+    }
+
+    pub fn seal(&mut self, owner: u32) -> Result<()> {
+        let mut declared = self
+            .resources
+            .get(&owner)
+            .into_iter()
+            .flatten()
+            .map(|(&offset, symbol)| json!({"offset":offset,"symbol":symbol}))
+            .collect::<Vec<_>>();
+        let payload = self
+            .owners
+            .get_mut(&owner)
+            .context("Secondary runtime owner")?;
+        let end = payload.0.len();
+        crate::tiger::instance::seal_span(payload, &mut declared, end)?;
+        let resources = self.resources.entry(owner).or_default();
+        for patch in declared {
+            let offset =
+                usize::try_from(patch["offset"].as_u64().context("Secondary patch offset")?)?;
+            resources.insert(
+                offset,
+                patch["symbol"]
+                    .as_str()
+                    .context("Secondary patch symbol")?
+                    .into(),
+            );
+        }
+        self.rebuilt = true;
+        Ok(())
     }
 
     /// Add an intact native component whose host requires no connection rows.
@@ -74,6 +159,7 @@ impl Bundle {
                 (*native.tag(allocation, Some(0x80809bbb))?).clone(),
             ),
         );
+        self.templates.insert(owner, payload.clone());
         self.owners.insert(owner, payload);
         self.added.push((owner, entity));
         Ok(())
@@ -86,14 +172,17 @@ impl Bundle {
             .array(16, 12, Some(0x80809c04))?
             .into_iter()
             .map(|row| original_entity.u32(row))
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .filter(|owner| self.owners.contains_key(owner))
+            .collect::<Vec<_>>();
         order.extend(self.added.iter().map(|(owner, _)| *owner));
         let components = order
             .iter()
             .map(|&owner| compiled::Component {
                 owner,
                 payload: &self.owners[&owner],
-                template: &self.owners[&owner],
+                template: &self.templates[&owner],
                 entity: self
                     .added
                     .iter()
@@ -102,10 +191,25 @@ impl Bundle {
                     .unwrap_or(&original_entity),
             })
             .collect::<Vec<_>>();
-        if !self.added.is_empty() {
-            let connections = links::Graph::read(&original_entity, false)?.native_rows(
+        if self.rebuilt || !self.added.is_empty() {
+            // External selectors retain their stock provider. These payloads
+            // validate reference bounds without becoming private components.
+            let mut linked = self.external.clone();
+            linked.extend(self.owners.clone());
+            let mut links = links::Graph::read(&original_entity, false)?;
+            links.connections.retain(|row| {
+                row.consumer
+                    .object
+                    .is_none_or(|object| self.owners.contains_key(&object.owner))
+            });
+            links.named_connections.retain(|row| {
+                row.consumer
+                    .object
+                    .is_none_or(|object| self.owners.contains_key(&object.owner))
+            });
+            let connections = links.native_rows(
                 &order,
-                &self.owners,
+                &linked,
                 Ok,
                 |_, channel| Ok(channel),
                 |_, selector| Ok(selector),

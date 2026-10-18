@@ -199,6 +199,9 @@ impl Inspection {
         let expected = match stage {
             Stage::Pixel => "ps_5_0",
             Stage::Vertex => "vs_5_0",
+            Stage::Geometry => "gs_5_0",
+            Stage::Hull => "hs_5_0",
+            Stage::Domain => "ds_5_0",
             Stage::Compute => "cs_5_0",
         };
         ensure!(lines.next() == Some(expected), "disassembled stage differs");

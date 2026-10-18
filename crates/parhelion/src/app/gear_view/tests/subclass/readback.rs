@@ -1418,6 +1418,91 @@ pub(in super::super) fn read_back_subclass(
             authored.damage_type, chosen,
             "{name} shows the damage type its strings were given"
         );
+        // Its definition swaps the element unlock flag the base shares with its element's stock
+        // subclasses for the chosen element's, and sets the unlock values that element's stock
+        // subclasses set. The game kept the base's icon while only the strings changed.
+        let manager = open_shadowkeep_package_manager(packages).unwrap();
+        let unlocks =
+            |catalog: &InvestmentCatalog, hash: u32| {
+                let definition = manager
+                    .read_tag(tiger_pkg::TagHash(
+                        catalog.item_definition_tag(hash).unwrap(),
+                    ))
+                    .unwrap();
+                let read = |at: usize, size: usize| {
+                    definition[at..at + size]
+                        .iter()
+                        .rev()
+                        .fold(0_u64, |value, byte| (value << 8) | u64::from(*byte))
+                };
+                let rows = |descriptor: usize| {
+                    let count = read(descriptor, 8) as usize;
+                    (
+                        count,
+                        descriptor + 8 + read(descriptor + 8, 8) as usize + 16,
+                    )
+                };
+                let block = 0x90 + read(0x90, 8) as usize;
+                let (count, first) = rows(block);
+                let flags = (0..count)
+                    .map(|index| read(first + 2 * index, 2) as u16)
+                    .collect::<std::collections::BTreeSet<_>>();
+                let mut values = Vec::new();
+                for descriptor in [block + 0x10, block + 0x20] {
+                    if read(descriptor, 8) != 0 {
+                        let (count, first) = rows(descriptor);
+                        values.extend((0..count).map(|index| {
+                            (read(first + 8 * index, 4), read(first + 8 * index + 4, 4))
+                        }));
+                    }
+                }
+                (flags, values)
+            };
+        let element = |damage: Option<WeaponDamageType>| {
+            let mut shared = None::<std::collections::BTreeSet<u16>>;
+            let mut values = None;
+            for each in stock
+                .subclasses(|_| true)
+                .into_iter()
+                .filter(|each| each.damage_type == damage)
+            {
+                let (flags, rows) = unlocks(stock, each.hash);
+                shared = Some(match shared {
+                    Some(shared) => shared.intersection(&flags).copied().collect(),
+                    None => flags,
+                });
+                assert!(
+                    values
+                        .replace(rows.clone())
+                        .is_none_or(|previous| previous == rows),
+                    "stock subclasses of one damage type set the same unlock values"
+                );
+            }
+            let shared = shared.expect("a stock subclass has that damage type");
+            assert_eq!(
+                shared.len(),
+                1,
+                "stock subclasses of one damage type share one element flag"
+            );
+            (shared, values.unwrap())
+        };
+        let (flags, values) = unlocks(staged, report.item_hash);
+        let (base_flags, _) = unlocks(stock, base.hash);
+        let (base_element, _) = element(base.damage_type);
+        let (chosen_element, chosen_values) = element(chosen);
+        assert_eq!(
+            flags,
+            base_flags
+                .difference(&base_element)
+                .chain(&chosen_element)
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>(),
+            "{name} carries its chosen damage type's element flag"
+        );
+        assert_eq!(
+            values, chosen_values,
+            "{name} sets its chosen damage type's element values"
+        );
     }
     serde_json::json!({
         "kind": ItemKind::Subclass,

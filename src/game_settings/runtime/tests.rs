@@ -1,4 +1,5 @@
 use super::*;
+use eframe::egui;
 use serde_json::json;
 
 fn fixture() -> Value {
@@ -48,6 +49,142 @@ fn sunrise_0_5_retires_four_controls_without_touching_other_runtimes_or_settings
         let capabilities = Capabilities::detect(Some(version), false);
         assert!(!capabilities.supports(RETIRED[0]), "{version}");
     }
+}
+
+/// One frame of the Sunrise page, reporting whether a control changed the document.
+fn draw_page(
+    context: &egui::Context,
+    events: Vec<egui::Event>,
+    document: &mut Value,
+    capabilities: Capabilities,
+) -> (egui::FullOutput, bool) {
+    let mut changed = false;
+    let output = context.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1240.0, 900.0),
+            )),
+            events,
+            ..Default::default()
+        },
+        |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                changed |= draw(ui, document, false, capabilities);
+            });
+        },
+    );
+    (output, changed)
+}
+
+/// Clicks the painted text, pressing and releasing in separate frames, then draws the result.
+fn click(
+    context: &egui::Context,
+    document: &mut Value,
+    capabilities: Capabilities,
+    text: &str,
+) -> (egui::FullOutput, bool) {
+    let (output, _) = draw_page(context, vec![], document, capabilities);
+    let position = crate::test_support::text_position(&output, text)
+        .unwrap_or_else(|| panic!("Missing rendered label: {text}"));
+    let mut changed = false;
+    for pressed in [true, false] {
+        let events = crate::test_support::primary_press(position, pressed);
+        changed |= draw_page(context, events, document, capabilities).1;
+    }
+    (
+        draw_page(context, vec![], document, capabilities).0,
+        changed,
+    )
+}
+
+/// Sunrise 0.6's three new controls and the keys they save.
+const SUNRISE_0_6_CONTROLS: [(&str, &str); 3] = [
+    ("Unlock Cheat Tools", "/client/cheats"),
+    ("Allow Studio Attach", "/core/studio_attach"),
+    ("Export Package Keys", "/client/dump_package_keys"),
+];
+
+/// Sunrise 0.6's own `default_settings.json`, plus a field no Sunrise version defines.
+fn sunrise_0_6_defaults() -> Value {
+    let mut defaults: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/sunrise-v18-9260d10-defaults.json"
+    ))
+    .unwrap();
+    defaults["unknown"] = json!({"keep": [1, 2]});
+    defaults
+}
+
+/// Opens the Advanced tab and returns its frame, or `None` when the page hides that tab.
+fn open_advanced(
+    context: &egui::Context,
+    document: &mut Value,
+    capabilities: Capabilities,
+) -> Option<egui::FullOutput> {
+    // The first frame of a fresh context only settles the layout.
+    draw_page(context, vec![], document, capabilities);
+    let (output, _) = draw_page(context, vec![], document, capabilities);
+    crate::test_support::text_position(&output, "Advanced")?;
+    let (output, changed) = click(context, document, capabilities, "Advanced");
+    assert!(!changed, "Opening a tab changed the settings");
+    Some(output)
+}
+
+#[test]
+fn sunrise_0_6_controls_appear_only_where_the_runtime_reads_them() {
+    const RETIRED: [&str; 2] = ["Private Region", "Pin Replicated Record"];
+    let defaults = sunrise_0_6_defaults();
+    // Both gates are independent, and only a readable Sunrise version may hide anything.
+    for (version, dawn, added, retired) in [
+        (Some("0.6"), false, true, false),
+        (Some("0.6.0.0"), false, true, false),
+        (Some("1.0"), false, true, false),
+        // Earlier parsers skip the new keys, so a control there would change nothing.
+        (Some("0.5.9.0"), false, false, false),
+        (Some("0.4.9"), false, false, true),
+        // Dawn reads none of the new keys and still reads the ones Sunrise 0.5 retired.
+        (Some("0.6"), true, false, true),
+        (None, false, true, true),
+        (Some("Not detected"), false, true, true),
+    ] {
+        let case = format!("{version:?} dawn={dawn}");
+        let capabilities = Capabilities::detect(version, dawn);
+        let mut document = defaults.clone();
+        let context = egui::Context::default();
+        let output = open_advanced(&context, &mut document, capabilities);
+        // A tab whose every control is hidden is not shown at all.
+        assert_eq!(output.is_some(), added || retired, "{case}");
+        let Some(output) = output else { continue };
+        assert_eq!(document, defaults, "{case}");
+        let shown = |label: &str| crate::test_support::text_position(&output, label).is_some();
+        let controls = SUNRISE_0_6_CONTROLS.map(|(label, _)| shown(label));
+        assert_eq!(controls, [added; 3], "{case}");
+        assert_eq!(RETIRED.map(shown), [retired; 2], "{case}");
+    }
+}
+
+#[test]
+fn sunrise_0_6_controls_save_their_own_keys() {
+    let capabilities = Capabilities::detect(Some("0.6"), false);
+    let context = egui::Context::default();
+    let mut document = sunrise_0_6_defaults();
+    open_advanced(&context, &mut document, capabilities).expect("Sunrise 0.6 shows Advanced");
+    // Each control saves its own key as a boolean and leaves the rest of the file alone.
+    for (label, path) in SUNRISE_0_6_CONTROLS {
+        let mut expected = document.clone();
+        *expected.pointer_mut(path).unwrap() = Value::Bool(true);
+        assert!(
+            click(&context, &mut document, capabilities, label).1,
+            "{label}"
+        );
+        assert_eq!(document, expected, "{label}");
+    }
+    // Sunrise 0.6's own defaults, with every new key changed, still pass both validators.
+    assert_eq!(validate(&document, false), Ok(()));
+    assert_eq!(
+        crate::game_settings::validate_non_account(&document),
+        Ok(())
+    );
 }
 
 #[test]

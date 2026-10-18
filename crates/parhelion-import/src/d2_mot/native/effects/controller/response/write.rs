@@ -135,6 +135,7 @@ impl Write {
         }
         let (native, size, length, alignment) = match class {
             0x80803FC6 => (0x80804B56, 12, 12, 4),
+            0x80803FCD => (0x80804B5D, 16, 16, 4),
             0x80803FB5 => (0x80804B45, 32, 32, 4),
             0x80803FAF => (0x80804B3F, 8, 8, 4),
             0x80803F85 => (0x80804B17, 12, 12, 4),
@@ -157,6 +158,15 @@ impl Write {
         let at = self.prefix(native, alignment)?;
         self.reserve(length)?;
         match class {
+            0x80803FCD => {
+                ensure!(
+                    read.source.bytes::<4>(source)? == [5, 0, 0, 0]
+                        && read.source.f32(source + 4)?.is_finite()
+                        && read.source.f32(source + 8)?.is_finite(),
+                    "unsupported health-region response mode or flags"
+                );
+                self.copy(read, source, at, 16)?;
+            }
             0x80803FD1 | 0x80803FD2 | 0x80803F75 | 0x808042CE => {
                 ensure!(read.source.u8(source)? <= 1, "response boolean differs");
                 self.copy(read, source, at, 1)?;

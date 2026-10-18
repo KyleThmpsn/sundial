@@ -216,6 +216,7 @@ fn saved_barrel_controls_emit_geometry_and_capacity_without_changing_stock() {
             staging_root: output.join(format!("staged-{run}")),
             ignore_installed_authored_overlays: true,
             recipes: recipes.clone(),
+            maps: Vec::new(),
         })
         .unwrap();
         let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |_| {}).unwrap();
@@ -359,6 +360,7 @@ fn saved_barrel_controls_emit_geometry_and_capacity_without_changing_stock() {
             staging_root: output.join(format!("rejected-{}", rejected.len())),
             ignore_installed_authored_overlays: true,
             recipes: vec![recipe],
+            maps: Vec::new(),
         })
         .and_then(|snapshot| crate::build_and_stage_snapshot_with_progress(&snapshot, |_| {}));
         rejected.push(

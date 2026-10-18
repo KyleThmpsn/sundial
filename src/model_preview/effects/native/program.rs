@@ -90,13 +90,25 @@ fn immediate(
     at: &mut usize,
     previous: &[[u32; 4]],
 ) -> Result<Vec<[u32; 4]>, String> {
+    let token = take(words, at)?;
+    let length = take(words, at)? as usize;
+    // Opaque custom data (class 2) is the console compiler's private block that D1 Rise of
+    // Iron programs carry before and after their declarations. The game does not evaluate
+    // it, so neither does the preview: it is skipped like any other comment class.
+    if token >> 11 != 3 {
+        if length < 2 {
+            return Err("Invalid shader custom data length".into());
+        }
+        *at = at
+            .checked_add(length - 2)
+            .filter(|end| *end <= words.len())
+            .ok_or("Truncated shader custom data")?;
+        return Ok(previous.to_vec());
+    }
     if !previous.is_empty() {
         return Err("Duplicate immediate shader table".into());
     }
-    let token = take(words, at)?;
-    let length = take(words, at)? as usize;
-    if token != (53 | (3 << 11)) || !(6..=1026).contains(&length) || !(length - 2).is_multiple_of(4)
-    {
+    if !(6..=1026).contains(&length) || !(length - 2).is_multiple_of(4) {
         return Err("Invalid immediate shader table".into());
     }
     let end = at

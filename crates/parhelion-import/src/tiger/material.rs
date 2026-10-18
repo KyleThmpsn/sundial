@@ -24,9 +24,11 @@ fn elements(layout: i16) -> Option<Vec<Element>> {
     let tangent = ("TANGENT", 0, 3, 15);
     let detail = ("TEXCOORD", 2, 3, 3);
     match layout {
+        9 => Some(vec![position, weights, indices, uv, normal, tangent]),
         28 => Some(vec![
             position, weights, indices, uv, normal, tangent, detail,
         ]),
+        123 => Some(vec![position, uv, normal, tangent]),
         139 => Some(vec![position, uv, normal, tangent, detail]),
         18 => Some(vec![position, normal, tangent, uv, weights, indices]),
         _ => None,
@@ -41,7 +43,7 @@ fn program(bytes: &[u8], layout: i16) -> Result<Vec<u8>> {
     };
     ensure!(
         Payload(bytes[code].to_vec()).u32(0)? == 0x00010050,
-        "native vertex input repair requires a shader model 5.0 vertex program"
+        "native vertex input binding requires a shader model 5.0 vertex program"
     );
     let range = dxbc::chunk(bytes, b"ISGN")?.context("vertex input signature missing")?;
     let signature = Payload(bytes[range].to_vec());
@@ -116,13 +118,9 @@ fn compatible_program(
     if layouts.iter().all(|layout| elements(*layout).is_none()) {
         return Ok(None);
     }
-    ensure!(
-        layouts.iter().all(|layout| elements(*layout).is_some()),
-        "vertex program {name} is also consumed by an unsupported layout"
-    );
     let original = read()?;
     let mut selected = None;
-    for layout in layouts {
+    for &layout in layouts.iter().filter(|layout| elements(**layout).is_some()) {
         let bytes = program(&original, layout)
             .with_context(|| format!("vertex program {name}, layout {layout}"))?;
         if let Some(previous) = &selected {
@@ -134,7 +132,29 @@ fn compatible_program(
             selected = Some(bytes);
         }
     }
-    Ok(selected.filter(|bytes| *bytes != original))
+    let bound = selected.filter(|bytes| *bytes != original);
+    // An unchanged program also preserves every unhandled consumer. A register
+    // rewrite needs a verified mapping for all of them before it can be applied.
+    ensure!(
+        bound.is_none() || layouts.iter().all(|layout| elements(*layout).is_some()),
+        "vertex program {name} is also consumed by an unsupported layout"
+    );
+    Ok(bound)
+}
+
+fn dye_scopes(mut bytes: Vec<u8>) -> Result<Option<Vec<u8>>> {
+    let payload = Payload(bytes.clone());
+    // Native gear draws gate their pixel dye binders on material +0x18.
+    // Earlier imported color programs requested those scopes only at +0x1C.
+    // Carry just the three declared dye dependencies, preserving all other bits.
+    let required = payload.u32(0x1C)? & 0x1C00_0000;
+    let original = payload.u32(0x18)?;
+    let selected = original | required;
+    if selected == original {
+        return Ok(None);
+    }
+    bytes[0x18..0x1C].copy_from_slice(&selected.to_le_bytes());
+    Ok(Some(bytes))
 }
 
 fn cloth_scope(name: &str, original: Vec<u8>) -> Result<Option<Vec<u8>>> {
@@ -162,7 +182,7 @@ fn frame_exposure(original: &[u8]) -> Result<Option<Vec<u8>>> {
     };
     ensure!(
         Payload(original[range].to_vec()).u32(0)? == 0x00000050,
-        "native frame exposure repair requires a shader model 5.0 pixel program"
+        "native frame exposure binding requires a shader model 5.0 pixel program"
     );
     // Stock Shadowkeep transparent emission multiplies frame vector 1's W and Z lanes.
     // The modern shader uses W and X. Reuse the particle adapter's bounded instruction
@@ -217,9 +237,50 @@ fn nodes(graph: &Value) -> Result<BTreeMap<&str, &Value>> {
     Ok(nodes)
 }
 
-/// Return repaired payloads by graph symbol without changing the pinned source files.
+fn bind_cloth<'a>(
+    name: &str,
+    roles: &BTreeSet<bool>,
+    get: impl Fn(&str) -> Result<&'a Value>,
+    read: impl Fn(&Value) -> Result<Vec<u8>>,
+    bound: &mut BTreeMap<String, Vec<u8>>,
+) -> Result<()> {
+    if !roles.contains(&true) {
+        return Ok(());
+    }
+    ensure!(
+        roles.len() == 1,
+        "cloth material {name} is shared by simulation and other draws"
+    );
+    let node = get(name)?;
+    let Some(header) = target(node, 0x48)? else {
+        return Ok(());
+    };
+    let data = get(header)?["reference"]
+        .as_str()
+        .context("private cloth vertex header has no bytecode reference")?;
+    let signature = dxbc::signature(&read(get(data)?)?, b"ISGN")?;
+    ensure!(
+        signature.iter().any(|(semantic, index, _, _)| {
+            semantic.eq_ignore_ascii_case("POSITION") && *index == 0
+        }) && !signature.iter().any(|(semantic, _, _, _)| {
+            semantic.eq_ignore_ascii_case("BLENDWEIGHT")
+                || semantic.eq_ignore_ascii_case("BLENDINDICES")
+        }),
+        "simulated cloth material {name} does not use an unweighted vertex program"
+    );
+    let original = match bound.get(name) {
+        Some(bytes) => bytes.clone(),
+        None => read(node)?,
+    };
+    if let Some(bytes) = cloth_scope(name, original)? {
+        bound.insert(name.to_owned(), bytes);
+    }
+    Ok(())
+}
+
+/// Return bound payloads by graph symbol without changing the pinned source files.
 /// Only private programs and materials reached through supported final model stages are eligible.
-pub fn repair(graph: &Value, directory: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
+pub fn bind(graph: &Value, directory: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
     let root = directory.canonicalize().context("imported graph folder")?;
     let models = crate::model_symbols(graph)?;
     let modern_materials = graph["source_stage_7_adapter"].is_object()
@@ -291,46 +352,24 @@ pub fn repair(graph: &Value, directory: &Path) -> Result<BTreeMap<String, Vec<u8
             }
         }
     }
-    let mut repaired = BTreeMap::new();
+    let mut bound = BTreeMap::new();
     for (name, layouts) in consumers {
         if let Some(bytes) = compatible_program(name, layouts, || read(get(name)?))? {
-            repaired.insert(name.to_owned(), bytes);
+            bound.insert(name.to_owned(), bytes);
         }
     }
     for (name, draws) in pixels {
         if let Some(bytes) = exposed_program(name, draws, |name| read(get(name)?))? {
-            repaired.insert(name.to_owned(), bytes);
+            bound.insert(name.to_owned(), bytes);
+        }
+    }
+    for name in materials.keys() {
+        if let Some(bytes) = dye_scopes(read(get(name)?)?)? {
+            bound.insert((*name).to_owned(), bytes);
         }
     }
     for (name, roles) in materials {
-        if !roles.contains(&true) {
-            continue;
-        }
-        ensure!(
-            roles.len() == 1,
-            "cloth material {name} is shared by simulation and other draws"
-        );
-        let node = get(name)?;
-        let Some(header) = target(node, 0x48)? else {
-            continue;
-        };
-        let data = get(header)?["reference"]
-            .as_str()
-            .context("private cloth vertex header has no bytecode reference")?;
-        let signature = dxbc::signature(&read(get(data)?)?, b"ISGN")?;
-        ensure!(
-            signature.iter().any(|(semantic, index, _, _)| {
-                semantic.eq_ignore_ascii_case("POSITION") && *index == 0
-            }) && !signature.iter().any(|(semantic, _, _, _)| {
-                semantic.eq_ignore_ascii_case("BLENDWEIGHT")
-                    || semantic.eq_ignore_ascii_case("BLENDINDICES")
-            }),
-            "simulated cloth material {name} does not use an unweighted vertex program"
-        );
-        let original = read(node)?;
-        if let Some(bytes) = cloth_scope(name, original)? {
-            repaired.insert(name.to_owned(), bytes);
-        }
+        bind_cloth(name, &roles, get, read, &mut bound)?;
     }
-    Ok(repaired)
+    Ok(bound)
 }

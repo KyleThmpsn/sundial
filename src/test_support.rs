@@ -73,6 +73,16 @@ pub(crate) fn primary_press(position: egui::Pos2, pressed: bool) -> Vec<egui::Ev
     ]
 }
 
+/// A point just inside the first painted text that reads exactly `text`, for a click to land on.
+pub(crate) fn text_position(output: &egui::FullOutput, text: &str) -> Option<egui::Pos2> {
+    output.shapes.iter().find_map(|shape| match &shape.shape {
+        egui::Shape::Text(shape) if shape.galley.job.text == text => {
+            Some(shape.pos + egui::vec2(3.0, 3.0))
+        }
+        _ => None,
+    })
+}
+
 pub(crate) fn artifact(name: &str, value: &serde_json::Value) {
     let Some(directory) = std::env::var_os("SUNDIAL_TEST_ARTIFACTS") else {
         return;

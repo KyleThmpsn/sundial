@@ -38,7 +38,7 @@ fn selection_edits_preserve_membership_of_unreadable_recipes() {
     // Deselect everything visible, without touching the hidden broken recipe.
     let visible = library.scan().unwrap().entries;
     library
-        .save_enabled_paths(&BTreeSet::new(), &visible)
+        .save_enabled_selection(&BTreeSet::new(), &visible, &[])
         .unwrap();
     fs::write(broken, original).unwrap();
     let scan = library.scan().unwrap();
@@ -516,7 +516,9 @@ fn disabling_bundled_recipe_survives_library_restart() {
         .find(|entry| entry.namespace == "parhelion.every-end")
         .unwrap();
     enabled.remove(&every_end.path);
-    library.save_enabled_paths(&enabled, &scan.entries).unwrap();
+    library
+        .save_enabled_selection(&enabled, &scan.entries, &[])
+        .unwrap();
 
     let reopened = RecipeLibrary::open(root).unwrap();
     let reopened_scan = reopened.scan().unwrap();

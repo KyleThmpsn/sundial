@@ -164,6 +164,7 @@ fn child(output: &Path, phase: &str) {
     let bundle = crate::item::build::compile_with_progress(
         &source,
         &WeaponProjectSpec { weapons },
+        &[],
         crate::branding::Branding::for_packages(&source),
         &mut |event| progress.push(json!({
             "seconds":event.timestamp.saturating_duration_since(start).as_secs_f64(),

@@ -25,35 +25,63 @@ pub(super) struct GearPagePlan {
     /// A collectible under `template`, whose child row the members copy.
     pub donor: usize,
     pub children: Vec<u16>,
+    /// Authored item identities in tile order for an armor set. Other pages use build order.
+    pub members: Vec<u32>,
 }
 
-/// An armor piece's branded pages: one per supported class, in the set that class has filled
-/// to, with the first base of each class's page noted. Exotic armor has none.
-fn armor_pages(
+/// Ordinary armor uses equipment buckets. Exotic armor keeps its native flat page.
+fn armor_piece(
+    sources: &sources::ProjectSources,
+    index: usize,
     weapon: &WeaponCloneSpec,
     definition: &[u8],
     supported: crate::collection::Classes,
-    (armor_counts, gear_bases): (&mut [usize; 3], &mut BTreeMap<GearPage, u32>),
-) -> AuthoringResult<Vec<GearPage>> {
+) -> AuthoringResult<Option<crate::collection::armor::Piece>> {
     let rarity = weapon
         .overrides
         .rarity
         .unwrap_or(weapon_rarity(definition)?);
     if rarity == AuthoredWeaponRarity::Exotic {
-        return Ok(Vec::new());
+        return Ok(None);
     }
-    Ok(supported
-        .iter()
-        .map(|class| {
-            let count = &mut armor_counts[usize::from(class)];
-            let set = *count / crate::collection::ARMOR_SET_SIZE;
-            *count += 1;
-            gear_bases
-                .entry(GearPage::armor(class))
-                .or_insert(weapon.donor_item_hash);
-            GearPage::armor_set(class, set)
+    let bucket = *definition
+        .get(sundial::package_authoring::investment_schema::ITEM_INVENTORY_SLOT_OFFSET)
+        .ok_or_else(|| invalid("Armor Collections base has no inventory slot"))?;
+    let slot = crate::collection::armor::Slot::from_native_bucket(bucket)
+        .ok_or_else(|| invalid("Armor Collections base has an unsupported inventory slot"))?;
+    Ok(Some(crate::collection::armor::Piece {
+        index,
+        slot: Some(slot),
+        classes: supported,
+        group: super::armor::group(sources, weapon)?,
+    }))
+}
+
+fn assign_armor_sets(
+    weapons: &[WeaponCloneSpec],
+    armor: &[crate::collection::armor::Piece],
+    destinations: &mut [Vec<GearPage>],
+    bases: &mut BTreeMap<GearPage, u32>,
+) -> BTreeMap<GearPage, Vec<u32>> {
+    crate::collection::armor::sets(armor)
+        .into_iter()
+        .map(|set| {
+            let base = weapons[set.members[0]].donor_item_hash;
+            bases
+                .entry(GearPage::armor(set.page.class().unwrap()))
+                .or_insert(base);
+            bases.insert(set.page, base);
+            let members = set
+                .members
+                .into_iter()
+                .map(|index| {
+                    destinations[index].push(set.page);
+                    weapons[index].identity.item_hash
+                })
+                .collect();
+            (set.page, members)
         })
-        .collect())
+        .collect()
 }
 
 pub(super) struct Plan {
@@ -76,8 +104,8 @@ impl Plan {
         let mut classes = Vec::with_capacity(weapons.len());
         // The first base of each kind names the category its branded page joins.
         let mut gear_bases = BTreeMap::new();
-        let mut armor_counts = [0usize; 3];
-        for weapon in weapons {
+        let mut armor = Vec::new();
+        for (index, weapon) in weapons.iter().enumerate() {
             let armor_definition = if weapon.kind == ItemKind::Armor {
                 let item = item_index(sources, weapon.donor_item_hash)?;
                 Some(read_tag(
@@ -99,12 +127,10 @@ impl Plan {
             };
             classes.push(supported);
             let gear_pages = match armor_definition.as_deref() {
-                Some(definition) => armor_pages(
-                    weapon,
-                    definition,
-                    supported,
-                    (&mut armor_counts, &mut gear_bases),
-                )?,
+                Some(definition) => {
+                    armor.extend(armor_piece(sources, index, weapon, definition, supported)?);
+                    Vec::new()
+                }
                 None => GearPage::for_kind(weapon.kind).into_iter().collect(),
             };
             for &page in &gear_pages {
@@ -122,6 +148,8 @@ impl Plan {
             }
             weapon_destinations.push(destination);
         }
+        let mut armor_members =
+            assign_armor_sets(weapons, &armor, &mut gear_destinations, &mut gear_bases);
         let badges = weapons
             .iter()
             .filter_map(|w| w.overrides.badge.as_ref().map(|b| b.name.as_str()))
@@ -184,7 +212,9 @@ impl Plan {
             let index = u16::try_from(next)
                 .map_err(|_| invalid("Collections page index exceeds capacity"))?;
             next += 1;
-            gear_pages.insert(page, gear_page(sources, page, base, index)?);
+            let mut planned = gear_page(sources, page, base, index)?;
+            planned.members = armor_members.remove(&page).unwrap_or_default();
+            gear_pages.insert(page, planned);
         }
         // Categories link to the preallocated set rows, preserving their display order.
         let armor_categories = gear_pages
@@ -312,6 +342,7 @@ fn gear_page(
         sibling,
         donor,
         children: Vec::new(),
+        members: Vec::new(),
     })
 }
 
@@ -444,7 +475,7 @@ fn stock_family_hashes(
     Ok(hashes)
 }
 
-fn item_index(sources: &sources::ProjectSources, hash: u32) -> AuthoringResult<usize> {
+pub(super) fn item_index(sources: &sources::ProjectSources, hash: u32) -> AuthoringResult<usize> {
     sources
         .stock_item_rows_by_hash
         .get(&hash)

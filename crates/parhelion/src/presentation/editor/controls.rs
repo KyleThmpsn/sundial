@@ -84,6 +84,20 @@ impl Editor {
         });
         ui.checkbox(&mut self.composition.flip_horizontal, "Flip Horizontally");
         ui.checkbox(&mut self.composition.flip_vertical, "Flip Vertically");
+        if let Kind::Nameplate { part, size } = self.kind
+            && part.shown_rows(size.1).is_some()
+        {
+            ui.add_space(10.0);
+            ui.strong("Visible Area");
+            if ui.button("Fit Visible Area").clicked() {
+                let picture = self.composition.source(self.source.pixels()).dimensions();
+                if let Some(placed) = crate::emblem::shown_rows_composition(part, picture, size) {
+                    self.composition.fit = placed.fit;
+                    self.composition.scale = placed.scale;
+                    self.composition.offset = placed.offset;
+                }
+            }
+        }
         ui.add_space(10.0);
         if ui.button("Reset Size and Position").clicked() {
             self.composition = Composition {

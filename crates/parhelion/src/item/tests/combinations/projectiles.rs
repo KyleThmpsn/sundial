@@ -297,6 +297,7 @@ fn recipe(
         .overrides
         .socket_plug_variants
         .push(crate::WeaponSocketPlugVariantRecipe {
+            projectile: None,
             offer_everywhere: false,
             replace_effects: false,
             socket_index: u16::try_from(donor.sockets.len()).unwrap(),

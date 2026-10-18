@@ -1,11 +1,31 @@
-//! Filesystem lifecycle through the public upgrade and installation boundaries.
-//! The failure inventory was recorded before implementation in the migration evidence.
+//! Filesystem lifecycle through the public installation, review and recovery boundaries.
+//!
+//! Failure inventory, written before the change to retire an earlier layout:
+//! - an earlier layout's packages patch stock packages with added entries, which the loader
+//!   refuses, so moving them into the mod folder publishes a mod that never loads
+//! - an install refuses to run while they remain, and removal or recovery that validates them as
+//!   mod content stops, leaving the installation unusable
+//! - a build whose patch adds entries reaches the mod folder
+//! - retiring them loses their bytes, or loses them when an operation is interrupted
+//! - an interrupted operation completes forward before its account change was written, or rolls
+//!   back after the earlier layout's packages were removed
+//! - a retired package's id is taken as a conflict for the build replacing it
+//!
+//! Failure inventory, written before the change to support switching between Sunrise 0.6 and
+//! Dawn or an earlier Sunrise on one installation:
+//! - reading fails, or shows the mod folder, on a runtime that doesn't load Sunrise mods
+//! - removal there refuses the mod folder, or leaves it for Sunrise 0.6 to load again later
+//! - an install there leaves the mod folder beside the new packages, so Sunrise 0.6 then loads
+//!   both layouts, or retires the folder without a backup or before the build was validated
+//! - a build made for the mod folder installs where its records package isn't known to load
+//! - the other runtime keeps a build-data cache describing packages that were replaced
 use super::*;
 use crate::install::loader as backend;
 use sundial::package_authoring::mod_content;
+mod coexistence;
 mod compliance;
 
-fn fixture() -> Fixture {
+pub(super) fn fixture() -> Fixture {
     let mut fixture = Fixture::new();
     let runtime = fixture.target.parent().unwrap().join("bin/x64");
     fs::remove_file(runtime.join("oo2core_3_win64.dll")).unwrap();
@@ -72,7 +92,7 @@ fn write_manifest(fixture: &Fixture) {
     }).collect()));
 }
 
-fn change_assets(fixture: &mut Fixture) {
+pub(super) fn change_assets(fixture: &mut Fixture) {
     let name = crate::package_profile::PARHELION_ASSET_FILE_NAME;
     let bytes = build_test_package_with_physical_payload(
         crate::package_profile::PARHELION_ASSET_PACKAGE_ID,
@@ -85,10 +105,51 @@ fn change_assets(fixture: &mut Fixture) {
     write_manifest(fixture);
 }
 
-fn legacy(fixture: &Fixture) {
-    for (name, bytes) in &fixture.staged_bytes {
+/// Writes an earlier layout's output into stock `packages`, as a build for Dawn or Sunrise
+/// before 0.6 installed it: each canonical patch replaces an entry and appends one, and every
+/// standalone package the build stages has a copy of its own. The patches are built beside copies
+/// of the stock packages, away from the fixture's placeholder encoder. Returns the written bytes.
+fn legacy(fixture: &Fixture) -> BTreeMap<String, Vec<u8>> {
+    let view = tempfile::tempdir().unwrap();
+    let packages = view.path().join("packages");
+    fs::create_dir(&packages).unwrap();
+    let mut written = BTreeMap::new();
+    for profile in CANONICAL_PACKAGES {
+        let stock = profile.stock_file_name(profile.stock_patch_id);
+        fs::copy(fixture.target.join(&stock), packages.join(&stock)).unwrap();
+        let overlay = crate::extend::build_extended_overlay(
+            &packages,
+            profile.package_id,
+            &[crate::ReplacementSpec {
+                tag: tiger_pkg::TagHash::new(profile.package_id, 0),
+                payload: b"legacy payload".to_vec(),
+            }],
+            &[crate::NewTagSpec {
+                template_tag: tiger_pkg::TagHash::new(profile.package_id, 0),
+                payload: b"legacy record".to_vec(),
+                storage: crate::NewTagStorageMode::InheritTemplate,
+            }],
+        )
+        .unwrap();
+        written.insert(
+            profile.authored_file_name.to_owned(),
+            overlay.bytes().to_vec(),
+        );
+    }
+    for name in fixture.staged_bytes.keys() {
+        if let Some(profile) = crate::package_profile::authored_package_for_file_name(name)
+            && canonical_package(profile.package_id).is_none()
+        {
+            let bytes =
+                build_test_package_with_physical_payload(profile.package_id, 0, b"legacy assets")
+                    .unwrap();
+            written.insert(name.clone(), bytes);
+        }
+    }
+    for (name, bytes) in &written {
         fs::write(fixture.target.join(name), bytes).unwrap();
     }
+    written
 }
 
 fn request(fixture: &Fixture) -> InstallRequest {
@@ -106,7 +167,7 @@ fn recovery(fixture: &Fixture) -> RecoveryRequest {
     }
 }
 
-fn account(fixture: &Fixture, schema: u64) -> (PathBuf, Vec<u8>) {
+pub(super) fn account(fixture: &Fixture, schema: u64) -> (PathBuf, Vec<u8>) {
     let root = fixture.target.parent().unwrap().join("bin/x64/Sunrise");
     fs::create_dir_all(root.join("data")).unwrap();
     let settings = root.join("settings.json");
@@ -148,6 +209,20 @@ fn account(fixture: &Fixture, schema: u64) -> (PathBuf, Vec<u8>) {
     (path, bytes)
 }
 
+/// How many items of `definition` a SQLite account holds.
+fn item_count(account: &Path, definition: u32) -> u64 {
+    rusqlite::Connection::open(account)
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM items WHERE definition_hash=?",
+            [i64::from(definition)],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+/// The mod folder holds exactly the staged build, read back through the loader's projection,
+/// and no output of either layout remains in stock `packages`.
 fn assert_mod_readback(fixture: &Fixture) -> serde_json::Value {
     let root = fixture.target.parent().unwrap();
     let view = mod_content::View::open(root).unwrap().unwrap();
@@ -167,8 +242,60 @@ fn assert_mod_readback(fixture: &Fixture) -> serde_json::Value {
     json!({"packages": files})
 }
 
+/// Every file in `directory` and its subfolders by relative path, with its SHA-256.
+fn tree(directory: &Path) -> BTreeMap<String, String> {
+    fn walk(root: &Path, path: &Path, found: &mut BTreeMap<String, String>) {
+        for entry in fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(root, &path, found);
+            } else {
+                found.insert(
+                    path.strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                    digest_file(&path).unwrap().sha256,
+                );
+            }
+        }
+    }
+    let mut found = BTreeMap::new();
+    walk(directory, directory, &mut found);
+    found
+}
+
+/// Makes the installation's runtime `brand` at `version`.
+fn switch_runtime(fixture: &Fixture, brand: &str, version: [u16; 4]) {
+    fs::write(
+        fixture
+            .target
+            .parent()
+            .unwrap()
+            .join("bin/x64/steam_api64.dll"),
+        sundial::test_support::runtime::module(brand, version, 18),
+    )
+    .unwrap();
+}
+
+/// Every retired package is in exactly one recovery backup, byte for byte.
+fn assert_retired_backup(fixture: &Fixture, retired: &BTreeMap<String, Vec<u8>>) -> PathBuf {
+    let backups = fs::read_dir(&fixture.backups)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.join("legacy").is_dir())
+        .collect::<Vec<_>>();
+    let [backup] = backups.as_slice() else {
+        panic!("one backup holds the retired packages: {backups:?}");
+    };
+    for (name, bytes) in retired {
+        assert_eq!(&fs::read(backup.join("legacy").join(name)).unwrap(), bytes);
+    }
+    backup.clone()
+}
+
 #[test]
-fn upgrade_preserves_persisted_accounts_and_supports_repeat_update_and_removal() {
+fn install_retires_an_earlier_layout_and_preserves_persisted_accounts() {
     let results = [8, 18]
         .into_iter()
         .map(verify_lifecycle)
@@ -181,42 +308,109 @@ fn upgrade_preserves_persisted_accounts_and_supports_repeat_update_and_removal()
 
 fn verify_lifecycle(schema: u64) -> serde_json::Value {
     let mut fixture = fixture();
+    let outside = super::runtime::links::external(&fixture, false);
+    let external_dll = outside.path().join("steam_api64.dll");
+    let runtime_before = fs::read(&external_dll).unwrap();
     let (account, original_account) = account(&fixture, schema);
     let stock = fixture.source_artifact_json();
     let directory_before = compliance::inventory(&fixture.target);
     fs::write(fixture.target.join(".parhelion-transaction.lock"), []).unwrap();
-    legacy(&fixture);
-    let plan = preview_upgrade(&fixture.target).unwrap().unwrap();
+    let retired = legacy(&fixture);
+    let review = preview_upgrade(&fixture.target).unwrap().unwrap();
+    assert_eq!(
+        review
+            .artifacts()
+            .iter()
+            .map(|artifact| artifact.file_name.clone())
+            .collect::<BTreeSet<_>>(),
+        retired.keys().cloned().collect()
+    );
     assert_eq!(fs::read(&account).unwrap(), original_account);
-    let report = upgrade_installation(&plan, &fixture.backups, game_stopped).unwrap();
+    let report = install_staged_packages(&request(&fixture)).unwrap();
     let readback = assert_mod_readback(&fixture);
+    let backup = assert_retired_backup(&fixture, &retired);
+    // Reports name the canonical packages folder.
+    let target = fs::canonicalize(&fixture.target).unwrap();
+    for name in retired.keys() {
+        assert!(
+            report
+                .removed_obsolete_packages
+                .contains(&target.join(name)),
+            "{name} is reported as retired"
+        );
+    }
     assert_eq!(compliance::inventory(&fixture.target), directory_before);
     assert_eq!(fs::read(&account).unwrap(), original_account);
     assert_eq!(fixture.source_artifact_json(), stock);
     assert!(preview_upgrade(&fixture.target).unwrap().is_none());
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(report.mod_directory.join("mod.json")).unwrap()).unwrap();
-    assert_eq!(manifest["manifestVersion"], 3);
-    assert_eq!(manifest.as_object().unwrap().len(), 4);
-    assert_eq!(manifest["id"], mod_content::ID);
+    assert_loader_manifest(&report.mod_directory.clone().unwrap());
     verify_update_and_removal(&mut fixture, &account, &original_account, &stock);
+    assert_eq!(fs::read(external_dll).unwrap(), runtime_before);
     assert_eq!(compliance::inventory(&fixture.target), directory_before);
     if schema == 18 {
-        let db = rusqlite::Connection::open(&account).unwrap();
-        assert_eq!(
-            db.query_row("SELECT value FROM migration_extension", [], |row| row
-                .get::<_, String>(0))
-                .unwrap(),
-            "retain"
-        );
-        assert!(
-            db.query_row("SELECT count(*) FROM items", [], |row| row.get::<_, u64>(0))
-                .unwrap()
-                > 0
-        );
+        assert_sqlite_account_kept(&account);
     }
     json!({"account_schema": schema, "stock": stock, "readback": readback,
-        "account_sha256": hex::encode(Sha256::digest(&original_account)), "repeat_upgrade": "no action", "update": "mod folder", "uninstall": "stock and account preserved"})
+        "retired": retired.iter().map(|(name, bytes)| json!({"file": name, "sha256": hex::encode(Sha256::digest(bytes))})).collect::<Vec<_>>(),
+        "retired_backup": backup.file_name().unwrap().to_string_lossy(),
+        "runtime_sha256": hex::encode(Sha256::digest(runtime_before)), "runtime_link": "external and preserved",
+        "account_sha256": hex::encode(Sha256::digest(&original_account)), "repeat_review": "no action", "update": "mod folder", "uninstall": "stock and account preserved"})
+}
+
+/// The published manifest holds only loader fields: Parhelion's ID, this release as the loader's
+/// `MAJOR.MINOR.PATCH`, and the author and source the Mods page shows.
+fn assert_loader_manifest(directory: &Path) {
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(directory.join("mod.json")).unwrap()).unwrap();
+    let release = [
+        env!("CARGO_PKG_VERSION_MAJOR"),
+        env!("CARGO_PKG_VERSION_MINOR"),
+        env!("CARGO_PKG_VERSION_PATCH"),
+    ]
+    .join(".");
+    assert_eq!(
+        manifest,
+        json!({
+            "manifestVersion": 3,
+            "id": mod_content::ID,
+            "version": release,
+            "name": "Parhelion",
+            "authors": ["KyleThmpsn"],
+            "src": "https://github.com/KyleThmpsn/sundial",
+        })
+    );
+}
+
+/// A SQLite account keeps its migration extension and its items.
+fn assert_sqlite_account_kept(account: &Path) {
+    let db = rusqlite::Connection::open(account).unwrap();
+    assert_eq!(
+        db.query_row("SELECT value FROM migration_extension", [], |row| row
+            .get::<_, String>(0))
+            .unwrap(),
+        "retain"
+    );
+    assert!(
+        db.query_row("SELECT count(*) FROM items", [], |row| row.get::<_, u64>(0))
+            .unwrap()
+            > 0
+    );
+}
+
+/// Runs `request`'s install until it reaches `stop`, where the process stops.
+fn interrupt_install(request: &InstallRequest, stop: &str) {
+    let reached = std::cell::Cell::new(false);
+    let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        backend::install_with_observer(request, &mut |_| {}, &mut |phase| {
+            if phase == stop {
+                reached.set(true);
+                panic!("simulated process stop at {phase}");
+            }
+        })
+        .unwrap();
+    }));
+    assert!(stopped.is_err());
+    assert!(reached.get(), "the operation did not reach {stop}");
 }
 
 fn verify_update_and_removal(
@@ -248,9 +442,9 @@ fn verify_update_and_removal(
 }
 
 #[test]
-fn upgrade_gates_on_active_runtime_and_rechecks_review_before_mutation() {
+fn review_gates_on_the_active_runtime_and_install_stops_before_mutation() {
     let fixture = fixture();
-    legacy(&fixture);
+    let retired = legacy(&fixture);
     let root = fixture.target.parent().unwrap();
     let bin = root.join("bin/x64/steam_api64.dll");
     for (brand, version) in [("Sunrise", [0, 5, 9, 0]), ("Dawn", [0, 6, 0, 0])] {
@@ -266,24 +460,90 @@ fn upgrade_gates_on_active_runtime_and_rechecks_review_before_mutation() {
         sundial::test_support::runtime::module("Sunrise", [0, 6, 0, 0], 18),
     )
     .unwrap();
-    let plan = preview_upgrade(&fixture.target).unwrap().unwrap();
-    assert!(upgrade_installation(&plan, &fixture.backups, game_running).is_err());
+    assert!(preview_upgrade(&fixture.target).unwrap().is_some());
+    let mut running = request(&fixture);
+    running.game_running_check = game_running;
+    assert!(install_staged_packages(&running).is_err());
     assert!(!fixture.backups.exists());
     fs::write(root.join("steam_api64.dll"), b"unrecognized root DLL").unwrap();
     assert!(preview_upgrade(&fixture.target).is_err());
-    assert!(upgrade_installation(&plan, &fixture.backups, game_stopped).is_err());
+    assert!(install_staged_packages(&request(&fixture)).is_err());
     assert!(!mod_content::directory(root).exists());
     fs::remove_file(root.join("steam_api64.dll")).unwrap();
-    let asset = fixture
-        .target
-        .join(crate::package_profile::PARHELION_ASSET_FILE_NAME);
-    fs::write(&asset, b"outside edit").unwrap();
-    assert!(upgrade_installation(&plan, &fixture.backups, game_stopped).is_err());
-    assert_eq!(fs::read(asset).unwrap(), b"outside edit");
+    for (name, bytes) in &retired {
+        assert_eq!(&fs::read(fixture.target.join(name)).unwrap(), bytes);
+    }
 }
 
 #[test]
-fn interrupted_upgrade_recovers_every_publication_boundary() {
+fn a_build_whose_patch_adds_entries_never_reaches_the_mod_folder() {
+    let mut fixture = fixture();
+    let retired = legacy(&fixture);
+    let profile = CANONICAL_PACKAGES[0];
+    let stock = fixture
+        .target
+        .join(profile.stock_file_name(profile.stock_patch_id));
+    let view = tempfile::tempdir().unwrap();
+    fs::copy(&stock, view.path().join(stock.file_name().unwrap())).unwrap();
+    let appended = crate::extend::build_extended_overlay(
+        view.path(),
+        profile.package_id,
+        &[],
+        &[crate::NewTagSpec {
+            template_tag: tiger_pkg::TagHash::new(profile.package_id, 0),
+            payload: b"appended record".to_vec(),
+            storage: crate::NewTagStorageMode::InheritTemplate,
+        }],
+    )
+    .unwrap();
+    fs::write(
+        fixture.staging.join(profile.authored_file_name),
+        appended.bytes(),
+    )
+    .unwrap();
+    fixture
+        .staged_bytes
+        .insert(profile.authored_file_name.into(), appended.bytes().to_vec());
+    write_manifest(&fixture);
+    let error = install_staged_packages(&request(&fixture)).unwrap_err();
+    assert!(
+        error.message.contains("refuses a patch that adds entries"),
+        "{}",
+        error.message
+    );
+    assert!(!mod_content::directory(fixture.target.parent().unwrap()).exists());
+    assert!(!fixture.backups.exists());
+    for (name, bytes) in &retired {
+        assert_eq!(&fs::read(fixture.target.join(name)).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn a_staged_patch_with_changed_inherited_blocks_is_refused_before_install() {
+    let fixture = fixture();
+    let retired = legacy(&fixture);
+    let profile = CANONICAL_PACKAGES[0];
+    let path = fixture.staging.join(profile.authored_file_name);
+    let mut bytes = fs::read(&path).unwrap();
+    let layout = PackageLayout::parse(&bytes).unwrap();
+    bytes[layout.block_table_offset] ^= 1;
+    layout.update_package_tables_hash(&mut bytes).unwrap();
+    fs::write(&path, bytes).unwrap();
+    let mut fixture = fixture;
+    fixture
+        .staged_bytes
+        .insert(profile.authored_file_name.into(), fs::read(&path).unwrap());
+    write_manifest(&fixture);
+    assert!(install_staged_packages(&request(&fixture)).is_err());
+    assert!(!fixture.backups.exists());
+    assert!(!mod_content::directory(fixture.target.parent().unwrap()).exists());
+    for (name, bytes) in &retired {
+        assert_eq!(&fs::read(fixture.target.join(name)).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn interrupted_install_retiring_an_earlier_layout_recovers_every_boundary() {
     let mut evidence = Vec::new();
     for stop in [
         "journaled",
@@ -295,37 +555,90 @@ fn interrupted_upgrade_recovers_every_publication_boundary() {
     ] {
         let fixture = fixture();
         let stock = compliance::inventory(&fixture.target);
-        legacy(&fixture);
-        let plan = preview_upgrade(&fixture.target).unwrap().unwrap();
-        let reached = std::cell::Cell::new(false);
-        let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            backend::upgrade_with_observer(&plan, &fixture.backups, game_stopped, &mut |phase| {
-                if phase == stop {
-                    reached.set(true);
-                    panic!("simulated process stop at {phase}");
-                }
-            })
-            .unwrap();
-        }));
-        assert!(stopped.is_err());
-        assert!(reached.get(), "the operation did not reach {stop}");
+        let retired = legacy(&fixture);
+        interrupt_install(&request(&fixture), stop);
+        // Without an account change, every boundary finishes forward.
         recover_interrupted_install(&recovery(&fixture)).unwrap();
         assert_mod_readback(&fixture);
+        assert_retired_backup(&fixture, &retired);
         assert!(preview_upgrade(&fixture.target).unwrap().is_none());
         assert_eq!(compliance::inventory(&fixture.target), stock);
         assert!(matches!(
             recover_interrupted_install(&recovery(&fixture)).unwrap(),
             RecoveryOutcome::NoTransaction
         ));
-        evidence.push(json!({"interruption": stop, "recovery": "verified", "repeat": "verified"}));
+        evidence.push(
+            json!({"interruption": stop, "recovery": "finished forward", "repeat": "verified"}),
+        );
     }
     crate::test_support::artifact("sunrise-mod-upgrade-recovery.json", &evidence);
 }
 
+/// An account change is written before any package moves. Interrupted before it, recovery
+/// restores the account and keeps the earlier layout. Interrupted after it, recovery publishes
+/// the build and retires the earlier layout with the account change kept. The account is the
+/// SQLite source that Sunrise 0.6 uses, holding an item whose definition the build removes.
 #[test]
-fn recovery_keeps_concurrent_files_and_upgrade_refuses_conflicting_mods() {
+fn interrupted_install_with_an_account_change_recovers_on_the_side_it_reached() {
+    // The first equipped definition of the SQLite defaults, which every character holds.
+    const REMOVED: u32 = 3_843_477_312;
+    let mut evidence = Vec::new();
+    for (stop, forward) in [("journaled", false), ("published", true)] {
+        let fixture = fixture();
+        let stock = compliance::inventory(&fixture.target);
+        let (path, _) = account(&fixture, 18);
+        let held = item_count(&path, REMOVED);
+        assert!(held > 0);
+        let review =
+            crate::install::replacement::test_review(&fixture.target, BTreeSet::from([REMOVED]));
+        assert!(
+            review
+                .account_cleanup()
+                .unwrap()
+                .removed_items
+                .contains_key(&REMOVED)
+        );
+        let retired = legacy(&fixture);
+        let mut confirmed = request(&fixture);
+        confirmed.confirmed_replacement = Some(review);
+        interrupt_install(&confirmed, stop);
+        let outcome = recover_interrupted_install(&recovery(&fixture)).unwrap();
+        let settled = if forward {
+            assert!(matches!(outcome, RecoveryOutcome::CommittedTransaction));
+            assert_eq!(item_count(&path, REMOVED), 0);
+            assert_mod_readback(&fixture);
+            assert_eq!(compliance::inventory(&fixture.target), stock);
+            "finished forward"
+        } else {
+            assert!(matches!(outcome, RecoveryOutcome::Recovered { .. }));
+            assert_eq!(item_count(&path, REMOVED), held);
+            assert_earlier_layout_kept(&fixture, &retired);
+            "account restored, earlier layout kept"
+        };
+        assert!(matches!(
+            recover_interrupted_install(&recovery(&fixture)).unwrap(),
+            RecoveryOutcome::NoTransaction
+        ));
+        evidence.push(json!({"interruption": stop, "recovery": settled,
+            "account_sha256": hex::encode(Sha256::digest(fs::read(&path).unwrap()))}));
+    }
+    crate::test_support::artifact("sunrise-mod-upgrade-account-recovery.json", &evidence);
+}
+
+/// Nothing reached the mod folder, every earlier package is in place and the review offers the
+/// upgrade again.
+fn assert_earlier_layout_kept(fixture: &Fixture, retired: &BTreeMap<String, Vec<u8>>) {
+    assert!(!mod_content::directory(fixture.target.parent().unwrap()).exists());
+    for (name, bytes) in retired {
+        assert_eq!(&fs::read(fixture.target.join(name)).unwrap(), bytes);
+    }
+    assert!(preview_upgrade(&fixture.target).unwrap().is_some());
+}
+
+#[test]
+fn recovery_keeps_concurrent_files_and_install_refuses_conflicting_mods() {
     let fixture = fixture();
-    legacy(&fixture);
+    let retired = legacy(&fixture);
     let root = fixture.target.parent().unwrap();
     let foreign = root.join("bin/x64/Sunrise/mods/dev.other.content/packages");
     fs::create_dir_all(&foreign).unwrap();
@@ -334,12 +647,11 @@ fn recovery_keeps_concurrent_files_and_upgrade_refuses_conflicting_mods() {
         b"foreign package",
     )
     .unwrap();
-    assert!(preview_upgrade(&fixture.target).is_err());
+    assert!(install_staged_packages(&request(&fixture)).is_err());
     fs::remove_file(foreign.join(crate::package_profile::PARHELION_ASSET_FILE_NAME)).unwrap();
-    let plan = preview_upgrade(&fixture.target).unwrap().unwrap();
     let reached = std::cell::Cell::new(false);
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        backend::upgrade_with_observer(&plan, &fixture.backups, game_stopped, &mut |phase| {
+        backend::install_with_observer(&request(&fixture), &mut |_| {}, &mut |phase| {
             if phase == "published" {
                 reached.set(true);
                 panic!("simulated process stop");
@@ -347,15 +659,15 @@ fn recovery_keeps_concurrent_files_and_upgrade_refuses_conflicting_mods() {
         })
         .unwrap();
     }));
-    assert!(reached.get(), "the upgrade did not publish its folder");
+    assert!(reached.get(), "the install did not publish its folder");
     let changed = mod_content::directory(root)
         .join("packages")
         .join(crate::package_profile::PARHELION_ASSET_FILE_NAME);
     fs::write(&changed, b"concurrent content").unwrap();
     assert!(recover_interrupted_install(&recovery(&fixture)).is_err());
     assert_eq!(fs::read(changed).unwrap(), b"concurrent content");
-    for (name, bytes) in &fixture.staged_bytes {
-        assert_eq!(fs::read(fixture.target.join(name)).unwrap(), *bytes);
+    for (name, bytes) in &retired {
+        assert_eq!(&fs::read(fixture.target.join(name)).unwrap(), bytes);
     }
 }
 
@@ -369,8 +681,7 @@ fn mod_update_and_uninstall_restore_the_previous_folder_after_interruption() {
             }
             let mut fixture = fixture();
             legacy(&fixture);
-            let plan = preview_upgrade(&fixture.target).unwrap().unwrap();
-            upgrade_installation(&plan, &fixture.backups, game_stopped).unwrap();
+            install_staged_packages(&request(&fixture)).unwrap();
             let directory = mod_content::directory(fixture.target.parent().unwrap());
             let manifest_before = fs::read(directory.join("mod.json")).unwrap();
             let original_bytes = fixture.staged_bytes.clone();
@@ -423,39 +734,87 @@ fn mod_update_and_uninstall_restore_the_previous_folder_after_interruption() {
 }
 
 #[test]
-fn upgraded_content_is_not_opened_on_a_downgraded_runtime() {
+fn switching_runtimes_keeps_reading_installing_and_removing_working() {
     let fixture = fixture();
-    legacy(&fixture);
-    let plan = preview_upgrade(&fixture.target).unwrap().unwrap();
-    upgrade_installation(&plan, &fixture.backups, game_stopped).unwrap();
-    let root = fixture.target.parent().unwrap();
-    fs::write(
-        root.join("bin/x64/steam_api64.dll"),
-        sundial::test_support::runtime::module("Sunrise", [0, 5, 0, 0], 8),
-    )
-    .unwrap();
-    assert!(mod_content::View::open(root).is_err());
-    assert!(install_staged_packages(&request(&fixture)).is_err());
-    assert!(
-        fixture
-            .staged_bytes
-            .keys()
-            .all(|name| !fixture.target.join(name).exists())
+    let root = fixture.target.parent().unwrap().to_path_buf();
+    let stock = compliance::inventory(&fixture.target);
+    let added = tiger_pkg::TagHash::new(0x0AA1, 0);
+    install_staged_packages(&request(&fixture)).unwrap();
+    let installed = tree(&mod_content::directory(&root));
+    // Dawn and Sunrise before 0.6 load stock `packages` alone, so readers see no mod content,
+    // there is nothing to upgrade, and removal reviews the mod folder.
+    for (brand, version) in [("Dawn", [0, 1, 3, 0]), ("Sunrise", [0, 5, 1, 0])] {
+        switch_runtime(&fixture, brand, version);
+        let reader =
+            sundial::package_authoring::open_shadowkeep_package_manager(&fixture.target).unwrap();
+        assert!(reader.get_entry(added).is_none(), "{brand}");
+        assert!(preview_upgrade(&fixture.target).unwrap().is_none());
+        let removal = preview_uninstall(&fixture.target).unwrap();
+        assert_eq!(removal.artifacts().len(), fixture.staged_bytes.len());
+    }
+    // There an install goes to `packages` and retires the mod folder, with a backup, so it can't
+    // load beside the new packages after a switch back. The other runtime's cache is cleared.
+    let sunrise_cache = root.join("bin/x64/Sunrise/cache/build_data.bin");
+    fs::create_dir_all(sunrise_cache.parent().unwrap()).unwrap();
+    fs::write(&sunrise_cache, b"built while the mod folder loaded").unwrap();
+    switch_runtime(&fixture, "Dawn", [0, 1, 3, 0]);
+    let report = install_staged_packages(&request(&fixture)).unwrap();
+    assert!(!mod_content::directory(&root).exists());
+    for (name, bytes) in &fixture.staged_bytes {
+        assert_eq!(&fs::read(fixture.target.join(name)).unwrap(), bytes);
+    }
+    let backup = report
+        .retired_mod_backup
+        .expect("the install names the retired mod folder's backup");
+    assert_eq!(tree(&backup.join("mod")), installed);
+    assert!(!sunrise_cache.exists());
+    let reader =
+        sundial::package_authoring::open_shadowkeep_package_manager(&fixture.target).unwrap();
+    assert!(reader.get_entry(added).is_some());
+    drop(reader);
+    // Back on Sunrise 0.6, the review offers the upgrade, and an install returns the build to the
+    // mod folder.
+    switch_runtime(&fixture, "Sunrise", [0, 6, 0, 0]);
+    assert!(preview_upgrade(&fixture.target).unwrap().is_some());
+    install_staged_packages(&request(&fixture)).unwrap();
+    let readback = assert_mod_readback(&fixture);
+    // Removal on Dawn takes the mod folder out too, so it doesn't return on Sunrise 0.6.
+    switch_runtime(&fixture, "Dawn", [0, 1, 3, 0]);
+    let removal = preview_uninstall(&fixture.target).unwrap();
+    uninstall_custom_packages(&removal, &fixture.backups, game_stopped).unwrap();
+    assert!(!mod_content::directory(&root).exists());
+    assert_eq!(compliance::inventory(&fixture.target), stock);
+    switch_runtime(&fixture, "Sunrise", [0, 6, 0, 0]);
+    assert!(mod_content::View::open(&root).unwrap().is_none());
+    crate::test_support::artifact(
+        "sunrise-runtime-switching.json",
+        &json!({
+            "runtimes": ["Sunrise 0.6.0.0", "Dawn 0.1.3.0", "Sunrise 0.5.1.0"],
+            "mod_folder": installed, "retired_mod_backup": backup, "mod_readback": readback,
+            "stock_after_removal": stock, "native_loader": "not executed"
+        }),
     );
 }
 
 #[test]
-fn an_overlay_with_changed_inherited_blocks_is_refused_before_upgrade() {
-    let fixture = fixture();
-    legacy(&fixture);
-    let profile = CANONICAL_PACKAGES[0];
-    let path = fixture.target.join(profile.authored_file_name);
-    let mut bytes = fs::read(&path).unwrap();
-    let layout = PackageLayout::parse(&bytes).unwrap();
-    bytes[layout.block_table_offset] ^= 1;
-    layout.update_package_tables_hash(&mut bytes).unwrap();
-    fs::write(&path, bytes).unwrap();
-    assert!(preview_upgrade(&fixture.target).is_err());
-    assert!(!fixture.backups.exists());
-    assert!(!mod_content::directory(fixture.target.parent().unwrap()).exists());
+fn a_build_for_the_mod_folder_does_not_install_where_mods_do_not_load() {
+    let mut fixture = fixture();
+    let records = "w64_parhelion_investment_0aa2_0.pkg";
+    let bytes = build_test_package_with_physical_payload(0x0AA2, 0, b"records").unwrap();
+    fs::write(fixture.staging.join(records), &bytes).unwrap();
+    fixture.staged_bytes.insert(records.into(), bytes);
+    write_manifest(&fixture);
+    let stock = compliance::inventory(&fixture.target);
+    for (brand, version) in [("Dawn", [0, 1, 3, 0]), ("Sunrise", [0, 5, 1, 0])] {
+        switch_runtime(&fixture, brand, version);
+        let error = install_staged_packages(&request(&fixture)).unwrap_err();
+        assert!(error.message.contains("mod folder"), "{error}");
+        assert_eq!(compliance::inventory(&fixture.target), stock);
+        assert!(!fixture.backups.exists());
+    }
+    switch_runtime(&fixture, "Sunrise", [0, 6, 0, 0]);
+    install_staged_packages(&request(&fixture)).unwrap();
+    let root = fixture.target.parent().unwrap();
+    let installed = mod_content::directory(root).join("packages").join(records);
+    assert_eq!(fs::read(installed).unwrap(), fixture.staged_bytes[records]);
 }

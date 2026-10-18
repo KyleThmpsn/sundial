@@ -26,9 +26,49 @@ pub struct Variant {
 pub struct Permutation {
     pub name: String,
     pub runtime_index: i8,
+    pub flags: u8,
     pub probability: f32,
-    pub states: Vec<String>,
+    pub states: Vec<State>,
+    pub runtime_states: [i8; 5],
 }
+#[derive(Clone, Debug, Serialize)]
+pub struct State {
+    pub name: String,
+    pub runtime_index: i8,
+    pub flags: u8,
+    /// Source state ordinal from intact through destroyed, inclusive.
+    pub state: i16,
+    pub probability: f32,
+}
+
+/// Select one deterministic source variant. Equal-weight hidden alternatives can
+/// have different damage coverage, so retain the stateful alternative on a tie.
+pub(super) fn select_permutation<'a>(
+    permutations: &'a [Permutation],
+    choice: Option<&str>,
+) -> Option<(usize, &'a Permutation)> {
+    let matches = |p: &Permutation| {
+        choice.is_none_or(|name| {
+            if p.runtime_index < 0 {
+                name.is_empty()
+            } else {
+                name == p.name
+            }
+        })
+    };
+    permutations
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| matches(p) && p.probability > 0.)
+        .max_by(|(_, a), (_, b)| {
+            a.probability
+                .total_cmp(&b.probability)
+                .then_with(|| (a.runtime_index >= 0).cmp(&(b.runtime_index >= 0)))
+                .then_with(|| a.states.len().cmp(&b.states.len()))
+        })
+        .or_else(|| permutations.iter().enumerate().find(|(_, p)| matches(p)))
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct Object {
     pub tag: Tag,
@@ -44,8 +84,24 @@ pub struct Object {
 
 impl Object {
     pub fn read(cache: &Cache, tag: &Tag) -> Result<Self> {
+        Self::read_with(cache, tag, true)
+    }
+
+    /// Reads `tag` for how it looks: its models, variants, attachments and functions, without the
+    /// rigid body and damage a crate or vehicle carries, which an object drawn where it stands in a
+    /// level never uses.
+    pub fn read_appearance(cache: &Cache, tag: &Tag) -> Result<Self> {
+        Self::read_with(cache, tag, false)
+    }
+
+    fn read_with(cache: &Cache, tag: &Tag, physics: bool) -> Result<Self> {
+        // Every group here begins with the object definition this reads, the devices (machines and
+        // controls) included.
         ensure!(
-            ["weap", "vehi", "scen", "bloc", "eqip", "proj"].contains(&tag.group.as_str()),
+            [
+                "weap", "vehi", "scen", "bloc", "eqip", "proj", "mach", "ctrl"
+            ]
+            .contains(&tag.group.as_str()),
             "Unsupported source object {}",
             tag.group
         );
@@ -70,12 +126,33 @@ impl Object {
                         permutations.push(Permutation {
                             name: cache.string_id(cache.u32(perm)?)?,
                             runtime_index: cache.u8(perm + 4)? as i8,
+                            flags: cache.u8(perm + 5)?,
                             probability: cache.f32(perm + 8)?,
                             states: cache
                                 .block(perm + 12, 12)?
                                 .into_iter()
-                                .map(|s| cache.string_id(cache.u32(s)?))
+                                .map(|s| {
+                                    let state = cache.i16(s + 6)?;
+                                    let probability = cache.f32(s + 8)?;
+                                    ensure!(
+                                        (0..=4).contains(&state)
+                                            && probability.is_finite()
+                                            && (0.0..=1.0).contains(&probability),
+                                        "Invalid source model damage state"
+                                    );
+                                    Ok(State {
+                                        name: cache.string_id(cache.u32(s)?)?,
+                                        runtime_index: cache.u8(s + 4)? as i8,
+                                        flags: cache.u8(s + 5)?,
+                                        state,
+                                        probability,
+                                    })
+                                })
                                 .collect::<Result<_>>()?,
+                            runtime_states: cache
+                                .bytes(perm + 0x18, 5)?
+                                .try_into()
+                                .map(|states: [u8; 5]| states.map(|value| value as i8))?,
                         });
                     }
                     ensure!(
@@ -138,10 +215,12 @@ impl Object {
             "vehi" => vehicle(cache, at)?,
             _ => json!({"kind":"attachment"}),
         };
-        if tag.group == "vehi"
+        if physics
+            && matches!(tag.group.as_str(), "vehi" | "bloc")
             && let Some(model) = &model
         {
             gameplay["rigid_body"] = super::vehicle::body(cache, model)?;
+            gameplay["damage"] = super::damage::read(cache, model)?;
         }
         let attachments = cache.block(at+0x104, 32)?.into_iter().map(|r| Ok(json!({
             "tag":cache.reference(r,None)?, "marker":cache.string_id(cache.u32(r+16)?)?,

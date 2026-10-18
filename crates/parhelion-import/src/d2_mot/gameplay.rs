@@ -262,8 +262,9 @@ fn reset_planned_damage(recipe: &mut Value) -> Result<()> {
     Ok(())
 }
 
-mod limits;
-mod stat_group;
+pub(crate) mod limits;
+pub(crate) mod private;
+pub(crate) mod stat_group;
 
 /// Older plug-driven elemental sockets cannot be made Kinetic by changing a
 /// parent damage marker. Select another gameplay donor before conversion.
@@ -355,10 +356,28 @@ fn default_hash(socket: &Value) -> Option<u64> {
         .as_u64()
 }
 
+/// Intrinsic plugs (`67FBA961`) set the weapon's frame.
+const INTRINSIC_CATEGORY: u64 = 0x67FB_A961;
+/// Weapon perk plugs, as opposed to shaders (14), masterworks and trackers (13) and mods (37).
+const PERK_ITEM_KIND: u64 = 15;
+
+/// A base lane whose default plug is a weapon perk other than the frame.
+fn perk_lane(target: &Value) -> bool {
+    target["socket_type"] != u16::MAX
+        && target["choices"]
+            .as_array()
+            .and_then(|choices| choices.iter().find(|choice| choice["default"] == true))
+            .is_some_and(|default| {
+                default["item_kind"].as_u64() == Some(PERK_ITEM_KIND)
+                    && default["category"].as_u64() != Some(INTRINSIC_CATEGORY)
+            })
+}
+
 fn columns(
     source: &Value,
     native: &Value,
     available: &BTreeMap<u32, u64>,
+    perks: &BTreeSet<u32>,
     fallbacks: &mut Vec<Value>,
 ) -> Result<Vec<Value>> {
     let sources = source["sockets"].as_array().context("source sockets")?;
@@ -409,6 +428,36 @@ fn columns(
         result[lane] =
             json!({"choices":choices.iter().map(|h|format!("0x{h:08X}")).collect::<Vec<_>>()});
     }
+    // A source socket no base lane shares a category with, such as a stock on a base without a
+    // stock socket, keeps its default plug when Shadowkeep has that same perk plug. It takes a
+    // perk lane the mapping left free, in lane order, rather than being dropped.
+    for (source_index, socket) in sources.iter().enumerate() {
+        if used.contains(&source_index) {
+            continue;
+        }
+        let Some(hash) = socket["choices"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|plug| plug["default"] == true)
+            .and_then(|plug| plug["hash"].as_u64())
+            .and_then(|hash| u32::try_from(hash).ok())
+            .filter(|hash| perks.contains(hash))
+        else {
+            continue;
+        };
+        let Some(lane) =
+            (0..targets.len()).find(|&lane| result[lane].is_null() && perk_lane(&targets[lane]))
+        else {
+            break;
+        };
+        used.insert(source_index);
+        result[lane] = json!({"choices":[format!("0x{hash:08X}")]});
+        fallbacks.push(
+            json!({"socket":lane,"source_socket":source_index,"placed_plug":hash,
+            "reason":"no base lane shares the plug's category, so it takes a free perk lane"}),
+        );
+    }
     Ok(result)
 }
 
@@ -440,10 +489,8 @@ fn fill_native_defaults(
     Ok(())
 }
 
-/// Resolve against the actual gameplay donor after compatibility defaults have been applied.
-pub fn apply(source: &Value, native: &Path, output: &Path, recipe: &mut Value) -> Result<Value> {
-    let donor = super::profile::hash(&recipe["donor"], "item_hash")?;
-    let mut r = Reader::discovery(native, output, false)?;
+/// Shadowkeep stat definition indices by stat hash, from the installed investment globals.
+pub(crate) fn stat_definitions(r: &mut Reader) -> Result<BTreeMap<u32, u16>> {
     let tag = r
         .manager
         .lookup
@@ -469,6 +516,26 @@ pub fn apply(source: &Value, native: &Path, output: &Path, recipe: &mut Value) -
             "duplicate native stat hash"
         );
     }
+    Ok(definitions)
+}
+
+/// Resolve against the actual gameplay donor after compatibility defaults have been applied.
+#[allow(clippy::cognitive_complexity)]
+pub fn apply(source: &Value, native: &Path, output: &Path, recipe: &mut Value) -> Result<Value> {
+    let donor = super::profile::hash(&recipe["donor"], "item_hash")?;
+    let mut r = Reader::discovery(native, output, false)?;
+    let tag = r
+        .manager
+        .lookup
+        .named_tags
+        .iter()
+        .find(|t| t.name == "investment_globals")
+        .context("native globals")?
+        .hash
+        .0;
+    let globals = r.tag(tag, None)?;
+    let root = r.tag(globals.u32(16)?, Some(0x80807D84))?;
+    let definitions = stat_definitions(&mut r)?;
     let native_sockets = ornaments::native(&mut r, donor)?;
     let items = r.tag(root.u32(8 + 48 * 16)?, None)?;
     let rows = items.array(8, 24, Some(0x80807BE8))?;
@@ -492,6 +559,7 @@ pub fn apply(source: &Value, native: &Path, output: &Path, recipe: &mut Value) -
         .filter_map(|v| v["hash"].as_u64())
         .collect::<BTreeSet<_>>();
     let mut available = BTreeMap::new();
+    let mut perks = BTreeSet::new();
     for at in rows {
         let hash = items.u32(at)?;
         if !needed.contains(&u64::from(hash)) {
@@ -511,6 +579,9 @@ pub fn apply(source: &Value, native: &Path, output: &Path, recipe: &mut Value) -
                         .is_none(),
                     "ambiguous native plug hash"
                 );
+                if u64::from(plug.u8(0xB8)?) == PERK_ITEM_KIND {
+                    perks.insert(hash);
+                }
             }
         }
     }
@@ -537,6 +608,27 @@ pub fn apply(source: &Value, native: &Path, output: &Path, recipe: &mut Value) -
     } else {
         None
     };
+    // Aim Assistance, Recoil Direction and Zoom keep their values but stay off the tooltip unless
+    // the native base's group shows them, as on Shadowkeep's own weapons.
+    let custom = match custom {
+        Some((maximum, rows)) => {
+            let native = limits::read(&mut r, &globals, donor, recipe)?;
+            let unshown = stat_group::UNSHOWN
+                .iter()
+                .filter_map(|hash| definitions.get(hash).copied())
+                .collect::<Vec<_>>();
+            let (shown, hidden): (Vec<_>, Vec<_>) = rows.into_iter().partition(|row| {
+                !unshown.contains(&row.index)
+                    || native.shown.iter().any(|stat| stat.index == row.index)
+            });
+            for row in hidden {
+                fallbacks.push(json!({"stat_group_index":row.index,
+                    "reason":"Shadowkeep's weapons set this stat without showing it, and the native base's group does not show it"}));
+            }
+            (!shown.is_empty()).then_some((maximum, shown))
+        }
+        None => None,
+    };
     let limits = if let Some((maximum, rows)) = &custom {
         // The recipe's own group replaces any stock one.
         recipe["overrides"]
@@ -554,7 +646,7 @@ pub fn apply(source: &Value, native: &Path, output: &Path, recipe: &mut Value) -
         limits::Limits::of(group.maximum, &group.shown)
     };
     mapped["investment_stats"] = json!(limits.retain(stats, &mut fallbacks)?);
-    let sockets = columns(source, &native_sockets, &available, &mut fallbacks)?;
+    let sockets = columns(source, &native_sockets, &available, &perks, &mut fallbacks)?;
     if sockets.iter().any(|s| !s.is_null()) {
         mapped["socket_columns"] = json!(sockets);
     }
@@ -571,7 +663,7 @@ pub fn apply(source: &Value, native: &Path, output: &Path, recipe: &mut Value) -
             &mut fallbacks,
         )?;
     }
-    let report = json!({"source":source,"mapped":mapped,"fallbacks":fallbacks});
+    let report = json!({"source":source,"mapped":mapped,"fallbacks":fallbacks,"native_sockets":native_sockets["sockets"]});
     super::reader::write_json(&output.join("gameplay-mapping.json"), &report)?;
     Ok(report)
 }

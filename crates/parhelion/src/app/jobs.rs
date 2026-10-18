@@ -922,6 +922,12 @@ impl PackageAuthoringApp {
                         report.removed_obsolete_packages.len()
                     )));
                 }
+                if let Some(backup) = &report.retired_mod_backup {
+                    self.log.push(LogEntry::info(format!(
+                        "Removed the Sunrise mod folder, which this runtime doesn't load. Its backup is in {}",
+                        backup.display()
+                    )));
+                }
                 if !report.pruned_backup_directories.is_empty() {
                     self.log.push(LogEntry::info(format!(
                         "Removed {} old automatic package {}",

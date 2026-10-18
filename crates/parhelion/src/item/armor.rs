@@ -31,6 +31,85 @@ pub(super) fn apply_class(
     Ok(())
 }
 
+pub(super) fn group(
+    sources: &sources::ProjectSources,
+    weapon: &WeaponCloneSpec,
+) -> AuthoringResult<Option<crate::collection::armor::Group>> {
+    #[cfg(feature = "d2-model-importer")]
+    if let Some(reference) = &weapon.overrides.imported_graph {
+        return crate::collection::armor::imported(reference).map_err(invalid);
+    }
+    let donor = weapon
+        .presentation_donor
+        .as_ref()
+        .map(|d| d.item_hash)
+        .unwrap_or(weapon.donor_item_hash);
+    let item = placements::item_index(sources, donor)?;
+    let (node_count, _, nodes, _) = array_at(&sources.stock_nodes, 8)?;
+    let mut sets = BTreeSet::new();
+    for collectible in 0..sources.stock_collectible_count {
+        if usize::from(read_u16(
+            &sources.stock_collectibles,
+            sources.collectible_rows
+                + collectible * COLLECTIBLE_ROW_SIZE
+                + COLLECTIBLE_ITEM_INDEX_OFFSET,
+        )?) != item
+        {
+            continue;
+        }
+        for parent in template_presentation_parents(
+            &sources.stock_nodes,
+            &sources.stock_collectibles,
+            collectible,
+        )? {
+            let parent = usize::from(parent);
+            if parent >= node_count {
+                return Err(invalid("Armor set parent exceeds the presentation table"));
+            }
+            let row = nodes + parent * PRESENTATION_NODE_ROW_SIZE;
+            let members = read_u64(
+                &sources.stock_nodes,
+                row + PRESENTATION_NODE_COLLECTIBLES_OFFSET,
+            )?;
+            if !(1..=5).contains(&members)
+                || read_u64(
+                    &sources.stock_nodes,
+                    row + PRESENTATION_NODE_CHILD_NODES_OFFSET,
+                )? != 0
+            {
+                continue;
+            }
+            let ancestors = presentation_ancestor_nodes(&sources.stock_nodes, &[parent as u16])?;
+            let hashes = ancestors
+                .into_iter()
+                .map(|index| {
+                    read_u32(
+                        &sources.stock_nodes,
+                        nodes + index * PRESENTATION_NODE_ROW_SIZE + PRESENTATION_NODE_HASH_OFFSET,
+                    )
+                })
+                .collect::<AuthoringResult<BTreeSet<_>>>()?;
+            if hashes.contains(&0x5FAB_0042)
+                && [0x305A_5226, 0xDF3B_D502, 0x4BB1_6895]
+                    .iter()
+                    .any(|hash| hashes.contains(hash))
+            {
+                sets.insert(u64::from(read_u32(
+                    &sources.stock_nodes,
+                    row + PRESENTATION_NODE_HASH_OFFSET,
+                )?));
+            }
+        }
+    }
+    Ok(if sets.len() == 1 {
+        sets.into_iter()
+            .next()
+            .map(crate::collection::armor::Group::Native)
+    } else {
+        None
+    })
+}
+
 /// Clone a native category for the runtime node and a native armor set for its rows.
 pub(super) fn page(
     sources: &sources::ProjectSources,
@@ -127,6 +206,7 @@ pub(super) fn page(
             sibling,
             donor: members[0],
             children: Vec::new(),
+            members: Vec::new(),
         });
     }
     Err(invalid(

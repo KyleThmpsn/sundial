@@ -80,6 +80,74 @@ const SUNDIAL_BUILD_TIME: u64 = 0x5F44_0756;
 const SHADOWKEEP_CONTENT_BUILD: u32 = 0x0001_5281;
 const SHADOWKEEP_CONTENT_REVISION: u32 = 2;
 
+/// One named definition in a package's extended header region: a tag, its class, and the name
+/// the client and Sunrise look it up by. The tag may live in another package.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NamedTag {
+    pub tag: u32,
+    pub class: u32,
+    pub name: String,
+}
+
+/// The extended header region starts here and the package tables follow it on a 0x800 boundary,
+/// as in stock packages.
+const EXTENDED_HEADER_START: usize = 0x1000;
+/// The second word of every inspected stock extended header region.
+const EXTENDED_HEADER_KIND: u64 = 3;
+const NAMED_TAG_DESCRIPTOR: usize = 0x10;
+/// Five descriptors precede the named-tag array: named tags, then four this writer leaves empty.
+const NAMED_TAG_HEADER: usize = 0x70;
+const NAMED_TAG_ROW_CLASS: u64 = 0x8080_9EEC;
+const NAMED_TAG_ROW_SIZE: usize = 16;
+/// Sunrise keeps a name in 128 bytes with its terminator.
+const MAX_NAMED_TAG_LENGTH: usize = 127;
+
+/// The extended header region holding only `named`, laid out like stock packages that name tags
+/// and carry no other extended table: the region size, kind 3, the named-tag descriptor, four
+/// empty descriptors, the marked named-tag array, then the packed names.
+pub(crate) fn named_tag_region(named: &[NamedTag]) -> AuthoringResult<Vec<u8>> {
+    let mut names = BTreeSet::new();
+    for entry in named {
+        if entry.name.is_empty()
+            || entry.name.len() > MAX_NAMED_TAG_LENGTH
+            || !entry.name.is_ascii()
+            || entry.name.bytes().any(|byte| byte == 0)
+            || !names.insert(entry.name.as_str())
+        {
+            return Err(invalid(format!(
+                "Named tag {:?} is empty, too long, not ASCII or repeated",
+                entry.name
+            )));
+        }
+    }
+    let rows = NAMED_TAG_HEADER + DYNAMIC_ARRAY_HEADER_SIZE;
+    let rows_end = rows + named.len() * NAMED_TAG_ROW_SIZE;
+    let mut bytes = vec![0u8; rows_end];
+    let count = u64::try_from(named.len()).map_err(|_| invalid("Too many named tags"))?;
+    write_u64(&mut bytes, NAMED_TAG_DESCRIPTOR - 8, EXTENDED_HEADER_KIND)?;
+    write_u64(&mut bytes, NAMED_TAG_DESCRIPTOR, count)?;
+    write_i64(
+        &mut bytes,
+        NAMED_TAG_DESCRIPTOR + DYNAMIC_ARRAY_POINTER_OFFSET,
+        (NAMED_TAG_HEADER - NAMED_TAG_DESCRIPTOR - DYNAMIC_ARRAY_POINTER_OFFSET) as i64,
+    )?;
+    write_u32(&mut bytes, NAMED_TAG_HEADER - 4, SHARED_TAG_TABLE_MARKER)?;
+    write_u64(&mut bytes, NAMED_TAG_HEADER, count)?;
+    write_u64(&mut bytes, NAMED_TAG_HEADER + 8, NAMED_TAG_ROW_CLASS)?;
+    for (index, entry) in named.iter().enumerate() {
+        let row = rows + index * NAMED_TAG_ROW_SIZE;
+        let name = bytes.len();
+        bytes.extend_from_slice(entry.name.as_bytes());
+        bytes.push(0);
+        write_u32(&mut bytes, row, entry.tag)?;
+        write_u32(&mut bytes, row + 4, entry.class)?;
+        write_i64(&mut bytes, row + 8, (name - (row + 8)) as i64)?;
+    }
+    let size = u64::try_from(bytes.len()).map_err(|_| invalid("Named-tag region is too large"))?;
+    write_u64(&mut bytes, 0, size)?;
+    Ok(bytes)
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct PackageLayout {
     pub package_id: u16,
@@ -948,7 +1016,7 @@ pub(crate) fn build_test_package_with_physical_payload(
             "A test package payload must fit one nonempty block",
         ));
     }
-    let mut bytes = build_standalone_package_skeleton(package_id, &[[0; 8]], 1, &[])?;
+    let mut bytes = build_standalone_package_skeleton(package_id, &[[0; 8]], 1, &[], &[])?;
     let layout = PackageLayout::parse(&bytes)?;
     let trailer = layout.opaque_trailer(&bytes)?.to_vec();
     bytes.truncate(layout.opaque_trailer_offset);

@@ -5,18 +5,45 @@ use crate::d2_mot::{
 use anyhow::{Context, Result, ensure};
 use std::collections::BTreeMap;
 
+#[derive(Clone)]
 pub struct Resource {
     pub source_class: u32,
     pub native_class: u32,
     pub tag: u32,
 }
 
+#[derive(Clone)]
+pub struct Selectors {
+    pub resources: crate::d2_mot::native::effects::resources::selectors::Resources,
+    pub groups: crate::d2_mot::native::effects::resources::selectors::GroupBindings,
+    pub resolver: crate::d2_mot::native::effects::resources::selectors::ResourceResolver,
+    pub published_names: std::collections::BTreeSet<u32>,
+    /// Names used by the qualified numeric context lookup, whose missing-value
+    /// behavior is a zero Float4. These are not claimed native publications.
+    pub optional_names: std::collections::BTreeSet<u32>,
+}
+
+impl Selectors {
+    pub fn accepts_name(&self, name: &u32) -> bool {
+        self.published_names.contains(name) || self.optional_names.contains(name)
+    }
+}
+
 /// Resource keys are validated source field offsets, including resolved 64-bit
 /// references. Compiled identities are separate from package-tag dependencies.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Bindings {
     pub resources: BTreeMap<usize, Resource>,
     pub identities: BTreeMap<u32, u32>,
+    /// Qualified cosmetic events keep their timing and ordinal as native delays.
+    pub omitted_events: std::collections::BTreeSet<usize>,
+    /// Conditional actions whose complete branch contains only presentation.
+    pub omitted_query_actions: std::collections::BTreeSet<usize>,
+    /// Additional native sequence owners supplying checked event instances.
+    pub event_templates: Vec<Payload>,
+    /// Checked provider metadata for sequence numeric outputs and root events.
+    pub metadata: BTreeMap<u32, Payload>,
+    pub selectors: Option<Selectors>,
 }
 
 pub struct Native {
@@ -152,13 +179,20 @@ fn locators(source: &Payload, output: &mut Payload) -> Result<(usize, Allocation
         "source sequence locator pool differs"
     );
     let mut allocation = Allocation::array(0x846FDE3F, u32::MAX, 0);
-    for (from, to, sc, nc, stride, name) in [
+    for (index, (from, to, sc, nc, stride, name)) in [
         (0x280, 0x170, 0x80809F4F, 0x80809F75, 32, 0x82C28E51),
         (0x290, 0x180, 0x80809F4F, 0x80809F75, 32, 0x4C2E87A1),
         (0x2A0, 0x190, 0x8080953C, 0x80808618, 2, 0x6E385590),
         (0x2B0, 0x1A0, 0x80809AC8, 0x80809BFF, 24, 0xA6E3DD20),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let count = copy_array(source, si + from, output, ni + to, sc, nc, stride)?;
+        ensure!(
+            count == source.u32(sd + 0x260 + index * 4)? as usize,
+            "sequence locator runtime capacity differs for pool {index}"
+        );
         if count > 0 {
             allocation.children.push(Allocation::array(name, nc, count));
         }
@@ -196,12 +230,18 @@ fn locators(source: &Payload, output: &mut Payload) -> Result<(usize, Allocation
         counts.iter().all(|n| *n == counts[0]),
         "sequence locator declaration dimensions differ"
     );
-    ensure!(
-        source.u64(si + 0x290)? == counts[0] as u64
-            && source.u64(si + 0x2A0)? == counts[0] as u64
-            && source.u64(si + 0x2B0)? == counts[0] as u64,
-        "sequence locator runtime dimensions differ"
-    );
+    // One declaration can reserve several points and a different number of
+    // slots. The four capacity words describe storage, not declaration count.
+    for row in source.array(sd + 0x230, 6, Some(0x8080953B))? {
+        let points = u32::from(source.u8(row)?) + u32::from(source.u8(row + 1)?);
+        let slots = u32::from(source.u8(row + 2)?) + u32::from(source.u8(row + 3)?);
+        ensure!(
+            points <= source.u32(sd + 0x264)?
+                && points <= source.u32(sd + 0x268)?
+                && slots <= source.u32(sd + 0x26C)?,
+            "sequence locator range exceeds its storage capacity"
+        );
+    }
     put(output, nd + 0x1E0, &source.bytes::<16>(sd + 0x260)?)?;
     Ok((counts[0], allocation))
 }
@@ -238,7 +278,7 @@ pub fn emit(
         template.u32(ni - 4)? == 0x808084D7 && template.u32(nd - 4)? == 0x808084E9,
         "native sequence root classes differ"
     );
-    for field in [0x1B8, 0x1E8, 0x1F8] {
+    for field in [0x1B8, 0x1E8] {
         ensure!(
             source.u64(sd + field)? == 0,
             "sequence extension at {field:X} requires translation"
@@ -276,6 +316,9 @@ pub fn emit(
     }
     put(&mut output, 0x44, &allocation_tag.to_le_bytes())?;
     let mut objects = vec![];
+    objects.extend(super::interfaces::event(source, &output, bindings)?);
+    let output_allocation =
+        super::outputs::emit(source, template, &mut output, bindings, &mut objects)?;
     let main_count = inputs(
         source,
         template,
@@ -301,8 +344,14 @@ pub fn emit(
     let (locator_count, locator_allocation) = locators(source, &mut output)?;
     let presentation_allocation = super::presentation::emit(source, &mut output, bindings)?;
     let input_map = (0..main_count as u32).map(|i| (i, i)).collect();
-    let control_allocation =
-        super::controls::write(source, &sequence, &mut output, &input_map, main_count)?;
+    let control_allocation = super::controls::write(
+        source,
+        &sequence,
+        &mut output,
+        &input_map,
+        main_count,
+        bindings.selectors.as_ref(),
+    )?;
     let event_allocation = events::write(
         source,
         &sequence,
@@ -313,6 +362,9 @@ pub fn emit(
         locator_count,
     )?;
     let mut allocations = vec![control_allocation, event_allocation];
+    if let Some(row) = output_allocation {
+        allocations.push(row);
+    }
     if main_count > 0 {
         allocations.push(Allocation::array(0x86374C3C, 0x80809788, main_count));
     }

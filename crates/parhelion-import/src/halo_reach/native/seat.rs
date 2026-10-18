@@ -56,7 +56,10 @@ pub(super) fn selected_marker<'a>(
     Ok(markers[0])
 }
 
-pub(super) fn marker(model: &model::Model, name: &str) -> Result<([f32; 3], [f32; 4])> {
+pub(in crate::halo_reach) fn marker(
+    model: &model::Model,
+    name: &str,
+) -> Result<([f32; 3], [f32; 4])> {
     let marker = selected_marker(model, name)?;
     marker_pose(model, marker)
 }
@@ -252,6 +255,6 @@ pub(super) fn build(
     Ok(Some(
         json!({"source_owner":tag,"owner":"driver-seat","class":0x80803d7du32,
         "markers":report,"pose_adjustment":pose,"gameplay_verified":false,
-        "limits":["The native driver pose and seat policies are retained. Passenger seats are not translated."]}),
+        "limits":["Native seat policies are retained. Rider actions are selected separately. Passenger seats are not translated."]}),
     ))
 }

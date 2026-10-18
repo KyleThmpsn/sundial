@@ -55,6 +55,12 @@ impl PackageAuthoringApp {
                 .matching_entries(&self.recipe_entries, &self.library_donors, &query);
         self.library_state
             .sort_entries(&mut shown, &self.library_donors);
+        // Maps are listed for builds. They have no editor and do not export.
+        let shown_maps = if self.library_state.export_selection.is_some() {
+            Vec::new()
+        } else {
+            super::matching_maps(&self.map_entries, self.library_state.kind, &query)
+        };
         if let Some(selected) = &mut self.library_state.export_selection {
             ui.horizontal(|ui| {
                 ui.strong("Choose Recipes to Export");
@@ -114,11 +120,14 @@ impl PackageAuthoringApp {
                         *action = Some(LibraryAction::Entry(entry.path.clone(), entry_action));
                     }
                 }
-                if shown.is_empty() {
+                if shown_maps.is_empty() && shown.is_empty() {
                     ui.label("No Matching Results");
                 }
+                for map in &shown_maps {
+                    ui.add_enabled_ui(!busy, |ui| super::draw_map_row(ui, map, None));
+                }
             });
-        shown.len()
+        shown.len() + shown_maps.len()
     }
 
     fn draw_library_footer(

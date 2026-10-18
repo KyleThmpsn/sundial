@@ -1,4 +1,6 @@
-//! Adopt an older package transaction without restoring files into stock packages.
+//! Recovers an older package transaction on a mod loader runtime. A pending one restores its
+//! recorded account and a committed one keeps its account. Either way its packages are retired with
+//! a verified backup, never restored into stock packages.
 use super::*;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -146,11 +148,11 @@ pub(in crate::install) fn recover_with_observer(
     let backups = canonical_directory(&request.backup_root, "legacy recovery backup root")?;
     recovery.validate(&target, &backups)?;
     recovery.verify_account()?;
-    let (sources, present) = sources(&target, &recovery.context)?;
+    // The interrupted operation's packages patch stock packages with added entries, which the mod
+    // loader refuses, so recovery retires them with a verified backup rather than publishing
+    // them. Checking its sources still confirms every recorded backup is intact.
+    let (_, present) = sources(&target, &recovery.context)?;
     validate_target_package_chain(&target)?;
-    if !sources.is_empty() {
-        validate_packages(&target, &sources)?;
-    }
     let stock = discover_target_source_artifact_names(&target)?
         .iter()
         .map(|name| metadata(&target.join(name), name))
@@ -161,7 +163,7 @@ pub(in crate::install) fn recover_with_observer(
         original: None,
         legacy: present,
         stock,
-        incoming: (!sources.is_empty()).then_some(sources.as_slice()),
+        incoming: None,
         runtime: &runtime,
     })?;
     recovery.verify_files(&target, false)?;
@@ -244,7 +246,7 @@ fn sources(
         }
     }
     // Unrecorded authored files could be another generation. Do not silently adopt them.
-    for profile in all_authored_packages() {
+    for profile in all_authored_packages_in(&[target]) {
         if target
             .join(profile.file_name)
             .try_exists()

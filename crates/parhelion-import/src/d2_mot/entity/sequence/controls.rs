@@ -1,5 +1,5 @@
 //! Native control records and their allocation tree.
-use super::{Range, Sequence};
+use super::{Condition, Range, Selectors, Sequence};
 use crate::d2_mot::payload::Payload;
 use anyhow::{Context, Result, ensure};
 use std::collections::BTreeMap;
@@ -142,18 +142,37 @@ impl Allocation {
 }
 
 fn condition(
-    source: &Option<Range>,
+    source: &Payload,
+    condition: &Option<Condition>,
     output: &mut Payload,
     field: usize,
     inputs: &BTreeMap<u32, u32>,
     count: usize,
+    selectors: Option<&Selectors>,
 ) -> Result<()> {
-    match source {
+    match condition {
         None => put(output, field, &0u64.to_le_bytes()),
-        Some(range) => {
+        Some(Condition::Range(range)) => {
             let bytes = range.native(inputs, count)?;
             let at = object(output, super::NATIVE_RANGE_CLASS, bytes.len());
             put(output, at, &bytes)?;
+            relative(output, field, at)
+        }
+        Some(Condition::Category { offset }) => {
+            let selectors = selectors.context("sequence category bindings are missing")?;
+            let at = object(output, 0x808093EC, 24);
+            put(output, at, &3u32.to_le_bytes())?;
+            let gates = crate::d2_mot::native::effects::resources::selectors::append_mask(
+                source,
+                offset + 16,
+                output,
+                at + 16,
+                &selectors.resources,
+            )?;
+            ensure!(
+                gates.is_empty(),
+                "sequence category condition has unresolved bindings"
+            );
             relative(output, field, at)
         }
     }
@@ -165,6 +184,7 @@ pub(super) fn write(
     output: &mut Payload,
     inputs: &BTreeMap<u32, u32>,
     input_count: usize,
+    selectors: Option<&Selectors>,
 ) -> Result<Allocation> {
     let root = output.pointer(16)?;
     let definition = output.pointer(24)?;
@@ -229,11 +249,13 @@ pub(super) fn write(
         array(output, target + 0x38, 0x808093FB, &children, 4)?;
         for slot in 0..2 {
             condition(
+                source,
                 &control.conditions[slot],
                 output,
                 target + 0x48 + slot * 8,
                 inputs,
                 input_count,
+                selectors,
             )?;
         }
         if kind == 6 {

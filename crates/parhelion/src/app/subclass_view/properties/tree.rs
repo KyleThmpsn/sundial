@@ -754,7 +754,8 @@ pub(super) fn properties_of(manager: &PackageManager, tag: u32, payload: &[u8]) 
     let settings = ability_settings::discover(manager, &graph);
     let claimed = settings
         .iter()
-        .map(|setting| setting.field.locator.clone())
+        .flat_map(|setting| std::iter::once(&setting.field).chain(&setting.linked))
+        .map(|field| field.locator.clone())
         .collect::<Vec<_>>();
     let creations = ability_settings::creations(manager, &graph);
     let gated = creations

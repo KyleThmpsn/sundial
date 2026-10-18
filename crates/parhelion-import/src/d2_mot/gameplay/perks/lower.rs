@@ -8,6 +8,18 @@ use crate::d2_mot::payload::Payload;
 
 mod energy;
 pub use energy::component_value;
+mod event;
+pub use event::{kill_condition, kill_condition_with_labels};
+mod event_modifier;
+pub use event_modifier::{event_modifier, event_modifier_with_labels};
+mod hit;
+pub use hit::{Hit, hit_condition};
+mod property;
+pub use property::named_property;
+mod status;
+pub use status::active_status;
+pub mod attachment;
+pub mod spawn;
 
 pub struct Node {
     pub class: u32,
@@ -43,8 +55,10 @@ pub fn draw_condition_prefix(source: &Payload, at: usize) -> Result<[u8; 24]> {
 pub fn condition(source: &Payload, at: usize) -> Result<Node> {
     ensure!(at >= 4, "source condition has no class word");
     match source.u32(at - 4)? {
+        0x8080_B7B2 => kill_condition(source, at),
         0x8080_3060 => timer_condition(source, at),
         0x8080_3086 => weapon_swap_condition(source, at),
+        0x8080_30B6 | 0x8080_30B2 => equipped_condition(source, at),
         0x8080_30BE => ability_condition(source, at),
         0x8080_3061 => state_value_condition(source, at),
         0x8080_BDCF => object_slot_condition(source, at),
@@ -304,10 +318,44 @@ pub fn timer_condition(source: &Payload, at: usize) -> Result<Node> {
 /// Sprint Grip has the same scalar condition bytes in both package eras. The
 /// source registry tag is build-specific, while both records name the same path.
 pub fn weapon_swap_condition(source: &Payload, at: usize) -> Result<Node> {
+    label_condition(source, at, 0x80803086, 18, 0x80803DDD)
+}
+
+/// Empty equip and unequip predicates use the native weapon lifecycle events.
+/// The modern equip predicate adds an object matcher, which must remain empty.
+pub fn equipped_condition(source: &Payload, at: usize) -> Result<Node> {
+    ensure!(at >= 4, "source lifecycle condition lacks a class");
+    let (kind, native) = match source.u32(at - 4)? {
+        0x808030B6 => {
+            ensure!(
+                source.u64(at + 112)? == 0
+                    && source.u64(at + 120)? == 0x100
+                    && source.bytes::<16>(at + 128)? == [0; 16],
+                "source equip matcher is populated"
+            );
+            (14, 0x80803DFA)
+        }
+        0x808030B2 => {
+            ensure!(
+                source.u64(at + 112)? == 0,
+                "source unequip metadata differs"
+            );
+            (15, 0x80803DF7)
+        }
+        class => anyhow::bail!("unsupported source lifecycle class {class:08X}"),
+    };
+    ensure!(
+        source.u8(at + 6)? == 0 && source.u8(at + 8)? == 1 && source.u32(at)? == 1f32.to_bits(),
+        "source lifecycle predicate is conditional"
+    );
+    label_condition(source, at, source.u32(at - 4)?, kind, native)
+}
+
+fn label_condition(source: &Payload, at: usize, class: u32, kind: u8, native: u32) -> Result<Node> {
     const LABEL_PATH: &str = "content/common/native/sandbox/label_globals.label_globals.tft";
     const NATIVE_LABEL_TAG: u32 = 0x80C70CA1;
     ensure!(
-        at >= 4 && source.u32(at - 4)? == 0x80803086,
+        at >= 4 && source.u32(at - 4)? == class,
         "unsupported source weapon-swap condition class"
     );
     let source_bytes = source.bytes::<112>(at)?;
@@ -318,7 +366,7 @@ pub fn weapon_swap_condition(source: &Payload, at: usize) -> Result<Node> {
     );
     ensure!(
         source_bytes[4] == 0xFF
-            && source_bytes[5] == 18
+            && source_bytes[5] == kind
             && source_bytes[6] <= 1
             && source_bytes[8] <= 1
             && source_bytes[9..0x50].iter().all(|byte| *byte == 0),
@@ -327,6 +375,7 @@ pub fn weapon_swap_condition(source: &Payload, at: usize) -> Result<Node> {
     ensure!(
         source.u64(at + 0x50)? != 0
             && (0x80800000..0x82000000).contains(&source.u32(at + 0x58)?)
+            && source.u32(at + 0x5C)? == 1
             && source_bytes[0x60..0x68].iter().all(|byte| *byte == 0)
             && source_bytes[0x68] == 0xFF
             && source_bytes[0x69..0x70].iter().all(|byte| *byte == 0),
@@ -353,8 +402,8 @@ pub fn weapon_swap_condition(source: &Payload, at: usize) -> Result<Node> {
     bytes.extend_from_slice(LABEL_PATH.as_bytes());
     bytes.push(0);
     Ok(Node {
-        class: 0x80803DDD,
-        kind: 18,
+        class: native,
+        kind,
         bytes,
     })
 }
@@ -363,6 +412,9 @@ pub fn weapon_swap_condition(source: &Payload, at: usize) -> Result<Node> {
 /// Component and input numbering are independent between the two eras.
 pub fn modifier_input(component: u8, input: u16) -> Result<(u8, u16)> {
     let component = match (component, input) {
+        // Shadowkeep CC68E6 and modern DC11A2 distinguish capacity (0) from
+        // the capped refill quantum (3). The native indexed getter is 186A430.
+        (1, 3) => 1,
         (3, 1 | 2) => 3,
         (15, 5 | 9) => 14,
         // EF8797 consumes category 11's input 3 as melee reach. The modern

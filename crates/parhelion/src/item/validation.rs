@@ -1215,73 +1215,119 @@ pub(super) fn validate_authored_payloads(
     strings: &[u8],
     socket_column_indices: Option<&[Option<ResolvedSocketColumn>]>,
     expected_weapon_pattern_index: Option<u16>,
+    carried_damage: Option<ModernDamageType>,
     spec: &WeaponCloneSpec,
 ) -> AuthoringResult<()> {
     validate_item_root_holder_bounds(definition)?;
+    // The build places a fixed damage marker for the recipe's damage type, and for the damage a
+    // replaced damage socket gave, so base perks compare without fixed markers in both cases.
+    let expected_damage = spec.overrides.modern_damage_type.or(carried_damage);
     validate_weapon_translation_markers(definition)?;
     let authored_version = weapon_version_array(definition)?;
-    if matching_u32_offsets(definition, spec.donor_item_hash).is_empty()
-        && matching_u32_offsets(definition, spec.identity.item_hash)
-            == [ITEM_DEFINITION_HASH_OFFSET]
-        && matching_u32_offsets(strings, spec.donor_item_hash).is_empty()
-        && read_u32(strings, ITEM_NAME_REFERENCE_OFFSET)? == LOCALIZATION_DONOR_TABLE_INDEX as u32
-        && read_u32(strings, ITEM_NAME_REFERENCE_OFFSET + 4)? == spec.identity.name_hash
-        && spec.text.type_name.as_ref().is_none_or(|_| {
-            read_u32(strings, ITEM_TYPE_REFERENCE_OFFSET).ok()
-                == Some(LOCALIZATION_DONOR_TABLE_INDEX as u32)
-                && read_u32(strings, ITEM_TYPE_REFERENCE_OFFSET + 4).ok()
-                    == Some(spec.identity.type_hash)
-        })
-        && read_u32(strings, ITEM_DESCRIPTION_REFERENCE_OFFSET)?
+    let display_source = if spec.text.inventory_hint.is_some() {
+        read_u32(strings, ITEM_DISPLAY_SOURCE_REFERENCE_OFFSET)?
             == LOCALIZATION_DONOR_TABLE_INDEX as u32
-        && read_u32(strings, ITEM_DESCRIPTION_REFERENCE_OFFSET + 4)? == spec.identity.flavor_hash
-        && if spec.text.inventory_hint.is_some() {
-            read_u32(strings, ITEM_DISPLAY_SOURCE_REFERENCE_OFFSET)?
+            && read_u32(strings, ITEM_DISPLAY_SOURCE_REFERENCE_OFFSET + 4)?
+                == spec.identity.inventory_hint_hash
+    } else {
+        read_u32(strings, ITEM_DISPLAY_SOURCE_REFERENCE_OFFSET)?
+            == BLANK_LOCALIZED_REFERENCE_TABLE_INDEX
+            && read_u32(strings, ITEM_DISPLAY_SOURCE_REFERENCE_OFFSET + 4)?
+                == BLANK_LOCALIZED_REFERENCE_HASH
+    };
+    let identity = [
+        (
+            "donor hash in the definition",
+            matching_u32_offsets(definition, spec.donor_item_hash).is_empty(),
+        ),
+        (
+            "item hash placement",
+            matching_u32_offsets(definition, spec.identity.item_hash)
+                == [ITEM_DEFINITION_HASH_OFFSET],
+        ),
+        (
+            "donor hash in the strings",
+            matching_u32_offsets(strings, spec.donor_item_hash).is_empty(),
+        ),
+        (
+            "name",
+            read_u32(strings, ITEM_NAME_REFERENCE_OFFSET)? == LOCALIZATION_DONOR_TABLE_INDEX as u32
+                && read_u32(strings, ITEM_NAME_REFERENCE_OFFSET + 4)? == spec.identity.name_hash,
+        ),
+        (
+            "type",
+            spec.text.type_name.as_ref().is_none_or(|_| {
+                read_u32(strings, ITEM_TYPE_REFERENCE_OFFSET).ok()
+                    == Some(LOCALIZATION_DONOR_TABLE_INDEX as u32)
+                    && read_u32(strings, ITEM_TYPE_REFERENCE_OFFSET + 4).ok()
+                        == Some(spec.identity.type_hash)
+            }),
+        ),
+        (
+            "flavor",
+            read_u32(strings, ITEM_DESCRIPTION_REFERENCE_OFFSET)?
                 == LOCALIZATION_DONOR_TABLE_INDEX as u32
-                && read_u32(strings, ITEM_DISPLAY_SOURCE_REFERENCE_OFFSET + 4)?
-                    == spec.identity.inventory_hint_hash
-        } else {
-            read_u32(strings, ITEM_DISPLAY_SOURCE_REFERENCE_OFFSET)?
-                == BLANK_LOCALIZED_REFERENCE_TABLE_INDEX
-                && read_u32(strings, ITEM_DISPLAY_SOURCE_REFERENCE_OFFSET + 4)?
-                    == BLANK_LOCALIZED_REFERENCE_HASH
-        }
-        && matching_u32_offsets(strings, RANDOM_PERKS_NOT_REACQUIRABLE_SOURCE_HASH).is_empty()
-    {
-        let resource = relative_target(definition, ITEM_INVESTMENT_STAT_POINTER_OFFSET)?;
-        let (count, _, rows, class) = array_at(definition, resource)?;
-        if class == ITEM_INVESTMENT_STAT_ROW_CLASS
-            && spec
-                .overrides
-                .investment_stats
-                .iter()
-                .all(|(definition_index, value)| {
-                    (0..count).any(|index| {
-                        let row = rows + index * ITEM_INVESTMENT_STAT_ROW_SIZE;
-                        read_u8(definition, row).ok().map(u16::from) == Some(*definition_index)
-                            && read_u8(definition, row + 1).ok() == Some(0)
-                            && read_i32(definition, row + 4).ok() == Some(*value)
-                    })
-                })
-            && spec
-                .overrides
+                && read_u32(strings, ITEM_DESCRIPTION_REFERENCE_OFFSET + 4)?
+                    == spec.identity.flavor_hash,
+        ),
+        ("source", display_source),
+        (
+            "reacquirable source",
+            matching_u32_offsets(strings, RANDOM_PERKS_NOT_REACQUIRABLE_SOURCE_HASH).is_empty(),
+        ),
+    ];
+    reject_inconsistent(&identity)?;
+    let resource = relative_target(definition, ITEM_INVESTMENT_STAT_POINTER_OFFSET)?;
+    let (count, _, rows, class) = array_at(definition, resource)?;
+    let base_perks = format!(
+        "base perks (requested {:?}, authored {:?})",
+        spec.overrides.base_sandbox_perks,
+        weapon_sandbox_perks(definition).ok()
+    );
+    let fields = [
+        (
+            "stats",
+            class == ITEM_INVESTMENT_STAT_ROW_CLASS
+                && spec
+                    .overrides
+                    .investment_stats
+                    .iter()
+                    .all(|(definition_index, value)| {
+                        (0..count).any(|index| {
+                            let row = rows + index * ITEM_INVESTMENT_STAT_ROW_SIZE;
+                            read_u8(definition, row).ok().map(u16::from) == Some(*definition_index)
+                                && read_u8(definition, row + 1).ok() == Some(0)
+                                && read_i32(definition, row + 4).ok() == Some(*value)
+                        })
+                    }),
+        ),
+        (
+            "slot",
+            spec.overrides
                 .inventory_slot
-                .is_none_or(|slot| weapon_inventory_slot(definition).ok() == Some(slot))
-            && spec
-                .overrides
+                .is_none_or(|slot| weapon_inventory_slot(definition).ok() == Some(slot)),
+        ),
+        (
+            "ammo",
+            spec.overrides
                 .ammo_type
-                .is_none_or(|ammo| item_string_ammo_type(strings).ok() == Some(Some(ammo)))
-            && spec.overrides.modern_damage_type.is_none_or(|damage| {
+                .is_none_or(|ammo| item_string_ammo_type(strings).ok() == Some(Some(ammo))),
+        ),
+        (
+            "damage",
+            expected_damage.is_none_or(|damage| {
                 weapon_damage_descriptor(definition).ok() == Some(damage.descriptor())
-            })
-            && spec
-                .overrides
+            }),
+        ),
+        (
+            base_perks.as_str(),
+            spec.overrides
                 .base_sandbox_perks
                 .as_ref()
                 .is_none_or(|perks| {
                     let actual = weapon_sandbox_perks(definition).ok();
                     actual.is_some_and(|actual| {
-                        if spec.overrides.modern_damage_type.is_some() {
+                        if expected_damage.is_some() {
                             actual
                                 .iter()
                                 .copied()
@@ -1294,48 +1340,73 @@ pub(super) fn validate_authored_payloads(
                             actual == *perks
                         }
                     })
-                })
-            && spec
-                .overrides
+                }),
+        ),
+        (
+            "traits",
+            spec.overrides
                 .trait_indices
                 .as_ref()
-                .is_none_or(|traits| weapon_item_traits(definition).ok().as_ref() == Some(traits))
-            && spec
-                .overrides
+                .is_none_or(|traits| weapon_item_traits(definition).ok().as_ref() == Some(traits)),
+        ),
+        (
+            "stack size",
+            spec.overrides
                 .max_stack_size
-                .is_none_or(|value| weapon_max_stack_size(definition).ok() == Some(value))
-            && spec.overrides.socket_entry_list_index.is_none_or(|index| {
+                .is_none_or(|value| weapon_max_stack_size(definition).ok() == Some(value)),
+        ),
+        (
+            "socket entry list",
+            spec.overrides.socket_entry_list_index.is_none_or(|index| {
                 weapon_socket_entry_list_index(definition).ok() == Some(Some(index))
-            })
-            && spec
-                .overrides
+            }),
+        ),
+        (
+            "plug category",
+            spec.overrides
                 .plug_category_hash
-                .is_none_or(|hash| weapon_plug_category_hash(definition).ok() == Some(hash))
-            && spec
-                .overrides
+                .is_none_or(|hash| weapon_plug_category_hash(definition).ok() == Some(hash)),
+        ),
+        (
+            "roll set",
+            spec.overrides
                 .roll_set_index
-                .is_none_or(|index| weapon_roll_set_index(definition).ok() == Some(index))
-            && spec
-                .overrides
+                .is_none_or(|index| weapon_roll_set_index(definition).ok() == Some(index)),
+        ),
+        (
+            "linked plug",
+            spec.overrides
                 .linked_plug_index
-                .is_none_or(|index| weapon_linked_plug_index(definition).ok() == Some(index))
-            && spec.overrides.power_cap_group.is_none_or(|group| {
+                .is_none_or(|index| weapon_linked_plug_index(definition).ok() == Some(index)),
+        ),
+        (
+            "cap",
+            spec.overrides.power_cap_group.is_none_or(|group| {
                 authored_version.as_ref().is_some_and(|version| {
                     !version.groups.is_empty() && version.groups.iter().all(|value| *value == group)
                 })
-            })
-            && spec
-                .overrides
+            }),
+        ),
+        (
+            "rarity",
+            spec.overrides
                 .rarity
-                .is_none_or(|rarity| weapon_rarity(definition).ok() == Some(rarity))
-            && weapon_pattern_index(definition).ok() == Some(expected_weapon_pattern_index)
-            && spec
-                .overrides
+                .is_none_or(|rarity| weapon_rarity(definition).ok() == Some(rarity)),
+        ),
+        (
+            "pattern",
+            weapon_pattern_index(definition).ok() == Some(expected_weapon_pattern_index),
+        ),
+        (
+            "art arrangements",
+            spec.overrides
                 .art_arrangements
                 .as_ref()
-                .is_none_or(|rows| weapon_art_arrangements(definition).ok().as_ref() == Some(rows))
-            && spec
-                .overrides
+                .is_none_or(|rows| weapon_art_arrangements(definition).ok().as_ref() == Some(rows)),
+        ),
+        (
+            "dyes",
+            spec.overrides
                 .render_dye_rows
                 .as_ref()
                 .is_none_or(|arrays| {
@@ -1344,34 +1415,48 @@ pub(super) fn validate_authored_payloads(
                         crate::dye::unlock_base_colors(&mut expected);
                     }
                     weapon_render_dye_rows(definition).ok().as_ref() == Some(&expected)
-                })
-            && spec
-                .overrides
+                }),
+        ),
+        (
+            "display group",
+            spec.overrides
                 .stat_group_index
-                .is_none_or(|index| item_string_stat_group_index(strings).ok() == Some(index))
-        {
-            // The socket columns are checked once, here, rather than as a term in the chain
-            // above. A term can only be false, which sent a lane-specific fault to the catch-all
-            // below and then re-ran the whole check to reach the same answer.
-            if let Some(columns) = socket_column_indices {
-                let resource = relative_target(definition, ITEM_ORDINARY_SOCKET_POINTER_OFFSET)?;
-                let (socket_count, _, socket_rows, _) = array_at(definition, resource)?;
-                let socket_types = (0..socket_count)
-                    .map(|lane| {
-                        read_u16(
-                            definition,
-                            socket_rows + lane * ITEM_ORDINARY_SOCKET_ROW_SIZE,
-                        )
-                    })
-                    .collect::<AuthoringResult<Vec<_>>>()?;
-                validate_weapon_socket_columns(definition, columns, &socket_types)?;
-            }
-            return Ok(());
-        }
+                .is_none_or(|index| item_string_stat_group_index(strings).ok() == Some(index)),
+        ),
+    ];
+    reject_inconsistent(&fields)?;
+    // The socket columns are checked once, after the fields above, so a lane-specific fault
+    // reports its own lane.
+    if let Some(columns) = socket_column_indices {
+        let resource = relative_target(definition, ITEM_ORDINARY_SOCKET_POINTER_OFFSET)?;
+        let (socket_count, _, socket_rows, _) = array_at(definition, resource)?;
+        let socket_types = (0..socket_count)
+            .map(|lane| {
+                read_u16(
+                    definition,
+                    socket_rows + lane * ITEM_ORDINARY_SOCKET_ROW_SIZE,
+                )
+            })
+            .collect::<AuthoringResult<Vec<_>>>()?;
+        validate_weapon_socket_columns(definition, columns, &socket_types)?;
     }
-    Err(validation(
-        "Authored weapon payload identity, strings, flavor, source, stats, damage, cap, rarity, pattern, display group, or plugs are inconsistent",
-    ))
+    Ok(())
+}
+
+/// Names every authored field that disagrees with its recipe.
+fn reject_inconsistent(checks: &[(&str, bool)]) -> AuthoringResult<()> {
+    let failed = checks
+        .iter()
+        .filter(|(_, ok)| !ok)
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>();
+    if failed.is_empty() {
+        return Ok(());
+    }
+    Err(validation(format!(
+        "Authored weapon payload disagrees with its recipe: {}",
+        failed.join(", ")
+    )))
 }
 
 pub(super) fn validate_authored_localization_values(
@@ -1380,6 +1465,7 @@ pub(super) fn validate_authored_localization_values(
     custom_plugs: &[ResolvedCustomPlug],
     branding: crate::branding::Branding,
     plan: &placements::Plan,
+    map_strings: &[(u32, String)],
 ) -> AuthoringResult<()> {
     let set_names = plan
         .gear_pages
@@ -1388,6 +1474,7 @@ pub(super) fn validate_authored_localization_values(
             page.set_name(branding.name())
                 .map(|name| (page.hash("name"), name))
         })
+        .chain(map_strings.iter().cloned())
         .collect::<Vec<_>>();
     let header_values = super::localization::project_localized_values_with_sets(
         weapons,

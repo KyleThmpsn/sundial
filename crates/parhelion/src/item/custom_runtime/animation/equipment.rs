@@ -8,23 +8,63 @@ struct Rig {
     relocation: Option<(usize, usize)>,
 }
 
+struct Clip {
+    native: u32,
+    payload: Vec<u8>,
+    cues: Vec<(usize, String)>,
+}
+
+fn clip(graph: &Inputs, value: &serde_json::Value) -> AuthoringResult<Clip> {
+    let payload = payload(graph, &value["file"])?;
+    let parsed = Payload(payload.clone());
+    let mut fields = BTreeSet::new();
+    for row in parsed
+        .array(0x160, 8, Some(0x8080902B))
+        .map_err(|e| invalid(e.to_string()))?
+    {
+        let at = parsed.pointer(row).map_err(|e| invalid(e.to_string()))?;
+        if at >= 4 && read_u32(&payload, at - 4)? == 0x80809033 {
+            fields.insert(at + 24);
+        }
+    }
+    let mut cues = Vec::new();
+    for patch in value["patches"].as_array().into_iter().flatten() {
+        let at = patch["offset"]
+            .as_u64()
+            .and_then(|v| usize::try_from(v).ok())
+            .ok_or_else(|| invalid("Equipment audio patch has no offset"))?;
+        let symbol = patch["symbol"]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| invalid("Equipment audio patch has no symbol"))?;
+        if !fields.remove(&at) || read_u32(&payload, at)? != u32::MAX {
+            return Err(invalid(
+                "Equipment audio patch is not a unique resource-event placeholder",
+            ));
+        }
+        cues.push((at, symbol.to_owned()));
+    }
+    Ok(Clip {
+        native: tag(value, "native")?,
+        payload,
+        cues,
+    })
+}
+
 pub(in crate::item) struct EquipmentAnimation {
     entity: (u32, Vec<u8>),
     lookup: (u32, Vec<u8>),
     bank: (u32, Vec<u8>),
     converted_bank: Vec<u8>,
     consumers: Vec<(u32, Vec<u8>)>,
-    clips: Vec<(u32, Vec<u8>)>,
+    clips: Vec<Clip>,
     rigs: Vec<Rig>,
     preserve_timing: bool,
 }
 
 impl EquipmentAnimation {
     pub(in crate::item) fn asset_bounds(&self) -> Vec<usize> {
-        self.clips
-            .iter()
-            .map(|(_, payload)| payload.len())
-            .collect()
+        self.clips.iter().map(|clip| clip.payload.len()).collect()
     }
 }
 
@@ -34,11 +74,12 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<EquipmentA
     if section["status"] != "linked" {
         return Ok(None);
     }
-    // Equipment graphs name their kind. A weapon graph names none, and its section carries the
-    // runtime's own clips, as an imported glaive's turning part does.
+    // Equipment graphs name their kind. A modern weapon graph names none and a Rise of Iron one
+    // names `weapon`. Their sections carry the runtime's own clips, as an imported glaive's
+    // turning part does.
     if !matches!(
         value["kind"].as_str(),
-        None | Some("ghost_shell" | "ship" | "sparrow")
+        None | Some("weapon" | "ghost_shell" | "ship" | "sparrow")
     ) {
         return Err(invalid(
             "Equipment animation requires an equipment or weapon graph",
@@ -49,7 +90,7 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<EquipmentA
         .as_array()
         .ok_or_else(|| invalid("Equipment clips missing"))?
         .iter()
-        .map(|clip| Ok((tag(clip, "native")?, payload(graph, &clip["file"])?)))
+        .map(|value| clip(graph, value))
         .collect::<AuthoringResult<Vec<_>>>()?;
     if clips.is_empty() {
         return Err(invalid("Linked equipment animation has no converted clips"));
@@ -128,13 +169,13 @@ fn validate_bank(animation: &EquipmentAnimation) -> AuthoringResult<()> {
             return Err(invalid("Equipment descriptor clip is outside its bank"));
         }
         let old = read_u32(&expected, clips + index * 4)?;
-        let Some((_, bytes)) = animation.clips.iter().find(|(tag, _)| *tag == old) else {
+        let Some(clip) = animation.clips.iter().find(|clip| clip.native == old) else {
             continue;
         };
         if expected.get(row..row + 16) != Some([0; 16].as_slice()) {
             return Err(invalid("Equipment descriptor has inline tracks"));
         }
-        let frames = read_u16(bytes, 0x13C)?;
+        let frames = read_u16(&clip.payload, 0x13C)?;
         if frames == 0 {
             return Err(invalid("Equipment clip has no frames"));
         }
@@ -162,6 +203,7 @@ pub(in crate::item) fn author(
     tags: &mut Vec<NewTagSpec>,
     (assets, asset_tags): (AppendedTagAllocator, &mut Vec<NewTagSpec>),
     cache: &mut AnimationTagCache,
+    symbols: &BTreeMap<String, TagHash>,
 ) -> AuthoringResult<()> {
     if animation.entity.0 != entity_tag.0 {
         return Err(invalid(
@@ -184,7 +226,9 @@ pub(in crate::item) fn author(
     validate_bank(animation)?;
     let mut bank = animation.converted_bank.clone();
     let mut seen = BTreeSet::new();
-    for (old, bytes) in &animation.clips {
+    for clip in &animation.clips {
+        let old = &clip.native;
+        let bytes = &clip.payload;
         if !seen.insert(*old)
             || manager
                 .get_entry(TagHash(*old))
@@ -207,8 +251,15 @@ pub(in crate::item) fn author(
                 "Equipment animation changed a retained native frame count",
             ));
         }
+        let mut bytes = bytes.clone();
+        for (at, symbol) in &clip.cues {
+            let tag = symbols.get(symbol).ok_or_else(|| {
+                invalid(format!("Equipment audio cue {symbol} was not allocated"))
+            })?;
+            write_u32(&mut bytes, *at, tag.0)?;
+        }
         use sha2::Digest;
-        let key = (CLIP_CLASS, sha2::Sha256::digest(bytes).into());
+        let key = (CLIP_CLASS, sha2::Sha256::digest(&bytes).into());
         let private = if let Some(private) = cache.get(&key) {
             *private
         } else {
@@ -217,7 +268,7 @@ pub(in crate::item) fn author(
                 .0;
             asset_tags.push(NewTagSpec {
                 template_tag: TagHash(*old),
-                payload: bytes.clone(),
+                payload: bytes,
                 storage: crate::NewTagStorageMode::InheritTemplate,
             });
             cache.insert(key, private);
@@ -349,6 +400,13 @@ fn author_rigs(
         retarget_weapon_component_owner_payload(&mut bytes, entity, rig.original.0, private)
             .map_err(invalid)?;
         retarget_weapon_component_owner(entity, rig.original.0, private).map_err(invalid)?;
+        parhelion_import::tiger::animation::rig::retarget_rebased_references(
+            entity,
+            bytes.len(),
+            rig.original.0,
+            private,
+        )
+        .map_err(|e| invalid(format!("Equipment rig references: {e:#}")))?;
         tags.push(NewTagSpec {
             template_tag: TagHash(rig.original.0),
             payload: bytes,

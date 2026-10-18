@@ -1,8 +1,4 @@
-//! The managed Parhelion mod's on-disk contract and read-only package projection.
-//!
-//! Sunrise owns general mod resolution and merged cache files. This projection reads the stock
-//! packages with the managed mod's packages over them. Other mods' packages are not read, since
-//! their effect on a package Parhelion also patches depends on the loader's merge.
+//! The managed mod's on-disk contract and read-only views of independent Sunrise mods.
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
@@ -11,25 +7,55 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-pub const ID: &str = "io.github.kylethmpsn.parhelion";
+mod config;
+mod content;
+pub mod merge;
+pub mod plaintext;
+mod view;
+pub use content::{Coexistence, Incoming};
+pub use view::View;
+
+pub const ID: &str = "dev.kylethmpsn.parhelion";
 pub const MANIFEST: &str = "mod.json";
 pub const RECEIPT: &str = "parhelion-install.json";
 pub const JOURNAL: &str = ".parhelion-mod-transaction.json";
-/// Read-only package views, beside the mods folder rather than in it, so the loader never reads
-/// them. The leading dot keeps them out of listings that skip hidden folders.
-const VIEWS: &str = ".sundial-package-views";
-const VIEW_PREFIX: &str = "view-";
-const VIEW_OWNER: &str = "owner.lock";
-const VIEW_GRACE: std::time::Duration = std::time::Duration::from_secs(120);
+/// The loader reads at most this many mod folders, the ones whose names sort first.
+pub(super) const FOLDER_LIMIT: usize = 64;
 
+/// A mod the loader refuses once its configured values are written: a value doesn't fit the
+/// content it binds. Readers leave the mod out and read again, as the loader does.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct Refusal {
+    id: String,
+    reason: String,
+}
+
+/// Sunrise's own folder, beside the DLL it runs from: the game root's when one is there, else
+/// `bin/x64`'s. Sunrise reads its mods folder from there.
 pub fn runtime_directory(install: &Path) -> PathBuf {
-    install.join("bin/x64/Sunrise")
+    super::sunrise_module_path(install)
+        .parent()
+        .map_or_else(|| install.join("bin/x64"), Path::to_path_buf)
+        .join("Sunrise")
 }
 
 pub fn directory(install: &Path) -> PathBuf {
     runtime_directory(install).join("mods").join(ID)
 }
 
+/// Sundial's release as the loader's `MAJOR.MINOR.PATCH`, which admits no pre-release suffix.
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION_MAJOR"),
+    ".",
+    env!("CARGO_PKG_VERSION_MINOR"),
+    ".",
+    env!("CARGO_PKG_VERSION_PATCH")
+);
+const AUTHOR: &str = "KyleThmpsn";
+const SOURCE: &str = "https://github.com/KyleThmpsn/sundial";
+
+/// Sunrise's Mods page shows the name and version as the mod's title, then its authors and
+/// source.
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
@@ -38,6 +64,9 @@ pub struct Manifest {
     pub id: String,
     pub version: String,
     pub name: String,
+    pub authors: Vec<String>,
+    #[serde(rename = "src")]
+    pub source: String,
 }
 
 impl Default for Manifest {
@@ -45,18 +74,30 @@ impl Default for Manifest {
         Self {
             manifest_version: 3,
             id: ID.into(),
-            version: "1.0.0".into(),
+            version: VERSION.into(),
             name: "Parhelion".into(),
+            authors: vec![AUTHOR.into()],
+            source: SOURCE.into(),
         }
     }
 }
 
 impl Manifest {
     pub fn validate(&self) -> Result<(), String> {
+        // The loader's text limits: names and authors up to 64 bytes, at most eight authors and a
+        // source up to 256 bytes, none holding a control character.
+        let text =
+            |value: &str, limit: usize| value.len() <= limit && !value.contains(char::is_control);
         if self.manifest_version != 3
             || self.id != ID
             || self.name.is_empty()
-            || self.name.len() > 64
+            || !text(&self.name, 64)
+            || self.authors.len() > 8
+            || self
+                .authors
+                .iter()
+                .any(|author| author.is_empty() || !text(author, 64))
+            || !text(&self.source, 256)
         {
             return Err("The managed Parhelion mod manifest has an unsupported identity".into());
         }
@@ -96,11 +137,7 @@ pub struct Receipt {
 
 impl Receipt {
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema != 1
-            || self.mod_id != ID
-            || self.artifacts.is_empty()
-            || self.artifacts.len() > 1024
-        {
+        if self.schema != 1 || self.mod_id != ID || self.artifacts.is_empty() {
             return Err(
                 "The managed mod receipt has an unsupported schema, identity or package count"
                     .into(),
@@ -119,6 +156,18 @@ impl Receipt {
             {
                 return Err("The managed mod receipt contains an unsupported package path".into());
             }
+            // Merge data sits beside its package under the same name.
+            if let Some(stem) = name.strip_suffix(".merge") {
+                let package = format!("{folder}/{stem}.pkg");
+                if !self.artifacts.iter().any(|other| other.path == package)
+                    || !names.insert(name.to_owned())
+                    || artifact.byte_length == 0
+                    || !valid_sha256(&artifact.sha256)
+                {
+                    return Err("The managed mod receipt has invalid or repeated merge data".into());
+                }
+                continue;
+            }
             let parsed = tiger_pkg::manager::PackagePath::parse(name)
                 .ok_or("Invalid mod package filename")?;
             let id = u16::from_str_radix(&parsed.id, 16).map_err(|error| error.to_string())?;
@@ -130,16 +179,25 @@ impl Receipt {
                 || !names.insert(name.to_owned())
                 || !packages.insert(id)
                 || artifact.byte_length == 0
-                || artifact.sha256.len() != 64
-                || !artifact.sha256.bytes().all(|b| b.is_ascii_hexdigit())
+                || !valid_sha256(&artifact.sha256)
             {
                 return Err(
                     "The managed mod receipt has invalid or repeated package metadata".into(),
                 );
             }
         }
+        if packages.is_empty() || packages.len() > 1024 {
+            return Err(
+                "The managed mod receipt has an unsupported schema, identity or package count"
+                    .into(),
+            );
+        }
         Ok(())
     }
+}
+
+fn valid_sha256(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Reject links, junctions and other reparse points below the caller's canonical boundary,
@@ -243,26 +301,22 @@ pub fn ensure_resolved_environment(install: &Path) -> Result<(), String> {
     }
     let own = directory(install);
     let proposed_count = count + usize::from(!own.exists());
-    if proposed_count > 64 {
+    if proposed_count > FOLDER_LIMIT {
         return Err("Installing Parhelion would exceed the loader's 64-mod limit".into());
     }
     Ok(())
 }
 
-/// Metadata and package paths contributing to the managed content identity. This does not
-/// hash all payloads at catalog startup. The installer verifies the receipt's full digests.
+/// Metadata and package paths of the mod folder Parhelion installed, checked against its receipt.
+/// Installation replaces and removes the folder whichever runtime is active, though only Sunrise
+/// 0.6 or later loads it. This does not hash every payload at catalog startup. The installer
+/// verifies the receipt's full digests.
 pub fn files(install: &Path) -> Result<Vec<PathBuf>, String> {
     ensure_readable(install)?;
     let folder = directory(install);
     checked_path(install, &folder)?;
-    // Readers see stock packages and Parhelion's mod. Other mods' packages are not read, so
-    // they never stop a reader.
     if !folder.try_exists().map_err(|e| e.to_string())? {
         return Ok(Vec::new());
-    }
-    let runtime = super::installed_runtime(install)?;
-    if !runtime.uses_mod_loader()? {
-        return Err("This installation has a Parhelion mod that requires Sunrise 0.6 or later. Restore a compatible Sunrise runtime before editing its content.".into());
     }
     checked_path(install, &folder.join(MANIFEST))?;
     checked_path(install, &folder.join(RECEIPT))?;
@@ -317,8 +371,45 @@ pub fn files(install: &Path) -> Result<Vec<PathBuf>, String> {
         }
         files.push(path);
     }
-    super::verify_installed_runtime(install, &runtime)?;
     Ok(files)
+}
+
+/// The files that decide what the active runtime loads beyond stock packages: every Sunrise mod's
+/// manifest, packages and merge data, and the saved configuration. A runtime that doesn't load
+/// Sunrise mods has none. `files` is the stricter ownership contract installation and removal use.
+pub fn content_files(install: &Path) -> Result<Vec<PathBuf>, String> {
+    content::files(install)
+}
+
+/// How Parhelion's build would load beside the other mods Sunrise loads, with `incoming` in place
+/// of Parhelion's installed folder: what would keep its content from loading intact, and the
+/// entries it shares that Sunrise merges.
+pub fn coexistence(install: &Path, incoming: &Incoming) -> Result<Coexistence, String> {
+    Ok(content::Plan::read(install, &[], Some(incoming))?.coexistence)
+}
+
+/// What readers leave out of the installation's content, and why, for diagnostics. `None` until
+/// a reader has read the current content. This never reads it, so it returns at once.
+pub fn notices(install: &Path) -> Result<Option<Vec<String>>, String> {
+    if !loads_mods(install)? {
+        let installed = directory(install).try_exists().map_err(|e| e.to_string())?;
+        return Ok(Some(
+            installed
+                .then(|| {
+                    "Parhelion's mod folder is installed, but the active runtime doesn't load \
+                     Sunrise mods, so its content isn't read"
+                        .to_owned()
+                })
+                .into_iter()
+                .collect(),
+        ));
+    }
+    View::current_notices(install)
+}
+
+/// Whether the installation's runtime loads Sunrise mods, as Sunrise 0.6 and later do.
+fn loads_mods(install: &Path) -> Result<bool, String> {
+    super::installed_runtime(install)?.uses_mod_loader()
 }
 
 pub fn ensure_readable(install: &Path) -> Result<(), String> {
@@ -333,148 +424,7 @@ pub fn ensure_readable(install: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Retain this view until every reader using it closes. The source packages are never edited.
-pub struct View {
-    /// Held while the view lives, so another opener knows it is in use. Declared first so it
-    /// closes before the folder holding it is removed.
-    _owner: File,
-    directory: tempfile::TempDir,
-    packages: PathBuf,
-    /// The installation's own packages directory the view projects.
-    source: PathBuf,
-}
-
-impl View {
-    pub fn open(install: &Path) -> Result<Option<Self>, String> {
-        ensure_readable(install)?;
-        let additions = files(install)?;
-        if additions.is_empty() {
-            return Ok(None);
-        }
-        super::reader::initialize_source_decoder(&install.join("packages"))?;
-        // Hard links work only within one volume, so the view sits inside the installation. In
-        // the system temp folder on another drive, every installed package was copied instead.
-        let root = runtime_directory(install).join(VIEWS);
-        checked_path(install, &root)?;
-        fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-        remove_stale_views(&root);
-        let directory = tempfile::Builder::new()
-            .prefix(VIEW_PREFIX)
-            .tempdir_in(&root)
-            .map_err(|e| e.to_string())?;
-        let owner = File::create(directory.path().join(VIEW_OWNER)).map_err(|e| e.to_string())?;
-        fs2::FileExt::try_lock_exclusive(&owner).map_err(|e| e.to_string())?;
-        let packages = directory.path().join("packages");
-        fs::create_dir(&packages).map_err(|e| e.to_string())?;
-        for entry in fs::read_dir(install.join("packages")).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let path = entry.path();
-            if is_package(&path) {
-                checked_path(install, &path)?;
-                link(&path, &packages.join(entry.file_name()))?;
-            }
-        }
-        for path in additions.iter().filter(|p| is_package(p)) {
-            link_or_copy(
-                path,
-                &packages.join(path.file_name().ok_or("Package has no filename")?),
-            )?;
-        }
-        // A projected installation retains the source decoder location expected by readers.
-        let bin = directory.path().join("bin/x64");
-        fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
-        for name in ["oo2core_3_win64.dll", "oo2core_9_win64.dll"] {
-            let source = install.join("bin/x64").join(name);
-            if source.is_file() {
-                link_or_copy(&source, &bin.join(name))?;
-            }
-        }
-        Ok(Some(Self {
-            _owner: owner,
-            directory,
-            packages,
-            source: install.join("packages"),
-        }))
-    }
-
-    pub fn packages(&self) -> &Path {
-        &self.packages
-    }
-    pub fn source(&self) -> &Path {
-        &self.source
-    }
-    pub(crate) fn install(&self) -> &Path {
-        self.directory.path()
-    }
-}
-
-/// Removes views left behind by a crash, or by a file still open when its reader closed. A view
-/// in use holds its owner lock. A new one gets a grace period, because its owner lock is created
-/// just after its folder. Removing a view removes only links, never installed packages.
-fn remove_stale_views(root: &Path) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let view = entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| name.starts_with(VIEW_PREFIX))
-            && entry.file_type().is_ok_and(|kind| kind.is_dir());
-        let old = entry
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .ok()
-            .and_then(|modified| modified.elapsed().ok())
-            .is_some_and(|age| age > VIEW_GRACE);
-        if !view || !old {
-            continue;
-        }
-        let unowned = match fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(entry.path().join(VIEW_OWNER))
-        {
-            Ok(owner) => fs2::FileExt::try_lock_exclusive(&owner).is_ok(),
-            Err(error) => error.kind() == std::io::ErrorKind::NotFound,
-        };
-        if unowned {
-            let _ = fs::remove_dir_all(entry.path());
-        }
-    }
-}
-
 fn is_package(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("pkg"))
-}
-
-/// Installed packages are never copied: a copy of every one would take as much space again.
-fn link(source: &Path, target: &Path) -> Result<(), String> {
-    if target.try_exists().map_err(|e| e.to_string())? {
-        return Err("A mod package aliases an installed package file".into());
-    }
-    fs::hard_link(source, target).map_err(|error| {
-        format!(
-            "Could not read the installed packages together with the Sunrise mod, because {} could not be linked: {error}. The game's drive must support hard links.",
-            source.display()
-        )
-    })
-}
-
-fn link_or_copy(source: &Path, target: &Path) -> Result<(), String> {
-    if target.try_exists().map_err(|e| e.to_string())? {
-        return Err("A mod package aliases an installed package file".into());
-    }
-    if fs::hard_link(source, target).is_ok() {
-        return Ok(());
-    }
-    let mut output = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(target)
-        .map_err(|e| e.to_string())?;
-    let mut input = File::open(source).map_err(|e| e.to_string())?;
-    std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
-    Ok(())
 }

@@ -1,5 +1,5 @@
 //! Plan restoring torque and rotational damping around the selected source body.
-use super::super::{METRES, body::Body, curve::Program, motion::number};
+use super::super::{body::Body, curve::Program, motion::number};
 use anyhow::{Result, ensure};
 use serde_json::{Value, json};
 
@@ -10,11 +10,22 @@ pub(super) enum Lift {
 }
 
 impl Lift {
-    pub(super) fn program(self) -> Result<Program> {
+    pub(super) fn program(self, reference: f32) -> Result<Program> {
         match self {
-            Self::Constant(value) => Program::constant(value),
-            Self::Incidence(gain) => Program::damping_lift(gain),
+            Self::Constant(value) => {
+                let program = Program::constant(value)?;
+                if value == 0. {
+                    Ok(program)
+                } else {
+                    program.airspeed(reference, true)
+                }
+            }
+            Self::Incidence(gain) => Program::damping_lift(gain)?.airspeed(reference, false),
         }
+    }
+
+    pub(super) fn uses_airspeed(self) -> bool {
+        !matches!(self, Self::Constant(value) if value == 0.)
     }
 
     pub(super) fn report(self) -> Value {
@@ -38,6 +49,7 @@ pub(super) struct Surface {
 
 pub(super) struct Plan {
     pub surfaces: Vec<Surface>,
+    pub reference_speed: f32,
     pub report: Value,
 }
 
@@ -47,10 +59,11 @@ pub(super) fn plan(
     body: &Body,
     gravity: f32,
     maneuvers: bool,
+    metres: f32,
 ) -> Result<Plan> {
-    let forward = number(controls, "forward_source_units_per_second")? * METRES;
-    let acceleration = number(controls, "acceleration_source_units_per_second_squared")? * METRES;
-    let deceleration = number(controls, "deceleration_source_units_per_second_squared")? * METRES;
+    let forward = number(controls, "forward_source_units_per_second")? * metres;
+    let acceleration = number(controls, "acceleration_source_units_per_second_squared")? * metres;
+    let deceleration = number(controls, "deceleration_source_units_per_second_squared")? * metres;
     let (cruise, _) = super::super::flight::thrust(controls)?;
     let bank = number(&controls["steering"], "left_limit_radians")?;
     let rate = number(&controls["steering"], "rate_radians_per_second")?;
@@ -237,7 +250,9 @@ pub(super) fn plan(
     );
     Ok(Plan {
         surfaces,
+        reference_speed: forward,
         report: json!({"reference_speed_metres_per_second":forward,
+            "low_speed_compensation":{"minimum_speed_metres_per_second":forward * 0.2,"maximum_lift_gain":25.,"maximum_damping_gain":5.,"speed_source":"Primary body linear speed","zero_flow_force":0.},
             "response_frequency_per_second":frequencies,"target_damping_ratio":ratio,
             "control_lift_coefficients":authority,"damping_lift_gains":stability,
             "source_frame_inertia_kg_metres_squared":body.inertia,

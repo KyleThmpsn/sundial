@@ -1,10 +1,10 @@
 //! Composes cosmetic candidates without changing the item being edited.
 use super::*;
+use crate::dyes::{compose as compose_dyes, gear_type};
 use crate::{
     catalog::ItemPackageMetadata,
     ui::model_preview::{self, Appearance, Loadout},
 };
-use std::collections::BTreeMap;
 
 pub(crate) fn loadout(catalog: &Catalog, hash: u64) -> Option<Loadout> {
     catalog.item_package_metadata(hash)?.weapon_inventory_slot?;
@@ -127,44 +127,6 @@ pub(crate) fn with_shader(
         dye_textures: Vec::new(),
         dyes: compose_dyes(&base, std::iter::once(shader)),
     })
-}
-
-/// The first dye key of the gear type a key paints. Armor, weapons, ships, Sparrows and Ghost
-/// Shells each have an armor, a cloth and a suit key, starting at 0, 4, 7, 10 and 13.
-fn gear_type(key: i8) -> Option<i8> {
-    [0, 4, 7, 10, 13]
-        .into_iter()
-        .find(|&first| (first..first + 3).contains(&key))
-}
-
-pub(in crate::app) fn compose_dyes(
-    base: &[Vec<(i8, u16)>; 3],
-    plugs: impl Iterator<Item = [Vec<(i8, u16)>; 3]>,
-) -> Vec<(i8, u16)> {
-    // A shader carries every gear type. The item's own rows decide which set can paint it.
-    let gear_types: Vec<_> = base
-        .iter()
-        .flatten()
-        .filter_map(|&(key, value)| (value != u16::MAX).then(|| gear_type(key)).flatten())
-        .collect();
-    let mut dyes = BTreeMap::new();
-    let mut insert = |rows: &[(i8, u16)]| {
-        for &(key, value) in rows {
-            if value != u16::MAX && gear_type(key).is_some_and(|first| gear_types.contains(&first))
-            {
-                dyes.insert(key, value);
-            }
-        }
-    };
-    insert(&base[1]);
-    insert(&base[0]);
-    for rows in plugs {
-        for stage in [1, 0, 2] {
-            insert(&rows[stage]);
-        }
-    }
-    insert(&base[2]);
-    dyes.into_iter().collect()
 }
 
 fn visual_plug(catalog: &Catalog, hash: u64) -> bool {

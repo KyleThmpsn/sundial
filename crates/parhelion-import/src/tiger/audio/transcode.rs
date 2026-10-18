@@ -354,6 +354,74 @@ fn channel_mask(channels: u16) -> u32 {
     if channels == 1 { 4 } else { 3 }
 }
 
+/// Decode the checked Wwise 89 Vorbis layout without changing its frame count or speakers.
+/// A partial-media loop needs a separate native loop contract and is refused here.
+pub fn early_pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
+    crate::cancellation::check()?;
+    let source = chunks(media)?;
+    let formats = source
+        .iter()
+        .filter(|(id, _)| **id == *b"fmt ")
+        .collect::<Vec<_>>();
+    ensure!(
+        formats.len() == 1 && source.iter().filter(|(id, _)| **id == *b"data").count() == 1,
+        "early media needs one format and sample chunk"
+    );
+    let fmt = formats[0].1;
+    if matches!(word(fmt, 0)?, 1 | 0xFFFE) {
+        return normalize_pcm_wem(media);
+    }
+    ensure!(
+        word(fmt, 0)? == 0xFFFF && fmt.len() == 66 && word(fmt, 16)? == 48,
+        "unsupported early Vorbis format"
+    );
+    ensure!(
+        source
+            .iter()
+            .all(|(id, _)| matches!(*id, b"fmt " | b"data" | b"JUNK" | b"LIST")),
+        "early media playback metadata requires translation"
+    );
+    let channels = word(fmt, 2)?;
+    let rate = dword(fmt, 4)?;
+    let mask = dword(fmt, 20)?;
+    let frames = dword(fmt, 24)? as usize;
+    ensure!(
+        matches!((channels, mask), (1, 4) | (1, 8) | (2, 3))
+            && (8_000..=192_000).contains(&rate)
+            && frames > 0,
+        "unsupported early media speakers or sample rate"
+    );
+    let decoded =
+        sundial::package_authoring::decode_audio_wave(media).map_err(anyhow::Error::msg)?;
+    crate::cancellation::check()?;
+    let decoded = chunks(&decoded)?;
+    let output_fmt = decoded
+        .iter()
+        .find(|(id, _)| **id == *b"fmt ")
+        .context("decoded format")?
+        .1;
+    let data = decoded
+        .iter()
+        .find(|(id, _)| **id == *b"data")
+        .context("decoded samples")?
+        .1;
+    ensure!(
+        word(output_fmt, 0)? == 1
+            && word(output_fmt, 2)? == channels
+            && dword(output_fmt, 4)? == rate
+            && word(output_fmt, 14)? == 16,
+        "early decoder changed the sample layout"
+    );
+    ensure!(
+        data.len()
+            == frames
+                .checked_mul(usize::from(channels) * 2)
+                .context("early frame extent")?,
+        "early decoded frame count differs from the source"
+    );
+    riff_pcm_layout(channels, rate, mask, data)
+}
+
 /// A 16-bit WAVEFORMATEXTENSIBLE PCM WEM.
 fn riff_pcm(channels: u16, rate: u32, data: &[u8]) -> Result<Vec<u8>> {
     riff_pcm_layout(channels, rate, channel_mask(channels), data)

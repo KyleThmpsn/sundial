@@ -1,4 +1,10 @@
 //! Source projectile presentations and private native carriers with explicit behavior limits.
+mod assembly;
+mod effect;
+pub(super) mod motion;
+mod program;
+mod shard;
+mod tracking;
 use super::*;
 use crate::presentation::put;
 use crate::tiger::{
@@ -28,7 +34,7 @@ pub(super) fn export(
             node["tag"]["path"].as_str().context("Projectile path")?,
         )?;
         let object = Object::read(cache, tag)?;
-        let mut row = json!({"tag":tag,"behavior":node["data"],"has_model":false});
+        let mut row = json!({"tag":tag,"behavior":node["data"],"guidance":tracking::policy(&node["data"] )?,"has_model":false});
         if object
             .world
             .as_ref()
@@ -109,6 +115,32 @@ fn number(value: &Value) -> Result<u32> {
     )?)
 }
 
+fn resolved(
+    node: &Value,
+    root: &Path,
+    symbols: &BTreeMap<String, u32>,
+) -> Result<(Payload, Option<u32>)> {
+    let mut payload = Payload(fs::read(
+        root.join(node["file"].as_str().context("Presentation file")?),
+    )?);
+    for patch in node["patches"].as_array().into_iter().flatten() {
+        let at = usize::try_from(patch["offset"].as_u64().context("Presentation patch")?)?;
+        ensure!(
+            payload.u32(at)? == u32::MAX,
+            "Presentation patch has no placeholder"
+        );
+        let target = *symbols
+            .get(patch["symbol"].as_str().context("Patch symbol")?)
+            .context("Missing presentation dependency")?;
+        put(&mut payload.0, at, &target.to_le_bytes())?;
+    }
+    let reference = node["reference"]
+        .as_str()
+        .map(|s| symbols.get(s).copied().context("Missing package reference"))
+        .transpose()?;
+    Ok((payload, reference))
+}
+
 // Relocate only typed component references and the separately supplied component table.
 fn relocate(
     payload: &mut Payload,
@@ -138,6 +170,23 @@ fn relocate(
     Ok(())
 }
 
+fn write_allocations(
+    reader: &mut Reader,
+    assets: &mut Assets,
+    ids: &BTreeMap<u32, u32>,
+    authored: &BTreeMap<u32, Payload>,
+) -> Result<()> {
+    for (&tag, &id) in ids {
+        let payload = match authored.get(&tag) {
+            Some(payload) => payload.clone(),
+            None => (*reader.tag(tag, Some(0x80809bbb))?).clone(),
+        };
+        assets.push(id, tag, payload, None)?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::cognitive_complexity)]
 pub(super) fn native(
     cache: &cache::Cache,
     pages: &mut resource::Pages,
@@ -171,10 +220,32 @@ pub(super) fn native(
         entry,
         &presentation_root,
         true,
+        None,
     )?;
     let carrier = number(&presentation["source_entity"])?;
     let model_owner = number(&presentation["source_owner"])?;
-    let original = reader.tag(carrier, Some(0x80809c0f))?;
+    let (mut assembly, shards) = assembly::Assembly::prepare(reader, carrier, &source["behavior"])?;
+    let guidance = json!({"source":tracking::policy(&source["behavior"] )?,
+        "translation":if tracking::enabled(&source["behavior"])? { "Source sampled angular rate and commanded-distance ramp on native acquisition" }
+            else { "Retained native carrier guidance" },"gameplay_verified":false});
+    let motion = motion::apply(
+        &assembly.entity,
+        &mut assembly.owners,
+        &source["behavior"],
+        rig::METRES_PER_UNIT,
+        assembly.source_trajectory,
+    )?;
+    let effects = effect::build(
+        cache,
+        pages,
+        reader,
+        &scene,
+        &source["behavior"],
+        &mut assembly,
+        &root.join("projectile-effects"),
+    )?;
+    let original = assembly.entity;
+    let mut owners = assembly.owners;
     let rows = original.array(16, 12, Some(0x80809c04))?;
     let mut assets = Assets::default();
     let mut symbols = BTreeMap::new();
@@ -188,12 +259,11 @@ pub(super) fn native(
             assets.reserve(reader, format!("reach-projectile-{symbol}"))?,
         );
     }
-    let mut owners = BTreeMap::new();
     let mut ids = BTreeMap::new();
     let mut allocations = BTreeMap::new();
     for &row in &rows {
         let tag = original.u32(row)?;
-        let payload = (*reader.tag(tag, Some(0x80809c36))?).clone();
+        let payload = owners.get(&tag).context("Assembled projectile component")?;
         let id = if tag == model_owner {
             symbols["owner"]
         } else {
@@ -211,7 +281,47 @@ pub(super) fn native(
                 format!("reach-projectile-allocation-{allocation:08X}"),
             )?);
         }
-        owners.insert(tag, payload);
+    }
+    if let Some(owner) = effects.owner {
+        // Flow nodes still read these controller inputs, so each input needs its entity
+        // connection to resolve a source at runtime.
+        let flow = &owners[&owner];
+        let inputs = flow.array(flow.pointer(24)? + 0x188, 40, Some(0x80809789))?;
+        let graph = crate::tiger::entity::links::Graph::read(&original, false)?;
+        let connected = graph
+            .connections
+            .iter()
+            .chain(&graph.named_connections)
+            .filter_map(|row| row.consumer.object)
+            .filter(|object| object.owner == owner && object.class == 0x80809789)
+            .count();
+        ensure!(
+            inputs.is_empty() || connected > 0,
+            "Projectile flow inputs have no entity connections"
+        );
+    }
+    let rows = original.array(16, 12, Some(0x80809c04))?;
+    let shard_report = shards
+        .as_ref()
+        .map(|shards| shards.append(reader, &mut assets, &mut owners))
+        .transpose()?;
+    let mut effect_ids = BTreeMap::new();
+    for node in &effects.graph.nodes {
+        let symbol = node["symbol"]
+            .as_str()
+            .context("Projectile effect symbol")?;
+        effect_ids.insert(
+            symbol.to_owned(),
+            assets.reserve(reader, format!("reach-projectile-effect-{symbol}"))?,
+        );
+    }
+    for (owner, offset, symbol) in &effects.patches {
+        let target = effect_ids.get(symbol).context("Projectile effect target")?;
+        put(
+            &mut owners.get_mut(owner).context("Projectile effect owner")?.0,
+            *offset,
+            &target.to_le_bytes(),
+        )?;
     }
     let mut converted = BTreeMap::new();
     for node in nodes {
@@ -219,24 +329,7 @@ pub(super) fn native(
         if symbol == "entity" {
             continue;
         }
-        let mut payload = Payload(fs::read(
-            presentation_root.join(node["file"].as_str().context("Presentation file")?),
-        )?);
-        for patch in node["patches"].as_array().into_iter().flatten() {
-            let at = usize::try_from(patch["offset"].as_u64().context("Presentation patch")?)?;
-            ensure!(
-                payload.u32(at)? == u32::MAX,
-                "Presentation patch has no placeholder"
-            );
-            let target = *symbols
-                .get(patch["symbol"].as_str().context("Patch symbol")?)
-                .context("Missing presentation dependency")?;
-            put(&mut payload.0, at, &target.to_le_bytes())?;
-        }
-        let reference = node["reference"]
-            .as_str()
-            .map(|s| symbols.get(s).copied().context("Missing package reference"))
-            .transpose()?;
+        let (mut payload, reference) = resolved(node, &presentation_root, &symbols)?;
         if symbol == "owner" {
             let allocation = allocations[&owners[&model_owner].u32(0x44)?];
             put(&mut payload.0, 0x44, &allocation.to_le_bytes())?;
@@ -244,6 +337,18 @@ pub(super) fn native(
         }
         assets.push(
             symbols[symbol],
+            number(&node["template"])?,
+            payload,
+            reference,
+        )?;
+    }
+    for node in &effects.graph.nodes {
+        let symbol = node["symbol"]
+            .as_str()
+            .context("Projectile effect symbol")?;
+        let (payload, reference) = resolved(node, &effects.graph.root, &effect_ids)?;
+        assets.push(
+            effect_ids[symbol],
             number(&node["template"])?,
             payload,
             reference,
@@ -263,10 +368,15 @@ pub(super) fn native(
         assets.push(ids[&tag], tag, payload.clone(), None)?;
         converted.insert(tag, payload);
     }
-    for (&tag, &id) in &allocations {
-        assets.push(id, tag, (*reader.tag(tag, Some(0x80809bbb))?).clone(), None)?;
+    let mut authored_allocations = assembly.allocations;
+    for (tag, payload) in effects.allocations {
+        ensure!(
+            authored_allocations.insert(tag, payload).is_none(),
+            "Projectile allocation edits overlap"
+        );
     }
-    let mut entity = (*original).clone();
+    write_allocations(reader, &mut assets, &allocations, &authored_allocations)?;
+    let mut entity = original.clone();
     relocate(&mut entity, &owners, &ids, &rows)?;
     let root_id = symbols["entity"];
     let replication_id = assets.reserve(reader, "reach-projectile-replication".into())?;
@@ -295,6 +405,8 @@ pub(super) fn native(
     assets.push(root_id, carrier, entity, None)?;
     assets.write(root,root_id,json!({"source":source["tag"],"native_carrier":carrier,
         "vertices":presentation["vertices"],"triangles":presentation["triangles"],"source_behavior":source["behavior"],
-        "native_skinning":presentation["native_skinning"],"gameplay_verified":false,
-        "limits":["Source projectile mesh and materials use a private native projectile carrier. Launch speed, collision, guidance, damage, impact effects and timing still use the carrier and require separate translation and gameplay calibration."]}))
+        "launch_policy":if assembly.source_trajectory { Some("source_player_trajectory") } else { None },
+        "native_skinning":presentation["native_skinning"],"motion":motion,"effects":effects.report,"shards":shard_report,"guidance":guidance,"gameplay_verified":false,
+        "retained_native_behavior":["Native collision and damage calculation", "Native impact presentation", "Native acquisition geometry where source tracking is enabled"],
+        "limits":["Source projectile geometry, supported flight contrails, gravity and range are translated. Guided and attached shard carriers also use source player speed curves. Source target acquisition, contact continuation, live-component relaunch and external modifiers require gameplay calibration."]}))
 }

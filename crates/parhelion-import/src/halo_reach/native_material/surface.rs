@@ -78,7 +78,7 @@ impl<'a> Surface<'a> {
                     .map_or(0., |v| v[0]);
                 let v = self.constant("v_coordinate").map_or(0.5, |v| v[0]);
                 format!(
-                    "Map8.Sample(SurfaceSampler,float2(saturate(abs(({a}).r-({b}).r)+(1-{alpha})*{modulation:.9}),{v:.9})).rgb"
+                    "Map8.Sample(ClampSampler,float2(saturate(abs(({a}).r-({b}).r)+(1-{alpha})*{modulation:.9}),{v:.9})).rgb"
                 )
             }
             _ => samples
@@ -90,6 +90,82 @@ impl<'a> Surface<'a> {
 
     pub fn transparent(&self) -> bool {
         self.lens.is_some() || self.material.alpha_mode() == "BLEND"
+    }
+
+    /// A glass surface's albedo, and the shading that replaces it with the color and opacity its
+    /// blend writes, as Reach's compiled glass programs compute them. The albedo is the base and
+    /// detail maps times the albedo color, with all three alphas. Coverage is that alpha, or the
+    /// opacity map's alpha when one is mapped. With the opacity fresnel constants, the opacity is
+    /// `1 - (1 - coverage) * (1 - fresnel)`, the fresnel term being
+    /// `saturate(coefficient * (1 - n.v)^steepness + bias)` on the vertex normal facing the camera
+    /// and zero facing away. Without them it is the coverage. Glass lights its albedo only by
+    /// analytical and dynamic lights, which these levels lack, so its color is its environment
+    /// reflection times `1 + fresnel`, which Reach lights with the ambient light. The reflection
+    /// stands in the ambient light for the environment map, which is not translated: the level's
+    /// decoded ambient light at `ambient_scale`, or neutral light without a lightmap. `v2.w`
+    /// carries the vertex normal's cosine to the camera.
+    pub fn glass(
+        &self,
+        samples: &BTreeMap<usize, String>,
+        ambient_scale: Option<f32>,
+    ) -> (String, String) {
+        let tint = self.constant("albedo_color").unwrap_or([1.; 4]);
+        let base = samples
+            .get(&0)
+            .cloned()
+            .unwrap_or_else(|| "float4(1,1,1,1)".into());
+        let albedo = match samples.get(&5) {
+            Some(detail) => format!(
+                "float4(({base}).rgb*({detail}).rgb*{}*{DETAIL_MULTIPLIER:.6},({base}).a*({detail}).a*{:.9})",
+                rgb(tint),
+                tint[3]
+            ),
+            None => format!(
+                "float4(({base}).rgb*{},({base}).a*{:.9})",
+                rgb(tint),
+                tint[3]
+            ),
+        };
+        let fresnel = match (
+            self.constant("opacity_fresnel_coefficient"),
+            self.constant("opacity_fresnel_curve_steepness"),
+            self.constant("opacity_fresnel_curve_bias"),
+        ) {
+            (Some(coefficient), Some(steepness), Some(bias)) => format!(
+                "float fresnel=v2.w>0?saturate({:.9}*pow(saturate(1-v2.w),{:.9})+{:.9}):0;",
+                coefficient[0], steepness[0], bias[0]
+            ),
+            _ => "float fresnel=0;".to_owned(),
+        };
+        let coverage = samples
+            .get(&GLASS_OPACITY_SLOT)
+            .map_or_else(|| "albedo.a".to_owned(), |s| format!("({s}).a"));
+        let ambient = match ambient_scale {
+            Some(scale) => format!(
+                "float3 glassAmbient=LightAmbient.Sample(ClampSampler,v3.zw).rgb;glassAmbient*=glassAmbient*{scale:.9};"
+            ),
+            None => "float3 glassAmbient=float3(1,1,1);".to_owned(),
+        };
+        let reflection = if self
+            .material
+            .options
+            .get("environment_mapping")
+            .is_none_or(|v| v == "none")
+        {
+            "float3(0,0,0)".to_owned()
+        } else {
+            let contribution = self
+                .constant("environment_map_specular_contribution")
+                .map_or(0., |v| v[0]);
+            format!(
+                "glassAmbient*{}*{contribution:.9}*(1+fresnel)",
+                rgb(self.constant("env_tint_color").unwrap_or([1.; 4]))
+            )
+        };
+        let shading = format!(
+            "{fresnel}float opacity=saturate(1-(1-{coverage})*(1-fresnel));{ambient}albedo=float4({reflection},opacity);"
+        );
+        (albedo, shading)
     }
 
     pub fn output(&self) -> &'static str {

@@ -343,7 +343,7 @@ fn gear_keys(dyes: &[(i8, u16)]) -> [i8; 3] {
     }
 }
 
-fn apply_colors(
+pub(super) fn apply_colors(
     manager: &PackageManager,
     globals: &[u8],
     appearance: &Appearance,

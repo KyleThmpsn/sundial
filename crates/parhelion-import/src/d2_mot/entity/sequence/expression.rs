@@ -2,6 +2,78 @@
 use super::controls::{array, put};
 use crate::d2_mot::{payload::Payload, tfx::program};
 use anyhow::{Context, Result, ensure};
+use std::collections::BTreeMap;
+
+/// Numeric sequence expressions retain their local builtin inputs and remap
+/// every additional input through the containing sequencer's slot table.
+pub(super) fn bound(
+    source: &Payload,
+    from: usize,
+    output: &mut Payload,
+    to: usize,
+    builtins: usize,
+    inputs: &BTreeMap<u32, u32>,
+) -> Result<()> {
+    if source.bytes::<64>(from)? == [0; 64] {
+        return put(output, to, &[0; 64]);
+    }
+    let mut slots = Vec::new();
+    for row in source.array(from + 48, 4, Some(0x80800007))? {
+        let index = source.u32(row)?;
+        slots.extend(
+            inputs
+                .get(&index)
+                .with_context(|| format!("unmapped sequence expression input {index}"))?
+                .to_le_bytes(),
+        );
+    }
+    let count = builtins
+        .checked_add(slots.len() / 4)
+        .context("sequence expression input capacity")?;
+    ensure!(
+        count <= 64 && source.u64(from + 32)? == count as u64 && source.u64(from + 40)? == 1,
+        "sequence expression input contract differs"
+    );
+    program(source, from, output, to, count)?;
+    array(output, to + 48, 0x80800007, &slots, 4)?;
+    Ok(())
+}
+
+/// The query's two distance functions carry raw 48-byte numeric programs.
+pub(super) fn program(
+    source: &Payload,
+    from: usize,
+    output: &mut Payload,
+    to: usize,
+    inputs: usize,
+) -> Result<()> {
+    let code = source
+        .array(from, 1, Some(0x80800009))?
+        .into_iter()
+        .map(|at| source.u8(at))
+        .collect::<Result<Vec<_>>>()?;
+    let rows = source.array(from + 16, 16, Some(0x80800090))?;
+    let mut constants = Vec::new();
+    for row in rows {
+        for lane in 0..4 {
+            ensure!(
+                source.f32(row + lane * 4)?.is_finite(),
+                "nonfinite sequence expression constant"
+            );
+        }
+        constants.extend(source.bytes::<16>(row)?);
+    }
+    ensure!(
+        source.u64(from + 32)? == inputs as u64 && source.u64(from + 40)? == 1,
+        "raw sequence expression dimensions differ"
+    );
+    let code = lower(&code, constants.len() / 16, inputs)?;
+    array(output, to, 0x80800009, &code, 1)?;
+    array(output, to + 16, 0x80800090, &constants, 16)?;
+    put(output, to + 32, &(inputs as u64).to_le_bytes())?;
+    put(output, to + 40, &1u64.to_le_bytes())?;
+    Ok(())
+}
 
 fn lower(code: &[u8], constants: usize, inputs: usize) -> Result<Vec<u8>> {
     let mut result = Vec::new();

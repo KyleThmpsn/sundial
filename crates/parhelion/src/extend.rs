@@ -1,7 +1,9 @@
 mod standalone;
-pub(crate) use standalone::build_standalone_package_with_chains;
 #[cfg(test)]
 pub(crate) use standalone::build_standalone_package_with_references;
+pub(crate) use standalone::{
+    build_named_package_with_chains, build_standalone_package_with_chains,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
@@ -63,6 +65,9 @@ pub enum NewTagStorageMode {
     AudioMedia,
     /// Preserve the bank storage layout and index it by its authored BKHD ID.
     AudioBank,
+    /// Native hull and domain resources share the ordinary GPU allocation layout.
+    GpuHull,
+    GpuDomain,
 }
 
 /// Selects the reference stored in an appended package-entry header.
@@ -127,8 +132,7 @@ impl AsRef<[u8]> for Bytes {
 }
 
 impl ExtendedOverlayArtifact {
-    #[cfg(test)]
-    pub fn bytes(&self) -> &[u8] {
+    pub(crate) fn bytes(&self) -> &[u8] {
         self.bytes.as_ref()
     }
 
@@ -696,7 +700,7 @@ fn resolve_appended_metadata(
                     .try_into()
                     .expect("entry type metadata has exactly four bytes"),
             );
-            let type_info = resolve_storage_mode(spec.storage, template_type_info);
+            let type_info = resolve_storage_mode(spec, template_type_info)?;
             prefix[4..].copy_from_slice(&type_info.to_le_bytes());
             Ok(AppendedEntryMetadata {
                 prefix,
@@ -848,11 +852,52 @@ fn validate_shared_tag_enrollments(
     Ok(())
 }
 
-fn resolve_storage_mode(mode: NewTagStorageMode, template_type_info: u32) -> u32 {
-    match mode {
+fn resolve_storage_mode(spec: &NewTagSpec, template_type_info: u32) -> AuthoringResult<u32> {
+    match spec.storage {
         NewTagStorageMode::InheritTemplate
         | NewTagStorageMode::AudioMedia
-        | NewTagStorageMode::AudioBank => template_type_info,
+        | NewTagStorageMode::AudioBank => Ok(template_type_info),
+        NewTagStorageMode::GpuHull | NewTagStorageMode::GpuDomain => {
+            #[cfg(not(feature = "d2-model-importer"))]
+            {
+                Err(invalid(
+                    "Tessellation authoring requires the model importer",
+                ))
+            }
+            #[cfg(feature = "d2-model-importer")]
+            {
+                use parhelion_import::tiger::{
+                    payload::Payload,
+                    shader::{identity::Stage, program::Program},
+                };
+                let kind = (template_type_info >> 9) & 0x7F;
+                if !matches!(kind, 33 | 41) || ((template_type_info >> 6) & 7) != 1 {
+                    return Err(invalid(
+                        "Tessellation allocation requires an ordinary vertex GPU template",
+                    ));
+                }
+                let stage = if spec.storage == NewTagStorageMode::GpuHull {
+                    Stage::Hull
+                } else {
+                    Stage::Domain
+                };
+                if kind == 41 {
+                    Program::new(stage, spec.payload.clone())
+                        .map_err(|error| invalid(format!("Tessellation GPU program: {error:#}")))?;
+                } else {
+                    let header = Payload(spec.payload.clone());
+                    if header.0.len() != 40
+                        || header.u64(0).ok() != Some(40)
+                        || header.u32(8).ok().is_none_or(|size| size < 48)
+                        || header.u32(12).ok() != Some(u32::MAX)
+                        || header.0[16..].iter().any(|byte| *byte != 0)
+                    {
+                        return Err(invalid("Tessellation GPU allocation header differs"));
+                    }
+                }
+                Ok((template_type_info & !(7 << 6)) | (u32::from(stage.subtype()) << 6))
+            }
+        }
     }
 }
 
@@ -1018,8 +1063,10 @@ fn write_payload(
     let entry_row = layout.entry_table_offset + entry_index * ENTRY_HEADER_SIZE;
     let kind = read_u32(artifact, entry_row + 4)?;
     let streamed = ((kind >> 9) & 0x7F) == 26 && ((kind >> 6) & 7) == 6;
+    // Sunrise merges a mod's patched entries only from blocks its patch stores uncompressed.
+    let uncompressed = streamed || crate::package_profile::host().is_standalone();
     for chunk in payload.chunks(BLOCK_SIZE) {
-        let encoded = if streamed {
+        let encoded = if uncompressed {
             EncodedPackageBlock::raw(chunk)?
         } else {
             block_encoder.encode(layout.package_id, chunk)?

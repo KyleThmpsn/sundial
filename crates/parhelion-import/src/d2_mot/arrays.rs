@@ -50,8 +50,8 @@ pub fn validate(b: &[u8]) -> Result<(), String> {
     }
     Ok(())
 }
-pub fn repair(b: &mut Vec<u8>) -> Result<usize, String> {
-    let mut repaired = 0;
+pub fn add_array_markers(b: &mut Vec<u8>) -> Result<usize, String> {
+    let mut added = 0;
     for (i, at) in descriptors(b)?.into_iter().enumerate() {
         let Some((h, end)) = row(b, at, if i == 0 { 0x808077B5 } else { 0x808077B3 })? else {
             continue;
@@ -65,12 +65,12 @@ pub fn repair(b: &mut Vec<u8>) -> Result<usize, String> {
         b.extend_from_slice(&0x80809FBDu32.to_le_bytes());
         b.extend_from_slice(&payload);
         b[at + 8..at + 16].copy_from_slice(&((next as i64) - (at + 8) as i64).to_le_bytes());
-        repaired += 1;
+        added += 1;
     }
     let len = b.len() as u64;
     b[..8].copy_from_slice(&len.to_le_bytes());
     validate(b)?;
-    Ok(repaired)
+    Ok(added)
 }
 #[cfg(test)]
 mod tests {
@@ -86,11 +86,11 @@ mod tests {
         b[0x160..0x164].copy_from_slice(&[255, 0, 206, 16]);
         b[0x14C..0x150].copy_from_slice(&0x12345678u32.to_le_bytes());
         assert!(validate(&b).is_err());
-        assert_eq!(repair(&mut b).unwrap(), 1);
+        assert_eq!(add_array_markers(&mut b).unwrap(), 1);
         validate(&b).unwrap();
         assert_eq!(&b[0x14C..0x150], &0x12345678u32.to_le_bytes());
         let h = pointer(&b, 0xA8).unwrap();
         assert_eq!(&b[h + 16..h + 20], &[255, 0, 206, 16]);
-        assert_eq!(repair(&mut b).unwrap(), 0);
+        assert_eq!(add_array_markers(&mut b).unwrap(), 0);
     }
 }

@@ -1,4 +1,5 @@
 //! Source wheel contacts with authored support distances and suspension response.
+mod suspension;
 use super::super::seat;
 use crate::{
     halo_reach::Scene,
@@ -106,6 +107,7 @@ pub(super) fn build(
     original: &Payload,
     scene: &Scene,
     bones: &Value,
+    body: &super::body::Body,
 ) -> Result<Contacts> {
     let controls = &scene.object.gameplay["contacts"];
     let wheels = controls["wheels"]
@@ -147,10 +149,36 @@ pub(super) fn build(
     let mut output = original.clone();
     put(&mut output.0, i + 0x30, &[0; 16])?;
     put(&mut output.0, d + 0x120, &[0; 16])?;
-    // The native tire consumer uses +1C * +20 for lateral static friction.
-    // Calibrate that coefficient to the source ground friction while retaining
-    // the native directional ratio and moving-friction transition shape.
+    // Reach ground friction is not a measured native Coulomb coefficient.
+    // Bound the authored lateral grip below the static tipping threshold of
+    // the selected support geometry. Keep the native directional ratios.
     let source_grip = number(controls, "ground_friction")?;
+    let maximum_wheel_mass = wheels.iter().try_fold(0f32, |maximum, wheel| {
+        Ok::<_, anyhow::Error>(maximum.max(number(wheel, "mass_source")?))
+    })?;
+    ensure!(maximum_wheel_mass > 0., "Source wheel masses are all zero");
+    let model = &scene.models[0].model;
+    let mut left = f32::NEG_INFINITY;
+    let mut right = f32::INFINITY;
+    let mut ground = f32::INFINITY;
+    let mut positions = Vec::new();
+    for wheel in wheels {
+        let name = wheel["marker"].as_str().context("Source wheel marker")?;
+        let (position, _) = seat::marker(model, name)?;
+        left = left.max(position[1]);
+        right = right.min(position[1]);
+        ground = ground.min(wheel_bottom(model, wheel)?);
+        positions.push(position);
+    }
+    let loads = suspension::loads(&positions, body.center)?;
+    let half_track = (left - body.center[1]).min(body.center[1] - right);
+    let height = body.center[2] - ground;
+    ensure!(
+        half_track > 0. && height > 0. && height.is_finite(),
+        "Source wheeled body has no supported lateral balance"
+    );
+    let tipping_grip = half_track / height;
+    let lateral_grip = source_grip.min(tipping_grip * 0.95);
     let template_grip = template.f32(td + 0xa8)?
         * template.f32(settings + 0x1c)?
         * template.f32(settings + 0x20)?;
@@ -158,7 +186,7 @@ pub(super) fn build(
         source_grip > 0. && template_grip.is_finite() && template_grip > 0.,
         "Invalid vehicle tire friction calibration"
     );
-    let grip_scale = source_grip / template_grip;
+    let grip_scale = lateral_grip / template_grip;
     ensure!(
         grip_scale.is_finite() && grip_scale > 0. && grip_scale <= 20.,
         "Source tire friction exceeds the supported native calibration"
@@ -169,6 +197,18 @@ pub(super) fn build(
             d + field,
             &(template.f32(td + field)? * grip_scale).to_le_bytes(),
         )?;
+    }
+    let slopes = [
+        super::motion::number(controls, "maximum_slope_cosine_0")?,
+        super::motion::number(controls, "maximum_slope_cosine_1")?,
+    ];
+    ensure!(
+        slopes.iter().all(|v| (-1. ..=1.).contains(v)) && slopes[0] > slopes[1],
+        "Source tire slope attenuation requires ordered distinct cosines"
+    );
+    // Reach 234D2A and native EA208D apply the same clamped cosine ramp.
+    for (field, value) in [0xb4, 0xb8].into_iter().zip(slopes) {
+        put(&mut output.0, d + field, &value.to_le_bytes())?;
     }
     append(
         &mut output.0,
@@ -188,17 +228,19 @@ pub(super) fn build(
     let definitions = output.array(d + 0x130, 0x88, Some(0x80803d4f))?;
     let mut report = Vec::new();
     let mut markers = Vec::new();
-    let travel = number(controls, "ground_depth_source")? * super::METRES;
-    let damping_ratio = number(controls, "ground_damping")?;
+    let travel = number(controls, "ground_depth_source")? * scene.metres();
+    let source_damping = number(controls, "ground_damping")?;
+    let damping_ratio = source_damping.min(0.85);
+    let maximum_normal = number(controls, "maximum_normal_force_contribution")?;
     let gravity = number(controls, "gravity_scale")?;
     ensure!(
-        travel > 0. && gravity > 0. && damping_ratio > 0.,
+        travel > 0. && gravity > 0. && damping_ratio > 0. && maximum_normal > 1.,
         "Source wheel suspension values are invalid"
     );
-    let stiffness = 1. / travel;
-    let damping = 2. * damping_ratio * (stiffness / (12.713999 * gravity)).sqrt();
     put(&mut output.0, d + 0xd4, &gravity.to_le_bytes())?;
-    for ((&instance, &definition), wheel) in instances.iter().zip(&definitions).zip(wheels) {
+    for (((&instance, &definition), wheel), &load) in
+        instances.iter().zip(&definitions).zip(wheels).zip(&loads)
+    {
         output.0[instance..instance + 0x140].copy_from_slice(&template.0[wi..wi + 0x140]);
         output.0[definition..definition + 0x88].copy_from_slice(&template.0[wd..wd + 0x88]);
         pair(
@@ -243,26 +285,64 @@ pub(super) fn build(
         put(&mut output.0, settings_at - 4, &0x80803d52u32.to_le_bytes())?;
         output.0[settings_at..settings_at + 0x58]
             .copy_from_slice(&template.0[settings..settings + 0x58]);
+        // Reach weights tire response by individual wheel mass. Preserve its
+        // relative lateral weighting without increasing the calibrated maximum
+        // grip or changing rolling traction. This remains a native force-curve
+        // adaptation, not an absolute source force or mass-unit conversion.
+        let wheel_mass = number(wheel, "mass_source")?;
+        let lateral_scale = wheel_mass / maximum_wheel_mass;
+        for field in [0x20, 0x28, 0x34, 0x3c] {
+            let ratio = template.f32(settings + field)?;
+            ensure!(
+                ratio.is_finite() && ratio >= 0.,
+                "Invalid native lateral tire ratio"
+            );
+            put(
+                &mut output.0,
+                settings_at + field,
+                &(ratio * lateral_scale).to_le_bytes(),
+            )?;
+        }
         put(
             &mut output.0,
             definition + 0x78,
             &(settings_at as i64 - (definition + 0x78) as i64).to_le_bytes(),
         )?;
-        let radius = number(wheel, "radius_source")? * super::METRES;
+        let radius = number(wheel, "radius_source")? * scene.metres();
+        let slip_speed = number(wheel, "friction_velocity_source")? * scene.metres();
+        let brake_slip_speed = number(wheel, "brake_friction_velocity_source")? * scene.metres();
+        ensure!(
+            slip_speed.is_finite() && brake_slip_speed.is_finite(),
+            "Source wheel slip threshold exceeds native range"
+        );
+        // Reach 234D6B and native EA20D9 select the moving branch above this
+        // speed. A zero threshold is valid and selects it for nonzero slip.
+        for (field, value) in [(0x2c, slip_speed), (0x40, brake_slip_speed)] {
+            put(&mut output.0, settings_at + field, &value.to_le_bytes())?;
+        }
         let name = wheel["marker"]
             .as_str()
             .filter(|s| !s.is_empty())
             .context("Source wheel marker")?;
         let source = seat::marker(&scene.models[0].model, name)?;
         let bottom = wheel_bottom(&scene.models[0].model, wheel)?;
-        let rest = source.0[2] - bottom;
-        let reach = rest + travel;
+        let height = source.0[2] - bottom;
+        let reach = height + travel;
         ensure!(
-            radius > 0. && rest > 0. && reach.is_finite(),
+            radius > 0. && height > 0. && reach.is_finite(),
             "Invalid wheel support distance"
         );
-        // The native spring supports its share of weight at +C. Fit that
-        // distance to the selected tire, then add declared source travel.
+        // The native compression curve peaks at 1 + rest * stiffness times
+        // supported weight. Honor the source static normal-force bound, and
+        // use an authored damping ratio to avoid excessive bump impulses.
+        let (rest, stiffness) = suspension::parameters(height, travel, load, maximum_normal)?;
+        let (equilibrium_slope, damping) =
+            suspension::damping(height, reach, rest, stiffness, load, damping_ratio, gravity)?;
+        // Compression stiffness and damping are normalized against base gravity
+        // by EB60C0. Extension support instead follows the selected gravity.
+        let stiffness = stiffness * gravity;
+        // The native spring supports one equal share of weight at +C. Offset
+        // that distance so the visible tire height balances the actual body.
         // Its two damping fields are coefficients per unit supported weight.
         for (field, value) in [
             (8, reach),
@@ -286,8 +366,11 @@ pub(super) fn build(
         markers.push(definition + 0x20);
         report.push(json!({"source":name,"flags":native_flags,"radius_metres":radius,
             "rest_distance_metres":rest,"visible_bottom_metres":bottom,"travel_metres":travel,
+            "visible_contact_distance_metres":height,"static_weight_multiple":load,
             "stiffness_per_metre":stiffness,"damping_ratio":damping_ratio,"damping_seconds_per_metre":damping,
-            "suspension_reach_metres":reach,"source_mass_not_translated":number(wheel,"mass_source")?,
+            "equilibrium_slope_per_metre":equilibrium_slope,"damping_mass_equal_share_multiple":load,
+            "suspension_reach_metres":reach,"source_mass":wheel_mass,"lateral_mass_ratio":lateral_scale,
+            "slip_threshold_metres_per_second":slip_speed,"brake_slip_threshold_metres_per_second":brake_slip_speed,
             "source_position":source.0,"source_orientation":source.1,"position":position,"orientation":rotation,
             "instance":instance,"definition":definition,"settings":settings_at}));
     }
@@ -299,8 +382,12 @@ pub(super) fn build(
         markers,
         json!({
             "wheels":report,"anti_gravity_points":0,"gameplay_verified":false,
-            "friction":{"source_ground_friction":source_grip,"native_template_lateral_static":template_grip,"multiplier":grip_scale},
-            "limits":["Support distance follows the selected tire geometry. Source ground depth and damping set authored travel and damping. Lateral static friction follows the source ground coefficient while native directional and moving-friction ratios remain. This is not an exact reproduction of the source solver. Source contact damage and damaged-wheel behavior are not translated."]
+            "friction":{"source_ground_friction":source_grip,"native_template_lateral_static":template_grip,"multiplier":grip_scale,
+                "lateral_static":lateral_grip,"static_tipping_coefficient":tipping_grip,"support_half_width_metres":half_track,"center_height_metres":height,
+                "lateral_weighting":"source_wheel_mass_relative_to_maximum","maximum_source_wheel_mass":maximum_wheel_mass,
+                "slope_attenuation_cosines":slopes,"source_force_curve_translated":false},
+            "source_ground_damping":source_damping,"maximum_static_normal_weight_multiple":maximum_normal,
+            "limits":["Support loads balance the selected center of mass at the visible tire height. Travel follows source geometry. Wheel slip thresholds and slope attenuation follow source controls. Lateral friction ratios use relative source wheel mass without increasing the calibrated maximum. Rolling friction retains the native adaptation. Absolute force magnitudes, square-root coefficients and the source low-speed response are not translated, so this calibration does not establish handling parity. Maximum normal static lateral grip is limited to 95 percent of the flat static tipping threshold. Source damping is adapted to a native corner damping ratio capped at 0.85, using the equilibrium branch slope and supported corner mass. Whole-body coupling is not a set of independent corners. The normal-force bound applies to the static spring curve, not dynamic damping forces. Terrain, airborne recovery and damaged wheels require gameplay acceptance."]
         }),
     )
 }

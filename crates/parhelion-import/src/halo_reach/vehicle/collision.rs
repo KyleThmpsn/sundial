@@ -2,6 +2,31 @@
 use super::*;
 
 pub(super) fn read(cache: &Cache, at: usize) -> Result<Value> {
+    let capsules = cache
+        .block(at + 0x8c, 0x70)?
+        .into_iter()
+        .map(|row| {
+            let a = cache.floats::<3>(row + 0x50)?;
+            let b = cache.floats::<3>(row + 0x60)?;
+            let radius = cache.f32(row + 0x40)?;
+            ensure!(
+                a.iter().chain(&b).all(|v| v.is_finite()) && radius.is_finite() && radius > 0.,
+                "Invalid source collision capsule"
+            );
+            Ok(json!({"a_source":a,"b_source":b,"radius_source":radius,
+            "material_index":cache.u8(row+4)? as i8}))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let boxes = cache.block(at + 0x98, 0xe0)?.into_iter().map(|row| {
+        let half = cache.floats::<3>(row + 0x50)?;
+        let radius = cache.f32(row + 0x40)?;
+        let transform = cache.floats::<16>(row + 0xa0)?;
+        ensure!(half.iter().all(|v| v.is_finite() && *v > 0.)
+            && radius.is_finite() && radius >= 0.
+            && transform.iter().all(|v| v.is_finite()), "Invalid source collision box");
+        Ok(json!({"half_extents_source":half,"radius_source":radius,"transform_source":transform,
+            "material_index":cache.u8(row+4)? as i8}))
+    }).collect::<Result<Vec<_>>>()?;
     let vectors = cache.block(at + 0xbc, 0x30)?;
     let planes = cache.block(at + 0xc8, 16)?;
     let mut vector_cursor = 0;
@@ -36,7 +61,7 @@ pub(super) fn read(cache: &Cache, at: usize) -> Result<Value> {
         vector_cursor += groups;
         plane_cursor += plane_count;
         polyhedra.push(json!({"vertices_source":vertices,"planes_source":equations,
-            "radius_source":cache.f32(row+0x40)?}));
+            "radius_source":cache.f32(row+0x40)?,"material_index":cache.u8(row+4)? as i8}));
     }
     ensure!(
         vector_cursor == vectors.len() && plane_cursor == planes.len(),
@@ -65,5 +90,5 @@ pub(super) fn read(cache: &Cache, at: usize) -> Result<Value> {
         child_cursor == children.len(),
         "Unassigned collision children"
     );
-    Ok(json!({"polyhedra":polyhedra,"lists":lists}))
+    Ok(json!({"polyhedra":polyhedra,"boxes":boxes,"capsules":capsules,"lists":lists}))
 }

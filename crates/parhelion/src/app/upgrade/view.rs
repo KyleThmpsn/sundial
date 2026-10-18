@@ -1,4 +1,4 @@
-//! The review, progress and result share one bounded dialog and action row.
+//! The review, its progress and any error share one bounded dialog and action row.
 use super::super::style;
 use super::UpgradeUi;
 use std::path::Path;
@@ -7,10 +7,9 @@ use std::path::Path;
 pub(super) enum Action {
     #[default]
     None,
-    Upgrade,
+    Build,
     Review,
     Recover,
-    OpenBackup,
     Close,
 }
 
@@ -48,49 +47,31 @@ pub(super) fn show(ctx: &egui::Context, state: &UpgradeUi, backup: &str) -> Acti
 }
 
 fn heading(ui: &mut egui::Ui, state: &UpgradeUi) {
-    let title = if state.worker.is_some() {
-        "Upgrading Installation"
-    } else if state.review.is_some() && state.recovering {
+    let title = if state.review.is_some() && state.recovering {
         "Recovering Installation"
     } else if state.review.is_some() {
         "Checking Installation"
-    } else if state.report.is_some() {
-        "Installation Upgraded"
     } else if state.error.is_some() {
         "Installation Needs Attention"
     } else if state.plan.is_some() {
-        "Move to Sunrise Mods"
+        "Rebuild for Sunrise Mods"
     } else {
         "No Upgrade Needed"
     };
-    let mut title = egui::RichText::new(title).size(24.0).strong();
-    if state.report.is_some() {
-        title = title.color(style::success_color(ui.visuals()));
-    }
-    ui.label(title);
+    ui.label(egui::RichText::new(title).size(24.0).strong());
 }
 
 fn content(ui: &mut egui::Ui, state: &UpgradeUi, backup: &str) {
     if state.busy() {
         ui.horizontal_wrapped(|ui| {
             ui.spinner();
-            ui.label(if state.worker.is_some() {
-                "Backing up your packages and moving them into the mod folder."
-            } else if state.recovering {
+            ui.label(if state.recovering {
                 "Recovering the interrupted operation and checking your installation."
             } else {
                 "Checking the installed Sunrise version and your custom packages."
             });
         });
         hint(ui, "Keep Parhelion open until this finishes.");
-    } else if let Some(report) = &state.report {
-        ui.label(format!(
-            "{} packages are now in the Sunrise mod folder. Future installs will update this folder.",
-            report.package_count
-        ));
-        path_block(ui, "Mod Folder", &report.mod_directory);
-        path_block(ui, "Recovery Backup", &report.backup_directory);
-        ui.label("Your account and recipes are kept. Start Destiny again to load the mod.");
     } else if let Some(error) = &state.error {
         ui.label("The operation could not finish. Review the details before trying again.");
         style::block(ui.style()).show(ui, |ui| {
@@ -100,19 +81,22 @@ fn content(ui: &mut egui::Ui, state: &UpgradeUi, backup: &str) {
                     .wrap(),
             );
         });
-        ui.label("If an earlier install or upgrade was interrupted, close Destiny and choose Recover Interrupted Operation.");
+        ui.label("If an earlier install was interrupted, close Destiny and choose Recover Interrupted Operation.");
     } else if let Some(plan) = &state.plan {
-        ui.label("Sunrise 0.6 or later uses a mod folder for your custom content. Move your existing Parhelion packages before installing another build.");
+        ui.label("On Sunrise 0.6 or later, builds install to the mod folder. Packages from earlier builds can't move there, so build and install again to bring your items over.");
         ui.add_space(4.0);
         style::block(ui.style()).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.strong(format!("{} Packages to Move", plan.artifacts().len()));
-            path(ui, "From", plan.target());
+            ui.strong(format!(
+                "{} Packages From an Earlier Build",
+                plan.artifacts().len()
+            ));
+            path(ui, "In", plan.target());
             ui.add_space(4.0);
-            path(ui, "To the Mod Folder", &plan.mod_directory());
+            path(ui, "New Builds Install To", &plan.mod_directory());
         });
         path_block(ui, "Backup Folder", Path::new(backup));
-        ui.label("A verified backup is saved before the move. Your account, recipes and package contents are kept.");
+        ui.label("Installing backs up and removes these packages. Your recipes are kept.");
         ui.collapsing("Package Files", |ui| {
             for artifact in plan.artifacts() {
                 ui.add(
@@ -121,8 +105,10 @@ fn content(ui: &mut egui::Ui, state: &UpgradeUi, backup: &str) {
             }
         });
         ui.add_space(4.0);
-        ui.label(egui::RichText::new("Close Destiny before upgrading.").strong());
-        hint(ui, "Start it again afterward to load the mod.");
+        hint(
+            ui,
+            "Keep every installed item in the build so it stays in your account.",
+        );
     } else {
         ui.label("This installation does not need a mod-folder upgrade. You can continue using Parhelion.");
     }
@@ -152,15 +138,6 @@ fn actions(ui: &mut egui::Ui, state: &UpgradeUi, action: &mut Action) {
         ui.add_enabled(false, egui::Button::new("Please Wait…"));
         return;
     }
-    if state.report.is_some() {
-        if ui.add(style::primary(ui, "Done")).clicked() {
-            *action = Action::Close;
-        }
-        if ui.button("Open Backup Folder").clicked() {
-            *action = Action::OpenBackup;
-        }
-        return;
-    }
     if state.error.is_some() {
         if ui.add(style::primary(ui, "Review Again")).clicked() {
             *action = Action::Review;
@@ -168,8 +145,8 @@ fn actions(ui: &mut egui::Ui, state: &UpgradeUi, action: &mut Action) {
         if ui.button("Recover Interrupted Operation").clicked() {
             *action = Action::Recover;
         }
-    } else if state.plan.is_some() && ui.add(style::primary(ui, "Back Up and Upgrade")).clicked() {
-        *action = Action::Upgrade;
+    } else if state.plan.is_some() && ui.add(style::primary(ui, "Build & Stage")).clicked() {
+        *action = Action::Build;
     }
     let close = if state.plan.is_some() && state.error.is_none() {
         "Later"

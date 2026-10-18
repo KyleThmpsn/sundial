@@ -9,86 +9,34 @@ uv=p.xy;position=float4(p.xy,0.5,1);
 }
 "#;
 
-const PIXEL: &str = r#"
-cbuffer Sight:register(b0) { float4 sight[19]; };
-cbuffer View:register(b12) { float4 view[13]; };
-float stroke(float2 p,float2 a,float2 b,float width,float aa) {
-float2 d=b-a;float t=saturate(dot(p-a,d)/dot(d,d));
-return 1-smoothstep(width,width+aa,length(p-a-t*d));
+mod layers;
+
+pub(super) struct Source<'a> {
+    pub cache: &'a cache::Cache,
+    pub pages: &'a mut resource::Pages,
+    pub overlay: &'a crate::halo_reach::hud::scope::Scope,
 }
-void main(float2 uv:TEXCOORD0,out float4 color:SV_TARGET0) {
-float visibility=saturate(sight[3].w);
-clip(visibility-0.0001);
-float aspect=clamp(view[12].w/max(view[12].z,0.000001),0.1,10);
-float2 p=uv.xy*float2(aspect,1);
-float2 aa=max(fwidth(p),float2(0.0001,0.0001));
-float radius=0.88;
-float distance=length(p);
-float outside=smoothstep(radius-aa.y,radius+aa.y,distance);
-#if RANGEFINDER
-float ink=1-smoothstep(0.0017,0.0017+aa.y,abs(distance-(radius-0.026)));
-float2 side=float2(abs(p.x),p.y);
-ink=max(ink,stroke(side,float2(0.33,0),float2(0.83,0),0.001,aa.y));
-for(int i=0;i<8;++i) {
-float x=0.145+i*0.017;
-ink=max(ink,stroke(side,float2(x,0),float2(x,-(i%2==0?0.028:0.018)),0.0008,aa.x));
+
+pub(super) fn visibility(native: &mut Reader) -> Result<String> {
+    let witness = native.tag(0x80ba71c2, Some(0x80809c36))?;
+    crate::tiger::channel::object_channel_map(&witness.0)?
+        .into_iter()
+        .find_map(|(name, index)| (index == 2).then_some(name))
+        .context("Native reticle visibility input is absent")
 }
-for(int i=0;i<3;++i) {
-float x=0.33+i*0.245;
-ink=max(ink,stroke(side,float2(x,0),float2(x,-0.028),0.001,aa.x));
-}
-for(int i=0;i<4;++i) {
-float y=-0.17-i*0.086;float width=0.018-i*0.003;
-ink=max(ink,stroke(side,float2(0,y),float2(width,y-0.022),0.0015,aa.y));
-}
-ink=max(ink,stroke(p,float2(0,-0.61),float2(0,-0.852),0.003,aa.x));
-ink=max(ink,stroke(p,float2(0,-0.46),float2(0,-0.61),0.0008,aa.x));
-ink=max(ink,stroke(p,float2(-0.30,-0.18),float2(-0.30,-0.57),0.001,aa.x));
-ink=max(ink,stroke(p,float2(-0.47,-0.16),float2(-0.40,-0.22),0.006,aa.y));
-ink=max(ink,stroke(p,float2(-0.40,-0.22),float2(-0.37,-0.56),0.006,aa.x));
-float angle=atan2(p.y,p.x);
-float arc=(1-smoothstep(0.011,0.011+aa.y,abs(distance-0.76)))*step(0.33,angle)*step(angle,1.04);
-ink=max(ink,arc);
-for(int i=0;i<7;++i) {
-float y=0.25+i*0.068;float x=sqrt(max(0,0.76*0.76-y*y));
-ink=max(ink,stroke(p,float2(x-0.095,y),float2(x+0.027,y),i==6?0.004:0.001,aa.y));
-}
-float ring=1-smoothstep(0.003,0.003+aa.y,abs(distance-0.046));
-float dot=1-smoothstep(0.004,0.004+aa.y,distance);
-float mark=max(ring,dot);
-float alpha=max(outside,max(ink,mark))*visibility;
-float3 tint=lerp(float3(0.015,0.017,0.019),float3(0.38,0.72,0.92),mark);
-color=float4(tint*alpha,alpha);
-#else
-float rim=1-smoothstep(0.002,0.002+aa.y,abs(distance-(radius-0.014)));
-float vertical=(1-smoothstep(0.0014,0.0014+aa.x,abs(p.x)))*step(0.012,abs(p.y))*(1-step(0.18,abs(p.y)));
-float horizontal=(1-smoothstep(0.0014,0.0014+aa.y,abs(p.y)))*step(0.012,abs(p.x))*(1-step(0.18,abs(p.x)));
-float center=1-smoothstep(0.0025,0.0025+aa.y,distance);
-float mark=max(center,max(vertical,horizontal));
-float alpha=max(outside,max(rim*0.65,mark))*visibility;
-float3 tint=float3(0.015,0.035,0.045)*outside+float3(0.08,0.28,0.36)*rim*0.65+float3(0.5,0.85,1)*mark;
-color=float4(tint*visibility,alpha);
-#endif
-}
-"#;
 
 pub(super) fn build(
     native: &mut Reader,
     graph: &mut Graph,
     symbol: &str,
     inputs: &BTreeMap<String, u8>,
-    reticle: Reticle,
+    source: Source<'_>,
 ) -> Result<Value> {
     // This native reticle's input two controls its existing appearance ramp.
     // Resolve the same named input on the selected sight, whose order can differ.
-    let witness = native.tag(0x80ba71c2, Some(0x80809c36))?;
-    let witness_inputs = crate::tiger::channel::object_channel_map(&witness.0)?;
-    let name = witness_inputs
-        .iter()
-        .find_map(|(name, &index)| (index == 2).then_some(name))
-        .context("Native reticle visibility input is absent")?;
+    let name = visibility(native)?;
     let input = *inputs
-        .get(name)
+        .get(&name)
         .context("Selected optic lacks reticle visibility")?;
     let material = native.tag(0x8152c441, Some(0x808071e8))?;
     ensure!(
@@ -108,9 +56,9 @@ pub(super) fn build(
                 .all(|(&at, &value)| material.0[at] == value),
         "Native reticle visibility program differs"
     );
-    // The overlay has no sampled lens or stencil resources. Give its alpha the
-    // selected optic's live aim value without retaining unused native bindings.
-    for at in [0x2d0, 0x2f8, 0x308, 0x328] {
+    // Keep the native linear clamp sampler. The selected weapon supplies all
+    // texture pixels and the selected optic supplies its live aim input.
+    for at in [0x2d0, 0x2f8, 0x328] {
         put(&mut bytes, at, &[0; 16])?;
     }
     append(&mut bytes, 0x2e8, 0x80800009, &[0x4d, input, 0x43, 3], 1)?;
@@ -133,6 +81,36 @@ pub(super) fn build(
     put(&mut bytes, 0xb8, &0u32.to_le_bytes())?;
     bytes[0xbc] = 0;
     put(&mut bytes, 0xc8, &u32::MAX.to_le_bytes())?;
+    let mut textures = Vec::new();
+    let mut slots = Vec::new();
+    for layer in &source.overlay.layers {
+        let texture = crate::halo_reach::native_material::texture(
+            source.cache,
+            source.pages,
+            native,
+            graph,
+            &layer.mapping,
+            false,
+            false,
+        )?;
+        let slot = if let Some(slot) = textures.iter().position(|s| s == &texture) {
+            slot
+        } else {
+            textures.push(texture);
+            textures.len() - 1
+        };
+        slots.push(slot);
+    }
+    ensure!(
+        textures.len() <= 16,
+        "Scope exceeds the native texture binding limit"
+    );
+    let mut fixed = Vec::new();
+    for slot in 0..textures.len() {
+        fixed.extend(u32::try_from(slot)?.to_le_bytes());
+        fixed.extend(u32::MAX.to_le_bytes());
+    }
+    append(&mut bytes, 0x2d0, 0x80807211, &fixed, 8)?;
     let vertex = "scope-vertex";
     let pixel = "scope-pixel";
     crate::halo_reach::native_material::program(
@@ -148,24 +126,23 @@ pub(super) fn build(
         graph,
         pixel,
         material.u32(0x2c8)?,
-        &format!(
-            "#define RANGEFINDER {}\n{PIXEL}",
-            u8::from(reticle == Reticle::Rangefinder)
-        ),
+        &layers::pixel(source.overlay, &slots)?,
         false,
     )?;
     put(&mut bytes, 0x48, &u32::MAX.to_le_bytes())?;
     put(&mut bytes, 0x2c8, &u32::MAX.to_le_bytes())?;
-    graph.add(
-        "scope-material",
-        0x8152c441,
-        &bytes,
-        None,
-        vec![
-            json!({"offset":0x48,"symbol":vertex}),
-            json!({"offset":0x2c8,"symbol":pixel}),
-        ],
-    )?;
+    let mut patches = vec![
+        json!({"offset":0x48,"symbol":vertex}),
+        json!({"offset":0x2c8,"symbol":pixel}),
+    ];
+    for (row, texture) in Payload(bytes.clone())
+        .array(0x2d0, 8, Some(0x80807211))?
+        .into_iter()
+        .zip(&textures)
+    {
+        patches.push(json!({"offset":row+4,"symbol":texture}));
+    }
+    graph.add("scope-material", 0x8152c441, &bytes, None, patches)?;
 
     let mesh = Mesh {
         positions: vec![[-1., -1., 0.], [1., -1., 0.], [-1., 1., 0.], [1., 1., 0.]],
@@ -226,7 +203,7 @@ pub(super) fn build(
     graph.add(symbol, 0x80ba71be, &encoded.header, None, encoded.patches)?;
     Ok(
         json!({"model":symbol,"material":"scope-material","stage":16,"visibility_input":name,"visibility_slot":input,
-        "native_visibility_material":"8152C441","projection":"Full viewport with aspect-correct circular mask","reticle":reticle,
+        "native_visibility_material":"8152C441","projection":"Source bitmap placement uniformly fitted to the viewport with mirrored borders","source_hud":source.overlay,"textures":textures,
         "depth_stencil_state":0,"rasterizer_state":1,
         "physical_lenses_preserved":true,"gameplay_verified":false}),
     )

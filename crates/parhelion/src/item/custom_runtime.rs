@@ -3,10 +3,12 @@ use super::*;
 mod actions;
 #[cfg(feature = "d2-model-importer")]
 pub(in crate::item) mod animation;
+pub(in crate::item) mod assets;
 #[cfg(feature = "d2-model-importer")]
 pub(in crate::item) mod audio;
 mod banks;
 mod barrel;
+pub(in crate::item) mod bundled;
 pub(crate) use barrel::{BarrelDefaults, barrel_defaults};
 #[cfg(feature = "d2-model-importer")]
 pub(in crate::item) mod crosshair;
@@ -17,6 +19,7 @@ mod firing;
 mod graph_tree;
 #[cfg(feature = "d2-model-importer")]
 pub(in crate::item) mod imports;
+mod launch;
 mod modifier_rows;
 pub(in crate::item) mod palettes;
 #[cfg(feature = "d2-model-importer")]
@@ -75,6 +78,8 @@ pub(crate) fn preflight_runtime_edits(
         .ok_or_else(|| invalid("The runtime host package is unavailable"))?
         .len();
     let allocator = AppendedTagAllocator::new(HOST_PACKAGE_ID, start);
+    #[allow(unused_mut)]
+    let mut source_trajectory = false;
     let projectile = if let Some(fired) = &overrides.fired_graph {
         fired.validate()?;
         if let Some(symbol) = &fired.imported {
@@ -88,6 +93,7 @@ pub(crate) fn preflight_runtime_edits(
                 let assets = particles::load(&inputs)?
                     .ok_or_else(|| invalid("Imported projectile has no assets"))?;
                 assets.projectile(symbol)?;
+                source_trajectory = assets.source_trajectory;
                 // Preflight only mutates an in-memory weapon. The build allocates this root
                 // together with its complete asset group before performing the same edit.
                 Some(allocator.assigned_tag(0, "Imported projectile", "preflight")?)
@@ -96,6 +102,17 @@ pub(crate) fn preflight_runtime_edits(
             return Err(invalid(format!(
                 "Imported projectile {symbol} requires model import support"
             )));
+        } else if let Some(preset) = fired.bundled {
+            let mut assets = bundled::Projectile::load(manager, preset)?;
+            assets.prepare(
+                manager,
+                entity,
+                content_group.unwrap_or(0),
+                overrides
+                    .behavior_projectile_speed
+                    .unwrap_or(crate::weapon::behavior::DEFAULT_PROJECTILE_SPEED_BOOST),
+            )?;
+            Some(allocator.assigned_tag(0, "Bundled projectile", "preflight")?)
         } else {
             None
         }
@@ -116,6 +133,7 @@ pub(crate) fn preflight_runtime_edits(
             actions: &[],
             markers: &[],
             projectile,
+            source_trajectory,
         },
         allocator,
         &mut Vec::new(),
@@ -334,6 +352,7 @@ pub(super) struct Sources<'a> {
     pub markers: &'a [WeaponRuntimeResourceAppend],
     /// A validated projectile root allocated with the imported asset group.
     pub projectile: Option<TagHash>,
+    pub source_trajectory: bool,
 }
 
 pub(super) fn author_runtime_edits(
@@ -351,6 +370,7 @@ pub(super) fn author_runtime_edits(
         actions,
         markers,
         projectile,
+        source_trajectory,
     } = sources;
     let mut patches = overrides.runtime_resource_patches.clone();
     // Before any owner is copied, so the private arms rig's tags come first and the attachment
@@ -408,8 +428,8 @@ pub(super) fn author_runtime_edits(
                 "A fired graph replaces the weapon's firing graph, so it cannot be combined with an additional behavior.",
             ));
         }
-        let private = if fired.imported.is_some() {
-            projectile.ok_or_else(|| invalid("Imported projectile has not been allocated"))?
+        let private = if fired.imported.is_some() || fired.bundled.is_some() {
+            projectile.ok_or_else(|| invalid("Private projectile has not been allocated"))?
         } else {
             let source = TagHash(fired.source_graph);
             let payload = read_tag(manager, source, "fired graph")?;
@@ -496,6 +516,9 @@ pub(super) fn author_runtime_edits(
         allocator,
         tags,
     )?;
+    if source_trajectory {
+        launch::apply(manager, entity, allocator, tags)?;
+    }
     validate_weapon_entity(entity).map_err(invalid)
 }
 

@@ -30,7 +30,7 @@ impl PackageAuthoringApp {
             if action_row(
                 ui,
                 "Sunrise Mod Folder",
-                "On Sunrise 0.6 or later, move existing Parhelion packages into the mod folder. A verified backup is saved first.",
+                "On Sunrise 0.6 or later, packages from earlier builds must be built again for the mod folder. Installing backs them up and removes them.",
                 "Review Sunrise Mod Upgrade…",
                 enabled,
             ) {

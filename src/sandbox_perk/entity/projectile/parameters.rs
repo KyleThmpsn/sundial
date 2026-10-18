@@ -465,6 +465,87 @@ fn curve_scale(start: f32, end: f32) -> f32 {
     }
 }
 
+/// Set a private owner's complete distance curve, including initial serialized state.
+/// A missing curve receives a typed settings object. Reset derives the same pool enable byte.
+pub fn set_stored_curve(
+    owner: &mut Vec<u8>,
+    owner_tag: u32,
+    instance: usize,
+    settings: [f32; 4],
+) -> Result<f32, String> {
+    use crate::package_payload::{
+        i64_at, native_array_at, relative_offset, rows_fit, u32_at, u64_at, write_bytes,
+    };
+    Stored::read(Kind::Speed, owner, owner_tag, instance)?;
+    if u64_at(owner, 0)? != owner.len() as u64 {
+        return Err("Projectile owner length differs".into());
+    }
+    for (kind, value) in CurveKind::ALL.into_iter().zip(settings) {
+        kind.validate(value)?;
+    }
+    rows_fit(owner, instance, 1, 0x1b8)?;
+    let definition = usize::try_from(u64_at(owner, instance + 8)?)
+        .map_err(|_| "Projectile definition offset overflow")?;
+    let field = definition + CURVE_MEMBER_OFFSET as usize;
+    let relative = i64_at(owner, field)?;
+    let existing = if relative == 0 {
+        None
+    } else {
+        let target = relative_offset(field, 0, relative)?;
+        if target < 4 || u32_at(owner, target - 4)? != CURVE_SETTINGS {
+            return Err("Projectile curve has an unsupported settings type".into());
+        }
+        rows_fit(owner, target, 1, 16)?;
+        Some(target)
+    };
+    let (count, _, rows, class) = native_array_at(owner, instance + 0x1a8)?;
+    if count > 0 && class != 0x808037ba {
+        return Err("Projectile curve has an unsupported trajectory pool".into());
+    }
+    rows_fit(owner, rows, count, 0x210)?;
+    let mut next = owner.clone();
+    let target = match existing {
+        Some(target) => target,
+        None => {
+            let target = next
+                .len()
+                .checked_add(19)
+                .ok_or("Projectile curve extent overflow")?
+                & !15;
+            next.resize(target - 4, 0);
+            next.extend(CURVE_SETTINGS.to_le_bytes());
+            next.resize(target + 16, 0);
+            write_bytes(
+                &mut next,
+                field,
+                &(target as i64 - field as i64).to_le_bytes(),
+            )?;
+            target
+        }
+    };
+    for (index, value) in settings.into_iter().enumerate() {
+        write_bytes(&mut next, target + index * 4, &value.to_le_bytes())?;
+        write_bytes(
+            &mut next,
+            instance + CURVE_STATE as usize + index * 4,
+            &value.to_le_bytes(),
+        )?;
+    }
+    let scale = curve_scale(settings[2], settings[3]);
+    write_bytes(
+        &mut next,
+        instance + CURVE_SCALE as usize,
+        &scale.to_le_bytes(),
+    )?;
+    for index in 0..count {
+        write_bytes(&mut next, rows + index * 0x210 + 0x1c1, &[1])?;
+    }
+    let length = next.len() as u64;
+    write_bytes(&mut next, 0, &length.to_le_bytes())?;
+    *owner = next;
+    Ok(scale)
+}
+
 #[derive(Clone, Debug)]
 pub struct Curve {
     pub kind: CurveKind,

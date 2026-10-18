@@ -24,6 +24,16 @@ pub fn body_group(model: &Payload, mesh: usize) -> Result<u16> {
     stage_group(model, mesh, 0).context("Native opaque body group")
 }
 
+/// The body group, or for a carrier that draws no opaque body, such as a map object drawn in
+/// its own stages, the dominant group of its first stage that draws.
+pub fn drawn_group(model: &Payload, mesh: usize) -> Result<u16> {
+    body_group(model, mesh).or_else(|error| {
+        (1..23)
+            .find_map(|stage| stage_group(model, mesh, stage).ok())
+            .ok_or(error)
+    })
+}
+
 /// The dominant highest-detail visibility group of one native draw stage.
 pub fn stage_group(model: &Payload, mesh: usize, stage: u8) -> Result<u16> {
     ensure!(stage < 23, "Native draw stage is outside its range table");
@@ -96,6 +106,22 @@ pub fn declare_model_draw_indices(model: &mut [u8]) -> Result<()> {
 }
 
 pub(crate) fn validate(model: &Payload, mesh: usize, parts: &[usize]) -> Result<()> {
+    validate_indices(model, parts)?;
+    validate_stages(model, mesh, parts)
+}
+
+/// Validate model-wide draw identities and each mesh's local stage ranges.
+pub(crate) fn validate_model(model: &Payload) -> Result<()> {
+    let mut all_parts = Vec::new();
+    for mesh in model.array(16, 136, Some(0x80807378))? {
+        let parts = model.array(mesh + 24, 32, Some(0x8080737E))?;
+        validate_stages(model, mesh, &parts)?;
+        all_parts.extend(parts);
+    }
+    validate_indices(model, &all_parts)
+}
+
+fn validate_indices(model: &Payload, parts: &[usize]) -> Result<()> {
     if !zero_layout(model)? {
         let capacity = model.u32(DRAW_INDEX_CAPACITY)?;
         ensure!(
@@ -114,6 +140,10 @@ pub(crate) fn validate(model: &Payload, mesh: usize, parts: &[usize]) -> Result<
         );
         numbered[index] = true;
     }
+    Ok(())
+}
+
+fn validate_stages(model: &Payload, mesh: usize, parts: &[usize]) -> Result<()> {
     for stage in 0..23 {
         let start = model.u16(mesh + 40 + stage * 2)? as usize;
         let end = model.u16(mesh + 42 + stage * 2)? as usize;

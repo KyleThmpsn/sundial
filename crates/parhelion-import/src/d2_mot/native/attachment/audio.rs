@@ -24,6 +24,24 @@ fn raw(native: &Reader, tag: u32) -> Result<()> {
     Ok(())
 }
 
+/// Only the explicitly unrepresented hierarchy type is a cosmetic omission.
+/// Read failures and all other bank conversion failures remain errors.
+pub(super) fn unsupported(
+    source: &mut Reader,
+    sounds: &BTreeSet<u32>,
+) -> Result<BTreeMap<u32, u32>> {
+    let mut skipped = BTreeMap::new();
+    for &tag in sounds {
+        let payload = source.tag(tag, Some(0x80809738))?;
+        let cue = Cue::read(&payload).with_context(|| format!("sound cue {tag:08X}"))?;
+        let bank = source.tag(cue.bank, None)?;
+        if crate::d2_mot::audio::bank::object_types(&bank.0)?.contains(&22) {
+            skipped.insert(tag, cue.bank);
+        }
+    }
+    Ok(skipped)
+}
+
 fn settings(
     source: &mut Reader,
     native: &mut Reader,

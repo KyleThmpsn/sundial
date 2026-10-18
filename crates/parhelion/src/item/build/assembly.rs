@@ -21,6 +21,8 @@ pub(super) struct Output {
     pub stat_group_table: Option<ReplacementSpec>,
     /// The shared plug set table, when a private perk is offered everywhere.
     pub plug_set_table: Option<ReplacementSpec>,
+    /// The Crucible maps added as new activities.
+    pub maps: crate::map::Plan,
 }
 
 impl Output {
@@ -94,6 +96,7 @@ pub(super) fn prepare(
         hud_statuses,
         stat_group_table,
         plug_set_table,
+        maps,
     } = output;
     if localization.donor_header_tag.pkg_id() != sources.table_tags.localized_index_tag.pkg_id()
         || localization.locale_data.iter().any(|locale| {
@@ -122,7 +125,7 @@ pub(super) fn prepare(
         ));
     }
     host_new_tags.extend(assets.watermark.new_tags);
-    if HOST_EXPECTED_ENTRY_COUNT + host_new_tags.len() != assets.weapon_runtime_start {
+    if crate::package_profile::host().first + host_new_tags.len() != assets.weapon_runtime_start {
         return Err(validation(
             "Authored host runtime-tag allocation did not converge",
         ));
@@ -179,6 +182,7 @@ pub(super) fn prepare(
         item_icons: icons.payload,
         runtime_dependencies,
         host_new_tags,
+        maps,
     };
     // Emission reads the same packages, and releases them before writing its own.
     Ok((emission, sources.manager))

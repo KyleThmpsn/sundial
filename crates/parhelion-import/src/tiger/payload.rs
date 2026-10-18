@@ -89,6 +89,28 @@ impl Payload {
         Ok(start..end)
     }
 }
+
+/// Append a native array, 16-byte aligned behind its allocation marker, and point the
+/// descriptor at `descriptor` to it.
+pub(crate) fn write_array(
+    target: &mut Vec<u8>,
+    descriptor: usize,
+    class: u32,
+    count: usize,
+    bytes: &[u8],
+) -> Result<()> {
+    let header = (target.len() + 19) & !15;
+    target.resize(header - 4, 0);
+    target.extend_from_slice(&0x80809FBDu32.to_le_bytes());
+    target.extend_from_slice(&(count as u64).to_le_bytes());
+    target.extend_from_slice(&(class as u64).to_le_bytes());
+    target.extend_from_slice(bytes);
+    target[descriptor..descriptor + 8].copy_from_slice(&(count as u64).to_le_bytes());
+    target[descriptor + 8..descriptor + 16]
+        .copy_from_slice(&(header as i64 - descriptor as i64 - 8).to_le_bytes());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

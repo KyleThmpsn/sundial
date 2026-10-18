@@ -4,6 +4,7 @@ use super::*;
 /// Metadata facts supplied by package inspection or completed private enrollment.
 /// The maps remain separate because the same tag can name different entry classes
 /// in the source and native package sets.
+#[derive(Clone, Default)]
 pub struct ResourceResolver {
     pub hashes: BTreeMap<u64, u32>,
     pub source_classes: BTreeMap<u32, u32>,

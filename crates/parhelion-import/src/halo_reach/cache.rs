@@ -195,6 +195,14 @@ impl Cache {
             self.path.display()
         )
     }
+    /// The loaded metadata's address and bytes, and the address a zero block pointer expands to.
+    pub fn metadata(&self) -> (usize, &[u8], i64) {
+        (
+            self.metadata.start,
+            &self.metadata.bytes,
+            0x5000_0000 - self.magic,
+        )
+    }
     pub fn meta(&self, offset: usize, size: usize) -> Result<&[u8]> {
         let offset = offset
             .checked_sub(self.metadata.start)

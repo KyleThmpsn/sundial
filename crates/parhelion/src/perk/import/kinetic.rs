@@ -221,6 +221,7 @@ pub(super) fn prepare(
         .overrides
         .socket_plug_variants
         .push(WeaponSocketPlugVariantRecipe {
+            projectile: None,
             offer_everywhere: false,
             replace_effects: true,
             socket_index: request.socket_index,

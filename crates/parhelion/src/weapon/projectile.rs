@@ -6,6 +6,15 @@
 //! every other weapon firing it stay as they are.
 use sundial::package_authoring::runtime::WeaponRuntimeValueOverride;
 
+/// A repository-owned native projectile graph carried with an attached private perk.
+pub use sundial::package_authoring::sandbox_perk::program::projectile::Dependency as Preset;
+
+pub(crate) fn manifest(preset: Preset) -> &'static str {
+    match preset {
+        Preset::WolfpackRounds => include_str!("projectile/wolfpack_rounds.json"),
+    }
+}
+
 /// Values set on the projectile a weapon fires, and the graph they were set for.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]

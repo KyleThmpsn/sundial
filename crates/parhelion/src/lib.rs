@@ -37,6 +37,7 @@ mod extend;
 mod format;
 pub mod hud_icon;
 mod icon_art;
+mod icon_chain;
 mod icon_edit;
 mod image_import;
 #[cfg(feature = "d2-model-importer")]
@@ -45,6 +46,8 @@ mod install;
 mod item;
 mod item_kind;
 mod manifest;
+pub mod map;
+mod merge_data;
 mod package_profile;
 mod payload_guards;
 pub mod perk;

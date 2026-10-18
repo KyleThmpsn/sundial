@@ -187,6 +187,7 @@ fn poses(
                     frame
                 })
                 .copied()
+                .map(|p| p.map(|v| v * scene.scale))
                 .unwrap_or(bone.translation);
             let s = track
                 .scale
@@ -266,7 +267,13 @@ pub(in crate::halo_reach) fn prepare(
                 .is_ok_and(|v| (v - identity[i]).abs() < 0.00001)),
         "Native root bind requires a separate source coordinate adapter"
     );
-    let extended = animation::rig::extend(&fk, fk_tag, &controls, &source_bones(scene, count)?)?;
+    let extended = animation::rig::extend(
+        &fk,
+        fk_tag,
+        &controls,
+        &source_bones(scene, count)?,
+        animation::rig::Placement::required(&fk)?,
+    )?;
     let clip_controls = extended.controls.clone();
     let mut skeleton = crate::tiger::rig::decode(
         &extended.skeleton,
@@ -275,7 +282,7 @@ pub(in crate::halo_reach) fn prepare(
         fk_tag,
         false,
     )?;
-    skeleton["source_bone_first"] = json!(extended.original_bones);
+    skeleton["source_bone_first"] = json!(extended.renumbering.first_appended);
     let total = skeleton["bones"]
         .as_array()
         .context("Extended bones")?

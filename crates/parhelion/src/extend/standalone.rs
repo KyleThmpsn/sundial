@@ -39,7 +39,10 @@ pub(crate) fn build_standalone_package_with_progress(
         package_id,
         output_file_name,
         new_tags,
-        reference_overrides,
+        References {
+            overrides: reference_overrides,
+            names: &[],
+        },
         progress,
     )
 }
@@ -59,9 +62,41 @@ pub(crate) fn build_standalone_package_with_chains(
         package_id,
         output_file_name,
         new_tags,
-        reference_overrides,
+        References {
+            overrides: reference_overrides,
+            names: &[],
+        },
         progress,
     )
+}
+
+/// A standalone package whose extended header region also names tags, in it or elsewhere.
+pub(crate) fn build_named_package_with_chains(
+    chains: &PatchChains,
+    package_id: u16,
+    output_file_name: &str,
+    new_tags: &[NewTagSpec],
+    named_tags: &[crate::format::NamedTag],
+    overrides: &[NewTagReferenceOverride],
+    progress: &mut dyn FnMut(&str),
+) -> AuthoringResult<ExtendedOverlayArtifact> {
+    build_standalone_package_from(
+        chains.directory(),
+        Some(chains),
+        package_id,
+        output_file_name,
+        new_tags,
+        References {
+            overrides,
+            names: named_tags,
+        },
+        progress,
+    )
+}
+
+struct References<'a> {
+    overrides: &'a [NewTagReferenceOverride],
+    names: &'a [crate::format::NamedTag],
 }
 
 fn build_standalone_package_from(
@@ -70,7 +105,7 @@ fn build_standalone_package_from(
     package_id: u16,
     output_file_name: &str,
     new_tags: &[NewTagSpec],
-    reference_overrides: &[NewTagReferenceOverride],
+    references: References<'_>,
     progress: &mut dyn FnMut(&str),
 ) -> AuthoringResult<ExtendedOverlayArtifact> {
     progress("Checking Package Identity");
@@ -111,7 +146,7 @@ fn build_standalone_package_from(
         )));
     }
 
-    let reference_modes = resolve_reference_modes(new_tags.len(), reference_overrides)?;
+    let reference_modes = resolve_reference_modes(new_tags.len(), references.overrides)?;
     progress("Preparing Entries");
     let metadata = resolve_appended_metadata(
         package_directory,
@@ -123,6 +158,8 @@ fn build_standalone_package_from(
     )?;
     let shared_tag_enrollments =
         resolve_shared_tag_enrollments(package_id, 0, new_tags, &metadata)?;
+    // Every entry keeps its own stored range. Stock Shadowkeep never points two entries at one
+    // range, and an on-demand texture whose range another entry owns never loads in game.
     let packing = packed::plan(
         new_tags
             .iter()
@@ -138,20 +175,27 @@ fn build_standalone_package_from(
     // Wwise bypasses package decompression. Every block touched by a medium,
     // including blocks shared with other resources, must remain raw. Full raw
     // blocks are written consecutively, so a spanning medium is contiguous.
-    let mut streamed_blocks = vec![false; block_count];
+    // Sunrise renumbers the rows a mod-folder build's entries name only in
+    // blocks the package stores uncompressed, so those entries stay raw too.
+    let merge_reads = crate::package_profile::host().is_standalone();
+    let mut raw_blocks = vec![false; block_count];
     for ((tag, entry), location) in new_tags.iter().zip(&metadata).zip(&packing.locations) {
-        if entry.is_streamed_media() {
+        let names_rows = merge_reads
+            && sundial::package_authoring::mod_content::merge::recipes::has_class_rules(
+                entry.reference,
+            );
+        if entry.is_streamed_media() || names_rows {
             let span = location
                 .offset
                 .checked_add(tag.payload.len())
-                .ok_or_else(|| invalid("Streamed payload span overflow"))?;
+                .ok_or_else(|| invalid("Raw payload span overflow"))?;
             let end = location
                 .block
                 .checked_add(span.div_ceil(BLOCK_SIZE))
-                .ok_or_else(|| invalid("Streamed block range overflow"))?;
-            streamed_blocks
+                .ok_or_else(|| invalid("Raw block range overflow"))?;
+            raw_blocks
                 .get_mut(location.block..end)
-                .ok_or_else(|| invalid("Streamed payload exceeds its block plan"))?
+                .ok_or_else(|| invalid("Raw payload exceeds its block plan"))?
                 .fill(true);
         }
     }
@@ -164,6 +208,7 @@ fn build_standalone_package_from(
         &prefixes,
         block_count,
         &shared_tag_enrollments,
+        references.names,
     )?;
     let layout = PackageLayout::parse(&artifact)?;
     let opaque_trailer = layout.opaque_trailer(&artifact)?.to_vec();
@@ -178,7 +223,7 @@ fn build_standalone_package_from(
             .zip(&metadata)
             .map(|(tag, entry)| (tag.payload.as_slice(), entry.alignment())),
         |index, chunk| {
-            let encoded = if streamed_blocks[index] {
+            let encoded = if raw_blocks[index] {
                 EncodedPackageBlock::raw(chunk)?
             } else {
                 block_encoder.encode(package_id, chunk)?

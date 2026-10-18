@@ -6,24 +6,12 @@ use crate::{
     tiger::audio::bank::Bank,
 };
 
-fn primary<'a>(behavior: &'a Value, cache: &Cache) -> Result<Option<&'a Value>> {
-    let edges = behavior["edges"]
-        .as_array()
-        .context("Vehicle weapon edges")?;
-    let root = behavior["root"]["datum"]
-        .as_u64()
-        .context("Vehicle source identity")?;
-    let Some(weapon) = edges
-        .iter()
-        .filter(|e| e["owner"] == root && e["role"] == "vehicle_weapon")
-        .min_by_key(|e| e["offset"].as_u64())
-    else {
-        return Ok(None);
-    };
-    let id = weapon["tag"]["datum"]
-        .as_u64()
-        .context("Vehicle weapon identity")?;
-    let node = &behavior["nodes"][format!("{id:08X}")];
+struct Source<'a> {
+    sound: &'a Value,
+    projectile: &'a Value,
+}
+
+fn primary_barrel(node: &Value, cache: &Cache) -> Result<usize> {
     let triggers = node["data"]["object"]["gameplay"]["triggers"]
         .as_array()
         .context("Vehicle weapon triggers")?;
@@ -46,9 +34,31 @@ fn primary<'a>(behavior: &'a Value, cache: &Cache) -> Result<Option<&'a Value>> 
             .context("Vehicle weapon source address")?,
     )?;
     let barrels = cache.block(at + 0x408, 0x184)?;
-    let barrel = *barrels
+    barrels
         .get(index)
-        .context("Primary barrel is outside source weapon")?;
+        .copied()
+        .context("Primary barrel is outside source weapon")
+}
+
+fn primary<'a>(behavior: &'a Value, cache: &Cache) -> Result<Option<Source<'a>>> {
+    let edges = behavior["edges"]
+        .as_array()
+        .context("Vehicle weapon edges")?;
+    let root = behavior["root"]["datum"]
+        .as_u64()
+        .context("Vehicle source identity")?;
+    let Some(weapon) = edges
+        .iter()
+        .filter(|e| e["owner"] == root && e["role"] == "vehicle_weapon")
+        .min_by_key(|e| e["offset"].as_u64())
+    else {
+        return Ok(None);
+    };
+    let id = weapon["tag"]["datum"]
+        .as_u64()
+        .context("Vehicle weapon identity")?;
+    let node = &behavior["nodes"][format!("{id:08X}")];
+    let barrel = primary_barrel(node, cache)?;
     let effects = cache.block(barrel + 0x178, 0xc4)?;
     let roots = edges
         .iter()
@@ -61,7 +71,18 @@ fn primary<'a>(behavior: &'a Value, cache: &Cache) -> Result<Option<&'a Value>> 
         })
         .map(|e| e["tag"]["datum"].as_u64().context("Primary firing effect"))
         .collect::<Result<Vec<_>>>()?;
-    audio::fire_sound_from(behavior, roots)
+    let Some(sound) = audio::fire_sound_from(behavior, roots)? else {
+        return Ok(None);
+    };
+    let projectile = cache
+        .reference(barrel + 0x104, Some("proj"))?
+        .context("Source vehicle primary projectile")?;
+    let projectile = &behavior["nodes"][format!("{:08X}", projectile.datum)]["data"];
+    ensure!(
+        projectile.is_object(),
+        "Source vehicle projectile behavior is absent"
+    );
+    Ok(Some(Source { sound, projectile }))
 }
 
 fn cue(
@@ -180,7 +201,7 @@ impl Assembly {
         cache: &Cache,
         bus: u32,
     ) -> Result<Value> {
-        let Some(sound) = primary(behavior, cache)? else {
+        let Some(source) = primary(behavior, cache)? else {
             return Ok(json!({"status":"source_only","reason":"No source primary firing sound"}));
         };
         let mut barrels = Vec::new();
@@ -247,8 +268,15 @@ impl Assembly {
             "Native launch sound template is absent or ambiguous"
         );
         let (flow, field, source_cue) = candidates[0];
-        let report = cue(native, graph, sound, source_cue, bus)?;
+        let report = cue(native, graph, source.sound, source_cue, bus)?;
         let mut bundle = Bundle::read(native, projectile)?;
+        let motion = crate::halo_reach::projectile::motion::apply(
+            &bundle.entity().clone(),
+            &mut bundle.owners,
+            source.projectile,
+            crate::halo_reach::rig::METRES_PER_UNIT,
+            false,
+        )?;
         bundle.add_unconnected(native, flow, host)?;
         bundle
             .resources
@@ -260,9 +288,9 @@ impl Assembly {
             self.resource(owner, definition + offset, symbol.clone())?;
         }
         Ok(
-            json!({"sound":report,"projectile":symbol,"native_projectile":format!("{projectile:08X}"),
+            json!({"sound":report,"motion":motion,"projectile":symbol,"native_projectile":format!("{projectile:08X}"),
             "trigger":"Native accepted projectile spawn","gameplay_verified":false,
-            "limits":["Native projectile gameplay and visuals are retained. Source primary firing PCM uses a private global voice limit. Source pitch curves, spatial attenuation and secondary firing are not translated. Native activation and audio cleanup require gameplay acceptance."]}),
+            "limits":["Source initial gravity scale and range are adapted on the private native projectile. Native launch inputs, later motion curves, damage and visuals are retained. Source primary firing PCM uses a private global voice limit. Source pitch curves, spatial attenuation and secondary firing are not translated. Native activation and audio cleanup require gameplay acceptance."]}),
         )
     }
 }

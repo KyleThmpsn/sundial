@@ -1,6 +1,92 @@
 //! Inventory art uses the gear carrier's activation and rig, independently of its summon.
 use super::*;
 
+/// Inventory has no damage controller. Keep the initially selected source
+/// sections and let the gear carrier supply their activation group.
+pub(super) fn intact(scene: &Scene) -> Result<Scene> {
+    let mut scene = scene.clone();
+    if let Some(damage) = scene.damage.take() {
+        let model = &mut scene
+            .models
+            .first_mut()
+            .context("Inventory source model")?
+            .model;
+        let mut intact = Vec::new();
+        for primitive in std::mem::take(&mut model.primitives) {
+            let group = usize::from(damage.group(&primitive)?) - 1;
+            if damage.groups[group].states.contains(&0) {
+                intact.push(primitive);
+            }
+        }
+        ensure!(
+            !intact.is_empty(),
+            "Inventory source has no intact geometry"
+        );
+        model.primitives = intact;
+    }
+    Ok(scene)
+}
+
+/// Gear art occupies a smaller native display envelope than the summoned vehicle.
+pub(super) fn fit(
+    mesh: &mut Mesh,
+    carrier: &Payload,
+    entry: &ImportRequest,
+    projectile: bool,
+) -> Result<Option<Value>> {
+    if projectile || entry.runtime_entity.is_some() || entry.recipe["kind"] != "sparrow" {
+        return Ok(None);
+    }
+    ensure!(
+        !mesh.positions.is_empty() && mesh.positions.iter().flatten().all(|v| v.is_finite()),
+        "Inventory geometry is empty or nonfinite"
+    );
+    let center = std::array::from_fn::<_, 3, _>(|axis| {
+        let lo = mesh
+            .positions
+            .iter()
+            .map(|p| p[axis])
+            .fold(f32::INFINITY, f32::min);
+        let hi = mesh
+            .positions
+            .iter()
+            .map(|p| p[axis])
+            .fold(f32::NEG_INFINITY, f32::max);
+        (lo + hi) * 0.5
+    });
+    let radius = mesh
+        .positions
+        .iter()
+        .map(|p| {
+            p.iter()
+                .zip(center)
+                .map(|(a, b)| (a - b).powi(2))
+                .sum::<f32>()
+                .sqrt()
+        })
+        .fold(0f32, f32::max);
+    let target_center = [carrier.f32(0x80)?, carrier.f32(0x84)?, carrier.f32(0x88)?];
+    let target_radius = carrier.f32(0x8c)? * entry.inspection_scale;
+    ensure!(
+        radius.is_finite()
+            && radius > 0.
+            && target_radius.is_finite()
+            && target_radius > 0.
+            && target_center.iter().all(|v| v.is_finite()),
+        "Inventory display bounds are degenerate"
+    );
+    let scale = target_radius / radius;
+    for point in &mut mesh.positions {
+        for axis in 0..3 {
+            point[axis] = (point[axis] - center[axis]) * scale + target_center[axis];
+        }
+    }
+    Ok(Some(
+        json!({"scale":scale,"display_scale":entry.inspection_scale,"source_center":center,"source_radius":radius,
+        "target_center":target_center,"target_radius":target_radius}),
+    ))
+}
+
 pub(super) fn build(
     cache: &cache::Cache,
     pages: &mut resource::Pages,
@@ -27,6 +113,7 @@ pub(super) fn build(
         &inventory,
         &root.join("inspection"),
         false,
+        None,
     )?;
     let prefix = |name: &str| format!("inspection-{name}");
     let nodes = art["nodes"].as_array_mut().context("Inventory art nodes")?;
@@ -97,7 +184,8 @@ pub(super) fn build(
         "source_entity":art["source_entity"], "source_owner":art["source_owner"],
         "model":"inspection-model", "native_skinning":art["native_skinning"],
         "instance_layout":art["instance_layout"],
-        "method":"Inventory gear carrier with independent activation and source geometry"
+        "fit":art["inspection_fit"],
+        "method":"Inventory gear carrier with independent activation and source geometry fitted to its native display bounds"
     });
     Ok(())
 }

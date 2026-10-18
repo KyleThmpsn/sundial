@@ -170,12 +170,15 @@ pub(super) fn draw_install_report(ui: &mut egui::Ui, report: &InstallReport) {
         ui.colored_label(ui.visuals().warn_fg_color, warning);
     }
     for overlap in &report.mod_overlaps {
-        ui.colored_label(ui.visuals().warn_fg_color, overlap);
+        ui.label(overlap);
     }
     ui.add_space(6.0);
     egui::CollapsingHeader::new("Installation Details").show(ui, |ui| {
         path_row(ui, "Installed To", &report.target_packages_directory);
         path_row(ui, "Backup Folder", &report.backup_directory);
+        if let Some(path) = &report.retired_mod_backup {
+            path_row(ui, "Mod Folder Backup", path);
+        }
         if let Some(path) = &report.cleaned_account {
             path_row(ui, "Account", path);
         }

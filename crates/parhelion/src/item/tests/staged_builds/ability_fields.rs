@@ -219,6 +219,7 @@ fn verified_ability_fields_survive_saved_recipes_and_private_packages() {
             .unwrap_or_else(|| temporary.path().join("staging")),
         ignore_installed_authored_overlays: false,
         recipes,
+        maps: Vec::new(),
     })
     .unwrap();
     let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |_| {}).unwrap();

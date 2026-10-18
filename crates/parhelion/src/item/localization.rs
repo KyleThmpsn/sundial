@@ -8,6 +8,7 @@ pub(super) fn author_project_localized_strings(
     custom_plugs: &[ResolvedCustomPlug],
     branding: crate::branding::Branding,
     plan: &placements::Plan,
+    map_strings: &[(u32, String)],
 ) -> AuthoringResult<AuthoredLocalization> {
     let (table_count, _, table_rows, table_class) = array_at(&index, 8)?;
     let table_end = table_rows
@@ -38,6 +39,7 @@ pub(super) fn author_project_localized_strings(
             page.set_name(branding.name())
                 .map(|name| (page.hash("name"), name))
         })
+        .chain(map_strings.iter().cloned())
         .collect::<Vec<_>>();
     let values = |locale| {
         project_localized_values_with_sets(weapons, custom_plugs, locale, branding, &set_names)

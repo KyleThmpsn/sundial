@@ -1027,53 +1027,55 @@ pub(super) fn append_item_hash_index_row(
             }
         }
     }
-    let [(target_index, donor_row)] = source.as_slice() else {
+    if source.is_empty() || source.windows(2).any(|rows| rows[0].0 == rows[1].0) {
         return Err(invalid(format!(
-            "Item hash-index donor 0x{source_hash:08X} occurs {} times. Exactly one is required",
+            "Item hash-index donor 0x{source_hash:08X} has {} rows. One row per participating family is required",
             source.len()
         )));
-    };
-    let target_index = *target_index;
-    let target = arrays[target_index];
-    let donor = data
-        .get(*donor_row..*donor_row + ITEM_HASH_INDEX_ROW_SIZE)
-        .ok_or_else(|| invalid("Item hash-index donor row is truncated"))?
-        .to_vec();
-    let insert_at = target.rows_end;
-    data.splice(insert_at..insert_at, donor);
-    let new_row = insert_at;
-    write_u32(&mut data, new_row, authored_hash)?;
-    write_u16(
-        &mut data,
-        new_row + ITEM_HASH_INDEX_ITEM_INDEX_OFFSET,
-        authored_item_index,
-    )?;
-
-    for (array_index, array) in arrays.iter().enumerate() {
-        let shifted_header =
-            array.header + usize::from(array.header >= insert_at) * ITEM_HASH_INDEX_ROW_SIZE;
-        write_relative_pointer(&mut data, array.descriptor + 8, shifted_header)?;
-        set_array_count(
+    }
+    // Insert the later family first so each saved source row keeps its offset.
+    for &(target_index, donor_row) in source.iter().rev() {
+        let current = item_hash_index_arrays(&data)?;
+        let donor = data
+            .get(donor_row..donor_row + ITEM_HASH_INDEX_ROW_SIZE)
+            .ok_or_else(|| invalid("Item hash-index donor row is truncated"))?
+            .to_vec();
+        let insert_at = current[target_index].rows_end;
+        data.splice(insert_at..insert_at, donor);
+        write_u32(&mut data, insert_at, authored_hash)?;
+        write_u16(
             &mut data,
-            array.descriptor,
-            shifted_header,
-            array.count + usize::from(array_index == target_index),
+            insert_at + ITEM_HASH_INDEX_ITEM_INDEX_OFFSET,
+            authored_item_index,
         )?;
+        for (array_index, array) in current.iter().enumerate() {
+            let shifted_header =
+                array.header + usize::from(array.header >= insert_at) * ITEM_HASH_INDEX_ROW_SIZE;
+            write_relative_pointer(&mut data, array.descriptor + 8, shifted_header)?;
+            set_array_count(
+                &mut data,
+                array.descriptor,
+                shifted_header,
+                array.count + usize::from(array_index == target_index),
+            )?;
+        }
     }
     let payload_size =
         u64::try_from(data.len()).map_err(|_| invalid("Item hash-index size is too large"))?;
     write_u64(&mut data, 0, payload_size)?;
 
     let authored = item_hash_index_arrays(&data)?;
-    let target = authored[target_index];
-    let row = target.rows + (target.count - 1) * ITEM_HASH_INDEX_ROW_SIZE;
-    if target.count != arrays[target_index].count + 1
-        || read_u32(&data, row)? != authored_hash
-        || read_u16(&data, row + ITEM_HASH_INDEX_ITEM_INDEX_OFFSET)? != authored_item_index
-    {
-        return Err(validation(
-            "Authored item hash-index row did not round-trip",
-        ));
+    for &(target_index, _) in &source {
+        let target = authored[target_index];
+        let row = target.rows + (target.count - 1) * ITEM_HASH_INDEX_ROW_SIZE;
+        if target.count != arrays[target_index].count + 1
+            || read_u32(&data, row)? != authored_hash
+            || read_u16(&data, row + ITEM_HASH_INDEX_ITEM_INDEX_OFFSET)? != authored_item_index
+        {
+            return Err(validation(
+                "Authored item hash-index row did not round-trip",
+            ));
+        }
     }
     Ok(data)
 }

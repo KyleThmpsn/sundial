@@ -186,7 +186,7 @@ fn effective_dyes<'a>(
                 .collect()
         })
     };
-    crate::app::item_editor::appearance::compose_dyes(
+    crate::dyes::compose(
         &rows(base),
         plugs.map(|plug| rows(&plug.translation_dye_rows)),
     )

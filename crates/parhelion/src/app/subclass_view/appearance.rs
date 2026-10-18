@@ -129,6 +129,7 @@ fn draw_tile(
             detail: None,
             source: &shown.source,
             texture: shown.texture.as_ref(),
+            hidden_rows: None,
             modified: shown.modified,
             selected,
         },

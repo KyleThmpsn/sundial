@@ -254,7 +254,9 @@ impl Graph<'_> {
         let triangles = array(&sim["triangleIndices"])?;
         ensure!(
             triangles.len().is_multiple_of(3)
-                && array(&sim["triangleFlips"])?.len() == (triangles.len() / 3).div_ceil(8),
+                // Reflection stores UInt32 words. The native consumer addresses
+                // packed bytes with triangle_index >> 3, then selects one bit.
+                && array(&sim["triangleFlips"])?.len() * 4 >= (triangles.len() / 3).div_ceil(8),
             "Cloth triangle flags differ"
         );
         indices(&sim["triangleIndices"], particles.len())?;
@@ -304,6 +306,26 @@ impl Graph<'_> {
                                 ensure!(
                                     integer(value)? < particles.len(),
                                     "Cloth link exceeds its particles"
+                                );
+                            }
+                        }
+                    }
+                }
+                "hclBonePlanesConstraintSet" => {
+                    let transforms = self.transform_count(&v["transformSetIndex"])?;
+                    for field in ["bonePlanes", "bonePlanesCompressed"] {
+                        for plane in array(&v[field])? {
+                            ensure!(
+                                integer(&plane["particleIndex"])? < particles.len()
+                                    && integer(&plane["transformIndex"])? < transforms,
+                                "Cloth bone plane exceeds its particle or transform set"
+                            );
+                            if field == "bonePlanes" {
+                                ensure!(
+                                    plane["stiffness"]
+                                        .as_f64()
+                                        .is_some_and(|n| (0.0..=1.0).contains(&n)),
+                                    "Invalid cloth bone-plane stiffness"
                                 );
                             }
                         }
@@ -449,7 +471,7 @@ pub(super) fn graph(objects: &BTreeMap<usize, Object>) -> Result<Value> {
             .collect::<Result<BTreeSet<_>>>()?;
         states.push(json!({"name":state["name"],"transition_constraints":constraints}));
     }
-    Ok(
-        json!({"states":states,"buffers":graph.buffers.iter().map(|b| json!({"vertices":b["numVertices"],"triangles":b["numTriangles"],"type":b["type"],"layout":b["bufferLayout"]})).collect::<Vec<_>>()}),
-    )
+    Ok(json!({"states":states,
+            "transforms":graph.transforms.iter().map(|t| t["numTransforms"].clone()).collect::<Vec<_>>(),
+            "buffers":graph.buffers.iter().map(|b| json!({"vertices":b["numVertices"],"triangles":b["numTriangles"],"type":b["type"],"layout":b["bufferLayout"]})).collect::<Vec<_>>()}))
 }

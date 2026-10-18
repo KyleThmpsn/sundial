@@ -89,14 +89,17 @@ pub fn native_type_name(schema: u32) -> Option<&'static str> {
         // knows no member names for their classes at all, so nothing establishes a role.
         // Field names seen inside their resources belong to nested records, not to the
         // component, which is why they are not evidence here.
-        0x8080_92D8 => Some("Constraints"), // Constraint Metadata
-        0x8080_72CB => Some("Channels"),    // Channels
-        0x8080_3A68 => Some("Interaction"), // Interaction Marker
-        0x8080_4CA3 => Some("Interaction"), // Interaction Marker
-        0x8080_4491 => Some("Interaction"), // Interaction Marker
-        0x8080_5FB3 => Some("Interaction"), // Interaction Marker
-        0x8080_4044 => Some("Interaction"), // Interaction Marker
-        0x8080_4DC2 => Some("Interaction"), // Interaction Marker
+        // Named by its native registry, whose decoded name is "physics component registration
+        // array", and by its definition's Havok packfile root `s_physics_component_havok_data`.
+        // Its member list names only constraint metadata, which is part of that physics data.
+        0x8080_92D8 => Some("Physics Component"),
+        0x8080_72CB => Some("Channels"),                 // Channels
+        0x8080_3A68 => Some("Interaction"),              // Interaction Marker
+        0x8080_4CA3 => Some("Interaction"),              // Interaction Marker
+        0x8080_4491 => Some("Interaction"),              // Interaction Marker
+        0x8080_5FB3 => Some("Interaction"),              // Interaction Marker
+        0x8080_4044 => Some("Interaction"),              // Interaction Marker
+        0x8080_4DC2 => Some("Interaction"),              // Interaction Marker
         0x8080_3C23 => Some("Aiming and Turrets"), // Aiming Locations, Camera Anchor Marker, Turrets
         0x8080_8506 => Some("Query Markers"),      // Query Marker Set
         0x8080_7132 => Some("Light Markers"),      // Light Markers
@@ -162,7 +165,7 @@ pub fn native_type_name(schema: u32) -> Option<&'static str> {
         0x8080_8568 => Some("Sight and Fire Markers Data"),
         0x8080_8BE6 => Some("Local Channels Data"),
         0x8080_8F8F => Some("Rig Controls Data"),
-        0x8080_8A0C => Some("Constraints Data"),
+        0x8080_8A0C => Some("Physics Component Data"),
         0x80BB_B907 => Some("Weapon Stats / Translator Data"),
         0x80BC_1273 => Some("Weapon Stats / Translator Data"),
         0x80C1_C53A => Some("Weapon Stats / Translator Data"),

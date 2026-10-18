@@ -10,6 +10,11 @@ enum Source {
     #[default]
     KineticTremors,
     EagerEdge,
+    DualLoader,
+    EnhancedDualLoader,
+    DestabilizingRounds,
+    RepulsorBrace,
+    WolfpackRounds,
 }
 
 impl Source {
@@ -17,6 +22,11 @@ impl Source {
         match self {
             Self::KineticTremors => "Kinetic Tremors",
             Self::EagerEdge => "Eager Edge",
+            Self::DualLoader => "Dual Loader",
+            Self::EnhancedDualLoader => "Enhanced Dual Loader",
+            Self::DestabilizingRounds => "Destabilizing Rounds",
+            Self::RepulsorBrace => "Repulsor Brace",
+            Self::WolfpackRounds => "Wolfpack Rounds",
         }
     }
 
@@ -24,12 +34,20 @@ impl Source {
         match self {
             Self::KineticTremors => 0xE7F42379,
             Self::EagerEdge => 2_077_819_806,
+            Self::DualLoader => 0x0186BA0E,
+            Self::EnhancedDualLoader => 0xBB572A82,
+            Self::DestabilizingRounds => 0x7A1BCA24,
+            Self::RepulsorBrace => 0x2E48EEC3,
+            Self::WolfpackRounds => 0xB0920C6B,
         }
     }
 
     fn supports(self, family: &str) -> bool {
         match self {
             Self::EagerEdge => family == "Sword",
+            Self::DualLoader | Self::EnhancedDualLoader => family == "Shotgun",
+            Self::WolfpackRounds => family == "Rocket Launcher",
+            Self::DestabilizingRounds | Self::RepulsorBrace => true,
             Self::KineticTremors => matches!(
                 family,
                 "Auto Rifle"
@@ -72,6 +90,11 @@ impl PackageAuthoringApp {
                 .is_some_and(|donor| donor.summary.type_name == "Sword")
             {
                 Source::EagerEdge
+            } else if self
+                .current_donor()
+                .is_some_and(|donor| donor.summary.type_name == "Rocket Launcher")
+            {
+                Source::WolfpackRounds
             } else {
                 Source::KineticTremors
             };
@@ -148,7 +171,8 @@ impl PackageAuthoringApp {
                 egui::ComboBox::from_id_salt("modern-perk-source")
                     .selected_text(self.importer.perks.source.name())
                     .show_ui(ui, |ui| {
-                        for source in [Source::KineticTremors, Source::EagerEdge] {
+                        for source in [Source::KineticTremors, Source::EagerEdge, Source::DualLoader, Source::EnhancedDualLoader,
+                            Source::DestabilizingRounds, Source::RepulsorBrace, Source::WolfpackRounds] {
                             ui.selectable_value(&mut self.importer.perks.source, source, source.name());
                         }
                     });
@@ -165,6 +189,22 @@ impl PackageAuthoringApp {
                     Source::EagerEdge => {
                         ui.label("Imports the modern controller with its private lunge and sword profile dependencies.");
                         ui.label("This is an experimental candidate. Swing consumption and the source status record still need verification.");
+                    }
+                    Source::DualLoader | Source::EnhancedDualLoader => {
+                        ui.label("Imports the source perk's additional rounds per reload for this weapon.");
+                        ui.label("This is an experimental candidate. Reload behavior and cleanup still need gameplay verification.");
+                    }
+                    Source::DestabilizingRounds => {
+                        ui.label("Imports the source perk's Volatile burst and Volatile Rounds effects.");
+                        ui.label("This is an experimental candidate. Some visual and audio layers differ. Activation, repeated use and cleanup still need gameplay verification.");
+                    }
+                    Source::RepulsorBrace => {
+                        ui.label("Imports the source perk's Void debuff kill triggers and Void Overshield effects.");
+                        ui.label("This is an experimental candidate. Some visual and audio layers differ. Shield refresh, damage resistance and cleanup still need gameplay verification.");
+                    }
+                    Source::WolfpackRounds => {
+                        ui.label("Imports the source perk's rocket channel, which releases the native tracking cluster missiles on detonation.");
+                        ui.label("This is an experimental candidate. The source damage bonus is not imported. Missiles still need gameplay verification.");
                     }
                 }
                 ui.add_space(8.0);

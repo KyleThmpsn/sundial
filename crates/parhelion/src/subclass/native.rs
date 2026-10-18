@@ -66,8 +66,9 @@ pub(crate) fn set_class(definition: &mut [u8], class: u8) -> AuthoringResult<()>
         .map_err(invalid)
 }
 
-/// Gives a subclass's item strings `damage`, whose icon it shows beside its name. Its strings
-/// hold the type in the resource their stat group pointer names, as the native damage enum.
+/// Gives a subclass's item strings `damage`, in the resource their stat group pointer names, as
+/// the native damage enum. Stock subclasses hold their element there too. Written alone, it left
+/// the icon beside the name unchanged in game, so [`set_element`] writes the definition's.
 pub(crate) fn set_damage_type(
     strings: &mut [u8],
     damage: crate::recipe::RecipeDamageType,
@@ -95,6 +96,93 @@ pub(crate) fn set_damage_type(
         RecipeDamageType::Void => VOID,
     };
     write_u32(strings, field, u32::from(code))
+}
+
+/// The item block that names the unlock flags and values an item carries: a flag array, then
+/// two value arrays of `{u32 value index, u32 value}` rows.
+const UNLOCK_BLOCK_POINTER_OFFSET: usize = 0x90;
+const UNLOCK_BLOCK_CLASS: u32 = 0x8080_77AB;
+const UNLOCK_FLAG_ROW_CLASS: u32 = 0x8080_7D4B;
+const UNLOCK_VALUE_ROW_CLASS: u32 = 0x8080_77AE;
+const UNLOCK_VALUE_ROW_SIZE: usize = 8;
+/// The value every stock subclass sets to its element.
+const ELEMENT_VALUE: u32 = 0x1E9;
+/// Each element's flag and value, as the three stock subclasses of that element carry them.
+const ELEMENTS: [(crate::recipe::RecipeDamageType, u16, u32); 3] = [
+    (crate::recipe::RecipeDamageType::Arc, 0x7B3, 1),
+    (crate::recipe::RecipeDamageType::Solar, 0x7B4, 3),
+    (crate::recipe::RecipeDamageType::Void, 0x7B5, 2),
+];
+
+/// Gives a subclass definition `damage` where the game reads its element: its element unlock
+/// flag and the value every stock subclass sets to its element, as a stock subclass of that
+/// element carries them. No stock subclass is Kinetic, so Kinetic lists no element flag and sets
+/// the value to 0, which stock subclasses write for the values they clear.
+pub(crate) fn set_element(
+    definition: &mut [u8],
+    damage: crate::recipe::RecipeDamageType,
+) -> AuthoringResult<()> {
+    if read_i64(definition, UNLOCK_BLOCK_POINTER_OFFSET)? == 0 {
+        return Err(invalid("The base subclass has no element unlocks"));
+    }
+    let block = relative_target(definition, UNLOCK_BLOCK_POINTER_OFFSET)?;
+    if block < 4 || read_u32(definition, block - 4)? != UNLOCK_BLOCK_CLASS {
+        return Err(invalid(
+            "The base subclass's element unlocks are not the native block",
+        ));
+    }
+    let (count, header, rows, class) = array_at(definition, block)?;
+    if class != UNLOCK_FLAG_ROW_CLASS {
+        return Err(invalid("The base subclass's unlock flags are not native"));
+    }
+    let flags = (0..count)
+        .map(|index| read_u16(definition, rows + 2 * index))
+        .collect::<AuthoringResult<Vec<_>>>()?;
+    let mut elements = flags
+        .iter()
+        .enumerate()
+        .filter(|(_, flag)| ELEMENTS.iter().any(|(_, element, _)| element == *flag));
+    let (Some((position, _)), None) = (elements.next(), elements.next()) else {
+        return Err(invalid(
+            "The base subclass does not carry exactly one element flag",
+        ));
+    };
+    let mut values = Vec::new();
+    for descriptor in [block + 0x10, block + 0x20] {
+        if read_u64(definition, descriptor)? == 0 {
+            continue;
+        }
+        let (count, _, rows, class) = array_at(definition, descriptor)?;
+        if class != UNLOCK_VALUE_ROW_CLASS {
+            return Err(invalid("The base subclass's unlock values are not native"));
+        }
+        for index in 0..count {
+            let row = rows + UNLOCK_VALUE_ROW_SIZE * index;
+            if read_u32(definition, row)? == ELEMENT_VALUE {
+                values.push(row + 4);
+            }
+        }
+    }
+    let [value] = values[..] else {
+        return Err(invalid(
+            "The base subclass does not set its element value exactly once",
+        ));
+    };
+    match ELEMENTS.iter().find(|(element, _, _)| *element == damage) {
+        Some((_, flag, code)) => {
+            write_u16(definition, rows + 2 * position, *flag)?;
+            write_u32(definition, value, *code)
+        }
+        None => {
+            // The flags after it move down one, and the vacated last row is cleared.
+            for index in position..count - 1 {
+                write_u16(definition, rows + 2 * index, flags[index + 1])?;
+            }
+            write_u16(definition, rows + 2 * (count - 1), 0)?;
+            crate::tag_payload::set_array_count(definition, block, header, count - 1)?;
+            write_u32(definition, value, 0)
+        }
+    }
 }
 
 const TALENT_GRID_HOLDER_CLASS: u32 = 0x8080_77B7;

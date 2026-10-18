@@ -60,7 +60,14 @@ impl Cue {
         let media = source
             .array(0x20, 4, Some(0x80800014))?
             .into_iter()
-            .map(|at| tag(source.u32(at)?))
+            .map(|at| {
+                let value = source.u32(at)?;
+                if value == u32::MAX {
+                    Ok(value)
+                } else {
+                    tag(value)
+                }
+            })
             .collect::<Result<Vec<_>>>()?;
         let events = [source.u32(8)?, source.u32(12)?];
         ensure!(!unset(events[0]), "sound cue has no primary event");
@@ -122,10 +129,14 @@ impl Cue {
         }
         out[0x20..0x28].copy_from_slice(&0x20i64.to_le_bytes());
         for (index, source) in self.media.iter().enumerate() {
-            let value = tag(*bindings
-                .media
-                .get(source)
-                .context("sound medium not linked")?)?;
+            let value = if *source == u32::MAX {
+                u32::MAX
+            } else {
+                tag(*bindings
+                    .media
+                    .get(source)
+                    .context("sound medium not linked")?)?
+            };
             out[0x50 + index * 4..0x54 + index * 4].copy_from_slice(&value.to_le_bytes());
         }
         Ok(out)

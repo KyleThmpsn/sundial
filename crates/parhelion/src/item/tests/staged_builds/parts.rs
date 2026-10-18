@@ -668,6 +668,7 @@ fn real_sidearm_look_keeps_hand_cannon_rates_and_arc_damage() {
         staging_root: staging.path().into(),
         ignore_installed_authored_overlays: true,
         recipes: vec![recipe.clone()],
+        maps: Vec::new(),
     })
     .unwrap();
     let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |_| {})

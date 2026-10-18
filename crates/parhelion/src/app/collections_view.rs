@@ -5,6 +5,15 @@ use crate::collection::{
 };
 use std::collections::BTreeSet;
 
+#[derive(Clone, Copy)]
+struct GearEntry<'a> {
+    kind: crate::ItemKind,
+    donor: u32,
+    rarity: Option<crate::RecipeRarity>,
+    class: Option<crate::ArmorClass>,
+    origin: Option<&'a crate::collection::armor::Origin>,
+}
+
 impl PackageAuthoringApp {
     pub(super) fn draw_collection_capacity(&self, ui: &mut egui::Ui) {
         let entries = self.recipe_entries.iter().filter(|entry| {
@@ -13,13 +22,12 @@ impl PackageAuthoringApp {
         });
         let mut gear_entries = entries
             .clone()
-            .map(|entry| {
-                (
-                    entry.kind,
-                    entry.donor_hash,
-                    entry.rarity,
-                    entry.armor_class,
-                )
+            .map(|entry| GearEntry {
+                kind: entry.kind,
+                donor: entry.donor_hash,
+                rarity: entry.rarity,
+                class: entry.armor_class,
+                origin: entry.armor_origin.as_ref(),
             })
             .collect::<Vec<_>>();
         let mut members = entries
@@ -60,12 +68,14 @@ impl PackageAuthoringApp {
             .recipe_path
             .as_ref()
             .is_some_and(|path| self.enabled_recipe_paths.contains(path));
-        let current_gear = (
-            self.recipe.kind,
-            self.recipe.donor.item_hash.parse_u32().unwrap_or_default(),
-            self.recipe.overrides.rarity,
-            self.recipe.overrides.armor_class,
-        );
+        let current_origin = crate::collection::armor::Origin::recipe(&self.recipe);
+        let current_gear = GearEntry {
+            kind: self.recipe.kind,
+            donor: self.recipe.donor.item_hash.parse_u32().unwrap_or_default(),
+            rarity: self.recipe.overrides.rarity,
+            class: self.recipe.overrides.armor_class,
+            origin: current_origin.as_ref(),
+        };
         if included {
             members.push(current);
             gear_entries.push(current_gear);
@@ -158,40 +168,51 @@ impl PackageAuthoringApp {
         }
     }
 
-    fn gear_collection_pages(
-        &self,
-        entries: &[(
-            crate::ItemKind,
-            u32,
-            Option<crate::RecipeRarity>,
-            Option<crate::ArmorClass>,
-        )],
-    ) -> BTreeSet<GearPage> {
+    fn gear_collection_pages(&self, entries: &[GearEntry<'_>]) -> BTreeSet<GearPage> {
         let mut pages = BTreeSet::new();
-        let mut counts = [0usize; 3];
-        for &(kind, donor_hash, rarity, selected) in entries {
-            if kind == crate::ItemKind::Armor {
-                if self.collection_is_exotic(rarity, donor_hash) {
+        let mut armor = Vec::new();
+        for (index, entry) in entries.iter().enumerate() {
+            if entry.kind == crate::ItemKind::Armor {
+                if self.collection_is_exotic(entry.rarity, entry.donor) {
                     continue;
                 }
                 let inherited = self
                     .catalog
                     .as_ref()
-                    .and_then(|catalog| catalog.item_class_type(donor_hash))
+                    .and_then(|catalog| catalog.item_class_type(entry.donor))
                     .filter(|class| *class < 3);
-                let class = selected.map_or(inherited, crate::ArmorClass::native_class);
+                let class = entry
+                    .class
+                    .map_or(inherited, crate::ArmorClass::native_class);
                 let classes = class.map_or(
                     crate::collection::Classes::ALL,
                     crate::collection::Classes::one,
                 );
-                for class in classes.iter() {
-                    counts[usize::from(class)] += 1;
-                }
+                let slot = self
+                    .gear_donors_for(crate::ItemKind::Armor)
+                    .iter()
+                    .find(|donor| donor.hash == entry.donor)
+                    .and_then(|donor| {
+                        crate::collection::armor::Slot::from_bucket_hash(donor.bucket_hash)
+                    });
+                armor.push(crate::collection::armor::Piece {
+                    index,
+                    slot,
+                    classes,
+                    group: entry
+                        .origin
+                        .and_then(|origin| origin.group(self.catalog.as_ref())),
+                });
             } else {
-                pages.extend(GearPage::for_kind(kind));
+                pages.extend(GearPage::for_kind(entry.kind));
             }
         }
-        pages.extend(crate::collection::armor_pages(counts));
+        for set in crate::collection::armor::sets(&armor) {
+            if let Some(class) = set.page.class() {
+                pages.insert(GearPage::armor(class));
+            }
+            pages.insert(set.page);
+        }
         pages
     }
 
@@ -202,7 +223,7 @@ impl PackageAuthoringApp {
                 if self.collection_is_exotic(self.recipe.overrides.rarity, self.recipe.donor.item_hash.parse_u32().unwrap_or_default()) {
                     "Exotic / Armor / Class.".to_owned()
                 } else {
-                    format!("{} category under Armor for each supported class. Numbered armor sets hold up to five items each.", self.presentation_editor.branding().name())
+                    format!("{} category under Armor for each supported class. Known sets stay together in helmet, arms, chest, legs and class-item order. Unmatched pieces share rows of up to five.", self.presentation_editor.branding().name())
                 }
             } else if GearPage::for_kind(self.recipe.kind).is_some() {
                 format!(

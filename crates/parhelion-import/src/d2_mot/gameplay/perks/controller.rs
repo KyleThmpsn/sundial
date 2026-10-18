@@ -10,7 +10,7 @@ pub struct Controller {
     pub auxiliary: Vec<Auxiliary>,
 }
 
-/// The auxiliary record class whose layout is decoded. Other classes stay source records.
+/// The state-gated HUD report class. Other auxiliary classes stay source records.
 pub const STATE_AUXILIARY: u32 = 0x8080_B843;
 
 #[derive(Debug, Serialize)]
@@ -18,10 +18,11 @@ pub struct Auxiliary {
     pub offset: usize,
     pub class: u32,
     pub key: Option<u32>,
-    pub unknown_integer: Option<u32>,
+    pub priority: Option<i32>,
     pub state_offsets: Vec<usize>,
     pub state_keys: Vec<u32>,
     pub source_record: String,
+    pub source_record_complete: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -228,14 +229,17 @@ pub fn read(p: &Payload) -> Result<Controller> {
                 offset: at,
                 class,
                 key: None,
-                unknown_integer: None,
+                priority: None,
                 state_offsets: Vec::new(),
                 state_keys: Vec::new(),
                 source_record: hex::encode(p.bytes::<8>(at)?),
+                source_record_complete: false,
             });
             continue;
         }
-        let source_record = hex::encode(p.bytes::<56>(at)?);
+        // The original consumers also read report flags at +38 through +3B.
+        // The modern definition gives this record a complete size of 0x40.
+        let source_record = hex::encode(p.bytes::<64>(at)?);
         let mut state_offsets = Vec::new();
         let mut state_keys = Vec::new();
         for reference in rows(p, at + 8, 8, 0x8080B848)? {
@@ -251,10 +255,11 @@ pub fn read(p: &Payload) -> Result<Controller> {
             offset: at,
             class,
             key: Some(p.u32(at + 24)?),
-            unknown_integer: Some(p.u32(at + 28)?),
+            priority: Some(i32::from_le_bytes(p.bytes::<4>(at + 28)?)),
             state_offsets,
             state_keys,
             source_record,
+            source_record_complete: true,
         });
     }
     Ok(Controller { states, auxiliary })

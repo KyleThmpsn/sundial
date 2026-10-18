@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 
 pub mod programs;
 pub mod selectors;
+pub mod slot;
 
 #[cfg(test)]
 mod tests;

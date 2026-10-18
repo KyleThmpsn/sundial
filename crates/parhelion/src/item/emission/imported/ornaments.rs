@@ -1,6 +1,50 @@
 //! Ornament targets are private plug definitions selected by one authored weapon.
 use super::*;
 use crate::tag_payload::{array_at, read_u16, relative_target, write_u16, write_u64};
+
+fn clear_requirements(emission: &mut PackageEmission, target: u32) -> AuthoringResult<()> {
+    let ordinal = definition_ordinal(emission, target)?;
+    let definition = &mut emission.host_new_tags[ordinal].payload;
+    let plug = relative_target(definition, 0x40)?;
+    if plug < 4 || read_u32(definition, plug - 4)? != ITEM_PLUG_BLOCK_CLASS {
+        return Err(invalid("Ornament plug resource layout differs"));
+    }
+    // A private appearance must not retain the donor's ownership or season-rank
+    // requirements. These are lists of numeric programs, not material costs.
+    for field in [plug + 0x40, plug + 0x50] {
+        if crate::tag_payload::read_u64(definition, field)? != 0 {
+            let (count, _, rows, class) = array_at(definition, field)?;
+            if class != 0x808077E6 || count > 64 {
+                return Err(invalid("Ornament requirement list layout differs"));
+            }
+            for index in 0..count {
+                validate_item_numeric_program(definition, rows + index * 16)?;
+            }
+        }
+        write_u64(definition, field, 0)?;
+        write_u64(definition, field + 8, 0)?;
+    }
+    // Objective progress is separate from plug eligibility. Cosmetic copies must
+    // not display or inherit the donor's Crucible, season or catalyst objectives.
+    if crate::tag_payload::read_u64(definition, 0x30)? != 0 {
+        let objectives = relative_target(definition, 0x30)?;
+        if objectives < 4 || read_u32(definition, objectives - 4)? != 0x808077EB {
+            return Err(invalid("Ornament objective resource layout differs"));
+        }
+        if crate::tag_payload::read_u64(definition, objectives)? != 0 {
+            let (count, _, rows, class) = array_at(definition, objectives)?;
+            if class != 0x808087B1 || count > 64 {
+                return Err(invalid("Ornament objective list layout differs"));
+            }
+            for index in 0..count {
+                read_u16(definition, rows + index * 2)?;
+            }
+        }
+        write_u64(definition, 0x30, 0)?;
+    }
+    Ok(())
+}
+
 pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringResult<()> {
     let Some(link) = graph.get("ornament") else {
         return Ok(());
@@ -11,7 +55,11 @@ pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringR
             .and_then(|v| u32::try_from(v).ok())
             .ok_or_else(|| invalid(format!("Ornament {key} missing")))
     };
-    let owner = hash("target_weapon")?;
+    let owner = hash(if link.get("target_item").is_some() {
+        "target_item"
+    } else {
+        "target_weapon"
+    })?;
     let socket = hash("target_socket")? as usize;
     let target = graph["item_hash"]
         .as_u64()
@@ -20,6 +68,7 @@ pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringR
     if !emission.plans.iter().any(|p| p.item_hash == owner) || owner == target {
         return Err(invalid("Ornament owner must be a separate authored weapon"));
     }
+    clear_requirements(emission, target)?;
     let ordinal = definition_ordinal(emission, owner)?;
     let definition = &emission.host_new_tags[ordinal].payload;
     let resource = relative_target(definition, 0x68)?;
@@ -35,7 +84,12 @@ pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringR
         }
         read_u32(&emission.item_table, item_rows + index as usize * 24)
     };
-    if resolve(read_u16(definition, row + 2)?)? != 0xAEBAE371 {
+    let reset = if graph["kind"] == "armor" {
+        hash("default_reset")?
+    } else {
+        0xAEBAE371
+    };
+    if resolve(read_u16(definition, row + 2)?)? != reset {
         return Err(invalid(
             "Ornament socket must retain the native default-appearance reset",
         ));

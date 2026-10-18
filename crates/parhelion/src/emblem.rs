@@ -6,6 +6,7 @@
 //! A recipe keeps its base emblem's images, takes any of them from another emblem, or brings
 //! pictures of its own. The build then gives the emblem a nameplate container of its own.
 use crate::image_import::EmbeddedImage;
+use crate::presentation::composition::{Composition, Fit};
 use crate::{HexHash, dye::DyeValue};
 use serde::{Deserialize, Serialize};
 use sundial::package_authoring::icon_schema::{
@@ -63,6 +64,54 @@ impl NameplatePart {
             Self::Background => (1958, 146),
         }
     }
+
+    /// How many of this image's `height` rows the character screen shows, counted from the bottom,
+    /// where it shows fewer than all of them. The screen draws the background at screen width
+    /// along its top, in a strip about 96 rows tall at 16:9 against the 146-row texture (a
+    /// 3440 × 1440 capture shows 123 of the strip's 256 scaled rows). Wider screens show fewer.
+    #[must_use]
+    pub fn shown_rows(self, height: u32) -> Option<u32> {
+        match self {
+            Self::Background => Some(
+                u32::try_from(u64::from(height) * SHOWN_BACKGROUND_ROWS / BACKGROUND_ROWS)
+                    .unwrap_or(height)
+                    .clamp(1, height.max(1)),
+            ),
+            Self::Banner | Self::Overlay => None,
+        }
+    }
+}
+
+/// The rows of a 146-row background the character screen shows at 16:9.
+const SHOWN_BACKGROUND_ROWS: u64 = 96;
+const BACKGROUND_ROWS: u64 = 146;
+
+/// The placement that puts a whole `picture` of `(picture_width, picture_height)` pixels inside
+/// the rows the screen shows of a `(width, height)` image. `None` where the screen shows every
+/// row.
+#[must_use]
+pub(crate) fn shown_rows_composition(
+    part: NameplatePart,
+    (picture_width, picture_height): (u32, u32),
+    (width, height): (u32, u32),
+) -> Option<Composition> {
+    let shown = part.shown_rows(height)?;
+    if shown >= height || picture_width == 0 || picture_height == 0 {
+        return None;
+    }
+    let contain = (f64::from(width) / f64::from(picture_width))
+        .min(f64::from(height) / f64::from(picture_height));
+    let wanted = (f64::from(width) / f64::from(picture_width))
+        .min(f64::from(shown) / f64::from(picture_height));
+    let scale = (wanted / contain * 100.0).round().clamp(10.0, 400.0) as u16;
+    let offset =
+        ((f64::from(height - shown) * 50.0 / f64::from(height)).round() as i16).clamp(0, 100);
+    Some(Composition {
+        fit: Fit::Contain,
+        scale,
+        offset: [0, offset],
+        ..Composition::default()
+    })
 }
 
 /// Where one nameplate image comes from, when it is not the base emblem's.

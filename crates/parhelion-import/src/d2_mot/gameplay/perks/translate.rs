@@ -1,7 +1,7 @@
 //! Complete package-derived inputs for the supported sword controller translation.
 //!
 //! Extraction preserves every assigned controller and its auxiliary records. It does
-//! not establish native event publication or map the auxiliary runtime consumer.
+//! not establish native event publication or rendered HUD behavior.
 use std::{collections::BTreeSet, sync::Arc};
 
 use anyhow::{Context, Result, ensure};
@@ -40,7 +40,7 @@ pub struct Routing {
     pub rearm_offset: usize,
     pub cooldown_ms: u32,
     pub effects: Vec<usize>,
-    /// Preserved source descriptors with an unmapped runtime consumer.
+    /// Complete source HUD descriptors, retained beside their bounded native translation.
     pub auxiliary: Vec<controller::Auxiliary>,
 }
 
@@ -84,6 +84,38 @@ fn array_rows(p: &Payload, at: usize, stride: usize, class: u32) -> Result<Vec<u
 }
 
 pub(super) fn neutral_state(p: &Payload, state: &controller::State) -> Result<()> {
+    state_metadata(p, state)?;
+    ensure!(
+        state.transitions[0].key == EMPTY_KEY,
+        "source transition is named at {:X}",
+        state.transitions[0].offset
+    );
+    Ok(())
+}
+
+pub(super) fn state_metadata(p: &Payload, state: &controller::State) -> Result<()> {
+    state_fields(p, state)?;
+    ensure!(
+        state.transitions.len() == 1,
+        "supported source states need exactly one transition at {:X}",
+        state.offset
+    );
+    let transition = &state.transitions[0];
+    let at = transition.offset;
+    ensure!(
+        p.u32(at + 4)? == 0
+            && p.bytes::<16>(at + 32)? == [0; 16]
+            && transition
+                .conditions
+                .iter()
+                .all(|condition| condition.children.is_empty()),
+        "unsupported source transition metadata or nesting at {at:X}"
+    );
+    Ok(())
+}
+
+/// The state fields every supported state leaves empty, whatever its transitions.
+pub(super) fn state_fields(p: &Payload, state: &controller::State) -> Result<()> {
     let at = state.offset;
     ensure!(
         p.u32(at + 4)? == 0
@@ -96,26 +128,13 @@ pub(super) fn neutral_state(p: &Payload, state: &controller::State) -> Result<()
             && p.bytes::<40>(at + 96)? == [0; 40],
         "unsupported source state metadata at {at:X}"
     );
-    ensure!(
-        state.transitions.len() == 1,
-        "supported source states need exactly one transition at {at:X}"
-    );
-    let transition = &state.transitions[0];
-    let at = transition.offset;
-    ensure!(
-        transition.key == EMPTY_KEY
-            && p.u32(at + 4)? == 0
-            && p.bytes::<16>(at + 32)? == [0; 16]
-            && transition
-                .conditions
-                .iter()
-                .all(|condition| condition.children.is_empty()),
-        "unsupported source transition metadata or nesting at {at:X}"
-    );
     Ok(())
 }
 
-pub(super) fn state_effects(p: &Payload, state: &controller::State) -> Result<Vec<usize>> {
+pub(in crate::d2_mot) fn state_effects(
+    p: &Payload,
+    state: &controller::State,
+) -> Result<Vec<usize>> {
     rows(p, state.offset + 8, 24, 0x8080_37AB)?
         .into_iter()
         .map(|row| {
@@ -268,22 +287,7 @@ pub fn routing(p: &Payload) -> Result<Routing> {
         "unsupported source auxiliary count"
     );
     let auxiliary = &decoded.auxiliary[0];
-    let at = auxiliary.offset;
-    ensure!(
-        auxiliary.class == controller::STATE_AUXILIARY
-            && auxiliary.state_offsets == [active.offset]
-            && auxiliary.state_keys == [active.key]
-            && auxiliary.unknown_integer == Some(150)
-            && auxiliary
-                .key
-                .is_some_and(|key| ![0, u32::MAX, EMPTY_KEY].contains(&key))
-            && p.bytes::<8>(at)? == [0, 255, 0, 0, 0, 0, 0, 0]
-            && p.u64(at + 32)? == 0
-            && p.u32(at + 40)? == 255
-            && p.u32(at + 44)? == EMPTY_KEY
-            && p.u64(at + 48)? == 0,
-        "unsupported source auxiliary descriptor"
-    );
+    lower::active_status(p, auxiliary, active.offset)?;
     Ok(Routing {
         draw_offset: draw.conditions[0].offset,
         active_offset: active.offset,
@@ -295,15 +299,15 @@ pub fn routing(p: &Payload) -> Result<Routing> {
     })
 }
 
-struct Attachment {
-    path: String,
-    entity_tag: u32,
-    owner_tag: u32,
-    owner: Arc<Payload>,
-    modifiers: Vec<usize>,
+pub(super) struct Attachment {
+    pub path: String,
+    pub entity_tag: u32,
+    pub owner_tag: u32,
+    pub owner: Arc<Payload>,
+    pub modifiers: Vec<usize>,
 }
 
-fn attachment(r: &mut Reader, p: &Payload, at: usize) -> Result<Attachment> {
+pub(super) fn attachment(r: &mut Reader, p: &Payload, at: usize) -> Result<Attachment> {
     let path = super::path(p, at + 8)?.context("source attachment has no path")?;
     ensure!(!path.is_empty(), "source attachment path is empty");
     let entity_tag = r.ref64(p, at + 16)?;

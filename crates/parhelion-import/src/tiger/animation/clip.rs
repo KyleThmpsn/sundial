@@ -4,7 +4,10 @@ use crate::{
     tiger::payload::Payload,
 };
 use anyhow::{Result, ensure};
+mod envelope;
+mod local;
 mod translation;
+pub use envelope::grow as grow_static_envelope;
 pub use translation::translate;
 
 #[derive(Default)]
@@ -40,16 +43,17 @@ fn read(
         return Ok(channels);
     }
     let base = p.pointer(pointer)?;
+    ensure!(base >= 4, "Native clip codec lacks its class header");
     let codec = p.u16(base)?;
     ensure!(
         matches!(
             (codec, p.u32(base - 4)?),
-            (0, 0x80808F73) | (2, 0x80808F71) | (3, 0x80808F6F)
+            (0, 0x80808F73) | (1, 0x80808F72) | (2, 0x80808F71) | (3, 0x80808F6F)
         ),
         "Selected native clip needs an unsupported codec translation"
     );
     ensure!(
-        p.u32(base + 0x10)? as usize == frames,
+        codec == 1 || p.u32(base + 0x10)? as usize == frames,
         "Native clip frame counts disagree"
     );
     for (kind, channel) in channels.iter_mut().enumerate() {
@@ -60,10 +64,30 @@ fn read(
     }
     if codec == 0 {
         read_raw(p, base, frames, &mut channels)?;
+    } else if codec == 1 {
+        read_curve(p, base, frames, &mut channels)?;
     } else {
         read_packed(p, base, codec, frames, &mut channels)?;
     }
     Ok(channels)
+}
+
+fn read_curve(p: &Payload, base: usize, frames: usize, channels: &mut [Channel; 3]) -> Result<()> {
+    use sundial::package_authoring::animation_curve::{Channel as Kind, Decoder};
+    let counts = channels.each_ref().map(|channel| channel.slots.len());
+    let decoder = Decoder::read(&p.0, base, counts, frames).map_err(anyhow::Error::msg)?;
+    for ((channel, kind), width) in channels
+        .iter_mut()
+        .zip([Kind::Scale, Kind::Rotation, Kind::Position])
+        .zip([1, 4, 3])
+    {
+        for track in 0..channel.slots.len() {
+            for point in decoder.samples(kind, track).map_err(anyhow::Error::msg)? {
+                channel.values.extend_from_slice(&point[..width]);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn read_raw(p: &Payload, base: usize, frames: usize, channels: &mut [Channel; 3]) -> Result<()> {
@@ -260,9 +284,107 @@ pub fn sample(original: &Payload, defaults: &[[f32; 8]], frame: usize) -> Result
     Ok(output)
 }
 
+/// Sample the complete leading control groups shared by a clip and target rig.
+/// The native mixer stops at the first different group. Remaining target
+/// controls retain their defaults instead of borrowing another weapon's joints.
+pub fn sample_common(
+    original: &Payload,
+    defaults: &[[f32; 8]],
+    controls: &Payload,
+    frame: usize,
+) -> Result<Vec<[f32; 8]>> {
+    let definition = controls.pointer(24)?;
+    ensure!(
+        controls.u32(definition - 4)? == 0x80808f8f && original.u8(0x181)? == 0,
+        "Shared control sampling requires absolute native poses"
+    );
+    let groups = |payload: &Payload, field| -> Result<Vec<(u32, usize)>> {
+        payload
+            .array(field, 8, Some(0x8080907f))?
+            .into_iter()
+            .map(|at| Ok((payload.u32(at)?, usize::try_from(payload.u32(at + 4)?)?)))
+            .collect()
+    };
+    let source = groups(original, 0x170)?;
+    let target = groups(controls, definition + 0x90)?;
+    let slots = usize::from(original.u16(0x140)?);
+    ensure!(
+        (1..=256).contains(&slots)
+            && source.iter().all(|(_, count)| *count > 0)
+            && target.iter().all(|(_, count)| *count > 0)
+            && source.iter().map(|(_, count)| count).sum::<usize>() == slots
+            && target.iter().map(|(_, count)| count).sum::<usize>() == defaults.len(),
+        "Native control groups do not cover their poses"
+    );
+    let common = source
+        .iter()
+        .zip(&target)
+        .take_while(|(a, b)| a == b)
+        .map(|((_, count), _)| count)
+        .sum::<usize>();
+    ensure!(
+        common > 0,
+        "Native clip and target have no common control group"
+    );
+    let mut source_defaults = vec![[0., 0., 0., 1., 0., 0., 0., 1.]; slots];
+    source_defaults[..common].copy_from_slice(&defaults[..common]);
+    let sampled = sample(original, &source_defaults, frame)?;
+    let mut output = defaults.to_vec();
+    output[..common].copy_from_slice(&sampled[..common]);
+    Ok(output)
+}
+
+/// Author complete absolute control poses for the selected rig while retaining
+/// the base or replacement action envelope's duration and events.
+pub fn replace_for(
+    original: &Payload,
+    poses: &[Vec<[f32; 8]>],
+    bones: usize,
+    controls: &Payload,
+) -> Result<Payload> {
+    ensure!(
+        matches!(original.u8(0x181)?, 0 | 2) && (1..=256).contains(&bones),
+        "Control motion requires an absolute native base or replacement action"
+    );
+    let mut envelope = original.clone();
+    put(&mut envelope.0, 0x13e, &u16::try_from(bones)?.to_le_bytes())?;
+    put(
+        &mut envelope.0,
+        0x140,
+        &u16::try_from(poses.len())?.to_le_bytes(),
+    )?;
+    let selected = if original.u8(0x181)? == 2 {
+        let mut selected = std::collections::BTreeSet::new();
+        for field in [0xA8, 0xB8, 0xC8, 0xD8, 0xE8, 0xF8] {
+            for row in original.array(field, 2, Some(0x8080000A))? {
+                let slot = usize::from(original.u16(row)?);
+                ensure!(slot < poses.len(), "Replacement control exceeds its rig");
+                selected.insert(slot);
+            }
+        }
+        ensure!(!selected.is_empty(), "Replacement action has no controls");
+        Some(selected)
+    } else {
+        None
+    };
+    let mut output = replace_selected(&envelope, poses, selected.as_ref())?;
+    groups(&mut output.0, controls, poses.len())?;
+    let size = output.0.len() as u64;
+    put(&mut output.0, 0, &size.to_le_bytes())?;
+    Ok(output)
+}
+
 /// Replace control motion while retaining the carrier's duration, events and
 /// bone count. `poses` is control-major, with one value for every native frame.
 pub fn replace(original: &Payload, poses: &[Vec<[f32; 8]>]) -> Result<Payload> {
+    replace_selected(original, poses, None)
+}
+
+fn replace_selected(
+    original: &Payload,
+    poses: &[Vec<[f32; 8]>],
+    selected: Option<&std::collections::BTreeSet<usize>>,
+) -> Result<Payload> {
     let frames = usize::from(original.u16(0x13C)?);
     let slots = usize::from(original.u16(0x140)?);
     ensure!(
@@ -276,6 +398,9 @@ pub fn replace(original: &Payload, poses: &[Vec<[f32; 8]>]) -> Result<Payload> {
     );
     let mut dynamic: [Channel; 3] = Default::default();
     for (slot, track) in poses.iter().enumerate() {
+        if selected.is_some_and(|selected| !selected.contains(&slot)) {
+            continue;
+        }
         for pose in track {
             let norm = pose[..4].iter().map(|v| v * v).sum::<f32>();
             ensure!(
@@ -303,8 +428,9 @@ pub fn replace(original: &Payload, poses: &[Vec<[f32; 8]>]) -> Result<Payload> {
     Ok(Payload(out))
 }
 
-/// `poses` is track-major and supplies all eight local transform values. Native
-/// frame counts, names, events and bank ordinals are retained by construction.
+/// `poses` is track-major and supplies absolute local transforms. Additive
+/// carriers receive deltas from the rig's default controls. Native frame counts,
+/// names, events and bank ordinals are retained by construction.
 pub fn extend(
     original: &Payload,
     old: usize,
@@ -333,10 +459,15 @@ pub fn extend(
         );
         let fixed = read(original, 0x10, 0xA8, old, 1)?;
         let mut dynamic = read(original, 0x18, 0xD8, old, frames)?;
+        let local = local::Local::read(original, controls, total)?;
         for (index, track) in poses.iter().enumerate() {
+            let track = track
+                .iter()
+                .map(|&pose| local.encode(old + index, pose))
+                .collect::<Result<Vec<_>>>()?;
             for (kind, channel) in dynamic.iter_mut().enumerate() {
                 channel.slots.push(u16::try_from(old + index)?);
-                for pose in track {
+                for pose in &track {
                     channel.values.extend(match kind {
                         0 => &pose[7..8],
                         1 => &pose[..4],
@@ -358,8 +489,8 @@ pub fn extend(
     Ok(Payload(out))
 }
 
-/// Emit sparse local poses on an extended rig. Selected controls retain their
-/// rest scale and translation while their local quaternion changes.
+/// Emit sparse local poses on an extended rig using the carrier's composition
+/// operation. Selected controls keep their rest position and scale after mixing.
 pub fn rotations(
     original: &Payload,
     total: usize,
@@ -378,16 +509,18 @@ pub fn rotations(
     );
     let mut fixed: [Channel; 3] = Default::default();
     let mut dynamic: [Channel; 3] = Default::default();
+    let local = local::Local::read(original, controls, total)?;
     for (&slot, samples) in tracks {
         ensure!(
             slot < total && samples.len() == frames,
             "Overlay control dimensions differ"
         );
+        let first = local.encode(slot, samples[0])?;
         dynamic[1].slots.push(u16::try_from(slot)?);
         fixed[0].slots.push(u16::try_from(slot)?);
-        fixed[0].values.push(samples[0][7]);
+        fixed[0].values.push(first[7]);
         fixed[2].slots.push(u16::try_from(slot)?);
-        fixed[2].values.extend(&samples[0][4..7]);
+        fixed[2].values.extend(&first[4..7]);
         for sample in samples {
             let norm = sample[..4].iter().map(|v| v * v).sum::<f32>();
             ensure!(
@@ -397,7 +530,7 @@ pub fn rotations(
                     && sample[4..] == samples[0][4..],
                 "Rotational pose is invalid or changes its rest translation or scale"
             );
-            dynamic[1].values.extend(&sample[..4]);
+            dynamic[1].values.extend(&local.encode(slot, *sample)?[..4]);
         }
     }
     let mut out = original.0.clone();

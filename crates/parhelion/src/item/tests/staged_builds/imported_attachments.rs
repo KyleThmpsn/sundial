@@ -96,6 +96,7 @@ fn persisted_attachment_groups_bind_private_actions_and_owners() {
         .overrides
         .socket_plug_variants
         .push(WeaponSocketPlugVariantRecipe {
+            projectile: None,
             socket_index: socket as u16,
             choice_index: 0,
             source_plug_hash: HexHash::new(plug),

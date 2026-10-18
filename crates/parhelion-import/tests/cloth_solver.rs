@@ -33,7 +33,15 @@ fn translated_cloth_executes_native_states_and_moving_attachments() -> Result<()
     let mut receipts = Vec::new();
     for (index, case) in cases.iter().enumerate() {
         let input = fs::read(case["source"].as_str().context("Source solver")?)?;
-        let converted = cloth::translate(&input, None)?;
+        let native_source = case["format"] == "packfile_2012";
+        let converted = if native_source {
+            cloth::Translated {
+                report: cloth::inspect_native(&input)?,
+                bytes: input.clone(),
+            }
+        } else {
+            cloth::translate(&input, None)?
+        };
         let dir = output.join(format!("case-{index}"));
         fs::create_dir_all(&dir)?;
         let solver = dir.join("solver.bin");
@@ -64,8 +72,10 @@ fn translated_cloth_executes_native_states_and_moving_attachments() -> Result<()
                     .as_str()
                     .context("Emulator dependencies")?,
             )
-            .arg(dir.join("execution"))
-            .arg("--modern-wrapper");
+            .arg(dir.join("execution"));
+        if !native_source {
+            command.arg("--modern-wrapper");
+        }
         if let Some(witness) = case["particle_transition_witness"].as_str() {
             command.arg("--transition-witness").arg(witness);
         }
@@ -113,20 +123,41 @@ fn translated_cloth_executes_native_states_and_moving_attachments() -> Result<()
             );
         }
         // Truncation and an unrecognized SDK must fail before an output exists.
+        let accepts = |bytes: &[u8]| {
+            if native_source {
+                cloth::inspect_native(bytes).is_ok()
+            } else {
+                cloth::translate(bytes, None).is_ok()
+            }
+        };
         ensure!(
-            cloth::translate(&input[..input.len() - 1], None).is_err(),
+            !accepts(&input[..input.len() - 1]),
             "Truncated source accepted"
         );
         let mut unknown = input.clone();
+        let marker: &[u8] = if native_source {
+            b"hk_2012.2.0-r1"
+        } else {
+            b"20180100"
+        };
         let sdk = unknown
-            .windows(8)
-            .position(|b| b == b"20180100")
+            .windows(marker.len())
+            .position(|b| b == marker)
             .context("Source SDK identity")?;
         unknown[sdk] = b'9';
-        ensure!(
-            cloth::translate(&unknown, None).is_err(),
-            "Unknown SDK accepted"
-        );
+        ensure!(!accepts(&unknown), "Unknown SDK accepted");
+        if native_source {
+            let mut incompatible = input.clone();
+            let section = u32::from_le_bytes(input[32..36].try_into()?) as usize;
+            let start = 64 + section * 48 + 20;
+            let start = u32::from_le_bytes(input[start..start + 4].try_into()?) as usize;
+            let name = start + u32::from_le_bytes(input[36..40].try_into()?) as usize;
+            incompatible[name - 5] ^= 1;
+            ensure!(
+                !accepts(&incompatible),
+                "Incompatible class signature accepted"
+            );
+        }
         receipts.push(
             json!({"case":index,"source_sha256":hex::encode(Sha256::digest(&input)),
             "native_sha256":hex::encode(Sha256::digest(&converted.bytes)),

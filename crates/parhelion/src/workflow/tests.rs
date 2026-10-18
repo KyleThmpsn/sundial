@@ -39,6 +39,7 @@ fn snapshot_with_recipe(
         staging_root,
         ignore_installed_authored_overlays: true,
         recipes: vec![recipe],
+        maps: Vec::new(),
     })
     .expect("single-recipe test snapshot should be valid")
 }
@@ -132,6 +133,7 @@ fn configured_recipe_directory_builds_and_stages_the_normal_batch_workflow() {
         staging_root,
         ignore_installed_authored_overlays: true,
         recipes,
+        maps: Vec::new(),
     })
     .expect("configured recipe batch should snapshot");
 
@@ -417,6 +419,7 @@ fn configured_additional_weapon_family_matrix_builds_and_stages() {
         staging_root,
         ignore_installed_authored_overlays: true,
         recipes,
+        maps: Vec::new(),
     })
     .expect("additional family matrix should snapshot");
     let report = build_and_stage_snapshot(&snapshot)
@@ -735,6 +738,7 @@ fn batch_snapshot_is_sorted_stable_and_sensitive_to_dirty_edits() {
         staging_root: PathBuf::from("staging"),
         ignore_installed_authored_overlays: true,
         recipes: vec![second.clone(), every.clone()],
+        maps: Vec::new(),
     };
     let snapshot = BatchBuildSnapshot::new(request.clone()).unwrap();
     let reversed = BatchBuildSnapshot::new(BatchBuildRequest {

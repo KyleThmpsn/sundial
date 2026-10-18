@@ -71,6 +71,7 @@ pub(in crate::app) fn upsert_private_perk_runtime_values(
             .overrides
             .socket_plug_variants
             .push(WeaponSocketPlugVariantRecipe {
+                projectile: None,
                 offer_everywhere: false,
                 replace_effects: false,
                 investment_stats: Vec::new(),

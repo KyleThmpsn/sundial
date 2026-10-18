@@ -22,6 +22,8 @@ struct Items {
     installed: BTreeSet<u32>,
     /// The items the build set builds, its required shaders included.
     included: BTreeSet<u32>,
+    installed_elapsed: Duration,
+    included_elapsed: Duration,
 }
 
 #[derive(Default)]
@@ -53,23 +55,21 @@ impl PackageAuthoringApp {
         let ctx = ctx.clone();
         let inputs = self.build_inputs();
         let worker = thread::spawn(move || {
-            let result = crate::install::installed_item_hashes(&packages).map(|installed| {
-                // The build set's items come from its recipes, read here because a full read
-                // restores every embedded model.
-                let included = inputs
-                    .request()
-                    .map(|request| {
-                        request
-                            .recipes
-                            .iter()
-                            .filter_map(|recipe| recipe.identity.item_hash.parse_u32().ok())
-                            .collect::<BTreeSet<_>>()
-                    })
-                    .unwrap_or_default();
-                Items {
+            let started = Instant::now();
+            let result = crate::install::installed_item_hashes(&packages).and_then(|installed| {
+                let installed_elapsed = started.elapsed();
+                let selection_started = Instant::now();
+                let included = if installed.is_empty() {
+                    BTreeSet::new()
+                } else {
+                    inputs.included_item_hashes()?
+                };
+                Ok(Items {
                     installed,
                     included,
-                }
+                    installed_elapsed,
+                    included_elapsed: selection_started.elapsed(),
+                })
             });
             // The window releases package access by dropping its catalog, so this copy goes first.
             drop(inputs);
@@ -77,6 +77,8 @@ impl PackageAuthoringApp {
             ctx.request_repaint();
         });
         self.build_check.job = Some(Job { receiver, worker });
+        self.log
+            .push(LogEntry::info("Checking installed items before building"));
     }
 
     pub(super) fn poll_build_check(&mut self) {
@@ -98,14 +100,22 @@ impl PackageAuthoringApp {
             // read here delays nothing.
             Err(error) => {
                 self.log.push(LogEntry::error(format!(
-                    "Could not read the installed items before building: {error}"
+                    "Could not check the installed items before building: {error}"
                 )));
                 self.start_build();
             }
             Ok(Items {
                 installed,
                 included,
+                installed_elapsed,
+                included_elapsed,
             }) => {
+                self.log.push(LogEntry::info(format!(
+                    "Checked installed items in {:.2}s (native tables {:.2}s, build selection {:.2}s)",
+                    (installed_elapsed + included_elapsed).as_secs_f64(),
+                    installed_elapsed.as_secs_f64(),
+                    included_elapsed.as_secs_f64(),
+                )));
                 self.installed.replace(installed.clone());
                 let missing = self.missing_from_build(&installed, &included);
                 if missing.is_empty() {

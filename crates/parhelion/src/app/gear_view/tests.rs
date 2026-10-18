@@ -1502,6 +1502,7 @@ fn every_class_subclasses_remove_the_native_equip_requirement() {
         staging_root: artifacts.join("staging"),
         ignore_installed_authored_overlays: true,
         recipes: recipes.clone(),
+        maps: Vec::new(),
     })
     .unwrap();
     let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |_| {}).unwrap();
@@ -1661,6 +1662,7 @@ fn gear_of_every_kind_goes_from_the_new_menu_to_staged_packages() {
         staging_root: artifacts.join("staging"),
         ignore_installed_authored_overlays: true,
         recipes: recipes.clone(),
+        maps: Vec::new(),
     })
     .unwrap();
     let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |progress| {

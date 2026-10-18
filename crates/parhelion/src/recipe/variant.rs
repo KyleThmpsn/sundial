@@ -14,6 +14,11 @@ impl WeaponSocketPlugVariantRecipe {
         variant_index: usize,
     ) -> Result<WeaponSocketPlugVariantOverride, RecipeError> {
         let context = format!("socket-plug variant {variant_index}");
+        if self.projectile.is_some() && self.offer_everywhere {
+            return Err(RecipeError::Validation(
+                "A perk with a projectile must be attached to its weapon. It cannot be offered in stock sockets.".into(),
+            ));
+        }
         Ok(WeaponSocketPlugVariantOverride {
             replace_effects: self.replace_effects,
             investment_stats: self
@@ -92,6 +97,11 @@ impl crate::perk::PerkRecipe {
     pub(crate) fn compiler_effects(
         &self,
     ) -> Result<Vec<WeaponSandboxPerkRuntimeOverride>, RecipeError> {
+        if self.projectile.is_some() {
+            return Err(RecipeError::Validation(
+                "A perk with a projectile must be attached to a weapon socket.".into(),
+            ));
+        }
         Ok(self.at_socket(0, 0).to_compiler(0)?.sandbox_perks)
     }
 }

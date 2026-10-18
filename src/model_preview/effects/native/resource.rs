@@ -22,10 +22,13 @@ impl<'a> Plan<'a> {
         }
     }
 
+    /// `expression` is the stage's material expression, whose sampler bindings name the table
+    /// row each sampler register takes.
     pub fn stage(
         &mut self,
         bytes: &[u8],
         code: &program::Program,
+        expression: Option<&Program>,
         samplers: &[texture::Sampler],
         vertex: bool,
         sampler_offset: usize,
@@ -37,7 +40,8 @@ impl<'a> Plan<'a> {
             .find(|(slot, _)| (5..=7).contains(slot))
             .map(|(slot, _)| *slot);
         for resource in &code.resources {
-            let sampler = sampling_for(code, resource, samplers.len())?.map(|i| i + sampler_offset);
+            let sampler = sampling_for(code, expression, resource, samplers.len())?
+                .map(|i| i + sampler_offset);
             let mut binding = if let Some(&tag) = explicit.get(&resource.slot) {
                 self.image(tag, resource)?
             } else if vertex {

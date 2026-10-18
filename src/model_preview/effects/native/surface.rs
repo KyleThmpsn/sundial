@@ -217,7 +217,83 @@ pub(in crate::model_preview) fn load(
     native.intensity = intensity;
     native.decal = decal;
     native.ambient_power = opaque::intensity::ambient_power(manager);
+    if std::env::var_os("SUNDIAL_PREVIEW_TRACE").is_some() {
+        trace(tag, &material, model);
+    }
     Ok(Some(material))
+}
+
+/// A notice naming a loaded surface's recovered contract and each bound image's size and
+/// centre texel, for `SUNDIAL_PREVIEW_TRACE` runs of the headless icon route.
+fn trace(tag: u32, material: &Material, model: &mut Model) {
+    let Some(native) = material.native.as_ref() else {
+        return;
+    };
+    let mut text = format!(
+        "Surface 0x{tag:08X}: intensity {}, decal {}, uv {:?}, {} samplers",
+        native.intensity,
+        native.decal,
+        native.opaque_uv,
+        material.samplers.len()
+    );
+    for binding in &native.bindings {
+        let image = match binding.role {
+            Role::Texture(index) => model.textures.get(index).map(|texture| {
+                let [width, height] = texture.size;
+                let at = ((height / 2) * width + width / 2) * 4;
+                format!(
+                    "{width}x{height} centre {:?}",
+                    texture.rgba.get(at..at + 4).unwrap_or(&[])
+                )
+            }),
+            _ => None,
+        };
+        text.push_str(&format!(
+            ", t{} {} sampler {:?} {}",
+            binding.slot,
+            if binding.color { "sRGB" } else { "linear" },
+            binding.sampler,
+            image.unwrap_or_else(|| "implicit".into())
+        ));
+    }
+    // The program's three targets at the centre of the map, facing the viewer.
+    let probe = material.frame(0.0).and_then(|frame| {
+        let input = vertex::Input {
+            position: [0.0; 3],
+            normal: [0.0, 0.0, -1.0],
+            tangent: [1.0, 0.0, 0.0, 1.0],
+            color: [1.0; 4],
+            uv: [0.5, 0.5],
+            detail_uv: [0.5, 0.5],
+        };
+        let mut varyings = input.default_varyings();
+        if let Some(uv) = native.opaque_uv {
+            varyings[3][0] = 0.5 * uv[0] + uv[2];
+            varyings[3][1] = 0.5 * uv[1] + uv[3];
+        }
+        let pixel = Pixel {
+            varyings,
+            dx: [[0.0; 4]; 9],
+            dy: [[0.0; 4]; 9],
+            screen: [0.0; 3],
+            direction: [0.0, 0.0, 1.0],
+            distance: 1.0,
+            front: true,
+            depth: Depth {
+                values: &[],
+                size: [1, 1],
+                top: 0,
+                scale: 1.0,
+            },
+            exposure: 1.0,
+        };
+        shade::outputs(model, material, &frame, &shader::Bindings::default(), pixel)
+    });
+    text.push_str(&format!(
+        ", probe {:?}",
+        probe.map(|outputs| [outputs[0], outputs[1], outputs[2]])
+    ));
+    model.notices.push(text);
 }
 
 pub(in crate::model_preview) struct Sample {

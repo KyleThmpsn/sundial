@@ -3,7 +3,8 @@
 //! again by the same readers in the staged copies, with each stock ability as it shipped. A curve
 //! is found only where the definition, the instance's curve state and the scale agree, so finding
 //! the edited one proves all three were written. Settings kept as bytes of an opaque field are
-//! written into the field's override, and two of one field read back together.
+//! written into the field's override, and two of one field read back together. A Falloff Start
+//! rewrites three coefficient rows, which are decoded straight from the copy's bytes.
 use super::*;
 use crate::subclass::{Place, SubclassAbilities};
 use sundial::package_authoring::ability_palette::ability_graphs;
@@ -115,6 +116,71 @@ const LANE_KINDS: [Kind; 32] = [
     Kind::MinimumActivationEnergy,
     Kind::EnergyFloor,
 ];
+
+/// The owners of the seven stock sequence queries whose spatial weight program is plateau-linear:
+/// Thermite Grenade's two, Daybreak's, Voidwall Grenade's two and Arc Staff's two, which one owner
+/// holds. Each starts falling at half its area but Voidwall's box at 80BC0825, at about 45%.
+const FALLOFF_OWNERS: [u32; 7] = [
+    0x80B8_0EE4,
+    0x80B8_0EEC,
+    0x80BA_AC92,
+    0x80BC_0825,
+    0x80BC_08EE,
+    0x80FE_F251,
+    0x80FE_F251,
+];
+
+/// The Falloff Start, in percent, authored on Voidwall Grenade.
+const FALLOFF_START: f32 = 25.0;
+
+/// Reads the authored Falloff Start straight from the staged copy's bytes: the copy is private,
+/// rows 0 and 1 stay zero, and rows 2 to 4 hold `-1/(1-s)`, `1/(1-s)` and `s` in their Y lanes
+/// with every other lane as the stock plateau-linear program holds it.
+fn read_back_falloff(
+    staged: &sundial::package_authoring::PackageManager,
+    copy: u32,
+    name: &str,
+) -> serde_json::Value {
+    let settings = found(staged, copy).1;
+    let edited = settings
+        .iter()
+        .find(|setting| {
+            setting.kind == Kind::FalloffStart && (setting.stock() - FALLOFF_START).abs() < 1e-4
+        })
+        .unwrap_or_else(|| panic!("{name} holds its authored Falloff Start"));
+    assert!(
+        !FALLOFF_OWNERS.contains(&edited.owner_tag),
+        "{name} writes its Falloff Start into a private copy of the query's owner"
+    );
+    let bytes = staged.read_tag(TagHash(edited.owner_tag)).unwrap();
+    let first = edited.field.owner_offset as usize - 4 * 16;
+    let rows = std::array::from_fn::<_, 5, _>(|row| {
+        std::array::from_fn::<_, 4, _>(|lane| {
+            let at = first + row * 16 + lane * 4;
+            u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+        })
+    });
+    let start = FALLOFF_START / 100.0;
+    let slope = (1.0 / (1.0 - f64::from(start))) as f32;
+    let expected = [
+        [0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0],
+        [0.0, -slope, 0.0, 0.0],
+        [1.0, slope, 0.0, 0.0],
+        [0.0, start, 1.0, 1.0],
+    ]
+    .map(|row| row.map(f32::to_bits));
+    assert_eq!(
+        rows, expected,
+        "{name} holds the three coefficients of its Falloff Start together"
+    );
+    serde_json::json!({
+        "subclass": name,
+        "falloff_owner": format!("0x{:08X}", edited.owner_tag),
+        "rows_offset": first,
+        "row_bits": rows,
+    })
+}
 
 /// Asserts that the abilities `entities` together offer every setting of `kinds`.
 fn assert_offered(
@@ -443,6 +509,11 @@ fn real_ability_settings_build_into_private_copies() {
                         (Kind::SourceFilter, Some(0.0)),
                     ],
                 },
+                Authored {
+                    entry: 7,
+                    curves: Vec::new(),
+                    settings: vec![(Kind::FalloffStart, Some(FALLOFF_START))],
+                },
             ],
         ),
         (
@@ -480,6 +551,30 @@ fn real_ability_settings_build_into_private_copies() {
     .collect::<Vec<_>>();
     assert_offered(&source, &census, &PROGRAM_KINDS);
     assert_offered(&source, &census, &LANE_KINDS);
+    // Falloff Start is offered on exactly the seven plateau-linear queries, with their stock starts.
+    let falloffs = [
+        ("Sunbreaker", 9),
+        ("Dawnblade", 10),
+        ("Nightstalker", 7),
+        ("Arcstrider", 10),
+    ]
+    .into_iter()
+    .flat_map(|(name, entry)| found(&source, base(name).entry_entities[&entry]).1)
+    .filter(|setting| setting.kind == Kind::FalloffStart)
+    .map(|setting| ((setting.owner_tag, setting.offset()), setting.stock()))
+    .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        falloffs.keys().map(|(owner, _)| *owner).collect::<Vec<_>>(),
+        FALLOFF_OWNERS,
+        "Falloff Start is offered on the seven plateau-linear queries"
+    );
+    for (&(owner, _), &start) in &falloffs {
+        let stock = if owner == 0x80BC_0825 { 45.0 } else { 50.0 };
+        assert!(
+            (start - stock).abs() < 1e-3,
+            "query owner 0x{owner:08X} starts its falloff at {stock}%, reads {start}"
+        );
+    }
     // Burning Maul's part 80BC8832 holds a tracking definition, owned by 80BC41B1, whose
     // proximity event row names no receiver, so its range and timers do nothing. The tracking is
     // still read, and only those three are withheld.
@@ -614,6 +709,7 @@ fn real_ability_settings_build_into_private_copies() {
         staging_root: temporary.path().join("staging"),
         ignore_installed_authored_overlays: false,
         recipes,
+        maps: Vec::new(),
     })
     .unwrap();
     let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |_| {}).unwrap();
@@ -644,6 +740,9 @@ fn real_ability_settings_build_into_private_copies() {
             missed.extend(read_back(&staged, copy, each, wanted, &name));
             if !each.curves.is_empty() {
                 receipt.push(read_back_reversed_curve(&staged, copy));
+            }
+            if wanted.iter().any(|(kind, _)| *kind == Kind::FalloffStart) {
+                receipt.push(read_back_falloff(&staged, copy, &name));
             }
             receipt.push(serde_json::json!({
                 "subclass": name,

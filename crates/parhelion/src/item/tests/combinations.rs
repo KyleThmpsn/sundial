@@ -176,6 +176,7 @@ fn recipes(catalog: &InvestmentCatalog, profile: usize) -> Vec<WeaponRecipe> {
                             }));
                         recipe.overrides.socket_plug_variants.push(
                             crate::WeaponSocketPlugVariantRecipe {
+                                projectile: None,
                                 offer_everywhere: false,
                                 replace_effects: false,
                                 socket_index: donor.sockets.len() as u16,
@@ -561,6 +562,7 @@ fn run_batch(
         staging_root: output.join(label),
         ignore_installed_authored_overlays: true,
         recipes: recipes.to_vec(),
+        maps: Vec::new(),
     })
     .unwrap();
     let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |progress| {

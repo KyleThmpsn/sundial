@@ -20,6 +20,7 @@ pub struct ReplacementReview {
     installed: Vec<ArtifactMetadata>,
     incoming: Vec<ArtifactMetadata>,
     removed_hashes: BTreeSet<u32>,
+    incoming_definitions: Option<BTreeSet<u32>>,
     removed_unlocks: Vec<AuthoredCollectionUnlock>,
     socket_changes: Vec<AuthoredSocketChange>,
     slots: Option<AuthoredSlotReplacement>,
@@ -115,6 +116,7 @@ fn preview_for_runtime_with_progress(
         installed: installed.artifacts().to_vec(),
         incoming: incoming.artifacts,
         removed_hashes: BTreeSet::new(),
+        incoming_definitions: None,
         removed_unlocks: vec![],
         socket_changes: vec![],
         slots: None,
@@ -122,34 +124,59 @@ fn preview_for_runtime_with_progress(
         cleanup: None,
         client_settings,
     };
-    if review.installed.is_empty() {
-        return Ok(review);
-    }
-    report(progress, "Reading Installed Item Identities", 4);
-    let installed = identities::Generation::open(&target, &target)?;
+    report(progress, "Reading Staged Item Identities", 4);
+    let incoming = identities::Generation::open(&target, &staged)?;
     let compared = (|| {
-        let old = identities::read_identities(&installed)?;
-        report(progress, "Reading Staged Item Identities", 5);
-        let incoming = identities::Generation::open(&target, &staged)?;
-        let compared =
-            compare_generations(&installed, &incoming, old, &variants, &mut review, progress);
-        incoming.finish(compared)
-    })();
-    installed.finish(compared)?;
-    if !review.removed_hashes.is_empty()
-        || !review.removed_unlocks.is_empty()
-        || !review.socket_changes.is_empty()
-        || review.slots.is_some()
-    {
-        report(progress, "Checking Account Items and References", 9);
-        review.cleanup = Some(account_references(&target, &review)?);
-        if let (Some(settings), Some(cleanup)) = (&review.client_settings, &mut review.cleanup)
-            && settings.merge_account_change(cleanup)?
-        {
-            review.client_settings = None;
+        review.incoming_definitions = Some(if runtime.uses_mod_loader()? {
+            incoming_mod_definitions(&target, &staged, &review)?
+        } else {
+            identities::read_available_definitions(&incoming)?
+        });
+        if !review.installed.is_empty() {
+            report(progress, "Reading Installed Item Identities", 5);
+            let installed = identities::Generation::open(&target, &target)?;
+            let compared = identities::read_identities(&installed).and_then(|old| {
+                compare_generations(&installed, &incoming, old, &variants, &mut review, progress)
+            });
+            installed.finish(compared)?;
         }
+        Ok(())
+    })();
+    incoming.finish(compared)?;
+    report(progress, "Checking Account Items and References", 9);
+    review.cleanup = Some(account_references(&target, &review)?);
+    if let (Some(settings), Some(cleanup)) = (&review.client_settings, &mut review.cleanup)
+        && settings.merge_account_change(cleanup)?
+    {
+        review.client_settings = None;
     }
     Ok(review)
+}
+
+fn incoming_mod_definitions(
+    target: &Path,
+    staged: &Path,
+    review: &ReplacementReview,
+) -> Result<BTreeSet<u32>, String> {
+    let mut incoming = sundial::package_authoring::mod_content::Incoming::default();
+    for artifact in &review.incoming {
+        let profile = authored_package_for_file_name(&artifact.file_name)
+            .ok_or("Unknown incoming package")?;
+        if canonical_package(profile.package_id).is_some() {
+            incoming.patches.push(staged.join(&artifact.file_name));
+        } else {
+            incoming.packages.push(staged.join(&artifact.file_name));
+        }
+    }
+    incoming.retired = review
+        .installed
+        .iter()
+        .filter(|artifact| target.join(&artifact.file_name).is_file())
+        .map(|artifact| artifact.file_name.clone())
+        .collect();
+    let manager =
+        sundial::package_authoring::open_incoming_shadowkeep_package_manager(target, &incoming)?;
+    identities::available_definitions(&manager)
 }
 
 /// Compares the installed and staged generations, each opened once for every comparison.
@@ -286,21 +313,42 @@ fn account_references(
     review: &ReplacementReview,
 ) -> Result<AuthoredAccountCleanup, String> {
     let target = fs::canonicalize(target).map_err(|error| error.to_string())?;
-    let mut cleanup = preview_authored_account_replacement_for_runtime(
-        target.parent().ok_or("Missing game root")?,
-        &review.runtime,
-        &review.removed_hashes,
-        &review.removed_unlocks,
-        &review.socket_changes,
-        review.slots.as_ref(),
-    )
-    .map_err(|error| {
-        format!("Cannot review account changes before replacing custom packages: {error}")
-    })?;
-    if let Some(settings) = preview_authored_client_settings_for_runtime(
-        target.parent().ok_or("Missing game root")?,
-        &review.runtime,
-    )? {
+    let install = target.parent().ok_or("Missing game root")?;
+    let preview = |hashes: &BTreeSet<u32>, slots: Option<&AuthoredSlotReplacement>| {
+        preview_authored_account_replacement_for_runtime(
+            install,
+            &review.runtime,
+            hashes,
+            &review.removed_unlocks,
+            &review.socket_changes,
+            slots,
+        )
+        .map_err(|error| {
+            format!("Cannot review account changes before replacing custom packages: {error}")
+        })
+    };
+    let slots = review.slots.as_ref();
+    let mut cleanup = match &review.incoming_definitions {
+        None => preview(&review.removed_hashes, slots)?,
+        // Saved items and plugs whose definitions the incoming packages lack, such as ones left
+        // from an older build, are removed the same way as the items this build leaves out.
+        // Slot moves size inventories from incoming definitions, so those are found without them.
+        Some(definitions) => {
+            let unmoved = preview(&review.removed_hashes, None)?;
+            let missing = unmoved.missing_incoming_definitions(definitions)?;
+            if missing.is_empty() && slots.is_none() {
+                unmoved
+            } else {
+                let removed: BTreeSet<u32> =
+                    review.removed_hashes.union(&missing).copied().collect();
+                let cleanup = preview(&removed, slots)?;
+                cleanup.validate_incoming_definitions(definitions)?;
+                cleanup
+            }
+        }
+    };
+    if let Some(settings) = preview_authored_client_settings_for_runtime(install, &review.runtime)?
+    {
         settings.merge_account_change(&mut cleanup)?;
     }
     Ok(cleanup)
@@ -338,6 +386,16 @@ pub(super) fn verify_account(
 #[cfg(test)]
 mod tests;
 
+/// The review installation computes for this runtime, for a test to confirm.
+#[cfg(test)]
+pub(crate) fn test_review_for_runtime(
+    target: &Path,
+    staged: &Path,
+    runtime: &RuntimeSnapshot,
+) -> Result<ReplacementReview, String> {
+    preview_for_runtime_with_progress(target, staged, runtime, &mut |_| {})
+}
+
 #[cfg(test)]
 pub(crate) fn test_review(target: &Path, hashes: BTreeSet<u32>) -> ReplacementReview {
     test_review_with_sockets(target, hashes, vec![])
@@ -372,6 +430,7 @@ pub(crate) fn test_review_with_slots(
         installed: vec![],
         incoming: vec![],
         removed_hashes: hashes,
+        incoming_definitions: None,
         removed_unlocks: vec![],
         socket_changes,
         slots,

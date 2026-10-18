@@ -23,11 +23,12 @@ fn definition_ordinal(emission: &PackageEmission, item: u32) -> AuthoringResult<
         return Err(invalid("Authored item is missing or ambiguous"));
     };
     let tag = TagHash(read_u32(&emission.item_table, row + 16)?);
-    if tag.pkg_id() != HOST_PACKAGE_ID {
+    let host = crate::package_profile::host();
+    if tag.pkg_id() != host.id {
         return Err(invalid("Authored item must be a private definition"));
     }
     let ordinal = (tag.entry_index() as usize)
-        .checked_sub(HOST_EXPECTED_ENTRY_COUNT)
+        .checked_sub(host.first)
         .ok_or_else(|| invalid("Authored item is a stock definition"))?;
     if ordinal >= emission.host_new_tags.len() {
         return Err(invalid("Authored definition is outside authored tags"));
@@ -49,8 +50,9 @@ fn strings_ordinal(emission: &PackageEmission, item: u32) -> AuthoringResult<usi
         return Err(invalid("Authored item strings are missing or ambiguous"));
     };
     let tag = TagHash(read_u32(&emission.item_strings, row + 16)?);
-    let ordinal = (tag.pkg_id() == HOST_PACKAGE_ID)
-        .then(|| (tag.entry_index() as usize).checked_sub(HOST_EXPECTED_ENTRY_COUNT))
+    let host = crate::package_profile::host();
+    let ordinal = (tag.pkg_id() == host.id)
+        .then(|| (tag.entry_index() as usize).checked_sub(host.first))
         .flatten()
         .filter(|ordinal| *ordinal < emission.host_new_tags.len())
         .ok_or_else(|| invalid("Authored item strings must be a private record"))?;
@@ -109,26 +111,36 @@ pub(super) struct PackageEmission {
     pub(super) item_icons: Vec<u8>,
     pub(super) runtime_dependencies: Option<Vec<u8>>,
     pub(super) host_new_tags: Vec<NewTagSpec>,
+    /// The Crucible maps added as new activities.
+    pub(super) maps: crate::map::Plan,
 }
 
 /// Wwise finds a medium by the media ID in its entry header, so every appended medium names
 /// itself there, in the asset packages as in the host.
 fn name_audio_media(asset_packages: &mut crate::asset_packages::AssetPackages) {
     for package in &mut asset_packages.packages {
-        for (ordinal, spec) in package.tags.iter().enumerate() {
-            if spec.storage == crate::NewTagStorageMode::AudioMedia
-                && !package
-                    .references
-                    .iter()
-                    .any(|reference| reference.new_tag_ordinal == ordinal)
+        for reference in media_references(&package.tags) {
+            if !package
+                .references
+                .iter()
+                .any(|existing| existing.new_tag_ordinal == reference.new_tag_ordinal)
             {
-                package.references.push(crate::NewTagReferenceOverride {
-                    new_tag_ordinal: ordinal,
-                    reference: crate::NewTagReference::Appended(ordinal),
-                });
+                package.references.push(reference);
             }
         }
     }
+}
+
+fn media_references(
+    tags: &[NewTagSpec],
+) -> impl Iterator<Item = crate::NewTagReferenceOverride> + '_ {
+    tags.iter()
+        .enumerate()
+        .filter(|(_, spec)| spec.storage == crate::NewTagStorageMode::AudioMedia)
+        .map(|(ordinal, _)| crate::NewTagReferenceOverride {
+            new_tag_ordinal: ordinal,
+            reference: crate::NewTagReference::Appended(ordinal),
+        })
 }
 
 #[allow(unused_mut)]
@@ -162,13 +174,16 @@ pub(super) fn emit_packages(
     let (crosshair_table, replacements): (Vec<_>, Vec<_>) = replacements
         .into_iter()
         .partition(|r| r.tag == crate::weapon::crosshair::TABLE);
-    let (imported_runtime, imported_strings): (Vec<_>, Vec<_>) = replacements
+    let (imported_runtime, replacements): (Vec<_>, Vec<_>) = replacements
         .into_iter()
         .partition(|r| r.tag.pkg_id() == emission.table_tags.entity_assignment_tag.pkg_id());
+    let (imported_strings, imported_shared): (Vec<_>, Vec<_>) = replacements
+        .into_iter()
+        .partition(|r| r.tag.pkg_id() == emission.table_tags.item_string_table_tag.pkg_id());
     let PackageEmission {
         lore,
         hud_table,
-        ability_banks,
+        ability_banks: mut shared_packages,
         hud_statuses,
         table_tags:
             super::sources::TableTags {
@@ -237,8 +252,9 @@ pub(super) fn emit_packages(
         objectives,
         pools,
         item_icons,
-        runtime_dependencies,
+        mut runtime_dependencies,
         host_new_tags,
+        maps,
     } = emission;
     // Private copies past the private perk-runtime package's table go to standalone packages of
     // their own, from the top of the build's window down.
@@ -261,14 +277,28 @@ pub(super) fn emit_packages(
             .or_default()
             .push(replacement);
     }
+    // Imported character banks and selectors belong to their native sandbox
+    // packages. Merge them with an existing optional overlay for the same id.
+    for replacement in imported_shared {
+        let id = replacement.tag.pkg_id();
+        ui_packages
+            .get_mut(&id)
+            .unwrap_or_else(|| shared_packages.entry(id).or_default())
+            .push(replacement);
+    }
+    let host = crate::package_profile::host();
     // One dependency check, six required overlays, and all optional packages in this plan.
     progress.payloads(
-        7 + asset_packages.packages.len()
+        7 + usize::from(host.is_standalone())
+            + asset_packages.packages.len()
+            + maps.package_count()
             + private_runtime_overflow.len()
-            + ability_banks.len()
+            + shared_packages.len()
             + ui_packages.len()
             + usize::from(!private_perk_runtime_new_tags.is_empty())
-            + usize::from(runtime_dependencies.is_some()),
+            + usize::from(
+                runtime_dependencies.is_some() || !maps.is_empty() || host.is_standalone(),
+            ),
     );
     progress.start("Checking Asset Dependencies");
     asset_packages.validate()?;
@@ -293,6 +323,7 @@ pub(super) fn emit_packages(
             companion: RUNTIME_DEPENDENCY_COMPANION,
         },
     )?;
+    let loading = loading.to_vec();
     // The package writer must not retain the source manager's open file handles.
     drop(manager);
     // Validate the completed map after every authoring pass, not only the stock source.
@@ -300,16 +331,38 @@ pub(super) fn emit_packages(
     progress.finish("Checking Asset Dependencies");
     let mut packages = packages::Packages::new(package_directory);
     let mut host_reference_overrides = watermark_reference_overrides;
-    for (ordinal, spec) in host_new_tags.iter().enumerate() {
-        if spec.storage == crate::NewTagStorageMode::AudioMedia {
-            host_reference_overrides.push(crate::NewTagReferenceOverride {
-                new_tag_ordinal: ordinal,
-                reference: crate::NewTagReference::Appended(ordinal),
-            });
-        }
-    }
+    host_reference_overrides.extend(media_references(&host_new_tags));
+    // A standalone host takes the build's investment records, and the stock host keeps its
+    // entry count. The client registers a package once a loading index names one of its
+    // entries, so the investment loading root names every record, as it does a map's.
+    let mut host_records = None;
+    let (host_new_tags, host_reference_overrides) = if host.is_standalone() {
+        let records = (0..host_new_tags.len())
+            .map(|index| {
+                u16::try_from(index)
+                    .map(|index| TagHash::new(host.id, index))
+                    .map_err(|_| invalid("The investment records do not fit one package"))
+            })
+            .collect::<AuthoringResult<Vec<_>>>()?;
+        runtime_dependencies = Some(crate::shared_tag_dependency_index::enroll_dependencies(
+            runtime_dependencies
+                .as_deref()
+                .unwrap_or(loading.as_slice()),
+            RUNTIME_DEPENDENCY_COMPANION,
+            RUNTIME_DEPENDENCY_ROOT,
+            &records,
+        )?);
+        host_records = Some(packages.standalone(crate::asset_packages::AssetPackage {
+            id: host.id,
+            tags: host_new_tags,
+            references: host_reference_overrides,
+        })?);
+        (Vec::new(), Vec::new())
+    } else {
+        (host_new_tags, host_reference_overrides)
+    };
     let expected_host_count = HOST_EXPECTED_ENTRY_COUNT + host_new_tags.len();
-    let host = packages.overlay(
+    let host_overlay = packages.overlay(
         HOST_PACKAGE_ID,
         vec![
             ReplacementSpec {
@@ -328,12 +381,22 @@ pub(super) fn emit_packages(
         host_new_tags,
         host_reference_overrides,
     )?;
-    packages.host(host, expected_host_count);
+    packages.host(host_overlay, expected_host_count);
     let mut asset_packages = asset_packages;
     name_audio_media(&mut asset_packages);
-    let assets_end =
+    let mut assets_end =
         usize::from(crate::package_profile::window().base) + asset_packages.packages.len();
-    let assets = plan_assets(&mut packages, asset_packages)?;
+    let mut assets = plan_assets(&mut packages, asset_packages)?;
+    // Each map's packages, named after the map, take the next ids after the asset packages.
+    assets_end = plan_maps(
+        &mut packages,
+        &maps,
+        assets_end,
+        &mut assets,
+        &mut runtime_dependencies,
+        &loading,
+    )?;
+    let map_tables = maps.replacements;
     let private_runtime_overflow =
         plan_private_runtime_overflow(&mut packages, assets_end, private_runtime_overflow)?;
     let private_count = private_perk_runtime_new_tags.len();
@@ -404,6 +467,9 @@ pub(super) fn emit_packages(
     }));
     subclass_replacements.extend(stat_group_table);
     subclass_replacements.extend(plug_set_table);
+    // The activity, display and private match tables join the investment overlays of their
+    // packages.
+    subclass_replacements.extend(map_tables);
     let mut subclass_tables_in = |package: u16| {
         let (owned, rest) = std::mem::take(&mut subclass_replacements)
             .into_iter()
@@ -565,36 +631,32 @@ pub(super) fn emit_packages(
     ];
     if let Some(package) = ui_packages
         .keys()
-        .find(|package| project_packages.contains(package) || ability_banks.contains_key(package))
+        .find(|package| project_packages.contains(package) || shared_packages.contains_key(package))
     {
         return Err(invalid(format!(
             "UI tables in package {package:04x} share it with another authored overlay"
         )));
     }
-    // The sandbox banks with a charge row added, one overlay per package that has any, only
-    // when a private perk applies the key.
-    let mut ability_bank_overlays = Vec::new();
-    for (package_id, replacements) in ability_banks {
-        ability_bank_overlays.push(packages.overlay(
-            package_id,
-            replacements,
-            Vec::new(),
-            Vec::new(),
-        )?);
+    // Shared sandbox resources use one overlay per package, including private
+    // ability rows and imported character animation branches.
+    let mut shared_overlays = Vec::new();
+    for (package_id, replacements) in shared_packages {
+        shared_overlays.push(packages.overlay(package_id, replacements, Vec::new(), Vec::new())?);
     }
     let mut ui_overlays = Vec::new();
     for (package_id, replacements) in ui_packages {
         ui_overlays.push(packages.overlay(package_id, replacements, Vec::new(), Vec::new())?);
     }
     let mut order = assets;
+    order.extend(host_records);
     order.extend(private_runtime_overflow);
     order.extend(ui_overlays);
-    order.extend(ability_bank_overlays);
+    order.extend(shared_overlays);
     order.extend(private_perk_runtime);
     order.extend(runtime_dependency_overlay);
     order.extend([
         runtime_entities,
-        host,
+        host_overlay,
         investment,
         strings,
         localized,
@@ -626,6 +688,55 @@ fn plan_assets(
         .into_iter()
         .map(|package| packages.standalone(package))
         .collect()
+}
+
+/// Plans each map's packages into `planned`, at the ids from `assets_end`, and returns the end of
+/// the ids they take. The client registers a package once a loading index names one of its
+/// entries, and a name lookup alone does not. The investment loading root, whose index starts as
+/// `runtime_dependencies` or else as `loading`, names the entries `Plan::registration` chooses,
+/// so both packages are registered before an activity looks up its root.
+fn plan_maps(
+    packages: &mut packages::Packages<'_>,
+    maps: &crate::map::Plan,
+    mut assets_end: usize,
+    planned: &mut Vec<packages::Ticket>,
+    runtime_dependencies: &mut Option<Vec<u8>>,
+    loading: &[u8],
+) -> AuthoringResult<usize> {
+    for index in 0..maps.len() {
+        for part in maps.parts(index) {
+            let id = u16::try_from(assets_end)
+                .ok()
+                .filter(|&id| id <= crate::package_profile::window().top)
+                .ok_or_else(|| {
+                    validation(
+                        "The build's maps need more packages than the free authored ids hold",
+                    )
+                })?;
+            crate::package_profile::name_standalone_package(id, &maps.family(index, part))
+                .map_err(validation)?;
+            let (tags, named, references) = maps.package(index, part, id)?;
+            let index_payload = runtime_dependencies.as_deref().unwrap_or(loading);
+            let registered = crate::shared_tag_dependency_index::dependency_entries(
+                index_payload,
+                RUNTIME_DEPENDENCY_COMPANION,
+                RUNTIME_DEPENDENCY_ROOT,
+            )?
+            .into_iter()
+            .map(|(package, _)| package)
+            .collect();
+            let registration = maps.registration(id, &tags, &registered)?;
+            planned.push(packages.named(id, tags, named, references)?);
+            assets_end += 1;
+            *runtime_dependencies = Some(crate::shared_tag_dependency_index::enroll_dependencies(
+                index_payload,
+                RUNTIME_DEPENDENCY_COMPANION,
+                RUNTIME_DEPENDENCY_ROOT,
+                &registration,
+            )?);
+        }
+    }
+    Ok(assets_end)
 }
 
 /// Reserve each private overflow output after checking its range against the asset packages.

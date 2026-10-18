@@ -214,6 +214,15 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
         (0x80803DCE | 0x80803DCC, 0x9C..=0xB0) => {
             result.description = "Inclusive magazine bounds for this weapon slot. The value is ammunition divided by magazine capacity. 0 means empty and 1 means full. The range 0 to 1 bypasses the check. A missing weapon supplies 0. This does not select Primary, Special or Heavy ammunition types.";
         }
+        // 107FC20 inverts its own result when +F8 is set. A nested condition's checker,
+        // 1080690, runs that on the predicate first and then requires the nested condition.
+        (0x80803DCE, 0xF8) => {
+            result.description = "Passes when these checks fail, and fails when they pass.";
+        }
+        (0x80803DCC, 0xF8) => {
+            result.description =
+                "Inverts only this predicate's checks. The nested condition must still pass.";
+        }
         (0x80803DCE | 0x80803DCC, 0xB4 | 0xB8) => {
             result.description = "Inclusive bounds on a separate global numeric value. Its gameplay meaning remains unresolved. These are minimum and maximum values, not a factor and an added term.";
         }
@@ -619,6 +628,15 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
                     "Seconds to retain a successful contribution. Positive values schedule the hold path. Zero does not schedule it."
                 }
                 (0x80803E06, 0) => "Seconds this requirement stays met after it passes.",
+                // ECB010 arms the hold when the predicate passes with none running and cancels
+                // it when it fails. ED0880 counts it down in game seconds and passes on reaching
+                // zero, once. 1080DF0 fails the direct check while the hold is positive.
+                (0x80803DCE, 0xE0) => {
+                    "Seconds these checks must keep passing before this passes. Failing restarts the wait, and it passes again only after failing. 0 checks at once."
+                }
+                // 1080690 fails a nested condition's predicate outright through 1080DF0 when
+                // its hold is positive, and no stock nested condition sets one.
+                (0x80803DCC, 0xE0) => "Leave at 0. Any positive value makes this check fail.",
                 (0x80803E3B, 4) => "Seconds added to eligible running timers, limited by Up To.",
                 (0x80803E3B, 8) => {
                     "Maximum duration in seconds after extending eligible running timers."

@@ -40,7 +40,7 @@ pub fn sound_assets(reader: &mut Reader, sound_tag: u32, modern: bool) -> Result
     // A sound without the media array keeps its media inside the bank.
     if sound.0.len() == 0x30 {
         return Ok(
-            json!({"tag":tag(sound_tag),"event_id":tag(sound.u32(8)?),"bank":tag(bank),"media":[],"media_ids":[],"embedded_media":true}),
+            json!({"tag":tag(sound_tag),"event_id":tag(sound.u32(8)?),"secondary_event_id":tag(sound.u32(12)?),"bank":tag(bank),"media":[],"media_ids":[],"embedded_media":true}),
         );
     }
     let count = usize::try_from(sound.u64(0x40)?)?;
@@ -52,6 +52,11 @@ pub fn sound_assets(reader: &mut Reader, sound_tag: u32, modern: bool) -> Result
     let mut media_ids = Vec::new();
     for index in 0..count {
         let media_tag = sound.u32(0x50 + index * 4)?;
+        // Original native cues retain explicit empty media slots. They carry
+        // no resource or media ID, and must not be opened as package assets.
+        if media_tag == u32::MAX {
+            continue;
+        }
         let entry = reader
             .manager
             .get_entry(TagHash(media_tag))
@@ -64,7 +69,7 @@ pub fn sound_assets(reader: &mut Reader, sound_tag: u32, modern: bool) -> Result
         media_ids.push(tag(entry.reference));
     }
     Ok(
-        json!({"tag":tag(sound_tag),"event_id":tag(sound.u32(8)?),"bank":tag(bank),"media":media,"media_ids":media_ids}),
+        json!({"tag":tag(sound_tag),"event_id":tag(sound.u32(8)?),"secondary_event_id":tag(sound.u32(12)?),"bank":tag(bank),"media":media,"media_ids":media_ids}),
     )
 }
 

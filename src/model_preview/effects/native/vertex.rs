@@ -95,6 +95,7 @@ impl Native {
                 model,
                 native: self,
                 samplers: &vertex.samplers,
+                offset: vertex.sampler_offset,
             }),
         })?;
         let mut varyings = input.default_varyings();
@@ -145,6 +146,8 @@ struct Images<'a> {
     model: &'a Model,
     native: &'a Native,
     samplers: &'a [texture::Sampler],
+    /// The pixel stage's sampler count, which vertex bindings' rows follow.
+    offset: usize,
 }
 
 impl Images<'_> {
@@ -170,14 +173,23 @@ pub(super) fn constant(
     quaternion: bool,
     constants: &Frame,
 ) -> [f32; 4] {
+    // The object scope holds the object's world matrix in rows 0 to 3, its position and
+    // texture placement in 5 and 6, then a motion palette from row 8: a quaternion pair per
+    // bone, or three matrix rows. The preview poses every object and bone at the identity.
     match (buffer, index) {
         (0, i) => constants.get(i).copied().unwrap_or([0.0; 4]),
+        (11, 0..=3) => std::array::from_fn(|lane| if lane == index { 1.0 } else { 0.0 }),
         (11, 5) => [0.0, 0.0, 0.0, 1.0],
         (11, 6) => [1.0, 1.0, 0.0, 0.0],
         (11, 7) => [0.0, 0.0, 0.0, 1.0],
-        (11, 8) if quaternion => [0.0, 0.0, 0.0, 1.0],
-        (11, 9) if quaternion => [0.0; 4],
-        (11, 8..=10) => std::array::from_fn(|lane| if lane == index - 8 { 1.0 } else { 0.0 }),
+        (11, 8..) if quaternion => {
+            if (index - 8).is_multiple_of(2) {
+                [0.0, 0.0, 0.0, 1.0]
+            } else {
+                [0.0; 4]
+            }
+        }
+        (11, 8..) => std::array::from_fn(|lane| if lane == (index - 8) % 3 { 1.0 } else { 0.0 }),
         (12, 0..=3) => std::array::from_fn(|lane| if lane == index { 1.0 } else { 0.0 }),
         _ => [0.0; 4],
     }
@@ -208,9 +220,16 @@ impl evaluate::Context for Context<'_> {
             return [0; 4];
         };
         images.at(resource).map_or([0; 4], |image| {
+            // A vertex binding's row counts from the material's combined table, after the
+            // pixel stage's rows.
             image.sample(
                 uv,
-                sampler.checked_sub(1).and_then(|i| images.samplers.get(i)),
+                image
+                    .binding
+                    .sampler
+                    .and_then(|row| row.checked_sub(images.offset))
+                    .or_else(|| sampler.checked_sub(1))
+                    .and_then(|i| images.samplers.get(i)),
                 sampling,
                 offset,
             )

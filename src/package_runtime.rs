@@ -346,13 +346,55 @@ fn contains_bytes(bytes: &[u8], needle: &[u8]) -> bool {
 }
 
 pub(crate) fn open_shadowkeep_packages(install: &Path) -> Result<PackageManager, String> {
-    let view = mods::View::open(install)?;
-    let source = view.as_ref().map_or(install, mods::View::install);
+    // Like Sunrise's loader, a reader leaves out a mod whose configured values don't fit what
+    // they bind, and reads again without it. Each pass leaves out one more mod.
+    for _ in 0..=mods::FOLDER_LIMIT {
+        let view = mods::View::open(install)?;
+        let source = view.as_ref().map_or(install, |view| view.install());
+        let mut manager = open_stock_shadowkeep_packages(source)?;
+        let Some(view) = view else {
+            return Ok(manager);
+        };
+        manager.retain_view(std::sync::Arc::clone(&view))?;
+        match view.configured(&manager) {
+            Ok(values) => {
+                manager.configure(values);
+                return Ok(manager);
+            }
+            Err(refusal) => mods::View::refuse(install, &view, refusal),
+        }
+    }
+    Err("Sunrise mods kept changing while they were read. Try again once they're installed".into())
+}
+
+pub(crate) fn open_managed_shadowkeep_packages(install: &Path) -> Result<PackageManager, String> {
+    let view = mods::View::open_managed(install)?;
+    let source = view.as_ref().map_or(install, |view| view.install());
     let mut manager = open_stock_shadowkeep_packages(source)?;
     if let Some(view) = view {
-        manager.retain_view(view);
+        manager.retain_view(view)?;
     }
     Ok(manager)
+}
+
+pub(crate) fn open_incoming_shadowkeep_packages(
+    install: &Path,
+    incoming: &mods::Incoming,
+) -> Result<PackageManager, String> {
+    let mut refused = Vec::new();
+    for _ in 0..=mods::FOLDER_LIMIT {
+        let view = mods::View::incoming(install, incoming, refused.clone())?;
+        let mut manager = open_stock_shadowkeep_packages(view.install())?;
+        manager.retain_view(std::sync::Arc::clone(&view))?;
+        match view.configured(&manager) {
+            Ok(values) => {
+                manager.configure(values);
+                return Ok(manager);
+            }
+            Err(refusal) => refused.push(refusal),
+        }
+    }
+    Err("Sunrise mods kept changing while the incoming content was checked".into())
 }
 
 fn open_stock_shadowkeep_packages(install: &Path) -> Result<PackageManager, String> {
@@ -473,6 +515,7 @@ mod linux {
     const LINOODLE_URL: &str = "https://raw.githubusercontent.com/v4nguard/tiger-pkg/657f41c0851001b2d371592b2f7a5cb9c686ddb4/liblinoodle3.so";
     const LINOODLE_FILE_NAME: &str = "liblinoodle3.so";
     const OODLE_DLL_FILE_NAME: &str = "oo2core_3_win64.dll";
+    const DECODER_EXPORT: &[u8] = b"OodleLZ_Decompress";
     const LINOODLE_MAX_BYTES: usize = 2 * 1024 * 1024;
     const LINOODLE_SHA256: [u8; 32] = [
         0x01, 0x67, 0xcf, 0xd2, 0xb3, 0x16, 0x23, 0xce, 0x15, 0xaf, 0xd1, 0x29, 0xc3, 0xad, 0x56,
@@ -500,6 +543,13 @@ mod linux {
         if INITIALIZED.get().is_some() {
             return create_manager(&install);
         }
+        // linoodle loads the linked DLL when the decoder starts and throws a C++ exception, which
+        // aborts the process, when that file isn't the Oodle library. Such an install opens
+        // without the decoder, so only a compressed read fails.
+        let installed = install.join("bin").join("x64").join(OODLE_DLL_FILE_NAME);
+        if installed.exists() && !is_oodle_library(&installed) {
+            return create_manager(&install);
+        }
 
         let runtime = prepare_runtime(&install)?;
         let previous_directory = env::current_dir()
@@ -521,6 +571,23 @@ mod linux {
         let manager = manager?;
         let _ = INITIALIZED.set(());
         Ok(manager)
+    }
+
+    /// Whether `path` is a Windows module that names Oodle's decoder export.
+    fn is_oodle_library(path: &Path) -> bool {
+        let Ok(bytes) = fs::read(path) else {
+            return false;
+        };
+        let header = bytes
+            .get(0x3C..0x40)
+            .map(|field| u32::from_le_bytes([field[0], field[1], field[2], field[3]]) as usize);
+        bytes.starts_with(b"MZ")
+            && header.is_some_and(|offset| {
+                bytes.get(offset..offset.saturating_add(4)) == Some(&b"PE\0\0"[..])
+            })
+            && bytes
+                .windows(DECODER_EXPORT.len())
+                .any(|window| window == DECODER_EXPORT)
     }
 
     fn create_manager(install: &Path) -> Result<PackageManager, String> {

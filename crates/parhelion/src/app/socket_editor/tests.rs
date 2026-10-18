@@ -35,6 +35,7 @@ fn donor() -> WeaponDonor {
 
 fn variant(socket_index: u16) -> WeaponSocketPlugVariantRecipe {
     WeaponSocketPlugVariantRecipe {
+        projectile: None,
         offer_everywhere: false,
         replace_effects: false,
         socket_index,

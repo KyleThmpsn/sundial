@@ -3,7 +3,7 @@ use super::{
     cache::file_range,
     resource::{Pages, fingerprint},
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -12,6 +12,18 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
+pub(super) mod clips;
+mod firing;
+mod looping;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Firing {
+    /// A checked native animation event that fires the source barrel sound.
+    Named { event: u32 },
+    /// An attached source loop on a checked native presentation loop node.
+    Loop { source: String, slot: u8, node: u32 },
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -29,6 +41,9 @@ pub struct Options {
     /// It must be a bus used by the selected native firing bank.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fire_bus: Option<u32>,
+    /// Explicit routes are required to link successfully, including paired loop events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firing: Option<Firing>,
     /// Explicit vgmstream-cli executable. No decoder is downloaded by the importer.
     pub decoder: PathBuf,
 }
@@ -218,6 +233,85 @@ fn pcm_layout(bytes: &[u8]) -> Result<(u16, u32, u64)> {
     Ok((channels, rate, (samples.len() / usize::from(align)) as u64))
 }
 
+/// Decodes sample `id` of `banks` with `decoder` into `root` as `<id>.wav`, checked against its
+/// FSB header, and returns its description, or none when no bank holds it.
+fn decode_sample(banks: &[Bank], decoder: &Path, id: u32, root: &Path) -> Result<Option<Value>> {
+    let matches = banks
+        .iter()
+        .filter_map(|bank| bank.entries.get(&id).map(|sample| (bank, sample)))
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        return Ok(None);
+    }
+    ensure!(
+        matches.len() == 1,
+        "Sample {id:08X} has {} matches across configured FSB banks. Configure its source bank and only one dialogue language.",
+        matches.len()
+    );
+    let (bank, sample) = matches[0];
+    let mut sample = sample.clone();
+    sample["bank"] = json!(bank.path);
+    let name = format!("{id:08X}.wav");
+    let destination = root.join(&name);
+    let mut command = Command::new(decoder);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    command
+        .args(["-i", "-s"])
+        .arg(sample["stream"].as_u64().unwrap().to_string())
+        .arg("-o")
+        .arg(&destination)
+        .arg(&bank.path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = crate::cancellation::wait_with_output(
+        command.spawn().context("Starting configured FSB decoder")?,
+    )?;
+    ensure!(
+        output.status.success(),
+        "FSB decode {id:08X}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (channels, rate, frames) = pcm_layout(&fs::read(&destination)?)?;
+    ensure!(
+        u64::from(channels) == sample["channels"].as_u64().unwrap()
+            && u64::from(rate) == sample["sample_rate"].as_u64().unwrap()
+            && frames == sample["frames"].as_u64().unwrap(),
+        "Decoded FSB sample layout differs"
+    );
+    sample["file"] = json!(name);
+    sample["output"] = serde_json::to_value(fingerprint(&destination)?)?;
+    Ok(Some(sample))
+}
+
+/// Decodes every sample of `ids` that the FSB bank `bank` holds with `decoder` into `root`, and
+/// returns each one's PCM WAV file and the samples the bank lacks.
+pub(super) fn decode(
+    bank: &Path,
+    decoder: &Path,
+    ids: &BTreeSet<u32>,
+    root: &Path,
+) -> Result<(BTreeMap<u32, PathBuf>, BTreeSet<u32>)> {
+    let banks = [Bank::open(bank)?];
+    let decoder = decoder.canonicalize().context("FSB decoder")?;
+    fs::create_dir_all(root)?;
+    let mut files = BTreeMap::new();
+    let mut missing = BTreeSet::new();
+    for &id in ids {
+        crate::cancellation::check()?;
+        if decode_sample(&banks, &decoder, id, root)?.is_some() {
+            files.insert(id, root.join(format!("{id:08X}.wav")));
+        } else {
+            missing.insert(id);
+        }
+    }
+    Ok((files, missing))
+}
+
 pub(super) fn export(
     options: &Options,
     behavior: &Value,
@@ -255,57 +349,13 @@ pub(super) fn export(
     let expected = wanted.len();
     for id in wanted {
         crate::cancellation::check()?;
-        let matches = banks
-            .iter()
-            .filter_map(|bank| bank.entries.get(&id).map(|sample| (bank, sample)))
-            .collect::<Vec<_>>();
-        if matches.is_empty() && options.record_missing_samples {
-            unavailable.push(json!({"id":id,"reason":"Referenced source sample is absent from the configured banks","native_playback":false}));
-            continue;
+        match decode_sample(&banks, &decoder, id, root)? {
+            Some(sample) => result.push(sample),
+            None if options.record_missing_samples => unavailable.push(json!({"id":id,"reason":"Referenced source sample is absent from the configured banks","native_playback":false})),
+            None => bail!(
+                "Sample {id:08X} has 0 matches across configured FSB banks. Configure its source bank and only one dialogue language."
+            ),
         }
-        ensure!(
-            matches.len() == 1,
-            "Sample {id:08X} has {} matches across configured FSB banks. Configure its source bank and only one dialogue language.",
-            matches.len()
-        );
-        let (bank, sample) = matches[0];
-        let mut sample = sample.clone();
-        sample["bank"] = json!(bank.path);
-        let name = format!("{id:08X}.wav");
-        let destination = root.join(&name);
-        let mut command = Command::new(&decoder);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            command.creation_flags(0x08000000);
-        }
-        command
-            .args(["-i", "-s"])
-            .arg(sample["stream"].as_u64().unwrap().to_string())
-            .arg("-o")
-            .arg(&destination)
-            .arg(&bank.path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let output = crate::cancellation::wait_with_output(
-            command.spawn().context("Starting configured FSB decoder")?,
-        )?;
-        ensure!(
-            output.status.success(),
-            "FSB decode {id:08X}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let (channels, rate, frames) = pcm_layout(&fs::read(&destination)?)?;
-        ensure!(
-            u64::from(channels) == sample["channels"].as_u64().unwrap()
-                && u64::from(rate) == sample["sample_rate"].as_u64().unwrap()
-                && frames == sample["frames"].as_u64().unwrap(),
-            "Decoded FSB sample layout differs"
-        );
-        sample["file"] = json!(name);
-        sample["output"] = serde_json::to_value(fingerprint(&destination)?)?;
-        result.push(sample);
     }
     ensure!(
         expected == 0 || !result.is_empty(),
@@ -316,20 +366,73 @@ pub(super) fn export(
     Ok(report)
 }
 
-fn fire_sound(behavior: &Value) -> Result<Option<&Value>> {
+/// The root's primary firing effects. A weapon with several barrels follows the barrel its
+/// first trigger names as primary, which the source trigger record stores explicitly, and
+/// reports the barrels left without source firing audio.
+fn primary_fire(behavior: &Value) -> Result<(Vec<u64>, Option<Value>)> {
     let edges = behavior["edges"].as_array().context("Behavior links")?;
     let root = behavior["root"]["datum"]
         .as_u64()
         .context("Behavior root")?;
-    let queue = edges
+    let fires = edges
         .iter()
         .filter(|e| e["owner"] == root && e["role"] == "fire")
-        .map(|e| e["tag"]["datum"].as_u64().context("Fire identity"))
-        .collect::<Result<Vec<_>>>()?;
-    fire_sound_from(behavior, queue)
+        .collect::<Vec<_>>();
+    if fires.len() <= 1 {
+        let queue = fires
+            .iter()
+            .map(|e| e["tag"]["datum"].as_u64().context("Fire identity"))
+            .collect::<Result<Vec<_>>>()?;
+        return Ok((queue, None));
+    }
+    let primary =
+        behavior["nodes"][format!("{root:08X}")]["data"]["object"]["gameplay"]["triggers"]
+            .as_array()
+            .and_then(|triggers| triggers.first())
+            .and_then(|trigger| trigger["primary_barrel"].as_i64())
+            .context("Source primary trigger barrel")?;
+    let mut selected = Vec::new();
+    let mut unselected = Vec::new();
+    for edge in &fires {
+        let barrel = edge["barrel"]
+            .as_i64()
+            .context("Fire effect barrel index")?;
+        if barrel == primary {
+            selected.push(edge["tag"]["datum"].as_u64().context("Fire identity")?);
+        } else {
+            unselected.push(json!({"barrel":barrel,"effect":edge["tag"]}));
+        }
+    }
+    ensure!(
+        selected.len() == 1,
+        "The source primary trigger's barrel has no single firing effect"
+    );
+    Ok((
+        selected,
+        Some(
+            json!({"primary_barrel":primary,"barrels":fires.len(),"unselected":unselected,
+            "limits":["Only the primary barrel's firing recording is translated. The other barrels keep the native firing audio and no source charge or secondary firing route."]}),
+        ),
+    ))
 }
 
-pub(super) fn fire_sound_from(behavior: &Value, mut queue: Vec<u64>) -> Result<Option<&Value>> {
+fn fire_sounds(behavior: &Value) -> Result<(Vec<&Value>, Option<Value>)> {
+    let (queue, barrels) = primary_fire(behavior)?;
+    let sounds = fire_sounds_from(behavior, queue.clone())?;
+    firing::validate(behavior, &queue, &sounds)?;
+    Ok((sounds, barrels))
+}
+
+pub(super) fn fire_sound_from(behavior: &Value, queue: Vec<u64>) -> Result<Option<&Value>> {
+    let mut sounds = fire_sounds_from(behavior, queue)?;
+    ensure!(
+        sounds.len() <= 1,
+        "Source barrel has multiple primary firing sounds. Explicit layer translation is required."
+    );
+    Ok(sounds.pop())
+}
+
+fn fire_sounds_from(behavior: &Value, mut queue: Vec<u64>) -> Result<Vec<&Value>> {
     let edges = behavior["edges"].as_array().context("Behavior edges")?;
     let nodes = behavior["nodes"].as_object().context("Behavior nodes")?;
     let mut seen = BTreeSet::new();
@@ -353,11 +456,7 @@ pub(super) fn fire_sound_from(behavior: &Value, mut queue: Vec<u64>) -> Result<O
             }
         }
     }
-    ensure!(
-        sounds.len() <= 1,
-        "Source barrel has multiple primary firing sounds. Explicit layer translation is required."
-    );
-    Ok(sounds.pop())
+    Ok(sounds)
 }
 
 /// Fit primary source fire variations to a checked native firing route.
@@ -370,11 +469,22 @@ pub(super) fn native(
     options: &Options,
 ) -> Result<Value> {
     let rig = crate::tiger::rig::inspect_with_audio(reader, item, false)?;
-    let Some(sound) = fire_sound(behavior)? else {
+    if let Some(Firing::Loop {
+        source: path,
+        slot,
+        node,
+    }) = &options.firing
+    {
+        return looping::native(
+            reader, &rig, behavior, source, graph, options, path, *slot, *node,
+        );
+    }
+    let (sounds, barrels) = fire_sounds(behavior)?;
+    if sounds.is_empty() {
         return Ok(
             json!({"status":"source_only","reason":"No unique primary firing sound on the source barrel"}),
         );
-    };
+    }
     let groups = rig["audio"]["unnamed_groups"]
         .as_array()
         .context("Native firing presentation unavailable")?;
@@ -402,77 +512,90 @@ pub(super) fn native(
     {
         candidates.retain(|(g, s)| s["event_id"] == g["content_key"]);
     }
-    ensure!(
-        candidates.len() == 1,
-        "Native firing sound is absent or ambiguous"
-    );
-    let (presentation, native) = candidates[0];
+    // An explicit output bus can distinguish the firing cue from mechanical
+    // layers on the same branch. Keep ambiguous bus matches as an error.
+    if candidates.len() > 1
+        && let Some(bus) = options.fire_bus
+    {
+        let mut matching = Vec::new();
+        for (group, sound) in candidates {
+            let tag =
+                u32::from_str_radix(sound["bank"].as_str().context("Native firing bank")?, 16)?;
+            if bank_has_bus(&reader.tag(tag, None)?.0, bus)? {
+                matching.push((group, sound));
+            }
+        }
+        candidates = matching;
+    }
+    let named = if let Some(Firing::Named { event }) = &options.firing {
+        let hash = format!("{event:08X}");
+        let matches = rig["audio"]["named_groups"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|g| {
+                g["events"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(move |e| (g, e))
+            })
+            .filter(|(_, e)| e["hash"] == hash)
+            .collect::<Vec<_>>();
+        ensure!(
+            matches.len() == 1,
+            "Native firing animation event is absent or ambiguous"
+        );
+        Some(matches[0])
+    } else {
+        None
+    };
+    let (presentation, native) = if let Some((group, event)) = named {
+        let sounds = event["sounds"]
+            .as_array()
+            .context("Native named firing sounds")?;
+        ensure!(
+            sounds.len() == 1,
+            "Native firing animation event requires layer selection"
+        );
+        (group, &sounds[0])
+    } else {
+        ensure!(
+            candidates.len() == 1,
+            "Native firing sound is absent or ambiguous"
+        );
+        candidates[0]
+    };
     let output_bus = options
         .fire_bus
         .context("Configure an explicit native fire_bus for nonspatial primary-fire playback")?;
     let native_bank =
         u32::from_str_radix(native["bank"].as_str().context("Native firing bank")?, 16)?;
     verify_bus(&reader.tag(native_bank, None)?.0, output_bus)?;
-    let ranges = sound["data"]["pitch_ranges"]
-        .as_array()
-        .context("Sound ranges")?;
-    ensure!(
-        ranges.len() == 1,
-        "Primary firing sound requires pitch-range switching"
-    );
-    let variants = ranges[0]["variants"]
-        .as_array()
-        .context("Sound variations")?;
-    ensure!(
-        !variants.is_empty(),
-        "Primary firing sound has no variations"
-    );
-    let mut media = Vec::new();
-    let mut files = Vec::new();
-    fs::create_dir_all(graph.join("audio"))?;
-    for variant in variants {
-        let id = u32::try_from(variant["fsb_info"].as_u64().context("Sound identity")?)?;
-        let id = format!("{id:08X}");
-        let file = format!("audio/{id}.wem");
-        let pcm = crate::tiger::audio::transcode::normalize_pcm_wem(&fs::read(
-            source.join(format!("{id}.wav")),
-        )?)?;
-        fs::write(graph.join(&file), pcm)?;
-        media.push(id.clone());
-        files.push(json!({"source_tag":id,"file":file}));
+    let (sound, files) = firing::convert(&sounds, source, graph, output_bus)?;
+    let mut report = json!({"authoring_schema":3,"runtime_entity":rig["runtime_entity"],"matched_events":[],"firing_events":[],"routing":"source_one_shot","transcoded_media":files,"converted_banks":[{"source_tag":"00000001","file":"audio/fire.bank.json","version":113,"routing":"source_one_shot"}],"conversion_errors":[],"output_bus":output_bus,"limits":["Primary firing PCM, gain, variation count and the source per-object voice limit are translated. New triggers replace the oldest voice at that limit. This explicit nonspatial route does not reproduce cross-object class limits, source attenuation, tails, pitch modulation, skip fractions or environment switches. Native trigger timing is retained."]});
+    if let Some((group, event)) = named {
+        report["matched_events"] = json!([{"hash":event["hash"],"sounds":[sound],
+            "native_sounds":[native],"native_group":group,"mapping":"source_primary_fire"}]);
+    } else {
+        report["firing_events"] = json!([{"sounds":[sound],"native_sounds":[native],
+            "native_presentation":presentation,"mapping":"source_primary_fire"}]);
     }
-    let ids = media
-        .iter()
-        .map(|id| u32::from_str_radix(id, 16))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let gain = sound["data"]["playback"]["gain_db"]
-        .as_f64()
-        .context("Source firing gain")? as f32;
-    let limits = &sound["data"]["playback_limits"];
-    ensure!(
-        sound["data"]["promotion_index"] == -1 && sound["data"]["custom_playback_index"] == -1,
-        "Primary firing sound requires promotion or custom playback translation"
-    );
-    ensure!(
-        limits["preemption_ms"] == 0 && limits["maximum_per_object_per_class"] == 0,
-        "Primary firing sound requires timed preemption or shared class limits"
-    );
-    let voice_limit = limits["maximum_per_object_per_tag"]
-        .as_u64()
-        .filter(|v| (1..=16).contains(v))
-        .context("Invalid source per-object firing voice limit")? as u16;
-    let bank = crate::tiger::audio::bank::Bank::one_shot(&ids, output_bus, gain, voice_limit)?;
-    fs::write(
-        graph.join("audio/fire.bank.json"),
-        serde_json::to_vec(&bank)?,
-    )?;
-    let sound = json!({"source":sound["tag"],"source_playback":sound["data"]["playback"],"source_playback_limits":limits,"native_voice_limit":voice_limit,"media":media,"media_ids":media,"bank":"00000001","event_id":"00000001","routing":"source_one_shot"});
-    Ok(
-        json!({"authoring_schema":3,"runtime_entity":rig["runtime_entity"],"matched_events":[],"firing_events":[{"sounds":[sound],"native_sounds":[native],"native_presentation":presentation,"mapping":"Source primary fire to unique native fire slot"}],"transcoded_media":files,"converted_banks":[{"source_tag":"00000001","file":"audio/fire.bank.json","version":113,"routing":"source_one_shot"}],"conversion_errors":[],"output_bus":output_bus,"limits":["Primary firing PCM, gain, variation count and the source per-object voice limit are translated. New triggers replace the oldest voice at that limit. This explicit nonspatial route does not reproduce cross-object class limits, source attenuation, tails, pitch modulation, skip fractions or environment switches. Native trigger timing is retained."]}),
-    )
+    if let Some(barrels) = barrels {
+        report["source_barrels"] = barrels;
+    }
+    Ok(report)
 }
 
 pub(super) fn verify_bus(bank: &[u8], bus: u32) -> Result<()> {
+    ensure!(
+        bank_has_bus(bank, bus)?,
+        "Selected fire_bus is not a checked output bus in the native firing bank"
+    );
+    Ok(())
+}
+
+fn bank_has_bus(bank: &[u8], bus: u32) -> Result<bool> {
     let mut at = 0;
     let mut version = None;
     let mut found = false;
@@ -506,8 +629,8 @@ pub(super) fn verify_bus(bank: &[u8], bus: u32) -> Result<()> {
         at += 8 + size;
     }
     ensure!(
-        version == Some(113) && found,
-        "Selected fire_bus is not a checked output bus in the native firing bank"
+        version == Some(113),
+        "Native firing bank is not version 113"
     );
-    Ok(())
+    Ok(found)
 }

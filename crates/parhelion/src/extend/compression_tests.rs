@@ -88,7 +88,8 @@ fn raw_template(payloads: &[Vec<u8>]) -> Vec<u8> {
         .map(|bytes| bytes.len().div_ceil(BLOCK_SIZE))
         .sum();
     let mut bytes =
-        build_standalone_package_skeleton(SOURCE_PACKAGE_ID, &prefixes, block_count, &[]).unwrap();
+        build_standalone_package_skeleton(SOURCE_PACKAGE_ID, &prefixes, block_count, &[], &[])
+            .unwrap();
     let layout = PackageLayout::parse(&bytes).unwrap();
     let trailer = layout.opaque_trailer(&bytes).unwrap().to_vec();
     bytes.truncate(layout.opaque_trailer_offset);

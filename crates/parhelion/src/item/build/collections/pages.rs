@@ -15,6 +15,7 @@ struct NewPage {
     /// Named, described and drawn like the runtime's badge instead of its template page.
     branded: bool,
     children: Vec<u16>,
+    members: Vec<u32>,
     attach: bool,
 }
 use sundial::package_authoring::investment_schema::{
@@ -25,9 +26,18 @@ pub(super) fn append(
     graph: &mut SunriseBadgeGraph,
     plan: &placements::Plan,
     rows: &[ProjectAuthoredRow],
+    weapons: &[WeaponCloneSpec],
     pools: &[u8],
     badge_icon_index: u16,
 ) -> AuthoringResult<()> {
+    if rows.len() != weapons.len() {
+        return Err(invalid("Collections items and rows have different counts"));
+    }
+    let rows_by_hash = weapons
+        .iter()
+        .zip(rows)
+        .map(|(weapon, row)| (weapon.identity.item_hash, row))
+        .collect::<BTreeMap<_, _>>();
     // Indices were allocated weapon pages first, then gear pages, each in key order.
     let weapon_pages = plan
         .pages
@@ -44,6 +54,7 @@ pub(super) fn append(
             name_hash: page.destination.name_hash(),
             branded: false,
             children: Vec::new(),
+            members: Vec::new(),
             attach: true,
         });
     let gear_pages = plan.gear_pages.values().map(|page| NewPage {
@@ -57,13 +68,11 @@ pub(super) fn append(
         name_hash: page.page.set().map(|_| page.page.hash("name")),
         branded: true,
         children: page.children.clone(),
+        members: page.members.clone(),
         attach: page.page.set().is_none(),
     });
     for page in weapon_pages.chain(gear_pages) {
-        let members = rows
-            .iter()
-            .filter(|row| row.pages.contains(page.index))
-            .collect::<Vec<_>>();
+        let members = page_members(&page, rows, &rows_by_hash)?;
         if members.is_empty() && page.children.is_empty() {
             return Err(invalid("Added Collections page has no members or sets"));
         }
@@ -218,6 +227,35 @@ pub(super) fn append(
         }
     }
     Ok(())
+}
+
+fn page_members<'a>(
+    page: &NewPage,
+    rows: &'a [ProjectAuthoredRow],
+    rows_by_hash: &BTreeMap<u32, &'a ProjectAuthoredRow>,
+) -> AuthoringResult<Vec<&'a ProjectAuthoredRow>> {
+    let members = rows
+        .iter()
+        .filter(|row| row.pages.contains(page.index))
+        .collect::<Vec<_>>();
+    if page.attach {
+        return Ok(members);
+    }
+    if page.members.len() != members.len()
+        || page.members.iter().collect::<BTreeSet<_>>().len() != members.len()
+    {
+        return Err(invalid("Armor set membership changed during build"));
+    }
+    page.members
+        .iter()
+        .map(|hash| {
+            rows_by_hash
+                .get(hash)
+                .copied()
+                .filter(|row| row.pages.contains(page.index))
+                .ok_or_else(|| invalid("Armor set member is missing from its planned page"))
+        })
+        .collect()
 }
 
 /// Names, describes and draws a gear page with the strings and artwork of the runtime's badge.

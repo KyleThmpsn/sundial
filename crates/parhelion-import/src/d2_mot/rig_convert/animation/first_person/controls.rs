@@ -91,7 +91,9 @@ fn check(rows: &[Vec<Vec<u8>>]) -> Result<()> {
         let f = |at| f32::from_le_bytes(row[at..at + 4].try_into().unwrap());
         let norm = (0..4).map(|i| f(i * 4).powi(2)).sum::<f32>();
         ensure!(
-            (0..8).all(|i| f(i * 4).is_finite()) && (norm - 1.0).abs() < 1e-3 && f(28) == 1.0,
+            (0..8).all(|i| f(i * 4).is_finite())
+                && (norm - 1.0).abs() < 1e-3
+                && (f(28) - 1.0).abs() < 1e-3,
             "rig control default transform is invalid"
         );
     }

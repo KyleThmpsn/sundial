@@ -580,6 +580,8 @@ pub(crate) fn frame_key(content: &Content, group: u32) -> Option<u32> {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FiredGraph {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundled: Option<crate::weapon::projectile::Preset>,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub source_graph: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -601,6 +603,20 @@ impl FiredGraph {
     /// Imported payloads already contain their edits and symbolic dependencies.
     /// Mixing both origins could silently select the wrong projectile.
     pub(crate) fn validate(&self) -> AuthoringResult<()> {
+        if self.bundled.is_some() {
+            return if self.imported.is_none()
+                && self.source_graph == 0
+                && self.patches.is_empty()
+                && self.appends.is_empty()
+                && self.particles.is_empty()
+            {
+                Ok(())
+            } else {
+                Err(invalid(
+                    "A bundled projectile cannot be combined with another fired graph",
+                ))
+            };
+        }
         match &self.imported {
             Some(symbol)
                 if !symbol.trim().is_empty()

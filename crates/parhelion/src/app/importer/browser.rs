@@ -36,6 +36,8 @@ pub(super) struct View {
     pub show_installed: bool,
     #[serde(default)]
     pub show_dummy: bool,
+    #[serde(default)]
+    pub supported_only: bool,
 }
 
 impl View {
@@ -61,6 +63,8 @@ pub(super) struct Browser {
     pub kind: String,
     pub show_dummy: bool,
     pub show_installed: bool,
+    /// Hides items with no installed donor.
+    pub supported_only: bool,
     pub order: Order,
     pub dirty: bool,
     /// The list returns to the top on its next draw.
@@ -86,6 +90,7 @@ impl Default for Browser {
             kind: String::new(),
             show_dummy: false,
             show_installed: false,
+            supported_only: false,
             order: Order::Catalog,
             dirty: true,
             reset_scroll: false,
@@ -102,6 +107,12 @@ impl Default for Browser {
 }
 
 pub(super) const ROW_HEIGHT: f32 = 64.0;
+/// Rows without artwork drop the icon tile and its height.
+const TEXT_ROW_HEIGHT: f32 = 48.0;
+
+fn row_height(icons: bool) -> f32 {
+    if icons { ROW_HEIGHT } else { TEXT_ROW_HEIGHT }
+}
 
 impl Browser {
     pub fn view(&self) -> View {
@@ -112,6 +123,7 @@ impl Browser {
             order: self.order,
             show_installed: self.show_installed,
             show_dummy: self.show_dummy,
+            supported_only: self.supported_only,
         }
     }
 
@@ -122,12 +134,14 @@ impl Browser {
         self.order = view.order;
         self.show_installed = view.show_installed;
         self.show_dummy = view.show_dummy;
+        self.supported_only = view.supported_only;
         self.dirty = true;
     }
 
     fn matches(&self, weapon: &Weapon, query: &str) -> bool {
         (self.show_dummy || !weapon.dummy)
             && (self.show_installed || !weapon.present_in_native)
+            && (!self.supported_only || self.importable(weapon))
             && (self.kind.is_empty() || weapon.weapon_type == self.kind)
             && self.filters.matches(weapon)
             && query.split_whitespace().all(|word| {
@@ -147,6 +161,7 @@ impl Browser {
             || self.filters.active()
             || self.show_installed
             || self.show_dummy
+            || self.supported_only
     }
 
     pub fn clear_filters(&mut self) {
@@ -155,6 +170,7 @@ impl Browser {
         self.filters = filters::Filters::default();
         self.show_installed = false;
         self.show_dummy = false;
+        self.supported_only = false;
         self.dirty = true;
         self.reset_scroll = true;
     }
@@ -225,6 +241,9 @@ struct Row<'a> {
     cursor: bool,
     idle: bool,
     stripe: bool,
+    icon: bool,
+    /// Source lines a Halo: Reach or Marathon row adds to its hover.
+    source: Option<String>,
 }
 
 fn row_background(
@@ -265,6 +284,25 @@ fn row_background(
     }
 }
 
+fn missing_donor_text(row: &Row<'_>) -> &'static str {
+    let weapon = row.weapon;
+    if row.source.is_some() {
+        if weapon.family() == service::Family::Sparrow {
+            "No installed native Sparrow to build on."
+        } else {
+            "No installed native weapon of this type to build on."
+        }
+    } else if weapon.is_shader() {
+        "No installed native shader to convert with."
+    } else if weapon.family().is_model_gear() {
+        "No installed native item matches this equipment slot and class."
+    } else if weapon.family() == service::Family::Emblem {
+        "No installed native emblem to convert with."
+    } else {
+        "No installed native weapon of this type to convert with."
+    }
+}
+
 fn draw_row(
     ui: &mut egui::Ui,
     rect: egui::Rect,
@@ -295,19 +333,28 @@ fn draw_row(
         )
     });
     row_background(ui, rect, &response, &row, active);
-    let check_rect =
-        egui::Rect::from_min_size(rect.min + egui::vec2(10.0, 22.0), egui::vec2(20.0, 20.0));
+    let height = rect.height();
+    let check_rect = egui::Rect::from_min_size(
+        rect.min + egui::vec2(10.0, (height - 20.0) / 2.0),
+        egui::vec2(20.0, 20.0),
+    );
     let mut checked = row.selected;
     let check = ui
         .add_enabled_ui(active, |ui| {
             ui.put(check_rect, egui::Checkbox::without_text(&mut checked))
         })
         .inner;
-    let icon_rect =
-        egui::Rect::from_min_size(rect.min + egui::vec2(40.0, 8.0), egui::vec2(48.0, 48.0));
-    ui.painter()
-        .rect_filled(icon_rect, 4.0, ui.visuals().extreme_bg_color);
-    icons.draw(ui, icon_rect, weapon.icon_index);
+    let mut text_left = rect.min.x + 40.0;
+    if row.icon {
+        let icon_rect = egui::Rect::from_min_size(
+            rect.min + egui::vec2(40.0, (height - 48.0) / 2.0),
+            egui::vec2(48.0, 48.0),
+        );
+        ui.painter()
+            .rect_filled(icon_rect, 4.0, ui.visuals().extreme_bg_color);
+        icons.draw(ui, icon_rect, weapon.icon_index);
+        text_left = rect.min.x + 98.0;
+    }
 
     let badge = if row.no_donor {
         Some(("No Donor", ui.visuals().error_fg_color))
@@ -319,7 +366,7 @@ fn draw_row(
     let mut text_right = rect.right() - 12.0;
     if let Some((text, color)) = badge {
         let badge_rect = egui::Rect::from_min_size(
-            egui::pos2(rect.right() - 112.0, rect.top() + 21.0),
+            egui::pos2(rect.right() - 112.0, rect.top() + (height - 22.0) / 2.0),
             egui::vec2(100.0, 22.0),
         );
         text_right = badge_rect.left() - 12.0;
@@ -331,21 +378,13 @@ fn draw_row(
             )
             .add(egui::Label::new(egui::RichText::new(text).color(color)).selectable(false));
         if row.no_donor {
-            badge.on_hover_text(if weapon.is_shader() {
-                "No installed native shader to convert with."
-            } else if weapon.family().is_model_gear() {
-                "No installed native item matches this equipment slot and class."
-            } else if weapon.family() == service::Family::Emblem {
-                "No installed native emblem to convert with."
-            } else {
-                "No installed native weapon of this type to convert with."
-            });
+            badge.on_hover_text(missing_donor_text(&row));
         }
     }
-    let text_left = rect.min.x + 98.0;
+    let text_top = rect.top() + if row.icon { 9.0 } else { 2.0 };
     let title_rect = egui::Rect::from_min_max(
-        egui::pos2(text_left, rect.top() + 9.0),
-        egui::pos2(text_right, rect.top() + 31.0),
+        egui::pos2(text_left, text_top),
+        egui::pos2(text_right, text_top + 22.0),
     );
     let subtitle = filters::details(weapon);
     // `put` centres a label; rows need left-aligned text.
@@ -364,10 +403,13 @@ fn draw_row(
         .add(egui::Label::new(text).truncate().selectable(false));
     }
     let clicked = response.clicked() && !check.hovered();
-    response.on_hover_text(format!(
-        "{}\n{}\nSource Item: {:08X}",
-        weapon.name, subtitle, weapon.hash
-    ));
+    response.on_hover_text(match &row.source {
+        Some(source) => format!("{}\n{}\n{source}", weapon.name, subtitle),
+        None => format!(
+            "{}\n{}\nSource Item: {:08X}",
+            weapon.name, subtitle, weapon.hash
+        ),
+    });
     if clicked || check.changed() {
         event = Some(RowEvent::Toggle {
             shift: clicked && ui.input(|input| input.modifiers.shift),
@@ -415,7 +457,7 @@ impl PackageAuthoringApp {
                 .response;
             super::super::pickers::name_response(ui, &order, "Sort Order");
         });
-        changed |= filters::draw(ui, browser, &self.importer.weapons);
+        changed |= filters::draw(ui, browser, &self.importer.weapons, self.importer.source);
         if changed || query_changed {
             browser.dirty = true;
             browser.reset_scroll = true;
@@ -507,8 +549,12 @@ impl PackageAuthoringApp {
             selected,
             icons,
             settings,
+            origins,
+            source,
             ..
         } = &mut self.importer;
+        let with_icons = source.icons();
+        let row_height = row_height(with_icons);
         if browser.visible.is_empty() {
             let (title, detail) = if weapons.is_empty() {
                 ("No Items", "")
@@ -539,7 +585,7 @@ impl PackageAuthoringApp {
             }
             return;
         }
-        let step = ROW_HEIGHT + ui.spacing().item_spacing.y;
+        let step = row_height + ui.spacing().item_spacing.y;
         let viewport = ui.available_height();
         let mut scroll = egui::ScrollArea::vertical()
             .id_salt("importer-weapons")
@@ -558,15 +604,15 @@ impl PackageAuthoringApp {
         let mut icon_indices = Vec::new();
         let mut events = Vec::new();
         let mut seen = 0..0;
-        scroll.show_rows(ui, ROW_HEIGHT, browser.visible.len(), |ui, rows| {
+        scroll.show_rows(ui, row_height, browser.visible.len(), |ui, rows| {
             seen = rows.clone();
             for row in rows {
                 let weapon = &weapons[browser.visible[row]];
-                if let Some(index) = weapon.icon_index {
+                if let Some(index) = weapon.icon_index.filter(|_| with_icons) {
                     icon_indices.push(index);
                 }
                 let (rect, _) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), ROW_HEIGHT),
+                    egui::vec2(ui.available_width(), row_height),
                     egui::Sense::hover(),
                 );
                 let event = draw_row(
@@ -580,6 +626,8 @@ impl PackageAuthoringApp {
                         cursor: browser.cursor == Some(row),
                         idle,
                         stripe: row % 2 == 0,
+                        icon: with_icons,
+                        source: origins.get(&weapon.hash).map(Origin::hover),
                     },
                 );
                 if let Some(event) = event {
@@ -620,7 +668,7 @@ impl PackageAuthoringApp {
                 }
             }
         }
-        if let Some(modern) = &settings.modern_packages {
+        if let Some(modern) = settings.modern_packages.as_ref().filter(|_| with_icons) {
             icons.request(ui.ctx(), modern, &icon_indices);
         }
     }

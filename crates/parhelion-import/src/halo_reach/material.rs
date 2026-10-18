@@ -12,6 +12,8 @@ pub struct Mapping {
     pub bitmap: Option<Tag>,
     pub transform: [f32; 4],
     pub frame: usize,
+    /// The sampler address mode byte stored after the frame.
+    pub address: u8,
     pub functions: Vec<Function>,
 }
 #[derive(Clone, Debug, Serialize)]
@@ -41,22 +43,31 @@ impl Mapping {
 
     /// The checked MCC decimal frame function maps its named digit to ten frames.
     /// Other functions remain in the source receipt without a runtime claim.
-    pub fn ammunition_place(&self) -> Option<u32> {
+    pub fn ammunition_place(&self, cache: &Cache) -> Result<Option<u32>> {
         let [function] = self.functions.as_slice() else {
-            return None;
+            return Ok(None);
         };
         const DECIMAL: [u8; 32] = [
             0, 0x34, 0, 0, 0, 0, 0, 0, 0, 0, 0x20, 0x41, 0, 0, 0, 0, 0, 0, 0, 0, 0x48, 0xe1, 0xfa,
             0x3e, 0, 0, 0, 0x3f, 0, 0, 0, 0,
         ];
         if function.kind != 7 || !function.range.is_empty() || function.data != DECIMAL {
-            return None;
+            return Ok(None);
         }
-        match function.input.as_str() {
-            "primary_ammunition_ones" => Some(1),
-            "primary_ammunition_tens" => Some(10),
-            _ => None,
-        }
+        let place = match function.input.as_str() {
+            "primary_ammunition_ones" => 1,
+            "primary_ammunition_tens" => 10,
+            _ => return Ok(None),
+        };
+        let bitmap = self.bitmap.as_ref().context("Decimal bitmap")?;
+        let images = cache.block(bitmap.address()? + 124, 56)?.len();
+        ensure!(
+            matches!(images, 1 | 10),
+            "Decimal frame function requires one static image or ten digit images"
+        );
+        // A one-image display plate can carry the same selector as digit art.
+        // It always resolves to its sole surface and needs no runtime input.
+        Ok((images == 10).then_some(place))
     }
 }
 #[derive(Clone, Debug, Serialize)]
@@ -81,6 +92,21 @@ pub fn read(c: &Cache, tag: Option<Tag>) -> Result<Material> {
     };
     let Some(tag) = tag else { return Ok(result) };
     let at = tag.address()?;
+    read_at(c, &mut result, at)?;
+    Ok(result)
+}
+
+pub(super) fn embedded(c: &Cache, owner: Tag, at: usize) -> Result<Material> {
+    let mut result = Material {
+        tag: Some(owner),
+        options: BTreeMap::new(),
+        properties: Vec::new(),
+    };
+    read_at(c, &mut result, at)?;
+    Ok(result)
+}
+
+fn read_at(c: &Cache, result: &mut Material, at: usize) -> Result<()> {
     let definition = c
         .reference(at, Some("rmdf"))?
         .context("Material has no definition")?;
@@ -176,6 +202,7 @@ pub fn read(c: &Cache, tag: Option<Tag>) -> Result<Material> {
                 bitmap: c.reference(mapping, Some("bitm"))?,
                 transform,
                 frame: usize::try_from(frame)?,
+                address: c.u8(mapping + 18)?,
                 functions: selected.to_vec(),
             });
         }
@@ -186,7 +213,7 @@ pub fn read(c: &Cache, tag: Option<Tag>) -> Result<Material> {
             functions,
         });
     }
-    Ok(result)
+    Ok(())
 }
 
 impl Material {
@@ -200,8 +227,15 @@ impl Material {
     pub fn constant(&self, name: &str) -> Option<[f32; 4]> {
         self.properties.first()?.constants.get(name).copied()
     }
+    /// Whether the material is a glass shader (`rmgl`). Reach always blends glass by an opacity of
+    /// its own, which its options do not name.
+    pub fn glass(&self) -> bool {
+        self.tag.as_ref().is_some_and(|tag| tag.group == "rmgl")
+    }
     pub fn alpha_mode(&self) -> &'static str {
-        if self.options.get("alpha_test").is_some_and(|o| o != "none") {
+        if self.glass() {
+            "BLEND"
+        } else if self.options.get("alpha_test").is_some_and(|o| o != "none") {
             "MASK"
         } else if self.options.get("blend_mode").is_some_and(|o| {
             [
@@ -216,6 +250,34 @@ impl Material {
         } else {
             "OPAQUE"
         }
+    }
+    /// Whether the material never draws: alpha blended by a constant albedo whose alpha is zero, as
+    /// `fx\fx_anchor\shaders\invisible` is, or alpha tested against a map whose every texel's alpha
+    /// lies below half, so the alpha test discards every pixel, as Reach's other `invisible` shaders
+    /// do with `alpha_black`. The map is the one a native surface's alpha test reads, and terrain,
+    /// which tests its albedo's alpha, is never judged so.
+    pub fn never_drawn(&self, cache: &Cache, pages: &mut Pages) -> Result<bool> {
+        let option = |name: &str| self.options.get(name).map(String::as_str);
+        if option("blend_mode") == Some("alpha_blend")
+            && option("albedo") == Some("constant_color")
+            && option("alpha_blend_source")
+                .is_some_and(|value| value.starts_with("from_albedo_alpha"))
+            && self
+                .constant("albedo_color")
+                .is_some_and(|color| color[3] <= 0.)
+        {
+            return Ok(true);
+        }
+        let terrain = self.tag.as_ref().is_some_and(|tag| tag.group == "rmtr");
+        let Some(mapping) = self
+            .mapping(&["alpha_mask_map", "alpha_test_map", "alpha_map"])
+            .filter(|_| self.alpha_mode() == "MASK" && !terrain)
+        else {
+            return Ok(false);
+        };
+        let bitmap = mapping.bitmap.as_ref().context("Missing mapped bitmap")?;
+        let image = image(cache, pages, bitmap, mapping.static_frame(cache)?, false)?;
+        Ok(image.rgba.chunks_exact(4).all(|texel| texel[3] < 128))
     }
 }
 
@@ -280,6 +342,108 @@ pub fn image(c: &Cache, pages: &mut Pages, tag: &Tag, image: usize, normal: bool
         "Surface texture is not a 2D image"
     );
     let format = c.i16(row + 8)?;
+    let resource = image_resource(c, tag, row, image)?;
+    let (unit, compressed) = texel_layout(format, tag)?;
+    let length = image_length(width, height, unit, compressed);
+    ensure!(
+        length <= 256 * 1024 * 1024 && width * height <= 64 * 1024 * 1024,
+        "Bitmap exceeds decode limit"
+    );
+    let raw = pages.bytes(c, &resource, 0, length)?;
+    Ok(Image {
+        tag: tag.clone(),
+        image,
+        width,
+        height,
+        format,
+        curve: c.u8(row + 17)?,
+        source_mips: c.u8(row + 16)?,
+        normal,
+        rgba: decode(&raw, width, height, format, normal)?,
+    })
+}
+
+/// Accumulates each texel's color times its alpha, linear unless `gamma`.
+fn add_texels(sum: &mut [f64; 3], rgba: &[u8], gamma: bool) {
+    for texel in rgba.chunks_exact(4) {
+        let alpha = f64::from(texel[3]) / 255.;
+        for (total, &value) in sum.iter_mut().zip(texel) {
+            let value = f64::from(value) / 255.;
+            *total += if gamma { value.powf(2.2) } else { value } * alpha;
+        }
+    }
+}
+
+/// The mean color of a cube map's six faces at full size, each texel's color times its alpha, as
+/// Reach's environment lighting multiplies them, and linear unless the bitmap's curve stores gamma
+/// encoded values. The faces are read as six consecutive mip chains, each down to one texel. Were
+/// the six full-size faces stored first instead, those reads would still fall across all six, so
+/// the mean changes little either way. A 2D image in the environment slot, as Breakneck's 256 by
+/// 192 `cex_headlong_city`, gives the mean of its full-size image.
+pub fn cube_mean(c: &Cache, pages: &mut Pages, tag: &Tag) -> Result<[f32; 3]> {
+    let at = tag.address()?;
+    let row = *c
+        .block(at + 124, 56)?
+        .first()
+        .context("Cube map has no image")?;
+    let size = c.u16(row)? as usize;
+    let height = c.u16(row + 2)? as usize;
+    let gamma = c.u8(row + 17)? != LINEAR_CURVE;
+    if size != height && c.u8(row + 6)? == 0 {
+        let image = image(c, pages, tag, 0, false)?;
+        let mut sum = [0f64; 3];
+        add_texels(&mut sum, &image.rgba, gamma);
+        let count = (image.width * image.height) as f64;
+        return Ok(sum.map(|total| (total / count) as f32));
+    }
+    ensure!(
+        size > 0 && size <= 4096 && height == size,
+        "Cube map faces are not square: {size} by {height}, image type {}",
+        c.u8(row + 6)?
+    );
+    ensure!(
+        c.u8(row + 5)? & 8 == 0,
+        "Swizzled MCC bitmap needs a layout translation"
+    );
+    let format = c.i16(row + 8)?;
+    let (unit, compressed) = texel_layout(format, tag)?;
+    let face = image_length(size, size, unit, compressed);
+    let chain = (0..=size.ilog2())
+        .map(|level| {
+            let side = (size >> level).max(1);
+            image_length(side, side, unit, compressed)
+        })
+        .sum::<usize>();
+    let resource = image_resource(c, tag, row, 0)?;
+    let raw = pages
+        .bytes(c, &resource, 0, chain * 5 + face)
+        .with_context(|| format!("Cube map {} holds fewer than six faces", tag.path))?;
+    let mut sum = [0f64; 3];
+    for index in 0..6 {
+        let rgba = decode(
+            &raw[index * chain..index * chain + face],
+            size,
+            size,
+            format,
+            false,
+        )?;
+        add_texels(&mut sum, &rgba, gamma);
+    }
+    let count = (6 * size * size) as f64;
+    Ok(sum.map(|total| (total / count) as f32))
+}
+
+/// The source bitmap curve whose values are stored linear, not gamma encoded.
+pub const LINEAR_CURVE: u8 = 3;
+
+/// The resource holding image `image` of bitmap `tag`, whose image row is at `row`.
+fn image_resource(
+    c: &Cache,
+    tag: &Tag,
+    row: usize,
+    image: usize,
+) -> Result<super::resource::Resource> {
+    let at = tag.address()?;
     let resources = c.block(at + 168, 8)?;
     let interleaved = c.block(at + 180, 8)?;
     let r = if interleaved.is_empty() {
@@ -289,25 +453,50 @@ pub fn image(c: &Cache, pages: &mut Pages, tag: &Tag, image: usize, normal: bool
             .get(c.u8(row + 18)? as usize)
             .context("Bitmap interleaved resource outside table")?
     };
-    let resource = c.resource(tag, c.u32(r)?)?;
-    let (unit, compressed) = match format {
+    c.resource(tag, c.u32(r)?)
+}
+
+/// The bytes of one texel, or of one 4 by 4 block for a compressed `format`, and whether it is
+/// compressed. Uncompressed formats 24, 25, 28 and 30 store four channels red first: 32-bit floats,
+/// 16-bit floats, signed bytes and unsigned 16-bit values.
+fn layout(format: i16) -> Option<(usize, bool)> {
+    Some(match format {
         0..=2 => (1, false),
         3 | 6 | 8 | 9 | 22 => (2, false),
-        10 | 11 => (4, false),
+        10 | 11 | 28 => (4, false),
+        25 | 30 => (8, false),
+        24 => (16, false),
         14 | 31 | 40..=43 => (8, true),
         15 | 16 | 38 | 44 => (16, true),
-        n => anyhow::bail!("Unsupported surface texture format {n} in {}", tag.path),
-    };
-    let length = if compressed {
+        _ => return None,
+    })
+}
+
+fn texel_layout(format: i16, tag: &Tag) -> Result<(usize, bool)> {
+    layout(format).with_context(|| {
+        format!(
+            "Unsupported surface texture format {format} in {}",
+            tag.path
+        )
+    })
+}
+
+fn image_length(width: usize, height: usize, unit: usize, compressed: bool) -> usize {
+    if compressed {
         width.div_ceil(4) * height.div_ceil(4) * unit
     } else {
         width * height * unit
-    };
+    }
+}
+
+/// Decodes `raw`, a `width` by `height` image of `format`, into RGBA8.
+fn decode(raw: &[u8], width: usize, height: usize, format: i16, normal: bool) -> Result<Vec<u8>> {
+    let (unit, compressed) =
+        layout(format).with_context(|| format!("Unsupported surface texture format {format}"))?;
     ensure!(
-        length <= 256 * 1024 * 1024 && width * height <= 64 * 1024 * 1024,
-        "Bitmap exceeds decode limit"
+        raw.len() >= image_length(width, height, unit, compressed),
+        "Bitmap data ends early"
     );
-    let raw = pages.bytes(c, &resource, 0, length)?;
     let mut rgba = vec![0; width * height * 4];
     if compressed {
         for by in 0..height.div_ceil(4) {
@@ -327,7 +516,7 @@ pub fn image(c: &Cache, pages: &mut Pages, tag: &Tag, image: usize, normal: bool
             }
         }
     } else {
-        for (i, b) in raw.chunks_exact(unit).enumerate() {
+        for (i, b) in raw[..width * height * unit].chunks_exact(unit).enumerate() {
             let p = match format {
                 0 => [255, 255, 255, b[0]],
                 1 => [b[0], b[0], b[0], 255],
@@ -337,6 +526,18 @@ pub fn image(c: &Cache, pages: &mut Pages, tag: &Tag, image: usize, normal: bool
                 }
                 3 => [b[0], b[0], b[0], b[1]],
                 10 | 11 => [b[2], b[1], b[0], if format == 10 { 255 } else { b[3] }],
+                24 => std::array::from_fn(|k| {
+                    unorm(f32::from_le_bytes(b[k * 4..k * 4 + 4].try_into().unwrap()))
+                }),
+                25 => std::array::from_fn(|k| {
+                    unorm(half::f16::from_le_bytes([b[k * 2], b[k * 2 + 1]]).to_f32())
+                }),
+                28 => {
+                    std::array::from_fn(|k| unorm((b[k] as i8 as f32 / 127.).max(-1.) * 0.5 + 0.5))
+                }
+                30 => std::array::from_fn(|k| {
+                    unorm(f32::from(u16::from_le_bytes([b[k * 2], b[k * 2 + 1]])) / 65535.)
+                }),
                 22 => {
                     let x = (b[0] as i8 as f32 / 127.).max(-1.);
                     let y = (b[1] as i8 as f32 / 127.).max(-1.);
@@ -375,17 +576,7 @@ pub fn image(c: &Cache, pages: &mut Pages, tag: &Tag, image: usize, normal: bool
             rgba[i * 4..i * 4 + 4].copy_from_slice(&p);
         }
     }
-    Ok(Image {
-        tag: tag.clone(),
-        image,
-        width,
-        height,
-        format,
-        curve: c.u8(row + 17)?,
-        source_mips: c.u8(row + 16)?,
-        normal,
-        rgba,
-    })
+    Ok(rgba)
 }
 fn decode_block(b: &[u8], format: i16, normal: bool) -> Result<[u8; 64]> {
     let mut pixels = [0u8; 64];

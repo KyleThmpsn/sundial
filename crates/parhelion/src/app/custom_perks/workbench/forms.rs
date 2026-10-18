@@ -108,7 +108,9 @@ impl Workbench {
                 });
                 // Shown where the type's plug is offered by a shared plug set, and while on, so
                 // it can be turned off after the type changes.
-                if counts.get(&hash).is_some_and(|&sets| sets > 0) || recipe.offer_everywhere {
+                if (recipe.projectile.is_none() && counts.get(&hash).is_some_and(|&sets| sets > 0))
+                    || recipe.offer_everywhere
+                {
                     let offer = ui
                         .checkbox(&mut recipe.offer_everywhere, "Offer Everywhere")
                         .on_hover_text(format!(
@@ -125,6 +127,12 @@ impl Workbench {
                         recipe.classification = Some(plug.into());
                     }
                 }
+            }
+            if let Some(projectile) = recipe.projectile {
+                ui.label(format!("Projectile: {}", projectile.label()))
+                    .on_hover_text(
+                        "Attaching this perk gives the weapon its own copy of this projectile.",
+                    );
             }
             // A disclosure drawn as one control. It used to be a label padded with four
             // spaces and an arrow painted into a copied response rect, which left the caret

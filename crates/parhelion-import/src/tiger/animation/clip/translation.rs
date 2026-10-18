@@ -10,12 +10,16 @@ fn curve(
     frames: usize,
     delta: [f32; 3],
 ) -> Result<()> {
-    ensure!(p.u32(base - 4)? == 0x80808F72, "Native curve class differs");
+    use sundial::package_authoring::animation_curve::{Channel, Decoder};
     let counts = [
         p.u16(base + 2)? as usize,
         p.u16(base + 4)? as usize,
         p.u16(base + 6)? as usize,
     ];
+    // Validate the selected track's keys, time coverage and tangents before editing it.
+    Decoder::read(&p.0, base, counts, frames)
+        .and_then(|decoder| decoder.samples(Channel::Position, track))
+        .map_err(anyhow::Error::msg)?;
     let ranges = p.array(base + 0x50, 4, Some(0x8080000F))?;
     let maps = p.array(base + 0x70, 2, Some(0x80800006))?;
     ensure!(
@@ -102,6 +106,7 @@ pub fn translate(
         };
         found = true;
         let base = original.pointer(pointer)?;
+        ensure!(base >= 4, "Native clip codec lacks its class header");
         ensure!(
             original.u16(base + 6)? as usize == positions.len(),
             "Native position map differs from codec"

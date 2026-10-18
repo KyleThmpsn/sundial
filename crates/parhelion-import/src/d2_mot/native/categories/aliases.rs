@@ -49,15 +49,20 @@ impl Namespace {
                 .source_groups
                 .get(source)
                 .context("requested Source category group missing")?;
-            let mapped = members
-                .iter()
-                .filter(|name| indices.contains_key(*name))
-                .copied()
-                .collect::<BTreeSet<_>>();
-            let unresolved = members
-                .difference(&mapped)
-                .copied()
-                .collect::<BTreeSet<_>>();
+            let mut mapped = BTreeSet::new();
+            let mut unresolved = BTreeSet::new();
+            for &member in members {
+                let source_index = self
+                    .source_names
+                    .iter()
+                    .position(|&name| name == member)
+                    .context("source group member is absent from its dictionary")?;
+                if let Some(index) = self.source_indices[source_index] {
+                    mapped.insert(self.names[usize::from(index)]);
+                } else {
+                    unresolved.insert(member);
+                }
+            }
             let label = format!("parhelion/source_group/{source:08X}");
             let native = hash(&label);
             if let Some(existing) = self.group_aliases.get(source) {

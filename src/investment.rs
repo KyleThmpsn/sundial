@@ -148,6 +148,39 @@ impl InvestmentCatalog {
             .collect()
     }
 
+    /// A small leaf under native Armor Collections, independent of display names.
+    #[must_use]
+    pub fn item_armor_set(&self, item_hash: u32) -> Option<u64> {
+        let mut sets = BTreeSet::new();
+        for parent in self.item_collection_parents(item_hash) {
+            let children = self.catalog.presentation_node_children(parent);
+            if !children.nodes.is_empty() || !(1..=5).contains(&children.collectibles.len()) {
+                continue;
+            }
+            let mut pending = vec![parent];
+            let mut ancestors = BTreeSet::new();
+            while let Some(hash) = pending.pop() {
+                if ancestors.insert(hash)
+                    && let Some(node) = self.catalog.presentation_node(hash)
+                {
+                    pending.extend(node.parents.iter().copied());
+                }
+            }
+            if ancestors.contains(&0x5FAB_0042)
+                && [0x305A_5226, 0xDF3B_D502, 0x4BB1_6895]
+                    .iter()
+                    .any(|hash| ancestors.contains(hash))
+            {
+                sets.insert(parent);
+            }
+        }
+        if sets.len() == 1 {
+            sets.into_iter().next()
+        } else {
+            None
+        }
+    }
+
     /// Where an item appears in Collections, one node-name path per placement.
     #[must_use]
     pub fn item_collection_paths(&self, item_hash: u32) -> Vec<Vec<String>> {

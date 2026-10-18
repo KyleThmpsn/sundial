@@ -108,6 +108,8 @@ struct RecipeLibraryState {
     schema: u32,
     known_bundled_recipes: BTreeSet<String>,
     enabled_recipes: BTreeSet<String>,
+    /// File names of the maps folder's recipes a build includes. A new map starts out of builds.
+    enabled_maps: BTreeSet<String>,
     #[serde(flatten)]
     extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
@@ -128,6 +130,7 @@ pub struct RecipeLibraryEntry {
     pub kind: crate::ItemKind,
     pub collection_destination: Option<crate::collection::Destination>,
     pub armor_class: Option<crate::ArmorClass>,
+    pub(crate) armor_origin: Option<crate::collection::armor::Origin>,
     pub badge: Option<LibraryBadge>,
     /// The release watermark's fingerprint. [`load_corner_icon`] reads the artwork.
     pub corner_icon: Option<u64>,
@@ -168,9 +171,23 @@ pub(crate) fn load_corner_icon(
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
+/// A Crucible map recipe of the maps folder, which the library lists for builds. Maps have no
+/// editor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MapLibraryEntry {
+    pub path: PathBuf,
+    /// The map's internal name, which its activity and packages carry.
+    pub name: String,
+    pub title: String,
+    /// Whether the map converts another game's level.
+    pub source: bool,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RecipeLibraryScan {
     pub entries: Vec<RecipeLibraryEntry>,
+    /// The maps folder's recipes, none without the D2 model importer.
+    pub maps: Vec<MapLibraryEntry>,
     pub errors: Vec<String>,
 }
 
@@ -179,13 +196,19 @@ pub struct RecipeLibrary {
     root: PathBuf,
     canonical_root: PathBuf,
     refresh: Option<DefaultsRefresh>,
+    /// The folder of map recipes the library lists, none without the D2 model importer.
+    maps: Option<PathBuf>,
 }
 
 impl RecipeLibrary {
     pub fn open_default() -> Result<Self, String> {
         let root = sundial::package_authoring::parhelion_recipe_library_directory()
             .ok_or_else(|| "Could not locate Sundial's per-user data directory".to_owned())?;
-        Self::open(root)
+        let mut library = Self::open(root)?;
+        if cfg!(feature = "d2-model-importer") {
+            library.maps = crate::map::library_directory();
+        }
+        Ok(library)
     }
 
     pub fn open(root: PathBuf) -> Result<Self, String> {
@@ -205,6 +228,7 @@ impl RecipeLibrary {
             root,
             canonical_root,
             refresh: None,
+            maps: None,
         };
         library.refresh = library.materialize_bundled_recipes()?;
         Ok(library)
@@ -231,10 +255,11 @@ impl RecipeLibrary {
 
         let mut scan = RecipeLibraryScan::default();
         for path in paths {
-            match WeaponRecipe::load_listing(&path) {
-                Ok(recipe) => scan.entries.push(RecipeLibraryEntry {
+            match WeaponRecipe::load_listing_details(&path) {
+                Ok((recipe, armor_origin)) => scan.entries.push(RecipeLibraryEntry {
                     // Read first, while the fields below have not yet moved out of the recipe.
                     art: crate::icon_art::Art::of(&recipe),
+                    armor_origin,
                     kind: recipe.kind,
                     collection_destination: recipe.overrides.collection_destination,
                     armor_class: recipe.overrides.armor_class,
@@ -297,7 +322,38 @@ impl RecipeLibrary {
                 entry.path.clone(),
             )
         });
+        if let Some(directory) = &self.maps {
+            let files = crate::map::library_files(directory).map_err(|error| error.to_string())?;
+            for (path, recipe) in files {
+                match recipe {
+                    Ok(recipe) => scan.maps.push(MapLibraryEntry {
+                        path,
+                        name: recipe.name,
+                        title: recipe.title,
+                        source: recipe.source.is_some(),
+                    }),
+                    Err(error) => scan.errors.push(error.to_string()),
+                }
+            }
+            scan.maps
+                .sort_by_cached_key(|map| (map.title.to_ascii_lowercase(), map.path.clone()));
+        }
         Ok(scan)
+    }
+
+    /// The paths of `maps` a build includes.
+    pub fn enabled_map_paths(&self, maps: &[MapLibraryEntry]) -> Result<BTreeSet<PathBuf>, String> {
+        let _lock = self.lock()?;
+        let (state, _) = self.read_state()?;
+        Ok(maps
+            .iter()
+            .filter(|map| {
+                map_file_name(map)
+                    .ok()
+                    .is_some_and(|name| state.enabled_maps.contains(&name))
+            })
+            .map(|map| map.path.clone())
+            .collect())
     }
 
     pub fn enabled_paths(
@@ -330,15 +386,27 @@ impl RecipeLibrary {
             .collect())
     }
 
-    pub fn save_enabled_paths(
+    /// Saves which recipes and maps a build includes. `paths` holds both, and membership changes
+    /// only for the recipes and maps the user could select.
+    pub fn save_enabled_selection(
         &self,
         paths: &BTreeSet<PathBuf>,
         visible_entries: &[RecipeLibraryEntry],
+        visible_maps: &[MapLibraryEntry],
     ) -> Result<(), String> {
         let _lock = self.lock()?;
         let (mut state, original) = self.read_state()?;
-        let selected: BTreeSet<String> = paths
+        let (maps, recipes): (BTreeSet<&PathBuf>, BTreeSet<&PathBuf>) = paths
             .iter()
+            .partition(|path| visible_maps.iter().any(|map| &map.path == *path));
+        for map in visible_maps {
+            state.enabled_maps.remove(&map_file_name(map)?);
+        }
+        for map in visible_maps.iter().filter(|map| maps.contains(&map.path)) {
+            state.enabled_maps.insert(map_file_name(map)?);
+        }
+        let selected: BTreeSet<String> = recipes
+            .into_iter()
             .map(|path| {
                 path.strip_prefix(&self.root)
                     .ok()
@@ -747,6 +815,14 @@ fn encode_state(state: &RecipeLibraryState) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("Could not encode recipe library state: {error}"))?;
     encoded.push(b'\n');
     Ok(encoded)
+}
+
+fn map_file_name(map: &MapLibraryEntry) -> Result<String, String> {
+    map.path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_owned)
+        .ok_or_else(|| format!("Map recipe has no UTF-8 filename: {}", map.path.display()))
 }
 
 fn entry_file_name(entry: &RecipeLibraryEntry) -> Result<String, String> {

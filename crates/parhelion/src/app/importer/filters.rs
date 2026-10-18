@@ -127,7 +127,77 @@ fn choice<T: Clone + PartialEq>(
     changed
 }
 
-pub(super) fn draw(ui: &mut egui::Ui, browser: &mut browser::Browser, items: &[Weapon]) -> bool {
+/// Halo: Reach and Marathon rows carry a kind and a source type only.
+fn draw_source(
+    ui: &mut egui::Ui,
+    browser: &mut browser::Browser,
+    items: &[Weapon],
+    source: Source,
+) -> bool {
+    let mut changed = false;
+    ui.horizontal_wrapped(|ui| {
+        style::compact_controls(ui);
+        if source == Source::Reach {
+            for (family, label) in [
+                (None, "All"),
+                (Some(service::Family::Weapon), "Weapons"),
+                (Some(service::Family::Sparrow), "Vehicles"),
+            ] {
+                let shown = browser.filters.family == family;
+                if ui.add(egui::Button::new(label).selected(shown)).clicked() && !shown {
+                    browser.filters.family = family;
+                    browser.kind.clear();
+                    changed = true;
+                }
+            }
+        }
+        let family = browser.filters.family;
+        let types: BTreeSet<&str> = items
+            .iter()
+            .filter(|item| family.is_none_or(|family| item.family() == family))
+            .map(|item| item.weapon_type.as_str())
+            .filter(|kind| !kind.is_empty())
+            .collect();
+        if types.len() > 1 {
+            let mut kind = (!browser.kind.is_empty()).then(|| browser.kind.clone());
+            if choice(
+                ui,
+                "import-source-type",
+                "Item Type",
+                "Type",
+                &mut kind,
+                types
+                    .iter()
+                    .map(|value| (value.to_string(), value.to_string())),
+                178.0,
+            ) {
+                browser.kind = kind.unwrap_or_default();
+                changed = true;
+            }
+        }
+        changed |= ui
+            .checkbox(&mut browser.show_installed, "Show Installed")
+            .changed();
+        changed |= supported_only(ui, browser);
+    });
+    changed
+}
+
+fn supported_only(ui: &mut egui::Ui, browser: &mut browser::Browser) -> bool {
+    ui.checkbox(&mut browser.supported_only, "Supported Only")
+        .on_hover_text("Hide items with no donor.")
+        .changed()
+}
+
+pub(super) fn draw(
+    ui: &mut egui::Ui,
+    browser: &mut browser::Browser,
+    items: &[Weapon],
+    source: Source,
+) -> bool {
+    if source != Source::Modern {
+        return draw_source(ui, browser, items, source);
+    }
     let mut changed = false;
     ui.horizontal_wrapped(|ui| {
         style::compact_controls(ui);
@@ -256,6 +326,7 @@ pub(super) fn draw(ui: &mut egui::Ui, browser: &mut browser::Browser, items: &[W
             .checkbox(&mut browser.show_dummy, "Include Dummy Items")
             .on_hover_text("Include display-only definitions. Some lack the data needed to import.")
             .changed();
+        changed |= supported_only(ui, browser);
     });
     changed
 }

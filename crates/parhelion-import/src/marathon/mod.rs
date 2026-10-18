@@ -19,6 +19,7 @@ pub fn apply_recipe_text(recipe: &mut Value) -> Result<()> {
     Ok(())
 }
 
+pub mod browse;
 mod geometry;
 mod material;
 use crate::tiger::{

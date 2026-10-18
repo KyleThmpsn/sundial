@@ -103,6 +103,11 @@ const WINDOW_DEFINITION_CLASS: u32 = 0x8080_41BD;
 const WINDOW_INSTANCE_CLASS: u32 = 0x8080_41BE;
 const WINDOW_LOW: usize = 0x10;
 const WINDOW_HIGH: usize = 0x14;
+/// Base ability input 1, the activation energy cost factor: activation multiplies it by the
+/// runtime's cost at +0x184 and subtracts the product from the ability's energy
+/// (exe+0xB9823D..B98266). A weapon melee scales it by zero, so a press spends none of the
+/// charge the subclass melee holds. No stock melee bank row changes this input.
+const ACTIVATION_COST_INPUT: u8 = 1;
 /// The native unpowered contact profile used by the direct melee attack template.
 pub const MELEE_DAMAGE_PROFILE: u32 = 0x81A6_B618;
 const DEFINITION_ROW_SIZE: usize = 56;
@@ -348,7 +353,8 @@ pub fn with_charge_row(payload: &[u8], key: u32) -> Result<Vec<u8>, String> {
 /// takes priority over every melee the bank's keys give: it also goes under each of the bank's
 /// own attack keys, gated on `key` and ahead of that key's rows (`own_attack_keys`), and closes
 /// the ranged melee window, under `key` and, gated on `key`, after the rows of each key that
-/// opens it (`window_keys`). Refuses a bank that already has the key, that does not list the
+/// opens it (`window_keys`). It also costs no energy, so it leaves the subclass melee's charge
+/// alone (`ACTIVATION_COST_INPUT`). Refuses a bank that already has the key, that does not list the
 /// parameter, since only a listed parameter is known to be read by the bank's script, or that
 /// shows no slot for the modifier.
 pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result<Vec<u8>, String> {
@@ -488,6 +494,11 @@ pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result
         return Err("The edited bank lost a block's link to its twin".into());
     }
     check_read_back(out, &before, &added, parameter)?;
+    if let Modifier::Melee { .. } = modifier
+        && scalar::has_handler(&region.out)?
+    {
+        return scalar::with_row_under(&region.out, key, ACTIVATION_COST_INPUT, 0.0, true);
+    }
     Ok(region.out)
 }
 

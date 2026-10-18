@@ -7,6 +7,18 @@ pub struct LocalScene {
     pub entities: Vec<u32>,
     /// Local armor, cloth and suit slots 0 to 2, mapped to native dye parent tags.
     pub dyes: BTreeMap<usize, u32>,
+    /// The native gear defaults the game binds when the item has no private dyes, as
+    /// (channel key, dye material index). Used only while `dyes` is empty.
+    pub stock_dyes: Vec<(i8, u16)>,
+}
+
+/// The dyes the gear path binds for an item that carries no private dyes: its definition's
+/// own translation rows, composed the way the game composes them, before any plug.
+pub fn stock_default_dyes(item: &[u8]) -> Vec<(i8, u16)> {
+    crate::dyes::compose(
+        &crate::catalog::translation_dye_rows(item),
+        std::iter::empty(),
+    )
 }
 
 type Reader = dyn Fn(&mut PackageManager) -> Result<LocalScene, String> + Send + Sync;
@@ -93,6 +105,7 @@ impl LocalAppearance {
         if result.triangles.is_empty() {
             return Err("Imported appearance has no supported geometry".into());
         }
+        let stock_dyes = scene.stock_dyes;
         let dyes = scene
             .dyes
             .into_iter()
@@ -101,6 +114,22 @@ impl LocalAppearance {
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         crate::dyes::source::apply_with_manager(&manager, &dyes, &mut result, cancel)?;
+        if dyes.is_empty() && !stock_dyes.is_empty() {
+            // Converted programs multiply by the bound dye vectors, so the gear defaults the
+            // game binds must be bound here too, or the surfaces draw black.
+            let globals = manager.read_tag(crate::package_authoring::resolve_live_named_tag(
+                &manager,
+                "investment_globals",
+                None,
+            )?)?;
+            let stock = appearance::Appearance {
+                arrangement: 0,
+                dyes: stock_dyes,
+                dye_textures: Vec::new(),
+            };
+            appearance::apply_colors(&manager, &globals, &stock, &mut result)?;
+            result.iridescence = texture::iridescence(&manager);
+        }
         result.notices.sort();
         result.notices.dedup();
         Ok(result)

@@ -182,6 +182,12 @@ fn size_label((width, height): (u32, u32)) -> String {
     format!("({width} × {height} px)")
 }
 
+/// The rows the game shows of the image, with its height, where it hides the rest.
+fn hidden_rows(part: NameplatePart, shown: &Shown) -> Option<(u32, u32)> {
+    let (_, height) = shown.size?;
+    Some((part.shown_rows(height)?, height))
+}
+
 /// One image's tile: its thumbnail, its name and size, and where it comes from. The selected tile
 /// is outlined and a changed image's name reads brighter, as the Shader page's surfaces do.
 fn draw_tile(
@@ -200,6 +206,7 @@ fn draw_tile(
             detail: shown.size.map(size_label),
             source: &shown.source,
             texture: shown.texture.as_ref(),
+            hidden_rows: hidden_rows(part, shown),
             modified: shown.modified,
             selected,
         },
@@ -491,7 +498,14 @@ impl PackageAuthoringApp {
             });
             let (frame, _) =
                 ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-            draw_contained(ui, frame, shown.texture.as_ref());
+            let drawn = draw_contained(ui, frame, shown.texture.as_ref());
+            let hidden = hidden_rows(part, shown);
+            if let (Some(rect), Some((rows, height))) = (drawn, hidden) {
+                style::hidden_rows(ui, rect, rows, height);
+            }
+            if hidden.is_some() {
+                ui.weak("The game shows the lower part at 16:9.");
+            }
             ui.add_space(4.0);
             self.draw_nameplate_source(ui, part, shown);
             match &self.emblem_page.files.outcome {

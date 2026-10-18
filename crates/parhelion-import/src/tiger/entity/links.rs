@@ -67,7 +67,12 @@ impl Interface {
     pub fn read(owner: &Payload, object: Object, metadata: &Payload, modern: bool) -> Result<Self> {
         ensure!(
             owner.u64(0)? == owner.0.len() as u64,
-            "interface owner size differs"
+            "interface owner {:08X} class {:08X} at {:X} declares {} bytes but contains {}",
+            object.owner,
+            object.class,
+            object.offset,
+            owner.u64(0)?,
+            owner.0.len()
         );
         ensure!(
             metadata.u64(0)? == metadata.0.len() as u64,

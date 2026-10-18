@@ -378,15 +378,26 @@ impl PackageAuthoringApp {
             && self.catalog_worker.is_none()
             && !self.catalog_reload_pending;
         let project_ready = included_count > 0 && catalog_ready;
-        let noun = ItemKind::count_noun(
-            self.enabled_recipe_paths.iter().filter_map(|path| {
-                self.recipe_entries
-                    .iter()
-                    .find(|entry| &entry.path == path)
-                    .map(|entry| entry.kind)
-            }),
-            included_count,
-        );
+        let maps = self
+            .enabled_recipe_paths
+            .iter()
+            .filter(|path| self.map_entries.iter().any(|map| &map.path == *path))
+            .count();
+        let noun = match (maps, included_count) {
+            (0, _) => ItemKind::count_noun(
+                self.enabled_recipe_paths.iter().filter_map(|path| {
+                    self.recipe_entries
+                        .iter()
+                        .find(|entry| &entry.path == path)
+                        .map(|entry| entry.kind)
+                }),
+                included_count,
+            ),
+            (1, 1) => "Map",
+            (maps, count) if maps == count => "Maps",
+            (_, 1) => "Item",
+            _ => "Items",
+        };
         ui.horizontal_wrapped(|ui| {
             let primary_fill = ui.visuals().selection.bg_fill;
             if ui

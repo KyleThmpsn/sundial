@@ -28,7 +28,14 @@ pub struct PackageManager {
     identity: u64,
     trace: Mutex<Option<trace::Reads>>,
     local: HashMap<u16, Vec<Arc<[u8]>>>,
-    view: Option<super::mods::View>,
+    // A provider keeps its own inherited block chain and bounded-reader identity. Routing only
+    // changed entries preserves disjoint patches that otherwise share the same package filename.
+    routes: HashMap<TagHash, usize>,
+    overlays: Vec<Self>,
+    /// Entries the loader rewrites as it serves them: rows several mods add, merged, and then
+    /// configured values.
+    rewritten: HashMap<TagHash, Arc<[u8]>>,
+    view: Option<Arc<super::mods::View>>,
 }
 impl PackageManager {
     pub fn new(
@@ -47,18 +54,73 @@ impl PackageManager {
             identity: NEXT_READER.fetch_add(1, Ordering::Relaxed),
             trace: Mutex::new(None),
             local: HashMap::new(),
+            routes: HashMap::new(),
+            overlays: Vec::new(),
+            rewritten: HashMap::new(),
             view: None,
         })
     }
-    pub(super) fn retain_view(&mut self, view: super::mods::View) {
+    pub(super) fn retain_view(&mut self, view: Arc<super::mods::View>) -> Result<(), String> {
+        for layer in view.layers() {
+            let overlay = Self::new(&layer.packages, self.version, Some(self.platform))?;
+            for &tag in &layer.tags {
+                let header = overlay
+                    .get_entry(tag)
+                    .ok_or_else(|| format!("Mod entry 0x{:08X} has no metadata", tag.0))?;
+                let target = self
+                    .lookup
+                    .tag32_entries_by_pkg
+                    .get_mut(&tag.pkg_id())
+                    .and_then(|entries| entries.get_mut(usize::from(tag.entry_index())))
+                    .ok_or("Mod entry has no stock metadata")?;
+                *target = header;
+                self.routes.insert(tag, self.overlays.len());
+            }
+            // Where two mods name a 64-bit tag differently, the layer read last is kept. Which
+            // one the client keeps is unverified.
+            for (&hash, value) in &overlay.lookup.tag64_entries {
+                self.lookup.tag64_entries.insert(hash, value.clone());
+            }
+            for (&tag, &hash) in &overlay.lookup.tag32_to_tag64 {
+                self.lookup.tag32_to_tag64.insert(tag, hash);
+            }
+            for name in &overlay.lookup.named_tags {
+                if !self.lookup.named_tags.iter().any(|n| {
+                    n.hash == name.hash && n.class_hash == name.class_hash && n.name == name.name
+                }) {
+                    self.lookup.named_tags.push(name.clone());
+                }
+            }
+            self.overlays.push(overlay);
+        }
+        for (tag, bytes) in view.merged() {
+            let header = self
+                .lookup
+                .tag32_entries_by_pkg
+                .get_mut(&tag.pkg_id())
+                .and_then(|entries| entries.get_mut(usize::from(tag.entry_index())))
+                .ok_or_else(|| format!("Merged entry 0x{:08X} has no metadata", tag.0))?;
+            header.file_size = u32::try_from(bytes.len())
+                .map_err(|_| format!("Merged entry 0x{:08X} is too large", tag.0))?;
+            self.rewritten.insert(*tag, Arc::clone(bytes));
+        }
         self.view = Some(view);
+        Ok(())
+    }
+    /// Reads `values` in place of the entries mods bind configured values to.
+    pub(super) fn configure(&mut self, values: Vec<(TagHash, Vec<u8>)>) {
+        self.rewritten.extend(
+            values
+                .into_iter()
+                .map(|(tag, bytes)| (tag, Arc::from(bytes))),
+        );
     }
     /// The installation's packages directory this reader was opened for. With a Sunrise mod in
-    /// place, `package_dir` is a temporary view of it with the mod's packages added.
+    /// place, `package_dir` is a temporary view of it with the resolved mod content added.
     pub fn source_dir(&self) -> &Path {
         self.view
             .as_ref()
-            .map_or(self.package_dir.as_path(), super::mods::View::source)
+            .map_or(self.package_dir.as_path(), |view| view.source())
     }
     pub fn read_tag(&self, tag: impl Into<TagHash>) -> Result<Vec<u8>, String> {
         let tag = tag.into();
@@ -72,6 +134,12 @@ impl PackageManager {
     }
 
     fn read_payload(&self, tag: TagHash) -> Result<Vec<u8>, String> {
+        if let Some(bytes) = self.rewritten.get(&tag) {
+            return Ok(bytes.to_vec());
+        }
+        if let Some(&index) = self.routes.get(&tag) {
+            return self.overlays[index].read_payload(tag);
+        }
         if let Some(entries) = self.local.get(&tag.pkg_id()) {
             return entries
                 .get(usize::from(tag.entry_index()))

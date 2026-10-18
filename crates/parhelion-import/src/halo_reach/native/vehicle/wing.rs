@@ -27,15 +27,28 @@ fn scalar(
     program.write(p, d + 16)
 }
 
-fn maneuver_inputs(
+fn channel_inputs(
     p: &mut Payload,
     owner: u32,
     instance: usize,
     definition: usize,
-    names: &[u32; 2],
+    names: &[u32],
+    first: usize,
 ) -> Result<Vec<(usize, usize)>> {
-    append(&mut p.0, instance + 0x20, 0x80809788, &[0; 192], 96)?;
-    append(&mut p.0, definition + 0x40, 0x80809789, &[0; 80], 40)?;
+    append(
+        &mut p.0,
+        instance + 0x20,
+        0x80809788,
+        &vec![0; names.len() * 96],
+        96,
+    )?;
+    append(
+        &mut p.0,
+        definition + 0x40,
+        0x80809789,
+        &vec![0; names.len() * 40],
+        40,
+    )?;
     let states = p.array(instance + 0x20, 96, Some(0x80809788))?;
     let definitions = p.array(definition + 0x40, 40, Some(0x80809789))?;
     let mut result = Vec::new();
@@ -46,7 +59,7 @@ fn maneuver_inputs(
         }
         put(&mut p.0, data + 24, &0x808097c1u64.to_le_bytes())?;
         put(&mut p.0, data + 32, &names[index].to_le_bytes())?;
-        result.push((data, index));
+        result.push((data, first + index));
     }
     Ok(result)
 }
@@ -58,8 +71,13 @@ pub(super) fn build(
     bones: &Value,
     controls: &Value,
     body: &Body,
-    maneuver_names: Option<[u32; 2]>,
+    channel_names: &[u32],
 ) -> Result<Contacts> {
+    ensure!(
+        [1, 3].contains(&channel_names.len()),
+        "Flight surface channels differ"
+    );
+    let maneuvers = channel_names.len() == 3;
     let i = original.pointer(16)?;
     let d = original.pointer(24)?;
     let owner = original.u32(i)?;
@@ -92,7 +110,7 @@ pub(super) fn build(
         "Invalid source flight dimensions"
     );
     let gravity = number(contacts, "gravity_scale")?;
-    let plan = surface::plan(size, controls, body, gravity, maneuver_names.is_some())?;
+    let plan = surface::plan(size, controls, body, gravity, maneuvers, scene.metres())?;
     let surfaces = plan.surfaces;
     let count = surfaces.len();
     let template = native.tag(0x80bfc32a, Some(0x80809c36))?;
@@ -169,7 +187,7 @@ pub(super) fn build(
             &(i as i64 - (instance + 0x90) as i64).to_le_bytes(),
         )?;
         for (si, sd, program) in [
-            (0xa0, 0x70, surface.lift.program()?),
+            (0xa0, 0x70, surface.lift.program(plan.reference_speed)?),
             (0xd0, 0xd0, Program::constant(surface.drag)?),
             (0x100, 0x138, surface.response),
         ] {
@@ -182,19 +200,39 @@ pub(super) fn build(
                 program,
             )?;
         }
-        let control_inputs = if let Some(names) = maneuver_names.filter(|_| surface.axis == 1) {
-            inputs.extend(maneuver_inputs(
+        let lift_inputs = if surface.lift.uses_airspeed() {
+            inputs.extend(channel_inputs(
+                &mut output,
+                owner,
+                instance + 0xa0,
+                definition + 0x70,
+                &channel_names[..1],
+                0,
+            )?);
+            1
+        } else {
+            0
+        };
+        let control_inputs = if maneuvers && surface.axis == 1 {
+            inputs.extend(channel_inputs(
                 &mut output,
                 owner,
                 instance + 0x100,
                 definition + 0x138,
-                &names,
+                &channel_names[1..],
+                1,
             )?);
             2
         } else {
             0
         };
-        surface_allocations.push(Row::input(0xecd1c696, control_inputs));
+        let mut expression_allocations = Vec::new();
+        for (field, count) in [(0x3b9524cf, lift_inputs), (0xecd1c696, control_inputs)] {
+            if count != 0 {
+                expression_allocations.push(Row::indirect(field, Row::inputs(count)));
+            }
+        }
+        surface_allocations.push(Row::named(0x811c9dc5, u32::MAX, 0, expression_allocations));
         output.0[definition + 0x130] = surface.axis;
         output.0[definition + 0x131] = 0;
         put(
@@ -241,7 +279,7 @@ pub(super) fn build(
         json!({"surfaces":report,"anti_gravity_points":0,"wheel_points":0,"source_bounds_metres":[low,high],
             "gravity_scale":gravity,"reference_gravity_metres_per_second_squared":12.713999,
             "stability":plan.report,
-            "maneuver_inputs":inputs,"maneuver_channel_names":maneuver_names,
+            "surface_inputs":inputs,"surface_channel_names":channel_names,
             "gameplay_verified":false,
             "limits":["Authored aerodynamic response using the selected source dimensions and mass. Equilibrium calibration assumes the native base gravity. World gravity modifiers, collision, takeoff and handling need gameplay verification."]}),
     )?;

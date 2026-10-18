@@ -13,6 +13,49 @@ pub(crate) struct Input {
     pub value_type: u16,
 }
 
+/// Find a declared numeric interface by its native implementation and method.
+pub(crate) fn provider(
+    native: &mut crate::tiger::reader::Reader,
+    owner: u32,
+    payload: &Payload,
+    implementation: u32,
+    method: u32,
+) -> Result<crate::tiger::entity::links::Object> {
+    use crate::tiger::entity::links;
+    let definition = usize::try_from(payload.u64(payload.pointer(16)? + 8)?)?;
+    let mut found = Vec::new();
+    for at in (definition + 0x48..payload.0.len().saturating_sub(23)).step_by(8) {
+        if payload.pointer(at).ok() != Some(definition)
+            || payload.u32(at + 12)? != 0
+            || native.reference(payload.u32(at + 8)?).ok() != Some(0x80809c54)
+        {
+            continue;
+        }
+        let metadata = native.tag(payload.u32(at + 8)?, Some(0x80809c54))?;
+        if metadata.u32(8)? != 0x80809ae1 {
+            continue;
+        }
+        let object = links::Object {
+            owner,
+            class: 0x80809ae1,
+            offset: at as u64,
+        };
+        let interface = links::Interface::read(payload, object, &metadata, false)?;
+        if interface.instance_class == 0x80809ae2
+            && interface.methods.len() == 1
+            && interface.methods[0].implementation_class == implementation
+            && interface.methods[0].index == method
+        {
+            found.push(object);
+        }
+    }
+    ensure!(
+        found.len() == 1,
+        "Numeric provider {implementation:08X} method {method} is absent or ambiguous"
+    );
+    Ok(found[0])
+}
+
 pub(crate) struct Extension {
     pub payload: Payload,
     pub allocation: Payload,

@@ -87,7 +87,7 @@ pub fn native(r: &mut Reader, hash: u32) -> Result<Value> {
                 .map(|at| plug.u32(at + 4))
                 .collect::<Result<Vec<_>>>()?;
             let category = (categories.len() == 1).then(|| categories[0]);
-            plugs.push(json!({"hash":items.u32(row)?,"tag":format!("{tag:08X}"),"art_indices":art,"category":category,"default":choice==initial}));
+            plugs.push(json!({"hash":items.u32(row)?,"tag":format!("{tag:08X}"),"art_indices":art,"category":category,"item_kind":plug.u8(0xB8)?,"default":choice==initial}));
         }
         let curated_fallback = if initial == u16::MAX && item.u64(row + 0x40)? == 0 {
             fallback

@@ -18,15 +18,59 @@ fn word(value: &Value) -> AuthoringResult<u32> {
         .ok_or_else(|| invalid("Invalid gear assignment"))
 }
 
-pub(super) fn bind(graph: &mut Value, spec: &WeaponCloneSpec) -> AuthoringResult<()> {
-    if crate::imported::kind(spec.kind).is_none_or(|kind| graph["kind"] != kind)
-        || graph["native_item"].as_u64() != Some(u64::from(spec.donor_item_hash))
-    {
+pub(super) fn bind(
+    graph: &mut Value,
+    spec: &WeaponCloneSpec,
+    emission: &PackageEmission,
+) -> AuthoringResult<()> {
+    let matching_kind = if spec.kind == ItemKind::Weapon {
+        graph["kind"] == "weapon"
+    } else {
+        crate::imported::kind(spec.kind).is_some_and(|kind| graph["kind"] == kind)
+    };
+    if !matching_kind || graph["native_item"].as_u64() != Some(u64::from(spec.donor_item_hash)) {
         return Err(invalid(
             "Imported gear requires its matching native slot and runtime template",
         ));
     }
-    let item = spec.identity.item_hash;
+    let item = if let Some(link) = graph.get("ornament") {
+        use crate::tag_payload::{array_at, read_u16, relative_target};
+        let socket = word(&link["target_socket"])? as usize;
+        let choice = word(&link["choice_index"])? as usize;
+        let source = word(&link["native_plug"])?;
+        if spec.kind != ItemKind::Armor
+            || !spec.overrides.socket_plug_variants.iter().any(|v| {
+                usize::from(v.socket_index) == socket
+                    && usize::from(v.choice_index) == choice
+                    && v.source_plug_hash == source
+            })
+        {
+            return Err(invalid(
+                "Armor ornament has no matching private socket choice",
+            ));
+        }
+        let owner = definition_ordinal(emission, spec.identity.item_hash)?;
+        let data = &emission.host_new_tags[owner].payload;
+        let (count, _, rows, _) = array_at(data, relative_target(data, 0x68)?)?;
+        if socket >= count {
+            return Err(invalid("Armor ornament socket is absent"));
+        }
+        let (count, _, rows, _) = array_at(data, rows + socket * 0x50 + 0x40)?;
+        if choice >= count {
+            return Err(invalid("Armor ornament choice is absent"));
+        }
+        let ordinal = usize::from(read_u16(data, rows + choice * 0x20)?);
+        let (count, _, rows, _) = array_at(&emission.item_table, 8)?;
+        if ordinal >= count {
+            return Err(invalid("Armor ornament item is absent"));
+        }
+        let item = read_u32(&emission.item_table, rows + ordinal * 24)?;
+        definition_ordinal(emission, item)?;
+        graph["ornament"]["target_item"] = spec.identity.item_hash.into();
+        item
+    } else {
+        spec.identity.item_hash
+    };
     graph["item_hash"] = item.into();
     let mut keys = BTreeSet::new();
     for (index, part) in graph["gear_art"]["parts"]
@@ -53,6 +97,93 @@ pub(super) fn bind(graph: &mut Value, spec: &WeaponCloneSpec) -> AuthoringResult
         }
         dye["manifest"] = value.into();
     }
+    Ok(())
+}
+
+/// Explicit source policy applies only to the freshly authored collectible.
+pub(super) fn collections(
+    emission: &mut PackageEmission,
+    graph: &Value,
+    spec: Option<&WeaponCloneSpec>,
+) -> AuthoringResult<()> {
+    if graph["collections_unconditional"] != true || graph.get("ornament").is_some() {
+        return Ok(());
+    }
+    let spec =
+        spec.ok_or_else(|| invalid("Unconditional Collections policy has no item recipe"))?;
+    if !matches!(
+        spec.kind,
+        ItemKind::Weapon | ItemKind::Armor | ItemKind::Sparrow
+    ) {
+        return Err(invalid(
+            "Unconditional imported Collections policy requires a weapon, armor or Sparrow",
+        ));
+    }
+    use crate::progression::*;
+    use crate::tag_payload::{array_at, read_u16, write_relative_pointer, write_u16, write_u32};
+    let item = word(&graph["item_hash"])?;
+    if item != spec.identity.item_hash {
+        return Err(invalid(
+            "Unconditional Collections item differs from its private recipe",
+        ));
+    }
+    definition_ordinal(emission, item)?;
+    let (count, _, rows, _) = array_at(&emission.item_table, 8)?;
+    let ordinal = (0..count)
+        .find(|i| read_u32(&emission.item_table, rows + i * 24).ok() == Some(item))
+        .ok_or_else(|| invalid("Imported item ordinal"))?;
+    let (count, _, rows, _) = array_at(&emission.collectibles, 8)?;
+    let matches = (0..count)
+        .map(|i| rows + i * COLLECTIBLE_ROW_SIZE)
+        .filter(|r| {
+            read_u16(&emission.collectibles, r + COLLECTIBLE_ITEM_INDEX_OFFSET).ok()
+                == Some(ordinal as u16)
+        })
+        .collect::<Vec<_>>();
+    let [row] = matches.as_slice() else {
+        return Err(invalid("Imported collectible is absent or ambiguous"));
+    };
+    let row = *row;
+    for field in COLLECTIBLE_SECONDARY_CONDITION_OFFSETS {
+        emission.collectibles[row + field..row + field + 16].fill(0);
+    }
+    let data = &mut emission.collectibles;
+    while !(data.len() + 4).is_multiple_of(16) {
+        data.push(0);
+    }
+    data.extend(0x80809FBDu32.to_le_bytes());
+    let header = data.len();
+    data.extend(1u64.to_le_bytes());
+    data.extend(u64::from(NUMERIC_PROGRAM_ROW_CLASS).to_le_bytes());
+    data.extend([11, 0, 0, 0, 1, 0, 0, 0]);
+    while !(data.len() + NESTED_ARRAY_TRAILER.len()).is_multiple_of(16) {
+        data.push(0);
+    }
+    data.extend(NESTED_ARRAY_TRAILER);
+    write_u64(data, row + COLLECTIBLE_CONDITION_OFFSET, 1)?;
+    write_relative_pointer(data, row + COLLECTIBLE_CONDITION_OFFSET + 8, header)?;
+    write_u16(
+        data,
+        row + COLLECTIBLE_REACQUISITION_STATE_OFFSET,
+        COLLECTIBLE_REACQUISITION_ENABLED,
+    )?;
+    // Claim cost is independent of acquisition. Only the authored row opts out
+    // of its donor's material requirements, leaving the shared set unchanged.
+    if graph["collections_no_cost"] == true {
+        write_u16(data, row + COLLECTIBLE_MATERIAL_SET_OFFSET, u16::MAX)?;
+    }
+    let length = data.len() as u64;
+    write_u64(data, 0, length)?;
+    // Clear any inherited display condition using the same parallel row ordinal.
+    let index = (row - rows) / COLLECTIBLE_ROW_SIZE;
+    let (count, _, rows, _) = array_at(&emission.collectible_displays, 8)?;
+    if index >= count {
+        return Err(invalid("Imported collectible display is absent"));
+    }
+    let at = rows + index * COLLECTIBLE_DISPLAY_ROW_SIZE + COLLECTIBLE_DISPLAY_CONDITION_OFFSET;
+    emission.collectible_displays[at..at + 16].fill(0);
+    // Native literal operands are dwords. Keep this write explicit at the storage boundary.
+    write_u32(data, header + 20, 1)?;
     Ok(())
 }
 
@@ -186,7 +317,7 @@ pub(super) fn apply(
     )?;
     let size = definition.len();
     write_u64(definition, 0, size as u64)?;
-    arrays::repair(definition).map_err(invalid)?;
+    arrays::add_array_markers(definition).map_err(invalid)?;
     let tag = art::ASSIGNMENT_TABLE;
     let old = match previous.get(&tag.0) {
         Some(bytes) => bytes.clone(),

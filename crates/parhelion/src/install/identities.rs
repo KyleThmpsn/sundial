@@ -47,7 +47,8 @@ impl Generation {
     ) -> Result<Self, String> {
         super::validation::decoder::ensure_initialized(target)?;
         if paths_equal(target, authored_directory) {
-            let manager = open_shadowkeep_package_manager(target)?;
+            let manager =
+                sundial::package_authoring::open_managed_shadowkeep_package_manager(target)?;
             let directory = manager.package_dir.clone();
             return Ok(Self {
                 manager,
@@ -58,12 +59,14 @@ impl Generation {
         // Authored overlays can reference physical blocks in older stock generations.
         // Reopen the staged generation in a complete read-only view; never assume its
         // output directory alone contains those stock blocks.
-        let ignored = all_authored_packages()
+        let profiles = all_authored_packages_in(&[target, authored_directory]);
+        let ignored = profiles
+            .iter()
             .map(|p| p.file_name.to_owned())
             .collect::<Vec<_>>();
         let view = crate::workflow::FilteredPackageView::create(target, &ignored)?;
         let manager = (|| {
-            for profile in all_authored_packages() {
+            for profile in &profiles {
                 let path = authored_directory.join(profile.file_name);
                 if path.is_file() {
                     view.add_overlay(&path)?;
@@ -139,6 +142,33 @@ pub(in crate::install) fn read_identities(
     let (stock_items, stock_unlocks) = tables(false)?;
     let (items, unlocks) = tables(true)?;
     identify(&stock_items, &items, &stock_unlocks, &unlocks)
+}
+
+/// Every available definition in the effective incoming package view, including stock items.
+pub(in crate::install) fn read_available_definitions(
+    generation: &Generation,
+) -> Result<BTreeSet<u32>, String> {
+    available_definitions(&generation.manager)
+}
+
+pub(in crate::install) fn available_definitions(
+    manager: &sundial::package_authoring::PackageManager,
+) -> Result<BTreeSet<u32>, String> {
+    let (_, table) = placement::tables(manager)?;
+    let rows = rows(&table, ITEM_DEFINITION_INDEX_ROW_CLASS, ITEM_INDEX_ROW_SIZE)?;
+    if rows.is_empty() {
+        return Err("The incoming native item definition table is empty".into());
+    }
+    let mut definitions = BTreeSet::new();
+    for row in rows {
+        let hash = read_u32(row, 0).map_err(|e| e.to_string())?;
+        if !definitions.insert(hash) {
+            return Err(format!(
+                "The incoming native item definition table repeats 0x{hash:08X}"
+            ));
+        }
+    }
+    Ok(definitions)
 }
 
 fn payload(target: &Path, tag: TagHash, authored: bool) -> Result<Vec<u8>, String> {
@@ -253,7 +283,8 @@ fn identify(
             slot,
         });
     }
-    if hashes.is_empty() || owned_unlocks.is_empty() {
+    // A set of maps alone authors neither items nor unlocks.
+    if hashes.is_empty() != owned_unlocks.is_empty() {
         return Err("The installed set has no provable authored item/unlock identities".into());
     }
     Ok((hashes, owned_unlocks))

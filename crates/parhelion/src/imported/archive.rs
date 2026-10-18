@@ -19,7 +19,9 @@ const SCHEMA: u32 = 1;
 const MAX_GRAPH: usize = 4 * 1024 * 1024;
 const MAX_FILE: usize = 128 * 1024 * 1024;
 const MAX_TOTAL: usize = 512 * 1024 * 1024;
-const MAX_FILES: usize = 1024;
+// Complete vehicle graphs include separate damage forms and effect resources.
+// The independent graph, per-file and aggregate byte bounds still apply.
+const MAX_FILES: usize = 4096;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -28,7 +30,7 @@ struct Reference {
     #[serde(default)]
     converter_revision: Option<u32>,
     #[serde(default)]
-    attachments: Vec<GraphReference>,
+    attachments: Vec<Value>,
     embedded_assets: Assets,
 }
 
@@ -48,8 +50,25 @@ pub(crate) fn encode(recipe: &WeaponRecipe) -> Result<String, String> {
         .as_ref()
         .ok_or("No imported item selected")?;
     let kind = super::kind(recipe.kind).ok_or("This item kind cannot embed reusable assets")?;
-    if !reference.attachments.is_empty() {
-        return Err("Portable item assets cannot contain weapon attachments".into());
+    reference
+        .validate_reusable(kind)
+        .map_err(|e| e.to_string())?;
+    let mut total = 0;
+    let mut document = serde_json::to_value(recipe).map_err(|e| e.to_string())?;
+    document["overrides"]["imported_graph"] = encode_reference(reference, kind, &mut total, true)?;
+    serde_json::to_string_pretty(&document).map_err(|e| e.to_string())
+}
+
+fn encode_reference(
+    reference: &GraphReference,
+    kind: &str,
+    total: &mut usize,
+    owner: bool,
+) -> Result<Value, String> {
+    if reference.attachments.len() > 32
+        || (!reference.attachments.is_empty() && (!owner || kind != "armor"))
+    {
+        return Err("Only armor supports a bounded list of direct appearance attachments".into());
     }
     reference
         .validate_reusable(kind)
@@ -63,7 +82,7 @@ pub(crate) fn encode(recipe: &WeaponRecipe) -> Result<String, String> {
     let ordered = asset_files(&graph)?;
     let files = ordered.iter().collect::<BTreeSet<_>>();
     let mut payloads = BTreeMap::new();
-    let mut total = graph.len();
+    *total = checked_total(*total, graph.len())?;
     for name in files {
         let path = root
             .join(name)
@@ -73,7 +92,7 @@ pub(crate) fn encode(recipe: &WeaponRecipe) -> Result<String, String> {
             return Err(format!("Item asset {name:?} escapes its source folder"));
         }
         let bytes = read_bounded(&path, MAX_FILE)?;
-        total = checked_total(total, bytes.len())?;
+        *total = checked_total(*total, bytes.len())?;
         payloads.insert(name.clone(), bytes);
     }
     // Hash exactly the bytes being saved, in the graph's fingerprint order. Checking the
@@ -89,10 +108,16 @@ pub(crate) fn encode(recipe: &WeaponRecipe) -> Result<String, String> {
     reference
         .validate_reusable(kind)
         .map_err(|e| e.to_string())?;
-    let mut document = serde_json::to_value(recipe).map_err(|e| e.to_string())?;
-    let saved = document["overrides"]["imported_graph"]
+    let attachments = reference
+        .attachments
+        .iter()
+        .map(|attachment| encode_reference(attachment, kind, total, false))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut document = serde_json::to_value(reference).map_err(|e| e.to_string())?;
+    let saved = document
         .as_object_mut()
         .ok_or("Imported item reference missing")?;
+    saved.insert("attachments".into(), Value::Array(attachments));
     saved.remove("directory");
     saved.insert(
         "embedded_assets".into(),
@@ -100,7 +125,7 @@ pub(crate) fn encode(recipe: &WeaponRecipe) -> Result<String, String> {
             "schema": SCHEMA, "graph": graph, "files": encoded,
         }),
     );
-    serde_json::to_string_pretty(&document).map_err(|e| e.to_string())
+    Ok(document)
 }
 
 pub(crate) fn expand(document: &mut Value) -> Result<(), String> {
@@ -124,15 +149,29 @@ pub(crate) fn expand(document: &mut Value) -> Result<(), String> {
     let item: HexHash = serde_json::from_value(document["identity"]["item_hash"].clone())
         .map_err(|e| e.to_string())?;
     item.parse_u32().map_err(|e| e.to_string())?;
-    let reference: Reference = serde_json::from_value(
-        document
-            .pointer_mut(field)
-            .ok_or("Imported item reference missing")?
-            .take(),
-    )
-    .map_err(|e| e.to_string())?;
-    if !reference.attachments.is_empty() {
-        return Err("Portable item assets cannot contain weapon attachments".into());
+    let value = document
+        .pointer_mut(field)
+        .ok_or("Imported item reference missing")?
+        .take();
+    let restored = expand_reference(value, &kind, &mut 0, true)?;
+    *document
+        .pointer_mut(field)
+        .ok_or("Imported item reference missing")? =
+        serde_json::to_value(restored).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn expand_reference(
+    value: Value,
+    kind: &str,
+    total: &mut usize,
+    owner: bool,
+) -> Result<GraphReference, String> {
+    let reference: Reference = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    if reference.attachments.len() > 32
+        || (!reference.attachments.is_empty() && (!owner || kind != "armor"))
+    {
+        return Err("Only armor supports a bounded list of direct appearance attachments".into());
     }
     if reference.sha256.len() != 64
         || !reference
@@ -156,7 +195,7 @@ pub(crate) fn expand(document: &mut Value) -> Result<(), String> {
     {
         return Err("Embedded item assets do not match the pinned graph's files".into());
     }
-    let mut total = assets.graph.len();
+    *total = checked_total(*total, assets.graph.len())?;
     let mut files = BTreeMap::new();
     for (name, encoded) in assets.files {
         if encoded.len() > MAX_FILE.div_ceil(3) * 4 {
@@ -168,7 +207,7 @@ pub(crate) fn expand(document: &mut Value) -> Result<(), String> {
         if bytes.len() > MAX_FILE {
             return Err(format!("Embedded item asset {name:?} is too large"));
         }
-        total = checked_total(total, bytes.len())?;
+        *total = checked_total(*total, bytes.len())?;
         files.insert(name, bytes);
     }
     if content_pin(&assets.graph, &ordered, &files) != reference.sha256 {
@@ -220,7 +259,7 @@ pub(crate) fn expand(document: &mut Value) -> Result<(), String> {
                 attachments: Vec::new(),
                 converter_revision: 0,
             }
-            .validate_reusable(&kind)
+            .validate_reusable(kind)
             .map_err(|e| format!("Embedded item assets are invalid: {e}"))?;
             fs::rename(temporary.path(), &destination).map_err(|e| e.to_string())?;
         }
@@ -237,20 +276,22 @@ pub(crate) fn expand(document: &mut Value) -> Result<(), String> {
     {
         return Err("Embedded item converter revision differs from its pinned graph".into());
     }
+    drop(lock);
+    let attachments = reference
+        .attachments
+        .into_iter()
+        .map(|attachment| expand_reference(attachment, kind, total, false))
+        .collect::<Result<Vec<_>, _>>()?;
     let restored = GraphReference {
         directory,
         sha256: reference.sha256,
-        attachments: Vec::new(),
+        attachments,
         converter_revision,
     };
     restored
-        .validate_reusable(&kind)
+        .validate_reusable(kind)
         .map_err(|e| format!("Cached item assets are invalid: {e}"))?;
-    *document
-        .pointer_mut(field)
-        .ok_or("Imported item reference missing")? =
-        serde_json::to_value(restored).map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(restored)
 }
 
 /// Leaves out the embedded assets of a recipe that is only listed. Lists and searches of saved
@@ -321,6 +362,7 @@ fn asset_files(raw: &str) -> Result<Vec<String>, String> {
     for first_person in graph["animation"]["first_person"]
         .as_object()
         .into_iter()
+        .chain(graph["animation"]["character"].as_object())
         .chain(
             graph
                 .get("equipment_animation")
@@ -353,6 +395,12 @@ fn asset_files(raw: &str) -> Result<Vec<String>, String> {
                 .flatten(),
         )
         .chain(graph["particles"]["nodes"].as_array().into_iter().flatten())
+        .chain(
+            graph["audio_assets"]["nodes"]
+                .as_array()
+                .into_iter()
+                .flatten(),
+        )
     {
         add(&file["file"])?;
     }

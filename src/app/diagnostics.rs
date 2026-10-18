@@ -475,24 +475,11 @@ fn append_package_summary(report: &mut String, install: &Path) {
             relevant.push(path);
         }
     }
-    // Sunrise 0.6 and later load Parhelion's packages from its mod folder, not this directory.
+    // Include every mod provider, even when several patches have the same filename.
     let managed = crate::package_runtime::mods::directory(install);
-    for folder in ["packages", "patches"] {
-        match fs::read_dir(managed.join(folder)) {
-            Ok(entries) => {
-                for entry in entries {
-                    match entry {
-                        Ok(entry) if extension_eq(&entry.path(), "pkg") => {
-                            relevant.push(entry.path());
-                        }
-                        Ok(_) => {}
-                        Err(error) => read_errors.push(error.to_string()),
-                    }
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => read_errors.push(error.to_string()),
-        }
+    match crate::package_runtime::mods::content_files(install) {
+        Ok(files) => relevant.extend(files.into_iter().filter(|path| extension_eq(path, "pkg"))),
+        Err(error) => read_errors.push(error),
     }
     relevant.sort_by_key(|path| path_sort_key(path));
     append_path(report, "parhelion_mod_directory", &managed);
@@ -506,6 +493,18 @@ fn append_package_summary(report: &mut String, install: &Path) {
     .expect("writing to a String cannot fail");
     for path in relevant {
         append_path(report, "investment_or_parhelion_pkg", &path);
+    }
+    match crate::package_runtime::mods::notices(install) {
+        Ok(Some(notices)) => {
+            for notice in notices {
+                writeln!(report, "mod_notice = {}", single_line(&notice))
+                    .expect("writing to a String cannot fail");
+            }
+        }
+        Ok(None) => {
+            writeln!(report, "mod_notice = not read yet").expect("writing to a String cannot fail")
+        }
+        Err(error) => read_errors.push(error),
     }
     for error in read_errors {
         writeln!(report, "package_scan_error = {}", single_line(&error))

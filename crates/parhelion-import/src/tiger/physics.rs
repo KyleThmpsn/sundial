@@ -1,8 +1,14 @@
-//! Shadowkeep Havok 2012.2 packfiles containing convex collision compounds.
+//! Shadowkeep Havok 2012.2 packfiles containing convex collision compounds, compressed triangle
+//! meshes or the static compound of a world's collision.
 use super::payload::Payload;
 use crate::presentation::put;
 use anyhow::{Context, Result, ensure};
 use std::collections::BTreeMap;
+
+mod compound;
+mod mesh;
+pub(crate) use compound::{Instance, static_compound};
+pub(crate) use mesh::{bare_mesh, compressed_mesh};
 
 pub(crate) struct Hull {
     pub vertices: Vec<[f32; 3]>,
@@ -10,17 +16,83 @@ pub(crate) struct Hull {
     pub radius: f32,
 }
 
+/// Convex leaves admitted by native dynamic-body assembly.
+pub(crate) enum Shape {
+    Hull(Hull),
+    Capsule {
+        a: [f32; 3],
+        b: [f32; 3],
+        radius: f32,
+    },
+}
+
+impl Shape {
+    fn bounds(&self) -> Result<([f32; 3], [f32; 3])> {
+        match self {
+            Self::Hull(hull) => {
+                let (low, high) = hull.bounds()?;
+                Ok((low.map(|v| v - hull.radius), high.map(|v| v + hull.radius)))
+            }
+            Self::Capsule { a, b, radius } => {
+                ensure!(
+                    a.iter().chain(b).all(|v| v.is_finite())
+                        && radius.is_finite()
+                        && *radius > 0.
+                        && a.iter().zip(b).map(|(x, y)| (x - y).powi(2)).sum::<f32>() > 1e-12,
+                    "Invalid collision capsule"
+                );
+                let low = std::array::from_fn(|i| a[i].min(b[i]) - radius);
+                let high = std::array::from_fn(|i| a[i].max(b[i]) + radius);
+                ensure!(
+                    low.iter().chain(&high).all(|v| v.is_finite()),
+                    "Nonfinite capsule bounds"
+                );
+                Ok((low, high))
+            }
+        }
+    }
+}
+
+impl Hull {
+    fn bounds(&self) -> Result<([f32; 3], [f32; 3])> {
+        ensure!(
+            (4..=1024).contains(&self.vertices.len())
+                && self.planes.len() >= 4
+                && self.radius.is_finite()
+                && (0.0..=1.0).contains(&self.radius),
+            "Invalid collision hull"
+        );
+        let mut minimum = [f32::INFINITY; 3];
+        let mut maximum = [f32::NEG_INFINITY; 3];
+        for vertex in &self.vertices {
+            for axis in 0..3 {
+                ensure!(vertex[axis].is_finite(), "Nonfinite collision vertex");
+                minimum[axis] = minimum[axis].min(vertex[axis]);
+                maximum[axis] = maximum[axis].max(vertex[axis]);
+            }
+        }
+        for axis in 0..3 {
+            ensure!(
+                maximum[axis] > minimum[axis],
+                "Degenerate collision hull bounds"
+            );
+        }
+        Ok((minimum, maximum))
+    }
+}
+
 struct Template {
     prefix: Vec<u8>,
-    root: Vec<u8>,
-    convex: Vec<u8>,
-    list: Vec<u8>,
+    bytes: Vec<u8>,
+    /// Each class's first object in the data section.
+    objects: BTreeMap<String, usize>,
     names: BTreeMap<String, u32>,
     data: usize,
 }
 
 impl Template {
-    fn read(bytes: &[u8]) -> Result<Self> {
+    /// A packfile whose first object is of class `root`.
+    fn read(bytes: &[u8], root: &str) -> Result<Self> {
         let p = Payload(bytes.to_vec());
         ensure!(
             p.u32(0)? == 0x57e0e057
@@ -72,27 +144,105 @@ impl Template {
             objects.entry(name).or_insert(data + p.u32(at)? as usize);
             at += 12;
         }
-        let copy = |name: &str, size: usize| -> Result<Vec<u8>> {
-            let start = *objects
-                .get(name)
-                .with_context(|| format!("Collision template lacks {name}"))?;
-            Ok(bytes
-                .get(start..start + size)
-                .context("Havok object extent")?
-                .to_vec())
-        };
-        ensure!(
-            objects.get("s_physics_component_havok_data") == Some(&data),
-            "Havok root differs"
-        );
+        ensure!(objects.get(root) == Some(&data), "Havok root is not {root}");
+        // The class name section also names classes the packfile has no object of, as a world
+        // collision's main packfile names the shapes its instances bind to: each entry is a
+        // signature, a 9, then the name.
+        let names_end = names_base + p.u32(0x58)? as usize;
+        let mut entry = names_base;
+        while entry + 5 < names_end && p.u32(entry)? != u32::MAX {
+            let start = entry + 5;
+            let suffix = bytes
+                .get(start..names_end)
+                .context("Havok class name bounds")?;
+            let length = suffix
+                .iter()
+                .position(|&b| b == 0)
+                .context("Havok class name terminator")?;
+            let name = std::str::from_utf8(&suffix[..length])?.to_owned();
+            names
+                .entry(name)
+                .or_insert(u32::try_from(start - names_base)?);
+            entry = start + length + 1;
+        }
         Ok(Self {
             prefix: bytes[..data].to_vec(),
-            root: copy("s_physics_component_havok_data", 64)?,
-            convex: copy("hkpConvexVerticesShape", 128)?,
-            list: copy("hkpListShape", 144)?,
+            bytes: bytes.to_vec(),
+            objects,
             names,
             data,
         })
+    }
+
+    /// The first `size` bytes of the template's first object of class `name`.
+    fn object(&self, name: &str, size: usize) -> Result<Vec<u8>> {
+        let start = *self
+            .objects
+            .get(name)
+            .with_context(|| format!("Collision template lacks {name}"))?;
+        Ok(self
+            .bytes
+            .get(start..start + size)
+            .context("Havok object extent")?
+            .to_vec())
+    }
+
+    /// Extend only the class-name section. Existing name offsets and relative fixups stay valid.
+    fn add_class(&mut self, name: &str, signature: u32) -> Result<()> {
+        let p = Payload(self.prefix.clone());
+        let base = p.u32(0x54)? as usize;
+        if let Some(&offset) = self.names.get(name) {
+            ensure!(
+                p.u32(base + offset as usize - 5)? == signature,
+                "Havok class signature differs"
+            );
+            return Ok(());
+        }
+        let old_size = p.u32(0x58)? as usize;
+        for field in (0x58..=0x6c).step_by(4) {
+            ensure!(
+                p.u32(field)? as usize == old_size,
+                "Class-name section contains fixups"
+            );
+        }
+        let mut used = 0;
+        for &offset in self.names.values() {
+            let start = base + offset as usize;
+            let length = self
+                .prefix
+                .get(start..base + old_size)
+                .context("Havok class name extent")?
+                .iter()
+                .position(|&b| b == 0)
+                .context("Havok class name terminator")?;
+            used = used.max(offset as usize + length + 1);
+        }
+        let mut section = self.prefix[base..base + used].to_vec();
+        section.extend(signature.to_le_bytes());
+        section.push(9);
+        self.names
+            .insert(name.into(), u32::try_from(section.len())?);
+        section.extend(name.as_bytes());
+        section.push(0);
+        let size = section.len().div_ceil(16) * 16;
+        section.resize(size, 0xff);
+        let growth = size
+            .checked_sub(old_size)
+            .context("Havok name section shrank")?;
+        self.prefix.splice(base..base + old_size, section);
+        for field in (0x58..=0x6c).step_by(4) {
+            put(&mut self.prefix, field, &u32::try_from(size)?.to_le_bytes())?;
+        }
+        for field in [0x84, 0xb4] {
+            put(
+                &mut self.prefix,
+                field,
+                &u32::try_from(p.u32(field)? as usize + growth)?.to_le_bytes(),
+            )?;
+        }
+        // Original object bytes keep their original offsets in `bytes`.
+        self.data += growth;
+        Ok(())
     }
 }
 
@@ -191,125 +341,236 @@ impl Writer {
     }
 }
 
-/// Each carrier body retains its filter and points to the same source collision
-/// hulls. Compound children use that body's filter, never a scenery-template one.
-pub(crate) fn compound(template: &[u8], hulls: &[Hull], filters: &[u32]) -> Result<Vec<u8>> {
+fn convex(
+    w: &mut Writer,
+    template: &[u8],
+    hull: &Hull,
+    minimum: [f32; 3],
+    maximum: [f32; 3],
+) -> Result<usize> {
+    let shape = w.object(template, "hkpConvexVerticesShape")?;
+    put(&mut w.data, shape, &[0; 16])?;
+    put(&mut w.data, shape + 24, &[0; 8])?;
+    put(&mut w.data, shape + 32, &hull.radius.to_le_bytes())?;
+    w.vector(
+        shape + 48,
+        std::array::from_fn(|i| (maximum[i] - minimum[i]) * 0.5),
+        0.,
+    )?;
+    w.vector(
+        shape + 64,
+        std::array::from_fn(|i| (maximum[i] + minimum[i]) * 0.5),
+        0.,
+    )?;
+    let mut vectors = Vec::new();
+    for chunk in hull.vertices.chunks(4) {
+        for axis in [0, 1, 2] {
+            for lane in 0..4 {
+                vectors.extend(chunk[lane.min(chunk.len() - 1)][axis].to_le_bytes());
+            }
+        }
+    }
+    w.array(shape + 80, &vectors, 48)?;
+    put(
+        &mut w.data,
+        shape + 96,
+        &u32::try_from(hull.vertices.len())?.to_le_bytes(),
+    )?;
+    put(&mut w.data, shape + 100, &[0; 4])?;
+    let mut planes = Vec::new();
+    for plane in &hull.planes {
+        ensure!(
+            plane.iter().all(|v| v.is_finite()),
+            "Nonfinite collision plane"
+        );
+        for value in plane {
+            planes.extend(value.to_le_bytes());
+        }
+    }
+    w.array(shape + 104, &planes, 16)?;
+    put(&mut w.data, shape + 120, &[0; 8])?;
+    Ok(shape)
+}
+
+/// Solid convex parts followed by separate triangle meshes for native hit bodies.
+pub(crate) fn vehicle_shapes(
+    template: &[u8],
+    hulls: &[Shape],
+    groups: &[Vec<usize>],
+    meshes: &[Vec<[[f32; 3]; 3]>],
+) -> Result<Vec<u8>> {
     ensure!(
-        !hulls.is_empty() && hulls.len() <= 256 && !filters.is_empty() && filters.len() <= 256,
+        !hulls.is_empty()
+            && hulls.len() <= 1024
+            && (1..=256).contains(&(groups.len() + meshes.len())),
         "Collision compound has an invalid body or hull count"
     );
-    let template = Template::read(template)?;
+    for group in groups {
+        ensure!(
+            !group.is_empty()
+                && group.len() <= 256
+                && group.iter().all(|&index| index < hulls.len()),
+            "Invalid collision hull selection"
+        );
+    }
+    let mut template = Template::read(template, "s_physics_component_havok_data")?;
+    let root = template.object("s_physics_component_havok_data", 64)?;
+    let convex_template = template.object("hkpConvexVerticesShape", 128)?;
+    let list_shape = template.object("hkpListShape", 144)?;
+    if hulls
+        .iter()
+        .any(|shape| matches!(shape, Shape::Capsule { .. }))
+    {
+        // Native 2012.2 reflection at 020C84D0, with inherited fields included.
+        template.add_class("hkpCapsuleShape", 0xb58289ff)?;
+    }
     let mut w = Writer {
         data: Vec::new(),
         local: Vec::new(),
         references: Vec::new(),
         objects: Vec::new(),
     };
-    w.object(&template.root, "s_physics_component_havok_data")?;
+    w.object(&root, "s_physics_component_havok_data")?;
     for field in [0, 16, 48] {
         w.array(field, &[], 8)?;
     }
-    let slots = w.array(32, &vec![0; filters.len() * 8], 8)?;
+    let slots = w.array(32, &vec![0; (groups.len() + meshes.len()) * 8], 8)?;
     let mut shapes = Vec::new();
-    let mut low = [f32::INFINITY; 3];
-    let mut high = [f32::NEG_INFINITY; 3];
+    let mut bounds = Vec::new();
     for hull in hulls {
-        ensure!(
-            (4..=1024).contains(&hull.vertices.len())
-                && hull.planes.len() >= 4
-                && hull.radius.is_finite()
-                && (0.0..=1.0).contains(&hull.radius),
-            "Invalid collision hull"
-        );
-        let mut minimum = [f32::INFINITY; 3];
-        let mut maximum = [f32::NEG_INFINITY; 3];
-        for vertex in &hull.vertices {
-            for axis in 0..3 {
-                ensure!(vertex[axis].is_finite(), "Nonfinite collision vertex");
-                minimum[axis] = minimum[axis].min(vertex[axis]);
-                maximum[axis] = maximum[axis].max(vertex[axis]);
+        bounds.push(hull.bounds()?);
+        let shape = match hull {
+            Shape::Hull(hull) => {
+                let (minimum, maximum) = hull.bounds()?;
+                convex(&mut w, &convex_template, hull, minimum, maximum)?
             }
-        }
-        for axis in 0..3 {
-            ensure!(
-                maximum[axis] > minimum[axis],
-                "Degenerate collision hull bounds"
-            );
-            low[axis] = low[axis].min(minimum[axis] - hull.radius);
-            high[axis] = high[axis].max(maximum[axis] + hull.radius);
-        }
-        let shape = w.object(&template.convex, "hkpConvexVerticesShape")?;
-        put(&mut w.data, shape, &[0; 16])?;
-        put(&mut w.data, shape + 24, &[0; 8])?;
-        put(&mut w.data, shape + 32, &hull.radius.to_le_bytes())?;
-        w.vector(
-            shape + 48,
-            std::array::from_fn(|i| (maximum[i] - minimum[i]) * 0.5),
-            0.,
-        )?;
-        w.vector(
-            shape + 64,
-            std::array::from_fn(|i| (maximum[i] + minimum[i]) * 0.5),
-            0.,
-        )?;
-        let mut vectors = Vec::new();
-        for chunk in hull.vertices.chunks(4) {
-            for axis in [0, 1, 2] {
-                for lane in 0..4 {
-                    vectors.extend(chunk[lane.min(chunk.len() - 1)][axis].to_le_bytes());
-                }
+            Shape::Capsule { a, b, radius } => {
+                // Common hkpConvexShape header, followed by two hkVector4 endpoints.
+                let mut bytes = vec![0; 0x50];
+                bytes[0x10..0x18].copy_from_slice(&convex_template[0x10..0x18]);
+                bytes[0x10] = 4;
+                let shape = w.object(&bytes, "hkpCapsuleShape")?;
+                put(&mut w.data, shape + 0x20, &radius.to_le_bytes())?;
+                // The collision-sphere consumer copies both vectors including their radius lane.
+                w.vector(shape + 0x30, *a, *radius)?;
+                w.vector(shape + 0x40, *b, *radius)?;
+                shape
             }
-        }
-        w.array(shape + 80, &vectors, 48)?;
-        put(
-            &mut w.data,
-            shape + 96,
-            &u32::try_from(hull.vertices.len())?.to_le_bytes(),
-        )?;
-        put(&mut w.data, shape + 100, &[0; 4])?;
-        let mut planes = Vec::new();
-        for plane in &hull.planes {
-            ensure!(
-                plane.iter().all(|v| v.is_finite()),
-                "Nonfinite collision plane"
-            );
-            for value in plane {
-                planes.extend(value.to_le_bytes());
-            }
-        }
-        w.array(shape + 104, &planes, 16)?;
-        put(&mut w.data, shape + 120, &[0; 8])?;
+        };
         shapes.push(shape);
     }
-    for (index, &filter) in filters.iter().enumerate() {
-        let shape = if shapes.len() == 1 {
-            shapes[0]
+    for (index, group) in groups.iter().enumerate() {
+        let shape = if group.len() == 1 {
+            shapes[group[0]]
         } else {
-            let list = w.object(&template.list, "hkpListShape")?;
-            put(&mut w.data, list, &[0; 16])?;
-            put(&mut w.data, list + 24, &[0; 24])?;
-            put(&mut w.data, list + 64, &[0; 16])?;
-            put(&mut w.data, list + 112, &[0xff; 32])?;
-            w.vector(
-                list + 80,
-                std::array::from_fn(|i| (high[i] - low[i]) * 0.5),
-                0.,
-            )?;
-            w.vector(
-                list + 96,
-                std::array::from_fn(|i| (high[i] + low[i]) * 0.5),
-                1.,
-            )?;
-            let mut children = vec![0; shapes.len() * 32];
-            for i in 0..shapes.len() {
-                put(&mut children, i * 32 + 8, &filter.to_le_bytes())?;
-            }
-            let start = w.array(list + 48, &children, 32)?;
-            for (i, &child) in shapes.iter().enumerate() {
-                w.references
-                    .push((u32::try_from(start + i * 32)?, u32::try_from(child)?));
-            }
-            list
+            let selected = group.iter().map(|&k| shapes[k]).collect::<Vec<_>>();
+            let selected_bounds = group.iter().map(|&k| bounds[k]).collect::<Vec<_>>();
+            list(&mut w, &list_shape, &selected, &selected_bounds)?
+        };
+        w.references
+            .push((u32::try_from(slots + index * 8)?, u32::try_from(shape)?));
+    }
+    if !meshes.is_empty() {
+        let shape_bytes = template.object("hkpBvCompressedMeshShape", 0x110)?;
+        for (index, triangles) in meshes.iter().enumerate() {
+            let (shape, _) = mesh::mesh_shape(&mut w, &shape_bytes, triangles)?;
+            w.references.push((
+                u32::try_from(slots + (groups.len() + index) * 8)?,
+                u32::try_from(shape)?,
+            ));
+        }
+    }
+    w.finish(template)
+}
+
+/// An `hkpListShape` over the written `shapes`, whose box encloses their `bounds`.
+fn list(
+    w: &mut Writer,
+    template: &[u8],
+    shapes: &[usize],
+    bounds: &[([f32; 3], [f32; 3])],
+) -> Result<usize> {
+    ensure!(
+        !shapes.is_empty() && shapes.len() == bounds.len() && shapes.len() <= 256,
+        "Invalid list shape children"
+    );
+    let mut low = [f32::INFINITY; 3];
+    let mut high = [f32::NEG_INFINITY; 3];
+    for (minimum, maximum) in bounds {
+        for axis in 0..3 {
+            low[axis] = low[axis].min(minimum[axis]);
+            high[axis] = high[axis].max(maximum[axis]);
+        }
+    }
+    let list = w.object(template, "hkpListShape")?;
+    put(&mut w.data, list, &[0; 16])?;
+    put(&mut w.data, list + 24, &[0; 24])?;
+    put(&mut w.data, list + 64, &[0; 16])?;
+    put(&mut w.data, list + 112, &[0xff; 32])?;
+    w.vector(
+        list + 80,
+        std::array::from_fn(|i| (high[i] - low[i]) * 0.5),
+        0.,
+    )?;
+    w.vector(
+        list + 96,
+        std::array::from_fn(|i| (high[i] + low[i]) * 0.5),
+        1.,
+    )?;
+    // Native A2AC40 treats zero as inheritance from the root collidable.
+    // Saved body filters omit the live contact-enable bits and cannot
+    // be copied to this runtime filter field.
+    let children = vec![0; shapes.len() * 32];
+    let start = w.array(list + 48, &children, 32)?;
+    for (i, &shape) in shapes.iter().enumerate() {
+        w.references
+            .push((u32::try_from(start + i * 32)?, u32::try_from(shape)?));
+    }
+    Ok(list)
+}
+
+/// The most prisms a volume keeps in a list shape. Stock volume packfiles hold up to three
+/// prisms in a list shape and more in a static compound.
+const LIST_PRISMS: usize = 3;
+
+/// A kill volume packfile: a shape array whose entries each hold one volume's convex prisms, in
+/// a list shape for up to three and a static compound of them beyond, as stock Crucible volume
+/// packfiles do. `template` is a stock volume packfile, whose class names cover all four classes.
+pub(crate) fn volume_shapes(template: &[u8], volumes: &[Vec<Hull>]) -> Result<Vec<u8>> {
+    ensure!(
+        !volumes.is_empty()
+            && volumes.len() <= 1024
+            && volumes.iter().all(|hulls| !hulls.is_empty()),
+        "Volume packfile has an invalid volume or prism count"
+    );
+    let template = Template::read(template, "s_hkpShape_array_data")?;
+    let root = template.object("s_hkpShape_array_data", 16)?;
+    let convex_template = template.object("hkpConvexVerticesShape", 128)?;
+    let list_shape = template.object("hkpListShape", 144)?;
+    let compound_shape = template.object("hkpStaticCompoundShape", compound::SHAPE_SIZE)?;
+    let mut w = Writer {
+        data: Vec::new(),
+        local: Vec::new(),
+        references: Vec::new(),
+        objects: Vec::new(),
+    };
+    w.object(&root, "s_hkpShape_array_data")?;
+    let slots = w.array(0, &vec![0; volumes.len() * 8], 8)?;
+    for (index, hulls) in volumes.iter().enumerate() {
+        let mut shapes = Vec::with_capacity(hulls.len());
+        let mut bounds = Vec::with_capacity(hulls.len());
+        for hull in hulls {
+            let (minimum, maximum) = hull.bounds()?;
+            bounds.push((
+                minimum.map(|v| v - hull.radius),
+                maximum.map(|v| v + hull.radius),
+            ));
+            shapes.push(convex(&mut w, &convex_template, hull, minimum, maximum)?);
+        }
+        let shape = if hulls.len() <= LIST_PRISMS {
+            list(&mut w, &list_shape, &shapes, &bounds)?
+        } else {
+            compound::convex_compound(&mut w, &compound_shape, &shapes, &bounds)?
         };
         w.references
             .push((u32::try_from(slots + index * 8)?, u32::try_from(shape)?));

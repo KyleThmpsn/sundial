@@ -60,9 +60,13 @@ impl Program {
         Ok(result)
     }
 
-    pub(super) fn flight_throttle(cruise: f32, boost: f32) -> Result<Self> {
+    pub(super) fn flight_throttle(cruise: f32, reverse: f32, boost: f32) -> Result<Self> {
         ensure!(
-            (0.0..=1.0).contains(&cruise) && boost.is_finite() && boost > cruise,
+            (0.0..=1.0).contains(&cruise)
+                && reverse.is_finite()
+                && reverse >= 0.
+                && boost.is_finite()
+                && boost > cruise,
             "Invalid flight thrust range"
         );
         let mut result = Self {
@@ -70,12 +74,22 @@ impl Program {
             inputs: 2,
             ..Self::default()
         };
-        // The unit movement getter returns forward input in Y. Input zero is
-        // the flight controller's separate boost demand. Both are zero at rest.
+        // Keep the unit movement getter's signed Y input. The native throttle
+        // accumulator and force construction both retain negative demand.
         result.scalar(cruise)?;
-        result.code.extend([0x03, 0x3c, 0, 0x23]);
+        result.code.extend([0x03, 0x3c, 1, 0x22, 0x55]);
+        result.scalar(-1.)?;
+        result.code.extend([0x03, 0x23]);
+        result.scalar(reverse)?;
+        result.code.extend([0x03, 0x02]);
+        // Boost replaces either travel direction. A maximum with zero boost
+        // would discard reverse thrust even after preserving the signed input.
+        result.scalar(1.)?;
+        result
+            .code
+            .extend([0x3c, 0, 0x23, 0x02, 0x03, 0x3c, 0, 0x23]);
         result.scalar(boost)?;
-        result.code.extend([0x03, 0x09]);
+        result.code.extend([0x03, 0x01]);
         Ok(result)
     }
 
@@ -105,6 +119,26 @@ impl Program {
         result.scalar(gain)?;
         result.code.push(0x03);
         Ok(result)
+    }
+
+    pub(super) fn airspeed(mut self, reference: f32, squared: bool) -> Result<Self> {
+        ensure!(
+            reference.is_finite() && reference > 0.,
+            "Invalid flight reference speed"
+        );
+        // The body speed getter is input one. Bound compensation at one fifth
+        // of reference speed and leave the original response above reference.
+        // Authority scales with speed squared, rotational damping with speed.
+        for _ in 0..if squared { 2 } else { 1 } {
+            self.scalar(reference)?;
+            self.code.extend([0x3c, 1]);
+            self.scalar(reference * 0.2)?;
+            self.code.extend([0x09, 0x04]);
+            self.scalar(1.)?;
+            self.code.extend([0x09, 0x03]);
+        }
+        self.inputs |= 2;
+        Ok(self)
     }
 
     pub(super) fn ramp(input: [f32; 2], output: [f32; 2]) -> Result<Self> {

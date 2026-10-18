@@ -468,6 +468,7 @@ pub(super) fn setting(
         field,
         lane,
         requires_positive_minimum,
+        linked: Vec::new(),
     })
 }
 

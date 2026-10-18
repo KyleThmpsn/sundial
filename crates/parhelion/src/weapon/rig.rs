@@ -305,7 +305,7 @@ pub(crate) fn stat_table_patches(
 }
 
 /// The one native array of `class` in the translator owner: its row count and first row.
-pub(super) fn translator_array(owner: &[u8], class: u32) -> AuthoringResult<(usize, usize)> {
+pub(crate) fn translator_array(owner: &[u8], class: u32) -> AuthoringResult<(usize, usize)> {
     let mut found = None;
     for descriptor in (0..owner.len().saturating_sub(16)).step_by(8) {
         let Ok((count, rows, found_class)) =

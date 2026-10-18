@@ -55,8 +55,8 @@ pub(crate) fn resident(header: &mut [u8], bytes: usize) -> Result<()> {
     // Keep the upload pitch metadata consistent with the new block format.
     match p.u32(4)? {
         28 | 29 => header[22] = 32,
-        71 | 72 | 80 => header[22] = 4,
-        98 | 99 => header[22] = 8,
+        71 | 72 | 80 | 81 => header[22] = 4,
+        77 | 78 | 83 | 84 | 98 | 99 => header[22] = 8,
         _ => {}
     }
     // Native resident BC textures and the single-mip RGBA control use this

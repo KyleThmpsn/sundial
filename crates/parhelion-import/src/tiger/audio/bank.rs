@@ -4,10 +4,13 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod early;
 mod linked;
 pub(crate) mod looping;
 mod one_shot;
+pub(crate) use one_shot::Layer as ShotLayer;
 mod params;
+pub use early::{upgrade, upgrade_with_settings};
 pub use linked::Namespace;
 pub mod settings;
 use params::{node, rtpcs};
@@ -166,6 +169,59 @@ pub fn lower(bytes: &[u8]) -> Result<Bank> {
     lower_inner(bytes, None)
 }
 
+/// Inspect framed object types without interpreting an unsupported object's
+/// body. This can justify a reported whole-cue omission, never copying unknown
+/// objects into a native bank or discarding individual hierarchy nodes.
+pub fn object_types(bytes: &[u8]) -> Result<BTreeSet<u8>> {
+    ensure!(bytes.len() <= 64 * 1024 * 1024, "source bank exceeds limit");
+    let mut r = Read { bytes, at: 0 };
+    let mut header = false;
+    let mut hierarchy = None;
+    while r.at < bytes.len() {
+        let name = r.take(4)?;
+        let size = r.u32()? as usize;
+        let body = r.take(size)?;
+        match name {
+            b"BKHD" => {
+                ensure!(!header && body.len() == 40, "bank header envelope differs");
+                ensure!(
+                    u32::from_le_bytes(body[..4].try_into()?) == 150,
+                    "source bank must be version 150"
+                );
+                header = true;
+            }
+            b"HIRC" => ensure!(hierarchy.replace(body).is_none(), "duplicate HIRC"),
+            b"STID" => {}
+            b"DIDX" | b"DATA" => ensure!(body.is_empty(), "embedded media needs extraction"),
+            _ => bail!("unsupported source bank chunk {name:?}"),
+        }
+    }
+    ensure!(header, "bank header missing");
+    let mut r = Read {
+        bytes: hierarchy.context("bank HIRC missing")?,
+        at: 0,
+    };
+    let count = r.count()?;
+    let mut ids = BTreeSet::new();
+    let mut types = BTreeSet::new();
+    for _ in 0..count {
+        types.insert(r.u8()?);
+        let size = r.u32()? as usize;
+        let data = r.take(size)?;
+        let id = u32::from_le_bytes(
+            data.get(..4)
+                .context("bank object identity missing")?
+                .try_into()?,
+        );
+        ensure!(
+            id != 0 && ids.insert(id),
+            "duplicate or zero bank object {id:08X}"
+        );
+    }
+    r.end()?;
+    Ok(types)
+}
+
 /// Include source globals absent from the target Init bank before loading HIRC.
 pub fn lower_with_settings(
     bytes: &[u8],
@@ -315,6 +371,25 @@ fn lower_inner(
 }
 
 impl Bank {
+    /// Cross-bank references retain their own identity domain.
+    pub fn bank_dependencies(&self) -> BTreeSet<u32> {
+        self.refs
+            .iter()
+            .filter(|r| matches!(r.kind, Kind::Bank) && r.value != self.bank_id)
+            .map(|r| r.value)
+            .collect()
+    }
+
+    /// References not defined in this hierarchy need another bank or the native Init graph.
+    pub fn external_objects(&self) -> BTreeSet<u32> {
+        self.refs
+            .iter()
+            .filter(|r| {
+                matches!(r.kind, Kind::Object) && r.value != 0 && !self.objects.contains(&r.value)
+            })
+            .map(|r| r.value)
+            .collect()
+    }
     /// Native media reference fields recorded by the parser, including unaligned fields.
     /// Their values are package-allocated media IDs, separate from Wwise object identities.
     pub fn media_fields(&self) -> Vec<(usize, u32)> {
@@ -429,7 +504,11 @@ fn action(r: &mut Read<'_>, w: &mut Write, c: &mut Convert) -> Result<()> {
         w.object(r)?;
     }
     w.copy(r, 1)?;
-    params::props(r, w, false)?;
+    let properties = params::props(r, w, false)?;
+    ensure!(
+        properties.attenuation.is_none() && !properties.position_switch,
+        "action has positioning properties"
+    );
     params::props(r, w, true)?;
     match action >> 8 {
         4 => {

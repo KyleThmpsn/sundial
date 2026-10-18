@@ -82,8 +82,22 @@ impl Editor {
                         .fit_to_exact_size(size)
                         .sense(egui::Sense::drag()),
                 );
+                let shown = match self.kind {
+                    Kind::Nameplate { part, .. } => part.shown_rows(height),
+                    _ => None,
+                };
+                if let Some(shown) = shown {
+                    crate::app::hidden_rows(ui, response.rect, shown, height);
+                }
                 self.pan(&response, size);
-                ui.weak(format!("Output {width} × {height} px"));
+                ui.weak(match shown {
+                    Some(_) => {
+                        format!(
+                            "Output {width} × {height} px. The game shows the lower part at 16:9."
+                        )
+                    }
+                    None => format!("Output {width} × {height} px"),
+                });
             } else if self.kind == Kind::Badge {
                 let width = ui.available_width().min(440.0);
                 let size = egui::vec2(width, width * 268.0 / 440.0);

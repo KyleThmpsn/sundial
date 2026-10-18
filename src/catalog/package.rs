@@ -51,20 +51,39 @@ pub(super) fn install_fingerprint(install: &Path) -> Result<String, String> {
     for path in paths {
         hash_package_header(&mut digest, &path)?;
     }
-    for path in crate::package_runtime::mods::files(install)? {
+    for path in crate::package_runtime::mods::content_files(install)? {
         digest.update(
             path.strip_prefix(install)
                 .map_err(|e| e.to_string())?
                 .to_string_lossy()
                 .as_bytes(),
         );
-        if path.extension().is_some_and(|ext| ext == "pkg") {
-            hash_package_header(&mut digest, &path)?;
-        } else {
-            digest.update(fs::read(&path).map_err(|e| e.to_string())?);
+        // Readers leave out a mod whose files the loader would refuse, so a malformed or
+        // unreadable one only needs to identify itself here.
+        if let Err(error) = hash_mod_input(&mut digest, &path) {
+            digest.update(error.kind().to_string());
         }
     }
     Ok(hex::encode(digest.finalize()))
+}
+
+/// A mod package's size and header bytes, or a mod's whole metadata file.
+fn hash_mod_input(digest: &mut Sha256, path: &Path) -> std::io::Result<()> {
+    let file = File::open(path)?;
+    let size = file.metadata()?.len();
+    let package = path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("pkg"));
+    let limit = if package {
+        PACKAGE_HEADER_SIZE as u64
+    } else {
+        size
+    };
+    let mut bytes = Vec::new();
+    file.take(limit).read_to_end(&mut bytes)?;
+    digest.update(size.to_le_bytes());
+    digest.update(bytes);
+    Ok(())
 }
 
 fn hash_package_header(digest: &mut Sha256, path: &Path) -> Result<(), String> {

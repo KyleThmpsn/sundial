@@ -75,6 +75,9 @@ pub struct PerkRecipe {
     /// Also offered in every stock socket that offers the plug its type comes from.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub offer_everywhere: bool,
+    /// Native projectile assets required by the perk on its authored weapon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projectile: Option<crate::weapon::projectile::Preset>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stats: Vec<WeaponStatOverride>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -121,6 +124,7 @@ impl PerkRecipe {
             icon: None,
             classification: None,
             offer_everywhere: false,
+            projectile: None,
             stats: Vec::new(),
             effects: Vec::new(),
             sources: Vec::new(),
@@ -186,6 +190,7 @@ impl PerkRecipe {
             icon: self.icon.clone(),
             classification_donor_hash: self.classification.clone(),
             offer_everywhere: self.offer_everywhere,
+            projectile: self.projectile,
             // Saved recipes keep stats in index order, so an applied perk equals its saved form.
             investment_stats: {
                 let mut stats = self.stats.clone();

@@ -9,6 +9,86 @@ pub struct Parameters {
     pub objects: Vec<Relocation>,
 }
 
+impl Parameters {
+    /// Use only after every declared value has been supplied by the private
+    /// creation action and the enclosing graph has excluded later writers.
+    pub fn freeze_creation(&mut self) -> Result<()> {
+        let root = self.owner.pointer(16)?;
+        let methods = self.owner.array(0x30, 16, Some(0x808091A4))?;
+        ensure!(
+            methods.len() == 1,
+            "constant parameter constructor list differs"
+        );
+        let row = methods[0];
+        ensure!(
+            self.owner.pointer(row)? == root
+                && self.owner.u32(row + 8)? == 0x80808BF1
+                && self.owner.u16(row + 12)? == 2
+                && self.owner.u16(row + 14)? == u16::MAX,
+            "constant parameter constructor contract differs"
+        );
+        // Native 57EA40 only applies the incoming named-value context. Keeping
+        // it would allow inherited values to replace the explicit constants.
+        // Both serialized runtime values and definition defaults are retained.
+        put(&mut self.owner.0, row + 12, &u16::MAX.to_le_bytes())
+    }
+}
+
+/// Specialize the initial values of one private graph for a constant creation
+/// action. The enclosing transaction must keep this graph private to callers
+/// with the same parameters and must reject external writes to this component.
+pub fn with_defaults(source: &Payload, values: &BTreeMap<u32, [u8; 16]>) -> Result<Payload> {
+    let si = source.pointer(16)?;
+    let sd = source.pointer(24)?;
+    ensure!(
+        source.u32(si - 4)? == 0x80808760 && source.u32(sd - 4)? == 0x80808757,
+        "creation defaults require a named-parameter component"
+    );
+    let inputs = source.array(si + 0x40, 48, Some(0x8080875C))?;
+    let declarations = source.array(sd + 0xB8, 80, Some(0x8080875D))?;
+    ensure!(
+        inputs.len() == declarations.len() && values.len() == declarations.len(),
+        "constant creation must supply every declared parameter"
+    );
+    let mut output = source.clone();
+    let mut names = BTreeSet::new();
+    let mut applied = BTreeSet::new();
+    for (&input, &definition) in inputs.iter().zip(&declarations) {
+        paired(
+            source,
+            input,
+            definition,
+            source.u32(si)?,
+            0x8080875C,
+            0x8080875D,
+        )?;
+        let name = source.u32(definition + 48)?;
+        ensure!(
+            names.insert(name)
+                && source.u32(definition + 52)? == 1
+                && source.u64(definition + 56)? == 0
+                && source.bytes::<16>(input + 32)? == source.bytes::<16>(definition + 64)?,
+            "creation parameter name, mode or initial value differs"
+        );
+        if let Some(value) = values.get(&name) {
+            for lane in value.chunks_exact(4) {
+                ensure!(
+                    f32::from_le_bytes(lane.try_into()?).is_finite(),
+                    "creation parameter is not finite"
+                );
+            }
+            put(&mut output.0, input + 32, value)?;
+            put(&mut output.0, definition + 64, value)?;
+            applied.insert(name);
+        }
+    }
+    ensure!(
+        applied.len() == values.len(),
+        "creation parameter is not declared by this graph"
+    );
+    Ok(output)
+}
+
 fn method(
     payload: &Payload,
     at: usize,
@@ -172,14 +252,14 @@ pub fn emit(
                 && source.u32(definition + 52)? == 1
                 && source.u64(definition + 32)? == 0
                 && source.u64(definition + 40)? == 0
-                && source.u64(definition + 72)? == 0
+                && source.u64(definition + 56)? == 0
                 && source.pointer(input + 16)? == si
                 && source.u64(input + 24)? == 0
-                && source.bytes::<16>(input + 32)? == source.bytes::<16>(definition + 56)?,
+                && source.bytes::<16>(input + 32)? == source.bytes::<16>(definition + 64)?,
             "parameter name, mode or initial state differs"
         );
         for lane in 0..4 {
-            source.f32(definition + 56 + lane * 4)?;
+            source.f32(definition + 64 + lane * 4)?;
         }
         let i = target_inputs[index];
         let d = target_declarations[index];
@@ -189,8 +269,11 @@ pub fn emit(
             i + 16,
             &(ni as i64 - (i + 16) as i64).to_le_bytes(),
         )?;
-        put(&mut owner.0, i + 32, &source.bytes::<16>(definition + 56)?)?;
-        put(&mut owner.0, d + 40, &source.bytes::<24>(definition + 48)?)?;
+        // Modern 875D aligns the Float4 at +40, after eight padding bytes.
+        // Native 8BEC stores the same value at +30. Copy fields separately.
+        put(&mut owner.0, i + 32, &source.bytes::<16>(definition + 64)?)?;
+        put(&mut owner.0, d + 40, &source.bytes::<8>(definition + 48)?)?;
+        put(&mut owner.0, d + 48, &source.bytes::<16>(definition + 64)?)?;
         for (at, twin, class) in [(i, d, 0x80808BECu32), (d, i, 0x80808BEB)] {
             put(&mut owner.0, at, &owner_tag.to_le_bytes())?;
             put(&mut owner.0, at + 4, &class.to_le_bytes())?;

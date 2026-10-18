@@ -84,6 +84,7 @@ pub(super) fn apply_socket_overrides(
     Ok(expected_socket_columns)
 }
 
+#[allow(clippy::cognitive_complexity)]
 pub(super) fn apply_presentation(
     definition: &mut Vec<u8>,
     strings: &mut [u8],
@@ -140,6 +141,14 @@ pub(super) fn apply_presentation(
         set_item_string_ammo_type(strings, ammo_type)?;
     }
     write_u16(strings, ITEM_STRING_ICON_INDEX_OFFSET, authored_icon_index)?;
+    // An imported weapon shows no secondary inspect art. The native base's, such as a foundry
+    // mark, belongs to the base's identity, and most stock items carry none (`FFFF`).
+    #[cfg(feature = "d2-model-importer")]
+    if donor.weapon.kind == crate::ItemKind::Weapon
+        && donor.weapon.overrides.imported_graph.is_some()
+    {
+        write_u16(strings, ITEM_STRING_SECONDARY_ICON_INDEX_OFFSET, u16::MAX)?;
+    }
     clear_item_string_watermark_overrides(strings)?;
     write_localized_reference(
         strings,

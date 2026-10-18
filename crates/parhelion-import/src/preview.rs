@@ -91,7 +91,7 @@ fn prepare(
             return Err("Imported preview has duplicate symbols".into());
         }
     }
-    let mut repaired = crate::tiger::material::repair(graph, root)
+    let mut bound = crate::tiger::material::bind(graph, root)
         .map_err(|e| format!("Imported model bindings: {e:#}"))?;
     let models = crate::model_symbols(graph).map_err(|e| e.to_string())?;
     let entries = nodes
@@ -100,7 +100,7 @@ fn prepare(
             let model = node["symbol"]
                 .as_str()
                 .is_some_and(|name| models.contains(name));
-            entry(node, model, root, &symbols, manager, &mut repaired)
+            entry(node, model, root, &symbols, manager, &mut bound)
         })
         .collect::<Result<_, _>>()?;
     Ok((package, symbols, entries))
@@ -112,7 +112,7 @@ fn entry(
     root: &Path,
     symbols: &Symbols,
     manager: &PackageManager,
-    repaired: &mut BTreeMap<String, Vec<u8>>,
+    bound: &mut BTreeMap<String, Vec<u8>>,
 ) -> Result<Entry, String> {
     let template = word(&node["template"])?;
     let mut header = manager
@@ -124,7 +124,7 @@ fn entry(
     let mut data = if companion {
         Vec::new()
     } else if let Some(bytes) =
-        repaired.remove(node["symbol"].as_str().ok_or("Preview symbol missing")?)
+        bound.remove(node["symbol"].as_str().ok_or("Preview symbol missing")?)
     {
         bytes
     } else {
@@ -181,7 +181,9 @@ fn scene(
     symbols: &Symbols,
     manager: &PackageManager,
 ) -> Result<LocalScene, String> {
-    if item_kind == "weapon" {
+    // A weapon converted as art parts (D1 Rise of Iron) carries its gear art rows and is
+    // read like any other arrangement below.
+    if item_kind == "weapon" && graph.get("gear_art").is_none() {
         let parent = tag(symbols, &graph["parent"])?;
         if manager
             .get_entry(parent)
@@ -192,9 +194,17 @@ fn scene(
         let entity = crate::tiger::payload::Payload(manager.read_tag(parent)?)
             .u32(0x10)
             .map_err(|e| e.to_string())?;
+        // A weapon with no private dyes is painted in game by its native donor's default
+        // dyes, which the gear path binds. The converted programs multiply by those vectors.
+        let stock_dyes = if graph["dyes"].as_array().is_none_or(Vec::is_empty) {
+            donor_default_dyes(manager, graph)?
+        } else {
+            Vec::new()
+        };
         return Ok(LocalScene {
             entities: vec![entity],
             dyes: BTreeMap::new(),
+            stock_dyes,
         });
     }
     let row = graph["gear_art"]["rows"]
@@ -256,18 +266,18 @@ fn scene(
             .as_array()
             .filter(|rows| rows.len() == 3)
             .ok_or("Imported appearance dye layers missing")?;
-        let first = match item_kind {
-            "armor" => 0,
-            "ship" => 7,
-            "sparrow" => 10,
-            "ghost_shell" => 13,
-            _ => return Err("Imported appearance kind has no dye slots".into()),
-        };
         for layer in [1, 0, 2] {
             for row in layers[layer]
                 .as_array()
                 .ok_or("Imported appearance dye layer invalid")?
             {
+                let first = match item_kind {
+                    "armor" => 0,
+                    "ship" => 7,
+                    "sparrow" => 10,
+                    "ghost_shell" => 13,
+                    _ => return Err("Imported appearance kind has no dye slots".into()),
+                };
                 let source = source_dyes
                     .get(word(&row["dye"])? as usize)
                     .ok_or("Imported preview dye missing")?;
@@ -283,7 +293,53 @@ fn scene(
             }
         }
     }
-    Ok(LocalScene { entities, dyes })
+    // A weapon's art parts are painted in game by its native donor's default dyes, as above.
+    let stock_dyes = if item_kind == "weapon" && dyes.is_empty() {
+        donor_default_dyes(manager, graph)?
+    } else {
+        Vec::new()
+    };
+    Ok(LocalScene {
+        entities,
+        dyes,
+        stock_dyes,
+    })
+}
+
+/// The native donor item's own default dyes, read from its definition the way the catalog
+/// reads them, for a weapon whose graph records no private dyes.
+fn donor_default_dyes(manager: &PackageManager, graph: &Value) -> Result<Vec<(i8, u16)>, String> {
+    let donor = graph["native_item"]
+        .as_u64()
+        .and_then(|hash| u32::try_from(hash).ok())
+        .ok_or("Imported weapon donor missing")?;
+    let named = manager
+        .lookup
+        .named_tags
+        .iter()
+        .find(|entry| entry.name == "investment_globals")
+        .map(|entry| entry.hash.0)
+        .ok_or("Native investment globals missing")?;
+    let payload = |tag: u32| -> Result<crate::tiger::payload::Payload, String> {
+        Ok(crate::tiger::payload::Payload(manager.read_tag(tag)?))
+    };
+    let word = |payload: &crate::tiger::payload::Payload, at: usize| -> Result<u32, String> {
+        payload.u32(at).map_err(|e| e.to_string())
+    };
+    let globals = payload(named)?;
+    let root = payload(word(&globals, 16)?)?;
+    let items = payload(word(&root, 8 + 48 * 16)?)?;
+    let mut definition = None;
+    for row in items
+        .array(8, 24, Some(0x80807BE8))
+        .map_err(|e| e.to_string())?
+    {
+        if word(&items, row)? == donor && definition.replace(word(&items, row + 16)?).is_some() {
+            return Err("Native donor item is ambiguous".into());
+        }
+    }
+    let item = manager.read_tag(definition.ok_or("Native donor item missing")?)?;
+    Ok(sundial::ui::model_preview::stock_default_dyes(&item))
 }
 
 fn validate(reference: &GraphReference, kind: &str) -> Result<(), String> {
@@ -292,8 +348,7 @@ fn validate(reference: &GraphReference, kind: &str) -> Result<(), String> {
             &fs::read(reference.directory.join("asset-graph.json")).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-        if graph.get("gear_art").is_some() || graph["kind"].as_str().is_some_and(|k| k != "weapon")
-        {
+        if graph["kind"].as_str().is_some_and(|k| k != "weapon") {
             return Err("Choose a weapon appearance for weapon artwork".into());
         }
         reference

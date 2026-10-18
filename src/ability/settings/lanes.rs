@@ -301,6 +301,7 @@ pub(super) fn find(
                 field: field.clone(),
                 lane: Some(lane),
                 requires_positive_minimum: false,
+                linked: Vec::new(),
             });
         }
     }

@@ -4,7 +4,7 @@ use super::*;
 /// One stat a stat group shows: its definition index, its display flags and its curve from
 /// investment value to shown value.
 #[derive(Clone, Debug, PartialEq)]
-pub(super) struct Shown {
+pub(crate) struct Shown {
     pub index: u16,
     pub numeric: bool,
     pub linear: bool,

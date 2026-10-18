@@ -1,27 +1,21 @@
 //! Imported particle assets: converted particle systems with their programs, materials,
 //! shaders and textures. They take a group in the asset packages, where each node gets its
 //! tag, its package reference and the tags of the nodes it names.
+use super::assets::audio;
 use super::imports::Inputs;
 use super::*;
 use crate::tag_payload::read_u16;
 use std::collections::{BTreeMap, BTreeSet};
-mod audio;
 mod projectile;
-mod replication;
+use super::assets::replication;
+mod shard;
 
-struct Node {
-    symbol: String,
-    template: u32,
-    payload: Vec<u8>,
-    reference: Option<String>,
-    storage: crate::NewTagStorageMode,
-    patches: Vec<(usize, String)>,
-    audio: audio::Metadata,
-}
+type Node = super::assets::Node<audio::Metadata>;
 
 pub(in crate::item) struct ImportedParticles {
     nodes: Vec<Node>,
     projectile: Option<String>,
+    pub(in crate::item) source_trajectory: bool,
     attachments: BTreeSet<String>,
     presentation: Option<Presentation>,
 }
@@ -136,6 +130,7 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedPa
         "projectile",
         "attachments",
         "runtime_presentation",
+        "audio_assets",
     ] {
         if let Some(part) = value.get(section) {
             if part["installable"] != true {
@@ -227,7 +222,7 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedPa
                 Some(_) => return Err(invalid("Imported asset has an unsupported storage mode")),
             },
             patches,
-            audio: serde_json::from_value(node.clone())
+            metadata: serde_json::from_value(node.clone())
                 .map_err(|error| invalid(format!("Imported graph audio: {error}")))?,
         });
     }
@@ -252,6 +247,8 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedPa
         .transpose()?;
     let assets = ImportedParticles {
         nodes: result,
+        source_trajectory: value["projectile"]["conversion"]["launch_policy"]
+            == "source_player_trajectory",
         projectile,
         attachments,
         presentation,
@@ -280,10 +277,10 @@ impl ImportedParticles {
                 .iter()
                 .map(|(offset, symbol)| serde_json::json!({"offset":offset,"symbol":symbol}))
                 .collect::<Vec<_>>();
-            if let Some(fixed) = parhelion_import::tiger::instance::repair(&node.payload, &patches)
-                .map_err(|error| {
-                    invalid(format!("Imported component {}: {error:#}", node.symbol))
-                })?
+            if let Some(fixed) =
+                parhelion_import::tiger::instance::upgrade_owner(&node.payload, &patches).map_err(
+                    |error| invalid(format!("Imported component {}: {error:#}", node.symbol)),
+                )?
             {
                 node.payload = fixed.payload;
                 node.patches = fixed
@@ -476,6 +473,7 @@ impl ImportedParticles {
         }
         self.nodes.extend(other.nodes);
         self.attachments.extend(other.attachments);
+        self.source_trajectory |= other.source_trajectory;
         self.projectile = self.projectile.take().or(other.projectile);
         self.presentation = self.presentation.take().or(other.presentation);
         Ok(())
@@ -524,100 +522,39 @@ impl ImportedParticles {
             .chain(runtime)
             .map(String::as_str)
             .collect::<Vec<_>>();
-        let loading = replication::Loading::all(&self.nodes, manager, &roots)?;
-        let mut bounds = self
-            .nodes
+        let entities = roots
             .iter()
-            .map(|node| node.payload.len())
-            .collect::<Vec<_>>();
-        bounds.extend(loading.iter().map(|loading| loading.bound));
-        let index = packages.reserve_group(bounds)?;
-        let package = &mut packages.packages[index];
-        let allocator = AppendedTagAllocator::new(package.id, 0);
-        let base = package.tags.len();
-        let mut symbols = BTreeMap::new();
-        for (index, node) in self.nodes.iter().enumerate() {
-            symbols.insert(
-                node.symbol.clone(),
-                allocator.assigned_tag(
-                    base + index,
-                    "Imported particle asset",
-                    "particle asset",
-                )?,
-            );
-        }
-        let mut audio = audio::bind(&self.nodes, &symbols, item)?;
-        for node in &self.nodes {
-            if node.storage != crate::NewTagStorageMode::InheritTemplate
-                && (node.reference.is_some()
-                    || manager
-                        .get_entry(TagHash(node.template))
-                        .is_none_or(|entry| entry.file_type != 26))
-            {
-                return Err(invalid(
-                    "Imported audio storage needs a raw audio template and its own identity",
-                ));
-            }
-            let entity = self.projectile.as_deref() == Some(node.symbol.as_str())
-                || self.attachments.contains(&node.symbol)
-                || runtime == Some(&node.symbol);
-            if entity
-                && manager
-                    .get_entry(TagHash(node.template))
-                    .is_none_or(|entry| entry.reference != 0x80809C0F)
-            {
-                return Err(invalid("Imported entity template is not a native entity"));
-            }
-            if manager.get_entry(TagHash(node.template)).is_none() {
-                return Err(invalid(format!(
-                    "Imported particle template 0x{:08X} is unavailable",
-                    node.template
-                )));
-            }
-            let mut payload = audio
-                .remove(&node.symbol)
-                .unwrap_or_else(|| node.payload.clone());
-            for (offset, target) in &node.patches {
-                let slot = payload
-                    .get_mut(*offset..offset + 4)
-                    .ok_or_else(|| invalid("Imported particle patch exceeds its payload"))?;
-                if slot != u32::MAX.to_le_bytes() {
-                    return Err(invalid("Imported particle patch is not a placeholder"));
-                }
-                slot.copy_from_slice(&symbols[target].0.to_le_bytes());
-            }
-            if entity {
-                parhelion_import::d2_mot::entity::links::Graph::read(
-                    &parhelion_import::d2_mot::payload::Payload(payload.clone()),
-                    false,
-                )
-                .map_err(|error| invalid(format!("Imported entity {}: {error}", node.symbol)))?;
-            }
-            if let Some(target) = &node.reference {
-                package.references.push(crate::NewTagReferenceOverride {
-                    new_tag_ordinal: package.tags.len(),
-                    reference: crate::NewTagReference::Appended(
-                        symbols[target].entry_index() as usize
-                    ),
-                });
-            }
-            package.tags.push(NewTagSpec {
-                template_tag: TagHash(node.template),
-                payload,
-                storage: node.storage,
-            });
-        }
-        for loading in loading {
-            loading.append(&self.nodes, &symbols, package)?;
-        }
-        // Native replication allocations and their root are eager. The companion
-        // is reached through package enrollment rather than the global index.
-        let eager = self
-            .nodes
-            .iter()
-            .map(|node| symbols[&node.symbol])
+            .map(|root| (*root).to_owned())
+            .chain(self.attachments.iter().cloned())
             .collect();
-        Ok((symbols, eager))
+        super::assets::author(
+            &self.nodes,
+            &roots,
+            &entities,
+            manager,
+            packages,
+            |symbols| {
+                let mut bound = audio::bind(
+                    &self.nodes.iter().map(audio::Node::from).collect::<Vec<_>>(),
+                    symbols,
+                    &format!("parhelion/{item:08x}/graph-audio"),
+                )?;
+                shard::bind(manager, &self.nodes, item, &mut bound)?;
+                Ok(bound)
+            },
+            |node, payload, entity| {
+                if entity {
+                    parhelion_import::d2_mot::entity::links::Graph::read(
+                        &parhelion_import::d2_mot::payload::Payload(payload.to_vec()),
+                        false,
+                    )
+                    .map_err(|error| {
+                        invalid(format!("Imported entity {}: {error}", node.symbol))
+                    })?;
+                }
+                Ok(())
+            },
+        )
     }
 }
 

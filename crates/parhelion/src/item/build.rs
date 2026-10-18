@@ -12,7 +12,7 @@ pub(super) use progress::Progress;
 pub(crate) use progress::{Event, Phase};
 
 // Shared compilation work plus donor resolution, runtime authoring, and definitions per weapon.
-const SHARED_OPERATIONS: usize = 17;
+const SHARED_OPERATIONS: usize = 18;
 
 pub(super) fn canonical_project_weapons(
     project: &WeaponProjectSpec,
@@ -138,6 +138,7 @@ pub(crate) fn build_weapon_project_after_catalog_validation(
     compile_with_progress(
         package_directory,
         project,
+        &[],
         crate::branding::Branding::for_packages(package_directory),
         &mut |_| {},
     )
@@ -147,14 +148,19 @@ pub(crate) fn build_weapon_project_after_catalog_validation(
 pub(crate) fn compile_with_progress(
     package_directory: &Path,
     project: &WeaponProjectSpec,
+    maps: &[crate::map::MapRecipe],
     branding: crate::branding::Branding,
     report: &mut dyn FnMut(Event<'_>),
 ) -> AuthoringResult<NewWeaponProjectBundle> {
     let mut progress = Progress::new(SHARED_OPERATIONS + 1 + 3 * project.weapons.len(), report);
+    // A set of maps alone builds no items.
     let weapons = progress.step("Validating Recipe Identities", || {
+        if project.weapons.is_empty() && !maps.is_empty() {
+            return Ok(Vec::new());
+        }
         canonical_project_weapons(project)
     })?;
-    compile_canonical(package_directory, &weapons, branding, &mut progress)
+    compile_canonical(package_directory, &weapons, maps, branding, &mut progress)
 }
 
 /// Keep allocation, table mutation, and final package validation in their native order.
@@ -168,6 +174,7 @@ pub(super) fn build_weapon_project_canonical(
     compile_canonical(
         package_directory,
         weapons,
+        &[],
         crate::branding::Branding::for_packages(package_directory),
         &mut progress,
     )
@@ -176,11 +183,22 @@ pub(super) fn build_weapon_project_canonical(
 fn compile_canonical(
     package_directory: &Path,
     weapons: &[WeaponCloneSpec],
+    maps: &[crate::map::MapRecipe],
     branding: crate::branding::Branding,
     progress: &mut Progress<'_>,
 ) -> AuthoringResult<NewWeaponProjectBundle> {
+    // A staged build already holds the layout it chose. A direct compile builds the stock one.
+    let _profile = crate::package_profile::join();
     let mut sources = progress.step("Loading Source Tables", || {
         sources::load_project_sources(package_directory)
+    })?;
+    let mut maps = progress.step("Planning Maps", || {
+        crate::map::Plan::load(
+            package_directory,
+            &sources.manager,
+            maps.to_vec(),
+            LOCALIZATION_DONOR_STRING_HASHES[1],
+        )
     })?;
     // Sunrise groups subclasses in threes by item index, so the items take their indices with
     // the subclasses grouped by class, and the plans return in the recipes' own order.
@@ -251,7 +269,13 @@ fn compile_canonical(
                 .flat_map(crate::subclass::compile::EntryPlan::private_perks),
         )
         .filter_map(|perk| perk.program.as_ref())
-        .filter(|program| program.assets().any(|asset| asset.hud_status.is_some()))
+        .filter(|program| {
+            program.assets().any(|asset| asset.hud_status.is_some())
+                || program
+                    .auxiliary
+                    .iter()
+                    .any(|record| record.hud_status.is_some())
+        })
         .cloned()
         .collect::<Vec<_>>();
     let mut assets = progress.step("Planning Artwork", || {
@@ -262,6 +286,7 @@ fn compile_canonical(
             (&mut custom_plugs, &mut mod_plugs),
             &programs,
             branding,
+            maps.pictures(),
         )
     })?;
     // A mod whose perk has an icon of its own shows it as the item's icon, in place of the
@@ -279,6 +304,8 @@ fn compile_canonical(
             &mut custom_plugs,
         )
     })?;
+    // Each map's private match displays name its picture's row.
+    maps.set_pictures(&icons.map_pictures)?;
     // A mod's strings name its item's icon row, which its perks' presentations show too.
     for plug in &mut mod_plugs {
         let owner = plug
@@ -323,6 +350,7 @@ fn compile_canonical(
             &custom_plugs,
             branding,
             &collection_plan,
+            &maps.strings(),
         )?;
         validate_authored_localization_values(
             &localization,
@@ -330,6 +358,7 @@ fn compile_canonical(
             &custom_plugs,
             branding,
             &collection_plan,
+            &maps.strings(),
         )?;
         Ok(localization)
     })?;
@@ -484,6 +513,7 @@ fn compile_canonical(
         stat_group_table,
         plug_set_table,
         runtime,
+        maps,
     };
     let (emission, manager) = progress.step("Linking Package Data", || {
         assembly::prepare(sources, output)

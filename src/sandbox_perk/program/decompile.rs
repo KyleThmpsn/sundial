@@ -81,6 +81,7 @@ pub fn decompile(
         actions,
         native_asset_patches: Vec::new(),
         imported_assets: Vec::new(),
+        imported_labels: None,
         removal_key: ending.removal_key,
         native_trigger,
         native_removal: ending.native_removal,

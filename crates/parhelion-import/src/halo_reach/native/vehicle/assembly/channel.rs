@@ -9,6 +9,31 @@ pub(in crate::halo_reach::native::vehicle) struct Channel {
 }
 
 impl Assembly {
+    fn flight_boost_release(&mut self) -> Result<()> {
+        let owner = self.owner(0x80803cde)?;
+        let hover = self.payloads.get_mut(&owner).unwrap();
+        let definition = usize::try_from(hover.u64(hover.pointer(16)? + 8)?)?;
+        ensure!(
+            hover.u32(definition - 4)? == 0x80803171,
+            "Flight carrier hover definition differs"
+        );
+        for profile in [0x6c0, 0x800] {
+            let at = definition + profile;
+            ensure!(
+                hover.u32(at)? == owner
+                    && hover.u32(at + 4)? == 0x80803cc5
+                    && hover.f32(at + 0x78)?.is_finite(),
+                "Flight carrier boost profile differs"
+            );
+            // EB3310 clears boost on release only after this minimum elapsed
+            // time. EB7D60 owns that clock and is replaced by flight motion.
+            // Keep boost activation and its firing gate, but release immediately.
+            put(&mut hover.0, at + 0x78, &0f32.to_le_bytes())?;
+        }
+        hover.0[definition + 0x9a1] = 1;
+        Ok(())
+    }
+
     pub(super) fn numeric_provider(
         &self,
         native: &mut Reader,
@@ -16,41 +41,13 @@ impl Assembly {
         method: u32,
     ) -> Result<links::Object> {
         let owner = self.owner(implementation)?;
-        let payload = &self.payloads[&owner];
-        let definition = usize::try_from(payload.u64(payload.pointer(16)? + 8)?)?;
-        let mut found = Vec::new();
-        // Providers can be declared without already having a consumer. Follow
-        // their parent pointer and metadata, rather than requiring an old wire.
-        for at in (definition + 0x48..payload.0.len().saturating_sub(23)).step_by(8) {
-            if payload.pointer(at).ok() != Some(definition)
-                || payload.u32(at + 12)? != 0
-                || native.reference(payload.u32(at + 8)?).ok() != Some(0x80809c54)
-            {
-                continue;
-            }
-            let metadata = native.tag(payload.u32(at + 8)?, Some(0x80809c54))?;
-            if metadata.u32(8)? != 0x80809ae1 {
-                continue;
-            }
-            let object = links::Object {
-                owner,
-                class: 0x80809ae1,
-                offset: at as u64,
-            };
-            let interface = links::Interface::read(payload, object, &metadata, false)?;
-            if interface.instance_class == 0x80809ae2
-                && interface.methods.len() == 1
-                && interface.methods[0].implementation_class == implementation
-                && interface.methods[0].index == method
-            {
-                found.push(object);
-            }
-        }
-        ensure!(
-            found.len() == 1,
-            "Vehicle numeric provider {implementation:08X} method {method} is absent or ambiguous"
-        );
-        Ok(found[0])
+        channel::inputs::provider(
+            native,
+            owner,
+            &self.payloads[&owner],
+            implementation,
+            method,
+        )
     }
 
     pub(super) fn channel_bridge(
@@ -247,6 +244,8 @@ impl Assembly {
         let mut sources = vec![
             (self.numeric_provider(native, 0x80803c23, 55)?, 2),
             (self.numeric_provider(native, 0x80803c23, 60)?, 3),
+            // The native primary-body speed input uses raw value type 4.
+            (self.numeric_provider(native, 0x808092d8, 26)?, 4),
         ];
         if maneuvers {
             let action = hover.pointer(definition + 0x9b8)?;
@@ -258,6 +257,7 @@ impl Assembly {
                 (self.numeric_provider(native, 0x80803cde, 19)?, 0),
                 (self.numeric_provider(native, 0x80803cde, 20)?, 0),
             ]);
+            self.flight_boost_release()?;
         }
         self.channel_bridge(native, graph, "vehicle-flight-channels", &sources)
     }

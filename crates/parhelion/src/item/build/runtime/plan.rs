@@ -26,6 +26,32 @@ pub(in crate::item::build) struct Payloads {
     private_perk_allocator: AppendedTagAllocator,
 }
 
+fn label_dictionaries(
+    manager: &PackageManager,
+    assets: &crate::asset_packages::AssetPackages,
+) -> AuthoringResult<BTreeMap<TagHash, NewTagSpec>> {
+    let mut dictionaries = BTreeMap::new();
+    for package in &assets.packages {
+        let allocator = AppendedTagAllocator::new(package.id, 0);
+        for (index, entry) in package.tags.iter().enumerate() {
+            if manager
+                .get_entry(entry.template_tag)
+                .is_some_and(|template| template.reference == 0x808094B4)
+            {
+                let tag = allocator.assigned_tag(
+                    index,
+                    "Imported label dictionary",
+                    "label dictionary",
+                )?;
+                if dictionaries.insert(tag, entry.clone()).is_some() {
+                    return Err(invalid("An imported label dictionary was allocated twice."));
+                }
+            }
+        }
+    }
+    Ok(dictionaries)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(in crate::item::build) fn author(
     package_directory: &Path,
@@ -41,8 +67,10 @@ pub(in crate::item::build) fn author(
     custom_plugs::CustomPlugPayloads,
     custom_plugs::CustomPlugPayloads,
 )> {
-    let weapon_runtime_tag_allocator =
-        AppendedTagAllocator::new(HOST_PACKAGE_ID, assets.weapon_runtime_start);
+    let weapon_runtime_tag_allocator = AppendedTagAllocator::new(
+        crate::package_profile::host().id,
+        assets.weapon_runtime_start,
+    );
     let mut weapon_runtime_new_tags = Vec::new();
     // The badge artwork opens the asset packages. Each weapon's imported runtime assets then
     // reserve a group of their own, so they roll over into further packages as one fills
@@ -58,8 +86,13 @@ pub(in crate::item::build) fn author(
     let mut particle_symbols = BTreeMap::new();
     #[cfg(not(feature = "d2-model-importer"))]
     let particle_symbols = BTreeMap::new();
-    let private_perk_runtime_append_start =
-        extended_overlay_append_start(package_directory, PRIVATE_PERK_RUNTIME_PACKAGE_ID)?;
+    // Sunrise's mod loader refuses a patch that adds entries, so there every private copy starts
+    // past the package's table and goes to the standalone packages that take its overflow.
+    let private_perk_runtime_append_start = if crate::package_profile::host().is_standalone() {
+        crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT
+    } else {
+        extended_overlay_append_start(package_directory, PRIVATE_PERK_RUNTIME_PACKAGE_ID)?
+    };
     if private_perk_runtime_append_start < PRIVATE_PERK_RUNTIME_EXPECTED_ENTRY_COUNT {
         return Err(validation(format!(
             "Private perk-runtime package historical high-water mark \
@@ -99,6 +132,9 @@ pub(in crate::item::build) fn author(
         &mut weapon_runtime_new_tags,
         progress,
     )?;
+    // Cache replay has already placed and linked every weapon's imported assets.
+    // Perk actions can live in a different package from their label dictionary.
+    let label_dictionaries = label_dictionaries(&sources.manager, &asset_packages)?;
     let mut catalog = custom_plugs::PerkCatalog {
         entity_assignments: &mut entity_assignments,
         finished_sandbox_perks: &mut finished_sandbox_perks,
@@ -106,6 +142,7 @@ pub(in crate::item::build) fn author(
         private_perk_runtime_new_tags: &mut private_perk_runtime_new_tags,
         private_perk_runtime_tag_allocator,
         particle_symbols: &particle_symbols,
+        label_dictionaries: &label_dictionaries,
         weapon: None,
     };
     // Each private perk, and each part of an authored subclass entry, reports as it starts.

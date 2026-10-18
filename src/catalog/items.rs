@@ -13,6 +13,7 @@ mod investment;
 mod perks;
 mod quality;
 mod scan;
+pub(crate) use scan::translation_dye_rows;
 mod sockets;
 
 #[cfg(test)]

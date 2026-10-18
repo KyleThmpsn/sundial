@@ -11,6 +11,8 @@ pub(in crate::item) struct PrivateRuntimeEdits<'a> {
     pub activation: Option<sundial::package_authoring::sandbox_perk::activation::PerkActivation>,
     /// The tags of the imported particle nodes of the weapon whose plug carries the program.
     pub particle_symbols: Option<&'a BTreeMap<String, TagHash>>,
+    /// Actual allocated dictionaries, including those in separate asset packages.
+    pub label_dictionaries: Option<&'a BTreeMap<TagHash, NewTagSpec>>,
 }
 
 /// Program asset patches with every imported particle symbol replaced by the tag the weapon's
@@ -51,7 +53,8 @@ pub(super) fn resolve_program_patches(
 pub(in crate::item) fn program_names_imported_particles(
     program: &sundial::package_authoring::sandbox_perk::program::Program,
 ) -> bool {
-    !program.imported_assets.is_empty()
+    program.imported_labels.is_some()
+        || !program.imported_assets.is_empty()
         || program
             .native_asset_patches
             .iter()
@@ -73,6 +76,7 @@ pub(in crate::item) fn clone_private_sandbox_perk_runtime(
         projectiles,
         activation,
         particle_symbols,
+        label_dictionaries,
     } = edits;
     if let Some(program) = program {
         if !values.is_empty()
@@ -89,6 +93,7 @@ pub(in crate::item) fn clone_private_sandbox_perk_runtime(
             runtime_action.action_tag,
             program,
             particle_symbols,
+            label_dictionaries,
             runtime_tag_allocator,
             runtime_new_tags,
         );
@@ -418,16 +423,85 @@ pub(super) fn append_private_asset_graph(
     Ok(private)
 }
 
+fn compile_program(
+    manager: &PackageManager,
+    template: TagHash,
+    program: &sundial::package_authoring::sandbox_perk::program::Program,
+    symbols: Option<&BTreeMap<String, TagHash>>,
+    labels: Option<&BTreeMap<TagHash, NewTagSpec>>,
+    allocator: AppendedTagAllocator,
+    tags: &[NewTagSpec],
+) -> AuthoringResult<sundial::package_authoring::sandbox_perk::program::Compiled> {
+    use sundial::package_authoring::sandbox_perk::program;
+    let Some(symbol) = &program.imported_labels else {
+        return program::compile(manager, program).map_err(invalid);
+    };
+    let target = symbols
+        .and_then(|symbols| symbols.get(symbol))
+        .ok_or_else(|| invalid("The imported label dictionary was not allocated."))?;
+    let mut dictionary = labels.and_then(|labels| labels.get(target));
+    if dictionary.is_none() {
+        for (index, tag) in tags.iter().enumerate() {
+            if allocator.assigned_tag(index, "Imported label dictionary", "label dictionary")?
+                == *target
+            {
+                dictionary = Some(tag);
+                break;
+            }
+        }
+    }
+    let dictionary = dictionary
+        .ok_or_else(|| invalid("The imported label dictionary is outside this build."))?;
+    if !manager
+        .get_entry(dictionary.template_tag)
+        .is_some_and(|entry| entry.reference == 0x808094B4)
+    {
+        return Err(invalid(
+            "The imported label symbol is not a native category dictionary.",
+        ));
+    }
+    let mut compiled =
+        program::compile_with_labels(manager, program, &dictionary.payload).map_err(invalid)?;
+    let fields = sundial::package_authoring::declared_payload_references(
+        manager,
+        template.0,
+        &compiled.payload,
+    )
+    .map_err(invalid)?;
+    let mut count = 0;
+    for (field, tag) in fields {
+        if tag == 0x80C70CA1 {
+            write_u32(&mut compiled.payload, field, target.0)?;
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return Err(invalid(
+            "The imported program has no declared category dictionary reference.",
+        ));
+    }
+    Ok(compiled)
+}
+
 pub(super) fn append_private_program_runtime(
     manager: &PackageManager,
     action_template: TagHash,
     program: &sundial::package_authoring::sandbox_perk::program::Program,
     particle_symbols: Option<&BTreeMap<String, TagHash>>,
+    label_dictionaries: Option<&BTreeMap<TagHash, NewTagSpec>>,
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<TagHash> {
-    let mut compiled = sundial::package_authoring::sandbox_perk::program::compile(manager, program)
-        .map_err(invalid)?;
+    let mut compiled = compile_program(
+        manager,
+        action_template,
+        program,
+        particle_symbols,
+        label_dictionaries,
+        allocator,
+        tags,
+    )?;
+    super::hud_status::rebind_auxiliary(manager, program, &mut compiled.payload)?;
     for (index, offsets) in &compiled.asset_offsets {
         let asset = program
             .asset(*index)

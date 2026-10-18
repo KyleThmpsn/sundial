@@ -140,6 +140,8 @@ struct Vertex {
     quaternion: bool,
     stored_uv: Option<[f32; 4]>,
     samplers: Vec<texture::Sampler>,
+    /// Where this stage's rows start in the material's combined sampler table.
+    sampler_offset: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -260,6 +262,7 @@ fn load_vertex(
         quaternion,
         stored_uv,
         samplers: texture::stage_samplers(manager, bytes, 0x48),
+        sampler_offset: 0,
     }))
 }
 
@@ -300,18 +303,28 @@ fn load_program(
     let constants = super::read::stage_constants(manager, bytes, 0x2C8)?;
     check_constants(&pixel, &constants)?;
     let expression = Program::material(bytes, 0x2C8, &globals, objects, surface, constants.len())?;
-    let vertex = if opaque {
+    let mut vertex = if opaque {
         None
     } else {
         load_vertex(manager, bytes, &globals, objects, surface)?
     };
     let mut samplers = texture::stage_samplers(manager, bytes, 0x2C8);
+    if let Some(vertex) = &mut vertex {
+        vertex.sampler_offset = samplers.len();
+    }
     let mut plan = resource::Plan::new(manager, model);
-    plan.stage(bytes, &pixel, &samplers, false, 0)?;
+    plan.stage(bytes, &pixel, expression.as_ref(), &samplers, false, 0)?;
     if let Some(vertex) = &vertex
         && vertex.stored_uv.is_none()
     {
-        plan.stage(bytes, &vertex.code, &vertex.samplers, true, samplers.len())?;
+        plan.stage(
+            bytes,
+            &vertex.code,
+            vertex.expression.as_ref(),
+            &vertex.samplers,
+            true,
+            samplers.len(),
+        )?;
         samplers.extend_from_slice(&vertex.samplers);
     }
     let (bindings, pending) = plan.finish();
@@ -362,12 +375,15 @@ fn check_constants(program: &program::Program, constants: &[[f32; 4]]) -> Result
 }
 
 fn contract(program: &program::Program, vertex: bool, deferred: bool) -> Result<(), String> {
-    if program
+    if let Some(instruction) = program
         .instructions
         .iter()
-        .any(|i| program::arity(i.code).is_none())
+        .find(|i| program::arity(i.code).is_none())
     {
-        return Err("The effect requires an unavailable shader instruction".into());
+        return Err(format!(
+            "The effect requires an unavailable shader instruction ({})",
+            instruction.code
+        ));
     }
     if program
         .instructions
@@ -379,9 +395,11 @@ fn contract(program: &program::Program, vertex: bool, deferred: bool) -> Result<
         return Err("The effect uses more than one dependent reflection footprint".into());
     }
     for &(slot, count) in &program.buffers {
+        // The vertex object scope ends with a motion palette of three rows per bone from row 8,
+        // which the preview holds at the bind pose for up to 256 bones.
         let limit = match (vertex, slot) {
             (_, 0) => 128,
-            (true, 11) => 24,
+            (true, 11) => 8 + 256 * 3,
             (true, 12) => 14,
             (false, 2) => 1,
             (false, 5..=7) => 27,
@@ -391,7 +409,9 @@ fn contract(program: &program::Program, vertex: bool, deferred: bool) -> Result<
             _ => return Err(format!("The effect constant scope {slot} is unavailable")),
         };
         if count > limit {
-            return Err("The effect constant scope exceeds its preview contract".into());
+            return Err(format!(
+                "The effect constant scope {slot} exceeds its preview contract ({count} rows of {limit})"
+            ));
         }
     }
     if vertex
@@ -471,8 +491,12 @@ fn contract(program: &program::Program, vertex: bool, deferred: bool) -> Result<
     Ok(())
 }
 
+/// The sampler table row `resource` is sampled with. A sampler register takes the row the
+/// stage's expression binds to it, or, unbound, the row before its number: stock stages bind
+/// rows 0 to 5 to registers 1 to 6 in order, and register 0 is never a material sampler.
 fn sampling_for(
     pixel: &program::Program,
+    expression: Option<&Program>,
     resource: &program::Resource,
     sampler_count: usize,
 ) -> Result<Option<usize>, String> {
@@ -481,14 +505,20 @@ fn sampling_for(
         if matches!(instruction.code, 69 | 72 | 73 | 108)
             && instruction.operands[2].indices[0].base as usize == resource.slot
         {
-            let sampler = instruction.operands[3].indices[0].base as usize;
-            if sampler == 0 || sampler > sampler_count {
-                return Err("The effect sampler is missing".into());
+            let register = instruction.operands[3].indices[0].base as usize;
+            let row = match expression.and_then(|e| e.sampler_row(register)) {
+                Some(row) => row,
+                None if register == 0 => {
+                    return Err("The effect sampler is missing".into());
+                }
+                None => register - 1,
+            };
+            if row >= sampler_count {
+                return Err(format!(
+                    "The effect sampler is missing (register {register} takes row {row} of {sampler_count})"
+                ));
             }
-            if sampling
-                .replace(sampler - 1)
-                .is_some_and(|old| old != sampler - 1)
-            {
+            if sampling.replace(row).is_some_and(|old| old != row) {
                 return Err("The effect samples one image with conflicting samplers".into());
             }
         }

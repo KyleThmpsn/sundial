@@ -131,7 +131,7 @@ fn additional_flow_package_oracle() -> Result<()> {
             inputs.insert(u32::try_from(index)?, u32::try_from(found[0].0)?);
         }
         let mut emitted = native.clone();
-        let allocation = write(&source, &sequence, &mut emitted, &inputs, names.len())?;
+        let allocation = write(&source, &sequence, &mut emitted, &inputs, names.len(), None)?;
         anyhow::ensure!(
             allocation.children.len() == sequence.controls.len(),
             "flow allocation count differs"
@@ -176,7 +176,8 @@ fn additional_flow_package_oracle() -> Result<()> {
                         &invalid_sequence,
                         &mut native.clone(),
                         &inputs,
-                        names.len()
+                        names.len(),
+                        None
                     )
                     .is_err(),
                     "malformed named-input control accepted"
@@ -193,7 +194,8 @@ fn additional_flow_package_oracle() -> Result<()> {
                         &sequence,
                         &mut native.clone(),
                         &inputs,
-                        names.len()
+                        names.len(),
+                        None
                     )
                     .is_err(),
                     "invalid named-input control bounds accepted"
@@ -208,7 +210,8 @@ fn additional_flow_package_oracle() -> Result<()> {
                     &sequence,
                     &mut native.clone(),
                     &unmapped,
-                    names.len()
+                    names.len(),
+                    None
                 )
                 .is_err(),
                 "unmapped named-input control accepted"
@@ -222,7 +225,8 @@ fn additional_flow_package_oracle() -> Result<()> {
                     &sequence,
                     &mut native.clone(),
                     &outside,
-                    names.len()
+                    names.len(),
+                    None
                 )
                 .is_err(),
                 "out-of-range named-input control accepted"
@@ -246,7 +250,8 @@ fn additional_flow_package_oracle() -> Result<()> {
                         &invalid_sequence,
                         &mut native.clone(),
                         &inputs,
-                        names.len()
+                        names.len(),
+                        None
                     )
                     .is_err(),
                     "malformed flow weight accepted"
@@ -264,7 +269,8 @@ fn additional_flow_package_oracle() -> Result<()> {
                     &invalid_sequence,
                     &mut native.clone(),
                     &inputs,
-                    names.len()
+                    names.len(),
+                    None
                 )
                 .is_err(),
                 "zero flow weight total accepted"

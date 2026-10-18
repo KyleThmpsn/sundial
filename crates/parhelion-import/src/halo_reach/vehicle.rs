@@ -3,6 +3,7 @@ use super::cache::Cache;
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 mod collision;
+mod shot;
 
 pub(super) fn body(cache: &Cache, model: &super::cache::Tag) -> Result<Value> {
     let Some(tag) = cache.reference(model.address()? + 0x30, Some("phmo"))? else {
@@ -49,7 +50,8 @@ pub(super) fn body(cache: &Cache, model: &super::cache::Tag) -> Result<Value> {
         .collect::<Result<Vec<_>>>()?;
     Ok(
         json!({"tag":tag,"mass_scale":cache.f32(at+4)?,"all_permutations_mass":cache.f32(at+8)?,
-        "nodes":nodes,"regions":regions,"bodies":bodies,"collision":collision::read(cache,at)?}),
+        "nodes":nodes,"regions":regions,"bodies":bodies,"collision":collision::read(cache,at)?,
+        "shot_collision":shot::read(cache,model)?}),
     )
 }
 
@@ -132,10 +134,44 @@ fn fighter(cache: &Cache, row: usize) -> Result<Value> {
     Ok(result)
 }
 
+/// The alien scout row keeps only the overdamp cusp and exponent of the steering
+/// record. Its engine, contrail and steering animation fields are presentation.
+fn scout(cache: &Cache, row: usize) -> Result<Value> {
+    let specific = cache.u8(row + 0x2c)?;
+    let specific_name = ["none", "ghost", "spectre", "wraith", "hover_craft"]
+        .get(usize::from(specific))
+        .copied();
+    let mut result = json!({
+        "overdamp_cusp_radians":cache.f32(row)?,
+        "overdamp_exponent":cache.f32(row+4)?,
+        "specific_type":specific,
+        "specific_type_name":specific_name,
+        "flags":cache.u8(row+0x2d)?
+    });
+    for (name, offset) in [
+        ("forward_source_units_per_second", 0x8),
+        ("reverse_source_units_per_second", 0xc),
+        ("acceleration_source_units_per_second_squared", 0x10),
+        ("deceleration_source_units_per_second_squared", 0x14),
+        ("left_slide_source_units_per_second", 0x18),
+        ("right_slide_source_units_per_second", 0x1c),
+        ("slide_acceleration_source_units_per_second_squared", 0x20),
+        ("slide_deceleration_source_units_per_second_squared", 0x24),
+        ("slide_speed_at_top_speed_source", 0x28),
+        ("drag_coefficient", 0x30),
+        ("constant_deceleration_source", 0x34),
+        ("torque_scale", 0x38),
+    ] {
+        result[name] = json!(cache.f32(row + offset)?);
+    }
+    Ok(result)
+}
+
 pub(super) fn controls(cache: &Cache, kind: &str, row: usize) -> Result<Value> {
     match kind {
         "human_jeep" => jeep(cache, row),
         "alien_fighter" => fighter(cache, row),
+        "alien_scout" => scout(cache, row),
         _ => Ok(json!({})),
     }
 }

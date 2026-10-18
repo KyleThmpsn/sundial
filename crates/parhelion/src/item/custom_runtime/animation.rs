@@ -34,6 +34,7 @@ pub(in crate::item) struct ImportedAnimation {
     pub profile: Option<profile::Patch>,
     pub states: Option<ImportedStates>,
     pub rigs: Vec<ImportedRig>,
+    pub rig_extension: bool,
     pub pose_layers: Option<ImportedPoseLayers>,
 }
 
@@ -48,6 +49,7 @@ pub(in crate::item) struct ImportedRig {
     converted: Vec<u8>,
     first_person: bool,
     kind: RigKind,
+    relocation: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -182,12 +184,28 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedAn
                 })
             })
             .transpose()?,
+        rig_extension: first_person["rig_extension"].as_bool().unwrap_or(false),
         rigs: first_person["rigs"]
             .as_array()
             .into_iter()
             .flatten()
             .map(|rig| {
                 Ok(ImportedRig {
+                    relocation: rig
+                        .get("relocation")
+                        .filter(|v| !v.is_null())
+                        .map(|v| {
+                            let field = |key| -> AuthoringResult<usize> {
+                                usize::try_from(v[key].as_u64().ok_or_else(|| {
+                                    invalid("Imported rig relocation is incomplete")
+                                })?)
+                                .map_err(|_| {
+                                    invalid("Imported rig relocation exceeds address limits")
+                                })
+                            };
+                            Ok::<_, crate::AuthoringError>((field("cut")?, field("delta")?))
+                        })
+                        .transpose()?,
                     kind: match rig.get("kind").and_then(Value::as_str) {
                         None | Some("skeleton") => RigKind::Skeleton,
                         Some("controls") => RigKind::Controls,
@@ -304,13 +322,25 @@ fn validate_rigs(manager: &PackageManager, animation: &ImportedAnimation) -> Aut
                 > 1
         })
         || animation.states.is_none()
-        || animation.profile.is_none()
+        || (!animation.rig_extension && animation.profile.is_none())
     {
         return Err(invalid(
             "Source-owned rigs require both skeletons and converted animation selectors",
         ));
     }
     for rig in &animation.rigs {
+        if animation.rig_extension {
+            parhelion_import::tiger::animation::rig::validate_extension(
+                &parhelion_import::tiger::payload::Payload(rig.original.1.clone()),
+                &parhelion_import::tiger::payload::Payload(rig.converted.clone()),
+                rig.relocation,
+            )
+            .map_err(|error| invalid(format!("Imported rig extension: {error:#}")))?;
+        } else if rig.relocation.is_some() {
+            return Err(invalid(
+                "Imported rig relocation requires an explicit extension",
+            ));
+        }
         match rig.kind {
             RigKind::Controls => {
                 parhelion_import::d2_mot::rig_convert::animation::first_person::controls::validate(
@@ -340,6 +370,42 @@ fn validate_rigs(manager: &PackageManager, animation: &ImportedAnimation) -> Aut
             }
         }
         stock(manager, &rig.original, RESOURCE_OWNER_CLASS, "rig owner")?;
+    }
+    if animation.rig_extension {
+        use parhelion_import::tiger::{animation::rig::validate_weapon_pair, payload::Payload};
+        let skeleton = |fp| {
+            animation
+                .rigs
+                .iter()
+                .find(|r| r.kind == RigKind::Skeleton && r.first_person == fp)
+                .unwrap()
+        };
+        let equipment = skeleton(false);
+        let first_person = skeleton(true);
+        let before = validate_weapon_pair(
+            &Payload(equipment.original.1.clone()),
+            &Payload(first_person.original.1.clone()),
+        )
+        .map_err(|error| invalid(format!("Native weapon palette: {error:#}")))?;
+        let after = validate_weapon_pair(
+            &Payload(equipment.converted.clone()),
+            &Payload(first_person.converted.clone()),
+        )
+        .map_err(|error| invalid(format!("Extended weapon palette: {error:#}")))?;
+        if before != after
+            || [false, true].into_iter().any(|fp| {
+                animation
+                    .rigs
+                    .iter()
+                    .filter(|r| r.kind == RigKind::Controls && r.first_person == fp)
+                    .count()
+                    != 1
+            })
+        {
+            return Err(invalid(
+                "Extended weapon palette requires both control rigs and an unchanged arm prefix",
+            ));
+        }
     }
     Ok(())
 }
@@ -550,12 +616,29 @@ pub(in crate::item) fn author(
             &mut *pattern_entity
         };
         let mut owner = rig.converted.clone();
+        if let Some((cut, delta)) = rig.relocation {
+            parhelion_import::tiger::animation::rig::rebase_entity(
+                target,
+                &parhelion_import::tiger::payload::Payload(rig.original.1.clone()),
+                rig.original.0,
+                cut,
+                delta,
+            )
+            .map_err(|error| invalid(format!("Imported rig relocation: {error:#}")))?;
+        }
         let assigned = allocator
             .assigned_tag(tags.len(), "Imported animation", "source rig owner")?
             .0;
         retarget_weapon_component_owner_payload(&mut owner, target, rig.original.0, assigned)
             .map_err(invalid)?;
         retarget_weapon_component_owner(target, rig.original.0, assigned).map_err(invalid)?;
+        parhelion_import::tiger::animation::rig::retarget_rebased_references(
+            target,
+            owner.len(),
+            rig.original.0,
+            assigned,
+        )
+        .map_err(|error| invalid(format!("Imported rig references: {error:#}")))?;
         tags.push(NewTagSpec {
             template_tag: TagHash(rig.original.0),
             payload: owner,

@@ -19,6 +19,7 @@ pub(super) enum Applied {
 
 fn stock_variant(hash: u32) -> WeaponSocketPlugVariantRecipe {
     WeaponSocketPlugVariantRecipe {
+        projectile: None,
         offer_everywhere: false,
         socket_index: 0,
         choice_index: 0,

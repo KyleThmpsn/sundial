@@ -27,6 +27,7 @@ pub(super) struct Assembly {
     symbols: BTreeMap<u32, String>,
     allocations: BTreeMap<u32, String>,
     resources: BTreeMap<u32, BTreeMap<usize, String>>,
+    runtime_ends: BTreeMap<u32, usize>,
 }
 
 fn patches(graph: &Graph, symbol: &str) -> Result<Vec<Value>> {
@@ -94,6 +95,7 @@ impl Assembly {
             symbols,
             allocations: BTreeMap::new(),
             resources: BTreeMap::new(),
+            runtime_ends: BTreeMap::new(),
         })
     }
 
@@ -127,6 +129,50 @@ impl Assembly {
                 .is_none(),
             "Vehicle resource was assigned twice"
         );
+        Ok(())
+    }
+
+    /// Retain appended mutable records in the loader's copied instance span.
+    /// Sealing waits until every resource reference has been declared.
+    pub fn runtime_end(&mut self, owner: u32, end: usize) -> Result<()> {
+        ensure!(
+            end <= self.payloads[&owner].0.len(),
+            "Vehicle runtime span exceeds its owner"
+        );
+        self.runtime_ends
+            .entry(owner)
+            .and_modify(|value| *value = (*value).max(end))
+            .or_insert(end);
+        Ok(())
+    }
+
+    fn seal_owners(&mut self, graph: &Graph) -> Result<()> {
+        for (&owner, &end) in &self.runtime_ends {
+            let mut declared = patches(graph, &self.symbols[&owner])?;
+            if let Some(resources) = self.resources.get(&owner) {
+                for (&offset, symbol) in resources {
+                    declared.retain(|patch| patch["offset"] != offset);
+                    declared.push(json!({"offset":offset,"symbol":symbol}));
+                }
+            }
+            crate::tiger::instance::seal_span(
+                self.payloads.get_mut(&owner).unwrap(),
+                &mut declared,
+                end,
+            )?;
+            let resources = self.resources.entry(owner).or_default();
+            for patch in declared {
+                let offset = usize::try_from(
+                    patch["offset"]
+                        .as_u64()
+                        .context("Sealed vehicle patch offset")?,
+                )?;
+                let symbol = patch["symbol"]
+                    .as_str()
+                    .context("Sealed vehicle patch symbol")?;
+                resources.insert(offset, symbol.to_owned());
+            }
+        }
         Ok(())
     }
 
@@ -589,6 +635,7 @@ impl Assembly {
         motion: Option<&motion::Motion>,
     ) -> Result<()> {
         self.allocate(native, graph)?;
+        self.seal_owners(graph)?;
         self.write_owners(graph)?;
         let template_entity = match motion {
             Some(motion) => self.presentation_template(hover, motion.retain_hover_update)?,

@@ -3,6 +3,12 @@ use crate::halo_reach::native_material::Lens;
 mod bore;
 mod scope;
 
+pub(super) struct Source<'a> {
+    pub cache: &'a cache::Cache,
+    pub pages: &'a mut resource::Pages,
+    pub weapon: &'a cache::Tag,
+}
+
 pub(super) struct Prepared {
     pub lenses: BTreeMap<u32, Lens>,
     bounds: Option<[[f32; 3]; 2]>,
@@ -10,7 +16,18 @@ pub(super) struct Prepared {
     front: [f32; 3],
     bore: Option<Value>,
     separate: bool,
-    reticle: Reticle,
+}
+
+fn separate_eye(mesh: &Mesh, rear: [f32; 3], direction: [f32; 3], relief: f32) -> Result<[f32; 3]> {
+    let farthest = mesh
+        .positions
+        .iter()
+        .map(|p| (0..3).map(|a| (p[a] - rear[a]) * direction[a]).sum::<f32>())
+        .fold(f32::NEG_INFINITY, f32::max);
+    ensure!(farthest.is_finite(), "Separate scope has no source bounds");
+    Ok(std::array::from_fn(|a| {
+        rear[a] + direction[a] * (farthest + relief)
+    }))
 }
 
 pub(super) fn select(
@@ -21,6 +38,10 @@ pub(super) fn select(
     ensure!(
         entry.optic.is_none() || entry.sights.is_none(),
         "Choose a lens optic or iron sights, not both"
+    );
+    ensure!(
+        entry.optic_item.is_none() || entry.optic.is_some() || entry.sights.is_some(),
+        "An explicit sight carrier requires configured sights"
     );
     match (&entry.optic, &entry.sights) {
         (Some(config), _) => prepare(config, mesh, materials).map(Some),
@@ -121,13 +142,7 @@ pub(super) fn prepare(
         );
     }
     if config.view == OpticView::Separate {
-        let farthest = mesh
-            .positions
-            .iter()
-            .map(|p| (0..3).map(|a| (p[a] - rear[a]) * direction[a]).sum::<f32>())
-            .fold(f32::NEG_INFINITY, f32::max);
-        ensure!(farthest.is_finite(), "Separate scope has no source bounds");
-        let eye = std::array::from_fn(|a| rear[a] + direction[a] * (farthest + config.eye_relief));
+        let eye = separate_eye(mesh, rear, direction, config.eye_relief)?;
         return Ok(Prepared {
             lenses: BTreeMap::new(),
             bounds: Some(bounds(&faces)),
@@ -135,7 +150,6 @@ pub(super) fn prepare(
             front: std::array::from_fn(|a| eye[a] + direction[a] * 0.2),
             bore: None,
             separate: true,
-            reticle: config.reticle,
         });
     }
     let opened = bore::open(
@@ -155,7 +169,6 @@ pub(super) fn prepare(
             json!({"rear_lens_bounds":rear_bounds,"front_lens_bounds":front_bounds,"rear_center":rear,"front_center":front,"radii":radii,"clearance":opened}),
         ),
         separate: false,
-        reticle: config.reticle,
     })
 }
 
@@ -200,6 +213,17 @@ pub(super) fn sights(config: &Sights, mesh: &Mesh) -> Result<Prepared> {
     let direction = crate::halo_reach::rig::normalize(std::array::from_fn(|axis| {
         config.front[axis] - config.rear[axis]
     }))?;
+    if config.view == OpticView::Separate {
+        let eye = separate_eye(mesh, config.rear, direction, config.eye_relief)?;
+        return Ok(Prepared {
+            lenses: BTreeMap::new(),
+            bounds: None,
+            rear: eye,
+            front: std::array::from_fn(|a| eye[a] + direction[a] * 0.2),
+            bore: None,
+            separate: true,
+        });
+    }
     Ok(Prepared {
         lenses: BTreeMap::new(),
         bounds: None,
@@ -207,7 +231,6 @@ pub(super) fn sights(config: &Sights, mesh: &Mesh) -> Result<Prepared> {
         front: config.front,
         bore: None,
         separate: false,
-        reticle: Reticle::default(),
     })
 }
 
@@ -251,22 +274,22 @@ fn no_draws(model: &Payload) -> Result<Payload> {
     Ok(out)
 }
 
-pub(super) fn build(
-    native: &mut Reader,
-    g: &mut Graph,
-    art: &Value,
-    optic: &Prepared,
-    item: u32,
-) -> Result<(Value, Value)> {
-    let (parent, entity_tag, original_entity) = template(native, art)?;
+type Components = BTreeMap<u32, (String, Payload)>;
+
+fn components(native: &mut Reader, entity: &Payload) -> Result<Components> {
     let mut components = BTreeMap::new();
-    for (index, row) in original_entity
+    for (index, row) in entity
         .array(16, 12, Some(0x80809c04))?
         .into_iter()
         .enumerate()
     {
-        let tag = original_entity.u32(row)?;
+        let tag = entity.u32(row)?;
         let payload = native.tag(tag, Some(0x80809c36))?;
+        // Channel components are immutable shared resources. Keep their native
+        // references until an added model input requires a private copy below.
+        if payload.u32(payload.pointer(24)? - 4)? == 0x80809790 {
+            continue;
+        }
         ensure!(
             components
                 .insert(tag, (format!("optic-owner-{index}"), (*payload).clone()))
@@ -274,8 +297,32 @@ pub(super) fn build(
             "Repeated optic component"
         );
     }
+    Ok(components)
+}
+
+pub(super) fn build(
+    native: &mut Reader,
+    g: &mut Graph,
+    art: &Value,
+    optic: &Prepared,
+    item: u32,
+    source: Option<u32>,
+    reach: Source<'_>,
+) -> Result<(Value, Value)> {
+    let overlay = if optic.separate {
+        crate::halo_reach::hud::scope::read(reach.cache, reach.weapon)?
+    } else {
+        None
+    };
+    let selected = source
+        .map(|item| crate::tiger::shadowkeep::extract(native, item))
+        .transpose()?;
+    let art = selected.as_ref().unwrap_or(art);
+    let (parent, entity_tag, original_entity) = template(native, art)?;
+    let components = components(native, &original_entity)?;
     let mut entity = original_entity.clone();
     let mut scope_report = None;
+    let mut scope_target = None;
     let mut entity_patches = Vec::new();
     for (&tag, (symbol, original)) in &components {
         let schema = original.pointer(24)?;
@@ -290,19 +337,12 @@ pub(super) fn build(
             let model_tag = original.u32(schema + 0x1dc)?;
             let model = native.tag(model_tag, Some(0x808073a5))?;
             let model_symbol = format!("{symbol}-model");
-            if optic.separate {
+            if overlay.is_some() {
                 ensure!(
-                    scope_report.is_none(),
+                    scope_target.is_none(),
                     "Separate scope has multiple render components"
                 );
-                let inputs = crate::tiger::channel::object_channel_map(&original.0)?;
-                scope_report = Some(scope::build(
-                    native,
-                    g,
-                    &model_symbol,
-                    &inputs,
-                    optic.reticle,
-                )?);
+                scope_target = Some((model_symbol.clone(), symbol.clone()));
             } else {
                 g.add(&model_symbol, model_tag, &no_draws(&model)?.0, None, vec![])?;
             }
@@ -327,6 +367,28 @@ pub(super) fn build(
         }
     }
     g.add("optic-entity", entity_tag, &entity.0, None, entity_patches)?;
+    if let (Some(overlay), Some((model, owner))) = (&overlay, scope_target) {
+        let name = u32::from_str_radix(&scope::visibility(native)?, 16)?;
+        let inputs = crate::presentation::channel::inherit_named(
+            native,
+            g,
+            &[name],
+            "optic-entity",
+            &owner,
+            "optic",
+        )?;
+        scope_report = Some(scope::build(
+            native,
+            g,
+            &model,
+            &inputs,
+            scope::Source {
+                cache: reach.cache,
+                pages: reach.pages,
+                overlay,
+            },
+        )?);
+    }
     let parent_tag = hash(&parent, "parent")?;
     let mut bytes = native.tag(parent_tag, None)?.0.clone();
     put(&mut bytes, 16, &u32::MAX.to_le_bytes())?;
@@ -349,14 +411,15 @@ pub(super) fn build(
     node["shared_owner"] = json!("optic-parent");
     node["source_parent"] = json!(parent_tag);
     let assignment = hash(&parent, "assignment")?;
-    let kept = json!({"assignment":assignment,"key":name_hash(&format!("reach-{item:08X}-optic")),"parent":"optic-parent"});
+    let kept = json!({"assignment":assignment,"key":name_hash(&format!("reach-{item:08X}-optic")),"parent":"optic-parent",
+        "native_region":true,"selector":parent["placement"]["selector"],"position":parent["placement"]["position"]});
     ensure!(
-        !optic.separate || scope_report.is_some(),
+        overlay.is_none() || scope_report.is_some(),
         "Separate scope has no render component"
     );
-    let report = json!({"source_entity":format!("{entity_tag:08X}"),"placement":parent["placement"],"aperture_bounds":optic.bounds,"rear":optic.rear,"front":optic.front,"bore":optic.bore,"scope":scope_report,
+    let report = json!({"source_item":art["item"],"source_entity":format!("{entity_tag:08X}"),"placement":parent["placement"],"aperture_bounds":optic.bounds,"rear":optic.rear,"front":optic.front,"bore":optic.bore,"scope":scope_report,
         "alignment":if optic.separate { "separate_view" } else if optic.bounds.is_some() { "lens_aperture" } else { "iron_sights" },
         "lens_materials":optic.lenses.keys().map(|key|format!("{key:08X}")).collect::<Vec<_>>(),"gameplay_verified":false,
-        "limits":if optic.separate { "A separate aiming camera and native reticle pass preserve the physical lens. The overlay uses an authored crosshair. Magnification remains the gameplay donor's. Aim transitions and the final view require gameplay acceptance." } else { "Object-space sight alignment. Lens optics use a simple illuminated aiming mark. Source scope overlays and magnification are not reproduced." }});
+        "limits":if optic.separate { "A separate aiming camera preserves the physical lens. Scoped weapons use their source HUD bitmap layers and neutral reticle artwork. Dynamic meter and reticle inputs are reported separately. Source magnification is recorded in source_gameplay.aim when first-person motion is requested. Aim transitions and the final view require gameplay acceptance." } else { "Object-space sight alignment. Lens optics use a simple illuminated aiming mark. Source magnification is recorded separately when first-person motion is requested." }});
     Ok((kept, report))
 }

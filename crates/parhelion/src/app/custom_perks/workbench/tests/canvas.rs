@@ -246,6 +246,7 @@ fn program_recipe() -> PerkRecipe {
         ],
         native_asset_patches: Vec::new(),
         imported_assets: Vec::new(),
+        imported_labels: None,
         removal_key: None,
         native_trigger: None,
         native_removal: None,

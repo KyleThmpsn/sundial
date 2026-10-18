@@ -131,7 +131,7 @@ impl<'a> Read<'a> {
         Ok(tag)
     }
 
-    fn masks(&mut self, field: usize) -> Result<Option<Mask>> {
+    pub(super) fn masks(&mut self, field: usize) -> Result<Option<Mask>> {
         if self.p.u64(field)? == 0 {
             return Ok(None);
         }
@@ -143,7 +143,7 @@ impl<'a> Read<'a> {
             0x8080976D => 4,
             class => anyhow::bail!("selector mask class {class:08X} requires conversion"),
         };
-        self.claim(prefix, 4 + count * 56 + 8)?;
+        self.claim(prefix, 4 + count * 56 + 4)?;
         let words = (0..count * 14)
             .map(|i| self.p.u32(at + i * 4))
             .collect::<Result<Vec<_>>>()?;
@@ -226,11 +226,37 @@ impl<'a> Read<'a> {
             }
             return Ok(Node::Factions(values));
         }
+        if class == 0x808042D5 {
+            self.claim(prefix, 148)?;
+            let comparison = self.p.u8(at + 0x88)?;
+            ensure!(
+                self.p.u64(at)? == 0
+                    && comparison <= 5
+                    && self.p.0[at + 0x89..at + 0x90].iter().all(|&byte| byte == 0),
+                "numeric selector comparison mode differs"
+            );
+            return Ok(Node::Numeric {
+                programs: [self.numeric(at + 8)?, self.numeric(at + 0x48)?],
+                comparison,
+            });
+        }
         ensure!(
             class == 0x808042CB,
             "selector predicate {class:08X} requires conversion"
         );
         self.claim(prefix, 108)?;
+        self.category(at, at + 88)
+    }
+
+    /// Event filters separate their source lists from the compiled property by
+    /// an optional flags word. Both regions belong to the containing action.
+    pub(super) fn labels(&mut self, at: usize, property: usize) -> Result<Node> {
+        self.claim(at, 88)?;
+        self.claim(property, 16)?;
+        self.category(at, property)
+    }
+
+    fn category(&mut self, at: usize, property: usize) -> Result<Node> {
         let mut rows: [Vec<Row>; 4] = std::array::from_fn(|_| Vec::new());
         for (i, output) in rows.iter_mut().enumerate() {
             for row in self.array(at + i * 16, 0x80809787, 32)? {
@@ -250,8 +276,54 @@ impl<'a> Read<'a> {
             rows,
             debug: self.string(at + 64)?,
             dictionary: self.dictionary(at + 72)?,
-            kind: self.p.u64(at + 88)?,
-            masks: self.masks(at + 96)?,
+            kind: self.p.u64(property)?,
+            masks: self.masks(property + 8)?,
+        })
+    }
+
+    fn numeric(&mut self, at: usize) -> Result<Numeric> {
+        let bindings = self
+            .array(at, 0x8080920F, 8)?
+            .into_iter()
+            .map(|row| {
+                let kind = self.p.u32(row)?;
+                let name = self.p.u32(row + 4)?;
+                ensure!(
+                    kind <= 1 && ![0, u32::MAX, 0x811C9DC5].contains(&name),
+                    "numeric selector binding kind or name differs"
+                );
+                Ok([kind, name])
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // Both context evaluators initialize eight Float4 input slots on the
+        // stack. The serialized input count must fit that actual workspace.
+        ensure!(
+            bindings.len() <= 8,
+            "numeric selector exceeds the native input workspace"
+        );
+        ensure!(
+            self.p.u64(at + 48)? == bindings.len() as u64 && self.p.u64(at + 56)? == 1,
+            "numeric selector dimensions differ"
+        );
+        let code = self
+            .array(at + 16, 0x80800009, 1)?
+            .into_iter()
+            .map(|row| self.p.u8(row))
+            .collect::<Result<Vec<_>>>()?;
+        let mut constants = Vec::new();
+        for row in self.array(at + 32, 0x80800090, 16)? {
+            constants.extend_from_slice(&self.p.bytes::<16>(row)?);
+        }
+        // Validate the complete program before retaining either half.
+        super::super::super::procedural::lower_program(
+            &code,
+            constants.len() / 16,
+            bindings.len(),
+        )?;
+        Ok(Numeric {
+            bindings,
+            code,
+            constants,
         })
     }
 

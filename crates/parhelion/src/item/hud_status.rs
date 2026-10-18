@@ -1,4 +1,4 @@
-//! HUD statuses of the project's own, shown by the Status Icon of an effect's graph.
+//! Private HUD statuses, shown by an effect's Status Icon or a perk's auxiliary report.
 //!
 //! A Status Icon (`0x80804211`) names its status by hash, in its data (`0x80804212`) at
 //! [`NAME_HASH`]. The HUD finds the status's icon in the status table [`TABLE`] by that hash, and
@@ -310,16 +310,62 @@ pub(super) fn asset_edits(
     Ok(edits)
 }
 
-/// Every asset of the programs that carries a HUD status of the project's own, whether the
-/// program keeps it on a guided action or in its native form.
-fn status_assets<'a>(
+/// Every private status, including reports that have no attached graph.
+fn statuses<'a>(
     programs: impl IntoIterator<Item = &'a Program>,
-) -> Vec<(&'a Asset, &'a HudStatus)> {
+) -> Vec<(Option<&'a Asset>, &'a HudStatus)> {
     programs
         .into_iter()
-        .flat_map(Program::assets)
-        .filter_map(|asset| Some((asset, asset.hud_status.as_ref()?)))
+        .flat_map(|program| {
+            program
+                .assets()
+                .filter_map(|asset| Some((Some(asset), asset.hud_status.as_ref()?)))
+                .chain(
+                    program
+                        .auxiliary
+                        .iter()
+                        .filter_map(|record| Some((None, record.hud_status.as_ref()?))),
+                )
+        })
         .collect()
+}
+
+/// Bind authored auxiliary reports after compilation, using the same identity as the
+/// private HUD table and localized names. Stock records remain byte exact.
+pub(super) fn rebind_auxiliary(
+    manager: &PackageManager,
+    program: &Program,
+    payload: &mut [u8],
+) -> AuthoringResult<()> {
+    if program
+        .auxiliary
+        .iter()
+        .all(|record| record.hud_status.is_none())
+    {
+        return Ok(());
+    }
+    let stock = stock(manager)?;
+    let (count, _, rows, class) = array_at(payload, 0x10)?;
+    if count != program.auxiliary.len() || class != 0x8080_4083 {
+        return Err(invalid(
+            "Compiled HUD report references differ from the authored program",
+        ));
+    }
+    for (index, record) in program.auxiliary.iter().enumerate() {
+        let Some(status) = &record.hud_status else {
+            continue;
+        };
+        record.check().map_err(invalid)?;
+        let at = crate::tag_payload::relative_target(payload, rows + index * 8)?;
+        if at < 4
+            || read_u32(payload, at - 4)? != record.class
+            || payload.get(at..at + record.bytes.len()) != Some(record.bytes.as_slice())
+        {
+            return Err(invalid("A HUD report changed during compilation"));
+        }
+        write_u32(payload, at + 4, hash(&stock, status)?)?;
+    }
+    Ok(())
 }
 
 /// The stock status whose row a status of the project's own copies: the one it chose, or else
@@ -327,12 +373,14 @@ fn status_assets<'a>(
 fn icon_source(
     manager: &PackageManager,
     stock: &Stock,
-    asset: &Asset,
+    asset: Option<&Asset>,
     status: &HudStatus,
 ) -> AuthoringResult<u32> {
     let icon = match status.icon {
         Some(icon) => icon,
         None => {
+            let asset =
+                asset.ok_or_else(|| invalid("A HUD report must choose an icon template"))?;
             let shown = status_icons(manager, asset.graph)?
                 .into_iter()
                 .map(|icon| icon.current)
@@ -372,7 +420,7 @@ pub(super) fn author_images<'a>(
     nodes: &mut Vec<NewTagSpec>,
     references: &mut Vec<NewTagReferenceOverride>,
 ) -> AuthoringResult<BTreeMap<(String, u32), TagHash>> {
-    let assets = status_assets(programs);
+    let assets = statuses(programs);
     let mut layers = BTreeMap::new();
     if assets.iter().all(|(_, status)| status.image.is_none()) {
         return Ok(layers);
@@ -490,7 +538,7 @@ pub(super) fn replacements<'a>(
     programs: impl IntoIterator<Item = &'a Program>,
     layers: &BTreeMap<(String, u32), TagHash>,
 ) -> AuthoringResult<Vec<ReplacementSpec>> {
-    let assets = status_assets(programs);
+    let assets = statuses(programs);
     if assets.is_empty() {
         return Ok(Vec::new());
     }

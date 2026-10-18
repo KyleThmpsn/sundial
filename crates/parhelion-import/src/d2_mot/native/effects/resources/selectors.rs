@@ -8,10 +8,15 @@ use std::collections::{BTreeMap, BTreeSet};
 mod fragment;
 mod read;
 pub use fragment::{
-    Fragment, FragmentContract, GroupBindings, append_category, append_value_selector,
-    emit_with_groups,
+    Fragment, FragmentContract, GroupBindings, append_category, append_hit_selector, append_labels,
+    append_mask, append_selector, append_value_selector, emit_with_groups,
 };
+mod inspection;
 mod resolver;
+pub use inspection::{
+    Inspection, inspect_labels, inspect_mask, inspect_mask_usage, inspect_resources,
+    inspect_selector,
+};
 #[cfg(test)]
 mod tests;
 mod write;
@@ -20,6 +25,7 @@ pub use resolver::ResourceResolver;
 pub const MODERN_CLASS: u32 = 0x808091B2;
 pub const NATIVE_CLASS: u32 = 0x80809311;
 
+#[derive(Clone)]
 pub struct Resources {
     pub tags: BTreeMap<u32, u32>,
     pub names: Vec<u32>,
@@ -70,7 +76,7 @@ pub struct GroupAliasUse {
 struct Mask {
     source: usize,
     words: Vec<u32>,
-    tail: [u8; 8],
+    tail: [u8; 4],
 }
 
 struct Row {
@@ -94,6 +100,10 @@ enum Node {
         rows: Vec<(u64, Node)>,
     },
     Factions(Vec<u8>),
+    Numeric {
+        programs: [Numeric; 2],
+        comparison: u8,
+    },
     Category {
         rows: [Vec<Row>; 4],
         debug: Option<String>,
@@ -101,6 +111,12 @@ enum Node {
         kind: u64,
         masks: Option<Mask>,
     },
+}
+
+struct Numeric {
+    bindings: Vec<[u32; 2]>,
+    code: Vec<u8>,
+    constants: Vec<u8>,
 }
 
 /// Emit inspected selector forms. Missing bindings and category names remain

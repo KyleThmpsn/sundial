@@ -1,9 +1,12 @@
 //! Native FK extensions and clip channels shared by source importers.
+pub mod bank;
 pub mod clip;
 pub mod control;
 pub mod layer;
+pub mod motion_table;
 pub mod pose;
 pub mod rig;
+pub mod runtime;
 pub mod state;
 
 pub fn bank_field(payload: &crate::tiger::payload::Payload) -> anyhow::Result<usize> {

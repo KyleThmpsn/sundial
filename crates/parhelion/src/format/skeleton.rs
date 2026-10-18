@@ -14,8 +14,19 @@ pub(crate) fn build_standalone_package_skeleton(
     entry_prefixes: &[[u8; 8]],
     block_count: usize,
     shared_tag_enrollments: &[(u32, u32)],
+    named_tags: &[NamedTag],
 ) -> AuthoringResult<Vec<u8>> {
-    const PACKAGE_TABLES_OFFSET: usize = 0x1000;
+    let extended = if named_tags.is_empty() {
+        Vec::new()
+    } else {
+        named_tag_region(named_tags)?
+    };
+    // Named tags take the extended header region the package tables otherwise start at.
+    let package_tables_offset = if extended.is_empty() {
+        EXTENDED_HEADER_START
+    } else {
+        (EXTENDED_HEADER_START + extended.len()).next_multiple_of(PACKAGE_FILE_ALIGNMENT)
+    };
 
     let entry_count = entry_prefixes.len();
     if !(MIN_PACKAGE_ID..=MAX_PACKAGE_ID).contains(&package_id) {
@@ -42,7 +53,7 @@ pub(crate) fn build_standalone_package_skeleton(
     let block_count_u64 = u64::try_from(block_count)
         .map_err(|_| invalid("Standalone block count exceeds 64 bits"))?;
 
-    let entry_table_offset = PACKAGE_TABLES_OFFSET
+    let entry_table_offset = package_tables_offset
         .checked_add(ENTRY_TABLE_POINTER_ADJUSTMENT)
         .ok_or_else(|| invalid("Standalone entry-table offset overflowed"))?;
     let entry_bytes = entry_count
@@ -78,7 +89,7 @@ pub(crate) fn build_standalone_package_skeleton(
             .ok_or_else(|| invalid("Standalone package-tables end overflowed"))?
     };
     let package_tables_size = package_tables_end
-        .checked_sub(PACKAGE_TABLES_OFFSET)
+        .checked_sub(package_tables_offset)
         .ok_or_else(|| invalid("Standalone package-tables size underflowed"))?;
     let mut bytes = vec![0u8; package_tables_end];
 
@@ -105,7 +116,7 @@ pub(crate) fn build_standalone_package_skeleton(
     write_u32(
         &mut bytes,
         PACKAGE_TABLES_DATA_POINTER_OFFSET,
-        PACKAGE_TABLES_OFFSET as u32,
+        package_tables_offset as u32,
     )?;
     write_u32(
         &mut bytes,
@@ -118,17 +129,17 @@ pub(crate) fn build_standalone_package_skeleton(
 
     write_u64(
         &mut bytes,
-        PACKAGE_TABLES_OFFSET + PACKAGE_TABLES_THIS_SIZE_OFFSET,
+        package_tables_offset + PACKAGE_TABLES_THIS_SIZE_OFFSET,
         u64::try_from(package_tables_size)
             .map_err(|_| invalid("Standalone package-tables size exceeds 64 bits"))?,
     )?;
-    write_u64(&mut bytes, PACKAGE_TABLES_OFFSET + 8, 1)?;
+    write_u64(&mut bytes, package_tables_offset + 8, 1)?;
     write_u64(
         &mut bytes,
-        PACKAGE_TABLES_OFFSET + PACKAGE_TABLES_ENTRY_DESCRIPTOR_OFFSET,
+        package_tables_offset + PACKAGE_TABLES_ENTRY_DESCRIPTOR_OFFSET,
         entry_count_u64,
     )?;
-    let entry_pointer = PACKAGE_TABLES_OFFSET
+    let entry_pointer = package_tables_offset
         + PACKAGE_TABLES_ENTRY_DESCRIPTOR_OFFSET
         + DYNAMIC_ARRAY_POINTER_OFFSET;
     write_i64(
@@ -140,10 +151,10 @@ pub(crate) fn build_standalone_package_skeleton(
     )?;
     write_u64(
         &mut bytes,
-        PACKAGE_TABLES_OFFSET + PACKAGE_TABLES_BLOCK_DESCRIPTOR_OFFSET,
+        package_tables_offset + PACKAGE_TABLES_BLOCK_DESCRIPTOR_OFFSET,
         block_count_u64,
     )?;
-    let block_pointer = PACKAGE_TABLES_OFFSET
+    let block_pointer = package_tables_offset
         + PACKAGE_TABLES_BLOCK_DESCRIPTOR_OFFSET
         + DYNAMIC_ARRAY_POINTER_OFFSET;
     write_i64(
@@ -184,7 +195,7 @@ pub(crate) fn build_standalone_package_skeleton(
     if !shared_tag_enrollments.is_empty() {
         let shared_count = u64::try_from(shared_tag_enrollments.len())
             .map_err(|_| invalid("Standalone shared-tag count exceeds 64 bits"))?;
-        let shared_descriptor = PACKAGE_TABLES_OFFSET + PACKAGE_TABLES_SHARED_TAG_DESCRIPTOR_OFFSET;
+        let shared_descriptor = package_tables_offset + PACKAGE_TABLES_SHARED_TAG_DESCRIPTOR_OFFSET;
         write_u64(&mut bytes, shared_descriptor, shared_count)?;
         write_i64(
             &mut bytes,
@@ -215,9 +226,29 @@ pub(crate) fn build_standalone_package_skeleton(
         }
     }
 
-    let package_tables_hash = Sha1::digest(&bytes[PACKAGE_TABLES_OFFSET..package_tables_end]);
+    let package_tables_hash = Sha1::digest(&bytes[package_tables_offset..package_tables_end]);
     bytes[PACKAGE_TABLES_DATA_HASH_OFFSET..PACKAGE_TABLES_DATA_HASH_OFFSET + REGION_HASH_SIZE]
         .copy_from_slice(&package_tables_hash);
+    // An absent region still carries the digest of its empty bytes. Sunrise's mod loader checks it
+    // before it reads a mod's entries for a table merge.
+    let extended_hash = Sha1::digest(&extended);
+    bytes[EXTENDED_DATA_HASH_OFFSET..EXTENDED_DATA_HASH_OFFSET + REGION_HASH_SIZE]
+        .copy_from_slice(&extended_hash);
+    if !extended.is_empty() {
+        bytes[EXTENDED_HEADER_START..EXTENDED_HEADER_START + extended.len()]
+            .copy_from_slice(&extended);
+        write_u32(
+            &mut bytes,
+            EXTENDED_DATA_POINTER_OFFSET,
+            EXTENDED_HEADER_START as u32,
+        )?;
+        write_u32(
+            &mut bytes,
+            EXTENDED_DATA_SIZE_OFFSET,
+            u32::try_from(extended.len())
+                .map_err(|_| invalid("Named-tag region exceeds 32 bits"))?,
+        )?;
+    }
     let mut trailer = vec![0u8; PACKAGE_FILE_ALIGNMENT];
     trailer[..OPAQUE_TRAILER_MARKER.len()].copy_from_slice(&OPAQUE_TRAILER_MARKER);
     append_opaque_trailer(&mut bytes, &trailer)?;

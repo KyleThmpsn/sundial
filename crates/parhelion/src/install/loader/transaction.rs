@@ -46,12 +46,50 @@ impl Record {
     fn migration(&self) -> bool {
         !self.legacy.is_empty() || self.legacy_recovery.is_some()
     }
+    /// Whether the recorded runtime loads the mod folder. On Dawn or Sunrise before 0.6 the only
+    /// operation is removing the folder, which changes nothing those runtimes read.
+    fn loads_mods(&self) -> Result<bool, InstallError> {
+        self.context
+            .runtime
+            .as_ref()
+            .expect("a mod operation records its runtime")
+            .uses_mod_loader()
+            .map_err(InstallError::validation)
+    }
 
     fn verify_finished_account(&self) -> Result<(), InstallError> {
         if let Some(legacy) = &self.legacy_recovery {
             legacy.verify_finished_account()?;
         }
         account::verify_committed(&self.context)
+    }
+
+    /// Studio and other editors do not take Parhelion's lock. Recheck their packages before
+    /// publishing and before recording success. Removal and rollback never depend on them.
+    fn verify_coexistence(&self, incoming_directory: &Path) -> Result<(), InstallError> {
+        let Some(incoming) = &self.incoming else {
+            return Ok(());
+        };
+        mod_content::ensure_resolved_environment(self.install())
+            .map_err(InstallError::validation)?;
+        let sources = artifacts(incoming)
+            .into_iter()
+            .map(|artifact| {
+                let path = incoming_directory.join(package_path(&artifact)?);
+                Ok((artifact, path))
+            })
+            .collect::<Result<Vec<_>, InstallError>>()?;
+        reject_installed_conflicts(
+            &self.context.target_packages_directory,
+            &sources,
+            &self.legacy,
+        )?;
+        check_other_mods(
+            &self.context.target_packages_directory,
+            &sources,
+            &self.legacy,
+        )?;
+        Ok(())
     }
 }
 
@@ -75,12 +113,14 @@ pub(super) fn prepare(plan: Plan<'_>) -> Result<Transaction, InstallError> {
         incoming,
         runtime,
     } = plan;
-    if !runtime
-        .uses_mod_loader()
-        .map_err(InstallError::validation)?
+    // Only publishing needs a runtime that loads the mod folder. Removal works on any runtime.
+    if incoming.is_some()
+        && !runtime
+            .uses_mod_loader()
+            .map_err(InstallError::validation)?
     {
         return Err(InstallError::validation(
-            "This operation requires Sunrise 0.6 or later. The runtime changed during review",
+            "Installing to the mod folder requires Sunrise 0.6 or later. The runtime changed during review",
         ));
     }
     let install = target
@@ -246,7 +286,10 @@ pub(super) fn commit(
         mod_content::checked_path(record.install(), &path).map_err(InstallError::validation)?;
     }
     verify_source_artifacts(&record.context.target_packages_directory, &record.stock)?;
-    mod_content::ensure_resolved_environment(record.install()).map_err(InstallError::validation)?;
+    if record.incoming.is_some() {
+        mod_content::ensure_resolved_environment(record.install())
+            .map_err(InstallError::validation)?;
+    }
     verify_folder(&record.live(), record.original.as_ref())?;
     if let Some(legacy) = &record.legacy_recovery {
         legacy.verify_files(&record.context.target_packages_directory, false)?;
@@ -284,6 +327,7 @@ pub(super) fn commit(
     .map_err(InstallError::validation)?;
     verify_source_artifacts(&record.context.target_packages_directory, &record.stock)?;
     verify_legacy(record, false)?;
+    record.verify_coexistence(&record.temporary("stage"))?;
     apply_account(&record.context)?;
     if let Some(legacy) = &record.legacy_recovery {
         legacy.apply_account(check)?;
@@ -305,12 +349,18 @@ pub(super) fn commit(
     verify_folder(&record.live(), record.incoming.as_ref())?;
     verify_source_artifacts(&record.context.target_packages_directory, &record.stock)?;
     record.verify_finished_account()?;
-    let sunrise = invalidate_sunrise_cache(&transaction.sunrise, DEFAULT_CACHE_INVALIDATION_OPS)
-        .map_err(InstallError::validation)?;
-    let headers =
-        invalidate_package_header_caches(&transaction.headers, DEFAULT_CACHE_INVALIDATION_OPS)
-            .map_err(InstallError::validation)?;
+    let (sunrise, headers) = if record.loads_mods()? {
+        (
+            invalidate_sunrise_cache(&transaction.sunrise, DEFAULT_CACHE_INVALIDATION_OPS)
+                .map_err(InstallError::validation)?,
+            invalidate_package_header_caches(&transaction.headers, DEFAULT_CACHE_INVALIDATION_OPS)
+                .map_err(InstallError::validation)?,
+        )
+    } else {
+        (None, Vec::new())
+    };
     observer("verified");
+    record.verify_coexistence(&record.live())?;
     record.state = InstallTransactionState::Committed;
     record.write()?;
     observer("committed");
@@ -348,7 +398,6 @@ pub(in crate::install) fn recover(
     )
     .map_err(InstallError::validation)?;
     verify_source_artifacts(&target, &record.stock)?;
-    mod_content::ensure_resolved_environment(install).map_err(InstallError::validation)?;
     if let Some(legacy) = &record.legacy_recovery {
         legacy.verify_files(&target, record.state == InstallTransactionState::Committed)?;
         legacy.verify_account()?;
@@ -370,7 +419,7 @@ pub(in crate::install) fn recover(
         cleanup(&record)?;
         return Ok(Some(RecoveryOutcome::CommittedTransaction));
     }
-    if record.state == InstallTransactionState::Recovered && !record.migration() {
+    if record.state == InstallTransactionState::Recovered {
         verify_folder(&record.live(), record.original.as_ref())?;
         verify_legacy(&record, false)?;
         cleanup(&record)?;
@@ -421,6 +470,12 @@ pub(in crate::install) fn recover(
         ));
     }
     if record.migration() {
+        // Commit writes the account before any package moves. A migration whose account change
+        // was not written yet moved nothing, so recovery restores the account and keeps every
+        // legacy package where it is. Once it was written, the migration finishes forward.
+        if record.legacy_recovery.is_none() && account::verify_committed(&record.context).is_err() {
+            return roll_back_unstarted_migration(&mut record, request);
+        }
         complete_migration(&mut record, request)?;
         return Ok(Some(RecoveryOutcome::CommittedTransaction));
     }
@@ -490,7 +545,7 @@ fn validate_record(record: &Record, target: &Path, backup_root: &Path) -> Result
         mod_content::checked_path(record.install(), &path).map_err(InstallError::validation)?;
     }
     for folder in record.original.iter().chain(record.incoming.iter()) {
-        if folder.files.is_empty() || folder.files.len() > 1026 {
+        if folder.files.is_empty() || folder.files.len() > FOLDER_FILE_LIMIT {
             return Err(InstallError::validation("Invalid recovery inventory"));
         }
         for (name, digest) in &folder.files {
@@ -561,6 +616,11 @@ fn complete_migration(record: &mut Record, request: &RecoveryRequest) -> Result<
     check_stopped(request.game_running_check)?;
     verify_source_artifacts(target, &record.stock)?;
     verify_legacy(record, true)?;
+    record.verify_coexistence(&if record.live().exists() {
+        record.live()
+    } else {
+        record.temporary("stage")
+    })?;
     if let Some(legacy) = &record.legacy_recovery {
         legacy.verify_files(target, false)?;
         legacy.apply_account(request.game_running_check)?;
@@ -579,6 +639,24 @@ fn complete_migration(record: &mut Record, request: &RecoveryRequest) -> Result<
         record,
     )?;
     cleanup(record)
+}
+
+fn roll_back_unstarted_migration(
+    record: &mut Record,
+    request: &RecoveryRequest,
+) -> Result<Option<RecoveryOutcome>, InstallError> {
+    check_stopped(request.game_running_check)?;
+    verify_legacy(record, false)?;
+    verify_folder(&record.live(), record.original.as_ref())?;
+    account::recover_account(&record.context, request.game_running_check)?;
+    uninstall::refresh_recovery_caches(&record.context, request.runtime_snapshot_check)?;
+    record.state = InstallTransactionState::Recovered;
+    record.write()?;
+    cleanup(record)?;
+    Ok(Some(RecoveryOutcome::Recovered {
+        restored_files: vec![],
+        removed_new_files: vec![],
+    }))
 }
 
 fn remove_legacy(
@@ -663,7 +741,7 @@ fn verify_subset(path: &Path, expected: &Folder) -> Result<(), InstallError> {
 }
 
 fn verify_legacy(record: &Record, allow_missing: bool) -> Result<(), InstallError> {
-    for profile in all_authored_packages() {
+    for profile in all_authored_packages_in(&[record.context.target_packages_directory.as_path()]) {
         let path = record
             .context
             .target_packages_directory

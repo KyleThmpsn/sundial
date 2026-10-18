@@ -646,7 +646,7 @@ pub(super) fn append_subclass(out: &mut String, recipe: &WeaponRecipe) {
         "damage type icon",
         overrides.subclass_damage_type.map_or_else(
             || "base subclass's".to_owned(),
-            |damage| format!("{damage:?}  (recipe, item strings)"),
+            |damage| format!("{damage:?}  (recipe, item strings and element unlocks)"),
         ),
     );
     field(

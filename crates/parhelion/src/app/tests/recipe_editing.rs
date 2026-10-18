@@ -344,6 +344,7 @@ fn duplicate_preserves_draft_mechanics_and_allocates_a_fresh_identity() {
         kind: first_copy.kind,
         collection_destination: None,
         armor_class: None,
+        armor_origin: None,
         badge: None,
         corner_icon: None,
         path: PathBuf::from("existing-copy.parhelion.json"),

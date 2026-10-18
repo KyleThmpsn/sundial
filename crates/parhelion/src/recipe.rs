@@ -402,6 +402,9 @@ pub struct WeaponSandboxPerkActionFloatRecipe {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WeaponSocketPlugVariantRecipe {
+    /// A private projectile dependency carried with this weapon's attached perk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projectile: Option<crate::weapon::projectile::Preset>,
     /// Uses complete authored effect and stat lists, replacing template contributions.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub replace_effects: bool,

@@ -6,6 +6,9 @@ const MARKER: u32 = 0x8080_9FBD;
 const GROUP_CLASS: u64 = 0x8080_9EFB;
 const BITMAP_CLASS: u64 = 0x8080_000B;
 const INDEX_CLASS: u64 = 0x8080_000A;
+/// A map owner's index can also name tags in other packages by 64-bit hash, at `+0x20`.
+const TAG64_CLASS: u64 = 0x8080_013D;
+const TAG64_DESCRIPTOR: usize = 0x20;
 const GROUP_START: usize = 0x50;
 const GROUP_SIZE: usize = 0x28;
 
@@ -67,12 +70,13 @@ pub fn decode(payload: &[u8], companion: u32, owner: u32) -> Result<BTreeMap<u16
         || u64_at(payload, 0)? != payload.len() as u64
         || u32_at(payload, 8)? != companion
         || u32_at(payload, 12)? != owner
-        || payload[0x20..0x3C].iter().any(|b| *b != 0)
+        || payload[0x30..0x3C].iter().any(|b| *b != 0)
     {
         return Err(invalid(
             "Shared dependency index identity or fixed envelope is invalid",
         ));
     }
+    tag64(payload)?;
     let rows = array(payload, 0x10, GROUP_CLASS, GROUP_SIZE, 4096)?;
     if rows.is_empty() || relative_offset(0x10, 8, i64_at(payload, 0x18)?)? != 0x40 {
         return Err(invalid(
@@ -117,6 +121,14 @@ pub fn decode(payload: &[u8], companion: u32, owner: u32) -> Result<BTreeMap<u16
     }
     Ok(groups)
 }
+/// The 64-bit tag hashes an index names, in stored order. Most indexes name none.
+pub fn tag64(payload: &[u8]) -> Result<Vec<u64>, String> {
+    Ok(array(payload, TAG64_DESCRIPTOR, TAG64_CLASS, 8, 4096)?
+        .chunks_exact(8)
+        .map(|b| u64::from_le_bytes(b.try_into().expect("hash")))
+        .collect())
+}
+
 pub fn entries(groups: &BTreeMap<u16, Group>) -> BTreeSet<(u16, u16)> {
     let mut entries = BTreeSet::new();
     for (&package, group) in groups {

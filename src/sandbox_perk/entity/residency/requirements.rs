@@ -11,6 +11,8 @@ use crate::{
     package_runtime::{loading, references},
 };
 
+mod contact;
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Requirement {
     pub tag: u32,
@@ -211,6 +213,9 @@ pub fn owner_requirements(
                 role: format!("optic dispatch at +0x{field:X}"),
             });
         }
+    }
+    if data >= 4 && u32_at(payload, data - 4)? == 0x8080_3D65 {
+        result.extend(contact::requirements(manager, owner, payload, data)?);
     }
     Ok(result)
 }

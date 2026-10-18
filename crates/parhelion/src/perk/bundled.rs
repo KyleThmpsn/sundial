@@ -1,6 +1,7 @@
 //! Editable examples materialized once in the default custom-perk library.
 
 pub(super) const RECIPES: &[&str] = &[
+    include_str!("../../recipes/perks/wolfpack-rounds.perk.json"),
     include_str!("../../recipes/perks/micro-missile-frame.perk.json"),
     include_str!("../../recipes/perks/chicken.perk.json"),
     include_str!("../../recipes/perks/hammer-of-sol-frame.perk.json"),

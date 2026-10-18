@@ -426,6 +426,174 @@ fn draw_library_row(
     .inner
 }
 
+/// A map's row details: what it is, and the game its level comes from.
+fn map_details(map: &crate::recipe_library::MapLibraryEntry) -> &'static str {
+    if map.source {
+        "Crucible Map · Halo: Reach"
+    } else {
+        "Crucible Map"
+    }
+}
+
+/// The maps a search shows: every map under All Items, matched like recipes by name and details.
+fn matching_maps<'a>(
+    maps: &'a [crate::recipe_library::MapLibraryEntry],
+    kind: Option<ItemKind>,
+    query: &str,
+) -> Vec<&'a crate::recipe_library::MapLibraryEntry> {
+    if kind.is_some() {
+        return Vec::new();
+    }
+    maps.iter()
+        .filter(|map| {
+            let searchable =
+                format!("{} {} {}", map.title, map.name, map_details(map)).to_lowercase();
+            query
+                .split_whitespace()
+                .all(|term| searchable.contains(term))
+        })
+        .collect()
+}
+
+/// A map's row, drawn as a recipe's is, with a map glyph for its icon. With `inclusion` it
+/// carries a build selection checkbox, and without one it opens nothing, as maps have no editor.
+/// Returns whether the selection toggled.
+fn draw_map_row(
+    ui: &mut egui::Ui,
+    map: &crate::recipe_library::MapLibraryEntry,
+    inclusion: Option<bool>,
+) -> bool {
+    ui.push_id(&map.path, |ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        let current = inclusion.unwrap_or(false);
+        let details = map_details(map);
+        let body_size = egui::TextStyle::Body.resolve(ui.style()).size;
+        let name_size = (body_size + 2.0).max(16.0);
+        let detail_size = body_size.max(14.0);
+        let row_height = (name_size + detail_size + 14.0).max(52.0);
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), row_height),
+            egui::Sense::hover(),
+        );
+        let response = ui.interact(
+            rect,
+            ui.make_persistent_id("map-row"),
+            if inclusion.is_some() {
+                egui::Sense::CLICK
+            } else {
+                egui::Sense::hover()
+            },
+        );
+        let visuals = ui.style().interact_selectable(&response, current);
+        let fill = if current {
+            ui.visuals().selection.bg_fill
+        } else if response.hovered() || response.has_focus() {
+            visuals.weak_bg_fill
+        } else {
+            ui.visuals().faint_bg_color
+        };
+        ui.painter().rect_filled(rect, visuals.corner_radius, fill);
+        let icon_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + 6.0, rect.center().y - 20.0),
+            egui::vec2(40.0, 40.0),
+        );
+        ui.painter()
+            .rect_filled(icon_rect, 2.0, ui.visuals().extreme_bg_color);
+        ui.put(
+            icon_rect,
+            egui::Label::new(
+                super::style::light_icon(ui, egui_phosphor::regular::MAP_TRIFOLD).size(24.0),
+            )
+            .selectable(false),
+        );
+        let text_rect = egui::Rect::from_min_max(
+            rect.min + egui::vec2(54.0, 3.0),
+            rect.max - egui::vec2(8.0, 3.0),
+        );
+        let mut checkbox_changed = false;
+        let mut checkbox_focus = false;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect), |ui| {
+            ui.horizontal(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(
+                        (ui.available_width() - 34.0).max(40.0),
+                        ui.spacing().interact_size.y,
+                    ),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&map.title).size(name_size).strong(),
+                            )
+                            .truncate()
+                            .selectable(false),
+                        )
+                    },
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(mut included) = inclusion {
+                        let checkbox = ui.checkbox(&mut included, "");
+                        checkbox.widget_info(|| {
+                            egui::WidgetInfo::selected(
+                                egui::WidgetType::Checkbox,
+                                ui.is_enabled(),
+                                included,
+                                format!("Select {} · {details}", map.title),
+                            )
+                        });
+                        checkbox_changed = checkbox.changed();
+                        checkbox_focus = checkbox.has_focus();
+                        if checkbox.gained_focus() {
+                            checkbox.scroll_to_me(None);
+                        }
+                    }
+                });
+            });
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(details)
+                        .size(detail_size)
+                        .color(ui.visuals().text_color().gamma_multiply(0.8)),
+                )
+                .truncate()
+                .selectable(false),
+            );
+        });
+        if response.has_focus() || checkbox_focus {
+            ui.painter().rect_stroke(
+                rect.shrink(1.0),
+                2.0,
+                egui::Stroke::new(2.0, ui.visuals().selection.stroke.color),
+                egui::StrokeKind::Inside,
+            );
+        }
+        if response.gained_focus() {
+            response.scroll_to_me(None);
+        }
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::SelectableLabel,
+                ui.is_enabled(),
+                current,
+                format!("{} · {details}", map.title),
+            )
+        });
+        let clicked = response
+            .on_hover_ui(|ui| {
+                ui.strong(&map.title);
+                ui.label(details);
+                ui.label(if inclusion.is_some() {
+                    "Toggle selection"
+                } else {
+                    "Maps have no editor yet"
+                });
+            })
+            .clicked();
+        clicked || checkbox_changed
+    })
+    .inner
+}
+
 fn draw_bundled_recipe_selection(
     ui: &mut egui::Ui,
     entries: &[RecipeLibraryEntry],
@@ -656,8 +824,16 @@ impl PackageAuthoringApp {
                 );
                 self.library_state
                     .sort_entries(&mut shown, &self.library_donors);
+                let shown_maps = matching_maps(&self.map_entries, self.library_state.kind, &query);
                 ui.separator();
-                draw_select_all_shown(ui, shown.iter().map(|(entry, _)| &entry.path), &mut draft);
+                draw_select_all_shown(
+                    ui,
+                    shown
+                        .iter()
+                        .map(|(entry, _)| &entry.path)
+                        .chain(shown_maps.iter().map(|map| &map.path)),
+                    &mut draft,
+                );
                 let footer_height = build_selection_footer_height(ui, &self.build_selection_error);
                 egui::ScrollArea::vertical()
                     .id_salt("build-selection-results")
@@ -686,7 +862,17 @@ impl PackageAuthoringApp {
                                 }
                             }
                         }
-                        if shown.is_empty() {
+                        for map in &shown_maps {
+                            let included = draft.contains(&map.path);
+                            if draw_map_row(ui, map, Some(included)) {
+                                if included {
+                                    draft.remove(&map.path);
+                                } else {
+                                    draft.insert(map.path.clone());
+                                }
+                            }
+                        }
+                        if shown.is_empty() && shown_maps.is_empty() {
                             ui.label("No Matching Results");
                         }
                     });
@@ -700,7 +886,11 @@ impl PackageAuthoringApp {
                         .clicked();
                     cancel = ui.button("Cancel").clicked();
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.weak(format!("{} selected · {} shown", draft.len(), shown.len()));
+                        ui.weak(format!(
+                            "{} selected · {} shown",
+                            draft.len(),
+                            shown.len() + shown_maps.len()
+                        ));
                     });
                 });
             });
@@ -726,7 +916,7 @@ impl PackageAuthoringApp {
             .as_ref()
             .ok_or("Recipe library is unavailable")?;
         // Commit storage first. A failed write must not change the active build in memory.
-        library.save_enabled_paths(&selected, &self.recipe_entries)?;
+        library.save_enabled_selection(&selected, &self.recipe_entries, &self.map_entries)?;
         if self.enabled_recipe_paths != selected {
             self.enabled_recipe_paths = selected;
             self.invalidate_results();

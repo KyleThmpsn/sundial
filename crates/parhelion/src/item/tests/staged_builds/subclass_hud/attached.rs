@@ -226,6 +226,7 @@ fn attached_ability_hud_survives_save_build_and_reset_without_changing_stock() {
         staging_root: artifacts.join("staging"),
         ignore_installed_authored_overlays: false,
         recipes,
+        maps: Vec::new(),
     })
     .unwrap();
     let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |_| {}).unwrap();
@@ -422,6 +423,7 @@ fn attached_ability_hud_survives_save_build_and_reset_without_changing_stock() {
             staging_root: artifacts.join(format!("rejected-{target:08X}")),
             ignore_installed_authored_overlays: false,
             recipes: vec![recipe],
+            maps: Vec::new(),
         })
         .unwrap();
         let error = crate::build_and_stage_snapshot_with_progress(&invalid, |_| {})

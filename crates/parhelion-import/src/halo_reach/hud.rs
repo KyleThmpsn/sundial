@@ -5,6 +5,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::{fs, io::Cursor, path::Path};
 mod font;
+pub(super) mod scope;
 
 pub(super) fn prepare(
     cache: &Cache,

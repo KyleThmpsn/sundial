@@ -75,14 +75,15 @@ impl WeaponTables {
             .authored_weapon_icon_containers
             .get(ordinal)
             .ok_or_else(|| validation("Authored weapon icon container is missing"))?;
+        let host = crate::package_profile::host();
         let definition_tag = TagHash::new(
-            HOST_PACKAGE_ID,
-            u16::try_from(HOST_EXPECTED_ENTRY_COUNT + ordinal * 2)
+            host.id,
+            u16::try_from(host.first + ordinal * 2)
                 .map_err(|_| invalid("Definition tag index does not fit 16 bits"))?,
         );
         let string_tag = TagHash::new(
-            HOST_PACKAGE_ID,
-            u16::try_from(HOST_EXPECTED_ENTRY_COUNT + ordinal * 2 + 1)
+            host.id,
+            u16::try_from(host.first + ordinal * 2 + 1)
                 .map_err(|_| invalid("String tag index does not fit 16 bits"))?,
         );
         let item_index = u16::try_from(context.stock_item_count + ordinal)
@@ -174,6 +175,7 @@ impl WeaponTables {
             &strings,
             (!expected_socket_columns.is_empty()).then_some(expected_socket_columns.as_slice()),
             authored_pattern_index,
+            socketless_damage,
             &donor.weapon,
         )?;
         validate_weapon_raw_payload_patches(
@@ -340,13 +342,14 @@ impl WeaponTables {
             // Each pair of host tags holds a record and the one after it: the list and its
             // companion, the display record and its companion, then each authored entry's pool
             // and node record.
-            let first = HOST_EXPECTED_ENTRY_COUNT
+            let host = crate::package_profile::host();
+            let first = host.first
                 + 2 * (context.weapon_count
                     + context.custom_plugs.len()
                     + self.subclass_records.len());
             let tag = |offset: usize| -> AuthoringResult<TagHash> {
                 Ok(TagHash::new(
-                    HOST_PACKAGE_ID,
+                    host.id,
                     u16::try_from(first + offset)
                         .map_err(|_| invalid("Subclass list tag index does not fit 16 bits"))?,
                 ))
@@ -419,6 +422,7 @@ impl WeaponTables {
         }
         if let Some(damage) = donor.weapon.overrides.subclass_damage_type {
             crate::subclass::native::set_damage_type(&mut strings, damage)?;
+            crate::subclass::native::set_element(&mut definition, damage)?;
         }
         let class_of = |definition: &[u8]| {
             sundial::package_authoring::investment_schema::subclass_equipment_class(definition)

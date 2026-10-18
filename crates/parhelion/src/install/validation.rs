@@ -106,6 +106,7 @@ pub(super) fn validate_request_with_progress(
         backup_root,
         source_artifacts: manifest.source_artifacts,
         artifacts: manifest.artifacts,
+        merge_data: manifest.merge_data,
         obsolete_artifacts,
         selected_recipe_files: manifest.selected_recipe_files,
         authored_unlocks: manifest.authored_unlocks,
@@ -150,7 +151,7 @@ fn find_obsolete_artifacts(
     incoming: &[ArtifactMetadata],
 ) -> Result<Vec<ArtifactMetadata>, InstallError> {
     let mut obsolete = Vec::new();
-    for profile in all_authored_packages() {
+    for profile in all_authored_packages_in(&[target]) {
         if profile.required_output
             || incoming
                 .iter()
@@ -223,18 +224,88 @@ pub(super) fn validate_manifest_and_staged_files(
     let authored_grants = manifest_grants(&manifest.project);
     let source_artifacts = validate_source_artifact_records(manifest.source_artifacts)?;
     let artifacts = validate_artifact_records(manifest.artifacts)?;
+    check_layout(target_packages_directory, &artifacts)?;
     let selected_recipe_files = manifest.selected_recipe_files;
     validate_direct_package_set(staged_run_directory, &artifacts)?;
     verify_staged_artifacts(staged_run_directory, &artifacts)?;
     validate_staged_packages(staged_run_directory, &artifacts, target_packages_directory)?;
+    let merge_data = validate_merge_data(staged_run_directory, &artifacts, manifest.merge_data)?;
     Ok(ValidatedManifest {
         source_artifacts,
         artifacts,
+        merge_data,
         selected_recipe_files,
         authored_unlocks,
         authored_grants,
         plug_variants,
     })
+}
+
+/// Merge data matches its manifest digest and describes the package beside it, since Sunrise binds
+/// it to that package's header and ignores it otherwise.
+fn validate_merge_data(
+    directory: &Path,
+    artifacts: &[ArtifactMetadata],
+    merge_data: Vec<ArtifactMetadata>,
+) -> Result<Vec<ArtifactMetadata>, InstallError> {
+    use sundial::package_authoring::mod_content::{merge::sidecar::Sidecar, plaintext};
+    let mut validated = Vec::with_capacity(merge_data.len());
+    for mut data in merge_data {
+        validate_plain_file_name(&data.file_name)?;
+        if !is_sha256(&data.sha256) {
+            return Err(InstallError::validation(format!(
+                "Merge data {} has an invalid SHA-256 digest",
+                data.file_name
+            )));
+        }
+        data.sha256.make_ascii_uppercase();
+        validated.push(data);
+    }
+    verify_staged_artifacts(directory, &validated)?;
+    for data in &validated {
+        let package = data
+            .file_name
+            .strip_suffix(".merge")
+            .map(|stem| format!("{stem}.pkg"))
+            .filter(|name| artifacts.iter().any(|artifact| artifact.file_name == *name))
+            .ok_or_else(|| {
+                InstallError::validation(format!(
+                    "Merge data {} sits beside no staged package",
+                    data.file_name
+                ))
+            })?;
+        let records = plaintext::records(&directory.join(&package))
+            .map_err(|reason| InstallError::validation(format!("{package} {}", reason.text())))?;
+        let bytes = fs::read(directory.join(&data.file_name)).map_err(|error| {
+            InstallError::validation(format!("Could not read {}: {error}", data.file_name))
+        })?;
+        Sidecar::parse(&bytes, records.package, records.patch, &records.digest).map_err(
+            |status| {
+                InstallError::validation(format!(
+                    "Merge data {} doesn't describe {package}: {}",
+                    data.file_name,
+                    status.text()
+                ))
+            },
+        )?;
+    }
+    Ok(validated)
+}
+
+/// A build keeps its investment records where the runtime it was made for loads them: in a records
+/// package of their own for Sunrise's mod loader, and appended to a stock package for Dawn and
+/// Sunrise before 0.6, which aren't known to load a records package. The mod loader refuses the
+/// appended layout when its patches are checked.
+fn check_layout(target: &Path, artifacts: &[ArtifactMetadata]) -> Result<(), InstallError> {
+    let mod_layout = artifacts
+        .iter()
+        .any(|artifact| crate::package_profile::is_records_package(&artifact.file_name));
+    if mod_layout && !uses_mod_loader(target) {
+        return Err(InstallError::validation(
+            "This build was made for Sunrise 0.6's mod folder, which this runtime doesn't load. Build it again to install it here",
+        ));
+    }
+    Ok(())
 }
 
 /// The authored items the install adds to the account: each subclass whose class the manifest
@@ -812,7 +883,7 @@ pub(super) fn validate_target_package_chain(
             )));
         }
     }
-    for profile in all_authored_packages() {
+    for profile in all_authored_packages_in(&[target_packages_directory]) {
         validate_existing_authored_target(
             &target_packages_directory.join(profile.file_name),
             profile.package_id,
@@ -847,9 +918,14 @@ pub(super) fn validate_no_alias_package_chains(
             ))
         })?;
         let actual_name = entry.file_name().to_string_lossy().into_owned();
+        // A standalone package may carry any family in its name, as a map's packages carry the
+        // map's, so its name must only be a standalone name for its own id.
+        let named = authored_package_for_file_name(&actual_name)
+            .filter(|profile| profile.package_id == header.package_id);
         if let Some(profile) = authored_package(header.package_id)
             && !profile.stock_overlay
         {
+            let profile = named.unwrap_or(profile);
             if actual_name != profile.file_name {
                 return Err(InstallError::validation(format!(
                     "Unexpected Parhelion asset package {} aliases {}; remove it before installation",

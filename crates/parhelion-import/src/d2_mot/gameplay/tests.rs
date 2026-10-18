@@ -96,6 +96,7 @@ fn socket_roles_match_categories_not_positions_and_keep_missing_defaults() {
         &source,
         &native,
         &BTreeMap::from([(10, 2), (12, 1), (13, 9)]),
+        &BTreeSet::new(),
         &mut fallbacks,
     )
     .unwrap();
@@ -111,7 +112,14 @@ fn unsupported_and_appearance_plugs_do_not_replace_donor_columns() {
     let source = json!({"sockets":[{"choices":[appearance,plug(11,1,false)]}]});
     let native = json!({"sockets":[{"choices":[plug(20,1,true),plug(21,1,false)]}]});
     assert_eq!(
-        columns(&source, &native, &BTreeMap::from([(10, 1)]), &mut vec![]).unwrap(),
+        columns(
+            &source,
+            &native,
+            &BTreeMap::from([(10, 1)]),
+            &BTreeSet::new(),
+            &mut vec![]
+        )
+        .unwrap(),
         vec![Value::Null]
     );
 }

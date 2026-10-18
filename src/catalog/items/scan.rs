@@ -923,6 +923,36 @@ fn item_socket_entry_list_index(item: &[u8]) -> Option<u16> {
     u16_at(item, block).ok()
 }
 
+/// The item's own translation dye rows as (channel key, dye material index) per stage, which the
+/// gear path binds before any plug's rows apply.
+pub(crate) fn translation_dye_rows(item: &[u8]) -> [Vec<(i8, u16)>; 3] {
+    let mut rows: [Vec<(i8, u16)>; 3] = Default::default();
+    let Some(art) = resolve_item_block(item, ART_BLOCK_OFFSET) else {
+        return rows;
+    };
+    for (stage, offset) in MATERIAL_STAGE_OFFSETS {
+        let Some(descriptor) = art.checked_add(offset) else {
+            continue;
+        };
+        let Some((count, start)) = bounded_array(
+            item,
+            descriptor,
+            MATERIAL_OVERRIDE_CLASS,
+            MATERIAL_ROW_STRIDE,
+        ) else {
+            continue;
+        };
+        for index in 0..count {
+            let row = start + index * MATERIAL_ROW_STRIDE;
+            let Ok(value) = u16_at(item, row + MATERIAL_ROW_VALUE_OFFSET) else {
+                break;
+            };
+            rows[usize::from(stage)].push((item[row] as i8, value));
+        }
+    }
+    rows
+}
+
 fn populate_item_appearance_metadata(item: &[u8], metadata: &mut ItemPackageMetadata) {
     metadata.weapon_pattern_index = None;
     metadata.art_arrangement_indices = [None; 4];

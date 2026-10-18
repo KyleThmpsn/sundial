@@ -395,6 +395,9 @@ pub(super) fn setting_text(kind: SettingKind, value: f64) -> String {
     ) {
         return format!("{}°/s", number(value));
     }
+    if kind == SettingKind::FalloffStart {
+        return format!("{}%", number(value));
+    }
     match kind.unit() {
         SettingUnit::Factor => format!("×{}", number(value)),
         SettingUnit::Seconds => format!("{} s", number(value)),

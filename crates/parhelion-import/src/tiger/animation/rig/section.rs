@@ -4,7 +4,6 @@ use super::*;
 pub(super) struct Extra {
     pub bytes: Vec<u8>,
     rows: [usize; 2],
-    first: usize,
     count: usize,
 }
 
@@ -31,14 +30,13 @@ pub(super) fn prepare(
     // The retained section's pose array is still before the insertion point.
     relative(&mut out, rows[0] + 0x28, original.pointer(section + 0x28)?)?;
     for row in rows {
-        relative(&mut out, row + 16, instance + 0x30)?;
+        relative(&mut out, row + 16, instance)?;
     }
     append(&mut out, rows[1] + 0x20, 0x80809f75, poses, 32)?;
     put(&mut out, rows[1] + 0x30, &(first as u32).to_le_bytes())?;
     Ok(Extra {
         bytes: out[cut..].to_vec(),
         rows,
-        first,
         count: poses.len() / 32,
     })
 }
@@ -62,7 +60,6 @@ impl Extra {
             put(out, schema + 8, &(instance as u64).to_le_bytes())?;
         }
         put(out, schemas[1] + 16, &(self.count as u32).to_le_bytes())?;
-        put(out, schemas[1] + 20, &(self.first as u32).to_le_bytes())?;
         Ok(())
     }
 }

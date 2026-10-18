@@ -171,6 +171,7 @@ fn armor_class_picker_controls_equip_collections_and_badges() {
         staging_root: output.join("staging"),
         ignore_installed_authored_overlays: true,
         recipes: cases.iter().map(|(r, ..)| r.clone()).collect(),
+        maps: Vec::new(),
     })
     .unwrap();
     let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |_| {}).unwrap();

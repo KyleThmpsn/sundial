@@ -362,7 +362,7 @@ impl WorkspaceDocument {
                 label: "investment.sqlite3",
                 detail: "Account data is saved to investment.sqlite3. Identity and runtime configuration stay in settings.json.".to_owned(),
                 database_path: self.database_path.clone(),
-                contract: "SQLite · Schema 2",
+                contract: "SQLite (Schema 2)",
             },
             AccountDocument::Dawn(_) => AccountSourceInfo {
                 kind: AccountSourceKind::Dawn,
@@ -504,7 +504,7 @@ impl WorkspaceDocument {
 }
 
 /// The schema this build accepts. `dawn_contract_names_the_supported_schema` keeps it honest.
-const DAWN_CONTRACT: &str = "SQLite · Dawn schema 5";
+const DAWN_CONTRACT: &str = "SQLite (Dawn Schema 5)";
 
 pub(super) use crate::game_settings::requires_sqlite_account as requires_sqlite;
 

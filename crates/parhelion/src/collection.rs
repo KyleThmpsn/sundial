@@ -1,6 +1,7 @@
 //! Stable recipe destinations and the shared native presentation-node budget.
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+pub(crate) mod armor;
 
 pub const NODE_CAPACITY: usize = 1024;
 pub const BASE_NODE_COUNT: usize = crate::progression::STOCK_PRESENTATION_NODE_COUNT + 4;
@@ -299,18 +300,6 @@ impl GearPage {
 
 /// Each native armor-set row holds at most five collectible tiles.
 pub(crate) const ARMOR_SET_SIZE: usize = 5;
-
-pub(crate) fn armor_pages(counts: [usize; 3]) -> impl Iterator<Item = GearPage> {
-    counts.into_iter().enumerate().flat_map(|(class, count)| {
-        (count != 0)
-            .then_some(GearPage::armor(class as u8))
-            .into_iter()
-            .chain(
-                (0..count.div_ceil(ARMOR_SET_SIZE))
-                    .map(move |set| GearPage::armor_set(class as u8, set)),
-            )
-    })
-}
 
 /// Node identities of the gear pages a build adds.
 pub(crate) fn gear_page_node_hashes(pages: impl IntoIterator<Item = GearPage>) -> BTreeSet<u64> {

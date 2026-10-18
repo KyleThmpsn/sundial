@@ -859,6 +859,7 @@ impl Group {
             | SettingKind::DamageBreakResponse
             | SettingKind::StrengthLoss => Self::Invisibility,
             SettingKind::QueryScale
+            | SettingKind::FalloffStart
             | SettingKind::SearchDelay
             | SettingKind::SearchRange
             | SettingKind::IncludeSelf

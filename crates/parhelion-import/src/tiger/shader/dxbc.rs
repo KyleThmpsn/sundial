@@ -115,10 +115,10 @@ pub(crate) fn chunk(container: &[u8], name: &[u8; 4]) -> Result<Option<std::ops:
 }
 
 /// An operand's immediate first index and its token position, with the selection bits.
-struct Operand {
-    token_at: usize,
-    kind: u32,
-    indices: Vec<Option<usize>>,
+pub(crate) struct Operand {
+    pub token_at: usize,
+    pub kind: u32,
+    pub indices: Vec<Option<usize>>,
 }
 
 fn operand(tokens: &[u32], mut at: usize, operands: &mut Vec<Operand>) -> Result<usize> {
@@ -175,9 +175,11 @@ fn operand(tokens: &[u32], mut at: usize, operands: &mut Vec<Operand>) -> Result
     Ok(at)
 }
 
-struct Instruction {
-    opcode: u32,
-    operands: Vec<Operand>,
+pub(crate) struct Instruction {
+    pub start: usize,
+    pub end: usize,
+    pub opcode: u32,
+    pub operands: Vec<Operand>,
 }
 
 fn is_declaration(opcode: u32) -> bool {
@@ -186,7 +188,7 @@ fn is_declaration(opcode: u32) -> bool {
         || (0xAA..=0xB0).contains(&opcode)
 }
 
-fn walk(tokens: &[u32]) -> Result<Vec<Instruction>> {
+pub(crate) fn walk(tokens: &[u32]) -> Result<Vec<Instruction>> {
     let mut at = 2;
     let mut result = Vec::new();
     while at < tokens.len() {
@@ -239,13 +241,68 @@ fn walk(tokens: &[u32]) -> Result<Vec<Instruction>> {
                 "shader operands overrun instruction {opcode:X}"
             );
         }
-        result.push(Instruction { opcode, operands });
+        result.push(Instruction {
+            start: at,
+            end: at + length,
+            opcode,
+            operands,
+        });
         at += length;
     }
     ensure!(
         at == tokens.len(),
         "shader instructions do not end at the chunk end"
     );
+    Ok(result)
+}
+
+/// Rebuild a source container around edited SM5 tokens and optional output
+/// signature. Compiler reflection and statistics no longer describe edited code.
+pub(crate) fn rebuild(container: &[u8], tokens: &[u32], outputs: Option<&[u8]>) -> Result<Vec<u8>> {
+    ensure!(
+        tokens.len() >= 2 && tokens[1] as usize == tokens.len(),
+        "Edited shader token extent differs"
+    );
+    walk(tokens)?;
+    let mut chunks = Vec::new();
+    for name in [*b"ISGN", *b"OSGN", *b"PCSG"] {
+        let data = if name == *b"OSGN"
+            && let Some(outputs) = outputs
+        {
+            outputs.to_vec()
+        } else if let Some(range) = chunk(container, &name)? {
+            container[range].to_vec()
+        } else {
+            continue;
+        };
+        chunks.push((name, data));
+    }
+    ensure!(
+        chunks.iter().any(|(name, _)| name == b"OSGN"),
+        "Source shader output signature is absent"
+    );
+    chunks.push((
+        *b"SHEX",
+        tokens.iter().flat_map(|word| word.to_le_bytes()).collect(),
+    ));
+    let mut result = vec![0; 32 + chunks.len() * 4];
+    result[..4].copy_from_slice(b"DXBC");
+    result[20..24].copy_from_slice(&1u32.to_le_bytes());
+    result[28..32].copy_from_slice(&(chunks.len() as u32).to_le_bytes());
+    for (index, (name, data)) in chunks.into_iter().enumerate() {
+        let offset = u32::try_from(result.len())?;
+        result[32 + index * 4..36 + index * 4].copy_from_slice(&offset.to_le_bytes());
+        result.extend(name);
+        result.extend(u32::try_from(data.len())?.to_le_bytes());
+        result.extend(data);
+        while !result.len().is_multiple_of(4) {
+            result.push(0);
+        }
+    }
+    let length = u32::try_from(result.len())?;
+    result[24..28].copy_from_slice(&length.to_le_bytes());
+    let digest = checksum(&result)?;
+    result[4..20].copy_from_slice(&digest);
     Ok(result)
 }
 

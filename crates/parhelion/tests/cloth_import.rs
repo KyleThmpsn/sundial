@@ -387,6 +387,7 @@ fn cloth_survives_import_sharing_and_staging_with_complete_skin_weights() -> Res
         package_directory: native.clone(),
         staging_root: output.join("build"),
         ignore_installed_authored_overlays: true,
+        maps: Vec::new(),
         recipes: recipes.clone(),
     })?;
     let built = build_and_stage_snapshot_with_progress(&snapshot, |p| println!("{:?}", p.phase))?;

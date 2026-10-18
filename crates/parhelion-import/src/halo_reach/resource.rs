@@ -173,6 +173,12 @@ impl Pages {
 
 impl Cache {
     pub fn resource(&self, owner: &Tag, handle: u32) -> Result<Resource> {
+        self.resource_from(owner, handle, false)
+    }
+
+    /// A resource whose gestalt entry names `owner` or, when `unowned` holds, no owner at all,
+    /// as a structure BSP's render geometry entry does.
+    pub fn resource_from(&self, owner: &Tag, handle: u32, unowned: bool) -> Result<Resource> {
         ensure!(handle != u32::MAX, "Null resource handle");
         let zone = self.only("zone")?.address()?;
         let play = self.only("play")?.offset.unwrap_or(zone + 28);
@@ -182,7 +188,7 @@ impl Cache {
             .context("Resource outside gestalt")?;
         ensure!(
             self.reference(entry, None)?
-                .is_some_and(|t| t.datum == owner.datum),
+                .map_or(unowned, |t| t.datum == owner.datum),
             "Resource owner differs from tag"
         );
         let segment = *self

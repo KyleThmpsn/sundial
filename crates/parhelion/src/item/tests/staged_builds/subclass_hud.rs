@@ -655,6 +655,7 @@ fn per_ability_colors_reach_private_tree_icons_and_hud_with_independent_inherita
         staging_root: artifacts.join("ability-colors"),
         ignore_installed_authored_overlays: false,
         recipes,
+        maps: Vec::new(),
     })
     .unwrap();
     let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |_| {}).unwrap();
@@ -955,6 +956,7 @@ fn subclass_hud_colors_survive_saved_recipes_and_private_package_builds() {
         staging_root: artifacts.join("subclass-hud"),
         ignore_installed_authored_overlays: false,
         recipes,
+        maps: Vec::new(),
     })
     .unwrap();
     let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |_| {}).unwrap();

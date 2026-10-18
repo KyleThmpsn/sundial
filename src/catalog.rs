@@ -17,6 +17,7 @@ pub(crate) mod dummy_items;
 pub(crate) mod icons;
 mod items;
 pub use items::stock_subclass_list_classes;
+pub(crate) use items::translation_dye_rows;
 pub(crate) use items::{character_row_class, inventory_bucket_capacity, weapon_bucket_capacities};
 pub(crate) use items::{item_subtype_label, item_type_label};
 pub(crate) mod package;

@@ -8,7 +8,7 @@ pub(super) struct Plan {
     pub weapon_tag_count: usize,
     pub weapon_runtime_start: usize,
     pub watermark: crate::watermark::WatermarkPlan,
-    pub badge: crate::badge_icon::BadgeIconPlan,
+    pub badge: crate::icon_chain::Plan,
     pub hud_table: Option<ReplacementSpec>,
     pub subclass_hud_table: Option<ReplacementSpec>,
     pub subclass_ui: Vec<ReplacementSpec>,
@@ -22,6 +22,17 @@ pub(super) struct Plan {
     /// Each emblem's own nameplate container, by item ordinal.
     pub nameplate_containers: Vec<Option<TagHash>>,
     pub perk_icon_dependencies: Vec<TagHash>,
+    /// Each map's own private match picture.
+    pub map_pictures: Vec<MapPicture>,
+}
+
+/// A map's private match picture in the asset package: its map, the hash and donor row its icon
+/// row takes, and its container.
+pub(super) struct MapPicture {
+    pub map: usize,
+    pub hash: u32,
+    pub donor_row: u16,
+    pub container: TagHash,
 }
 
 pub(super) fn plan(
@@ -31,6 +42,7 @@ pub(super) fn plan(
     (custom_plugs, mod_plugs): (&mut [ResolvedCustomPlug], &mut [ResolvedCustomPlug]),
     programs: &[sundial::package_authoring::sandbox_perk::program::Program],
     branding: crate::branding::Branding,
+    pictures: &[crate::map::Picture],
 ) -> AuthoringResult<Plan> {
     // Each item and private plug takes a pair, definition and strings. A subclass list takes
     // two: the list and its companion, then the display record and its companion. Each authored
@@ -86,8 +98,8 @@ pub(super) fn plan(
         .collect::<AuthoringResult<Vec<_>>>()?;
     let watermark_plan = crate::watermark::build_presented_watermark_plan(
         manager,
-        HOST_PACKAGE_ID,
-        HOST_EXPECTED_ENTRY_COUNT,
+        crate::package_profile::host().id,
+        crate::package_profile::host().first,
         weapon_tag_ordinal_base,
         &icon_requests,
         crate::watermark::Presentation {
@@ -156,6 +168,30 @@ pub(super) fn plan(
         )
         .map_err(|error| error.context(badge_context(resolved, &name)))?;
         custom_badges.insert(name, plan.container_tag);
+        badge_icon_plan.new_tags.extend(plan.new_tags);
+        badge_icon_plan
+            .reference_overrides
+            .extend(plan.reference_overrides);
+    }
+    // Each map's private match picture follows the badges and, as theirs do, loads when the
+    // screen names its icon row.
+    let mut map_pictures = Vec::with_capacity(pictures.len());
+    for picture in pictures {
+        let chain = picture.donor.read(manager)?;
+        let mut plan = picture.donor.plan(
+            &chain,
+            picture.pixels.clone(),
+            crate::package_profile::window().base,
+            0,
+            badge_icon_plan.new_tags.len(),
+        )?;
+        plan.fingerprint()?;
+        map_pictures.push(MapPicture {
+            map: picture.map,
+            hash: picture.hash,
+            donor_row: picture.donor_row,
+            container: plan.container_tag,
+        });
         badge_icon_plan.new_tags.extend(plan.new_tags);
         badge_icon_plan
             .reference_overrides
@@ -324,7 +360,8 @@ pub(super) fn plan(
                 })
         })
         .collect::<AuthoringResult<Vec<_>>>()?;
-    let weapon_runtime_tag_start = HOST_EXPECTED_ENTRY_COUNT
+    let weapon_runtime_tag_start = crate::package_profile::host()
+        .first
         .checked_add(weapon_tag_ordinal_base)
         .and_then(|count| count.checked_add(watermark_plan.new_tags.len()))
         .ok_or_else(|| invalid("Authored host runtime-tag start overflowed"))?;
@@ -398,6 +435,7 @@ pub(super) fn plan(
         entry_icon_containers,
         nameplate_containers,
         perk_icon_dependencies,
+        map_pictures,
     })
 }
 
@@ -410,6 +448,8 @@ pub(super) struct IconRows {
     pub entry_indices: Vec<Vec<Option<u16>>>,
     /// Each emblem's own nameplate row and container, by item ordinal.
     pub nameplates: Vec<Option<(u16, TagHash)>>,
+    /// Each map picture's row, by map.
+    pub map_pictures: Vec<(usize, u16)>,
 }
 
 pub(super) fn author_icon_rows(
@@ -461,6 +501,17 @@ pub(super) fn author_icon_rows(
         )?;
         authored_item_icons = icons;
         custom_badges.insert(name.clone(), index);
+    }
+    let mut map_pictures = Vec::with_capacity(assets.map_pictures.len());
+    for picture in &assets.map_pictures {
+        let (icons, index) = append_authored_weapon_icon_row(
+            authored_item_icons,
+            picture.donor_row,
+            picture.hash,
+            picture.container,
+        )?;
+        authored_item_icons = icons;
+        map_pictures.push((picture.map, index));
     }
     let mut entry_indices = Vec::with_capacity(resolved.len());
     for (donor, containers) in resolved.iter().zip(&assets.entry_icon_containers) {
@@ -529,6 +580,7 @@ pub(super) fn author_icon_rows(
         weapon_indices: authored_weapon_icon_indices,
         entry_indices,
         nameplates,
+        map_pictures,
     })
 }
 

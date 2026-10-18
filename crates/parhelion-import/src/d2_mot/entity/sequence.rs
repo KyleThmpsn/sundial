@@ -3,17 +3,50 @@ mod assembly;
 mod controls;
 mod events;
 mod expression;
+mod interfaces;
 mod link;
+mod outputs;
 pub(crate) mod presentation;
 use super::links::Object;
 use crate::d2_mot::payload::Payload;
 use anyhow::{Context, Result, ensure};
 pub(crate) use assembly::inputs as scalar_inputs;
-pub use assembly::{Bindings, Native, Resource, emit};
+pub use assembly::{Bindings, Native, Resource, Selectors, emit};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const NATIVE_RANGE_CLASS: u32 = 0x808093ED;
+
+#[derive(Debug, Serialize)]
+pub enum Condition {
+    Range(Range),
+    Category { offset: usize },
+}
+
+impl Condition {
+    fn read(source: &Payload, offset: usize, input_count: usize) -> Result<Self> {
+        match source.u32(offset.checked_sub(4).context("condition class offset")?)? {
+            0x808091FE => Range::read(source, offset, input_count).map(Self::Range),
+            0x808091FD => {
+                ensure!(
+                    source.u32(offset)? == 3
+                        && source.u32(offset + 4)? == 0
+                        && source.u64(offset + 8)? == 0,
+                    "unsupported sequence category condition header at {offset:X}"
+                );
+                let mask = source.pointer(offset + 16)?;
+                ensure!(
+                    source.u32(mask.checked_sub(4).context("condition mask class")?)? == 0x8080976E,
+                    "unsupported sequence category mask"
+                );
+                Ok(Self::Category { offset })
+            }
+            class => {
+                anyhow::bail!("unsupported source sequence condition {class:08X} at {offset:X}")
+            }
+        }
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub struct Input {
@@ -96,7 +129,7 @@ pub struct Control {
     pub children: Vec<Child>,
     /// The two pointer fields have distinct scheduling roles. Preserve their
     /// slots rather than flattening them into one condition list.
-    pub conditions: [Option<Range>; 2],
+    pub conditions: [Option<Condition>; 2],
 }
 
 #[derive(Debug, Serialize)]
@@ -209,11 +242,11 @@ impl Sequence {
                     index: child,
                 });
             }
-            let read = |field| -> Result<Option<Range>> {
+            let read = |field| -> Result<Option<Condition>> {
                 if source.u64(at + field)? == 0 {
                     return Ok(None);
                 }
-                Range::read(source, source.pointer(at + field)?, inputs.len()).map(Some)
+                Condition::read(source, source.pointer(at + field)?, inputs.len()).map(Some)
             };
             controls.push(Control {
                 offset: at,

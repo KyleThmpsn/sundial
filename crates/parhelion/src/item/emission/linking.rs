@@ -19,6 +19,8 @@ pub(super) struct Node {
     /// A cloned loading index for the named owner symbol, from that native parent's companion.
     pub companion: Option<Companion>,
     pub storage: crate::NewTagStorageMode,
+    #[cfg(feature = "d2-model-importer")]
+    pub audio: crate::item::custom_runtime::assets::audio::Metadata,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -73,6 +75,8 @@ impl Node {
             reference: None,
             companion: None,
             storage: crate::NewTagStorageMode::InheritTemplate,
+            #[cfg(feature = "d2-model-importer")]
+            audio: Default::default(),
         }
     }
 
@@ -141,7 +145,36 @@ pub(super) fn link(
         primary,
         companions,
         extra_bounds,
-        |_| Ok(nodes),
+        |_symbols| {
+            #[cfg(feature = "d2-model-importer")]
+            let nodes = {
+                use crate::item::custom_runtime::assets::audio;
+                let symbols = _symbols;
+                let views = nodes
+                    .iter()
+                    .map(|node| audio::Node {
+                        symbol: &node.symbol,
+                        payload: &node.payload,
+                        storage: node.storage,
+                        patched: !node.patches.is_empty(),
+                        metadata: &node.audio,
+                    })
+                    .collect::<Vec<_>>();
+                let mut bound = audio::bind(
+                    &views,
+                    symbols,
+                    &format!("parhelion/{:08x}/appearance-audio", symbols[primary].0),
+                )?;
+                let mut nodes = nodes;
+                for node in &mut nodes {
+                    if let Some(payload) = bound.remove(&node.symbol) {
+                        node.payload = payload;
+                    }
+                }
+                nodes
+            };
+            Ok(nodes)
+        },
         extra_groups,
         debug,
     )

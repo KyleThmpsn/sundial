@@ -39,7 +39,7 @@ fn initialize(target_packages: &Path) -> Result<(), String> {
         )
     })?;
     // The public manager initializes the decoder. Direct PackageD2PreBL readers do not.
-    let _manager = sundial::package_authoring::open_shadowkeep_package_manager(&target)?;
+    let _manager = sundial::package_authoring::open_managed_shadowkeep_package_manager(&target)?;
     Ok(())
 }
 
@@ -88,6 +88,7 @@ mod tests {
 fn initialize(target_packages: &Path) -> Result<(), String> {
     // Let Sundial prepare its checked Linux runtime before touching the lazy decoder.
     // Initializing tiger's lazy value first would cache a failure before the runtime exists.
-    let _manager = sundial::package_authoring::open_shadowkeep_package_manager(target_packages)?;
+    let _manager =
+        sundial::package_authoring::open_managed_shadowkeep_package_manager(target_packages)?;
     Ok(())
 }

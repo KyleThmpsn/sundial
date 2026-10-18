@@ -32,8 +32,11 @@
 //!   [`OFFSET_SHAPES`] and only while its descriptor takes no fast path ([`OFFSET_ROLES`]).
 //! - A value a definition keeps inside an opaque field, such as a projectile's expiration age or
 //!   a Glide's initial phase, is a few bytes of that field at a fixed place ([`lanes`]).
+//! - A sequence query whose spatial weight program holds full strength and then falls linearly
+//!   offers where the fall starts, which three of its constant rows keep together ([`falloff`]).
 use std::collections::{BTreeMap, BTreeSet};
 
+mod falloff;
 mod lanes;
 pub use lanes::{Codec, Lane};
 pub(crate) mod native;
@@ -470,6 +473,7 @@ pub enum Kind {
     RechargeDelay,
     MinimumActivationEnergy,
     EnergyFloor,
+    FalloffStart,
 }
 
 /// Tracking stores its turn rate in radians per second and the tile shows degrees.
@@ -551,6 +555,7 @@ impl Kind {
             Self::RechargeDelay => "Recharge Delay",
             Self::MinimumActivationEnergy => "Minimum Activation Energy",
             Self::EnergyFloor => "Energy Floor",
+            Self::FalloffStart => "Falloff Start",
         }
     }
 
@@ -631,6 +636,9 @@ impl Kind {
             Self::RechargeDelay => "Wait after it ends before recharging",
             Self::MinimumActivationEnergy => "Energy it needs to be ready. 1 is a full charge",
             Self::EnergyFloor => "Lowest energy kept when energy syncs",
+            Self::FalloffStart => {
+                "Share of its area at full strength. Past it the effect fades to nothing at the edge"
+            }
         }
     }
 
@@ -692,7 +700,8 @@ impl Kind {
             | Self::ActiveEnergyRate
             | Self::EndingEnergyCost
             | Self::MinimumActivationEnergy
-            | Self::EnergyFloor => Unit::Number,
+            | Self::EnergyFloor
+            | Self::FalloffStart => Unit::Number,
             Self::CollisionRadius
             | Self::LeadDistanceLimit
             | Self::ProximityRange
@@ -718,6 +727,8 @@ impl Kind {
         match self {
             Self::Native(property) => property.scale(),
             Self::TurnRate => DEGREES_PER_RADIAN,
+            // A fraction of the shape's distance, shown in percent.
+            Self::FalloffStart => 100.0,
             _ => 1.0,
         }
     }
@@ -789,6 +800,8 @@ impl Kind {
             // Below zero sets no timer, as every stock trigger does.
             Self::MinimumProximityTime | Self::MaximumProximityTime => (-1.0, 10.0),
             Self::SearchRange => (0.0, 50.0),
+            // At 100% the fall would be infinitely steep.
+            Self::FalloffStart => (0.0, 99.0),
         }
     }
 }
@@ -803,6 +816,8 @@ pub struct Setting {
     pub lane: Option<Lane>,
     /// The group does not force a delay, so its maximum is read only with a positive minimum.
     pub requires_positive_minimum: bool,
+    /// Fields a setting writes together with `field`, such as a Falloff Start's two slope rows.
+    pub linked: Vec<WeaponRuntimeField>,
 }
 
 impl Setting {
@@ -866,6 +881,7 @@ impl Setting {
             (Kind::Native(_), WeaponRuntimeValue::Unsigned(value)) => {
                 Some(*value as f32 * self.kind.scale())
             }
+            (Kind::FalloffStart, _) => falloff::read(value).map(|start| start * self.kind.scale()),
             (_, WeaponRuntimeValue::Float32Bits(bits)) => {
                 Some(f32::from_bits(*bits) * self.kind.scale())
             }
@@ -897,6 +913,9 @@ impl Setting {
     /// setting of the same field leaves it unchanged.
     #[must_use]
     pub fn is_modified(&self, draft: &[WeaponRuntimeValueOverride]) -> bool {
+        if self.kind == Kind::FalloffStart {
+            return falloff::is_modified(self, draft);
+        }
         match self.lane {
             Some(lane) => lane.bytes(self.current(draft)) != lane.bytes(&self.field.value),
             None => self.value(draft).to_bits() != self.stock().to_bits(),
@@ -920,6 +939,9 @@ impl Setting {
         }
         if let Kind::Native(property) = self.kind {
             property.validate(value)?;
+        }
+        if self.kind == Kind::FalloffStart {
+            return falloff::write(self, draft, value / self.kind.scale());
         }
         let value = if self.kind.unit() == Unit::Count {
             value.round()
@@ -996,6 +1018,10 @@ impl Setting {
     /// Restores its stock value. A lane restores only its own bytes, so the field's other settings
     /// keep their edits.
     pub fn reset(&self, draft: &mut Vec<WeaponRuntimeValueOverride>) {
+        if self.kind == Kind::FalloffStart {
+            falloff::reset(self, draft);
+            return;
+        }
         let next = match self.lane {
             Some(lane) => lane
                 .bytes(&self.field.value)
@@ -1098,6 +1124,7 @@ pub fn discover(manager: &PackageManager, graph: &WeaponRuntimeGraph) -> Vec<Set
             .as_ref()
             .is_none_or(|connected| connected.contains(&source));
         found.extend(lanes::find(owner, root, (timed, proximity)));
+        found.extend(falloff::find(owner, root, payload));
         // A generic reflected declaration may already occupy a native lane's bytes. Generate
         // its semantic setting independently, while reusing a compatible saved field below.
         if let Some(payload) = payload {
@@ -1136,6 +1163,7 @@ pub fn discover(manager: &PackageManager, graph: &WeaponRuntimeGraph) -> Vec<Set
     }
     found.extend(programs.settings());
     found.extend(native::expression_settings(manager, graph));
+    falloff::unshared(&mut found, &roots);
     // A root a resource and an owner both list is found twice. Lanes of one field are distinct.
     let mut unique: Vec<Setting> = Vec::new();
     for setting in lanes::separate(found) {
@@ -1252,6 +1280,7 @@ fn regions(owner: u32, root: &WeaponRuntimeRoot, payload: Option<&[u8]>) -> Vec<
             field: field.clone(),
             lane: None,
             requires_positive_minimum: false,
+            linked: Vec::new(),
         }));
     }
     found
@@ -1280,6 +1309,7 @@ fn damage_filter(owner: u32, root: &WeaponRuntimeRoot, payload: Option<&[u8]>) -
             field: field.clone(),
             lane: None,
             requires_positive_minimum: false,
+            linked: Vec::new(),
         });
     }
     let source = direct(SOURCE_PROPERTY).filter(|field| {
@@ -1292,6 +1322,7 @@ fn damage_filter(owner: u32, root: &WeaponRuntimeRoot, payload: Option<&[u8]>) -
             field: field.clone(),
             lane: None,
             requires_positive_minimum: false,
+            linked: Vec::new(),
         });
     }
     if source.is_some()
@@ -1303,6 +1334,7 @@ fn damage_filter(owner: u32, root: &WeaponRuntimeRoot, payload: Option<&[u8]>) -
             field: field.clone(),
             lane: None,
             requires_positive_minimum: false,
+            linked: Vec::new(),
         });
     }
     if let Some(field) = base_multiplier(root) {
@@ -1312,6 +1344,7 @@ fn damage_filter(owner: u32, root: &WeaponRuntimeRoot, payload: Option<&[u8]>) -
             field,
             lane: None,
             requires_positive_minimum: false,
+            linked: Vec::new(),
         });
     }
     found
@@ -1502,6 +1535,7 @@ impl Programs {
                 field: constant.clone(),
                 lane: None,
                 requires_positive_minimum: false,
+                linked: Vec::new(),
             };
             if let Some(role) = ROLES.iter().find(|role| role.matches(&place))
                 && let [(_, constant)] = constants.as_slice()
@@ -1599,6 +1633,7 @@ fn invisibility(owner: u32, root: &WeaponRuntimeRoot) -> Vec<Setting> {
                 field: field.clone(),
                 lane: None,
                 requires_positive_minimum: false,
+                linked: Vec::new(),
             });
         }
     }
@@ -1617,6 +1652,7 @@ fn invisibility(owner: u32, root: &WeaponRuntimeRoot) -> Vec<Setting> {
             field: flags.clone(),
             lane: None,
             requires_positive_minimum: false,
+            linked: Vec::new(),
         });
         // A draft can enable timed retirement even when the stock flag is clear.
         if let Some(delay) = direct(0x294).filter(|field| is_float(field)) {
@@ -1626,6 +1662,7 @@ fn invisibility(owner: u32, root: &WeaponRuntimeRoot) -> Vec<Setting> {
                 field: delay.clone(),
                 lane: None,
                 requires_positive_minimum: false,
+                linked: Vec::new(),
             });
         }
     }

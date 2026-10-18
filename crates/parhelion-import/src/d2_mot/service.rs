@@ -81,6 +81,10 @@ pub fn known_weapons() -> impl Iterator<Item = (u32, &'static str)> {
 pub struct Settings {
     pub enabled: bool,
     pub modern_packages: Option<PathBuf>,
+    pub reach_maps: Option<PathBuf>,
+    pub marathon_packages: Option<PathBuf>,
+    pub d1_roi: Option<PathBuf>,
+    pub d1_xg_library: Option<PathBuf>,
 }
 
 pub fn packages_path(path: &Path) -> Result<PathBuf> {
@@ -422,7 +426,8 @@ fn convert_with_donor(
         super::compatibility::apply(weapon.hash, profile::hash(donor, "hash")?, &mut document);
     progress("Matching source perks, stats and weapon properties…".into());
     let gameplay: Value = serde_json::from_slice(&fs::read(source.join("gameplay.json"))?)?;
-    super::gameplay::apply(&gameplay, native, &attempt.join("gameplay"), &mut document)?;
+    let mapping =
+        super::gameplay::apply(&gameplay, native, &attempt.join("gameplay"), &mut document)?;
     if super::glaive::is_glaive(&gameplay) {
         progress("Adding the glaive shield and intrinsic…".into());
         let prepared_folder = PathBuf::from(
@@ -454,6 +459,14 @@ fn convert_with_donor(
             ));
         }
     }
+    progress("Translating source perks the base has no plug for…".into());
+    super::gameplay::private::apply(
+        modern,
+        native,
+        &mapping,
+        &attempt.join("private-perks"),
+        &mut document,
+    )?;
     progress("Converting the hip-fire crosshair…".into());
     if let Err(error) =
         super::crosshair::apply(modern, native, source, &attempt.join("crosshair"), &graph)
@@ -510,7 +523,7 @@ fn prepare_steps(
         super::reader::package_index(&native.canonicalize()?, false)?,
     );
     let stamp = package_stamp(modern)?;
-    let (source, source_exotic) = match reusable_source(output, weapon.hash, &stamp) {
+    let (source, _) = match reusable_source(output, weapon.hash, &stamp) {
         Some(found) => {
             progress("Reusing the saved source export…".into());
             found
@@ -540,7 +553,10 @@ fn prepare_steps(
     } else {
         super::compatibility::profile(weapon.hash)
             .map(|p| p.model_donor)
-            .or_else(|| previous_model_donor(output, weapon.hash))
+            .or_else(|| {
+                previous_model_donor(output, weapon.hash)
+                    .filter(|&hash| ordinary_base(&mut native_reader, donors, hash, weapon))
+            })
     };
     let mut errors = Vec::new();
     // Converting checks a donor in full, and the donor that converted this weapon before
@@ -598,7 +614,6 @@ fn prepare_steps(
         selection_priority(
             row,
             (weapon.hash, &weapon.name),
-            source_exotic,
             source_bucket,
             source_rarity,
             source_content,
@@ -634,11 +649,12 @@ fn prepare_steps(
     )
 }
 
-fn donor_priority(row: &Value, source_exotic: bool) -> (bool, u64, Option<u64>) {
+/// An exotic base brings its own exotic behavior into the import, such as a frame that fires
+/// a volley or a sight that supplies its own aim pose, so it is a fallback for every source,
+/// exotic or not, behind any ordinary base of the type.
+fn donor_priority(row: &Value) -> (bool, u64, Option<u64>) {
     (
-        row["exotic"]
-            .as_bool()
-            .is_none_or(|exotic| exotic && !source_exotic),
+        row["exotic"].as_bool().is_none_or(|exotic| exotic),
         row["mapping"]["native_bone_count"]
             .as_u64()
             .unwrap_or(u64::MAX),
@@ -646,10 +662,30 @@ fn donor_priority(row: &Value, source_exotic: bool) -> (bool, u64, Option<u64>) 
     )
 }
 
+/// Whether a remembered base can be tried first again. A remembered exotic base is reused only
+/// for the same weapon, so imports made before exotic bases became a fallback move to an
+/// ordinary base of their type on their next import.
+fn ordinary_base(reader: &mut Reader, donors: &Value, hash: u32, weapon: &Weapon) -> bool {
+    let same_name = donors["weapons"].as_array().is_some_and(|rows| {
+        rows.iter().any(|row| {
+            row["hash"].as_u64() == Some(u64::from(hash))
+                && row["name"]
+                    .as_str()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(&weapon.name))
+        })
+    });
+    if hash == weapon.hash || same_name {
+        return true;
+    }
+    super::assets::item::find_native(reader, hash)
+        .and_then(|tag| reader.tag(tag, Some(0x80807BEA)))
+        .and_then(|item| item.u8(0xBA))
+        .is_ok_and(|rarity| rarity != 5)
+}
+
 fn selection_priority(
     row: &Value,
     source: (u32, &str),
-    source_exotic: bool,
     source_bucket: Option<u64>,
     source_rarity: Option<u64>,
     source_content: Option<&str>,
@@ -666,7 +702,7 @@ fn selection_priority(
     u64,
     Option<u64>,
 ) {
-    let (fallback, bones, hash) = donor_priority(row, source_exotic);
+    let (fallback, bones, hash) = donor_priority(row);
     let same_identity = hash == Some(u64::from(source.0))
         || row["name"]
             .as_str()
@@ -675,11 +711,11 @@ fn selection_priority(
         row["collection_backed"].as_bool() == Some(false),
         row["unrelated_collection_condition"].as_bool() == Some(true),
         !same_identity,
+        fallback,
         source_content.is_none_or(|content| row["content_key"].as_str() != Some(content)),
         source_bucket.is_some_and(|bucket| row["bucket"].as_u64() != Some(bucket)),
         source_rarity.is_some_and(|rarity| row["rarity"].as_u64() != Some(rarity)),
         hash != preferred.map(u64::from),
-        fallback,
         bones,
         hash,
     )
@@ -713,11 +749,8 @@ mod tests {
         let ordinary = json!({"hash":99,"exotic":false,"mapping":{"native_bone_count":12}});
         let exotic = json!({"hash":1,"exotic":true,"mapping":{"native_bone_count":8}});
         let unknown = json!({"hash":0,"mapping":{"native_bone_count":1}});
-        assert!(donor_priority(&ordinary, false) < donor_priority(&exotic, false));
-        assert!(donor_priority(&ordinary, false) < donor_priority(&unknown, false));
-        // Exotic sources can use the closer exotic rig without a rarity penalty.
-        assert!(donor_priority(&exotic, true) < donor_priority(&ordinary, true));
-        assert!(donor_priority(&exotic, true) < donor_priority(&unknown, true));
+        assert!(donor_priority(&ordinary) < donor_priority(&exotic));
+        assert!(donor_priority(&ordinary) < donor_priority(&unknown));
     }
 
     #[test]
@@ -746,12 +779,11 @@ mod tests {
     fn remembered_donor_precedes_smaller_unverified_candidates() {
         let mut candidates = [
             json!({"hash":1,"exotic":false,"mapping":{"native_bone_count":3}}),
-            json!({"hash":2,"exotic":true,"mapping":{"native_bone_count":9}}),
+            json!({"hash":2,"exotic":false,"mapping":{"native_bone_count":9}}),
         ];
         let preferred = Some(2);
-        candidates.sort_by_key(|row| {
-            selection_priority(row, (0, "Source"), false, None, None, None, preferred)
-        });
+        candidates
+            .sort_by_key(|row| selection_priority(row, (0, "Source"), None, None, None, preferred));
         assert_eq!(candidates[0]["hash"], 2);
     }
 
@@ -762,7 +794,7 @@ mod tests {
             json!({"hash":2,"exotic":false,"bucket":10,"rarity":2,"collection_backed":true,"mapping":{"native_bone_count":8}}),
         ];
         candidates.sort_by_key(|row| {
-            selection_priority(row, (0, "Source"), false, Some(20), Some(4), None, Some(1))
+            selection_priority(row, (0, "Source"), Some(20), Some(4), None, Some(1))
         });
         assert_eq!(candidates[0]["hash"], 2);
     }
@@ -774,7 +806,7 @@ mod tests {
             json!({"hash":2,"exotic":false,"bucket":20,"rarity":4,"collection_backed":true,"unrelated_collection_condition":false,"mapping":{"native_bone_count":15}}),
         ];
         candidates.sort_by_key(|row| {
-            selection_priority(row, (0, "Source"), false, Some(20), Some(4), None, Some(1))
+            selection_priority(row, (0, "Source"), Some(20), Some(4), None, Some(1))
         });
         assert_eq!(candidates[0]["hash"], 2);
     }
@@ -786,28 +818,12 @@ mod tests {
             json!({"hash":2,"name":"Source Weapon","exotic":false,"bucket":20,"rarity":4,"collection_backed":true,"mapping":{"native_bone_count":12}}),
         ];
         candidates.sort_by_key(|row| {
-            selection_priority(
-                row,
-                (99, "source weapon"),
-                false,
-                Some(20),
-                Some(4),
-                None,
-                None,
-            )
+            selection_priority(row, (99, "source weapon"), Some(20), Some(4), None, None)
         });
         assert_eq!(candidates[0]["hash"], 2);
         candidates[0]["unrelated_collection_condition"] = json!(true);
         candidates.sort_by_key(|row| {
-            selection_priority(
-                row,
-                (99, "Source Weapon"),
-                false,
-                Some(20),
-                Some(4),
-                None,
-                None,
-            )
+            selection_priority(row, (99, "Source Weapon"), Some(20), Some(4), None, None)
         });
         assert_eq!(candidates[0]["hash"], 1);
     }
@@ -822,7 +838,6 @@ mod tests {
             selection_priority(
                 row,
                 (99, "Source"),
-                false,
                 Some(20),
                 Some(4),
                 Some("A0EEEE21"),

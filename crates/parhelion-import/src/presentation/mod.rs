@@ -40,6 +40,72 @@ pub(crate) struct Graph {
     pub nodes: Vec<Value>,
 }
 impl Graph {
+    /// Join a graph written beneath its own directory and symbol namespace.
+    /// Symbolic patches stay symbolic until the complete graph is linked.
+    pub fn extend(&mut self, graph: Self, prefix: &str) -> Result<()> {
+        ensure!(
+            !prefix.is_empty()
+                && prefix
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_')),
+            "Invalid presentation namespace"
+        );
+        ensure!(
+            graph.root == self.root.join(prefix),
+            "Nested presentation directory differs"
+        );
+        let symbols = graph
+            .nodes
+            .iter()
+            .map(|node| node["symbol"].as_str().context("Nested graph symbol"))
+            .collect::<Result<std::collections::BTreeSet<_>>>()?;
+        ensure!(
+            symbols.len() == graph.nodes.len(),
+            "Nested graph symbols collide"
+        );
+        let rename = |name: &str| -> Result<String> {
+            ensure!(
+                symbols.contains(name),
+                "Nested graph reference leaves its namespace"
+            );
+            Ok(format!("{prefix}-{name}"))
+        };
+        let mut joined = Vec::new();
+        for source in &graph.nodes {
+            let mut node = source.clone();
+            let symbol = rename(source["symbol"].as_str().context("Nested graph symbol")?)?;
+            ensure!(
+                self.nodes.iter().all(|n| n["symbol"] != symbol),
+                "Presentation namespace collides"
+            );
+            node["symbol"] = Value::String(symbol);
+            let file = source["file"].as_str().context("Nested graph file")?;
+            ensure!(
+                std::path::Path::new(file)
+                    .components()
+                    .all(|c| matches!(c, std::path::Component::Normal(_))),
+                "Nested presentation file leaves its directory"
+            );
+            node["file"] = Value::String(format!("{prefix}/{file}"));
+            for field in ["reference", "shared_owner"] {
+                if let Some(value) = source[field].as_str() {
+                    node[field] = Value::String(rename(value)?);
+                }
+            }
+            for patch in node["patches"]
+                .as_array_mut()
+                .context("Nested graph patches")?
+            {
+                patch["symbol"] = Value::String(rename(
+                    patch["symbol"].as_str().context("Nested graph patch")?,
+                )?);
+            }
+            joined.push(node);
+        }
+        self.nodes.extend(joined);
+        Ok(())
+    }
+
     pub fn seal_instances(&mut self) -> Result<Vec<Value>> {
         let mut changes = Vec::new();
         for layout in crate::tiger::instance::LAYOUTS {

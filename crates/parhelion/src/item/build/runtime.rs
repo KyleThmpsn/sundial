@@ -329,6 +329,7 @@ fn weapon_runtime_edits(donor: &resolve::ResolvedWeapon) -> bool {
         || donor.type_marker_pattern_source.is_some()
         || overrides.ammo_type.is_some()
         || !overrides.runtime_values.is_empty()
+        || overrides.fired_graph.is_some()
         || overrides.projectile.is_some()
         || overrides.barrel.is_some()
         || overrides.sword_profile.is_some()
@@ -404,6 +405,7 @@ fn author_entity(
         particles: mut imported_particles,
         equipment: equipment_animation,
         crosshair: imported_crosshair,
+        zoom: imported_zoom,
     } = imported;
     let vehicle_settings = donor.weapon.overrides.sparrow.as_ref();
     let has_runtime_edits = recipe_runtime_edits(donor)
@@ -684,6 +686,26 @@ fn author_entity(
         .transpose()?;
     #[cfg(not(feature = "d2-model-importer"))]
     let imported_projectile = None;
+    let bundled_projectile = runtime_overrides
+        .fired_graph
+        .as_ref()
+        .and_then(|fired| fired.bundled)
+        .map(|preset| {
+            let mut projectile =
+                crate::item::custom_runtime::bundled::Projectile::load(manager, preset)?;
+            projectile.prepare(
+                manager,
+                &pattern_entity,
+                groups.own.or(groups.selected).unwrap_or(0),
+                runtime_overrides
+                    .behavior_projectile_speed
+                    .unwrap_or(crate::weapon::behavior::DEFAULT_PROJECTILE_SPEED_BOOST),
+            )?;
+            let (root, eager) = projectile.author(manager, assets.packages)?;
+            assets.placed.extend(eager);
+            Ok::<_, crate::AuthoringError>(root)
+        })
+        .transpose()?;
     // A moved rig makes the pattern row name the appearance's weapon type, and the stat
     // translator converts by that type. The base weapon's conversion is put back, so the
     // appearance changes how the weapon looks and not its fire rate.
@@ -717,6 +739,15 @@ fn author_entity(
         )?);
     }
     let with_stats;
+    #[cfg(feature = "d2-model-importer")]
+    if let Some(magnification) = imported_zoom {
+        stat_patches.extend(crate::weapon::zoom::patches(
+            manager,
+            &pattern_entity,
+            pattern_source.weapon_translation_group_hash,
+            magnification,
+        )?);
+    }
     let runtime_overrides = if stat_patches.is_empty() {
         runtime_overrides
     } else {
@@ -764,6 +795,13 @@ fn author_entity(
             ))
         })
         .collect::<AuthoringResult<Vec<_>>>()?;
+    #[cfg(feature = "d2-model-importer")]
+    let source_trajectory = imported_projectile.is_some()
+        && imported_particles
+            .as_ref()
+            .is_some_and(|p| p.source_trajectory);
+    #[cfg(not(feature = "d2-model-importer"))]
+    let source_trajectory = false;
     author_runtime_edits(
         manager,
         &mut pattern_entity,
@@ -774,7 +812,8 @@ fn author_entity(
             splices: &splices,
             actions: &actions,
             markers: &rig_markers,
-            projectile: imported_projectile,
+            projectile: imported_projectile.or(bundled_projectile),
+            source_trajectory,
         },
         weapon_runtime_tag_allocator,
         weapon_runtime_new_tags,
@@ -833,6 +872,7 @@ fn author_entity(
             weapon_runtime_new_tags,
             asset_target(assets.packages, index),
             animation_cache,
+            &particle_symbols,
         )?;
     }
     #[cfg(feature = "d2-model-importer")]
@@ -947,6 +987,7 @@ struct ImportedRuntime {
     particles: Option<crate::item::custom_runtime::particles::ImportedParticles>,
     equipment: Option<crate::item::custom_runtime::animation::equipment::EquipmentAnimation>,
     crosshair: Option<crate::item::custom_runtime::crosshair::Crosshair>,
+    zoom: Option<f32>,
 }
 
 #[cfg(feature = "d2-model-importer")]
@@ -959,6 +1000,7 @@ impl ImportedRuntime {
             || self.particles.is_some()
             || !self.extensions.is_empty()
             || self.crosshair.is_some()
+            || self.zoom.is_some()
     }
 
     /// Reads each part from `donor`'s imported graph, all empty for a weapon without one.
@@ -974,6 +1016,7 @@ impl ImportedRuntime {
             particles: None,
             equipment: None,
             crosshair: None,
+            zoom: None,
         };
         let mut directories = BTreeSet::new();
         if let Some(reference) = donor.weapon.overrides.imported_graph.as_ref() {
@@ -986,6 +1029,7 @@ impl ImportedRuntime {
                 particles: particles::load(graph)?,
                 equipment: animation::equipment::load(graph)?,
                 crosshair: crosshair::load(graph)?,
+                zoom: crate::weapon::zoom::imported(graph.value())?,
             };
             if let Some(audio) = loaded.audio.as_mut() {
                 audio.set_item(donor.weapon.identity.item_hash);

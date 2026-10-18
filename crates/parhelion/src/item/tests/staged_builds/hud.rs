@@ -17,6 +17,7 @@ fn real_hud_recipe_stages_with_private_texture_and_runtime() {
         staging_root: out,
         ignore_installed_authored_overlays: true,
         recipes: vec![recipe],
+        maps: Vec::new(),
     })
     .unwrap();
     let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |p| {

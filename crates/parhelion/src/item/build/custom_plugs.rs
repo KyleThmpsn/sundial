@@ -132,9 +132,8 @@ fn read_private_plug_source(
         string_tag,
         "private socket-plug donor strings",
     )?;
-    if matching_u32_offsets(&definition, variant.source_plug_hash) != [ITEM_DEFINITION_HASH_OFFSET]
-        || !matching_u32_offsets(&strings, variant.source_plug_hash).is_empty()
-    {
+    crate::item::gear::identity_offsets(&definition, variant.source_plug_hash)?;
+    if !matching_u32_offsets(&strings, variant.source_plug_hash).is_empty() {
         return Err(invalid(format!(
             "Private socket-plug donor 0x{:08X} embeds its identity at unsupported offsets",
             variant.source_plug_hash
@@ -352,6 +351,7 @@ pub(super) fn plan(
     let mut mods = Vec::new();
     let mut shared_keys = Vec::with_capacity(custom_plug_count);
     for (weapon_ordinal, donor) in resolved.iter().enumerate() {
+        let appearances = sharing::bound_appearances(&donor.weapon)?;
         let mut variants = donor.weapon.overrides.socket_plug_variants.clone();
         variants.sort_by_key(|variant| (variant.socket_index, variant.choice_index));
         for variant in variants {
@@ -370,10 +370,11 @@ pub(super) fn plan(
                     // A mod's perk is the item itself, so it takes the item's own place,
                     // tags and text, and never shares a plug with a socket's perk.
                     let identity = donor.weapon.identity;
+                    let host = crate::package_profile::host();
                     let tag = |offset: usize| -> AuthoringResult<TagHash> {
                         Ok(TagHash::new(
-                            HOST_PACKAGE_ID,
-                            u16::try_from(HOST_EXPECTED_ENTRY_COUNT + weapon_ordinal * 2 + offset)
+                            host.id,
+                            u16::try_from(host.first + weapon_ordinal * 2 + offset)
                                 .map_err(|_| invalid("Mod tag index does not fit 16 bits"))?,
                         ))
                     };
@@ -400,11 +401,19 @@ pub(super) fn plan(
                     socket_index: usize::from(variant.socket_index),
                     choice_index: usize::from(variant.choice_index),
                 };
+                // An imported appearance bound to this choice makes the plug its owner's alone.
+                let appearance = appearances
+                    .iter()
+                    .find(|appearance| appearance.binds(&variant))
+                    .map(|appearance| {
+                        (donor.weapon.identity.item_hash, appearance.pin().to_owned())
+                    });
                 let shared_key = sharing::Key::new(
                     sources,
                     &variant,
                     source.classification,
                     source.classification_perk_index,
+                    appearance,
                 )?;
                 if let Some(index) = shared_keys.iter().position(|key| *key == shared_key) {
                     custom_plugs[index].uses.push(usage);
@@ -427,15 +436,16 @@ pub(super) fn plan(
                             .ok_or_else(|| invalid("Private socket-plug tag index overflowed"))?,
                     )
                     .ok_or_else(|| invalid("Private socket-plug tag index overflowed"))?;
+                let host = crate::package_profile::host();
                 let authored_definition_tag = TagHash::new(
-                    HOST_PACKAGE_ID,
-                    u16::try_from(HOST_EXPECTED_ENTRY_COUNT + tag_ordinal).map_err(|_| {
+                    host.id,
+                    u16::try_from(host.first + tag_ordinal).map_err(|_| {
                         invalid("Private socket-plug definition tag does not fit 16 bits")
                     })?,
                 );
                 let authored_string_tag = TagHash::new(
-                    HOST_PACKAGE_ID,
-                    u16::try_from(HOST_EXPECTED_ENTRY_COUNT + tag_ordinal + 1).map_err(|_| {
+                    host.id,
+                    u16::try_from(host.first + tag_ordinal + 1).map_err(|_| {
                         invalid("Private socket-plug string tag does not fit 16 bits")
                     })?,
                 );
@@ -735,6 +745,7 @@ pub(super) struct PerkCatalog<'a> {
     pub private_perk_runtime_tag_allocator: AppendedTagAllocator,
     /// Each authored weapon's imported particle tags by node symbol, by weapon ordinal.
     pub particle_symbols: &'a BTreeMap<usize, BTreeMap<String, TagHash>>,
+    pub label_dictionaries: &'a BTreeMap<TagHash, NewTagSpec>,
     /// The weapon whose plug is compiling, when one weapon uses it.
     pub weapon: Option<usize>,
 }
@@ -789,11 +800,12 @@ pub(super) fn author_payloads(
             if let Some(classification) = custom_plug.classification {
                 classification.apply(&mut definition, &mut strings)?;
             }
-            write_u32(
-                &mut definition,
-                ITEM_DEFINITION_HASH_OFFSET,
-                custom_plug.authored_item_hash,
-            )?;
+            for offset in crate::item::gear::identity_offsets(
+                &custom_plug.source_definition,
+                custom_plug.source_item_hash,
+            )? {
+                write_u32(&mut definition, offset, custom_plug.authored_item_hash)?;
+            }
             if let Some(name_hash) = custom_plug.authored_name_hash {
                 write_localized_reference(
                     &mut strings,
@@ -1001,6 +1013,7 @@ fn append_effect_at(
             particle_symbols: catalog
                 .weapon
                 .and_then(|weapon| catalog.particle_symbols.get(&weapon)),
+            label_dictionaries: Some(catalog.label_dictionaries),
         },
         catalog.private_perk_runtime_tag_allocator,
         &mut *catalog.private_perk_runtime_new_tags,

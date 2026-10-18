@@ -15,9 +15,10 @@ pub use selectors::{
 
 pub(crate) mod compiler;
 pub use compiler::draft as native_draft;
-pub use compiler::{Compiled, compile};
+pub use compiler::{Compiled, compile, compile_with_labels};
 mod assets;
 pub mod decompile;
+pub mod projectile;
 pub mod properties;
 pub use assets::AmmunitionStore;
 pub use assets::AmmunitionTarget;
@@ -564,6 +565,15 @@ impl Program {
     /// private resource edits to the graphs its actions reference have no place in it.
     #[must_use]
     pub fn native_adoption_issue(&self) -> Option<&'static str> {
+        if self
+            .auxiliary
+            .iter()
+            .any(|record| record.hud_status.is_some())
+        {
+            return Some(
+                "This effect carries private HUD text and artwork, which a native draft cannot keep. It stays in its authored form.",
+            );
+        }
         (self.native.is_none()
             && (!self.native_asset_patches.is_empty() || !self.imported_assets.is_empty())).then_some(
             "This effect edits private copies of the objects it attaches, which editing it here would drop. It stays as it is.",
@@ -1049,6 +1059,10 @@ pub struct Program {
     /// Complete privately allocated attachment groups, independent of a weapon's model.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub imported_assets: Vec<ImportedAsset>,
+    /// Symbol of the private label dictionary in the pinned imported asset group.
+    /// Package assembly supplies those exact bytes to compilation and binds its tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported_labels: Option<String>,
     /// For an always-active program, the Event Key Match key that ends it. `None` keeps the
     /// actions until the perk is removed. Stock always-active perks that end early all use
     /// this one condition kind, with a key whose event is not named.
@@ -1157,8 +1171,8 @@ pub use native::{NativeIssue, NativeProgram};
 /// allocation graph.
 ///
 /// Stock records hold keys, resource tags, scalars and at most a string, with no link into
-/// the program, so preserving them is a copy. Their meaning is not resolved and they have no
-/// controls.
+/// the program, so preserving them is a copy. A HUD report can additionally carry private
+/// presentation metadata, which the item build binds to its own name key.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeRecord {
@@ -1166,12 +1180,24 @@ pub struct NativeRecord {
     pub class: u32,
     #[serde(with = "hex_bytes")]
     pub bytes: Vec<u8>,
+    /// Private presentation for a native 80804085 HUD report. The item build replaces +04
+    /// with the key it registers in the HUD table and every locale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hud_status: Option<HudStatus>,
 }
 
 impl NativeRecord {
     /// The bytes must read as one closed allocation graph of the declared class, with no
     /// bytes left over.
     pub fn check(&self) -> Result<(), String> {
+        if let Some(status) = &self.hud_status
+            && (self.class != 0x8080_4085
+                || self.bytes.len() != 24
+                || status.name.trim().is_empty()
+                || status.icon.is_none())
+        {
+            return Err("A private HUD report needs its native status record, a name and a stock icon template.".into());
+        }
         let graph = crate::sandbox_perk::action::native::Graph::read(&self.bytes, 0, self.class)?;
         let needed = graph.emit()?.len();
         if needed != self.bytes.len() {
@@ -1190,6 +1216,7 @@ impl From<&crate::sandbox_perk::action::DecodedRecord> for NativeRecord {
         Self {
             class: record.class,
             bytes: record.bytes.clone(),
+            hud_status: None,
         }
     }
 }
@@ -1244,6 +1271,7 @@ impl Default for Program {
             actions: Vec::new(),
             native_asset_patches: Vec::new(),
             imported_assets: Vec::new(),
+            imported_labels: None,
             removal_key: None,
             native_trigger: None,
             native_removal: None,
@@ -1336,6 +1364,15 @@ impl Program {
     }
 
     fn validate_asset_patches(&self) -> Result<(), String> {
+        if let Some(symbol) = &self.imported_labels
+            && (self.imported_assets.is_empty()
+                || symbol.trim().is_empty()
+                || symbol.contains('\0'))
+        {
+            return Err(
+                "An imported label dictionary needs a symbol in a pinned attachment group.".into(),
+            );
+        }
         let mut patched_actions = BTreeSet::new();
         for imported in &self.imported_assets {
             if !patched_actions.insert(imported.action_index)
@@ -1437,6 +1474,7 @@ impl Program {
             if !self.actions.is_empty()
                 || !self.native_asset_patches.is_empty()
                 || !self.imported_assets.is_empty()
+                || self.imported_labels.is_some()
                 || self.native_trigger.is_some()
                 || self.native_removal.is_some()
                 || self.removal_key.is_some()
@@ -1471,6 +1509,14 @@ impl Program {
             return Err("Only a complete native program edits the graphs a script names.".into());
         }
         self.validate_asset_patches()?;
+        if self
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.configuration.as_ref())
+            .is_some_and(|record| record.hud_status.is_some())
+        {
+            return Err("Private HUD presentation belongs to an auxiliary report.".into());
+        }
         for record in self.auxiliary.iter().chain(
             self.policy
                 .iter()

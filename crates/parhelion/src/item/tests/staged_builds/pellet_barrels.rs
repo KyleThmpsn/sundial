@@ -543,6 +543,7 @@ fn composed_pellet_barrels_and_final_projectiles_survive_packaging() {
         staging_root: output.join("staged"),
         ignore_installed_authored_overlays: true,
         recipes: recipes.clone(),
+        maps: Vec::new(),
     })
     .unwrap();
     let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |_| {}).unwrap();
@@ -730,6 +731,7 @@ fn composed_pellet_barrels_and_final_projectiles_survive_packaging() {
         staging_root: output.join("rejected"),
         ignore_installed_authored_overlays: true,
         recipes: vec![malformed],
+        maps: Vec::new(),
     })
     .unwrap();
     let rejection = crate::build_and_stage_snapshot_with_progress(&bad, |_| {})

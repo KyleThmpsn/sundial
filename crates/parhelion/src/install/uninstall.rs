@@ -86,7 +86,7 @@ pub(super) fn preview_legacy(packages: &Path) -> Result<UninstallPlan, InstallEr
     let target = canonical_packages_directory(packages)?;
     validate_target_package_chain(&target)?;
     let mut artifacts = Vec::new();
-    for profile in all_authored_packages() {
+    for profile in all_authored_packages_in(&[target.as_path()]) {
         let path = target.join(profile.file_name);
         match fs::symlink_metadata(&path) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -209,6 +209,7 @@ pub(super) fn uninstall_inner(
             "The runtime changed to the mod loader during removal review. Review the installation again",
         ));
     }
+    clear_other_runtime_caches(&plan.target, sunrise.runtime.brand())?;
     let headers = validate_package_header_caches(&plan.target)?;
     fs::create_dir_all(&root).map_err(|error| InstallError::validation(error.to_string()))?;
     let root = canonical_directory(&root, "uninstall backup root")?;

@@ -2,7 +2,7 @@
 use super::{Payload, put};
 use anyhow::{Context, Result, ensure};
 
-pub(super) fn repair(p: &mut Payload) -> Result<usize> {
+pub(super) fn restore_input_envelopes(p: &mut Payload) -> Result<usize> {
     let instance = p.pointer(16)?;
     let schema = p.pointer(24)?;
     let definition = usize::try_from(p.u64(instance + 8)?)?;
@@ -17,7 +17,7 @@ pub(super) fn repair(p: &mut Payload) -> Result<usize> {
             && p.u64(definition + 8)? == instance as u64,
         "Flight component root pair differs"
     );
-    let mut repaired = 0;
+    let mut restored = 0;
     // Pitch and thrust have native scalar expressions with mutable input arrays.
     for field in [0x130, 0x210] {
         let expression = instance + field;
@@ -49,11 +49,11 @@ pub(super) fn repair(p: &mut Payload) -> Result<usize> {
         match p.u32(prefix)? {
             0 => {
                 put(&mut p.0, prefix, &0x80809FBDu32.to_le_bytes())?;
-                repaired += 1;
+                restored += 1;
             }
             0x80809FBD => {}
             _ => anyhow::bail!("Flight input has an unexpected physical envelope"),
         }
     }
-    Ok(repaired)
+    Ok(restored)
 }

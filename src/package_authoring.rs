@@ -6,6 +6,7 @@ use std::{
     process::Command,
 };
 
+pub use crate::animation::curve as animation_curve;
 pub use crate::package_runtime::mods as mod_content;
 pub use crate::package_runtime::reader::{PackageManager, initialize_source_decoder};
 pub use crate::package_runtime::{RuntimeBrand, RuntimeSnapshot};
@@ -42,6 +43,12 @@ pub fn inventory_bucket_capacity(
 }
 pub use crate::package_runtime::tft;
 pub use crate::package_runtime::{is_valid_package_tag, resolve_live_named_tag};
+
+/// Decode bounded Wwise Vorbis media through the same codebook and sample reader as inspection.
+/// Importers still own speaker assignment, loop metadata and the native streaming envelope.
+pub fn decode_audio_wave(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    crate::model_preview::assets::decoded_wave(bytes)
+}
 
 /// Checked reference fields in a newly authored payload, using a native template's layout.
 /// Raw buffers, shader bytecode and audio backing data have no reflected fields.
@@ -244,7 +251,7 @@ pub mod ability_spawns {
 }
 pub mod ability_damage {
     pub use crate::ability::damage::{
-        ARC, KINETIC, Profile, SOLAR, VOID, profile, references, retype,
+        ARC, KINETIC, Profile, SOLAR, VOID, profile, references, retype, set_fixed_amount,
     };
 }
 
@@ -556,6 +563,28 @@ pub fn validate_package_authoring_runtime(packages: &Path) -> Result<(), String>
 }
 
 pub use crate::investment::discovery::open_packages as open_shadowkeep_package_manager;
+
+/// Only stock and the managed generation, for ownership checks during removal and recovery.
+pub fn open_managed_shadowkeep_package_manager(packages: &Path) -> Result<PackageManager, String> {
+    crate::package_runtime::open_managed_shadowkeep_packages(
+        packages
+            .parent()
+            .ok_or("Packages directory has no install root")?,
+    )
+}
+
+/// Prospective loader view with the staged generation and every other admitted mod.
+pub fn open_incoming_shadowkeep_package_manager(
+    packages: &Path,
+    incoming: &mod_content::Incoming,
+) -> Result<PackageManager, String> {
+    crate::package_runtime::open_incoming_shadowkeep_packages(
+        packages
+            .parent()
+            .ok_or("Packages directory has no install root")?,
+        incoming,
+    )
+}
 
 /// Reports whether the Destiny 2 client is currently running.
 pub fn destiny_is_running() -> Result<bool, String> {

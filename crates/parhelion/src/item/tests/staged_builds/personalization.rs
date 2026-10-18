@@ -13,6 +13,7 @@ fn real_personalization_stages_distinct_badges_corner_icons_and_lore() {
             staging_root: staging_root.clone(),
             ignore_installed_authored_overlays: true,
             recipes,
+            maps: Vec::new(),
         })
         .unwrap();
         crate::build_and_stage_snapshot_with_progress(&snapshot, |p| {

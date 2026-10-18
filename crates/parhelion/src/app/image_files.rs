@@ -163,12 +163,13 @@ pub(super) fn covered_texture(
 }
 
 /// `texture` fitted inside `frame` at its own aspect, over a checkerboard that shows where it is
-/// clear. While it loads, or where there is none, the frame is an outline.
+/// clear, returning where it was drawn. While it loads, or where there is none, the frame is an
+/// outline.
 pub(super) fn draw_contained(
     ui: &egui::Ui,
     frame: egui::Rect,
     texture: Option<&egui::TextureHandle>,
-) {
+) -> Option<egui::Rect> {
     let Some(texture) = texture else {
         ui.painter().rect_stroke(
             frame,
@@ -176,7 +177,7 @@ pub(super) fn draw_contained(
             ui.visuals().widgets.noninteractive.bg_stroke,
             egui::StrokeKind::Inside,
         );
-        return;
+        return None;
     };
     let size = texture.size_vec2();
     let scale = (frame.width() / size.x.max(1.0)).min(frame.height() / size.y.max(1.0));
@@ -188,4 +189,5 @@ pub(super) fn draw_contained(
         egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
         egui::Color32::WHITE,
     );
+    Some(rect)
 }

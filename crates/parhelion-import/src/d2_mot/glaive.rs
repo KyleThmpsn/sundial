@@ -658,6 +658,112 @@ fn variant(
     Ok(variant)
 }
 
+/// Reuse the qualified weapon-melee activation independently of the glaive shield.
+pub(crate) fn weapon_melee(
+    native: &mut Reader,
+    recipe: &mut Value,
+    impact_key: u32,
+    title: &str,
+) -> Result<Value> {
+    let base = crate::graph::hash(&recipe["donor"], "item_hash")?;
+    let (lane, plug) = intrinsic(native, base, recipe)?;
+    let kit: Value = serde_json::from_str(KIT)?;
+    let candidates = kit["variant"]["sandbox_perks"]
+        .as_array()
+        .context("Weapon melee template")?
+        .iter()
+        .filter(|row| row["program"]["name"] == "Glaive Melee Reach")
+        .collect::<Vec<_>>();
+    let [template] = candidates[..] else {
+        anyhow::bail!("The weapon melee template is absent or ambiguous");
+    };
+    let index = template["source_perk_index"]
+        .as_u64()
+        .context("Melee template perk")?
+        .to_string();
+    let wanted = Value::Object(serde_json::Map::from_iter([(
+        index.clone(),
+        kit["source_perks"][&index].clone(),
+    )]));
+    let perks = perk_rows(native, &wanted)?;
+    let perk_index = *perks.get(&index).context("Native melee template perk")?;
+    let mut perk = (*template).clone();
+    perk["source_perk_index"] = json!(perk_index);
+    perk["program"]["name"] = json!(title);
+    for action in perk["program"]["actions"]
+        .as_array_mut()
+        .context("Melee property actions")?
+    {
+        if action["key"] == kit["impact_key"] {
+            action["key"] = json!(format!("0x{impact_key:08X}"));
+        }
+    }
+    let variants = recipe["overrides"]
+        .as_object_mut()
+        .context("Recipe overrides")?
+        .entry("socket_plug_variants")
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .context("Recipe private variants")?;
+    let matching = variants
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row["socket_index"] == lane && row["choice_index"] == 0)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    ensure!(matching.len() <= 1, "Repeated private intrinsic variants");
+    let row = if let Some(&index) = matching.first() {
+        &mut variants[index]
+    } else {
+        variants.push(json!({"socket_index":lane,"choice_index":0,
+            "source_plug_hash":format!("0x{plug:08X}"),"name":title,
+            "description":"Use the weapon's own melee strikes while it is drawn.",
+            "additional_sandbox_perks":[],"sandbox_perks":[]}));
+        variants.last_mut().unwrap()
+    };
+    ensure!(
+        crate::graph::hash(row, "source_plug_hash")? == plug,
+        "Private intrinsic source differs from its selected plug"
+    );
+    let additions = row
+        .as_object_mut()
+        .context("Private intrinsic")?
+        .entry("additional_sandbox_perks")
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .context("Intrinsic additional perks")?;
+    if !additions.contains(&json!(perk_index)) {
+        additions.push(json!(perk_index));
+    }
+    let programs = row
+        .as_object_mut()
+        .unwrap()
+        .entry("sandbox_perks")
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .context("Intrinsic private programs")?;
+    let existing = programs
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row["source_perk_index"] == perk_index)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    ensure!(existing.len() <= 1, "Repeated intrinsic melee programs");
+    if let Some(&index) = existing.first() {
+        ensure!(
+            programs[index]["program"]["name"] == title,
+            "The selected intrinsic already edits the required melee template perk"
+        );
+        programs[index] = perk;
+    } else {
+        programs.push(perk);
+    }
+    Ok(
+        json!({"socket_index":lane,"source_plug":plug,"source_perk_index":perk_index,"property":impact_key,
+        "scope":"Drawn weapon","native_contract":"Private attack selection, closed ranged-melee window and zero activation energy cost"}),
+    )
+}
+
 fn named_particles(variant: &Value) -> Vec<String> {
     let mut symbols = Vec::new();
     for perk in variant["sandbox_perks"].as_array().into_iter().flatten() {

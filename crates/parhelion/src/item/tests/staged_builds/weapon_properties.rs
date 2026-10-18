@@ -577,6 +577,7 @@ fn change_weapon_properties_rows_reach_the_staged_packages() {
         .overrides
         .socket_plug_variants
         .push(WeaponSocketPlugVariantRecipe {
+            projectile: None,
             socket_index: socket as u16,
             choice_index: 0,
             source_plug_hash: HexHash::new(plug),

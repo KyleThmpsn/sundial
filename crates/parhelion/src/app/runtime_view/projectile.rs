@@ -111,6 +111,29 @@ impl PackageAuthoringApp {
         if !self.recipe.kind.is_weapon() {
             return;
         }
+        let bundled = self
+            .recipe
+            .overrides
+            .socket_plug_variants
+            .iter()
+            .find_map(|variant| variant.projectile)
+            .or_else(|| {
+                self.recipe
+                    .overrides
+                    .fired_graph
+                    .as_ref()
+                    .and_then(|fired| fired.bundled)
+            });
+        if let Some(projectile) = bundled {
+            ui.add_space(8.0);
+            draw_donor_section_label(ui, "Projectile", None);
+            ui.label(format!(
+                "{} supplies this weapon's projectile.",
+                projectile.label()
+            ));
+            crate::app::donor_view::draw_projectile_speed(ui, &mut self.recipe.overrides);
+            return;
+        }
         if let Some(fired) = &self.recipe.overrides.fired_graph {
             if fired.imported.is_some() {
                 ui.add_space(8.0);

@@ -106,7 +106,7 @@ fn a_busy_library_refuses_mutations_and_releases_the_lease_afterward() {
     assert!(library.save_existing(&path, &recipe).is_err());
     assert!(
         library
-            .save_enabled_paths(&BTreeSet::new(), &entries)
+            .save_enabled_selection(&BTreeSet::new(), &entries, &[])
             .is_err()
     );
     assert!(library.delete_recipe(&delete).is_err());
@@ -116,10 +116,12 @@ fn a_busy_library_refuses_mutations_and_releases_the_lease_afterward() {
     assert_eq!(fs::read(library.state_path().unwrap()).unwrap(), state);
     drop(guard);
     library
-        .save_enabled_paths(&BTreeSet::new(), &entries)
+        .save_enabled_selection(&BTreeSet::new(), &entries, &[])
         .unwrap();
     assert!(library.enabled_paths(&entries).unwrap().is_empty());
-    library.save_enabled_paths(&enabled, &entries).unwrap();
+    library
+        .save_enabled_selection(&enabled, &entries, &[])
+        .unwrap();
     assert_eq!(library.enabled_paths(&entries).unwrap(), enabled);
 }
 
@@ -229,7 +231,9 @@ fn selection_and_deletion_keep_unknown_supported_metadata() {
     state["future_view"] = serde_json::json!({"order":[3,1,2],"nested":{"enabled":true}});
     fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
     selected.remove(&entries[0].path);
-    library.save_enabled_paths(&selected, &entries).unwrap();
+    library
+        .save_enabled_selection(&selected, &entries, &[])
+        .unwrap();
     library
         .delete_recipe(&library.prepare_delete_recipe(&entries[1].path).unwrap())
         .unwrap();
@@ -262,6 +266,10 @@ fn a_redirected_library_cannot_create_recipes_or_update_selection() {
             .save_new(&WeaponRecipe::new_weapon("parhelion.redirected").unwrap())
             .is_err()
     );
-    assert!(library.save_enabled_paths(&state, &entries).is_err());
+    assert!(
+        library
+            .save_enabled_selection(&state, &entries, &[])
+            .is_err()
+    );
     assert!(fs::read_dir(other).unwrap().next().is_none());
 }

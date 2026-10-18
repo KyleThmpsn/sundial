@@ -15,6 +15,9 @@ pub(crate) struct Program {
     ops: Vec<Op>,
     constants: Vec<Vector>,
     outputs: usize,
+    /// The stage's sampler bindings: each pixel sampler register and the sampler table row
+    /// it takes.
+    samplers: Vec<(usize, usize)>,
 }
 #[derive(Clone)]
 enum Op {
@@ -107,6 +110,7 @@ impl Program {
         }
         let mut bytes = code.iter().copied();
         let mut ops = Vec::new();
+        let mut samplers = Vec::new();
         while let Some(code) = bytes.next() {
             let mut arg = || {
                 bytes
@@ -158,15 +162,21 @@ impl Program {
                     }
                 },
                 // These bind samplers and scene textures. They cannot enter numeric expressions.
+                // A binding pushes a row of the material's sampler table and names the pixel
+                // sampler register that takes it, as 0x20 plus the register. Stock gear binds
+                // rows 0 to 5 to registers 1 to 6 in order, and converted surfaces bind the rows
+                // their maps' address modes share to registers from 3. The stage keeps the pairs
+                // so sampling resolves each register to its row.
                 0x4C if surface.is_some() => {
-                    let sampler = arg()?;
+                    let row = arg()?;
                     if arg()? != 0x49 {
                         return Err("Invalid effect sampler binding".into());
                     }
                     let slot = arg()?;
-                    if sampler > 5 || slot != 0x21 + sampler {
+                    if row >= 16 || !(0x21..0x31).contains(&slot) {
                         return Err("The effect remaps an unsupported sampler".into());
                     }
+                    samplers.push((usize::from(slot - 0x20), usize::from(row)));
                     continue;
                 }
                 0x3F if surface.is_some() => {
@@ -202,11 +212,22 @@ impl Program {
             ops,
             constants,
             outputs,
+            samplers,
         };
         // Validate structure without evaluating an arbitrary time. A well-formed animation
         // may be undefined at time zero but produce valid values on later frames.
         program.validate()?;
         Ok(Some(program))
+    }
+
+    /// The sampler table row the stage binds to pixel sampler `register`, when a binding
+    /// names it. The last binding of a register wins, as the native stage runs them in order.
+    pub(crate) fn sampler_row(&self, register: usize) -> Option<usize> {
+        self.samplers
+            .iter()
+            .rev()
+            .find(|(bound, _)| *bound == register)
+            .map(|(_, row)| *row)
     }
 
     fn validate(&self) -> Result<(), String> {

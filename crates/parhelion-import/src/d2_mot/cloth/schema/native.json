@@ -2619,5 +2619,127 @@
       }
     ],
     "parent": null
+  },
+  "hclBonePlanesConstraintSet": {
+    "size": 72,
+    "version": 1,
+    "members": [
+      {
+        "name": "bonePlanes",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 32,
+        "class": "hclBonePlanesConstraintSetBonePlane"
+      },
+      {
+        "name": "bonePlanesCompressed",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 48,
+        "class": "hclBonePlanesConstraintSetBonePlaneCompressed"
+      },
+      {
+        "name": "transformSetIndex",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 64
+      }
+    ],
+    "parent": "hclConstraintSet",
+    "signature": 2578018825
+  },
+  "hclBonePlanesConstraintSetBonePlane": {
+    "size": 32,
+    "version": 0,
+    "members": [
+      {
+        "name": "planeEquationBone",
+        "kind": 12,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "particleIndex",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 16
+      },
+      {
+        "name": "transformIndex",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 18
+      },
+      {
+        "name": "stiffness",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 20
+      }
+    ],
+    "parent": null,
+    "signature": 1442969623
+  },
+  "hclBonePlanesConstraintSetBonePlaneCompressed": {
+    "size": 16,
+    "version": 0,
+    "members": [
+      {
+        "name": "planeDistance",
+        "kind": 11,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "planeNormal",
+        "kind": 6,
+        "subtype": 0,
+        "length": 3,
+        "flags": 0,
+        "offset": 4
+      },
+      {
+        "name": "particleIndex",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 10
+      },
+      {
+        "name": "transformIndex",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 12
+      },
+      {
+        "name": "stiffness",
+        "kind": 4,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 14
+      }
+    ],
+    "parent": null,
+    "signature": 1909566431
   }
 }

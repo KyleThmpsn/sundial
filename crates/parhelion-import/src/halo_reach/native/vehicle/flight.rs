@@ -1,6 +1,5 @@
 //! An authored flight response on Shadowkeep's registered flight implementation.
 use super::{
-    METRES,
     curve::Program,
     motion::{Callback, Contract, INSTANCE, Input, Motion, Writer, number},
 };
@@ -75,6 +74,7 @@ pub(super) fn build(
     source: &Value,
     activation_priority: i16,
     maneuvers: bool,
+    metres: f32,
 ) -> Result<Motion> {
     let template = native.tag(0x80bfaf05, Some(0x80809c36))?;
     let mut w = Writer::new(&template, (0x80803cf2, 0x80803cf1), 0x360, 0x420)?;
@@ -82,9 +82,10 @@ pub(super) fn build(
     let left = number(steering, "left_limit_radians")?;
     let right = number(steering, "right_limit_radians")?;
     let rate = number(steering, "rate_radians_per_second")?;
-    let forward = number(source, "forward_source_units_per_second")? * METRES;
-    let acceleration = number(source, "acceleration_source_units_per_second_squared")? * METRES;
-    let deceleration = number(source, "deceleration_source_units_per_second_squared")? * METRES;
+    let forward = number(source, "forward_source_units_per_second")? * metres;
+    let reverse_speed = number(source, "reverse_source_units_per_second")? * metres;
+    let acceleration = number(source, "acceleration_source_units_per_second_squared")? * metres;
+    let deceleration = number(source, "deceleration_source_units_per_second_squared")? * metres;
     let (cruise, boost) = thrust(source)?;
     ensure!(
         left > 0.
@@ -93,12 +94,16 @@ pub(super) fn build(
             && left < std::f32::consts::FRAC_PI_2
             && rate > 0.
             && forward > 0.
+            && reverse_speed <= 0.
             && acceleration > 0.
             && deceleration > 0.
             && cruise > 0.
             && cruise <= 1.,
         "Source flight controls are outside the authored response domain"
     );
+    // The authored drag response is quadratic. The squared source speed ratio
+    // therefore sets the reverse demand relative to the existing cruise demand.
+    let reverse = cruise * (reverse_speed / forward).powi(2);
     let bank = left.to_degrees();
     // EB22C0 supplies heading and bank errors in degrees and converts pitch
     // results to radians. Pitch follows the retained unit's relative aim channel.
@@ -133,7 +138,7 @@ pub(super) fn build(
         boost_i + 0x20,
         boost_d + 0x10,
         boost_i,
-        Program::flight_throttle(cruise, boost)?,
+        Program::flight_throttle(cruise, reverse, boost)?,
     )?;
     for (field, value) in [
         (0x70, acceleration / forward),
@@ -144,8 +149,8 @@ pub(super) fn build(
     ] {
         put(&mut w.payload.0, boost_d + field, &value.to_le_bytes())?;
     }
-    // Forward input requests cruise thrust and boost requests the higher demand.
-    // Releasing both requests zero. Energy stays available. Source fuel, tricks
+    // Signed movement requests forward or reverse thrust, with boost taking
+    // priority. Releasing both requests zero. Energy stays available. Source fuel, tricks
     // and gravity transitions remain separate contracts.
     put(&mut w.payload.0, boost_i + 0x54, &1f32.to_le_bytes())?;
     let inputs = vec![
@@ -250,12 +255,13 @@ pub(super) fn build(
     )?;
     let mut motion = w.finish(native, graph, &[(INSTANCE, 0x80803cf2, 2)], callbacks, json!({
         "owner":"vehicle-motion","instance_class":0x80803cf2u32,"definition_class":0x80803cf1u32,
-        "source":source,"forward_metres_per_second":forward,"acceleration_metres_per_second_squared":acceleration,
-        "cruise_thrust_fraction":cruise,"boost_thrust_fraction":boost,"boost_to_cruise_ratio":boost / cruise,"cruise_thrust_gain":1.25,"bank_limit_degrees":bank,"response_per_second":response,"response_gain":response_gain,
-        "controls":{"pitch":"Relative aim","throttle":"Forward movement input","boost":"Native boost input, LT in the captured controller layout","neutral_thrust":0.},
+        "source":source,"forward_metres_per_second":forward,"reverse_metres_per_second":reverse_speed,"acceleration_metres_per_second_squared":acceleration,
+        "cruise_thrust_fraction":cruise,"reverse_thrust_fraction":reverse,"boost_thrust_fraction":boost,"boost_to_cruise_ratio":boost / cruise,"cruise_thrust_gain":1.25,"bank_limit_degrees":bank,"response_per_second":response,"response_gain":response_gain,
+        "controls":{"pitch":"Relative aim","throttle":"Signed forward and reverse movement input","boost":"Native boost input, LT in the captured controller layout","neutral_thrust":0.},
         "native_maneuvers":maneuvers,
+        "hover_boost_release":if maneuvers {Some("Release clears boost without the replaced hover motion clock")}else{None},
         "gameplay_verified":false,
-        "limits":["Authored native flight response using source speed, acceleration, cruise and bank limits. A compatible carrier's left and right maneuver states drive roll surfaces with its original action timing and costs. Full roll travel and recovery need gameplay acceptance. Source reverse, independent strafing, gravity transition and dive scaling are not reproduced. Live handling needs calibration."]
+        "limits":["Authored native flight response using source speed, acceleration, cruise and bank limits. Reverse demand preserves the source reverse-to-forward speed ratio against the authored quadratic drag response. A compatible carrier's left and right maneuver states drive roll surfaces with its original action timing and costs. Full roll travel and recovery need gameplay acceptance. Independent strafing, gravity transition and dive scaling are not reproduced. Live handling needs calibration."]
     }))?;
     motion.inputs = inputs;
     motion.retain_hover_update = maneuvers;

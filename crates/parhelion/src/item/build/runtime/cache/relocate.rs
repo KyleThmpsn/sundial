@@ -3,7 +3,9 @@ use super::*;
 
 pub(super) fn fields(manager: &PackageManager, tag: &NewTagSpec) -> Option<Vec<(usize, u32)>> {
     match tag.storage {
-        crate::NewTagStorageMode::AudioMedia => Some(Vec::new()),
+        crate::NewTagStorageMode::AudioMedia
+        | crate::NewTagStorageMode::GpuHull
+        | crate::NewTagStorageMode::GpuDomain => Some(Vec::new()),
         crate::NewTagStorageMode::AudioBank => audio_fields(&tag.payload),
         crate::NewTagStorageMode::InheritTemplate => {
             // A loading index also names resources through package IDs and bitmap
@@ -116,6 +118,8 @@ pub(super) fn unpack(
             0 => crate::NewTagStorageMode::InheritTemplate,
             1 => crate::NewTagStorageMode::AudioMedia,
             2 => crate::NewTagStorageMode::AudioBank,
+            3 => crate::NewTagStorageMode::GpuHull,
+            4 => crate::NewTagStorageMode::GpuDomain,
             _ => return None,
         },
         payload,

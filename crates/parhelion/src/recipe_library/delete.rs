@@ -183,7 +183,7 @@ mod tests {
         let mut selected = enabled(&library);
         selected.insert(path.clone());
         library
-            .save_enabled_paths(&selected, &library.scan().unwrap().entries)
+            .save_enabled_selection(&selected, &library.scan().unwrap().entries, &[])
             .unwrap();
         assert!(enabled(&library).contains(&path));
         let original = fs::read(&path).unwrap();

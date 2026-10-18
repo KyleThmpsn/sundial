@@ -121,6 +121,9 @@ struct PackageAuthoringApp {
     build_selection_query: String,
     recipe_library: Option<RecipeLibrary>,
     recipe_entries: Vec<RecipeLibraryEntry>,
+    /// The maps folder's recipes, none without the D2 model importer.
+    map_entries: Vec<crate::recipe_library::MapLibraryEntry>,
+    /// The recipes and maps the next build includes.
     enabled_recipe_paths: BTreeSet<PathBuf>,
     packages: PathBuf,
     staging: String,
@@ -312,6 +315,7 @@ impl Default for PackageAuthoringApp {
             build_selection_query: String::new(),
             recipe_library,
             recipe_entries,
+            map_entries: Vec::new(),
             enabled_recipe_paths,
             packages: PathBuf::new(),
             staging: default_staging_root().display().to_string(),
@@ -817,7 +821,7 @@ mod style;
 #[cfg(test)]
 mod tests;
 use style::named_control;
-pub(crate) use style::{transparency_backdrop, workbench_style};
+pub(crate) use style::{hidden_rows, transparency_backdrop, workbench_style};
 mod ability_names;
 mod build_check;
 mod build_status;

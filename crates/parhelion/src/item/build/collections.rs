@@ -75,6 +75,7 @@ pub(super) fn author(
         &mut badge,
         plan,
         project_rows,
+        weapons,
         &sources.stock_pools,
         badge_icon_index,
     )?;

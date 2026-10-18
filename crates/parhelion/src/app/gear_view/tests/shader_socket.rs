@@ -71,6 +71,7 @@ fn a_created_shader_is_selected_saved_and_built_with_its_weapon() {
         staging_root: output.join("first-build"),
         ignore_installed_authored_overlays: true,
         recipes: vec![shader.clone()],
+        maps: Vec::new(),
     })
     .unwrap();
     let first = crate::build_and_stage_snapshot_with_progress(&first, |_| {}).unwrap();

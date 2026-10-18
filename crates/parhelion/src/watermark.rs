@@ -219,7 +219,7 @@ impl WatermarkPlan {
 /// `current_entry_count` is the destination package's entry count before the append operation.
 /// `appended_ordinal_base` is the number of tags placed before this plan in the same `new_tags`
 /// slice. Containers are deduplicated only when donor, image edit, and authored rarity are identical.
-#[cfg(any(test, feature = "d2-model-importer"))]
+#[cfg(test)]
 pub fn build_watermark_plan(
     manager: &PackageManager,
     destination_package_id: u16,
@@ -247,11 +247,6 @@ fn build_watermark_plan_with_context(
     branding: crate::branding::Branding,
     request_context: &dyn Fn(usize) -> String,
 ) -> AuthoringResult<WatermarkPlan> {
-    if icon_requests.is_empty() {
-        return Err(invalid(
-            "A weapon watermark plan needs at least one donor icon container",
-        ));
-    }
     let donor_layer = read_and_validate_watermark_donor(manager)?;
 
     let mut new_tags = Vec::with_capacity(SHARED_TAG_COUNT + icon_requests.len() * 5);
@@ -667,13 +662,17 @@ fn validate_plan(context: WatermarkPlanValidation<'_>) -> AuthoringResult<()> {
         || new_tags[TEXTURE_DIMENSIONS.len() * 2].storage != NewTagStorageMode::InheritTemplate
         || new_tags[TEXTURE_DIMENSIONS.len() * 2].payload.len() != WATERMARK_LAYER_SIZE
         || requests.len() != request_container_tags.len()
-        || containers.last().is_none_or(|container| {
-            container
-                .companion_ordinal
-                .checked_sub(appended_ordinal_base)
-                .and_then(|index| index.checked_add(1))
-                != Some(new_tags.len())
-        })
+        // The tags end with the last container's companion, or with the layer without items.
+        || Some(new_tags.len())
+            != containers.last().map_or(
+                Some(TEXTURE_DIMENSIONS.len() * 2 + 1),
+                |container| {
+                    container
+                        .companion_ordinal
+                        .checked_sub(appended_ordinal_base)
+                        .and_then(|index| index.checked_add(1))
+                },
+            )
         || containers.iter().any(|container| {
             let Some(definition_index) = container.ordinal.checked_sub(appended_ordinal_base)
             else {

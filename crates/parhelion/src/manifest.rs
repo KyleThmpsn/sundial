@@ -29,6 +29,10 @@ pub(crate) struct ManifestDocument {
     pub(crate) selected_recipe_files: Vec<String>,
     pub(crate) project: ManifestProject,
     pub(crate) artifacts: Vec<ArtifactMetadata>,
+    /// The merge data beside each package of a mod-folder build, which Sunrise reads to merge
+    /// the rows Parhelion and other mods add to one table. Empty for other builds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) merge_data: Vec<ArtifactMetadata>,
 }
 
 impl ManifestDocument {
@@ -54,8 +58,38 @@ impl ManifestDocument {
         }
         validate_artifact_metadata("source artifact", &self.source_artifacts)?;
         validate_artifact_metadata("artifact", &self.artifacts)?;
+        validate_artifact_metadata("merge data", &self.merge_data)?;
+        validate_merge_data(&self.artifacts, &self.merge_data)?;
         self.project.validate()
     }
+}
+
+/// Merge data sits beside its package under the same name, and a build has it for every package
+/// or for none, since Sunrise ignores all of a mod's merge data when a file lacks it.
+fn validate_merge_data(
+    artifacts: &[ArtifactMetadata],
+    merge_data: &[ArtifactMetadata],
+) -> Result<(), String> {
+    if merge_data.is_empty() {
+        return Ok(());
+    }
+    let packages = artifacts
+        .iter()
+        .filter_map(|artifact| artifact.file_name.strip_suffix(".pkg"))
+        .collect::<BTreeSet<_>>();
+    let described = merge_data
+        .iter()
+        .map(|data| {
+            data.file_name
+                .strip_suffix(".merge")
+                .filter(|stem| packages.contains(stem))
+                .ok_or_else(|| format!("Merge data {} sits beside no package", data.file_name))
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    if described.len() != merge_data.len() || described != packages {
+        return Err("The manifest needs merge data for every package or for none".to_owned());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]

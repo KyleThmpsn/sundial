@@ -293,7 +293,7 @@ fn apply_with_progress(
         skinning::write(&mut context)?;
     }
     for (symbol, bytes) in
-        crate::tiger::material::repair(&context.graph.manifest, &context.graph.root)?
+        crate::tiger::material::bind(&context.graph.manifest, &context.graph.root)?
     {
         context.graph.write(&symbol, &bytes)?;
     }

@@ -14,6 +14,7 @@ impl PackageAuthoringApp {
         log.enable_file();
         log.push(LogEntry::info("Opening recipe library"));
         let mut recipe_entries = Vec::new();
+        let mut map_entries = Vec::new();
         let mut enabled_recipe_paths = BTreeSet::new();
         let backup_preferences = match ParhelionPreferences::load_default() {
             Ok(preferences) => preferences,
@@ -38,7 +39,8 @@ impl PackageAuthoringApp {
                             )));
                         }
                         recipe_entries = scan.entries;
-                        match library.enabled_paths(&recipe_entries) {
+                        map_entries = scan.maps;
+                        match enabled_paths(&library, &recipe_entries, &map_entries) {
                             Ok(enabled) => enabled_recipe_paths = enabled,
                             Err(error) => log.push(LogEntry::error(format!(
                                 "Recipe selection state could not be loaded: {error}"
@@ -59,6 +61,7 @@ impl PackageAuthoringApp {
 
         self.recipe_library = recipe_library;
         self.recipe_entries = recipe_entries;
+        self.map_entries = map_entries;
         self.library_state.refresh_metadata(&self.recipe_entries);
         self.enabled_recipe_paths = enabled_recipe_paths;
         self.limit_package_backups = backup_preferences.limit_package_backups;
@@ -88,6 +91,11 @@ impl PackageAuthoringApp {
                 baseline: self.recipe_baseline.clone(),
             }),
             enabled: self.enabled_recipe_paths.clone(),
+            map_paths: self
+                .map_entries
+                .iter()
+                .map(|map| map.path.clone())
+                .collect(),
             catalog: self.catalog.clone(),
             library: self.recipe_library.clone(),
             library_items: self
@@ -133,7 +141,10 @@ impl PackageAuthoringApp {
 pub(super) struct BuildInputs {
     invalid_name: Option<String>,
     open: Option<OpenRecipe>,
+    /// The recipes and maps the build includes.
     enabled: BTreeSet<PathBuf>,
+    /// Every listed map's path, which tells the enabled maps from the recipes.
+    map_paths: BTreeSet<PathBuf>,
     catalog: Option<InvestmentCatalog>,
     library: Option<RecipeLibrary>,
     library_items: Vec<LibraryItem>,
@@ -157,8 +168,53 @@ struct LibraryItem {
     path: PathBuf,
 }
 
+#[derive(Clone, Copy)]
+enum RecipeRead {
+    Build,
+    Listing,
+}
+
+impl RecipeRead {
+    fn load(self, path: &Path) -> Result<WeaponRecipe, crate::recipe::RecipeError> {
+        match self {
+            Self::Build => WeaponRecipe::load_json(path),
+            Self::Listing => WeaponRecipe::load_listing(path),
+        }
+    }
+}
+
 impl BuildInputs {
     pub(super) fn request(&self) -> Result<BatchBuildRequest, String> {
+        Ok(BatchBuildRequest {
+            package_directory: self.package_directory.clone(),
+            staging_root: self.staging_root.clone(),
+            ignore_installed_authored_overlays: self.ignore_installed,
+            recipes: self.recipes(RecipeRead::Build)?,
+            maps: crate::map::load_selected(
+                self.enabled
+                    .intersection(&self.map_paths)
+                    .map(PathBuf::as_path),
+            )
+            .map_err(|error| error.to_string())?,
+        })
+    }
+
+    /// The removal warning needs identities and socket dependencies, not restored assets.
+    /// The build still rereads complete recipes and checks the open draft against disk.
+    pub(super) fn included_item_hashes(&self) -> Result<BTreeSet<u32>, String> {
+        self.recipes(RecipeRead::Listing)?
+            .iter()
+            .map(|recipe| {
+                recipe
+                    .identity
+                    .item_hash
+                    .parse_u32()
+                    .map_err(|error| error.to_string())
+            })
+            .collect()
+    }
+
+    fn recipes(&self, read: RecipeRead) -> Result<Vec<WeaponRecipe>, String> {
         if self
             .open
             .as_ref()
@@ -168,8 +224,8 @@ impl BuildInputs {
             return Err(error.clone());
         }
         let mut recipes = Vec::with_capacity(self.enabled.len());
-        for path in &self.enabled {
-            recipes.push(self.recipe(path)?);
+        for path in self.enabled.difference(&self.map_paths) {
+            recipes.push(self.recipe(path, read)?);
         }
         if let Some(library) = &self.library {
             let included = recipes
@@ -200,7 +256,7 @@ impl BuildInputs {
             // Shader recipes cannot contain sockets, so these dependencies have no further
             // socket dependencies. Keep one copy even when several items select the shader.
             for entry in library.shader_entries(&referenced)? {
-                let recipe = self.recipe(&entry.path)?;
+                let recipe = self.recipe(&entry.path, read)?;
                 if recipe.kind != ItemKind::Shader
                     || recipe.identity.item_hash.parse_u32().ok() != Some(entry.identity_hash)
                 {
@@ -212,17 +268,24 @@ impl BuildInputs {
                 recipes.push(recipe);
             }
         }
-        Ok(BatchBuildRequest {
-            package_directory: self.package_directory.clone(),
-            staging_root: self.staging_root.clone(),
-            ignore_installed_authored_overlays: self.ignore_installed,
-            recipes,
-        })
+        Ok(recipes)
     }
 
     /// Explicit items and required shaders use the same draft and concurrent-change checks.
-    fn recipe(&self, path: &Path) -> Result<WeaponRecipe, String> {
+    fn recipe(&self, path: &Path, read: RecipeRead) -> Result<WeaponRecipe, String> {
         let mut recipe = match &self.open {
+            // This advisory check uses current draft choices. The actual build below performs
+            // the full saved-content comparison, including the imported graph content pins.
+            Some(open) if open.path == path && matches!(read, RecipeRead::Listing) => {
+                let recipe = open.recipe.clone();
+                #[cfg(feature = "d2-model-importer")]
+                let recipe = {
+                    let mut recipe = recipe;
+                    recipe.overrides.imported_graph = None;
+                    recipe
+                };
+                recipe
+            }
             Some(open) if open.path == path => {
                 if let Some(error) = &self.invalid_name {
                     return Err(error.clone());
@@ -241,14 +304,14 @@ impl BuildInputs {
                 }
                 open.recipe.clone()
             }
-            _ => WeaponRecipe::load_json(path).map_err(|error| {
+            _ => read.load(path).map_err(|error| {
                 format!("Could not load included recipe {}: {error}", path.display())
             })?,
         };
         if let Some(catalog) = self.catalog.as_ref() {
             custom_perks::repair_socket_picks(self.library.as_ref(), catalog, &mut recipe)?;
         }
-        self.rebase(recipe)
+        self.rebase(recipe, read)
     }
 
     /// Rebuilds a recipe whose donor is a weapon from the library on that weapon's own recipe.
@@ -257,7 +320,7 @@ impl BuildInputs {
     /// so it cannot serve as a donor as it is. Its recipe can: the result keeps this recipe's
     /// identity and settings on top of the base recipe's stock donor and changes. A base that
     /// itself builds on a library weapon is followed the same way.
-    fn rebase(&self, recipe: WeaponRecipe) -> Result<WeaponRecipe, String> {
+    fn rebase(&self, recipe: WeaponRecipe, read: RecipeRead) -> Result<WeaponRecipe, String> {
         let mut current = recipe;
         let mut seen = Vec::new();
         loop {
@@ -286,7 +349,7 @@ impl BuildInputs {
                 ));
             }
             seen.push(donor);
-            let base = WeaponRecipe::load_json(&entry.path).map_err(|error| {
+            let base = read.load(&entry.path).map_err(|error| {
                 format!(
                     "{} builds on {}, whose recipe could not be loaded: {error}",
                     current.name, entry.name
@@ -495,8 +558,9 @@ impl PackageAuthoringApp {
         match library.scan() {
             Ok(scan) => {
                 self.recipe_entries = scan.entries;
+                self.map_entries = scan.maps;
                 self.library_state.refresh_metadata(&self.recipe_entries);
-                match library.enabled_paths(&self.recipe_entries) {
+                match enabled_paths(library, &self.recipe_entries, &self.map_entries) {
                     Ok(enabled) => self.enabled_recipe_paths = enabled,
                     Err(error) => self.log.push(LogEntry::error(format!(
                         "Recipe selection state could not be loaded: {error}"
@@ -698,4 +762,15 @@ impl PackageAuthoringApp {
         }
         library.export(&self.recipe, path)
     }
+}
+
+/// The recipes and maps of the library that a build includes.
+fn enabled_paths(
+    library: &RecipeLibrary,
+    entries: &[RecipeLibraryEntry],
+    maps: &[crate::recipe_library::MapLibraryEntry],
+) -> Result<BTreeSet<PathBuf>, String> {
+    let mut enabled = library.enabled_paths(entries)?;
+    enabled.extend(library.enabled_map_paths(maps)?);
+    Ok(enabled)
 }

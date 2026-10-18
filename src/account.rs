@@ -1,5 +1,6 @@
 //! Account proposals and synchronization accompanying authored package transactions.
 use std::path::{Path, PathBuf};
+mod compatibility;
 pub(crate) mod contract;
 mod grants;
 pub use grants::{

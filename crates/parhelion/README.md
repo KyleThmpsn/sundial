@@ -1,6 +1,6 @@
 # Parhelion
 
-Parhelion is an **experimental** item workbench bundled with [Sundial](../../README.md) for Project Sunrise and Dawn. Build weapons by mixing gameplay, appearance, perks, and stats, including Exotics and unusual combinations. You can also author armor, Sparrows, Ships, Ghost Shells, Emblems, Shaders, and Subclasses from stock items.
+Parhelion is an **experimental** item workbench bundled with [Sundial](../../README.md) for Project Sunrise and Dawn. Build weapons by mixing gameplay, appearance, perks, and stats, including Exotics and unusual combinations. You can also author armor, Sparrows, Ships, Ghost Shells, Emblems, Shaders, and Subclasses from stock items, and mods from your custom perks.
 
 Your items are saved as **recipes** that you can edit and share. Some combinations may not work or may crash the game, so test them in-game after installing them.
 
@@ -11,7 +11,6 @@ See Sundial's [Compatibility](../../README.md#compatibility) section for support
 - [Getting Started](#getting-started)
 - [Making Weapons](#making-weapons)
   - [Stats and Power](#stats-and-power)
-  - [Barrel Settings](#barrel-settings)
   - [Perks and Sockets](#perks-and-sockets)
   - [Custom Perk Workbench](#custom-perk-workbench)
   - [Finding Triggers, Actions, and Objects](#finding-triggers-actions-and-objects)
@@ -21,7 +20,8 @@ See Sundial's [Compatibility](../../README.md#compatibility) section for support
   - [Organizing Effects](#organizing-effects)
   - [Engine Catalog](#engine-catalog)
   - [Borrowing Weapon Behavior](#borrowing-weapon-behavior)
-  - [Ornaments, Icons and Shaders](#ornaments-icons-and-shaders)
+  - [Ornaments, Icons, and Shaders](#ornaments-icons-and-shaders)
+  - [Barrel Settings](#barrel-settings)
   - [Collections Placement](#collections-placement)
 - [Making Other Items](#making-other-items)
   - [Vehicles](#vehicles)
@@ -30,6 +30,7 @@ See Sundial's [Compatibility](../../README.md#compatibility) section for support
 - [Making Subclasses](#making-subclasses)
 - [Bundled Custom Weapons and Perks](#bundled-custom-weapons-and-perks)
 - [Recipes and Sharing](#recipes-and-sharing)
+- [Sunrise Mod Folder](#sunrise-mod-folder)
 - [Generated Packages](#generated-packages)
 - [Backups and Recovery](#backups-and-recovery)
 - [FAQ](#faq)
@@ -38,56 +39,48 @@ See Sundial's [Compatibility](../../README.md#compatibility) section for support
 
 1. In Sundial, open **Preferences > Editing**. Under **Experimental**, turn on **Enable Parhelion Package Authoring**, then click **Open Parhelion**.
 2. Click **New Weapon** or open the adjacent **New Item** menu to choose another item type. You can also open a library recipe and use **Recipe… > Duplicate**. Pick a stock base and edit the choices available for that item.
-3. Save your recipe. Open **Items in This Build**, select every item you want installed, then click **Apply Selection**.
-4. Click **Build & Stage**. When the build finishes, click **Review**.
+3. Save your recipe. Click **Items in Build…**, select every item you want installed, then click **Apply Selection**.
+4. Click **Build & Stage**. When the build finishes, click **Review Installation**.
 5. Check the install location and any listed removals. Close Destiny and any other apps editing the same account, then confirm the installation.
-6. Relaunch Destiny and find your authored weapons, gear, and Shaders in Collections. Weapons appear under their type, or under **Exotics** for Exotic weapons. [Making Other Items](#making-other-items) covers where the rest appear. Subclasses do not appear in Collections. Equip them in game like any other Subclass.
+6. Relaunch Destiny and find your authored weapons, armor, and other items in Collections. Weapons appear under their type, or under **Exotics** for Exotic weapons. [Making Other Items](#making-other-items) covers where the rest appear. Subclasses do not appear in Collections. Equip them in game like any other Subclass.
 
 Each install replaces the previously installed Parhelion package set, including its standalone asset packages. Select every recipe you want to keep, not just those you've changed. If a selected item uses an authored Shader saved in your library, Parhelion includes that Shader automatically.
 
-If the new build leaves out an installed item or custom perk, Parhelion lists what needs to be removed from your selected account. This can include equipped items, inventory items, saved perk selections, Collections unlocks, and reward rules for any character in that account. Review the list, then click **Back Up, Remove & Install** to continue or **Cancel** to make no changes. Other accounts aren't changed.
+Check the build selection before each build. Opening a recipe doesn't automatically select it. **Include Default Weapons** is checked by default. Leave it checked to include all bundled weapons, or uncheck it to choose them individually. Recipes whose items are installed are marked **Installed**. When a build would remove an installed item, **Build & Stage** lists it first, and **Add to Build** keeps it.
 
-Parhelion checks that your selected items fit within the game's package limits before installation.
+If the new build leaves out an installed item or custom perk, Parhelion lists what needs to be removed from your selected account. This can include equipped items, inventory items, saved perk selections, Collections unlocks, and reward rules for any character in that account. Review the list, then click **Back Up, Remove & Install** to continue or **Back to Build** to make no changes. Other accounts aren't changed.
 
-Builds reuse the compiled parts of weapons and Subclass abilities you haven't changed, so the first build after updating Parhelion takes the longest.
+Parhelion checks that your selected items fit within the game's package limits before installation. Builds reuse the compiled parts of weapons and Subclass abilities you haven't changed, so the first build after updating Parhelion takes the longest.
 
-Check the build selection before each build. Opening a recipe doesn't automatically select it. **Include Default Weapons** is checked by default. Leave it checked to include all bundled weapons, or uncheck it to choose them individually.
+On Project Sunrise 0.6 or later, builds install as a Sunrise mod. [Sunrise Mod Folder](#sunrise-mod-folder) covers upgrading an earlier installation, installing beside other mods, and switching between runtimes.
 
 ## Making Weapons
 
-Your weapon starts with the **base weapon**'s firing behavior, stats, and perks. The **appearance donor** determines the weapon's in-game model and iconography. The picker opens on your base weapon's type, and you can clear that filter to use any weapon's appearance. Appearances from another weapon type can carry the appearance weapon's rig and animations when the two weapon types can share them. Otherwise, the model uses the base weapon's rig and some moving parts may remain still. The picker shows which result to expect.
+Your weapon starts with the **base weapon**'s firing behavior, stats, and perks. The **appearance donor** determines the weapon's in-game model and iconography. The picker opens on your base weapon's type, and you can clear that filter to use any weapon's appearance.
 
-**Weapon** holds the weapon's text, base, slot, damage, stats, and perks. **Appearance** holds its model, animations, artwork, and placement. **Gameplay** controls how it fires and which parts it takes from other weapons. **Identity** shows the weapon's hex hash identifiers for reference.
+Appearances from another weapon type can carry the appearance weapon's rig and animations when the two weapon types can share them. Otherwise, the model uses the base weapon's rig and some moving parts may remain still. The picker shows which result to expect. A weapon with another type's appearance takes that type's name, Collections page, and HUD icon. Turn on **Keep … Type** on **Appearance**, such as **Keep Scout Rifle Type**, to keep the base weapon's.
 
-On **Gameplay**, **Parts** lets you borrow behavior and firing parts from other weapons. **Firing Behavior**, **Barrel**, and **Magazine** can each use a different source while keeping your weapon's runtime. **Reload** swaps the whole runtime. On **Appearance**, **Animations** and **Actions** borrow whole animation profiles or individual actions. Test borrowed parts in game.
+**Weapon** holds what the weapon is: its text, base weapon and appearance, slot, damage, stats, and perks. **Appearance** holds how it looks and is held: its model, animations, artwork, and placement. **Gameplay** controls how it fires and which parts it takes from other weapons. **Collections** chooses where it appears in Collections, and **Identity** shows its hex hash identifiers for reference.
 
-The runtime donor picker groups choices under **Lower Risk**, **Experimental**, and **Rejected**. Rejected choices explain why they cannot be used.
+On **Gameplay**, **Parts** lets you borrow behavior and firing parts from other weapons. **Runtime** sets the weapon yours fires and behaves like, and the rows under it follow it. **Behavior**, **Firing Behavior**, **Barrel**, and **Magazine** can each copy one part from a different weapon into your weapon's own runtime. On **Appearance**, **Animations** and **Actions** borrow whole animation profiles or individual actions. Test borrowed parts in game.
 
-For runtime and inventory controls, turn on **Enable Experimental Features** under **Preferences… > Editor & Library**, then open **Technical** on **Gameplay**.
+Turning on **Enable Experimental Features** under **Preferences… > Editor & Library** adds runtime and inventory controls under **Technical** on **Gameplay**, and a **Reload** row to **Parts**. **Reload** swaps the whole reload component, not only its animation. Its picker groups choices under **Lower Risk**, **Experimental**, and **Rejected**, and rejected choices explain why they cannot be used.
 
 You can choose the weapon slot, damage type, and ammo type separately. The editor shows any restrictions. Changing ammo type doesn't rebalance the weapon's stats. Adjust those separately as needed.
 
-Changing an Exotic base weapon to a non-exotic rarity removes its exotic equip restriction. Choosing Exotic rarity applies the normal exotic weapon restriction. Other unique-equip restrictions are preserved.
+Changing an Exotic base weapon to a non-Exotic rarity removes its Exotic equip restriction. Choosing Exotic rarity applies the normal Exotic weapon restriction. Other unique-equip restrictions are preserved.
 
 Installing unlocks your weapons in Collections and, by default, adds them to the **Project Sunrise** or **Dawn** badge for your active runtime. Get a copy from Collections to add it to your inventory.
 
-You can also write flavor text and a custom **Lore** tab on **Weapon**. Leave both lore boxes off to keep the donor's lore, turn on **Custom Lore Tab** to write your own, or turn on **No Lore Tab** for a weapon that should have no lore entry at all.
+You can also write flavor text and a custom **Lore** tab on **Weapon**. Leave both lore checkboxes off to keep the donor's lore, turn on **Custom Lore Tab** to write your own, or turn on **No Lore Tab** for a weapon that should have no lore entry at all.
 
 ### Stats and Power
 
-**Weapon Stats** lists the values saved on your weapon. **Raw Value** is what gets written, and **Preview** shows what the game displays, such as rounds per minute. A raw value of 30 on a rate of fire stat is not 30 rounds per minute. A stat you add only shows in-game if the weapon's stat group supports it, so check the preview.
+**Weapon Stats** lists the values saved on your weapon in the game's order. Each row shows what the game displays, such as a stat bar or rounds per minute, and a bar marks the change from the base weapon in green or red. The number you edit under **Raw** is what gets written. A raw value of 30 on a rate of fire stat is not 30 rounds per minute. A stat you add only shows in-game if the weapon's stat group supports it, so check its displayed value.
 
-**Stat Options** holds the less common controls. **Show Internal Stats** reveals package-level rows such as Attack and Power along with unnamed ones. Hidden rows are kept either way, so turning it off doesn't discard anything. Use the reset command to put every value back to the base weapon.
+**Stat Options** holds the less common controls. **Show Internal Stats** reveals package-level rows such as Attack and Power along with unnamed ones. Hidden rows are kept either way, so turning it off doesn't discard anything. The reset button beside **Weapon Stats** puts every value back to the base weapon.
 
 **Power Cap** sets the weapon's infusion limit. Current Power is a separate thing and is edited in Sundial, not here.
-
-### Barrel Settings
-
-**Barrel Settings** on **Gameplay** controls how many pellets each bullet fires and how they spread. Set **Pellets per Bullet** and **Spread**, then choose a **Pattern**: **Filled Circle**, **Ring**, or **Custom**. A custom pattern lists each ring's pellet count, inner and outer radius, rotation, and randomness beside a preview. **Random Rotation** turns the pattern to a new angle for each bullet. Turn it off to keep a pattern, such as a level row, at the same angle every shot.
-
-**Bullets per Shot** sets how many bullets fire with each trigger pull. On pulse rifles, sidearms, and rocket launchers, the weapon's **Rounds Per Minute** decides it.
-
-Extra pellets are confirmed working on Fusion Rifles, Shotguns, Pulse Rifles, Auto Rifles, Scout Rifles, Submachine Guns, Sniper Rifles, Grenade Launchers, Sidearms, and Hand Cannons. On Rocket Launchers, the extra rockets collide with each other as soon as they're fired.
 
 ### Perks and Sockets
 
@@ -95,11 +88,11 @@ A **socket** is a slot for a perk or mod. The game calls these perks and mods **
 
 A perk picker lists the socket's current perk first, with its default right below it. **Plugs Offered**, beside the picker's search, sets which plugs it lists, from the perks your item lists for that socket to every plug in the game. Wider choices can list plugs that don't work in that socket, so test them in game.
 
-Use a socket's **… > Remove Socket** command to remove its choices and custom perk assignments. Other sockets keep their positions. For a removed base socket, click **Restore Socket** to bring back the base weapon's choices and role. Added sockets must be removed from last to first.
+Use **Remove Socket** in a socket's menu to remove its choices and custom perk assignments. Other sockets keep their positions. For a removed base socket, click **Restore Socket** to bring back the base weapon's choices and role. Added sockets must be removed from last to first.
 
 ### Custom Perk Workbench
 
-A **custom perk** is one you author yourself rather than borrow from another weapon. Open **Custom Perk Workbench…** from the main Parhelion menu, or click a socket choice and use **Use Custom Perk…** in its picker. The window has three parts. **Custom Perks** on the left lists your saved perks and open drafts. The perk you are editing fills the middle. The footer applies it to a socket of the open item.
+A **custom perk** is one you author yourself rather than borrow from another weapon. Open **Custom Perk Workbench…** from the toolbar, or click a socket choice and use **Use Custom Perk…** in its picker. The window has three parts. **Custom Perks** on the left lists your saved perks and open drafts. The perk you are editing fills the middle. The footer applies it to a socket of the open item.
 
 Each effect is a card that says what starts it, what it does, and when it ends. You can use a stock effect exactly as the game has it, change one in place, or build one from scratch by combining triggers, conditions, actions, objects, and more. Behavior Parhelion has mapped appears under plain names. Behavior that is not mapped yet keeps the engine's own names, reachable from each item's menu. **Engine Catalog…** browses the behavior in the perks your game already has, covered under [Engine Catalog](#engine-catalog).
 
@@ -107,7 +100,7 @@ To create and use a custom perk:
 
 1. Click **New Perk**, or **New from Perk…** to start from a copy of a stock perk. To start from a socket choice, click that choice and use **Use Custom Perk… > Create Custom Perk…**. You can also open a saved or bundled perk from the list.
 2. Name the perk. The row under the name holds its **Type**, its **Description**, and **Change Icon…**. Match **Type** to the socket: **Trait** for normal perk columns and **Intrinsic** for the weapon's frame.
-3. Click **Add Effect** for an empty card, or **Add from Perk…** to copy a stock perk's effects. A perk with several effects adds them all. Open it in the picker to add one on its own.
+3. Click **Add Effect** for an empty card, or **Add from Perk…** to copy a stock perk's effects. A perk with several effects adds them all. Open it in the picker to add one on its own. Sunrise and Dawn run only a perk's first four effects, so any after that are marked **Inactive**.
 4. On the card, choose the **Trigger**, click **Add Action…** for each action, and set **Timing**. **Duration** is how long the effect lasts and **Cooldown** how soon it can fire again. An effect nothing triggers has a **Repeat Interval** instead. A kill effect whose actions happen once reads **At Once**, so every kill fires it.
 5. Click **Save to Library** (Ctrl+S) to keep the perk under **Custom Perks**.
 6. In the footer, choose the socket and choice under **Weapon Socket**, or **Armor Socket** and so on for other items, then click **Apply to Weapon** or the matching button for your item type. Click **Save Recipe** afterwards.
@@ -138,10 +131,10 @@ A perk that needs several events before it fires, such as three kills, uses the 
 
 ### Common Effects
 
-An effect is a trigger plus what it does when that trigger fires. These are some the workbench names in plain words:
+An effect is a trigger plus what it does when that trigger fires. Here are some of the actions the workbench names in plain words:
 
 - **Change Fired Projectile** swaps what the weapon shoots for something else entirely, such as another weapon's rounds, a missile, or an ability's projectile.
-- **Spawn an Object or Effect** and **Attach an Effect** put something in the world or keep it on a target for the duration. An attached effect such as Devour or invisibility has its own **Attachment Length**. Type -1 for **Unlimited** so it never ends on its own.
+- **Spawn an Object or Effect** and **Attach an Effect** put something in the world or keep it on a target for the duration. An attached effect such as Devour or invisibility has its own **Attachment Length**. Type **Unlimited** or -1 so it never ends on its own.
 - **Generate Orbs of Light** drops a collectible orb at the kill or at the player, the way a Masterwork does.
 - **Adjust Ammo** and **Adjust Ammo by Capacity** add or remove rounds, either a fixed count or a share of the magazine.
 - **Reload from Reserves** refills the magazine without the reload.
@@ -165,9 +158,9 @@ Use **Not** on a condition to reverse its result, for example to run while you a
 
 **More Conditions** adds an **End Condition**, which stops the effect, or a **Reactivation**, which lets it start again. Without them, the card shows only the **Timing** row. If an effect could only ever fire once, the card says so under its trigger and **End at Once** fixes it.
 
-Some conditions check a state instead of waiting for an event: nearby enemies or allies, your subclass, how full the magazine is, melee energy, or whether your Super is active. Each starts with the comparison a stock perk uses, such as three or more enemies nearby, and you can change it. The **State** list can be searched and leads with everyday states such as **Aiming Down Sights** and **Reloading**.
+Some conditions check a state instead of waiting for an event: nearby enemies or allies, your Subclass, how full the magazine is, melee energy, or whether your Super is active. Each starts with the comparison a stock perk uses, such as three or more enemies nearby, and you can change it. The **State** list can be searched and leads with everyday states such as **Aiming Down Sights** and **Reloading**.
 
-Plenty of stock effects already use these stacks. Opening one and reading down its conditions is the quickest way to see how the game combines them before you build your own.
+Plenty of stock effects already combine conditions like this. Open one and read down its conditions to see how the game does it before you build your own.
 
 ### Organizing Effects
 
@@ -212,9 +205,9 @@ For example, to put Malfeasance's rounds on an ordinary Hand Cannon:
 3. Leave **Include Its Perks** on. Malfeasance keeps the detonation in its perk, so the weapon half alone will not finish the job.
 4. Save, build, install, and get a copy from Collections.
 
-### Ornaments, Icons and Shaders
+### Ornaments, Icons, and Shaders
 
-**Appearance** and the ornament, shader, and appearance donor pickers show a preview of the weapon model, with its textures, animations, and shader colors, so you can see a choice before you commit to it. Drag to turn the model and Shift-drag or right-drag to pan. **View** changes the background and lighting, and **Clip** and **Speed** play one of its animations. Previews are not exact yet, so some models light or shade differently from how they look in game.
+**Appearance** and the ornament, shader, and appearance donor pickers show a preview of the weapon model, with its textures, animations, and shader colors, so you can see a choice before you commit to it. Drag to turn the model and Shift-drag or right-drag to pan. **View** changes the background and lighting, and **Clip** plays one of its animations at the speed set beside it. Previews are not exact yet, so some models light or shade differently from how they look in game.
 
 **Use Ornament** lists compatible stock ornaments, including ones from other weapons. Picking one takes that ornament's model, its own colors when available, and its inventory icon. An ornament has no rig of its own, so choosing one from another weapon also makes that weapon the appearance donor. When the base weapon has no ornaments of its own, the list opens filtered to its weapon type. Everything the ornament sets stays editable afterwards, and **Default Appearance** puts it back. The button sits beside the appearance picker on **Weapon** as well as on **Appearance**.
 
@@ -224,15 +217,23 @@ The background follows your weapon's rarity. Icon edits don't recolor the 3D wea
 
 Custom perks, badges, and watermarks share an icon browser. Choose from game assets, use **Add Icon…** to load your own, or choose **Download destiny-icons** for the optional [destiny-icons](https://github.com/justrealmilk/destiny-icons) collection. Imported artwork is stored with the recipe or perk document.
 
-Use **Edit Artwork…** under **Release Watermark** on **Appearance** to customize the small watermark on the weapon's inventory icon. Custom badges have the same artwork editor on **Collections**. Both support crop, placement, rotation, and flipping, and badges also offer background colors and gradients.
+Use **Edit Artwork…** under **Release Watermark** on **Appearance** to customize the small watermark on the weapon's inventory icon. Custom badges have the same artwork editor on **Collections**. Both support crop, placement, rotation, flipping, **Before** and **After** comparison, and **Reset All Edits**. Badges also offer background colors, gradients, and **Colors** for hue, saturation, brightness, contrast, opacity, and inversion. Watermarks offer **Opacity**.
 
 Authored weapons accept shaders even when their base, appearance, or ornament is Exotic. The original colors remain when no shader is selected. Shader colors still depend on the model's supported dye channels. **Render Dyes** under **Appearance > Technical Appearance Data** edits the underlying dye rows when experimental features are enabled.
 
-To change the small weapon icon beside the ammo count, use **Ammo HUD Icon > Import HUD PNG…** and choose a transparent PNG. This doesn't change the inventory icon. **Use Appearance** switches back to the donor's HUD icon. Rebuild and install to see your changes in-game.
+To change the small weapon icon beside the ammo count, click **Import PNG…** on **Ammo HUD Icon** and choose a transparent PNG. This doesn't change the inventory icon. **Use Appearance** switches back to the donor's HUD icon. Rebuild and install to see your changes in-game.
+
+### Barrel Settings
+
+**Barrel Settings** on **Gameplay** controls how many pellets each bullet fires and how they spread. Set **Pellets per Bullet** and **Spread**, then choose a **Pattern**: **Filled Circle**, **Ring**, or **Custom**. A custom pattern lists each ring's pellet count, inner and outer radius, rotation, and randomness beside a preview. **Random Rotation** turns the pattern to a new angle for each bullet. Turn it off to keep a pattern, such as a level row, at the same angle every shot.
+
+**Bullets per Shot** sets how many bullets fire with each trigger pull. On pulse rifles, sidearms, and rocket launchers, the weapon's **Rounds Per Minute** decides it.
+
+Extra pellets are confirmed working on Fusion Rifles, Shotguns, Pulse Rifles, Auto Rifles, Scout Rifles, Submachine Guns, Sniper Rifles, Grenade Launchers, Sidearms, and Hand Cannons. On Rocket Launchers, the extra rockets collide with each other as soon as they're fired.
 
 ### Collections Placement
 
-**Collections** chooses where your weapon appears in the game's Collections. By default it uses the node matching your weapon's ammo type and its base weapon's type, creating that node when the game has no stock one for the combination. Your weapon goes at the start of the node rather than beside its base weapon, so it is easier to find. Adding a page creates one shared page that uses the stock weapon-type name and icon. Exotic weapons always use the Exotics collection for their inventory slot.
+**Collections** chooses where your weapon appears in the game's Collections. By default it uses the node matching your weapon's ammo type and weapon type, creating that node when the game has no stock one for the combination. Your weapon goes at the start of the node rather than beside its base weapon, so it is easier to find. Adding a page creates one shared page that uses the stock weapon-type name and icon. Exotic weapons always use the Exotics collection for their inventory slot.
 
 Enable **Custom Badge** to group weapons under your own badge, with a name, description, and artwork. Use the same badge settings for each member, or select an existing badge with **Choose from Library**. You can also choose whether the weapon appears in the default Sunrise or Dawn badge.
 
@@ -242,11 +243,11 @@ Placement is presentation only. It does not change ammo, stats, or gameplay.
 
 ## Making Other Items
 
-The **New Item** menu beside **New Weapon** starts an armor piece, Sparrow, Ship, Ghost Shell, Emblem, Shader, Mod, or Subclass from a stock base. Save it as a recipe and select it in **Items in This Build** before building. This section covers gear. Shaders, Mods, and Subclasses have their own sections below.
+The **New Item** menu beside **New Weapon** starts an armor piece, Sparrow, Ship, Ghost Shell, Emblem, Shader, Mod, or Subclass from a stock base. Save it as a recipe and select it under **Items in Build…** before building. This section covers armor, Sparrows, Ships, Ghost Shells, and Emblems. Shaders, Mods, and Subclasses have their own sections below.
 
-Edit the name, description, icon, rarity, supported stats, and sockets. Gear can add sockets, remove the base's sockets, or give a socket another role, as weapons can. Gear keeps the base item's slot, model, and runtime behavior, and its page shows a preview of the base item's model. Armor also has **Energy Type** and **Energy Capacity** controls, and a **Class** picker that follows the base or can use **Titan**, **Hunter**, **Warlock**, or **Any Class**. Exotic armor requires an Exotic base. Sparrows, Ships, Ghost Shells, Emblems, and Shaders can be Exotic on any base. An Emblem's nameplate takes its banner, overlay, and background from another Emblem or your own image, and **Customize Colors** sets its colors.
+Edit the name, description, icon, rarity, supported stats, and sockets. These items can add sockets, remove the base's sockets, or give a socket another role, as weapons can. They keep the base item's slot, model, and runtime behavior, and their pages show a preview of the base item's model. Armor also has **Energy Type** and **Energy Capacity** controls, and a **Class** picker that follows the base or can use **Titan**, **Hunter**, **Warlock**, or **Any Class**. Exotic armor requires an Exotic base. Sparrows, Ships, Ghost Shells, Emblems, and Shaders can be Exotic on any base. An Emblem's nameplate takes its banner, overlay, and background from another Emblem or your own image. Each image has **Edit Artwork…**, **Customize Colors** sets the nameplate's colors, and **Stat Trackers** chooses which trackers the Emblem offers.
 
-In Collections, authored armor appears on a **Project Sunrise** or **Dawn** page under **Armor** for each class it supports and joins that class's badge. Exotic armor also appears in **Exotics**. Sparrows, Ships, Ghost Shells, Emblems, and Shaders appear on a **Project Sunrise** or **Dawn** page under their kind. Each of these pages uses one node from the [Collections budget](#collections-placement).
+In Collections, authored armor appears on a **Project Sunrise** or **Dawn** page under **Armor** for each class it supports and joins that class's badge. Its **Armor Set** rows hold up to five pieces, and pieces whose appearance comes from the same armor set stay together in slot order. Exotic armor also appears in **Exotics**. Sparrows, Ships, Ghost Shells, Emblems, and Shaders appear on a **Project Sunrise** or **Dawn** page under their kind. Each of these pages uses one node from the [Collections budget](#collections-placement).
 
 Armor authoring will gain more options in future releases.
 
@@ -273,7 +274,7 @@ Choose **Shader** from the **New Item** menu and pick a stock Shader as the base
 - Give a dye another Shader's detail textures and change how often they repeat.
 - Use **Copy from Shader…** to copy a surface, a dye's textures, or a whole dye channel from a stock Shader.
 
-Edit every gear type at once, or one at a time to give weapons different colors from armor. The Shader's icon is built automatically from your color and material choices, in the style of the stock Shader icons, and updates as you edit. Turn off **Icon From Dyes** to pick an icon instead.
+Edit **All Gear** at once, or each item type on its own to give weapons different colors from armor. The Shader's icon is built automatically from your color and material choices, in the style of the stock Shader icons, and updates as you edit. Turn off **Icon From Dyes** to pick an icon instead.
 
 Authored Shaders appear on a **Project Sunrise** or **Dawn** page in Collections, and installing adds a stack of 777 of each to your inventory when there is room.
 
@@ -289,9 +290,9 @@ You can also build attunement paths node by node. Each node can come from any Su
 
 Each ability and node has its own page, with tabs marked once you change something:
 
-- **Ability** sets its name, description, and icon. Imported artwork shows on the Subclass screen only.
+- **Ability** sets its name, description, and icon. Your own artwork shows on the Subclass screen only.
 - **Perks** sets the perks it grants, including custom perks from the workbench. Right-click a stock perk and choose **Edit as Custom Perk…** to change it for this ability alone.
-- **Gameplay** holds the ability's **Charges**, **Recharge**, and own values, such as **Blink Distance** or **Airborne Jumps**. A node's **Changes While Equipped** sets what selecting it changes about the Subclass's abilities, such as an extra grenade charge. Each part the ability creates has a card with its timers, projectile flight, and buff amounts. A timer's **Duration** can be **Unlimited**. **Projectile** swaps a projectile for another ability's, or for any projectile in the game, such as a weapon's or an enemy's, under **All Projectiles**.
+- **Gameplay** holds the ability's **Extra Charges**, **Recharge Rate**, and own values, such as **Blink Distance** or **Airborne Jumps**. A node's **Changes While Equipped** sets what selecting it changes about the Subclass's abilities, such as an extra grenade charge. Each part the ability creates has a card with values such as its timers, projectile flight, and what it changes about you and your weapons. **Find Properties** searches every value the ability has. A timer's **Duration** can be **Unlimited**. **Projectile** swaps a projectile for another ability's, or for any projectile in the game, such as a weapon's or an enemy's, under **All Projectiles**.
 - **Visuals** holds **Effect Colors**. **Overall** adjusts everything the ability draws, including trails, lights, and decals. Under it, each color the ability's effects use has its own hue, saturation, and brightness, and **Apply to Every Color** in a color's menu copies its values to the rest. **Colors From** copies another ability's colors, and **Colorize** sets a single hue. Every swatch shows its color with **Overall** applied, as it will look in game.
 
 Changes belong to that ability, so other abilities using the same stock data keep theirs.
@@ -308,7 +309,7 @@ Subclass authoring will gain more options in future releases as more of how Subc
 
 ## Bundled Custom Weapons and Perks
 
-Parhelion includes these examples to show a taste of what the workbench can do. Use them as references, inspiration, or starting points for your own creations. Open one to see how its donors, sockets, stats, presentation, and custom behavior fit together.
+Parhelion includes these examples to show what the workbench can do. Use them as references, inspiration, or starting points for your own creations. Open one to see how its donors, sockets, stats, presentation, and custom behavior fit together.
 
 ### Bundled Weapons
 
@@ -351,6 +352,7 @@ These library examples are Traits. Redacted and Vaultbreaker use Intrinsic versi
 - **Scavenger's Rhythm**: Any final blow transfers ammunition from reserves into the magazine.
 - **Storm Cannon Frame**: Fires massive Arc bolts. Final blows grant melee energy.
 - **Void Nova Frame**: Fires high-velocity Void Nova Bombs. Final blows grant invisibility.
+- **Wolfpack Rounds**: Rounds split into tracking micro-missiles when they detonate.
 
 ## Recipes and Sharing
 
@@ -362,19 +364,38 @@ To remove a recipe from the library, open its menu and choose **Delete…**. Par
 
 Renaming an item also changes its in-game identifiers, so the game treats it as a different item. If the next build replaces the old item, installation asks you to confirm removal of any saved copies.
 
-**Recipe… > Discard Changes** returns to the last saved version of the recipe. It doesn't undo an installation. Export a working recipe before experimenting if you want a copy to return to. To replace a recipe with an earlier version, follow [Restoring a recipe](#restoring-a-recipe).
+**Recipe… > Discard Changes** returns to the last saved version of the recipe. It doesn't undo an installation. Export a working recipe before experimenting if you want a copy to return to. To replace a recipe with an earlier version, follow [Restoring a Recipe](#restoring-a-recipe).
 
 You can edit any of the default weapons bundled with Parhelion too. Parhelion uses your saved version instead of the bundled version.
 
+## Sunrise Mod Folder
+
+On Project Sunrise 0.6 or later, Parhelion installs each build as a Sunrise mod, in the `dev.kylethmpsn.parhelion` folder inside Sunrise's `mods` folder. Dawn and earlier Sunrise versions keep using the game's `packages` folder. Sunrise's **Mods** page lists it as **Parhelion**, with the version of Sundial that built it.
+
+Packages from an earlier build can't move into the mod folder. When Parhelion finds them in the game's `packages` folder, it asks you to build again, and the next install backs them up and removes them. Keep every installed item in that build so it stays in your account. **Review Sunrise Mod Upgrade…** in **Preferences… > Builds & Backups** opens that review again.
+
+Parhelion installs beside other mods, including Sunrise Studio mods. Builds skip the package IDs other mods use, and each package carries merge data, so Sunrise can combine the rows Parhelion and another mod both add to item, Collections, and other shared tables. Where another mod changes an entry Parhelion also changes, installation goes ahead only if Sunrise would combine it intact. It stops and names the other mod when Sunrise can't combine the entry, when both mods set the same values differently, or when the other mod loads first and adds rows to a table Parhelion adds to, since Sunrise would then renumber Parhelion's rows. Sunrise loads mods in order of their IDs, so a mod whose ID sorts before `dev.kylethmpsn.parhelion` loads first. Remove the overlapping edits from one of them to install both.
+
+Installation also stops where Sunrise would refuse a mod:
+
+- Another mod declares Parhelion incompatible, already adds one of the build's new package IDs, or claims Parhelion's mod ID.
+- All mods together would add more than 1,024 package files.
+- There would be more than 64 mod folders.
+
+Sundial and Parhelion read the game the way Sunrise loads it, with Parhelion's mod and every other mod Sunrise would load, including their configuration values. A mod Sunrise would refuse is left out. Where several mods change the same entry, Sundial shows the entry Sunrise combines from them, or the version from the mod Sunrise loads later where it can't combine them. In Sundial, **Preferences > Installation > Troubleshooting > Copy Report** lists what was left out and why. Reading mods needs a game drive that supports hard links.
+
+You can switch the game between Sunrise 0.6 and Dawn or an earlier Sunrise version. Sunrise 0.6 loads builds from its mod folder, and the others load them from the game's `packages` folder, so after switching, build and install again for the runtime you're using. That install backs up and removes the packages installed for the other runtime, and uninstalling removes custom packages from either place. Each runtime keeps its own account, so items added on one aren't in the other.
+
 ## Generated Packages
 
-Parhelion installs each build's packages together into your game's `packages` folder. Every build includes asset and investment packages. Other files depend on your selected recipes. The build result and manifest list the exact files.
+Parhelion installs each build's packages together. On Dawn and on Project Sunrise before 0.6, they go in your game's `packages` folder. On Sunrise 0.6 or later, they go in the [Sunrise mod folder](#sunrise-mod-folder), and their IDs skip any that other mods use, so the numbers can differ from those below. Every build includes asset and investment packages. Other files depend on your selected recipes. The build result and manifest list the exact files.
 
 ### Required Packages
 
 | Package File | Purpose |
 | --- | --- |
-| `w64_parhelion_assets_0aa0_0.pkg` | Holds authored artwork, models, materials, and other private assets, including badges and watermarks. |
+| `w64_parhelion_assets_0aa0_0.pkg` | Holds authored artwork, models, materials, and other private assets, including badges and watermarks. On Sunrise 0.6 or later, the first asset package is `w64_parhelion_assets_0aa1_0.pkg`. |
+| `w64_parhelion_investment_0aa0_0.pkg` | Sunrise 0.6 or later only. Holds the authored item records that other runtimes add to `w64_investment_globals_client_0914_4.pkg`. |
 | `w64_investment_0361_7.pkg` | Connects authored items and perks to their in-game behavior. |
 | `w64_investment_globals_client_058c_4.pkg` | Adds Collections entries, unlocks, and Sunrise or Dawn badge progression. |
 | `w64_investment_globals_client_0593_4.pkg` | Registers authored items and connects them to their Collections entries. |
@@ -388,7 +409,7 @@ Generated only when your recipes need them. Ability property banks gain entries 
 
 | Package File | Purpose |
 | --- | --- |
-| `w64_parhelion_assets_0aa1_0.pkg` through `w64_parhelion_assets_0cff_0.pkg` | Holds additional authored assets when they no longer fit in the first package. Only the needed files are generated. |
+| `w64_parhelion_assets_0aa1_0.pkg` through `w64_parhelion_assets_0cff_0.pkg` | Holds authored assets, custom perks, and abilities that no longer fit in the packages above. Only the needed files are generated. |
 | `w64_sandbox_01bb_7.pkg` | Adds the custom perk behavior that selected items use. |
 | `w64_sandbox_01c0_6.pkg` | Extends an ability property bank. |
 | `w64_sandbox_01d5_7.pkg` | Extends an ability property bank. |
@@ -400,8 +421,10 @@ Generated only when your recipes need them. Ability property banks gain entries 
 | `w64_sandbox_01fd_6.pkg` | Extends an ability property bank. |
 | `w64_sandbox_0397_6.pkg` | Extends an ability property bank. |
 | `w64_shared_manifest_0374_7.pkg` | Makes additional gameplay resources available to the items and perks that need them. |
+| `w64_ui_01a3_7.pkg` | Applies authored ability colors on the Subclass screen. |
+| `w64_ui_01e3_6.pkg` | Adds authored ability icons and the colors the HUD and Subclass screen show for them. |
 | `w64_ui_02af_6.pkg` | Adds custom perk statuses shown on the HUD, with their names and icons. |
-| `w64_ui_037e_6.pkg` | Adds custom weapon icons shown beside the ammo count. |
+| `w64_ui_037e_6.pkg` | Adds custom weapon icons shown beside the ammo count, and applies authored ability colors on the Subclass screen. |
 | `w64_globals_03ab_7.pkg` | Stores the localized text for custom HUD status names. |
 | `w64_globals_06dc_7.pkg` | Registers custom HUD status names and connects them to their localized text. |
 
@@ -413,7 +436,7 @@ Parhelion backs up the installed package set before replacing it and removes old
 
 If installation also removes anything from your account, Parhelion backs up the account with the packages. These backups aren't deleted automatically.
 
-Under **Preferences… > Builds & Backups**, choose where to save backups, how many to keep, and whether to back up recipes. By default, Parhelion keeps the latest **three** completed package backups for each game installation. It keeps incomplete backups and older backups it can't identify.
+Under **Preferences… > Builds & Backups**, choose where to save backups, how many to keep, and whether to back up recipes. By default, Parhelion keeps the latest **three** completed package backups for each game installation. It keeps incomplete backups and older backups it can't identify. Sunrise mod folder backups are kept separately and aren't deleted automatically.
 
 [Settings backups](../../README.md#backups-and-local-files) are separate. Restoring settings doesn't restore packages.
 
@@ -433,7 +456,7 @@ Custom recipes, build selection, and installed packages are kept. Rebuild and in
 
 1. Close Destiny and any other apps editing the same account.
 2. Open **Preferences… > Builds & Backups > Uninstall Custom Packages…**.
-3. Leave **Remove Custom Items and Progression** checked to remove custom items, saved perk selections, Collections unlocks, and reward rules from the selected account. Equipped custom weapons are removed too, leaving those slots empty.
+3. Leave **Remove Custom Items and Progression** checked to remove custom items, saved perk selections, Collections unlocks, and reward rules from the selected account. Equipped custom weapons and Subclasses are removed too, leaving those slots empty. A character left without a Subclass shows no model on the character screen until you pick a stock Subclass in that slot.
 4. Review the removals, confirm, then click **Back Up & Uninstall**.
 
 This removes the complete installed Parhelion package set.
@@ -444,7 +467,7 @@ If you leave account cleanup checked, the backup includes both the packages and 
 
 ### Recovering an Interrupted Installation
 
-With Destiny closed, open **Preferences… > Builds & Backups** and choose **Recover Interrupted Operation**. This also handles interrupted uninstalls. If recovery fails, keep the complete backup and build manifest and ask for help. Don't try to repair the installation by deleting stock packages or mixing builds.
+Parhelion recovers an interrupted installation or uninstall before the next one starts, so close Destiny and install or uninstall again. If **Uninstall Custom Packages…** or the Sunrise mod review reports an interrupted operation, choose **Recover Interrupted Operation** there. Recover before switching between Sunrise 0.6 and Dawn or an earlier Sunrise, since recovery needs the runtime the operation started on. If recovery fails, keep the complete backup and build manifest and ask for help. Don't try to repair the installation by deleting stock packages or mixing builds.
 
 ## FAQ
 
@@ -456,7 +479,7 @@ Perks can depend on a specific reload action, magazine size, or weapon behavior.
 
 Make sure you saved the recipe, selected it for the build, and installed the new packages with Destiny closed. Fully relaunch the game afterward.
 
-Existing weapons may keep their selected perks. Get a fresh copy from Collections to check new defaults. If a weapon is missing from Collections, check the install report for an unlock error even if the packages installed successfully.
+Existing weapons may keep their selected perks. Get a fresh copy from Collections to check new defaults. If a weapon is missing from Collections, check the install report for an unlock error even if the packages installed successfully. **Tools > Resync Account** applies the installed items and unlocks to your account again.
 
 ### Where Are the Advanced Controls?
 

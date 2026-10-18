@@ -1,8 +1,9 @@
 //! Private copies of the entities a composed owner attaches, without chosen components.
 //!
-//! A sword guard attaches entity `80BBC2F6` to the player while it is active. Its third person
-//! camera component (`80EF5842`, class `80808A0C`, as the sword entity's own always-on camera
-//! `80EF588B` is) is what turns a glaive that guards into a third person weapon. The copy keeps
+//! A sword guard attaches entity `80BBC2F6` to the player while it is active. It carries a physics
+//! component (`80EF5842`, class `80808A0C`, as the sword entity's own always-on `80EF588B` does).
+//! A live build that copied the attachment without it still guarded in third person, so it is not
+//! what turns the guard third person. The copy keeps
 //! every other component and connection, and the composed owner names the copy instead, through
 //! the same private graph copy that runtime resource patches with graph removals make.
 use super::*;

@@ -18,6 +18,7 @@ d2-model-importer = ["dep:parhelion-import"]
 workspace = true
 
 [dependencies]
+anyhow = "1"
 parhelion-import = { path = "../parhelion-import", optional = true }
 fs2 = "0.4.3"
 hex = "0.4.3"
@@ -36,13 +37,12 @@ sundial = { path = "../.." }
 tempfile = "3.27.0"
 tiger-pkg = { version = "0.21.0", features = ["ignore_caches"] }
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
-zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2"] }
 resvg = { version = "0.48.1", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 libloading = "0.9.0"
 
 [dev-dependencies]
-anyhow = "1"
 sundial = { path = "../..", features = ["test-support"] }
 rusqlite = { version = "0.40.2", features = ["bundled", "fallible_uint"] }

@@ -139,7 +139,31 @@ impl<'a> Write<'a> {
             }
         }
         self.bytes.extend_from_slice(&mask.tail);
+        // The native mask ends with four flag/padding bytes. Any following
+        // alignment belongs to the containing stream, not the mask record.
+        let aligned = self
+            .bytes
+            .len()
+            .checked_add(7)
+            .context("selector mask alignment")?
+            & !7;
+        self.bytes.resize(aligned, 0);
         Ok(at)
+    }
+
+    pub(super) fn mask_fragment(
+        mut self,
+        mask: Option<Mask>,
+        destination: &Payload,
+        field: usize,
+    ) -> Result<(Payload, Vec<Gate>)> {
+        self.bytes = destination.0.clone();
+        put(&mut self.bytes, field, &0u64.to_le_bytes())?;
+        if let Some(mask) = mask {
+            let target = self.masks(mask)?;
+            self.relative(field, target)?;
+        }
+        Ok((Payload(self.bytes), self.gates))
     }
 
     fn selector(&mut self, flags: u64, rows: Vec<(u64, Node)>, at: usize) -> Result<()> {
@@ -197,6 +221,46 @@ impl<'a> Write<'a> {
                 let data = self.array(at, 0x80806829, values.len(), 1)?;
                 if !values.is_empty() {
                     put(&mut self.bytes, data, &values)?;
+                }
+                Ok(at)
+            }
+            Node::Numeric {
+                programs,
+                comparison,
+            } => {
+                let at = self.prefix(0x80804D7D, 8)?;
+                self.reserve(144)?;
+                self.bytes[at + 0x88] = comparison;
+                for (i, program) in programs.into_iter().enumerate() {
+                    let field = at + 8 + i * 64;
+                    let data = self.array(field, 0x8080941B, program.bindings.len(), 8)?;
+                    for (j, [kind, name]) in program.bindings.iter().copied().enumerate() {
+                        put(&mut self.bytes, data + j * 8, &kind.to_le_bytes())?;
+                        put(&mut self.bytes, data + j * 8 + 4, &name.to_le_bytes())?;
+                        self.named_conditions.insert(name);
+                    }
+                    let code = super::super::super::procedural::lower_program(
+                        &program.code,
+                        program.constants.len() / 16,
+                        program.bindings.len(),
+                    )?;
+                    let mut constants = program.constants;
+                    super::super::super::controller::constants::broadcast(
+                        &program.code,
+                        &mut constants,
+                    );
+                    let data = self.array(field + 16, 0x80800009, code.len(), 1)?;
+                    put(&mut self.bytes, data, &code)?;
+                    let data = self.array(field + 32, 0x80800090, constants.len() / 16, 16)?;
+                    if !constants.is_empty() {
+                        put(&mut self.bytes, data, &constants)?;
+                    }
+                    put(
+                        &mut self.bytes,
+                        field + 48,
+                        &(program.bindings.len() as u64).to_le_bytes(),
+                    )?;
+                    put(&mut self.bytes, field + 56, &1u64.to_le_bytes())?;
                 }
                 Ok(at)
             }

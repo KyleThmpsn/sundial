@@ -26,6 +26,8 @@ fn pack(
                     crate::NewTagStorageMode::InheritTemplate => 0,
                     crate::NewTagStorageMode::AudioMedia => 1,
                     crate::NewTagStorageMode::AudioBank => 2,
+                    crate::NewTagStorageMode::GpuHull => 3,
+                    crate::NewTagStorageMode::GpuDomain => 4,
                 },
                 fields: relocate::fields(manager, tag),
                 span: append(bytes, &tag.payload),

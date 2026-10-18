@@ -152,6 +152,7 @@ fn child(output: &Path, phase: &str) {
     let bundle = crate::item::build::compile_with_progress(
         &source,
         &WeaponProjectSpec { weapons: items },
+        &[],
         crate::branding::Branding::for_packages(&source),
         &mut |event| {
             progress.push(json!({

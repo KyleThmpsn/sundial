@@ -24,7 +24,26 @@ pub fn encode_with_stages(
         stages.values().all(|stage| matches!(stage, 0 | 7)),
         "Unsupported surface stage"
     );
-    encode_passes(mesh, native, native_mesh, stages, true)
+    encode_passes(mesh, native, native_mesh, stages, true, None)
+}
+
+/// Bind each authored primitive to a declared component activation group.
+pub(crate) fn encode_grouped(
+    mesh: &Mesh,
+    native: &Payload,
+    native_mesh: usize,
+    stages: &std::collections::BTreeMap<u32, u8>,
+    groups: &[u16],
+) -> Result<Encoded> {
+    ensure!(
+        stages.values().all(|stage| matches!(stage, 0 | 7)),
+        "Unsupported surface stage"
+    );
+    ensure!(
+        groups.len() == mesh.groups.len() && groups.iter().all(|&group| group <= i16::MAX as u16),
+        "Authored activation groups differ from primitive groups"
+    );
+    encode_passes(mesh, native, native_mesh, stages, true, Some(groups))
 }
 
 /// Keep explicitly supplied surface, decal, shadow, transparent, depth and reticle
@@ -42,10 +61,10 @@ pub fn encode_source_passes(
     ensure!(
         stages
             .values()
-            .all(|stage| matches!(stage, 0 | 1 | 3 | 7 | 12 | 16)),
+            .all(|stage| matches!(stage, 0 | 1 | 3 | 7 | 9 | 12 | 16)),
         "Unsupported source presentation pass"
     );
-    encode_passes(mesh, native, native_mesh, stages, false)
+    encode_passes(mesh, native, native_mesh, stages, false, None)
 }
 
 #[expect(
@@ -58,6 +77,7 @@ fn encode_passes(
     native_mesh: usize,
     stages: &std::collections::BTreeMap<u32, u8>,
     automatic_shadows: bool,
+    groups: Option<&[u16]>,
 ) -> Result<Encoded> {
     ensure!(
         !mesh.positions.is_empty() && mesh.positions.len() == mesh.attributes.len(),
@@ -141,7 +161,7 @@ fn encode_passes(
         if !automatic_shadows && !stages.is_empty() && stages.values().all(|stage| *stage == 16) {
             crate::tiger::draws::stage_group(native, native_mesh, 16)?
         } else {
-            crate::tiger::draws::body_group(native, native_mesh)?
+            crate::tiger::draws::drawn_group(native, native_mesh)?
         };
     let mut patches = vec![
         json!({"offset":0xb0,"symbol":"positions-header"}),
@@ -150,8 +170,8 @@ fn encode_passes(
     ];
     let mut ranges = vec![0u16];
     for stage in 0..23 {
-        if [0, 1, 3, 7, 12, 16].contains(&stage) {
-            for (mat, faces) in &mesh.groups {
+        if [0, 1, 3, 7, 9, 12, 16].contains(&stage) {
+            for (group_index, (mat, faces)) in mesh.groups.iter().enumerate() {
                 let surface_stage = usize::from(*stages.get(mat).unwrap_or(&0));
                 if stage != surface_stage
                     && !(automatic_shadows && stage == 3 && surface_stage == 0)
@@ -170,15 +190,15 @@ fn encode_passes(
                 )?;
                 put(&mut rec, 12, &(faces.len() as u32 * 4).to_le_bytes())?;
                 put(&mut rec, 16, &(faces.len() as u32).to_le_bytes())?;
-                // The imported assembly follows the carrier's body activation.
-                put(&mut rec, 20, &visibility_group.to_le_bytes())?;
+                let group = groups.map_or(visibility_group, |groups| groups[group_index]);
+                put(&mut rec, 20, &group.to_le_bytes())?;
                 put(&mut rec, 22, &(records.len() as u16).to_le_bytes())?;
                 put(
                     &mut rec,
                     24,
                     &(match stage {
                         1 => 39u16,
-                        7 | 16 => 21,
+                        7 | 9 | 16 => 21,
                         _ => 5,
                     })
                     .to_le_bytes(),
@@ -237,7 +257,9 @@ fn encode_passes(
         })
         .fold(0f32, f32::max)
         + scale / 32767.;
-    for offset in [0x20, 0x24, 0x8c] {
+    // Stock weapon headers hold the bounding radius at +0x20, +0x24 and +0x28 and keep 1.0 at
+    // +0x2C. The copied donor header must not keep its own +0x28 under a larger model.
+    for offset in [0x20, 0x24, 0x28, 0x8c] {
         put(&mut h, offset, &radius.to_le_bytes())?;
     }
     for (a, value) in center.iter().enumerate() {

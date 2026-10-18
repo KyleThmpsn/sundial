@@ -59,6 +59,16 @@ impl Settings {
 
 /// Render a checked local weapon graph without changing any of its payloads.
 pub fn render(reference: &GraphReference, packages: &Path, settings: Settings) -> Result<Vec<u8>> {
+    Ok(render_with_notices(reference, packages, settings)?.0)
+}
+
+/// The rendered artwork and the preview's notices: what it could not load or evaluate as the
+/// game would, which a generated icon then misrepresents.
+pub fn render_with_notices(
+    reference: &GraphReference,
+    packages: &Path,
+    settings: Settings,
+) -> Result<(Vec<u8>, Vec<String>)> {
     let appearance = crate::preview::appearance(reference, "weapon");
     let art = icon::local(packages, &appearance, settings.pose, settings.frame, 768)
         .map_err(anyhow::Error::msg)?;
@@ -67,7 +77,7 @@ pub fn render(reference: &GraphReference, packages: &Path, settings: Settings) -
     let image = image::imageops::resize(&source, 96, 96, image::imageops::FilterType::Lanczos3);
     let mut png = Cursor::new(Vec::new());
     image.write_to(&mut png, image::ImageFormat::Png)?;
-    Ok(png.into_inner())
+    Ok((png.into_inner(), art.notices))
 }
 
 /// Add artwork to a freshly converted graph before it is published or pinned by a recipe.
@@ -85,7 +95,8 @@ pub(crate) fn prepare(directory: &Path, packages: &Path, settings: Settings) -> 
     let file = "generated-icon.png";
     fs::write(directory.join(file), png)?;
     graph["source_icon_png"] = json!(file);
-    graph["generated_icon"] = json!({"revision":1,"settings":settings,"size":96});
+    // Record the renderer version so cached artwork can be refreshed after rendering changes.
+    graph["generated_icon"] = json!({"revision":3,"settings":settings,"size":96});
     crate::io::write_json(&path, &graph)
 }
 

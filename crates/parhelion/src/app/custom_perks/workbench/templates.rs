@@ -570,6 +570,7 @@ pub(super) fn from_variant(
     });
     recipe.classification = variant.classification_donor_hash.clone();
     recipe.offer_everywhere = variant.offer_everywhere;
+    recipe.projectile = variant.projectile;
     if !variant.replace_effects {
         recipe.effects = catalog
             .item_sandbox_perk_indices(hash)

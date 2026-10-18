@@ -88,24 +88,39 @@ fn parameter(id: u32) -> Result<u8> {
 }
 
 /// Properties are separate ID and value arrays, not interleaved records.
-pub(super) fn props(r: &mut Read<'_>, w: &mut Write, ranged: bool) -> Result<Option<u32>> {
+#[derive(Default)]
+pub(super) struct Properties {
+    pub attenuation: Option<u32>,
+    pub position_switch: bool,
+}
+
+pub(super) fn props(r: &mut Read<'_>, w: &mut Write, ranged: bool) -> Result<Properties> {
     let count = r.u8()? as usize;
     let ids = r.take(count)?.to_vec();
     let width = if ranged { 8 } else { 4 };
     let values = r.take(count * width)?;
     let mut keep = Vec::new();
-    let mut attenuation = None;
+    let mut properties = Properties::default();
     for (index, id) in ids.into_iter().enumerate() {
         if id == 0x56 {
             ensure!(!ranged, "randomized attenuation identity");
             ensure!(
-                attenuation
+                properties
+                    .attenuation
                     .replace(u32::from_le_bytes(
                         values[index * width..index * width + 4].try_into()?
                     ))
                     .is_none(),
                 "duplicate attenuation identity"
             );
+        } else if id == 0x2A {
+            ensure!(
+                !ranged
+                    && !properties.position_switch
+                    && values[index * width..index * width + 4] == 1.0f32.to_le_bytes(),
+                "unsupported positioning blend property"
+            );
+            properties.position_switch = true;
         } else {
             keep.push((property(id)?, index));
         }
@@ -118,10 +133,15 @@ pub(super) fn props(r: &mut Read<'_>, w: &mut Write, ranged: bool) -> Result<Opt
     for (_, index) in keep {
         w.bytes.extend(&values[index * width..(index + 1) * width]);
     }
-    Ok(attenuation)
+    Ok(properties)
 }
 
 pub(super) fn rtpcs(r: &mut Read<'_>, w: &mut Write, c: &mut Convert) -> Result<()> {
+    curves(r, w, c, false).map(|_| ())
+}
+
+fn curves(r: &mut Read<'_>, w: &mut Write, c: &mut Convert, position_switch: bool) -> Result<bool> {
+    let mut switched = false;
     let count = r.u16()?;
     w.u16(count);
     for _ in 0..count {
@@ -138,7 +158,16 @@ pub(super) fn rtpcs(r: &mut Read<'_>, w: &mut Write, c: &mut Convert) -> Result<
         w.u8(kind);
         let accumulation = r.u8()?;
         let source = r.var()?;
-        let target = parameter(source)?;
+        let target = if source == 0x2A {
+            ensure!(
+                position_switch && accumulation == 1 && !switched,
+                "positioning curve lacks a supported switch envelope"
+            );
+            switched = true;
+            0x0A
+        } else {
+            parameter(source)?
+        };
         let accumulation = match (source, accumulation) {
             (6, 2) => 0, // Priority was an exclusive native parameter.
             (2 | 3 | 0x0E | 0x0F | 0x2E | 0x2F, 6) => 1, // Native filters use additive accumulation.
@@ -148,12 +177,19 @@ pub(super) fn rtpcs(r: &mut Read<'_>, w: &mut Write, c: &mut Convert) -> Result<
         };
         w.u8(accumulation);
         w.u8(target);
-        w.copy(r, 5)?; // Curve ID and scaling.
+        w.copy(r, 4)?; // Curve ID.
+        let scaling = r.u8()?;
+        ensure!(source != 0x2A || scaling == 0, "scaled positioning switch");
+        w.u8(scaling);
         let points = r.u16()?;
         w.u16(points);
-        w.copy(r, usize::from(points) * 12)?;
+        if source == 0x2A {
+            position::switch_curve(r, w, points)?;
+        } else {
+            w.copy(r, usize::from(points) * 12)?;
+        }
     }
-    Ok(())
+    Ok(switched)
 }
 
 fn states(r: &mut Read<'_>, w: &mut Write, c: &mut Convert, owner: u32) -> Result<()> {
@@ -249,9 +285,11 @@ pub(super) fn node(r: &mut Read<'_>, w: &mut Write, c: &mut Convert, id: u32) ->
     w.copy(r, 4)?; // Output bus remains global.
     w.object(r)?;
     w.copy(r, 1)?;
-    let attenuation = props(r, w, false)?;
+    let properties = props(r, w, false)?;
     props(r, w, true)?;
-    position::emit(r, w, attenuation)?;
+    let position_switch = r.bytes.get(r.at..r.at + 2) == Some(&[3, 0x0A]);
+    let position_at = w.bytes.len();
+    position::emit(r, w, properties.attenuation, properties.position_switch)?;
     let aux = r.u8()?;
     ensure!(aux & 0x10 == 0, "reflection bus override is unsupported");
     w.u8(aux);
@@ -261,6 +299,15 @@ pub(super) fn node(r: &mut Read<'_>, w: &mut Write, c: &mut Convert, id: u32) ->
     ensure!(r.u32()? == 0, "reflection bus requires native conversion");
     w.copy(r, 6)?;
     states(r, w, c, id)?;
-    rtpcs(r, w, c)?;
+    let switched = curves(r, w, c, position_switch)?;
+    ensure!(
+        !properties.position_switch || switched,
+        "positioning blend lacks a binary controller"
+    );
+    if switched {
+        // The witnessed native switch exposes both positioning routes, even
+        // when the source uses the default base value without a property row.
+        w.bytes[position_at] |= 2;
+    }
     Ok(())
 }

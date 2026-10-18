@@ -8,8 +8,10 @@ const ABILITY_BASE: u32 = 0x8080_3BB7;
 const INPUT_METHOD: usize = 11;
 /// The inherited input method that consumes the ability's command slot (`BB0F50`).
 const SLOT_INPUT: u32 = 27;
-/// An inherited method that returns false and touches nothing (`E0DC10`), so the ability never
-/// starts from input and a melee press is left to the class melee.
+/// An inherited method read as returning false and touching nothing (`E0DC10`), so the ability
+/// would never start from input. Selected in a live glaive build, it hung the game on fire. The
+/// native cold-cache loader checks neither a method row's ordinal nor its signature, so this
+/// ordinal is not established as an inert input.
 const NO_INPUT: u32 = 62;
 
 pub(super) fn author(

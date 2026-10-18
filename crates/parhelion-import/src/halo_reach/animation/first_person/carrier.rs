@@ -18,6 +18,12 @@ pub(super) struct Carrier {
     pub pose_tag: u32,
     pub pose_layers: Arc<Payload>,
     pub rig: animation::control::Rig,
+    pub skeleton_tag: u32,
+    pub skeleton: Arc<Payload>,
+    pub control_tag: u32,
+    pub controls: Arc<Payload>,
+    pub equipment_skeleton: (u32, Arc<Payload>),
+    pub equipment_controls: (u32, Arc<Payload>),
     pub descriptors: Vec<usize>,
     pub consumers: Vec<(u32, Arc<Payload>)>,
 }
@@ -54,10 +60,10 @@ impl Carrier {
             "Native first-person attachment is ambiguous"
         );
         let (attachment, entity) = chains[0];
-        let owner = |class: &str| -> Result<u32> {
+        let owner_for = |class: &str, target: u32| -> Result<u32> {
             let selected = components
                 .iter()
-                .filter(|c| c["class"] == class && hex(&c["entity"]).ok() == Some(entity))
+                .filter(|c| c["class"] == class && hex(&c["entity"]).ok() == Some(target))
                 .collect::<Vec<_>>();
             ensure!(
                 selected.len() == 1,
@@ -65,8 +71,21 @@ impl Carrier {
             );
             hex(&selected[0]["owner"])
         };
-        let skeleton = native.tag(owner("80808546")?, Some(0x80809C36))?;
-        let controls = native.tag(owner("80808F8F")?, Some(0x80809C36))?;
+        let owner = |class: &str| owner_for(class, entity);
+        let skeleton_tag = owner("80808546")?;
+        let control_tag = owner("80808F8F")?;
+        let skeleton = native.tag(skeleton_tag, Some(0x80809C36))?;
+        let controls = native.tag(control_tag, Some(0x80809C36))?;
+        let equipment_skeleton_tag = owner_for("80808546", runtime)?;
+        let equipment_control_tag = owner_for("80808F8F", runtime)?;
+        let equipment_skeleton = (
+            equipment_skeleton_tag,
+            native.tag(equipment_skeleton_tag, Some(0x80809C36))?,
+        );
+        let equipment_controls = (
+            equipment_control_tag,
+            native.tag(equipment_control_tag, Some(0x80809C36))?,
+        );
         let rig = animation::control::Rig::read(&skeleton, &controls)?;
         let lookup_tag = owner("8080344B")?;
         let lookup = native.tag(lookup_tag, Some(0x80809C36))?;
@@ -112,6 +131,12 @@ impl Carrier {
             pose_tag,
             pose_layers,
             rig,
+            skeleton_tag,
+            skeleton,
+            control_tag,
+            controls,
+            equipment_skeleton,
+            equipment_controls,
             descriptors,
             consumers,
         })

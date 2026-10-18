@@ -67,10 +67,11 @@ lewton = "0.10.2"
 pelite = { version = "0.10.0", default-features = false, features = ["std"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
+sha1 = "0.11.0"
 sha2 = "0.11.0"
 tempfile = "3.27.0"
 tar = { version = "0.4.46", default-features = false }
-zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2"] }
 sundial-account = { path = "crates/sundial-account" }
 rfd = "0.17.2"
 rusqlite = { version = "0.40.2", features = ["backup", "bundled", "fallible_uint"] }

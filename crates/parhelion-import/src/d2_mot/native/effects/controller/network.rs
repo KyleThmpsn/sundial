@@ -246,13 +246,14 @@ pub fn emit(
         metadata,
     )?;
     // The saved native facet constructor copies precisely 68 bytes. Its source
-    // block excludes the following attachment binding mode at +19C.
+    // block excludes the intervening word at +19C. The source constructor also
+    // copies only 68 bytes. The attachment lookup starts at +1A0, not +19C.
     let priority = source.bytes::<68>(sd + 0x158)?;
     for at in [0, 4, 8, 12, 16, 20, 24, 28, 32, 44, 48, 52, 56, 64] {
         source.f32(sd + 0x158 + at)?;
     }
     ensure!(
-        source.u32(sd + 0x19C)? == 2
+        source.u32(sd + 0x19C)? <= 3
             && source.u64(sd + 0x1A0)? == 0
             && source.u32(sd + 0x1A8)? == u32::MAX
             && source.u32(sd + 0x1AC)? == 1

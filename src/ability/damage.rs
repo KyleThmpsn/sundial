@@ -107,3 +107,23 @@ pub fn retype(payload: &mut [u8], profile: Profile, copy: u32, mode: u8) -> Resu
         .ok_or("A damage profile is shorter than its shape")? = mode;
     Ok(())
 }
+
+/// Author a fixed amount in an absolute outgoing profile. Native 00B87600
+/// interpolates +14 and +18, with symmetric random extent +1C. Mode +10 = 1
+/// additionally scales by a caller-supplied base, so that mode is not accepted.
+pub fn set_fixed_amount(payload: &mut [u8], profile: Profile, amount: f32) -> Result<(), String> {
+    if !amount.is_finite() || amount <= 0.0 {
+        return Err("Damage amount must be finite and positive".into());
+    }
+    let root = profile.root;
+    if payload.get(root + 0x10).copied() != Some(0) {
+        return Err("Fixed damage requires an absolute outgoing profile".into());
+    }
+    for (offset, value) in [(0x14, amount), (0x18, amount), (0x1c, 0.0)] {
+        payload
+            .get_mut(root + offset..root + offset + 4)
+            .ok_or("Damage amount exceeds its profile")?
+            .copy_from_slice(&value.to_le_bytes());
+    }
+    Ok(())
+}

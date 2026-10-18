@@ -13,6 +13,9 @@ mod tests;
 pub enum Stage {
     Pixel,
     Vertex,
+    Geometry,
+    Hull,
+    Domain,
     Compute,
 }
 
@@ -21,6 +24,9 @@ impl Stage {
         match self {
             Self::Pixel => 0,
             Self::Vertex => 1,
+            Self::Geometry => 2,
+            Self::Hull => 4,
+            Self::Domain => 5,
             Self::Compute => 6,
         }
     }
@@ -29,6 +35,9 @@ impl Stage {
         match subtype {
             0 => Ok(Self::Pixel),
             1 => Ok(Self::Vertex),
+            2 => Ok(Self::Geometry),
+            4 => Ok(Self::Hull),
+            5 => Ok(Self::Domain),
             6 => Ok(Self::Compute),
             _ => anyhow::bail!("shader package subtype {subtype} needs a format contract"),
         }
@@ -38,6 +47,9 @@ impl Stage {
         match self {
             Self::Pixel => 0x00000050,
             Self::Vertex => 0x00010050,
+            Self::Geometry => 0x00020050,
+            Self::Hull => 0x00030050,
+            Self::Domain => 0x00040050,
             Self::Compute => 0x00050050,
         }
     }
@@ -129,16 +141,21 @@ pub fn validate(stage: Stage, header: &Payload, code: &[u8]) -> Result<()> {
         code.starts_with(b"DXBC") && code.len() >= 44 && word(code, 20)? == 1,
         "shader DXBC envelope differs"
     );
+    let chunks = if matches!(stage, Stage::Hull | Stage::Domain) {
+        4
+    } else {
+        3
+    };
     ensure!(
-        usize::try_from(word(code, 24)?)? == code.len() && word(code, 28)? == 3,
+        usize::try_from(word(code, 24)?)? == code.len() && word(code, 28)? as usize == chunks,
         "shader DXBC size or chunk count differs"
     );
     let mut spans = Vec::new();
     let mut kinds = BTreeSet::new();
-    for index in 0..3 {
+    for index in 0..chunks {
         let at = usize::try_from(word(code, 32 + index * 4)?)?;
         ensure!(
-            at >= 44 && at.is_multiple_of(4),
+            at >= 32 + chunks * 4 && at.is_multiple_of(4),
             "shader chunk target differs"
         );
         let length = usize::try_from(word(
@@ -163,7 +180,7 @@ pub fn validate(stage: Stage, header: &Payload, code: &[u8]) -> Result<()> {
             .try_into()?;
         ensure!(kinds.insert(kind), "duplicate shader chunk");
         match &kind {
-            b"ISGN" | b"OSGN" => signature(bytes)?,
+            b"ISGN" | b"OSGN" | b"PCSG" => signature(bytes)?,
             b"SHEX" => {
                 ensure!(
                     length >= 8
@@ -179,10 +196,11 @@ pub fn validate(stage: Stage, header: &Payload, code: &[u8]) -> Result<()> {
             _ => anyhow::bail!("shader chunk needs an independent format contract"),
         }
     }
-    ensure!(
-        kinds == BTreeSet::from([*b"ISGN", *b"OSGN", *b"SHEX"]),
-        "shader stage chunks differ"
-    );
+    let mut expected = BTreeSet::from([*b"ISGN", *b"OSGN", *b"SHEX"]);
+    if chunks == 4 {
+        expected.insert(*b"PCSG");
+    }
+    ensure!(kinds == expected, "shader stage chunks differ");
     Ok(())
 }
 

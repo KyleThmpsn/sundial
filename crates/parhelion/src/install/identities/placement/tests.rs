@@ -66,6 +66,7 @@ fn native_slot_replacement_compares_compiled_generations_in_both_directions() {
             staging_root: output.join(format!("stage-{index}")),
             ignore_installed_authored_overlays: true,
             recipes: vec![recipe.clone()],
+            maps: Vec::new(),
         })
         .unwrap();
         stages.push(

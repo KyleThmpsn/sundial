@@ -289,6 +289,42 @@ impl WeaponRecipeOverrides {
                 "Choose either source lore text or no lore tab".into(),
             ));
         }
+        let mut fired_graph = self.fired_graph.clone();
+        for dependency in self
+            .socket_plug_variants
+            .iter()
+            .filter_map(|variant| variant.projectile)
+        {
+            if let Some(fired) = &fired_graph {
+                if fired.bundled != Some(dependency) {
+                    return Err(RecipeError::Validation(
+                        "The attached perk requires a different projectile. Remove the conflicting fired graph or perk.".into(),
+                    ));
+                }
+            } else {
+                fired_graph = Some(crate::weapon::behavior::FiredGraph {
+                    bundled: Some(dependency),
+                    source_graph: 0,
+                    imported: None,
+                    patches: Vec::new(),
+                    appends: Vec::new(),
+                    particles: Vec::new(),
+                });
+            }
+        }
+        if fired_graph
+            .as_ref()
+            .is_some_and(|fired| fired.bundled.is_some())
+            && (self
+                .projectile
+                .as_ref()
+                .is_some_and(|projectile| !projectile.values.is_empty())
+                || !self.additional_behaviors.is_empty())
+        {
+            return Err(RecipeError::Validation(
+                "A bundled projectile cannot be combined with projectile value edits or an additional behavior.".into(),
+            ));
+        }
         Ok(WeaponCloneOverrides {
             remove_lore: self.remove_lore,
             #[cfg(feature = "d2-model-importer")]
@@ -328,7 +364,7 @@ impl WeaponRecipeOverrides {
             skip_behavior_perks: self.skip_behavior_perks,
             behavior_firing: self.behavior_firing.map(Into::into).unwrap_or_default(),
             behavior_projectile_speed: self.behavior_projectile_speed_bits.map(f32::from_bits),
-            fired_graph: self.fired_graph.clone(),
+            fired_graph,
             projectile: self
                 .projectile
                 .clone()
@@ -599,6 +635,22 @@ impl WeaponRecipe {
 
 impl WeaponRecipe {
     pub fn to_spec(&self) -> Result<WeaponCloneSpec, RecipeError> {
+        if self.kind != ItemKind::Weapon
+            && (self
+                .overrides
+                .socket_plug_variants
+                .iter()
+                .any(|variant| variant.projectile.is_some())
+                || self
+                    .overrides
+                    .fired_graph
+                    .as_ref()
+                    .is_some_and(|fired| fired.bundled.is_some()))
+        {
+            return Err(RecipeError::Validation(
+                "Only weapons can carry a bundled projectile.".into(),
+            ));
+        }
         if self.schema != RECIPE_SCHEMA {
             return Err(RecipeError::Validation(format!(
                 "Unsupported recipe schema {}; expected {RECIPE_SCHEMA}",

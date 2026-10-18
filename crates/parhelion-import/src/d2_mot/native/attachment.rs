@@ -24,6 +24,14 @@ use std::{
 };
 
 mod audio;
+pub mod closure;
+mod gameplay;
+mod graph;
+mod lifetime;
+mod namespace;
+mod presentation;
+mod resources;
+pub use gameplay::{ActionInput, CompiledAction, Gameplay, convert_gameplay};
 
 pub struct Request<'a> {
     pub source_tag: u32,

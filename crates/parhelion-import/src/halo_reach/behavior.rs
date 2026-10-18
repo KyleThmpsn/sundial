@@ -19,7 +19,8 @@ impl Read<'_> {
             self.edges
                 .push(json!({"owner":self.owner,"role":role,"tag":tag,"offset":at}));
             if [
-                "weap", "vehi", "proj", "effe", "snd!", "lsnd", "jmad", "frms", "jpt!",
+                "weap", "vehi", "bloc", "proj", "effe", "prt3", "snd!", "lsnd", "jmad", "frms",
+                "jpt!",
             ]
             .contains(&tag.group.as_str())
             {
@@ -56,6 +57,29 @@ impl Read<'_> {
         )?;
         self.block_links(at + 0x104, 32, &[(0, "attachment")])?;
         self.block_links(at + 0x128, 16, &[(0, "widget")])?;
+        if let Some(model) = &object.model {
+            for section in c.block(model.address()? + 0xe0, 0xc0)? {
+                self.links(
+                    section,
+                    &[
+                        (0x34, "recharge"),
+                        (0x48, "pre_recharge"),
+                        (0x5c, "recharge_abort"),
+                    ],
+                )?;
+                self.block_links(
+                    section + 0x84,
+                    0xb0,
+                    &[
+                        (0xc, "damage_generic"),
+                        (0x20, "damage_specific"),
+                        (0x34, "damage_damage"),
+                        (0x48, "damage_looping"),
+                        (0x7c, "damage_delay"),
+                    ],
+                )?;
+            }
+        }
         self.block_links(
             at + 0x15c,
             0x30,
@@ -150,7 +174,8 @@ impl Read<'_> {
                     (0x70, "discharge_damage"),
                 ],
             )?;
-            for row in c.block(at + 0x408, 0x184)? {
+            for (barrel, row) in c.block(at + 0x408, 0x184)?.into_iter().enumerate() {
+                let first = self.edges.len();
                 self.links(
                     row,
                     &[
@@ -178,6 +203,10 @@ impl Read<'_> {
                         (0xb4, "secondary_fire_rider_response"),
                     ],
                 )?;
+                // The barrel index is what a trigger's primary and secondary barrel fields name.
+                for edge in &mut self.edges[first..] {
+                    edge["barrel"] = json!(barrel);
+                }
             }
         } else if tag.group == "vehi" {
             self.block_links(at + 0x42c, 20, &[(0, "vehicle_weapon")])?;
@@ -259,37 +288,41 @@ impl Read<'_> {
             .collect::<Result<Vec<_>>>()?;
         let conical_spread = c.block(at + 0x344, 12)?.into_iter().map(|r| Ok(json!({"yaw_count":c.i16(r)?,"pitch_count":c.i16(r+2)?,"distribution_exponent":c.f32(r+4)?,"spread_radians":c.f32(r+8)?}))).collect::<Result<Vec<_>>>()?;
         Ok(
-            json!({"flags":c.u32(at+0x168)?,"timer_start":c.i16(at+0x16c)?,"collision_radius":c.f32(at+0x170)?,"arming_seconds":c.f32(at+0x174)?,"timer_seconds":c.floats::<2>(at+0x184)?,"minimum_velocity":c.f32(at+0x18c)?,"maximum_range":c.f32(at+0x190)?,"super_detonation_count":c.i16(at+0x1a2)?,"super_detonation_seconds":c.f32(at+0x1a4)?,"air_gravity_scale":c.f32(at+0x2b8)?,"water_gravity_scale":c.f32(at+0x2c4)?,"initial_velocity":c.f32(at+0x2d0)?,"final_velocity":c.f32(at+0x2d4)?,"guided_angular_velocity":c.floats::<2>(at+0x2f0)?,"acceleration_range":c.floats::<2>(at+0x2fc)?,"responses":responses,"conical_spread":conical_spread,"length_unit_metres":super::rig::METRES_PER_UNIT}),
+            json!({"flags":c.u32(at+0x168)?,"timer_start":c.i16(at+0x16c)?,"collision_radius":c.f32(at+0x170)?,"arming_seconds":c.f32(at+0x174)?,"timer_seconds":c.floats::<2>(at+0x184)?,"minimum_velocity":c.f32(at+0x18c)?,"maximum_range":c.f32(at+0x190)?,"super_detonation_count":c.i16(at+0x1a2)?,"super_detonation_seconds":c.f32(at+0x1a4)?,"air_gravity_scale":c.f32(at+0x2b8)?,"water_gravity_scale":c.f32(at+0x2c4)?,"initial_velocity":c.f32(at+0x2d0)?,"final_velocity":c.f32(at+0x2d4)?,"guided_angular_velocity":c.floats::<2>(at+0x2f0)?,"guided_angular_velocity_at_rest":c.f32(at+0x2f8)?,"acceleration_range":c.floats::<2>(at+0x2fc)?,"acceleration_inverse_width":c.f32(at+0x304)?,"responses":responses,"conical_spread":conical_spread,"length_unit_metres":super::rig::METRES_PER_UNIT}),
         )
     }
     fn effect(&mut self, at: usize) -> Result<Value> {
         let c = self.cache;
-        let mut events = Vec::new();
         for row in c.block(at + 0x2c, 0x40)? {
-            let mut parts = Vec::new();
             for part in c.block(row + 0x1c, 0x64)? {
                 self.link(part + 0x14, "effect_part")?;
-                parts.push(json!({"tag":c.reference(part+0x14,None)?,"raw":hex::encode(c.meta(part,0x64)?)}));
             }
             self.block_links(row + 0x34, 0x70, &[(4, "particle")])?;
-            events.push(json!({"raw":hex::encode(c.meta(row,0x40)?),"parts":parts}));
         }
         self.block_links(at + 0x38, 0x14, &[(0, "looping_sound")])?;
-        Ok(json!({"flags":c.u32(at)?,"loop_start":c.i16(at+0x14)?,"events":events}))
+        super::effect::source::read(c, at)
     }
     fn animation(&mut self, at: usize) -> Result<Value> {
         let c = self.cache;
         self.links(at, &[(0, "parent_animation"), (0x84, "frame_events")])?;
         self.block_links(at + 0x54, 20, &[(0, "animation_sound")])?;
         self.block_links(at + 0x60, 20, &[(0, "animation_effect")])?;
+        let sounds = c
+            .block(at + 0x54, 20)?
+            .into_iter()
+            .map(|row| c.reference(row, Some("snd!")))
+            .collect::<Result<Vec<_>>>()?;
         let mut clips = Vec::new();
-        for row in c.block(at + 0x94, 0x3c)? {
+        for (index, row) in c.block(at + 0x94, 0x3c)?.into_iter().enumerate() {
             self.link(row + 0x1c, "shared_animation")?;
             let shared=c.block(row+0x30,0xd4)?.into_iter().map(|r| {
                 let sounds=c.block(r+0x44,8)?.into_iter().map(|s|Ok(json!({"sound_index":c.i16(s)?,"frame":c.i16(s+2)?,"marker":c.string_id(c.u32(s+4)?)?}))).collect::<Result<Vec<_>>>()?;
-                Ok(json!({"raw":hex::encode(c.meta(r,0xd4)?),"frames":c.i16(r+2)?,"animation_type":c.u8(r+4)?,"movement_type":c.u8(r+5)?,"resource_group":c.i16(r+0x20)?,"resource_member":c.i16(r+0x22)?,"sound_events":sounds}))
+                let events = c.block(r + 0x38, 4)?.into_iter()
+                    .map(|event| Ok(json!({"kind":c.i16(event)?,"frame":c.i16(event + 2)?})))
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(json!({"raw":hex::encode(c.meta(r,0xd4)?),"frames":c.i16(r+2)?,"animation_type":c.u8(r+4)?,"movement_type":c.u8(r+5)?,"resource_group":c.i16(r+0x20)?,"resource_member":c.i16(r+0x22)?,"sound_events":sounds,"frame_events":events}))
             }).collect::<Result<Vec<_>>>()?;
-            clips.push(json!({"name":c.string_id(c.u32(row)?)?,"raw":hex::encode(c.meta(row,0x3c)?),"shared":shared}));
+            clips.push(json!({"index":index,"name":c.string_id(c.u32(row)?)?,"raw":hex::encode(c.meta(row,0x3c)?),"shared_graph":c.reference(row+0x1c,Some("jmad"))?,"shared_index":c.i16(row+0x2c)?,"shared":shared}));
         }
         for offset in [0x128, 0x134] {
             self.block_links(at + offset, 0x2c, &[(0, "inherited_animation")])?;
@@ -300,7 +333,7 @@ impl Read<'_> {
             .map(|r| Ok(json!({"references":c.i32(r)?,"handle":c.u32(r+4)?})))
             .collect::<Result<Vec<_>>>()?;
         Ok(
-            json!({"clips":clips,"resource_groups":groups,"playback":"See animations.json for decoded channels and supported source-scene playback"}),
+            json!({"clips":clips,"sounds":sounds,"resource_groups":groups,"playback":"See animations.json for decoded channels and supported source-scene playback"}),
         )
     }
     fn damage(&mut self, at: usize) -> Result<Value> {
@@ -328,6 +361,17 @@ impl Read<'_> {
     }
 }
 
+pub(super) fn animation_data(cache: &Cache, tag: &Tag) -> Result<Value> {
+    ensure!(tag.group == "jmad", "Expected an animation graph");
+    Read {
+        cache,
+        queue: VecDeque::new(),
+        edges: Vec::new(),
+        owner: tag.datum,
+    }
+    .animation(tag.address()?)
+}
+
 fn pitch_parameters(c: &Cache, parameters: &[usize], index: i16) -> Result<Value> {
     if index == -1 {
         return Ok(Value::Null);
@@ -352,7 +396,7 @@ fn pitch_name(c: &Cache, names: &[usize], index: i16) -> Result<Value> {
     Ok(json!(c.string_id(c.u32(name)?)?))
 }
 
-fn sound(c: &Cache, tag: &Tag) -> Result<Value> {
+pub(super) fn sound(c: &Cache, tag: &Tag) -> Result<Value> {
     let at = tag.address()?;
     let gestalt = c.only("ugh!")?.address()?;
     let class_tag = c.only("sncl")?;
@@ -439,9 +483,10 @@ pub(super) fn read(cache: &Cache, scene: &super::Scene) -> Result<Value> {
         reader.owner = tag.datum;
         let at = tag.address()?;
         let data = match tag.group.as_str() {
-            "weap" | "vehi" => reader.object(&tag)?,
+            "weap" | "vehi" | "bloc" => reader.object(&tag)?,
             "proj" => reader.projectile(at)?,
             "effe" => reader.effect(at)?,
+            "prt3" => super::effect::source::particle(cache, &tag)?,
             "snd!" => sound(cache, &tag)?,
             "jmad" => reader.animation(at)?,
             "lsnd" => {

@@ -36,6 +36,12 @@ pub(in crate::item) fn author(
             "Melee contact profile has an unsupported component layout",
         ));
     }
+    if let Some(amount) = audio.contact_damage {
+        use sundial::package_authoring::ability_damage;
+        let profile = ability_damage::profile(MELEE_DAMAGE_PROFILE, &payload)
+            .ok_or_else(|| invalid("Melee damage profile has an unsupported outgoing root"))?;
+        ability_damage::set_fixed_amount(&mut payload, profile, amount).map_err(invalid)?;
+    }
     let rows = array(&payload, definition + 0x188, 56, 0x80804B48)?;
     let first = rows
         .first()
@@ -76,7 +82,7 @@ pub(in crate::item) fn author(
         )?;
         put(&mut payload, at + 8, sound)?;
     }
-    if used.len() != rows.len() {
+    if !audio.impacts.is_empty() && used.len() != rows.len() {
         return Err(invalid(
             "Imported impact audio does not cover every native contact response",
         ));

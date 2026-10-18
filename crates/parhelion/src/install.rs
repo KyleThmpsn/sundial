@@ -9,8 +9,8 @@ mod tests;
 
 mod loader;
 mod recovery;
-pub(crate) use loader::package_window;
-pub use loader::{UpgradeReport, UpgradeReview, preview_upgrade, upgrade_installation};
+pub use loader::{UpgradeReview, preview_upgrade};
+pub(crate) use loader::{package_window, uses_mod_loader};
 pub use recovery::recover_interrupted_install;
 use recovery::*;
 mod locking;
@@ -88,8 +88,8 @@ pub(crate) use crate::package_profile::AUTHORED_PATCH_ID;
 pub(crate) use crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES;
 use crate::package_profile::{
     ACCOUNT_UNLOCK_BANK, AuthoredPackage, CANONICAL_PACKAGES, PACKAGE_HEADER_PREFIX_SIZE,
-    PackageHeaderPrefix, all_authored_packages, authored_package, authored_package_for_file_name,
-    authored_packages_for_file_names, canonical_package,
+    PackageHeaderPrefix, all_authored_packages_in, authored_package,
+    authored_package_for_file_name, authored_packages_for_file_names, canonical_package,
 };
 pub(crate) use crate::package_profile::{CANONICAL_PACKAGE_IDS, SHADOWKEEP_HEADER_VERSION};
 use crate::recipe::WeaponRecipe;
@@ -234,8 +234,11 @@ pub struct InstallReport {
     pub profile_sync: Option<Result<AuthoredProfileSyncReport, String>>,
     /// Authored subclasses and shaders added to the account after the transaction committed.
     pub item_grants: Option<Result<AuthoredGrantReport, String>>,
-    /// Entries another Sunrise mod also changes, and which mod's version the loader uses.
+    /// Entries another Sunrise mod also changes, which the loader merges.
     pub mod_overlaps: Vec<String>,
+    /// The backup of the mod folder an install on Dawn or Sunrise before 0.6 removed, since those
+    /// runtimes don't load it.
+    pub retired_mod_backup: Option<PathBuf>,
     /// Account updated as part of this backed-up replacement transaction.
     pub cleaned_account: Option<PathBuf>,
 }
@@ -316,6 +319,8 @@ struct ValidatedRun {
     backup_root: PathBuf,
     source_artifacts: Vec<ArtifactMetadata>,
     artifacts: Vec<ArtifactMetadata>,
+    /// The merge data beside each package of a mod-folder build.
+    merge_data: Vec<ArtifactMetadata>,
     obsolete_artifacts: Vec<ArtifactMetadata>,
     selected_recipe_files: Vec<String>,
     authored_unlocks: Vec<AuthoredCollectionUnlock>,
@@ -506,6 +511,16 @@ pub fn resync_account(
         .parent()
         .ok_or_else(|| "Installed package directory has no game root".to_owned())?;
     sundial::package_authoring::mod_content::ensure_readable(game_root)?;
+    // Installed identities include the mod folder on any runtime, but only Sunrise 0.6 or later
+    // loads it, so granting its items elsewhere would add items the game can't find.
+    if sundial::package_authoring::mod_content::directory(game_root).exists()
+        && !uses_mod_loader(target_packages_directory)
+    {
+        return Err(
+            "The installed build is in Sunrise's mod folder, which this runtime doesn't load. Install it again to use it here."
+                .to_owned(),
+        );
+    }
     let (hashes, unlocks) = identities::installed_identities(target_packages_directory)
         .map_err(|error| format!("No installed Parhelion generation to resync: {error}"))?;
     let grants = identities::installed_grants(target_packages_directory, &hashes)?;
@@ -637,6 +652,11 @@ fn install_with_progress(
             "The runtime changed to the mod loader during preflight. Review installation again",
         ));
     }
+    clear_other_runtime_caches(
+        &validated.target_packages_directory,
+        validated.sunrise_build_cache.runtime.brand(),
+    )?;
+    let retired_mod_backup = loader::retire_inactive(&validated, request.game_running_check)?;
     let backup_directory = create_backup_directory(&validated.backup_root).map_err(|error| {
         InstallError::validation(format!("Could not create a package backup: {error}"))
     })?;
@@ -816,7 +836,7 @@ fn install_with_progress(
         return Err(InstallError::after_backup(message, &backup_directory));
     }
 
-    commit_and_verify(
+    let mut report = commit_and_verify(
         CommitContext {
             validated: &validated,
             backup_directory: &backup_directory,
@@ -833,7 +853,9 @@ fn install_with_progress(
         prepared,
         transaction,
         progress,
-    )
+    )?;
+    report.retired_mod_backup = retired_mod_backup;
+    Ok(report)
 }
 
 fn check_game_before_validation(request: &InstallRequest) -> Result<(), InstallError> {
@@ -865,6 +887,7 @@ fn check_game_immediately_before_commit(request: &InstallRequest) -> Result<(), 
 struct ValidatedManifest {
     source_artifacts: Vec<ArtifactMetadata>,
     artifacts: Vec<ArtifactMetadata>,
+    merge_data: Vec<ArtifactMetadata>,
     selected_recipe_files: Vec<String>,
     authored_unlocks: Vec<AuthoredCollectionUnlock>,
     authored_grants: Vec<identities::GrantedItem>,
@@ -1260,6 +1283,7 @@ fn build_install_report(
         profile_sync,
         item_grants,
         mod_overlaps: Vec::new(),
+        retired_mod_backup: None,
     }
 }
 

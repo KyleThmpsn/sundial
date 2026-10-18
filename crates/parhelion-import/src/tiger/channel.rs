@@ -1,6 +1,7 @@
 use super::payload::Payload;
 use anyhow::{Result, ensure};
 use std::collections::BTreeMap;
+pub(crate) mod inherited;
 pub(crate) mod inputs;
 
 /// Correct older appended inherited declarations before their native update runs.

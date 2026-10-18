@@ -1,6 +1,7 @@
 //! Experimental, atomic weapon imports with their private runtime dependencies.
 use std::{fs, path::Path};
 
+use base64::Engine as _;
 use parhelion_import::d2_mot::{
     gameplay::perks::{lower, presentation, translate},
     payload::Payload,
@@ -17,7 +18,8 @@ use sundial::{
         runtime::load_weapon_runtime_entity_for_item_with_manager,
         sandbox_perk::load_sandbox_perk_runtime_action,
         sandbox_perk::program::{
-            Action, NativeAssetPatch, NativeAssetResourcePatch, NativeNode, Program, Trigger,
+            Action, HudStatus, NativeAssetPatch, NativeAssetResourcePatch, NativeNode,
+            NativeRecord, Program, Trigger,
         },
     },
 };
@@ -36,10 +38,13 @@ const SWORD_BINDING: u32 = 0xCD2B_CEAC;
 const SWORD_CLASS: u32 = 0x8080_43D2;
 // This shipped effect graph supplies the native modifier envelope. Its resource row is
 // discovered and checked, rather than identifying the imported behavior by an item hash.
-const LUNGE_GRAPH: u32 = 0x8162_C91A;
-const LUNGE_BINDING: u32 = 0x7330_E39F;
+const MODIFIER_GRAPH: u32 = 0x8162_C91A;
+const MODIFIER_BINDING: u32 = 0x7330_E39F;
 
+mod attached;
+mod equipped;
 mod kinetic;
+mod lifecycle;
 
 pub struct Request<'a> {
     pub modern_packages: &'a Path,
@@ -80,7 +85,7 @@ impl Prepared {
 }
 
 fn error(error: impl std::fmt::Display) -> String {
-    error.to_string()
+    format!("{error:#}")
 }
 
 fn digest(bytes: &[u8]) -> String {
@@ -182,7 +187,7 @@ fn selection(
     Ok(choices)
 }
 
-struct Lunge {
+struct Modifier {
     patch: NativeAssetPatch,
     owner_tag: u32,
     offset: usize,
@@ -191,19 +196,23 @@ struct Lunge {
     owner: Vec<u8>,
 }
 
-fn lunge(manager: &PackageManager, source: &translate::Source) -> Result<Lunge, String> {
-    let graph = checked_tag(manager, LUNGE_GRAPH, WEAPON_ENTITY_CLASS)?;
-    let bindings = weapon_component_bindings(&graph, LUNGE_BINDING)?;
+fn modifier(
+    manager: &PackageManager,
+    source: &Payload,
+    source_offset: usize,
+) -> Result<Modifier, String> {
+    let graph = checked_tag(manager, MODIFIER_GRAPH, WEAPON_ENTITY_CLASS)?;
+    let bindings = weapon_component_bindings(&graph, MODIFIER_BINDING)?;
     if bindings.len() != 1
         || bindings[0].resource_count != 1
         || bindings[0].concrete_class != 0x8080_3B05
     {
-        return Err("The native lunge modifier binding is ambiguous".into());
+        return Err("The native modifier binding is ambiguous".into());
     }
     let binding = bindings[0];
     let owner_class = manager
         .get_entry(TagHash(binding.owner_tag))
-        .ok_or("The native lunge owner is missing")?
+        .ok_or("The native modifier owner is missing")?
         .reference;
     let owner = checked_tag(manager, binding.owner_tag, owner_class)?;
     let resource = usize::try_from(binding.resource_offset).map_err(error)?;
@@ -218,7 +227,7 @@ fn lunge(manager: &PackageManager, source: &translate::Source) -> Result<Lunge, 
         || read_u32(&owner, settings - 4).map_err(error)? != 0x8080_3AFE
         || read_u32(&owner, settings + 4).map_err(error)? != 0x8080_3AFD
     {
-        return Err("The native lunge instance and settings classes are unsupported".into());
+        return Err("The native modifier instance and settings classes are unsupported".into());
     }
     let descriptor = settings
         .checked_add(88)
@@ -248,7 +257,7 @@ fn lunge(manager: &PackageManager, source: &translate::Source) -> Result<Lunge, 
         }
     }
     if candidates.len() != 1 {
-        return Err("The native lunge resource requires exactly one paired modifier row".into());
+        return Err("The native modifier resource requires exactly one paired modifier row".into());
     }
     let offset = candidates[0];
     if read_u32(&owner, resource).map_err(error)? != binding.owner_tag
@@ -256,29 +265,24 @@ fn lunge(manager: &PackageManager, source: &translate::Source) -> Result<Lunge, 
         || read_u64(&owner, resource + 8).map_err(error)? != offset as u64
         || read_u64(&owner, offset + 8).map_err(error)? != resource as u64
     {
-        return Err("The selected native lunge resource and modifier row do not match".into());
+        return Err("The selected native modifier resource and modifier row do not match".into());
     }
     let relative = offset
         .checked_sub(resource)
         .and_then(|value| u32::try_from(value).ok())
-        .ok_or("The native lunge modifier lies outside its component resource")?;
+        .ok_or("The native modifier lies outside its component resource")?;
     let expected = read_array::<88>(&owner, offset).map_err(error)?.to_vec();
-    let bytes = lower::modifier_settings(
-        &source.lunge.owner,
-        source.lunge.modifier_offset,
-        &Payload(owner.clone()),
-        offset,
-    )
-    .map_err(error)?
-    .to_vec();
-    Ok(Lunge {
+    let bytes = lower::modifier_settings(source, source_offset, &Payload(owner.clone()), offset)
+        .map_err(error)?
+        .to_vec();
+    Ok(Modifier {
         patch: NativeAssetPatch {
             action_index: 0,
-            source_graph: LUNGE_GRAPH,
+            source_graph: MODIFIER_GRAPH,
             appends: Vec::new(),
             remove_owners: Vec::new(),
             patches: vec![NativeAssetResourcePatch {
-                binding_hash: LUNGE_BINDING,
+                binding_hash: MODIFIER_BINDING,
                 resource_index: u16::try_from(binding.resource_index).map_err(error)?,
                 offset: relative,
                 expected,
@@ -305,6 +309,7 @@ fn program(
     request: &Request<'_>,
     source: &translate::Source,
     patch: NativeAssetPatch,
+    status: HudStatus,
 ) -> Result<Program, String> {
     let mut draw = NativeNode::condition(16).ok_or("The native draw condition is unavailable")?;
     if draw.bytes.len() < 112 {
@@ -338,9 +343,13 @@ fn program(
     if timer.bytes != expected_timer || source.routing.cooldown_ms == 0 {
         return Err("The source rearm timer cannot be represented by the native cooldown".into());
     }
-    let lunge = lower::dynamic_entity(&source.controller, source.lunge.effect_offset, LUNGE_GRAPH)
-        .map(node)
-        .map_err(error)?;
+    let lunge = lower::dynamic_entity(
+        &source.controller,
+        source.lunge.effect_offset,
+        MODIFIER_GRAPH,
+    )
+    .map(node)
+    .map_err(error)?;
     let movement = lower::host_record(&source.controller, source.movement_offset)
         .map(node)
         .map_err(error)?;
@@ -365,6 +374,16 @@ fn program(
             Action::Native { node: movement },
         ],
         native_asset_patches: vec![patch],
+        auxiliary: vec![NativeRecord {
+            class: 0x8080_4085,
+            bytes: lower::active_status(
+                &source.controller,
+                &source.routing.auxiliary[0],
+                source.routing.active_offset,
+            )
+            .map_err(error)?,
+            hud_status: Some(status),
+        }],
         ..Program::default()
     };
     program.validate()?;
@@ -372,7 +391,7 @@ fn program(
 }
 
 /// Prepare one source-validated controller as an experimental private native candidate.
-/// Source auxiliary consumers and native swing publication remain explicit gaps.
+/// Native swing publication and in-game status visibility remain explicit gaps.
 pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
     if request.recipe.kind != ItemKind::Weapon {
         return Err("A perk import requires a weapon recipe".into());
@@ -430,6 +449,19 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
     let assigned =
         parhelion_import::d2_mot::gameplay::perks::assigned(&mut reader, request.plug_hash)
             .map_err(error)?;
+    // Lifetime property controllers come first: an equipped modifier's attachment does not
+    // translate there, so such a plug still reaches its own route below.
+    if let Some(prepared) = lifecycle::prepare(
+        request,
+        (&manager, &catalog),
+        &mut reader,
+        &output,
+        &donor,
+        &assigned,
+        choices.clone(),
+    )? {
+        return Ok(prepared);
+    }
     if assigned.len() == 1 {
         let controller =
             parhelion_import::d2_mot::gameplay::perks::controller::read(&assigned[0].controller)
@@ -439,9 +471,27 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
             .first()
             .and_then(|state| state.transitions.first())
             .and_then(|transition| transition.conditions.first())
+            .is_some_and(|condition| condition.class == 0x808030B6)
+        {
+            return equipped::prepare(request, &manager, &mut reader, &output, &donor, choices);
+        }
+        if controller
+            .states
+            .first()
+            .and_then(|state| state.transitions.first())
+            .and_then(|transition| transition.conditions.first())
             .is_some_and(|condition| condition.class == 0x8080B7B3)
         {
             return kinetic::prepare(request, &manager, &mut reader, &output, &donor, choices);
+        }
+        if controller
+            .states
+            .first()
+            .and_then(|state| state.transitions.first())
+            .and_then(|transition| transition.conditions.first())
+            .is_some_and(|condition| condition.class == 0x8080B7B2)
+        {
+            return attached::prepare(request, &mut reader, &output, &donor, choices);
         }
     }
     sword(&manager, donor_hash)?;
@@ -482,8 +532,22 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
     {
         return Err("The weapon already carries an incompatible private sword profile".into());
     }
-    let native_lunge = lunge(&manager, &source)?;
-    let program = program(request, &source, native_lunge.patch.clone())?;
+    let native_lunge = modifier(&manager, &source.lunge.owner, source.lunge.modifier_offset)?;
+    let status = HudStatus {
+        name: if request.name.trim().is_empty() {
+            presentation.name.clone()
+        } else {
+            request.name.into()
+        },
+        // Rapid Hit supplies the native generic buff row and RGBA icon-layer envelope.
+        // The build gives the report its own key, text and imported artwork.
+        icon: Some(0xC35D_D059),
+        image: presentation
+            .icon_png
+            .as_ref()
+            .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes)),
+    };
+    let program = program(request, &source, native_lunge.patch.clone(), status)?;
     let mut recipe = request.recipe.clone();
     let index = usize::from(request.socket_index);
     if recipe
@@ -510,6 +574,7 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
         .overrides
         .socket_plug_variants
         .push(WeaponSocketPlugVariantRecipe {
+            projectile: None,
             offer_everywhere: false,
             replace_effects: true,
             socket_index: request.socket_index,
@@ -538,7 +603,7 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
         "presentation": presentation.report,
         "prepared_recipe_sha256": digest(encoded.as_bytes()),
         "baseline_recipe_sha256": digest(request.recipe.to_json_pretty().map_err(error)?.as_bytes()),
-        "remaining": ["Unknown source auxiliary consumer", "Native swing publication and channel-2 timing proof", "Gameplay verification"],
+        "remaining": ["Native swing publication and channel-2 timing proof", "In-game HUD visibility and cleanup", "Gameplay verification"],
         "source": {
             "plug_hash": source.plug_hash,
             "item_tag": source.item_tag,
@@ -561,7 +626,7 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
             "choice_index": request.choice_index,
             "source_plug_hash": request.source_plug_hash,
             "source_perk_index": request.source_perk_index,
-            "lunge_graph": LUNGE_GRAPH,
+            "lunge_graph": MODIFIER_GRAPH,
             "lunge_owner": native_lunge.owner_tag,
             "lunge_resource_offset": native_lunge.resource_offset,
             "lunge_modifier_offset": native_lunge.offset,
@@ -570,6 +635,9 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
             "profile": recipe.overrides.sword_profile,
             "effect_order": [2, 41, 36],
             "removal_order": [18, 1, 41, 8, 20],
+            "hud_report": {"class":"80804085", "state_mask":6,
+                "source_priority":source.routing.auxiliary[0].priority,
+                "private_text_and_icon":true, "rendered_in_game":false},
         }
     });
     fs::write(output.join("native-lunge-graph.bin"), &native_lunge.graph).map_err(error)?;

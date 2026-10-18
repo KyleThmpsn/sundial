@@ -8,6 +8,9 @@ const STAND_INS: [(u32, u32); 1] = [(crate::d2_mot::glaive::SHIELD_DURATION, 0xD
 /// Ammo Generation reuses the identity of Shadowkeep's Inventory Size, which sets reserves
 /// rather than ammunition drops, so neither its value nor its display carries over.
 const REPURPOSED: [u32; 1] = [0x7323_05CC];
+/// Aim Assistance, Recoil Direction and Zoom. Shadowkeep's own weapons set these without showing
+/// them, so an import keeps their values but shows them only where its native base's group does.
+pub(super) const UNSHOWN: [u32; 3] = [0x5034_5F6F, 0xA1E0_6B6C, 0xD3E9_1ADA];
 const MAXIMUM_STATS: usize = 32;
 const MAXIMUM_POINTS: usize = 64;
 
@@ -24,7 +27,7 @@ pub(super) fn target(hash: u32) -> Option<(u32, bool)> {
     )
 }
 
-fn display(stat: &Value, maximum: i32) -> Option<Vec<[i32; 2]>> {
+pub(crate) fn display(stat: &Value, maximum: i32) -> Option<Vec<[i32; 2]>> {
     let points = stat["display"]
         .as_array()?
         .iter()
@@ -93,7 +96,7 @@ pub(super) fn plan(
 }
 
 /// The recipe's `custom_stat_group`.
-pub(super) fn recipe(maximum: i32, rows: &[Shown]) -> Value {
+pub(crate) fn recipe(maximum: i32, rows: &[Shown]) -> Value {
     json!({"maximum_value":maximum,"stats":rows.iter().map(|row| {
         let mut stat = json!({"definition_index":row.index,"display":row.display});
         if row.numeric {

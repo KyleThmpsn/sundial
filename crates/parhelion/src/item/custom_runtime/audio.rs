@@ -30,6 +30,7 @@ pub(in crate::item) struct ImportedAudio {
     clips: Vec<Value>,
     impacts: Vec<Value>,
     impact_key: Option<u32>,
+    contact_damage: Option<f32>,
     /// Per-surface melee impact sounds, by the native response row each replaces.
     responses: Vec<Value>,
     media: BTreeMap<String, Vec<u8>>,
@@ -69,7 +70,7 @@ impl ImportedAudio {
             );
             bounds.push(crate::format::BLOCK_SIZE);
         }
-        if !self.impacts.is_empty() {
+        if self.impact_key.is_some() {
             bounds.push(crate::format::BLOCK_SIZE);
         }
         if !self.responses.is_empty() {
@@ -148,7 +149,13 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedAu
         .as_array()
         .cloned()
         .unwrap_or_default();
-    let impact_key = if impacts.is_empty() {
+    let retain_contacts = audio["retain_native_contacts"] == true;
+    if retain_contacts && (!impacts.is_empty() || !responses.is_empty()) {
+        return Err(invalid(
+            "Retained melee contacts cannot also replace contact audio",
+        ));
+    }
+    let impact_key = if impacts.is_empty() && !retain_contacts {
         if !responses.is_empty() {
             return Err(invalid(
                 "Impact responses require the private contact profile that selects them",
@@ -161,6 +168,21 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedAu
         }
         Some(hex(&audio["impact_key"], "impact property key")?)
     };
+    let contact_damage = match audio.get("contact_damage") {
+        None => None,
+        Some(value) => {
+            let amount = value
+                .as_f64()
+                .ok_or_else(|| invalid("Melee contact damage is not a number"))?
+                as f32;
+            if impact_key.is_none() || !amount.is_finite() || amount <= 0.0 {
+                return Err(invalid(
+                    "Melee contact damage requires a private profile and a finite positive amount",
+                ));
+            }
+            Some(amount)
+        }
+    };
     if !clips.is_empty() && audio["authoring_schema"] != 3 {
         return Err(invalid("Clip audio requires source bank routing"));
     }
@@ -169,7 +191,7 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedAu
             "Clip audio requires linked first-person animations",
         ));
     }
-    if events.is_empty() && firing.is_empty() && clips.is_empty() && impacts.is_empty() {
+    if events.is_empty() && firing.is_empty() && clips.is_empty() && impact_key.is_none() {
         return Ok(None);
     }
     let mut media = BTreeMap::new();
@@ -276,6 +298,7 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedAu
         clips,
         impacts,
         impact_key,
+        contact_damage,
         responses,
         media,
         banks,
@@ -581,21 +604,46 @@ fn private_sound(
     if bank_entry.file_type != 26 {
         return Err(invalid("Native bank has an unexpected file type"));
     }
-    let (bank, event_id) =
+    let (bank, event_id, stop_id) =
         if let Some(converted) = source["bank"].as_str().and_then(|tag| audio.banks.get(tag)) {
-            converted
-                .instantiate(
+            let stop = source
+                .get("secondary_event_id")
+                .map(|value| hex(value, "source stop event ID"))
+                .transpose()?
+                .filter(|value| !matches!(*value, 0 | u32::MAX | 0x811c9dc5));
+            if let Some(stop) = stop {
+                let namespace = parhelion_import::tiger::audio::bank::Namespace::new(
                     name,
-                    hex(&source["event_id"], "source event ID")?,
-                    &media_ids,
-                    &media_sizes,
+                    std::slice::from_ref(converted),
                 )
-                .map_err(|error| invalid(format!("Source audio bank: {error:#}")))?
+                .map_err(|error| invalid(format!("Source audio namespace: {error:#}")))?;
+                let bytes = namespace
+                    .instantiate(converted, &media_ids, &media_sizes)
+                    .map_err(|error| invalid(format!("Source paired audio bank: {error:#}")))?;
+                let event = namespace
+                    .object(hex(&source["event_id"], "source event ID")?)
+                    .map_err(|error| invalid(format!("Source start event: {error:#}")))?;
+                let stop = namespace
+                    .object(stop)
+                    .map_err(|error| invalid(format!("Source stop event: {error:#}")))?;
+                (bytes, event, stop)
+            } else {
+                let (bytes, event) = converted
+                    .instantiate(
+                        name,
+                        hex(&source["event_id"], "source event ID")?,
+                        &media_ids,
+                        &media_sizes,
+                    )
+                    .map_err(|error| invalid(format!("Source audio bank: {error:#}")))?;
+                (bytes, event, 0x811c9dc5)
+            }
         } else {
             let stock_bank = read_tag(manager, TagHash(bank_tag), "native audio bank")?;
             (
                 private_bank(&stock_bank, name, &variations, &media_ids, &media_sizes)?,
                 fnv1(name),
+                word(&stock_sound, 12)?,
             )
         };
     let private_bank_tag = append(
@@ -609,6 +657,7 @@ fn private_sound(
     )?;
     remap.insert(bank_tag, private_bank_tag);
     put(&mut sound, 8, event_id)?;
+    put(&mut sound, 12, stop_id)?;
     put(&mut sound, 0x14, private_bank_tag)?;
     let private_sound_tag = append(
         manager,

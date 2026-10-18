@@ -14,3 +14,5 @@ pub(crate) mod perk_bank;
 pub mod projectile;
 pub(crate) mod rig;
 pub(crate) mod variable_damage;
+#[cfg(feature = "d2-model-importer")]
+pub(crate) mod zoom;

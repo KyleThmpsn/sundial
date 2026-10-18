@@ -129,9 +129,12 @@ pub fn compatible_map(
         .as_str()
         .map(|geometry| used_bones(Path::new(geometry), source_item_tag))
         .transpose()?;
+    // An ornament's geometry is worn on its weapon's rig, so the rig export belongs to the item
+    // the config names rather than to the geometry's own item.
+    let rig_item = config.get("rig_item_tag").unwrap_or(source_item_tag);
     compatible_map_loaded(
         config,
-        source_item_tag,
+        rig_item,
         native_item_tag,
         &source,
         &native,
@@ -239,24 +242,7 @@ pub(crate) fn compatible_map_loaded(
         json!({"bone_map":mapping,"required_source_bones":required,"native_bone_count":to.len(),"source_bones":from,"native_bones":to,"source_owner":config["source_owner"],"native_owner":config["native_owner"],"native_animation_donor":native["item_tag"],"gameplay_verified":false}),
     )
 }
-pub(crate) fn write_array(
-    target: &mut Vec<u8>,
-    descriptor: usize,
-    class: u32,
-    count: usize,
-    bytes: &[u8],
-) -> Result<()> {
-    let header = (target.len() + 19) & !15;
-    target.resize(header - 4, 0);
-    target.extend_from_slice(&0x80809FBDu32.to_le_bytes());
-    target.extend_from_slice(&(count as u64).to_le_bytes());
-    target.extend_from_slice(&(class as u64).to_le_bytes());
-    target.extend_from_slice(bytes);
-    target[descriptor..descriptor + 8].copy_from_slice(&(count as u64).to_le_bytes());
-    target[descriptor + 8..descriptor + 16]
-        .copy_from_slice(&(header as i64 - descriptor as i64 - 8).to_le_bytes());
-    Ok(())
-}
+pub(crate) use crate::tiger::payload::write_array;
 fn unlink_owner(payload: &mut Payload, owner: u32) -> Result<Vec<usize>> {
     let offsets = (0..payload.0.len().saturating_sub(3))
         .step_by(4)

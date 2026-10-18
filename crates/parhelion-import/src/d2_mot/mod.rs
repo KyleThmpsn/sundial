@@ -84,6 +84,7 @@ pub mod plates;
 pub mod records;
 pub mod support;
 pub mod tfx;
+pub mod weapon_ornament;
 
 pub mod gameplay;
 pub(crate) mod glaive;

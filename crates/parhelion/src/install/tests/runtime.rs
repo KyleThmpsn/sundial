@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) mod links;
+
 #[test]
 fn runtime_support_lost_during_preparation_stops_before_any_replacement() {
     let fixture = Fixture::new();

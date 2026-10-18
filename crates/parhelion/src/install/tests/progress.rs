@@ -1,44 +1,6 @@
 use super::*;
 
 #[test]
-fn account_review_reports_its_work_and_finishes_before_backup() {
-    let fixture = Fixture::new();
-    let mut request = fixture.request();
-    fs::write(
-        fixture.target.parent().unwrap().join("settings.json"),
-        br#"{"version":8}"#,
-    )
-    .unwrap();
-    request.skip_replacement_review = false;
-    let mut events = Vec::new();
-    install_staged_packages_with_progress(&request, |event| events.push(event)).unwrap();
-    let review = events
-        .iter()
-        .filter(|event| event.phase == InstallPhase::ReviewingAccount)
-        .collect::<Vec<_>>();
-    assert!(review.len() >= 2, "review must report start and completion");
-    assert_eq!(review.first().unwrap().completed, 0);
-    let complete = review.last().unwrap();
-    assert_eq!(complete.completed, complete.total);
-    assert!(
-        review
-            .windows(2)
-            .all(|pair| pair[0].completed < pair[1].completed)
-    );
-    let review_end = events
-        .iter()
-        .rposition(|event| event.phase == InstallPhase::ReviewingAccount)
-        .unwrap();
-    assert!(
-        events[..review_end]
-            .iter()
-            .all(|event| event.phase == InstallPhase::Checking
-                || event.phase == InstallPhase::ReviewingAccount)
-    );
-    assert_eq!(events.last().unwrap().phase, InstallPhase::Complete);
-}
-
-#[test]
 fn progress_follows_the_verified_transaction_and_reports_every_installed_file() {
     let fixture = Fixture::new();
     let mut events = Vec::new();

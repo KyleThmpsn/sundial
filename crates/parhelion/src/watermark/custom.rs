@@ -17,10 +17,22 @@ pub(crate) fn build_presented_watermark_plan(
     request_context: &dyn Fn(usize) -> String,
 ) -> AuthoringResult<WatermarkPlan> {
     let Presentation { artwork, branding } = presentation;
-    if requests.len() != artwork.len() || requests.is_empty() {
+    if requests.len() != artwork.len() {
         return Err(invalid(
             "Release watermark artwork must match the weapon icon requests",
         ));
+    }
+    // A build without items still authors the shared watermark layer.
+    if requests.is_empty() {
+        return build_watermark_plan_with_context(
+            manager,
+            destination_package_id,
+            current_entry_count,
+            appended_ordinal_base,
+            &[],
+            branding,
+            request_context,
+        );
     }
     let mut groups: Vec<(Option<Artwork>, Vec<usize>)> = vec![];
     for (index, image) in artwork.iter().enumerate() {

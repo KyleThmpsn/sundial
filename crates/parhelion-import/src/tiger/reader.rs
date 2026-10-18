@@ -87,6 +87,12 @@ impl Reader {
             record_reads: true,
         })
     }
+    /// A Marathon reader for browsing, which keeps reads in memory only.
+    pub fn marathon_discovery(packages: &Path, output: &Path) -> Result<Self> {
+        let mut reader = Self::marathon(packages, output)?;
+        reader.record_reads = false;
+        Ok(reader)
+    }
     pub fn new(packages: &Path, output: &Path, modern: bool) -> Result<Self> {
         let packages = packages.canonicalize()?;
         let output = outside(output, packages.parent().unwrap_or(&packages))?;

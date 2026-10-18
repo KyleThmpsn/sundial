@@ -178,8 +178,26 @@ pub(crate) struct ImageTile<'a> {
     pub detail: Option<String>,
     pub source: &'a str,
     pub texture: Option<&'a egui::TextureHandle>,
+    /// The rows the game shows of the image's rows, where it hides the rest.
+    pub hidden_rows: Option<(u32, u32)>,
     pub modified: bool,
     pub selected: bool,
+}
+
+/// Shades the rows above the lower `shown` of `height` rows of an image drawn at `rect`.
+pub(crate) fn hidden_rows(ui: &egui::Ui, rect: egui::Rect, shown: u32, height: u32) {
+    if shown >= height || height == 0 {
+        return;
+    }
+    let hidden = rect.height() * (height - shown) as f32 / height as f32;
+    let top = egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.min.y + hidden));
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(top, 0.0, egui::Color32::from_black_alpha(150));
+    painter.hline(
+        rect.x_range(),
+        top.max.y,
+        egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
+    );
 }
 
 pub(crate) fn image_tile(ui: &mut egui::Ui, tile: ImageTile<'_>) -> egui::Response {
@@ -211,7 +229,10 @@ pub(crate) fn image_tile(ui: &mut egui::Ui, tile: ImageTile<'_>) -> egui::Respon
         let inner = rect.shrink(PADDING);
         let thumbnail =
             egui::Rect::from_min_size(inner.min, egui::vec2(inner.width(), tile.thumbnail_height));
-        super::image_files::draw_contained(ui, thumbnail, tile.texture);
+        let drawn = super::image_files::draw_contained(ui, thumbnail, tile.texture);
+        if let (Some(rect), Some((shown, height))) = (drawn, tile.hidden_rows) {
+            hidden_rows(ui, rect, shown, height);
+        }
         let name = painter.text(
             egui::pos2(inner.left(), thumbnail.bottom() + 6.0),
             egui::Align2::LEFT_TOP,

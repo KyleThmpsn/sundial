@@ -233,16 +233,10 @@ pub(super) fn validate_install_transaction(
         ));
     }
     if let Some(runtime) = &transaction.runtime {
-        let game_root = target_packages_directory.parent().ok_or_else(|| {
-            InstallError::validation("Package-install recovery target has no game root")
-        })?;
-        if !path_is_within(runtime.module_path(), game_root)
-            || runtime.dll_sha256().len() != 64
-            || !runtime
-                .dll_sha256()
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit())
-        {
+        // The game selects the DLL through its local lookup path, but a link may resolve to
+        // an external build. This records a read-only identity, never a recovery destination.
+        // Do not require the archived module to still exist after a runtime change.
+        if !runtime.module_path().is_absolute() || !is_sha256(runtime.dll_sha256()) {
             return Err(InstallError::validation(
                 "Package-install recovery record has invalid runtime identity metadata",
             ));

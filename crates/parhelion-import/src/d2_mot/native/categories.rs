@@ -5,6 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod aliases;
 pub use aliases::GroupAlias;
+mod query;
+pub use query::{Queries, emit_queries};
 
 #[cfg(test)]
 mod tests;
@@ -40,6 +42,9 @@ pub struct Namespace {
     pub added_static: Vec<u32>,
     /// Optional private group identities with unchanged stock memberships.
     pub group_aliases: BTreeMap<u32, GroupAlias>,
+    /// Read-only union predicates may share an added bit only when their entire
+    /// closed query set cannot distinguish its source atoms.
+    pub query_aliases: BTreeMap<u32, u32>,
     wire_indices: BTreeSet<u16>,
 }
 
@@ -274,7 +279,10 @@ pub fn emit_static(
         .collect::<Vec<_>>();
     ensure!(
         target.names.len() + added_static.len() <= 320,
-        "private category dictionary exceeds native capacity"
+        "imported filters need {} categories ({} native and {} additional), but Shadowkeep supports 320. The import cannot preserve all filters yet",
+        target.names.len() + added_static.len(),
+        target.names.len(),
+        added_static.len()
     );
     target.names.extend(&added_static);
     let indices = target
@@ -327,6 +335,7 @@ pub fn emit_static(
         source_indices,
         added_static,
         group_aliases: BTreeMap::new(),
+        query_aliases: BTreeMap::new(),
         wire_indices,
     })
 }

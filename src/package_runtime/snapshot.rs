@@ -19,10 +19,15 @@ impl Snapshot {
         let mut files = Vec::new();
         for entry in std::fs::read_dir(packages).map_err(|error| error.to_string())? {
             let entry = entry.map_err(|error| error.to_string())?;
-            if entry
-                .path()
-                .extension()
-                .is_none_or(|extension| !extension.eq_ignore_ascii_case("pkg"))
+            let identity = entry
+                .file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with(".sundial-content-"));
+            if !identity
+                && entry
+                    .path()
+                    .extension()
+                    .is_none_or(|extension| !extension.eq_ignore_ascii_case("pkg"))
             {
                 continue;
             }
@@ -30,11 +35,15 @@ impl Snapshot {
             files.push((
                 entry.file_name(),
                 metadata.len(),
-                metadata.modified().map_err(|error| error.to_string())?,
+                if identity {
+                    SystemTime::UNIX_EPOCH
+                } else {
+                    metadata.modified().map_err(|error| error.to_string())?
+                },
             ));
         }
         if let Some(install) = packages.parent() {
-            for path in super::mods::files(install)? {
+            for path in super::mods::content_files(install)? {
                 let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
                 files.push((
                     path.strip_prefix(install)

@@ -13,7 +13,7 @@ use std::{
 pub use crate::model_preview::{
     SurfaceOverride,
     appearance::{Appearance, DyeTextureOverride},
-    local::{LocalAppearance, LocalScene},
+    local::{LocalAppearance, LocalScene, stock_default_dyes},
 };
 pub mod chooser;
 mod details;

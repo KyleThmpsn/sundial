@@ -7,15 +7,21 @@ use crate::d2_mot::{entity::links::Object, payload::Payload};
 use crate::tiger::allocation;
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
+mod component;
 pub(super) mod constants;
 pub mod damage;
+pub mod damage_events;
+pub mod health;
+pub mod modifier;
 pub mod movement;
 pub mod network;
 pub mod parameters;
+pub mod perk;
 pub mod response;
 pub mod scalar;
 #[cfg(test)]
 mod tests;
+pub mod timed;
 
 #[derive(Serialize)]
 pub struct Relocation {
@@ -32,6 +38,13 @@ pub struct Bank {
     /// Serialized translation does not establish incoming provider connections
     /// or application of allocation metadata during native construction.
     pub gates: Vec<String>,
+}
+
+/// Keep checked reads valid between append phases. This does not relocate the
+/// schema or publish the mutable instance span, which belongs to final sealing.
+fn refresh_size(owner: &mut Payload) -> Result<()> {
+    let length = owner.0.len() as u64;
+    put(&mut owner.0, 0, &length.to_le_bytes())
 }
 
 /// Finish a controller whose nested runtime records were appended during

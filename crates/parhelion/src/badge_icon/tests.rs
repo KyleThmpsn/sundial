@@ -2,7 +2,13 @@ use std::path::Path;
 
 use tiger_pkg::{DestinyVersion, GameVersion};
 
+use sundial::package_authoring::icon_schema::ICON_PRIMARY_LAYER_OFFSET;
+
 use super::*;
+use crate::{
+    NewTagStorageMode, payload_guards::donor_mutation_is_limited_to,
+    shared_tag_memory::dependency_set, tag_payload::read_u32,
+};
 
 #[test]
 fn renderer_preserves_an_opaque_donor_mask_and_untouched_gradient_side_margins() {
@@ -110,14 +116,16 @@ fn alpha_compositing_is_straight_and_fully_opaque() {
 
 #[test]
 fn rejects_unencodable_destination_indices() {
-    let ordinals = ordinals(2).expect("ordinals should be assigned");
-    let error = assigned_tags(0x0197, 8184, ordinals)
+    let donor = lunar();
+    let ordinals = donor.ordinals(2).expect("ordinals should be assigned");
+    let error = donor
+        .assigned_tags(0x0197, 8184, ordinals)
         .expect_err("seven icon tags cannot overflow the package entry table");
     assert!(error.to_string().contains("package-table limit"));
 }
 
-fn assert_real_plan_shape(plan: &BadgeIconPlan, donor_low_header: &[u8], donor_high_header: &[u8]) {
-    assert_eq!(plan.new_tags.len(), TAGS_PER_ICON);
+fn assert_real_plan_shape(plan: &Plan, donor_low_header: &[u8], donor_high_header: &[u8]) {
+    assert_eq!(plan.new_tags.len(), crate::icon_chain::TAGS);
     assert_eq!(plan.ordinals.low_data, 2);
     assert_eq!(plan.ordinals.container, 7);
     assert_eq!(plan.ordinals.companion, 8);
@@ -133,26 +141,28 @@ fn assert_real_plan_shape(plan: &BadgeIconPlan, donor_low_header: &[u8], donor_h
     );
 }
 
-fn assert_real_plan_links(plan: &BadgeIconPlan, donor_layer: &[u8], donor_container: &[u8]) {
-    validate_only_patched_ranges(
-        donor_layer,
-        &plan.new_tags[4].payload,
-        &[
-            LOW_HEADER_TAG_OFFSET..LOW_HEADER_TAG_OFFSET + 4,
-            HIGH_HEADER_TAG_OFFSET..HIGH_HEADER_TAG_OFFSET + 4,
-        ],
-        "test layer",
-    )
-    .expect("only the layer's two host tags should change");
+fn assert_real_plan_links(plan: &Plan, donor_layer: &[u8], donor_container: &[u8]) {
+    assert!(
+        donor_mutation_is_limited_to(
+            donor_layer,
+            &plan.new_tags[4].payload,
+            &[
+                LOW_HEADER_TAG_OFFSET..LOW_HEADER_TAG_OFFSET + 4,
+                HIGH_HEADER_TAG_OFFSET..HIGH_HEADER_TAG_OFFSET + 4,
+            ],
+        ),
+        "only the layer's two host tags should change"
+    );
     let container_layer_tag_range = ICON_PRIMARY_LAYER_OFFSET..ICON_PRIMARY_LAYER_OFFSET + 4;
     let container_fingerprint_range = 0x10..0x14;
-    validate_only_patched_ranges(
-        donor_container,
-        &plan.new_tags[5].payload,
-        &[container_layer_tag_range, container_fingerprint_range],
-        "test container",
-    )
-    .expect("only the container's layer host tag and content fingerprint should change");
+    assert!(
+        donor_mutation_is_limited_to(
+            donor_container,
+            &plan.new_tags[5].payload,
+            &[container_layer_tag_range, container_fingerprint_range],
+        ),
+        "only the container's layer host tag and content fingerprint should change"
+    );
     assert_eq!(
         read_u32(&plan.new_tags[4].payload, LOW_HEADER_TAG_OFFSET)
             .expect("low layer link should decode"),
@@ -250,13 +260,13 @@ fn edited_badge_preview_matches_emitted_pixels_and_custom_backgrounds() {
         let saved = serde_json::to_string(&artwork).unwrap();
         let artwork: Artwork = serde_json::from_str(&saved).unwrap();
         let plan = build_icon_plan(&manager, 0x0aa0, 0, 0, Some(&artwork)).unwrap();
-        let preview = preview(Some(&artwork), Some(&donor.high_data)).unwrap();
+        let preview = preview(Some(&artwork), Some(&donor.data[1])).unwrap();
         assert_eq!(plan.new_tags[2].payload, preview.as_raw().as_slice());
         assert_eq!(
             plan.new_tags[0].payload,
             render_artwork(
                 Some(&artwork),
-                &donor.low_data,
+                &donor.data[0],
                 LOW_WIDTH,
                 LOW_HEIGHT,
                 crate::branding::Branding::Sunrise
@@ -266,7 +276,7 @@ fn edited_badge_preview_matches_emitted_pixels_and_custom_backgrounds() {
         assert!(
             preview
                 .pixels()
-                .zip(donor.high_data.chunks_exact(4))
+                .zip(donor.data[1].chunks_exact(4))
                 .all(|(a, b)| a[3] == b[3])
         );
         if scale == 100 {

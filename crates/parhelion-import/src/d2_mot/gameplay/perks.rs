@@ -10,8 +10,11 @@ use serde_json::{Value, json};
 use super::{resource, table};
 use crate::d2_mot::{payload::Payload, reader::Reader};
 
+pub mod attached;
 pub mod controller;
+pub mod equipped;
 pub mod kinetic;
+pub mod lifecycle;
 pub mod lower;
 pub mod presentation;
 pub mod sword;
@@ -322,10 +325,11 @@ fn controller(r: &mut Reader, tag: u32) -> Result<Value> {
                 "class": format!("{:08X}", record.class),
                 "state_reference_class": (record.class == controller::STATE_AUXILIARY).then_some("8080B848"),
                 "key": record.key.map(|key| format!("{key:08X}")),
-                "unknown_integer": record.unknown_integer,
+                "priority": record.priority,
                 "state_offsets": &record.state_offsets,
                 "state_keys": record.state_keys.iter().map(|key| format!("{key:08X}")).collect::<Vec<_>>(),
                 "source_record": &record.source_record,
+                "source_record_complete": record.source_record_complete,
             })
         })
         .collect::<Vec<_>>();

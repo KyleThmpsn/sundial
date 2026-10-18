@@ -102,6 +102,7 @@ fn socket_plug_variants_reject_invalid_positions_and_perks() {
     let mut recipe = WeaponRecipe::new_weapon("parhelion.invalid-private-perk").unwrap();
     recipe.overrides.socket_plug_variants = vec![
         WeaponSocketPlugVariantRecipe {
+            projectile: None,
             offer_everywhere: false,
             replace_effects: false,
             investment_stats: Vec::new(),
@@ -123,6 +124,7 @@ fn socket_plug_variants_reject_invalid_positions_and_perks() {
             }],
         },
         WeaponSocketPlugVariantRecipe {
+            projectile: None,
             offer_everywhere: false,
             replace_effects: false,
             investment_stats: Vec::new(),

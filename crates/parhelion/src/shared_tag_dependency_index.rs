@@ -14,6 +14,9 @@ const MARKER: u32 = 0x8080_9FBD;
 const GROUP_CLASS: u64 = 0x8080_9EFB;
 const BITMAP_CLASS: u64 = 0x8080_000B;
 const INDEX_CLASS: u64 = 0x8080_000A;
+const TAG64_CLASS: u64 = 0x8080_013D;
+/// The array of 64-bit tag hashes that a map owner's index can keep after its groups.
+const TAG64_DESCRIPTOR: usize = 0x20;
 const GROUP_START: usize = 0x50;
 const GROUP_SIZE: usize = 0x28;
 
@@ -69,7 +72,9 @@ fn append_array(
 }
 
 pub(crate) fn encode(template: &[u8], groups: &BTreeMap<u16, Group>) -> AuthoringResult<Vec<u8>> {
+    let tags = sundial::package_authoring::loading_index::tag64(template).map_err(invalid)?;
     let mut payload = template[..0x30].to_vec();
+    payload[TAG64_DESCRIPTOR..0x30].fill(0);
     write_u64(&mut payload, 0x10, groups.len() as u64)?;
     write_i64(&mut payload, 0x18, 0x28)?;
     payload.resize(0x3C, 0);
@@ -105,6 +110,17 @@ pub(crate) fn encode(template: &[u8], groups: &BTreeMap<u16, Group>) -> Authorin
             &sparse,
         )?;
     }
+    let hashes = tags
+        .iter()
+        .flat_map(|hash| hash.to_le_bytes())
+        .collect::<Vec<_>>();
+    append_array(
+        &mut payload,
+        TAG64_DESCRIPTOR,
+        TAG64_CLASS,
+        tags.len(),
+        &hashes,
+    )?;
     let size = payload.len() as u64;
     write_u64(&mut payload, 0, size)?;
     Ok(payload)
@@ -209,6 +225,96 @@ pub(crate) fn enroll_inherited_dependencies(
     if indexed_dependencies(&parse(&authored, companion, owner)?) != expected {
         return Err(validation(
             "Authored loading dependencies did not round-trip",
+        ));
+    }
+    Ok(authored)
+}
+
+/// A copied companion's dependencies with `source_owner` replaced by its own `owner`. Every stock
+/// companion lists its owner among the entries that load with it, so a copy that kept the source
+/// owner would load the source and leave its own owner unloaded.
+#[cfg(feature = "d2-model-importer")]
+pub(crate) fn replace_owner_dependency(
+    payload: &[u8],
+    companion: TagHash,
+    owner: TagHash,
+    source_owner: TagHash,
+) -> AuthoringResult<Vec<u8>> {
+    let mut groups = parse(payload, companion, owner)?;
+    let mut expected = indexed_dependencies(&groups);
+    let (package, entry) = (source_owner.pkg_id(), source_owner.entry_index());
+    if !expected.remove(&(package, entry)) {
+        return Err(invalid(format!(
+            "Companion {companion} does not list its source owner {source_owner}"
+        )));
+    }
+    let group = groups
+        .get_mut(&package)
+        .ok_or_else(|| invalid("Dependency group is missing"))?;
+    if let Some(word) = group.bitmap.get_mut(entry as usize / 32)
+        && *word & (1 << (entry % 32)) != 0
+    {
+        *word &= !(1 << (entry % 32));
+    } else {
+        group.indices.retain(|&index| index != entry);
+    }
+    if group.indices.is_empty() && group.bitmap.iter().all(|&word| word == 0) {
+        groups.remove(&package);
+    }
+    let added = (owner.pkg_id(), owner.entry_index());
+    expected.insert(added);
+    let group = groups.entry(added.0).or_default();
+    if group.bitmap.is_empty() {
+        let position = group.indices.binary_search(&added.1).unwrap_or_else(|p| p);
+        group.indices.insert(position, added.1);
+    } else {
+        group
+            .bitmap
+            .resize(group.bitmap.len().max(added.1 as usize / 32 + 1), 0);
+        group.bitmap[added.1 as usize / 32] |= 1 << (added.1 % 32);
+    }
+    let authored = encode(payload, &groups)?;
+    if indexed_dependencies(&parse(&authored, companion, owner)?) != expected {
+        return Err(validation(
+            "Retargeted loading dependencies did not round-trip",
+        ));
+    }
+    Ok(authored)
+}
+
+/// A companion's dependencies without `removals`. A removal it does not list is skipped.
+#[cfg(feature = "d2-model-importer")]
+pub(crate) fn remove_dependencies(
+    payload: &[u8],
+    companion: TagHash,
+    owner: TagHash,
+    removals: &[TagHash],
+) -> AuthoringResult<Vec<u8>> {
+    let mut groups = parse(payload, companion, owner)?;
+    let mut expected = indexed_dependencies(&groups);
+    for removal in removals {
+        let (package, entry) = (removal.pkg_id(), removal.entry_index());
+        if !expected.remove(&(package, entry)) {
+            continue;
+        }
+        let group = groups
+            .get_mut(&package)
+            .ok_or_else(|| invalid("Dependency group is missing"))?;
+        if let Some(word) = group.bitmap.get_mut(entry as usize / 32)
+            && *word & (1 << (entry % 32)) != 0
+        {
+            *word &= !(1 << (entry % 32));
+        } else {
+            group.indices.retain(|&index| index != entry);
+        }
+        if group.indices.is_empty() && group.bitmap.iter().all(|&word| word == 0) {
+            groups.remove(&package);
+        }
+    }
+    let authored = encode(payload, &groups)?;
+    if indexed_dependencies(&parse(&authored, companion, owner)?) != expected {
+        return Err(validation(
+            "Reduced loading dependencies did not round-trip",
         ));
     }
     Ok(authored)

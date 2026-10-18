@@ -119,6 +119,7 @@ fn real_offered_mod_joins_every_plug_set_that_offers_its_type_plug() {
         staging_root: temporary.path().join("staging"),
         ignore_installed_authored_overlays: false,
         recipes: vec![recipe],
+        maps: Vec::new(),
     })
     .unwrap();
     let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |_| {}).unwrap();
@@ -259,6 +260,7 @@ fn real_mod_item_is_offered_everywhere_without_a_host() {
         staging_root: temporary.path().join("staging"),
         ignore_installed_authored_overlays: false,
         recipes: vec![item, weapon],
+        maps: Vec::new(),
     })
     .unwrap();
     let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |_| {}).unwrap();

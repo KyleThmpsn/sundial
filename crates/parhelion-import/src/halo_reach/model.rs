@@ -1,7 +1,7 @@
 use super::{
     cache::{Cache, Tag},
     material::{self, Material},
-    resource::Pages,
+    resource::{Pages, Resource},
     rig::{self, Bone, METRES_PER_UNIT},
 };
 use anyhow::{Context, Result, ensure};
@@ -16,6 +16,12 @@ pub struct Vertex {
     pub uv: [f32; 2],
     pub joints: [u16; 4],
     pub weights: [f32; 4],
+    /// The vertex's index in its section's vertex buffer, which other per-vertex streams share.
+    #[serde(skip)]
+    pub source: u32,
+    /// Lightmap texture coordinates, which a level fills where its lightmap covers the vertex.
+    #[serde(skip)]
+    pub lightmap: Option<[f32; 2]>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Primitive {
@@ -83,11 +89,18 @@ fn nullable(value: u8) -> Option<usize> {
 }
 
 pub(super) fn read_bones(cache: &Cache, at: usize) -> Result<Vec<Bone>> {
+    model_bones(cache, at, true)
+}
+
+/// The render model's bones. With `posed`, a model that is posed by its bones must have unit
+/// inverse scales and a default pose that matches its bind pose. A model drawn where it stands, in
+/// the pose its vertices are stored in, needs neither.
+fn model_bones(cache: &Cache, at: usize, posed: bool) -> Result<Vec<Bone>> {
     let mut bones = Vec::new();
     for row in cache.block(at + 48, 96)? {
         let inverse_scale = cache.f32(row + 40)?;
         ensure!(
-            (inverse_scale - 1.).abs() < 0.001,
+            !posed || (inverse_scale - 1.).abs() < 0.001,
             "Nonunit inverse bone scale requires explicit conversion"
         );
         let mut inverse_bind = rig::IDENTITY;
@@ -115,6 +128,9 @@ pub(super) fn read_bones(cache: &Cache, at: usize) -> Result<Vec<Bone>> {
             rotation: [0., 0., 0., 1.],
             inverse_bind: rig::IDENTITY,
         });
+    }
+    if !posed {
+        return Ok(bones);
     }
     let worlds = rig::world(&bones)?;
     for (bone, world) in bones.iter().zip(&worlds) {
@@ -213,25 +229,42 @@ fn select(
     })
 }
 
+/// The vertex format of decorator models: 32 bytes of floats, a position from 0 to 1 across the
+/// compression bounds, texture coordinates likewise, and a unit normal, as Reach's
+/// `decorator_mesh` vertex program reads them (`POSITION0`, `TEXCOORD0` and `NORMAL0`, the first
+/// two scaled and offset by its vertex compression constants).
+const DECORATOR_FORMAT: u8 = 15;
+
+/// The bytes a vertex of `format` takes.
+fn vertex_stride(format: u8) -> Result<usize> {
+    Ok(match format {
+        0 | 1 => 36,
+        2 => 44,
+        DECORATOR_FORMAT => 32,
+        n => anyhow::bail!("Unsupported Reach vertex format {n}"),
+    })
+}
+
 fn decode_vertices(
     data: &[u8],
     format: u8,
-    flags: u16,
     rigid: usize,
     bounds: &[f32; 10],
     palette: &[u8],
     bone_count: usize,
 ) -> Result<Vec<Vertex>> {
-    let stride = if format == 2 { 44 } else { 36 };
+    let stride = vertex_stride(format)?;
     let mut vertices = Vec::with_capacity(data.len() / stride);
-    for bytes in data.chunks_exact(stride) {
+    for (source, bytes) in data.chunks_exact(stride).enumerate() {
         let f = |p| f32::from_le_bytes(bytes[p..p + 4].try_into().unwrap());
         let unorm = |p| u16::from_le_bytes(bytes[p..p + 2].try_into().unwrap()) as f32 / 65535.;
         let snorm =
             |p| (i16::from_le_bytes(bytes[p..p + 2].try_into().unwrap()) as f32 / 32767.).max(-1.);
         let position = std::array::from_fn(|a| {
+            // Compressed formats store positions from 0 to 1 across the compression bounds,
+            // even when mesh flag bit 8 claims uncompressed positions.
             let v = f(a * 4);
-            (if flags & 256 != 0 || format == 0 {
+            (if format == 0 {
                 v
             } else {
                 bounds[a * 2] + v * (bounds[a * 2 + 1] - bounds[a * 2])
@@ -243,6 +276,8 @@ fn decode_vertices(
                     bytes[16 + a * 2..18 + a * 2].try_into().unwrap(),
                 ))
                 .to_f32()
+            } else if format == DECORATOR_FORMAT {
+                bounds[6 + a * 2] + f(12 + a * 4) * (bounds[7 + a * 2] - bounds[6 + a * 2])
             } else {
                 bounds[6 + a * 2] + unorm(16 + a * 2) * (bounds[7 + a * 2] - bounds[6 + a * 2])
             }
@@ -251,9 +286,28 @@ fn decode_vertices(
             position.iter().chain(uv.iter()).all(|v| v.is_finite()),
             "Nonfinite model vertex"
         );
-        let normal = rig::normalize([snorm(20), snorm(22), snorm(24)])?;
-        let t = rig::normalize([snorm(28), snorm(30), snorm(32)])?;
-        let tangent = [t[0], t[1], t[2], if snorm(34) < 0. { -1. } else { 1. }];
+        let (normal, tangent) = if format == DECORATOR_FORMAT {
+            // A decorator vertex keeps no tangent, so any direction across its normal serves.
+            let normal = rig::normalize([f(20), f(24), f(28)])?;
+            let across = if normal[2].abs() < 0.9 {
+                [0., 0., 1.]
+            } else {
+                [1., 0., 0.]
+            };
+            let t = rig::normalize([
+                across[1] * normal[2] - across[2] * normal[1],
+                across[2] * normal[0] - across[0] * normal[2],
+                across[0] * normal[1] - across[1] * normal[0],
+            ])?;
+            (normal, [t[0], t[1], t[2], 1.])
+        } else {
+            let normal = rig::normalize([snorm(20), snorm(22), snorm(24)])?;
+            let t = rig::normalize([snorm(28), snorm(30), snorm(32)])?;
+            (
+                normal,
+                [t[0], t[1], t[2], if snorm(34) < 0. { -1. } else { 1. }],
+            )
+        };
         let mut joints = [u16::try_from(rigid)?; 4];
         let mut weights = [1., 0., 0., 0.];
         if format == 2 {
@@ -292,9 +346,253 @@ fn decode_vertices(
             uv,
             joints,
             weights,
+            source: u32::try_from(source)?,
+            lightmap: None,
         });
     }
     Ok(vertices)
+}
+
+/// A render geometry block: the struct a render model holds at `+0x64` and a structure BSP at
+/// `+0x44C`. Its sections, compression bounds, node maps and buffer resource sit at the same
+/// offsets from its start.
+pub(super) struct Geometry {
+    pub(super) sections: Vec<usize>,
+    /// Compression bounds: one for the whole model, or one for each mesh of a level.
+    bounds: Vec<[f32; 10]>,
+    node_maps: Vec<usize>,
+    resource: Resource,
+    vertex_buffers: usize,
+    index_buffers: usize,
+}
+
+/// One section's decoded buffers and the parts that draw them.
+pub(super) struct Section {
+    pub(super) row: usize,
+    pub(super) vertices: Vec<Vertex>,
+    pub(super) indices: Vec<u32>,
+    pub(super) restart: u32,
+    pub(super) topology: u8,
+    pub(super) parts: Vec<usize>,
+}
+
+impl Geometry {
+    /// The block at `base` of `tag`. With `unowned`, its buffer resource may name no owner.
+    pub(super) fn read(cache: &Cache, tag: &Tag, base: usize, unowned: bool) -> Result<Self> {
+        let sections = cache.block(base + 4, 92)?;
+        let bounds = cache
+            .block(base + 16, 52)?
+            .into_iter()
+            .map(|row| cache.floats::<10>(row + 4))
+            .collect::<Result<Vec<_>>>()?;
+        // A block whose vertices are all stored uncompressed, as a BSP's decal geometry is, holds
+        // no bounds. Decoding a compressed section then fails.
+        ensure!(
+            bounds
+                .iter()
+                .all(|bounds| bounds.chunks_exact(2).all(|b| b[1] >= b[0])),
+            "Inverted compression bounds"
+        );
+        let node_maps = cache.block(base + 76, 12)?;
+        let resource = cache.resource_from(tag, cache.u32(base + 148)?, unowned)?;
+        ensure!(resource.fixup_size >= 24, "Short geometry fixup");
+        let fixup = resource.fixup_offset;
+        let vertex_buffers = usize::try_from(cache.i32(fixup + resource.fixup_size - 24)?)?;
+        let index_buffers = usize::try_from(cache.i32(fixup + resource.fixup_size - 12)?)?;
+        ensure!(
+            vertex_buffers <= 65536
+                && index_buffers <= 65536
+                && vertex_buffers * 40 + index_buffers * 28 <= resource.fixup_size,
+            "Geometry buffer table outside fixup"
+        );
+        Ok(Self {
+            sections,
+            bounds,
+            node_maps,
+            resource,
+            vertex_buffers,
+            index_buffers,
+        })
+    }
+
+    /// The compression bounds of section `si`, none when the block holds none. A render model has
+    /// one entry for every section. A level has one per compressed mesh, in mesh order, and its
+    /// uncompressed world meshes follow them.
+    fn bounds_for(&self, si: usize) -> Option<&[f32; 10]> {
+        if self.bounds.len() > 1 {
+            self.bounds.get(si).or(self.bounds.first())
+        } else {
+            self.bounds.first()
+        }
+    }
+
+    /// Section `si`'s vertices and indices, or none when it has no vertices.
+    pub(super) fn section(
+        &self,
+        cache: &Cache,
+        pages: &mut Pages,
+        tag: &Tag,
+        si: usize,
+        bone_count: usize,
+    ) -> Result<Option<Section>> {
+        let row = *self.sections.get(si).context("Section outside geometry")?;
+        let fixup = self.resource.fixup_offset;
+        let vb = usize::try_from(cache.i16(row + 24)?)?;
+        ensure!(vb < self.vertex_buffers, "Vertex buffer outside fixup");
+        let count = usize::try_from(cache.i32(fixup + vb * 28)?)?;
+        if count == 0 {
+            return Ok(None);
+        }
+        let length = usize::try_from(cache.i32(fixup + vb * 28 + 8)?)?;
+        let format = cache.u8(row + 47)?;
+        let stride = vertex_stride(format).with_context(|| format!("{} section {si}", tag.path))?;
+        ensure!(
+            count.checked_mul(stride) == Some(length),
+            "Vertex stride or buffer length differs"
+        );
+        let vb_offset = *self
+            .resource
+            .fixups
+            .get(vb)
+            .context("Missing vertex resource fixup")?;
+        let data = pages.bytes(cache, &self.resource, vb_offset, length)?;
+        let palette = if let Some(&map) = self.node_maps.get(si) {
+            cache
+                .block(map, 1)?
+                .into_iter()
+                .map(|p| cache.u8(p))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
+        let rigid = nullable(cache.u8(row + 46)?).unwrap_or(0);
+        // World vertices (format 0) are stored uncompressed and read no bounds.
+        let bounds = match self.bounds_for(si) {
+            Some(bounds) => *bounds,
+            None if format == 0 => [0.; 10],
+            None => anyhow::bail!("Missing compression bounds for {} section {si}", tag.path),
+        };
+        let vertices = decode_vertices(&data, format, rigid, &bounds, &palette, bone_count)?;
+        let (indices, restart) = self.indices(cache, pages, row, count)?;
+        Ok(Some(Section {
+            row,
+            vertices,
+            indices,
+            restart,
+            topology: cache.u8(row + 50)?,
+            parts: cache.block(row, 24)?,
+        }))
+    }
+
+    /// Section `si`'s vertex buffer bytes, vertex format, index list, restart value and
+    /// topology, with its vertices undecoded, or none when it has no vertices.
+    pub(super) fn raw_section(
+        &self,
+        cache: &Cache,
+        pages: &mut Pages,
+        si: usize,
+    ) -> Result<Option<RawSection>> {
+        let row = *self.sections.get(si).context("Section outside geometry")?;
+        let vb = usize::try_from(cache.i16(row + 24)?)?;
+        let (count, _, data) = self.vertex_buffer(cache, pages, vb)?;
+        if count == 0 {
+            return Ok(None);
+        }
+        let (indices, restart) = self.indices(cache, pages, row, count)?;
+        Ok(Some(RawSection {
+            vertices: data,
+            count,
+            format: cache.u8(row + 47)?,
+            indices,
+            restart,
+            topology: cache.u8(row + 50)?,
+        }))
+    }
+
+    /// The index list of the section at `row` over `count` vertices, and its restart value. A
+    /// section without an index buffer draws its vertices in order.
+    fn indices(
+        &self,
+        cache: &Cache,
+        pages: &mut Pages,
+        row: usize,
+        count: usize,
+    ) -> Result<(Vec<u32>, u32)> {
+        let ib = cache.i16(row + 40)?;
+        if ib == -1 || cache.u16(row + 44)? & 16 != 0 {
+            return Ok(((0..u32::try_from(count)?).collect(), u32::MAX));
+        }
+        let ib = usize::try_from(ib)?;
+        ensure!(ib < self.index_buffers, "Index buffer outside fixup");
+        let fixup = self.resource.fixup_offset;
+        let length = usize::try_from(cache.i32(fixup + self.vertex_buffers * 40 + ib * 28 + 8)?)?;
+        let offset = *self
+            .resource
+            .fixups
+            .get(self.vertex_buffers * 2 + ib)
+            .context("Missing index resource fixup")?;
+        let data = pages.bytes(cache, &self.resource, offset, length)?;
+        let width = if count > 65535 { 4 } else { 2 };
+        ensure!(length.is_multiple_of(width), "Partial index");
+        Ok((
+            data.chunks_exact(width)
+                .map(|b| {
+                    if width == 2 {
+                        u32::from(u16::from_le_bytes(b.try_into().unwrap()))
+                    } else {
+                        u32::from_le_bytes(b.try_into().unwrap())
+                    }
+                })
+                .collect(),
+            if width == 2 { 65535 } else { u32::MAX },
+        ))
+    }
+}
+
+/// A section's buffers with its vertices undecoded.
+pub(super) struct RawSection {
+    pub(super) vertices: Vec<u8>,
+    pub(super) count: usize,
+    pub(super) format: u8,
+    pub(super) indices: Vec<u32>,
+    pub(super) restart: u32,
+    pub(super) topology: u8,
+}
+
+impl Geometry {
+    /// The vertex buffer section `si` names in `slot`, one of its eight vertex buffer slots.
+    pub(super) fn section_buffer(
+        &self,
+        cache: &Cache,
+        si: usize,
+        slot: usize,
+    ) -> Result<Option<usize>> {
+        ensure!(slot < 8, "Vertex buffer slot outside section");
+        let row = *self.sections.get(si).context("Section outside geometry")?;
+        let vb = cache.i16(row + 24 + slot * 2)?;
+        Ok(usize::try_from(vb).ok())
+    }
+
+    /// Vertex buffer `vb`'s vertex count, declaration word (stride above type) and bytes.
+    pub(super) fn vertex_buffer(
+        &self,
+        cache: &Cache,
+        pages: &mut Pages,
+        vb: usize,
+    ) -> Result<(usize, u32, Vec<u8>)> {
+        ensure!(vb < self.vertex_buffers, "Vertex buffer outside fixup");
+        let fixup = self.resource.fixup_offset;
+        let count = usize::try_from(cache.i32(fixup + vb * 28)?)?;
+        let declaration = cache.u32(fixup + vb * 28 + 4)?;
+        let length = usize::try_from(cache.i32(fixup + vb * 28 + 8)?)?;
+        let offset = *self
+            .resource
+            .fixups
+            .get(vb)
+            .context("Missing vertex resource fixup")?;
+        let data = pages.bytes(cache, &self.resource, offset, length)?;
+        Ok((count, declaration, data))
+    }
 }
 
 fn read_markers(cache: &Cache, at: usize, bone_count: usize) -> Result<Vec<Marker>> {
@@ -327,41 +625,78 @@ pub fn read(
     tag: &Tag,
     choices: &BTreeMap<String, String>,
 ) -> Result<Model> {
+    read_permutations(cache, pages, tag, choices, &BTreeMap::new())
+}
+
+/// Decodes `tag` as an object placed in a level draws it, where it stands in the pose its vertices
+/// are stored in. Nothing poses it by its bones, so their default pose need not match their bind
+/// pose, as it does not for some light fixtures.
+pub(super) fn read_static(
+    cache: &Cache,
+    pages: &mut Pages,
+    tag: &Tag,
+    choices: &BTreeMap<String, String>,
+) -> Result<Model> {
+    decode(cache, pages, tag, choices, &BTreeMap::new(), false)
+}
+
+/// Decode the selected pose together with explicitly requested alternate draws.
+/// Markers and physics still use `choices` as their initial selection.
+pub(super) fn read_permutations(
+    cache: &Cache,
+    pages: &mut Pages,
+    tag: &Tag,
+    choices: &BTreeMap<String, String>,
+    additional: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<Model> {
+    decode(cache, pages, tag, choices, additional, true)
+}
+
+/// Decodes `tag` with the selected and requested permutations, checking its bones for posing when
+/// `posed`.
+fn decode(
+    cache: &Cache,
+    pages: &mut Pages,
+    tag: &Tag,
+    choices: &BTreeMap<String, String>,
+    additional: &BTreeMap<String, BTreeSet<String>>,
+    posed: bool,
+) -> Result<Model> {
     let at = tag.address()?;
     ensure!(tag.group == "mode", "Expected render model");
     cache.meta(at, 252)?;
-    let bones = read_bones(cache, at)?;
+    let bones = model_bones(cache, at, posed)?;
     let markers = read_markers(cache, at, bones.len())?;
-    let sections = cache.block(at + 104, 92)?;
+    let geometry = Geometry::read(cache, tag, at + 100, false)?;
+    let sections = &geometry.sections;
     let Selection {
         regions,
         selected,
         mut selected_sections,
-        instance_mask,
-    } = select(cache, at, &sections, choices)?;
+        mut instance_mask,
+    } = select(cache, at, sections, choices)?;
+    for (name, requested) in additional {
+        let region = regions
+            .iter()
+            .find(|region| &region.name == name)
+            .with_context(|| format!("Additional model region {name} is absent"))?;
+        for name in requested {
+            let permutation = region
+                .permutations
+                .iter()
+                .find(|p| &p.name == name)
+                .with_context(|| format!("Additional model permutation {name} is absent"))?;
+            selected_sections.extend(permutation.sections.iter().copied());
+            for (mask, extra) in instance_mask.iter_mut().zip(permutation.instance_mask) {
+                *mask |= extra;
+            }
+        }
+    }
     let materials = cache
         .block(at + 72, 44)?
         .into_iter()
         .map(|r| material::read(cache, cache.reference(r, None)?))
         .collect::<Result<Vec<_>>>()?;
-    let bounds = cache.block(at + 116, 52)?;
-    let bounds = cache.floats::<10>(*bounds.first().context("Missing compression bounds")? + 4)?;
-    ensure!(
-        bounds.chunks_exact(2).all(|b| b[1] >= b[0]),
-        "Inverted compression bounds"
-    );
-    let node_maps = cache.block(at + 176, 12)?;
-    let resource = cache.resource(tag, cache.u32(at + 248)?)?;
-    ensure!(resource.fixup_size >= 24, "Short geometry fixup");
-    let fixup = resource.fixup_offset;
-    let vertex_buffers = usize::try_from(cache.i32(fixup + resource.fixup_size - 24)?)?;
-    let index_buffers = usize::try_from(cache.i32(fixup + resource.fixup_size - 12)?)?;
-    ensure!(
-        vertex_buffers <= 65536
-            && index_buffers <= 65536
-            && vertex_buffers * 40 + index_buffers * 28 <= resource.fixup_size,
-        "Geometry buffer table outside fixup"
-    );
     let instances = cache.block(at + 32, 60)?;
     let instance_section = cache.i32(at + 28)?;
     if !instances.is_empty() {
@@ -373,74 +708,17 @@ pub fn read(
     }
     let mut primitives = Vec::new();
     for si in selected_sections {
-        let row = sections[si];
-        let vb = usize::try_from(cache.i16(row + 24)?)?;
-        ensure!(vb < vertex_buffers, "Vertex buffer outside fixup");
-        let count = usize::try_from(cache.i32(fixup + vb * 28)?)?;
-        if count == 0 {
+        let Some(Section {
+            row,
+            vertices,
+            indices,
+            restart,
+            topology,
+            parts,
+        }) = geometry.section(cache, pages, tag, si, bones.len())?
+        else {
             continue;
-        }
-        let length = usize::try_from(cache.i32(fixup + vb * 28 + 8)?)?;
-        let format = cache.u8(row + 47)?;
-        let stride = match format {
-            0 | 1 => 36,
-            2 => 44,
-            n => anyhow::bail!(
-                "Unsupported Reach vertex format {n} in {} section {si}",
-                tag.path
-            ),
         };
-        ensure!(
-            count.checked_mul(stride) == Some(length),
-            "Vertex stride or buffer length differs"
-        );
-        let vb_offset = *resource
-            .fixups
-            .get(vb)
-            .context("Missing vertex resource fixup")?;
-        let data = pages.bytes(cache, &resource, vb_offset, length)?;
-        let flags = cache.u16(row + 44)?;
-        let palette = if let Some(&map) = node_maps.get(si) {
-            cache
-                .block(map, 1)?
-                .into_iter()
-                .map(|p| cache.u8(p))
-                .collect::<Result<Vec<_>>>()?
-        } else {
-            Vec::new()
-        };
-        let rigid = nullable(cache.u8(row + 46)?).unwrap_or(0);
-        let vertices =
-            decode_vertices(&data, format, flags, rigid, &bounds, &palette, bones.len())?;
-        let ib = cache.i16(row + 40)?;
-        let topology = cache.u8(row + 50)?;
-        let (indices, restart) = if ib == -1 || flags & 16 != 0 {
-            ((0..u32::try_from(count)?).collect::<Vec<_>>(), u32::MAX)
-        } else {
-            let ib = usize::try_from(ib)?;
-            ensure!(ib < index_buffers, "Index buffer outside fixup");
-            let length = usize::try_from(cache.i32(fixup + vertex_buffers * 40 + ib * 28 + 8)?)?;
-            let offset = *resource
-                .fixups
-                .get(vertex_buffers * 2 + ib)
-                .context("Missing index resource fixup")?;
-            let data = pages.bytes(cache, &resource, offset, length)?;
-            let width = if count > 65535 { 4 } else { 2 };
-            ensure!(length.is_multiple_of(width), "Partial index");
-            (
-                data.chunks_exact(width)
-                    .map(|b| {
-                        if width == 2 {
-                            u32::from(u16::from_le_bytes(b.try_into().unwrap()))
-                        } else {
-                            u32::from_le_bytes(b.try_into().unwrap())
-                        }
-                    })
-                    .collect(),
-                if width == 2 { 65535 } else { u32::MAX },
-            )
-        };
-        let parts = cache.block(row, 24)?;
         if si as i32 == instance_section && !instances.is_empty() {
             let subsets = cache.block(row + 12, 16)?;
             ensure!(subsets.len() >= instances.len(), "Missing instance subset");
@@ -543,7 +821,7 @@ fn place_instance(
     clippy::too_many_arguments,
     reason = "Source draw fields and their checked owning buffers remain explicit"
 )]
-fn draw(
+pub(super) fn draw(
     c: &Cache,
     section: usize,
     part: usize,

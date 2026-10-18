@@ -47,8 +47,42 @@ fn paths(r: &mut Read<'_>, w: &mut Write) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn emit(r: &mut Read<'_>, w: &mut Write, attenuation: Option<u32>) -> Result<()> {
+/// A native positioning type is binary. A modern continuous blend has no
+/// equivalent, even when both authored curve endpoints happen to be binary.
+pub(super) fn switch_curve(r: &mut Read<'_>, w: &mut Write, count: u16) -> Result<()> {
+    ensure!(count > 0, "empty positioning switch curve");
+    let mut previous = None;
+    for index in 0..count {
+        let row = r.take(12)?;
+        let x = number(&row[..4]);
+        let y = number(&row[4..8]);
+        let interpolation = u32::from_le_bytes(row[8..].try_into()?);
+        ensure!(
+            x.is_finite()
+                && previous.is_none_or(|p| x > p)
+                && (y == 0.0 || y == 100.0)
+                && (index + 1 == count || interpolation == 9),
+            "continuous or invalid positioning blend curve"
+        );
+        previous = Some(x);
+        w.bytes.extend_from_slice(&row[..4]);
+        w.bytes.extend_from_slice(&(y / 100.0).to_le_bytes());
+        w.bytes.extend_from_slice(&row[8..]);
+    }
+    Ok(())
+}
+
+pub(super) fn emit(
+    r: &mut Read<'_>,
+    w: &mut Write,
+    attenuation: Option<u32>,
+    position_switch: bool,
+) -> Result<()> {
     let bits = r.u8()?;
+    ensure!(
+        !position_switch || bits == 3,
+        "positioning switch requires direct spatial routing"
+    );
     ensure!(bits & 0x90 == 0, "unsupported positioning flags {bits:02X}");
     if bits & 1 == 0 {
         ensure!(
@@ -69,6 +103,10 @@ pub(super) fn emit(r: &mut Read<'_>, w: &mut Write, attenuation: Option<u32>) ->
         return Ok(());
     }
     let spatial = r.u8()?;
+    ensure!(
+        !position_switch || spatial == 0x0A,
+        "unvalidated positioning switch flags"
+    );
     ensure!(
         spatial & 0x80 == 0,
         "diffraction needs a native implementation"
@@ -95,7 +133,7 @@ pub(super) fn emit(r: &mut Read<'_>, w: &mut Write, attenuation: Option<u32>) ->
         );
         w.u8(0xC7);
     } else {
-        w.u8(0xD9);
+        w.u8(if position_switch { 0xDB } else { 0xD9 });
         w.u8(1 | ((spatial & 0x70) >> 1));
         w.reference(
             if spatial & 8 != 0 {

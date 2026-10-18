@@ -12,59 +12,7 @@ use sha2::{Digest, Sha256};
 /// The importer revision a new import records in its graph. Raise it with any change to what
 /// conversion writes. Raise [`MINIMUM_CONVERTER_REVISION`] to it as well when imports made before
 /// the change are unsafe or wrong to install, so Parhelion asks for those to be imported again.
-/// Revision 1 is the first recorded, after the reticle lens fix of 2026-10-05. Revision 2 draws
-/// converted crosshair pieces with their own draw records, which gives glaives their shield meter.
-/// Revision 3 retains both operands of modern TFX multiply and add aliases.
-/// Revision 4 imports skinned float cloth and preserves four native vertex weights.
-/// Revision 5 translates supported cloth solvers and their component bindings.
-/// Revision 6 assembles supported source projectile controllers with explicit compatibility choices.
-/// Revision 7 coordinates oversized CPU particle programs with their consuming materials.
-/// Revision 8 preserves checked particle transform tables and private perk attachments.
-/// Revision 10 rebuilds private replication records for converted projectiles.
-/// Revision 11 binds transparent scene textures without depth constants and retains base emission
-/// for checked material expressions whose multiplier has no source binding.
-/// Revision 12 binds private vertex input registers to the final native model layout.
-/// Revision 13 selects the rigid model scope for simulated float cloth materials.
-/// Existing imports receive both bounded repairs during emission without repinning.
-/// Revision 14 carries automatic native-rendered inventory artwork for cross-game weapons.
-/// Revision 15 keeps appended channel state inside the native instance copy and aligns
-/// explicitly configured iron sights. Older component owners are repaired during emission.
-/// Revision 16 preserves explicit two-sided rasterization in translated source materials.
-/// Revision 17 carries native body activation groups and private first-person arm actions.
-/// Revision 18 retains empty local receiver ranges for inherited display channels.
-/// Older prepared declarations receive the same bounded repair during emission.
-/// Revision 19 preserves source cloth activation conditions for each body variant.
-/// Revision 20 carries primary firing audio through directly bound native presentations.
-/// It also translates supported Reach driver attachments into the retained carrier rig.
-/// Revision 21 translates modern artwork slots and records unsupported source material passes.
-/// Saved gear receives the slot correction during emission without repinning.
-/// Attachment model declarations also participate in vertex input and draw-index repairs.
-/// Revision 22 binds imported transparent emission to the native frame exposure component.
-/// Saved model shaders receive the same repair during emission without repinning.
-/// Revision 23 carries private Reach wheeled and authored flight component graphs.
-/// Revision 24 retains Marathon surface programs, authored inputs and explicit render passes.
-/// Revision 25 preserves vehicle presentation getters and physical initialization during
-/// contact replacement.
-/// Revision 26 activates authored vehicle motion after the carrier's setup callbacks.
-/// Revision 27 binds flight thrust and pitch to native unit inputs, corrects tail
-/// control direction and removes isolated carrier lighting from private vehicles.
-/// Vehicle attachments also follow the selected source region and permutation.
-/// Revision 28 carries private vehicle prompts and camera rails, removes selected
-/// secondary visual events, and binds wheel phases and compatible native maneuvers.
-/// Revision 29 clears the old object footprints when replacing vehicle visual
-/// events with smaller delays, preserving the native loader's complete stream.
-/// Revision 30 repairs vehicle input ownership, extended FK ranges and source
-/// engine audio, and carries the aligned weapon and arm presentation.
-/// Revision 31 adds separate optic views, source driver IK targets and boost
-/// ribbons. It also refreshes clip storage sizes, relocates generated component
-/// roots and translates source inertia, tire grip and flight damping surfaces.
-/// Revision 32 restores physical array envelopes around authored flight inputs.
-/// Older prepared flight components receive the bounded repair during emission.
-/// Revision 33 binds extended clip control groups, native ammunition and separate
-/// scope inputs, carries source HUD glyphs and collision hulls, and separates
-/// vehicle inspection art. Explicit paint, seat and firing audio adapters retain
-/// their native ownership and declared source boundaries.
-pub const CONVERTER_REVISION: u32 = 33;
+pub const CONVERTER_REVISION: u32 = 80;
 /// Imports from an earlier revision need importing again. Imports made before revisions were
 /// recorded count as revision 0.
 pub const MINIMUM_CONVERTER_REVISION: u32 = 0;
@@ -180,7 +128,11 @@ impl GraphReference {
             fs::create_dir_all(destination.parent().context("Icon file parent")?)?;
             fs::copy(self.directory.join(file), destination)?;
         }
-        if let Some(first_person) = graph["animation"]["first_person"].as_object() {
+        for first_person in graph["animation"]["first_person"]
+            .as_object()
+            .into_iter()
+            .chain(graph["animation"]["character"].as_object())
+        {
             let files = first_person["files"]
                 .as_object()
                 .context("animation files")?;
@@ -205,6 +157,12 @@ impl GraphReference {
                     .flatten(),
             )
             .chain(graph["particles"]["nodes"].as_array().into_iter().flatten())
+            .chain(
+                graph["audio_assets"]["nodes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten(),
+            )
             .chain(
                 graph["projectile"]["nodes"]
                     .as_array()
@@ -322,10 +280,6 @@ impl GraphReference {
             "Imported asset folder must be absolute"
         );
         ensure!(
-            self.attachments.is_empty(),
-            "Reusable item assets cannot contain attachments"
-        );
-        ensure!(
             fingerprint(&self.directory, None)? == self.sha256,
             "Imported assets changed after selection. Select the prepared graph again"
         );
@@ -335,6 +289,31 @@ impl GraphReference {
             graph["kind"] == kind,
             "Imported asset kind differs from its recipe"
         );
+        let mut choices = BTreeSet::new();
+        for attachment in &self.attachments {
+            ensure!(
+                kind == "armor" && attachment.attachments.is_empty(),
+                "Only armor supports reusable appearance attachments"
+            );
+            attachment.validate_reusable(kind)?;
+            let child: Value =
+                serde_json::from_slice(&fs::read(attachment.directory.join("asset-graph.json"))?)?;
+            ensure!(
+                child["ornament"]["target_item"] == graph["item_hash"]
+                    && child["native_item"] == graph["native_item"],
+                "Armor ornament belongs to another source item"
+            );
+            let socket = child["ornament"]["target_socket"]
+                .as_u64()
+                .context("Armor ornament socket")?;
+            let choice = child["ornament"]["choice_index"]
+                .as_u64()
+                .context("Armor ornament choice")?;
+            ensure!(
+                choice > 0 && choices.insert((socket, choice)),
+                "Duplicate armor ornament choice"
+            );
+        }
         Ok(())
     }
 }
@@ -343,6 +322,7 @@ fn hash_animation(graph: &Value, root: &Path, digest: &mut Sha256) -> Result<()>
     for first_person in graph["animation"]["first_person"]
         .as_object()
         .into_iter()
+        .chain(graph["animation"]["character"].as_object())
         .chain(
             graph
                 .get("equipment_animation")
@@ -391,7 +371,8 @@ fn fingerprint(directory: &Path, item: Option<u32>) -> Result<String> {
     if let Some(item) = item {
         ensure!(
             graph["item_hash"].as_u64() == Some(u64::from(item))
-                || graph["ornament"]["target_weapon"].as_u64() == Some(u64::from(item)),
+                || graph["ornament"]["target_weapon"].as_u64() == Some(u64::from(item))
+                || graph["ornament"]["target_item"].as_u64() == Some(u64::from(item)),
             "Imported graph belongs to a different item identity"
         );
     } else {
@@ -525,6 +506,12 @@ fn fingerprint(directory: &Path, item: Option<u32>) -> Result<String> {
         .into_iter()
         .flatten()
         .chain(
+            graph["audio_assets"]["nodes"]
+                .as_array()
+                .into_iter()
+                .flatten(),
+        )
+        .chain(
             graph["projectile"]["nodes"]
                 .as_array()
                 .into_iter()
@@ -578,7 +565,7 @@ fn validate_gear(graph: &Value, symbols: &BTreeSet<&str>) -> Result<()> {
     ensure!(
         matches!(
             graph["kind"].as_str(),
-            Some("armor" | "ghost_shell" | "ship" | "sparrow")
+            Some("weapon" | "armor" | "ghost_shell" | "ship" | "sparrow")
         ),
         "Gear art requires a model gear recipe"
     );

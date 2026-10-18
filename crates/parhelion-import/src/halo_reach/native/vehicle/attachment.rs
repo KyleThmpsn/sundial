@@ -54,9 +54,12 @@ pub(super) fn build(assembly: &mut Assembly, scene: &Scene, bones: &Value) -> Re
         let pose = seat::marker(model, source)?;
         let (position, orientation) = seat::frame(bones, bone, pose)?;
         for row in selected {
+            // The first word selects a body group, not a skeletal binding mode.
+            // Preserve that visibility selector and replace only the bone frame.
             ensure!(
-                row.binding[0] == 1 && payload.bytes::<8>(row.row + 8)? == [0; 8],
-                "Driver IK marker does not use the native skeletal binding"
+                usize::try_from(row.binding[1])? < first
+                    && payload.bytes::<8>(row.row + 8)? == [0; 8],
+                "Driver IK marker is outside the original native skeleton"
             );
             put(
                 &mut payload.0,

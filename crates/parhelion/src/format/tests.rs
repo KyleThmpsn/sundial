@@ -439,7 +439,7 @@ fn extended_tables_grow_and_rehash_the_native_package_tables() {
 #[test]
 fn creates_the_first_shared_tag_table_and_preserves_it_on_later_growth() {
     let package_id = 0x0AA1;
-    let source = build_standalone_package_skeleton(package_id, &[[0; 8]], 1, &[])
+    let source = build_standalone_package_skeleton(package_id, &[[0; 8]], 1, &[], &[])
         .expect("empty shared-tag package should build");
     let source_layout =
         PackageLayout::parse(&source).expect("empty shared-tag package should parse");

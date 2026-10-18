@@ -1,10 +1,11 @@
 //! Optics carry their aim transforms in embedded marker providers, separately
-//! from the art part's marker set. Preserve the native component and its wiring.
+//! from the art part's marker set. Carry their parent movement connections too.
 use super::*;
 use crate::{graph::add, tiger::reader::Reader};
 use anyhow::Context;
 use serde_json::{Value, json};
 use std::{fs, path::Path};
+mod connections;
 
 /// Source model input endpoints keyed by the source component tag and input hash,
 /// holding the composed model's symbol, its native input hash and its component index.
@@ -56,7 +57,13 @@ pub(crate) fn aligned(native: &Payload, rear: [f32; 3], front: [f32; 3]) -> Resu
     Ok(result)
 }
 
-fn source_parts(source: &Path) -> Result<BTreeMap<(u64, u64), Payload>> {
+#[derive(Clone)]
+struct Source {
+    owner: Payload,
+    parents: [u32; 2],
+}
+
+fn source_parts(source: &Path) -> Result<BTreeMap<(u64, u64), Source>> {
     let report: Value = serde_json::from_slice(&fs::read(source.join("report.json"))?)?;
     let mut result = BTreeMap::new();
     for part in report["art_parts"].as_array().into_iter().flatten() {
@@ -86,13 +93,19 @@ fn source_parts(source: &Path) -> Result<BTreeMap<(u64, u64), Payload>> {
             if owner.u64(data + 0x1B0)? == 0 && owner.u64(data + 0x250)? == 0 {
                 continue;
             }
+            let parents = connections::source(&entity, entity.u32(row)?, &owner)
+                .with_context(|| format!("source optic on entity {tag}"))?;
+            let source = Source { owner, parents };
             for placement in part["placements"].as_array().context("optic placements")? {
                 let key = (
                     placement["selector"].as_u64().context("optic selector")?,
                     placement["position"].as_u64().context("optic position")?,
                 );
-                if let Some(previous) = result.insert(key, owner.clone()) {
-                    ensure!(previous.0 == owner.0, "source optic placement is ambiguous");
+                if let Some(previous) = result.insert(key, source.clone()) {
+                    ensure!(
+                        previous.owner.0 == source.owner.0 && previous.parents == source.parents,
+                        "source optic placement is ambiguous"
+                    );
                 }
             }
         }
@@ -213,6 +226,7 @@ fn template(
     reader: &mut Reader,
     native: &Value,
     placement: &Value,
+    source: &Source,
 ) -> Result<Option<(u32, Payload, Payload)>> {
     let mut candidates = native["parents"]
         .as_array()
@@ -254,7 +268,17 @@ fn template(
             // actual aim poses come from this source alternative. Some native
             // sights also require unsupported display components, so try an
             // equivalent supported format within the same art region.
-            match closure(reader, &entity, tag, "optic-template") {
+            let mut entity = entity;
+            let candidate = connections::apply(
+                &mut entity,
+                &mut Vec::new(),
+                tag,
+                "",
+                &owner,
+                source.parents,
+            )
+            .and_then(|()| closure(reader, &entity, tag, "optic-template"));
+            match candidate {
                 Ok(_) => return Ok(Some((tag, owner, entity))),
                 Err(error) => rejected = Some(error),
             }
@@ -420,7 +444,7 @@ pub(super) fn author(
         );
         let added_component = found.is_none();
         let fallback = if added_component {
-            template(reader, native, placement)?
+            template(reader, native, placement, source)?
         } else {
             None
         };
@@ -432,7 +456,7 @@ pub(super) fn author(
             report.push(json!({"entity":entity_symbol,"status":"native_component_absent","selector":selector,"position":position}));
             continue;
         };
-        let mut payload = convert(source, original)?;
+        let mut payload = convert(&source.owner, original)?;
         let patches = author::relocate(&mut payload, tag, &symbol)?;
         let mut added = Vec::new();
         add(
@@ -525,9 +549,17 @@ pub(super) fn author(
                 &inputs,
             )?;
         }
+        connections::apply(
+            &mut entity,
+            node["patches"].as_array_mut().context("optic patches")?,
+            tag,
+            &symbol,
+            original,
+            source.parents,
+        )?;
         fs::write(path, entity.0)?;
         nodes[index] = node;
-        report.push(json!({"entity":entity_symbol,"optics":symbol,"status":"source_aim_transforms","source_provider_modes":true,"source_angular_override":true,"selector":selector,"position":position,"added_component":added_component,"companions":companions,"gameplay_verified":false}));
+        report.push(json!({"entity":entity_symbol,"optics":symbol,"status":"source_aim_transforms","source_provider_modes":true,"source_angular_override":true,"source_parent_bindings":true,"selector":selector,"position":position,"added_component":added_component,"companions":companions,"gameplay_verified":false}));
     }
     graph["source_optics"] = json!(report);
     Ok(())

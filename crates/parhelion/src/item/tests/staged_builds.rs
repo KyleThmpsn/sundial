@@ -9,6 +9,7 @@ mod appearance_sweep;
 mod bank_overlays;
 mod behavior_firing;
 mod behavior_labels;
+mod bundled_projectile;
 mod collection_conditions;
 mod companions;
 mod component_rewire;
@@ -23,6 +24,7 @@ mod hud;
 mod imported_attachments;
 #[cfg(feature = "d2-model-importer")]
 mod kinetic_import;
+mod mod_loader_layout;
 mod native_objectives;
 mod offered_mods;
 mod ornaments;

@@ -70,6 +70,7 @@ fn expect_rejected(packages: &Path, output: &Path, label: &str, recipe: WeaponRe
         staging_root: staging_root.clone(),
         ignore_installed_authored_overlays: true,
         recipes: vec![recipe],
+        maps: Vec::new(),
     });
     let error = match snapshot {
         Err(error) => error,

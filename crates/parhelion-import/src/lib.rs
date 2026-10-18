@@ -2,6 +2,7 @@
 pub mod artwork;
 pub mod cache;
 pub mod cancellation;
+pub mod d1_roi;
 pub mod d2_mot;
 mod graph;
 pub mod halo_reach;
@@ -9,6 +10,7 @@ pub mod io;
 pub mod marathon;
 pub mod preview;
 pub mod tiger;
+pub mod weapon_type;
 pub use graph::GraphReference;
 pub use graph::manifest_converter_revision;
 pub use graph::model_symbols;

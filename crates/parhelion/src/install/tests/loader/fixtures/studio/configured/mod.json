@@ -1,0 +1,27 @@
+{
+  "manifestVersion": 3,
+  "id": "dev.studio.configured",
+  "version": "1.0.0",
+  "name": "Configured Studio Fixture",
+  "config": [
+    {
+      "key": "limit",
+      "name": "Limit",
+      "type": "int",
+      "default": 11
+    }
+  ],
+  "configBindings": [
+    {
+      "key": "limit",
+      "profile": "cui-comparison-v1",
+      "tag": 2178236416,
+      "class": 2155890725,
+      "size": 432,
+      "sourceSha256": "0adbb1c96895c5c13d059af74b05f09238234adf4503cfc6df3172f290d78c93",
+      "offset": 428,
+      "type": "int",
+      "bindingOffset": 364
+    }
+  ]
+}

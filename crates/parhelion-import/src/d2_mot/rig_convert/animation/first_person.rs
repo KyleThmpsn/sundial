@@ -160,21 +160,16 @@ pub(super) fn bone_map(source: &[Value], native: &[Value]) -> Result<Vec<u16>> {
 
 /// Read a lookup owner's bank rows as clip tags with the clip names they carry.
 pub(super) fn bank(r: &mut Reader, owner: u32, modern: bool) -> Result<(u32, Vec<(u32, u32)>)> {
-    let p = r.tag(owner, Some(if modern { 0x80809B06 } else { 0x80809C36 }))?;
-    let bank_tag = p.u32(p.pointer(24)? + if modern { 0xA8 } else { 0x90 })?;
-    let bank = r.tag(bank_tag, Some(if modern { 0x8080289F } else { 0x808036F6 }))?;
+    if !modern {
+        return crate::tiger::animation::runtime::bank(r, owner);
+    }
+    let p = r.tag(owner, Some(0x80809B06))?;
+    let bank_tag = p.u32(p.pointer(24)? + 0xA8)?;
+    let bank = r.tag(bank_tag, Some(0x8080289F))?;
     let mut clips = Vec::new();
-    for row in bank.array(
-        8,
-        if modern { 16 } else { 4 },
-        Some(if modern { 0x80808BDF } else { 0x80808F48 }),
-    )? {
-        let tag = if modern {
-            r.ref64(&bank, row)?
-        } else {
-            bank.u32(row)?
-        };
-        let clip = r.tag(tag, Some(if modern { 0x80808BE0 } else { 0x80808F49 }))?;
+    for row in bank.array(8, 16, Some(0x80808BDF))? {
+        let tag = r.ref64(&bank, row)?;
+        let clip = r.tag(tag, Some(0x80808BE0))?;
         ensure!(
             clip.0.len() >= 0x190 && clip.u64(0)? == clip.0.len() as u64,
             "animation clip payload size differs"

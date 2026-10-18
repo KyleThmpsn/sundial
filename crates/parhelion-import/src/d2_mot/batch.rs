@@ -422,7 +422,7 @@ pub(crate) fn prepare_one_reusing(
         .filter(|v| ["kinetic", "arc", "solar", "void"].contains(v));
     // Unsupported source elements retain the native gameplay donor. Their
     // original element remains in the source plan and extraction metadata.
-    let mut recipe = json!({"schema":1,"collection_placement":"sunrise_badge","namespace":namespace,"donor":{"item_hash":format!("0x{donor:08X}"),"expected_name":row["native_donor"]},"identity":id,"name":row["name"],"flavor":source["flavor"].as_str().unwrap_or(""),"source":"Source: Imported arsenal","overrides":{"icon_edit":{"imported_image":{"png_base64":icon}},"modern_damage_type":damage}});
+    let mut recipe = json!({"schema":1,"collection_placement":"sunrise_badge","namespace":namespace,"donor":{"item_hash":format!("0x{donor:08X}"),"expected_name":row["native_donor"]},"identity":id,"name":row["name"],"flavor":source["flavor"].as_str().unwrap_or(""),"source":"Source: Pulled through the timeline.","overrides":{"icon_edit":{"imported_image":{"png_base64":icon}},"modern_damage_type":damage}});
     recipe["overrides"]["hud_icon"] = json!({"png_base64":hud});
     if let Some(lore) = source["lore"]["text"].as_str() {
         recipe["overrides"]["lore"] = json!(lore);

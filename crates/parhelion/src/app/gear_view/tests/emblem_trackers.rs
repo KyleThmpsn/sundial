@@ -178,6 +178,7 @@ fn tracker_choices_go_from_the_emblem_page_to_native_packages() {
         staging_root: output.join("staging"),
         ignore_installed_authored_overlays: true,
         recipes: recipes.clone(),
+        maps: Vec::new(),
     })
     .unwrap();
     let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |_| {}).unwrap();

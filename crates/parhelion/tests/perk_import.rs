@@ -174,6 +174,54 @@ fn modern_controller_routing_preserves_nested_and_multiple_transitions()
                     .collect::<Vec<_>>(),
                 [0x178, 0x200, 0xF0]
             );
+            let auxiliary = &controller.auxiliary[0];
+            assert_eq!(hex::decode(&auxiliary.source_record)?.len(), 64);
+            assert!(auxiliary.source_record_complete);
+            assert_eq!(auxiliary.priority, Some(150));
+            let routing = perks::translate::routing(&payload)?;
+            let bytes = perks::lower::active_status(&payload, auxiliary, routing.active_offset)?;
+            let program = Program {
+                name: "Translated Active Status".into(),
+                auxiliary: vec![program::NativeRecord {
+                    class: 0x8080_4085,
+                    bytes,
+                    hud_status: None,
+                }],
+                ..Program::default()
+            };
+            let compiled = program::compile(&native_compiler(&native)?, &program)?;
+            let status = &action::decode(&compiled.payload)?.auxiliary[0];
+            assert_eq!(status.class, 0x8080_4085);
+            // Original Shadowkeep consumer EF9950 uses mask 06 for active state one,
+            // +04 for the name, +08 for signed retention priority and +14 for count input.
+            assert_eq!(&status.bytes[..4], &[6, 255, 0, 0]);
+            assert_eq!(&status.bytes[4..8], &0x86C4_40E8u32.to_le_bytes());
+            assert_eq!(&status.bytes[8..12], &150i32.to_le_bytes());
+            assert_eq!(&status.bytes[12..20], &[0; 8]);
+            assert_eq!(&status.bytes[20..], &[255, 0, 0, 0]);
+            fs::write(
+                output.join(format!("{tag:08X}-native-status.bin")),
+                &compiled.payload,
+            )?;
+            for lane in [0x28, 0x30, 0x38, 0x39, 0x3A, 0x3B] {
+                let mut unsupported = payload.0.clone();
+                unsupported[auxiliary.offset + lane] ^= 1;
+                assert!(
+                    perks::translate::routing(&Payload(unsupported)).is_err(),
+                    "Unsupported status field +{lane:X} must not disappear during translation"
+                );
+            }
+            let mut changed_priority = payload.0.clone();
+            changed_priority[auxiliary.offset + 28..auxiliary.offset + 32]
+                .copy_from_slice(&(-7i32).to_le_bytes());
+            let changed_priority = Payload(changed_priority);
+            let changed = perks::translate::routing(&changed_priority)?;
+            let bytes = perks::lower::active_status(
+                &changed_priority,
+                &changed.auxiliary[0],
+                changed.active_offset,
+            )?;
+            assert_eq!(&bytes[8..12], &(-7i32).to_le_bytes());
         }
         if tag == 0x80C30682 {
             // Valiant Charge's nested condition contributes kind 5 under kind 36.

@@ -38,6 +38,37 @@ pub(super) fn with_row(
     value: f32,
     multiply: bool,
 ) -> Result<Vec<u8>, String> {
+    if property_rows(payload)?.iter().any(|row| row.key == key) {
+        return Err(format!(
+            "The bank already has a property row for key {key:08X}"
+        ));
+    }
+    with_row_under(payload, key, input, value, multiply)
+}
+
+/// Whether the bank shows the handler slot of numeric property rows.
+pub(super) fn has_handler(payload: &[u8]) -> Result<bool, String> {
+    let modifier = Modifier::Scalar {
+        input: 0,
+        value: 1.0,
+        multiply: true,
+    };
+    Ok(handler_slot_in(
+        &property_rows(payload)?,
+        read::bank_class(payload)?,
+        modifier,
+    )?
+    .is_some())
+}
+
+/// The bank with one more numeric property row under `key`, which other rows may already use.
+pub(super) fn with_row_under(
+    payload: &[u8],
+    key: u32,
+    input: u8,
+    value: f32,
+    multiply: bool,
+) -> Result<Vec<u8>, String> {
     // Base ability initialization and property dispatch both expose exactly seven inputs.
     if input >= 7 || !value.is_finite() || (multiply && value < 0.0) {
         return Err("Invalid base ability input adjustment".into());
@@ -48,11 +79,6 @@ pub(super) fn with_row(
         multiply,
     };
     let before = property_rows(payload)?;
-    if before.iter().any(|row| row.key == key) {
-        return Err(format!(
-            "The bank already has a property row for key {key:08X}"
-        ));
-    }
     let layout = layout(payload)?;
     let handler = handler_slot_in(&before, read::bank_class(payload)?, modifier)?
         .ok_or("The bank has no native numeric property handler")?;

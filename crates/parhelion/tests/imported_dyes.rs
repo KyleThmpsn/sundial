@@ -65,6 +65,7 @@ fn imported_colors_remain_defaults_when_shaders_are_equipped() -> Result<()> {
         package_directory: native.clone(),
         staging_root: output.join("build"),
         ignore_installed_authored_overlays: true,
+        maps: Vec::new(),
         recipes: recipes.clone(),
     })?;
     let built = parhelion::build_and_stage_snapshot_with_progress(&snapshot, |p| {

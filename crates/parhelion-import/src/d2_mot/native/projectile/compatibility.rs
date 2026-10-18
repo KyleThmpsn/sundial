@@ -180,7 +180,7 @@ pub(super) fn steering(source: &Payload, parameters: &Payload) -> Result<Steerin
         put(&mut constant, input + 32 + lane * 4, &1f32.to_le_bytes())?;
         put(
             &mut constant,
-            declaration + 56 + lane * 4,
+            declaration + 64 + lane * 4,
             &1f32.to_le_bytes(),
         )?;
     }

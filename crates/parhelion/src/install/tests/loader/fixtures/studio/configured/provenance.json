@@ -1,0 +1,7 @@
+{
+  "producer": "SunriseStudio PackageWriter",
+  "revision": "007dd7a6f10164243369350e63c42168229c35ab",
+  "recipe": "WriteNew with one synthetic 432-byte CUI resource and one signed integer comparison. Source operand 7, declared default 11, configured value supplied by E2E. No game data.",
+  "source_sha256": "0ADBB1C96895C5C13D059AF74B05F09238234ADF4503CFC6DF3172F290D78C93",
+  "package_sha256": "3E2EC2B6860496A379D1EA4C8C0740B51415F9201403FC464C5415CD744CAE7E"
+}

@@ -33,6 +33,8 @@ pub struct Artwork {
     /// Straight-alpha sRGB, suitable for the primary layer of a native icon.
     pub rgba: Vec<u8>,
     pub size: usize,
+    /// What the preview could not load or evaluate as the game would, per material or asset.
+    pub notices: Vec<String>,
     pub vertices: usize,
     pub triangles: usize,
     pub bounds: ([f32; 3], [f32; 3]),
@@ -99,14 +101,70 @@ fn draw(model: &Model, pose: Pose, frame: Frame, size: usize) -> Result<Artwork,
     };
     camera.zoom = render::fitted_zoom(model, bounds, camera, [working as f32; 2], 0.70);
     let image = render::transparent_image(model, camera, working);
-    let rgba = fit(&image, pose.roll, frame, size)?;
+    let mut rgba = fit(&image, pose.roll, frame, size)?;
+    normalize_exposure(&mut rgba);
     Ok(Artwork {
         rgba,
         size,
+        notices: model.notices.clone(),
         vertices: model.vertices.len(),
         triangles: model.triangles.len(),
         bounds,
     })
+}
+
+/// Stock inventory artwork is lit far brighter than the preview's fixed studio exposure lights
+/// dark source metal. The bright tenth of the opaque pixels is lifted to this sRGB level.
+const BRIGHT_TARGET: f32 = 150.0 / 255.0;
+/// The most a dark render is lifted, so a black source stays dark instead of turning to noise.
+const MAX_GAIN: f32 = 4.0;
+
+fn srgb_to_linear(value: u8) -> f32 {
+    let v = f32::from(value) / 255.0;
+    if v <= 0.04045 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_srgb(value: f32) -> u8 {
+    let v = value.clamp(0.0, 1.0);
+    let encoded = if v <= 0.003_130_8 {
+        v * 12.92
+    } else {
+        1.055 * v.powf(1.0 / 2.4) - 0.055
+    };
+    (encoded * 255.0).round() as u8
+}
+
+/// Lifts the exposure of unmultiplied sRGB artwork in linear light, never darkening it and
+/// never beyond `MAX_GAIN`. Returns the gain applied.
+fn normalize_exposure(rgba: &mut [u8]) -> f32 {
+    let mut luma: Vec<f32> = rgba
+        .chunks_exact(4)
+        .filter(|pixel| pixel[3] > 128)
+        .map(|pixel| {
+            0.2126 * srgb_to_linear(pixel[0])
+                + 0.7152 * srgb_to_linear(pixel[1])
+                + 0.0722 * srgb_to_linear(pixel[2])
+        })
+        .collect();
+    if luma.is_empty() {
+        return 1.0;
+    }
+    luma.sort_by(f32::total_cmp);
+    let bright = luma[luma.len() * 9 / 10].max(1e-4);
+    let target = srgb_to_linear((BRIGHT_TARGET * 255.0).round() as u8);
+    let gain = (target / bright).clamp(1.0, MAX_GAIN);
+    if gain > 1.0 {
+        for pixel in rgba.chunks_exact_mut(4) {
+            for channel in &mut pixel[..3] {
+                *channel = linear_to_srgb(srgb_to_linear(*channel) * gain);
+            }
+        }
+    }
+    gain
 }
 
 fn fit(image: &egui::ColorImage, angle: f32, frame: Frame, size: usize) -> Result<Vec<u8>, String> {

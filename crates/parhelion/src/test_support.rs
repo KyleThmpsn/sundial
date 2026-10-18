@@ -14,6 +14,15 @@ pub(crate) fn install() -> PathBuf {
     )
 }
 
+/// A Sunrise 0.6 or later `steam_api64.dll`, whose installations load Sunrise mods, from
+/// `SUNRISE_MOD_LOADER_DLL`.
+pub(crate) fn mod_loader_runtime() -> PathBuf {
+    PathBuf::from(
+        std::env::var_os("SUNRISE_MOD_LOADER_DLL")
+            .expect("SUNRISE_MOD_LOADER_DLL names a Sunrise 0.6 or later steam_api64.dll"),
+    )
+}
+
 /// This test's own folder under `SUNDIAL_TEST_ARTIFACTS`, or `None` when no artifact root is set.
 pub(crate) fn artifacts(name: &str) -> Option<PathBuf> {
     std::env::var_os("SUNDIAL_TEST_ARTIFACTS").map(|root| PathBuf::from(root).join(name))

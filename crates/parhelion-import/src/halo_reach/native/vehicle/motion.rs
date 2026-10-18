@@ -298,6 +298,7 @@ pub(super) fn build(
     graph: &mut Graph,
     source: &Value,
     activation_priority: i16,
+    metres: f32,
 ) -> Result<Motion> {
     let template = native.tag(0x80bfaf05, Some(0x80809c36))?;
     let ti = template.pointer(16)?;
@@ -374,7 +375,7 @@ pub(super) fn build(
     for (field, value) in [
         (0x30, moment),
         (0x34, angular_velocity * std::f32::consts::TAU),
-        (0x44, circumference * super::METRES),
+        (0x44, circumference * metres),
     ] {
         put(&mut w.payload.0, ENGINE + field, &value.to_le_bytes())?;
     }
@@ -383,7 +384,7 @@ pub(super) fn build(
     put(
         &mut w.payload.0,
         DEFINITION + 0x428,
-        &(circumference * super::METRES).to_le_bytes(),
+        &(circumference * metres).to_le_bytes(),
     )?;
     w.provider(
         graph,

@@ -131,6 +131,7 @@ fn setting(
         field: field.clone(),
         lane: None,
         requires_positive_minimum: false,
+        linked: Vec::new(),
     })
 }
 

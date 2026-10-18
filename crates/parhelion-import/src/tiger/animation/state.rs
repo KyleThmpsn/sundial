@@ -5,6 +5,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use std::collections::{BTreeMap, BTreeSet};
+pub mod parameter;
 
 fn node(p: &Payload, name: u32) -> Result<usize> {
     let names = p.array(8, 8, Some(0x8080342E))?;
@@ -70,15 +71,30 @@ fn weighted(
     field: usize,
     p: &Payload,
     original: usize,
-    map: &BTreeMap<usize, usize>,
+    map: &BTreeMap<usize, Vec<usize>>,
 ) -> Result<()> {
     let mut bytes = Vec::new();
+    let mut previous = 0.0;
     for at in p.array(original, 8, Some(0x80803439))? {
-        let descriptor = *map
+        let descriptors = map
             .get(&(p.u32(at)? as usize))
             .context("Untranslated state choice")?;
-        bytes.extend(u32::try_from(descriptor)?.to_le_bytes());
-        bytes.extend(p.bytes::<4>(at + 4)?);
+        ensure!(!descriptors.is_empty(), "Translated state choice is empty");
+        let cutoff = p.f32(at + 4)?;
+        ensure!(
+            cutoff.is_finite() && cutoff >= previous && cutoff <= 1.0,
+            "Native cumulative animation weights are invalid"
+        );
+        for (index, &descriptor) in descriptors.iter().enumerate() {
+            bytes.extend(u32::try_from(descriptor)?.to_le_bytes());
+            let next = if index + 1 == descriptors.len() {
+                cutoff
+            } else {
+                previous + (cutoff - previous) * (index + 1) as f32 / descriptors.len() as f32
+            };
+            bytes.extend(next.to_le_bytes());
+        }
+        previous = cutoff;
     }
     append(out, field, 0x80803439, &bytes, 8)
 }
@@ -86,6 +102,24 @@ fn weighted(
 pub fn clone_actions(
     p: &Payload,
     routes: &BTreeMap<u32, BTreeMap<usize, usize>>,
+) -> Result<Payload> {
+    let routes = routes
+        .iter()
+        .map(|(&name, map)| {
+            (
+                name,
+                map.iter().map(|(&from, &to)| (from, vec![to])).collect(),
+            )
+        })
+        .collect();
+    clone_variants(p, &routes)
+}
+
+/// Split each original cumulative interval evenly among its translated choices.
+/// Named states receive private nodes so an aliased action retains its old route.
+pub fn clone_variants(
+    p: &Payload,
+    routes: &BTreeMap<u32, BTreeMap<usize, Vec<usize>>>,
 ) -> Result<Payload> {
     let mut out = p.0.clone();
     let rows = p.array(24, 16, Some(0x8080342F))?;

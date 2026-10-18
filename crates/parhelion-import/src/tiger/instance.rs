@@ -41,9 +41,9 @@ pub(crate) const LAYOUTS: &[Layout] = &[
     },
 ];
 
-/// Repair supported native component owners from older prepared graphs in memory.
+/// Upgrade supported native component owners from older prepared graphs in memory.
 /// Call only for a native component-owner tag, before assigning symbolic references.
-pub fn repair(owner: &[u8], patches: &[Value]) -> Result<Option<Repair>> {
+pub fn upgrade_owner(owner: &[u8], patches: &[Value]) -> Result<Option<UpgradedOwner>> {
     let mut payload = Payload(owner.to_vec());
     let instance = payload.pointer(16)?;
     let class = payload.u32(
@@ -52,10 +52,12 @@ pub fn repair(owner: &[u8], patches: &[Value]) -> Result<Option<Repair>> {
             .context("Component instance marker")?,
     )?;
     if class == 0x80803CF2 {
-        return Ok((flight::repair(&mut payload)? != 0).then_some(Repair {
-            payload: payload.0,
-            patches: patches.to_vec(),
-        }));
+        return Ok(
+            (flight::restore_input_envelopes(&mut payload)? != 0).then_some(UpgradedOwner {
+                payload: payload.0,
+                patches: patches.to_vec(),
+            }),
+        );
     }
     let Some(layout) = LAYOUTS.iter().find(|layout| layout.class == class) else {
         return Ok(None);
@@ -67,13 +69,13 @@ pub fn repair(owner: &[u8], patches: &[Value]) -> Result<Option<Repair>> {
     let mut patches = patches.to_vec();
     let channels = super::channel::repair_inherited_receivers(&mut payload)?;
     let span = seal(&mut payload, &mut patches, layout)?;
-    Ok((channels != 0 || span.is_some()).then_some(Repair {
+    Ok((channels != 0 || span.is_some()).then_some(UpgradedOwner {
         payload: payload.0,
         patches,
     }))
 }
 
-pub struct Repair {
+pub struct UpgradedOwner {
     pub payload: Vec<u8>,
     pub patches: Vec<Value>,
 }

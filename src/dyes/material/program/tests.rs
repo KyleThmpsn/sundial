@@ -15,6 +15,7 @@ fn time_drives_native_outputs_without_accumulating_between_frames() {
             Op::Ternary(0x12),
             Op::Store(3),
         ],
+        samplers: Vec::new(),
     };
     let base = [[0.25; 4]; 27];
     let first = p.run(base, 0.0).unwrap();
@@ -32,6 +33,7 @@ fn stack_and_output_errors_are_rejected() {
         outputs: 27,
         constants: vec![],
         ops,
+        samplers: Vec::new(),
     };
     assert!(p(vec![Op::Store(0)]).run([[0.0; 4]; 27], 0.0).is_err());
     assert!(

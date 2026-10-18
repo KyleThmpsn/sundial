@@ -50,6 +50,7 @@ fn native_perk_icons_author_private_wrappers_and_preserve_stock_pixels() {
         (&mut plugs, &mut []),
         &[],
         crate::branding::Branding::for_packages(view.path()),
+        &[],
     )
     .unwrap();
     let icons = author_icon_rows(

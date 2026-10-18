@@ -340,6 +340,7 @@ fn catalog_to_staged_private_perk_has_a_repeatable_package_receipt() {
         staging_root,
         ignore_installed_authored_overlays: true,
         recipes: vec![weapon],
+        maps: Vec::new(),
     })
     .unwrap();
     let report =

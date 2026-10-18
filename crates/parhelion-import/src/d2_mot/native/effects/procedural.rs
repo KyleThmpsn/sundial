@@ -1,6 +1,7 @@
 //! Preserve the inspected variable component and its channel-bank feedback loop.
 use super::*;
 use std::collections::BTreeSet;
+mod dependency;
 mod program;
 pub(crate) use program::lower as lower_program;
 mod state;
@@ -70,9 +71,8 @@ impl Declaration {
             .position(|r| *r == row)
             .context("source procedure ordinal")?;
         for at in p.array(row + 56, 4, Some(0x80800007))? {
-            let output = *rows
-                .get(p.u32(at)? as usize)
-                .context("procedure output declaration")?;
+            let input = p.u32(at)? as usize;
+            let output = *rows.get(input).context("procedure output declaration")?;
             let deps = p.array(output + 80, 4, Some(0x8080000B))?;
             let reciprocal = deps
                 .get(ordinal / 32)
@@ -82,9 +82,10 @@ impl Declaration {
             // Constant channels have no writable storage or reverse dependency
             // mask. They remain valid procedure inputs without dirty propagation.
             let constant = deps.is_empty() && constant_input(p, output, rows)?;
+            let computed = dependency::computed(p, rows, input, ordinal)?;
             ensure!(
-                p.u64(output + 8)? == 0 && (reciprocal || constant),
-                "procedure output lacks reciprocal dependency"
+                (p.u64(output + 8)? == 0 && (reciprocal || constant)) || computed,
+                "procedure input {input} for declaration {ordinal} lacks a qualified dependency"
             );
             outputs.push(format!("{:08X}", p.u32(output)?));
         }

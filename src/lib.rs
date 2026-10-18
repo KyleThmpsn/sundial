@@ -19,6 +19,7 @@ compile_error!("Sundial supports Windows and Linux");
 mod ability;
 pub mod account;
 pub mod activity_log;
+mod animation;
 mod app;
 mod backups;
 mod catalog;

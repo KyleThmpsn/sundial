@@ -272,6 +272,16 @@ fn stage_sword_profiles(item_hash: u32, profile_descriptors: &[usize], artifact_
         panic!("imported perk artwork must survive recipe reload")
     };
     assert_eq!(image, &source_icon);
+    let imported_program = presentation.sandbox_perks[0].program.as_ref().unwrap();
+    let status = imported_program.auxiliary[0].hud_status.as_ref().unwrap();
+    assert_eq!(status.name, "Private Sword Profile Key");
+    assert!(status.image.is_some());
+    let mut status_only = imported_program.clone();
+    status_only.native_asset_patches.clear();
+    assert!(
+        status_only.native_adoption_issue().is_some(),
+        "Native draft conversion must preserve private status presentation"
+    );
     std::fs::write(
         output.join("presentation.json"),
         serde_json::to_vec_pretty(
@@ -423,6 +433,7 @@ fn stage_sword_profiles(item_hash: u32, profile_descriptors: &[usize], artifact_
         .unwrap();
     let action_bytes = staged.read_tag(TagHash(assignment.runtime_tag)).unwrap();
     let action = action::decode(&action_bytes).unwrap();
+    let hud_status = verify_active_status(&stock, &staged, &action_bytes, &output);
     assert_eq!(
         action.effects().map(|node| node.kind).collect::<Vec<_>>(),
         // Native execution walks the stored effect pointers in reverse order.
@@ -525,6 +536,7 @@ fn stage_sword_profiles(item_hash: u32, profile_descriptors: &[usize], artifact_
             "authored_lunge_owner_sha256": digest(&authored_lunge_owner),
             "private_action": format!("{:08X}", assignment.runtime_tag),
             "private_action_sha256": digest(&action_bytes),
+            "hud_status": hud_status,
             "profile_banks": profile_descriptors.len(),
             "original_profiles": profiles,
             "keyed_profiles": profiles,
@@ -541,4 +553,102 @@ fn stage_sword_profiles(item_hash: u32, profile_descriptors: &[usize], artifact_
         .unwrap(),
     )
     .unwrap();
+}
+
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "End-to-end verification follows the status through its table, texture lanes and every locale"
+)]
+fn verify_active_status(
+    stock: &PackageManager,
+    staged: &PackageManager,
+    action_bytes: &[u8],
+    output: &Path,
+) -> serde_json::Value {
+    // Follow the emitted pointer independently of the program's stored metadata.
+    let (count, _, references, class) = array_at(action_bytes, 0x10).unwrap();
+    assert_eq!((count, class), (1, 0x8080_4083));
+    let record = relative_target(action_bytes, references).unwrap();
+    assert_eq!(read_u32(action_bytes, record - 4).unwrap(), 0x8080_4085);
+    assert_eq!(&action_bytes[record..record + 4], &[6, 255, 0, 0]);
+    assert_eq!(read_u32(action_bytes, record + 8).unwrap(), 150);
+    assert_eq!(&action_bytes[record + 12..record + 20], &[0; 8]);
+    assert_eq!(&action_bytes[record + 20..record + 24], &[255, 0, 0, 0]);
+    let key = read_u32(action_bytes, record + 4).unwrap();
+    assert_ne!(
+        key, 0x86C4_40E8,
+        "A modern status key must be privately rebound"
+    );
+
+    let table_tag = TagHash(0x80D5_FFD3);
+    let stock_table = stock.read_tag(table_tag).unwrap();
+    let table = staged.read_tag(table_tag).unwrap();
+    let stock_rows = crate::hud_icon::assets::table_rows(&stock_table).unwrap();
+    let rows = crate::hud_icon::assets::table_rows(&table).unwrap();
+    assert_eq!(rows.len(), stock_rows.len() + 1);
+    for (stock_key, row) in &stock_rows {
+        assert_eq!(
+            rows.get(stock_key),
+            Some(row),
+            "Stock HUD rows must remain intact"
+        );
+    }
+    assert!(!stock_rows.contains_key(&key));
+    let row = &rows[&key];
+    let layer_tag = TagHash(read_u32(row, 4).unwrap());
+    assert_eq!(layer_tag.pkg_id(), PARHELION_ASSET_PACKAGE_ID);
+    let layer = staged.read_tag(layer_tag).unwrap();
+    let (lane_count, _, lanes, lane_class) = array_at(&layer, 0x20).unwrap();
+    assert_eq!(lane_class, 0x8080_4A6A);
+    assert!(lane_count > 0);
+    let mut textures = Vec::new();
+    for lane in 0..lane_count {
+        let (count, _, entries, class) = array_at(&layer, lanes + lane * 16).unwrap();
+        assert_eq!(class, 0x8080_4A6E);
+        assert!(count > 0);
+        for index in 0..count {
+            let texture_tag = TagHash(read_u32(&layer, entries + index * 4).unwrap());
+            assert_eq!(texture_tag.pkg_id(), PARHELION_ASSET_PACKAGE_ID);
+            let header = staged.read_tag(texture_tag).unwrap();
+            let width = u32::from(u16::from_le_bytes(header[14..16].try_into().unwrap()));
+            let height = u32::from(u16::from_le_bytes(header[16..18].try_into().unwrap()));
+            let data_tag = TagHash(staged.get_entry(texture_tag).unwrap().reference);
+            assert_eq!(data_tag.pkg_id(), PARHELION_ASSET_PACKAGE_ID);
+            let pixels = staged.read_tag(data_tag).unwrap();
+            assert_eq!(pixels.len(), (width * height * 4) as usize);
+            assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] != 0));
+            let image = format!("staged-status-icon-{lane}-{index}.png");
+            image::RgbaImage::from_raw(width, height, pixels.clone())
+                .unwrap()
+                .save(output.join(&image))
+                .unwrap();
+            textures.push(serde_json::json!({"tag":format!("{:08X}",texture_tag.0),
+                "data_tag":format!("{:08X}",data_tag.0),"width":width,"height":height,
+                "pixels_sha256":digest(&pixels),"image":image}));
+        }
+    }
+
+    let names_tag = TagHash(0x815B_961E);
+    let names = staged.read_tag(names_tag).unwrap();
+    let (count, _, hashes, _) = array_at(&names, 8).unwrap();
+    let index = (0..count)
+        .find(|index| read_u32(&names, hashes + index * 4).unwrap() == key)
+        .expect("Private status localization hash");
+    let mut locales = Vec::new();
+    for offset in (LOCALIZATION_DATA_TAG_START..LOCALIZATION_DATA_TAG_END).step_by(4) {
+        let tag = TagHash(read_u32(&names, offset).unwrap());
+        let locale = staged.read_tag(tag).unwrap();
+        let name = decode_localized_value_at(&locale, index).unwrap();
+        assert_eq!(name, "Private Sword Profile Key");
+        locales.push(
+            serde_json::json!({"tag":format!("{:08X}",tag.0),"name":name,
+            "sha256":digest(&locale)}),
+        );
+    }
+    assert_eq!(stock.read_tag(table_tag).unwrap(), stock_table);
+    std::fs::write(output.join("private-status-action.bin"), action_bytes).unwrap();
+    serde_json::json!({"key":format!("{key:08X}"),"mask":6,"priority":150,
+        "record_offset":record,"table_sha256":digest(&table),
+        "icon_layer":format!("{:08X}",layer_tag.0),"icon_textures":textures,"locales":locales,
+        "rendered_in_game":false})
 }

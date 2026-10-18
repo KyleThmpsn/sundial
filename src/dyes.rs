@@ -11,6 +11,9 @@ use crate::{
 use std::{collections::BTreeMap, path::Path};
 use tiger_pkg::TagHash;
 
+mod composition;
+pub(crate) use composition::{compose, gear_type};
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WeaponDyeColors {
     /// Linear RGB albedo tints, before textures, lighting, wear and shader overrides.

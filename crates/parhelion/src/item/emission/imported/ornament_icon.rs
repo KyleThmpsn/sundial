@@ -1,15 +1,21 @@
 //! Private ornament artwork uses Parhelion's existing checked PNG authoring.
 use super::*;
 use crate::tag_payload::{array_at, read_u16, write_u16};
-pub(super) fn apply(
-    manager: &sundial::package_authoring::PackageManager,
-    emission: &mut PackageEmission,
+
+struct Artwork {
+    target: u32,
+    ordinal: usize,
+    donor_index: u16,
+    request: crate::watermark::WeaponIconRequest,
+}
+
+fn artwork(
+    emission: &PackageEmission,
     graph: &Value,
-    package_index: usize,
     folder: &Path,
-) -> AuthoringResult<()> {
+) -> AuthoringResult<Option<Artwork>> {
     let Some(path) = graph["ornament_icon_png"].as_str() else {
-        return Ok(());
+        return Ok(None);
     };
     if graph.get("ornament").is_none() {
         return Err(invalid("Ornament artwork requires a socket link"));
@@ -37,20 +43,79 @@ pub(super) fn apply(
         imported_image: Some(crate::icon_edit::ImportedIcon::from_bytes(&png).map_err(invalid)?),
         ..Default::default()
     };
-    let package = &emission.asset_packages.packages[package_index];
-    let package_id = package.id;
-    let base = package.tags.len();
-    let plan = crate::watermark::build_watermark_plan(
-        manager,
-        package_id,
-        0,
-        base,
-        &[crate::watermark::WeaponIconRequest {
+    Ok(Some(Artwork {
+        target,
+        ordinal,
+        donor_index,
+        request: crate::watermark::WeaponIconRequest {
             donor_container_tag: donor,
             icon_edit: edit,
             rarity: crate::AuthoredWeaponRarity::Exotic,
             plain: false,
-        }],
+        },
+    }))
+}
+
+pub(super) fn entry_bound(
+    manager: &sundial::package_authoring::PackageManager,
+    emission: &PackageEmission,
+    graph: &Value,
+    folder: &Path,
+    branding: crate::branding::Branding,
+) -> AuthoringResult<usize> {
+    let Some(artwork) = artwork(emission, graph, folder)? else {
+        return Ok(0);
+    };
+    // Validate the complete plan before the model group chooses its package.
+    // Primary layers can contain several texture lanes, so a fixed allowance
+    // does not describe every donor's actual resource count.
+    let plan = crate::watermark::build_presented_watermark_plan(
+        manager,
+        crate::package_profile::window().base,
+        0,
+        0,
+        &[artwork.request],
+        crate::watermark::Presentation {
+            branding,
+            artwork: &[None],
+        },
+        &|_| format!("Ornament {:08X}", artwork.target),
+    )?;
+    Ok(plan.new_tags.len())
+}
+
+pub(super) fn apply(
+    manager: &sundial::package_authoring::PackageManager,
+    emission: &mut PackageEmission,
+    graph: &Value,
+    package_index: usize,
+    folder: &Path,
+    branding: crate::branding::Branding,
+) -> AuthoringResult<()> {
+    let Some(Artwork {
+        target,
+        ordinal,
+        donor_index,
+        request,
+    }) = artwork(emission, graph, folder)?
+    else {
+        return Ok(());
+    };
+    let donor = request.donor_container_tag;
+    let package = &emission.asset_packages.packages[package_index];
+    let package_id = package.id;
+    let base = package.tags.len();
+    let plan = crate::watermark::build_presented_watermark_plan(
+        manager,
+        package_id,
+        0,
+        base,
+        &[request],
+        crate::watermark::Presentation {
+            branding,
+            artwork: &[None],
+        },
+        &|_| format!("Ornament {target:08X}"),
     )?;
     let container = plan
         .container_for_request(0)
@@ -76,6 +141,7 @@ pub(super) fn apply(
         ITEM_STRING_ICON_INDEX_OFFSET,
         icon_index,
     )?;
+    clear_item_string_watermark_overrides(&mut emission.host_new_tags[ordinal + 1].payload)?;
     let (count, _, rows, _) = array_at(&emission.item_table, 8)?;
     let item_index = (0..count)
         .find(|i| read_u32(&emission.item_table, rows + i * 24).ok() == Some(target))

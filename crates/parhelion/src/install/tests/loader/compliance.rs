@@ -1,4 +1,6 @@
-//! Public filesystem workflows for the loader document's stock-directory boundary.
+//! Public filesystem workflows for the loader document's stock-directory boundary. An earlier
+//! layout's packages are retired from stock `packages` with a verified backup, never adopted
+//! into the mod folder, since their patches add entries the loader refuses.
 use super::*;
 
 pub(super) fn inventory(directory: &Path) -> BTreeMap<String, String> {
@@ -20,7 +22,6 @@ fn loader_operations_share_the_external_lock_and_retire_the_legacy_lock() {
     let fixture = fixture();
     let stock = inventory(&fixture.target);
     legacy(&fixture);
-    let plan = preview_upgrade(&fixture.target).unwrap().unwrap();
     let legacy_path = fixture.target.join(".parhelion-transaction.lock");
     let old = OpenOptions::new()
         .read(true)
@@ -30,7 +31,7 @@ fn loader_operations_share_the_external_lock_and_retire_the_legacy_lock() {
         .unwrap();
     fs2::FileExt::try_lock_exclusive(&old).unwrap();
     assert!(
-        upgrade_installation(&plan, &fixture.backups, game_stopped)
+        install_staged_packages(&request(&fixture))
             .unwrap_err()
             .message
             .contains("transaction lock")
@@ -55,11 +56,10 @@ fn loader_operations_share_the_external_lock_and_retire_the_legacy_lock() {
     };
     assert!(!external.exists());
     let guard = hold();
-    assert!(upgrade_installation(&plan, &fixture.backups, game_stopped).is_err());
     assert!(install_staged_packages(&request(&fixture)).is_err());
     assert!(recover_interrupted_install(&recovery(&fixture)).is_err());
     drop(guard);
-    upgrade_installation(&plan, &fixture.backups, game_stopped).unwrap();
+    install_staged_packages(&request(&fixture)).unwrap();
     assert!(!external.exists());
     let removal = preview_uninstall(&fixture.target).unwrap();
     let guard = hold();
@@ -70,7 +70,7 @@ fn loader_operations_share_the_external_lock_and_retire_the_legacy_lock() {
     assert_eq!(inventory(&fixture.target), stock);
     crate::test_support::artifact(
         "sunrise-mod-lock-compliance.json",
-        &json!({"stock": stock, "legacy_lock_removed": !legacy_path.exists(), "external_lock": external.file_name().unwrap().to_string_lossy(), "external_lock_removed": !external.exists(), "contending_operations": ["upgrade", "install", "recovery", "uninstall"]}),
+        &json!({"stock": stock, "legacy_lock_removed": !legacy_path.exists(), "external_lock": external.file_name().unwrap().to_string_lossy(), "external_lock_removed": !external.exists(), "contending_operations": ["install", "recovery", "uninstall"]}),
     );
 }
 
@@ -143,7 +143,7 @@ fn old_transaction(
 }
 
 #[test]
-fn old_install_and_removal_journals_recover_directly_into_the_mod_layout() {
+fn old_install_and_removal_journals_retire_their_packages_on_recovery() {
     let cases = [(false, true), (true, true), (false, false)];
     let results = cases.into_iter().map(|(removal, had_original)| {
         let fixture = fixture();
@@ -151,8 +151,7 @@ fn old_install_and_removal_journals_recover_directly_into_the_mod_layout() {
         let (account, original_account) = account(&fixture, 18);
         old_transaction(&fixture, InstallTransactionState::Pending, removal, had_original);
         recover_interrupted_install(&recovery(&fixture)).unwrap();
-        if had_original { assert_mod_readback(&fixture); }
-        else { assert!(!mod_content::directory(fixture.target.parent().unwrap()).exists()); }
+        assert!(!mod_content::directory(fixture.target.parent().unwrap()).exists());
         assert_eq!(inventory(&fixture.target), stock);
         assert_eq!(fs::read(account).unwrap(), original_account);
         assert!(matches!(recover_interrupted_install(&recovery(&fixture)).unwrap(), RecoveryOutcome::NoTransaction));
@@ -162,9 +161,14 @@ fn old_install_and_removal_journals_recover_directly_into_the_mod_layout() {
 }
 
 #[test]
-fn legacy_adoption_survives_another_interruption_and_preserves_conflicting_files() {
+fn legacy_retirement_survives_another_interruption_and_preserves_conflicting_files() {
     let mut evidence = Vec::new();
-    for stop in ["journaled", "published", "legacy_file_removed", "committed"] {
+    for stop in [
+        "journaled",
+        "legacy_file_removed",
+        "legacy_removed",
+        "committed",
+    ] {
         let fixture = fixture();
         let stock = inventory(&fixture.target);
         old_transaction(&fixture, InstallTransactionState::Pending, true, true);
@@ -173,12 +177,12 @@ fn legacy_adoption_survives_another_interruption_and_preserves_conflicting_files
             backend::recover_legacy_with_observer(&recovery(&fixture), &mut |phase| {
                 if phase == stop {
                     reached.set(true);
-                    panic!("simulated legacy adoption stop");
+                    panic!("simulated legacy retirement stop");
                 }
             })
             .unwrap();
         }));
-        assert!(reached.get(), "legacy adoption did not reach {stop}");
+        assert!(reached.get(), "legacy retirement did not reach {stop}");
         let journal = fixture.target.join(INSTALL_TRANSACTION_FILE_NAME);
         let expected = fs::read(&journal).unwrap();
         fs::write(&journal, b"concurrent journal").unwrap();
@@ -186,15 +190,15 @@ fn legacy_adoption_survives_another_interruption_and_preserves_conflicting_files
         assert_eq!(fs::read(&journal).unwrap(), b"concurrent journal");
         fs::write(&journal, expected).unwrap();
         recover_interrupted_install(&recovery(&fixture)).unwrap();
-        assert_mod_readback(&fixture);
+        assert!(!mod_content::directory(fixture.target.parent().unwrap()).exists());
         assert_eq!(inventory(&fixture.target), stock);
         evidence.push(json!({"interruption":stop,"stock":stock}));
     }
-    crate::test_support::artifact("sunrise-mod-legacy-adoption-recovery.json", &evidence);
+    crate::test_support::artifact("sunrise-mod-legacy-retirement-recovery.json", &evidence);
 }
 
 #[test]
-fn committed_legacy_install_is_kept_and_unknown_temporary_content_is_not_deleted() {
+fn committed_legacy_install_is_retired_to_its_backup_and_unknown_temporary_content_is_kept() {
     let mut fixture = fixture();
     let stock = inventory(&fixture.target);
     let record = old_transaction(&fixture, InstallTransactionState::Committed, false, true);
@@ -216,12 +220,13 @@ fn committed_legacy_install_is_kept_and_unknown_temporary_content_is_not_deleted
         )
         .unwrap(),
     );
-    assert_mod_readback(&fixture);
+    assert!(!mod_content::directory(fixture.target.parent().unwrap()).exists());
     assert_eq!(inventory(&fixture.target), stock);
+    assert_retired_backup(&fixture, &fixture.staged_bytes);
 }
 
 #[test]
-fn legacy_adoption_restores_the_recorded_json_and_sqlite_account_state() {
+fn legacy_retirement_restores_the_recorded_json_and_sqlite_account_state() {
     let results = [8, 18]
         .into_iter()
         .map(verify_account_recovery)
@@ -231,6 +236,9 @@ fn legacy_adoption_restores_the_recorded_json_and_sqlite_account_state() {
 
 fn verify_account_recovery(schema: u64) -> serde_json::Value {
     let fixture = fixture();
+    let outside = super::super::runtime::links::external(&fixture, false);
+    let external_dll = outside.path().join("steam_api64.dll");
+    let runtime_before = fs::read(&external_dll).unwrap();
     let (path, _) = account(&fixture, schema);
     let read = sundial::package_authoring::account::read_authored_account_source;
     let original = read(&path).unwrap();
@@ -257,7 +265,8 @@ fn verify_account_recovery(schema: u64) -> serde_json::Value {
         .unwrap();
     recover_interrupted_install(&recovery(&fixture)).unwrap();
     assert_eq!(read(&path).unwrap(), original);
-    assert_mod_readback(&fixture);
+    assert_eq!(fs::read(external_dll).unwrap(), runtime_before);
+    assert!(!mod_content::directory(fixture.target.parent().unwrap()).exists());
     if schema == 18 {
         let db = rusqlite::Connection::open(&path).unwrap();
         assert_eq!(
@@ -267,7 +276,7 @@ fn verify_account_recovery(schema: u64) -> serde_json::Value {
             "retain"
         );
     }
-    json!({"schema":schema,"original_sha256":hex::encode(Sha256::digest(&original)),"interrupted_sha256":hex::encode(Sha256::digest(&cleaned)),"recovered_sha256":hex::encode(Sha256::digest(read(&path).unwrap()))})
+    json!({"schema":schema,"original_sha256":hex::encode(Sha256::digest(&original)),"interrupted_sha256":hex::encode(Sha256::digest(&cleaned)),"recovered_sha256":hex::encode(Sha256::digest(read(&path).unwrap())),"runtime_sha256":hex::encode(Sha256::digest(runtime_before)),"runtime_link":"external and preserved"})
 }
 
 #[test]
@@ -276,8 +285,7 @@ fn nonempty_legacy_lock_is_preserved_instead_of_claimed_as_editor_metadata() {
     legacy(&fixture);
     let path = fixture.target.join(".parhelion-transaction.lock");
     fs::write(&path, b"foreign metadata").unwrap();
-    let plan = preview_upgrade(&fixture.target).unwrap().unwrap();
-    assert!(upgrade_installation(&plan, &fixture.backups, game_stopped).is_err());
+    assert!(install_staged_packages(&request(&fixture)).is_err());
     assert_eq!(fs::read(&path).unwrap(), b"foreign metadata");
     assert!(!fixture.backups.exists());
 }
@@ -286,12 +294,18 @@ fn nonempty_legacy_lock_is_preserved_instead_of_claimed_as_editor_metadata() {
 fn legacy_uninstall_on_loader_runtime_leaves_only_the_original_stock_files() {
     let fixture = fixture();
     let stock = inventory(&fixture.target);
-    legacy(&fixture);
+    let retired = legacy(&fixture);
     fs::write(fixture.target.join(".parhelion-transaction.lock"), []).unwrap();
     let plan = preview_uninstall(&fixture.target).unwrap();
-    uninstall_custom_packages(&plan, &fixture.backups, game_stopped).unwrap();
+    let report = uninstall_custom_packages(&plan, &fixture.backups, game_stopped).unwrap();
     assert_eq!(inventory(&fixture.target), stock);
     assert!(!mod_content::directory(fixture.target.parent().unwrap()).exists());
+    assert_retired_backup(&fixture, &retired);
+    // Reports name the canonical packages folder.
+    let target = fs::canonicalize(&fixture.target).unwrap();
+    for name in retired.keys() {
+        assert!(report.removed_files.contains(&target.join(name)));
+    }
     crate::test_support::artifact(
         "sunrise-mod-legacy-removal.json",
         &json!({"stock":stock,"mod_removed":true}),

@@ -62,6 +62,27 @@ fn copy(
     Ok(rows.len())
 }
 
+fn unused(source: &Payload, bindings: &Bindings) -> Result<bool> {
+    let mut omitted = false;
+    for row in source.array(source.pointer(24)? + 0x1D8, 24, Some(0x808091F1))? {
+        let event = source.pointer(row + 16)?;
+        if source.u32(event - 4)? != 0x808067B9 {
+            continue;
+        }
+        for row in source.array(event + 0x28, 24, Some(0x808067BB))? {
+            fields(source, row)?;
+            if source.u32(row + 16)? != u32::MAX {
+                continue;
+            }
+            if !bindings.omitted_events.contains(&event) {
+                return Ok(false);
+            }
+            omitted = true;
+        }
+    }
+    Ok(omitted)
+}
+
 pub(super) fn emit(
     source: &Payload,
     output: &mut Payload,
@@ -97,6 +118,30 @@ pub(super) fn emit(
             && output.u32(ni + 4)? == 0x808072C1,
         "indexed particle runtime pair differs"
     );
+    let runtime = source.array(si + 0x30, 8, Some(0x80806DB3))?;
+    ensure!(
+        runtime.len() == groups.len(),
+        "indexed particle runtime count differs"
+    );
+    for row in runtime {
+        ensure!(
+            source.u64(row)? == u64::MAX,
+            "indexed particle handles are initialized"
+        );
+    }
+    if unused(source, bindings)? {
+        // Every indexed consumer becomes a delay. Direct particle events have
+        // their own references and remain intact. No index is remapped here.
+        source.array(sd + 0x2B0, 8, Some(0x80806D98))?;
+        for field in [nd + 0x200, nd + 0x230, nd + 0x240, ni + 0x20] {
+            put(output, field, &[0; 16])?;
+        }
+        put(output, nd + 0x210, &[0; 32])?;
+        put(output, ni + 0x18, &[0; 8])?;
+        put(output, nd + 0x260, &source.bytes::<8>(sd + 0x2F8)?)?;
+        put(output, nd + 0x268, &0u32.to_le_bytes())?;
+        return Ok(None);
+    }
     copy(
         source,
         sd + 0x280,
@@ -119,17 +164,6 @@ pub(super) fn emit(
         systems.extend(events::link(bindings, field, 0x80806920, 0x80806E28)?.to_le_bytes());
     }
     array(output, nd + 0x240, 0x80800014, &systems, 4)?;
-    let runtime = source.array(si + 0x30, 8, Some(0x80806DB3))?;
-    ensure!(
-        runtime.len() == groups.len(),
-        "indexed particle runtime count differs"
-    );
-    for row in runtime {
-        ensure!(
-            source.u64(row)? == u64::MAX,
-            "indexed particle handles are initialized"
-        );
-    }
     array(
         output,
         ni + 0x20,

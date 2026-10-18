@@ -168,10 +168,13 @@ impl evaluate::Context for Context<'_, '_> {
                 _ => [0; 4],
             };
         };
+        // The binding resolved its sampler table row when the stage was planned. A load-only
+        // resource has none, and its register then names the row before it, the stock order.
         image::Image { texture, binding }.sample(
             uv,
-            sampler
-                .checked_sub(1)
+            binding
+                .sampler
+                .or_else(|| sampler.checked_sub(1))
                 .and_then(|i| self.material.samplers.get(i)),
             sampling,
             offset,

@@ -1,44 +1,20 @@
-//! Selected source convex hulls in the native root-body frame.
-use super::{METRES, assembly::Assembly, body};
+//! Source damage forms, solid bodies and surface hit meshes in native frames.
+mod hull;
+mod shot;
+#[cfg(test)]
+mod tests;
+use super::{assembly::Assembly, body, damage};
 use crate::{
     halo_reach::{Scene, rig},
     presentation::{Graph, put},
-    tiger::{physics::Hull, reader::Reader},
+    tiger::{
+        physics::{Hull, Shape},
+        reader::Reader,
+    },
 };
 use anyhow::{Context, Result, bail, ensure};
+pub(super) use hull::build as hulls;
 use serde_json::{Value, json};
-
-fn polyhedra(
-    source: &Value,
-    shape: &Value,
-    path: &mut Vec<usize>,
-    out: &mut Vec<usize>,
-) -> Result<()> {
-    let kind = shape[0].as_i64().context("Source collision shape kind")?;
-    let index = usize::try_from(shape[1].as_u64().context("Source collision shape index")?)?;
-    match kind {
-        4 => {
-            out.push(index);
-        }
-        14 => {
-            ensure!(
-                !path.contains(&index) && path.len() < 16,
-                "Cyclic source collision compound"
-            );
-            let children = source["lists"]
-                .get(index)
-                .and_then(Value::as_array)
-                .context("Source collision list")?;
-            path.push(index);
-            for child in children {
-                polyhedra(source, child, path, out)?;
-            }
-            path.pop();
-        }
-        _ => bail!("Source collision shape {kind} needs an explicit native translation"),
-    }
-    Ok(())
-}
 
 fn vector<const N: usize>(value: &Value) -> Result<[f32; N]> {
     let values = value
@@ -53,6 +29,20 @@ fn vector<const N: usize>(value: &Value) -> Result<[f32; N]> {
     Ok(result)
 }
 
+fn condition(
+    groups: &mut Vec<(String, Vec<u8>)>,
+    value: Option<&(String, Vec<u8>)>,
+) -> Result<u32> {
+    let Some(value) = value else {
+        return Ok(0);
+    };
+    if let Some(index) = groups.iter().position(|group| group == value) {
+        return Ok(u32::try_from(index + 1)?);
+    }
+    groups.push(value.clone());
+    Ok(u32::try_from(groups.len())?)
+}
+
 pub(super) fn build(
     native: &mut Reader,
     graph: &mut Graph,
@@ -60,113 +50,163 @@ pub(super) fn build(
     scene: &Scene,
     bones: &Value,
 ) -> Result<Value> {
-    let model = &scene.models[0].model;
-    let source = &scene.object.gameplay["rigid_body"];
-    let (selected, _) = body::selection(model, source)?;
-    let worlds = rig::world(&model.bones)?;
+    let mut selected = body::physical(scene)?;
+    // The initial active body keeps the carrier's primary name. All solid rows
+    // share its bone so the native constructor combines their enabled shapes.
+    selected.sort_by_key(|part| {
+        (
+            !part
+                .condition
+                .as_ref()
+                .is_none_or(|(_, states)| states.contains(&0)),
+            part.body,
+        )
+    });
     let mut hulls = Vec::new();
-    let mut report = Vec::new();
-    for index in selected {
-        let body = &source["bodies"][index];
-        let node = usize::try_from(body["node"].as_u64().context("Physics node index")?)?;
-        let name = source["nodes"][node]
-            .as_str()
-            .context("Physics node name")?;
-        let matches = model
-            .bones
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| b.name == name)
-            .collect::<Vec<_>>();
-        ensure!(
-            matches.len() == 1,
-            "Physics node is absent or ambiguous in the render rig"
-        );
-        let world = &worlds[matches[0].0];
-        let mut selected_hulls = Vec::new();
-        polyhedra(
-            &source["collision"],
-            &body["shape"],
-            &mut Vec::new(),
-            &mut selected_hulls,
-        )?;
-        for poly in selected_hulls {
-            let source_hull = &source["collision"]["polyhedra"][poly];
-            let vertices = source_hull["vertices_source"]
-                .as_array()
-                .context("Source collision vertices")?
-                .iter()
-                .map(|value| {
-                    let source_point = vector::<3>(value)?.map(|v| v * METRES);
-                    let object = rig::point(world, source_point, true);
-                    Ok(super::super::seat::frame(bones, 0, (object, [0., 0., 0., 1.]))?.0)
-                })
-                .collect::<Result<Vec<_>>>()?;
-            let origin = rig::point(world, [0.; 3], true);
-            let local_origin = super::super::seat::frame(bones, 0, (origin, [0., 0., 0., 1.]))?.0;
-            let root_origin = super::super::seat::frame(bones, 0, ([0.; 3], [0., 0., 0., 1.]))?.0;
-            let planes = source_hull["planes_source"]
-                .as_array()
-                .context("Source collision planes")?
-                .iter()
-                .map(|value| {
-                    let plane = vector::<4>(value)?;
-                    let normal = rig::point(world, plane[..3].try_into().unwrap(), false);
-                    let mut normal =
-                        super::super::seat::frame(bones, 0, (normal, [0., 0., 0., 1.]))?.0;
-                    for axis in 0..3 {
-                        normal[axis] -= root_origin[axis];
-                    }
-                    let distance = plane[3] * METRES
-                        - normal
-                            .iter()
-                            .zip(local_origin)
-                            .map(|(a, b)| a * b)
-                            .sum::<f32>();
-                    Ok([normal[0], normal[1], normal[2], distance])
-                })
-                .collect::<Result<Vec<_>>>()?;
-            let radius = source_hull["radius_source"]
-                .as_f64()
-                .context("Source convex radius")? as f32
-                * METRES;
-            report.push(json!({"body":index,"polyhedron":poly,"vertices":vertices.len(),"planes":planes.len(),"radius_metres":radius}));
-            hulls.push(Hull {
-                vertices,
-                planes,
-                radius,
-            });
+    let mut shape_groups = Vec::new();
+    let mut groups = Vec::new();
+    let mut solids = Vec::new();
+    let mut initial_mass = 0.;
+    for part in selected {
+        let properties = body::properties(scene, part.body)?;
+        if part
+            .condition
+            .as_ref()
+            .is_none_or(|(_, states)| states.contains(&0))
+        {
+            initial_mass += properties.mass;
+        }
+        let shapes = hull::build(scene, bones, part.body)?;
+        let group = condition(&mut groups, part.condition.as_ref())?;
+        let share = properties.share(shapes.len())?;
+        // Native dynamic assembly rejects a nested hkpListShape after its
+        // first body. Expose each convex leaf directly, retaining the source
+        // condition and distributing its physical properties exactly once.
+        for shape in shapes {
+            shape_groups.push(vec![hulls.len()]);
+            hulls.push(shape);
+            solids.push((part.body, group, properties.mass, share.clone()));
         }
     }
-    let owner = assembly.owner(0x808092d8)?;
-    let payload = assembly.payloads.get_mut(&owner).unwrap();
-    let definition = payload.pointer(24)?;
     ensure!(
-        payload.u32(definition - 4)? == 0x80808a0c,
-        "Collision body definition differs"
+        initial_mass.is_finite() && initial_mass > 0.,
+        "Source intact vehicle has no mass"
     );
-    let rows = payload.array(definition + 0x388, 0x90, Some(0x80808c07))?;
-    ensure!(!rows.is_empty(), "Native collision body is empty");
-    let filters = rows
+    let hits = shot::build(scene, bones)?;
+    let hit_groups = hits
         .iter()
-        .map(|&row| payload.u32(row + 0x18))
+        .map(|mesh| condition(&mut groups, Some(&mesh.condition)))
         .collect::<Result<Vec<_>>>()?;
-    let template = native.tag(0x80b822ba, None)?;
-    let bytes = crate::tiger::physics::compound(&template.0, &hulls, &filters)?;
-    let previous = payload.u32(definition + 0x380)?;
-    native.tag(previous, None)?;
-    graph.add("vehicle-collision", previous, &bytes, None, Vec::new())?;
-    // Body categories, callbacks and filter policies remain native. Every shape
-    // uses the root frame, so donor child bones cannot move the source collision.
-    for row in &rows {
+    let meshes = hits
+        .iter()
+        .map(|mesh| mesh.triangles.clone())
+        .collect::<Vec<_>>();
+    let owner = assembly.owner(0x808092d8)?;
+    let (allocation_tag, mut layout) = assembly.allocation(native, graph, owner)?;
+    let payload = assembly.payloads.get_mut(&owner).unwrap();
+    let (instance, definition) = damage::definition(payload, 0x808092d8, 0x80808a0c)?;
+    let old_rows = payload.array(definition + 0x388, 0x90, Some(0x80808c07))?;
+    let primary = body::primary(payload)?;
+    ensure!(
+        (payload.u32(primary + 0x18)? >> 8) & 0xff == 1 && payload.u32(primary + 0x80)? == 1,
+        "Native solid-body filter or motion contract differs"
+    );
+    let hit = old_rows
+        .iter()
+        .copied()
+        .find(|&row| {
+            payload.u32(row + 0x18).is_ok_and(|v| (v >> 8) & 0xff == 2)
+                && payload.u32(row + 0x80).ok() == Some(4)
+                && payload.f32(row + 0x60).ok() == Some(0.)
+        })
+        .context("Native animated hit-body contract")?;
+    let solid_template = payload.bytes::<0x90>(primary)?;
+    let hit_template = payload.bytes::<0x90>(hit)?;
+    let target_mass = payload.f32(primary + 0x60)?;
+    ensure!(
+        (target_mass - initial_mass).abs() <= initial_mass * 0.00001,
+        "Vehicle motion and physical parts disagree on initial mass"
+    );
+    let count = solids.len() + hits.len();
+    let rows = damage::array(payload, definition + 0x388, 0x80808c07, 0x90, count)?;
+    let damage_source = &scene.object.gameplay["damage"];
+    let main = usize::try_from(
+        damage_source["indirect_section"]
+            .as_u64()
+            .context("Source indirect damage section")?,
+    )?;
+    let main_name = damage_source["sections"][main]["name"]
+        .as_str()
+        .context("Source primary damage section")?;
+    let mut report = Vec::new();
+    for (index, (&row, (source, group, source_mass, properties))) in
+        rows.iter().zip(&solids).enumerate()
+    {
+        put(&mut payload.0, row, &solid_template)?;
+        if index != 0 {
+            put(
+                &mut payload.0,
+                row,
+                &damage::hash(&format!("reach_body_{source}_{index}")).to_le_bytes(),
+            )?;
+        }
+        put(
+            &mut payload.0,
+            row + 4,
+            &damage::hash(main_name).to_le_bytes(),
+        )?;
         put(&mut payload.0, row + 8, &0u32.to_le_bytes())?;
+        put(&mut payload.0, row + 12, &group.to_le_bytes())?;
+        put(
+            &mut payload.0,
+            row + 0x88,
+            &u32::try_from(index)?.to_le_bytes(),
+        )?;
+        body::write(payload, row, bones, properties)?;
+        report.push(json!({"source_body":source,"row":row,"group":group,"shape":index,"source_mass":source_mass,
+            "mass":properties.mass,"bone":0,"section":main_name,"hulls":shape_groups[index]}));
     }
-    // The old cloth hull belongs to the donor silhouette, not the source model.
+    let mut hit_report = Vec::new();
+    for (index, mesh) in hits.iter().enumerate() {
+        let row = rows[solids.len() + index];
+        put(&mut payload.0, row, &hit_template)?;
+        for (offset, value) in [
+            (0, damage::hash(&mesh.name)),
+            (4, damage::hash(&mesh.section)),
+            (8, u32::try_from(mesh.bone)?),
+            (12, hit_groups[index]),
+            (0x88, u32::try_from(solids.len() + index)?),
+        ] {
+            put(&mut payload.0, row + offset, &value.to_le_bytes())?;
+        }
+        hit_report.push(json!({"name":mesh.name,"section":mesh.section,"bone":mesh.bone,"group":hit_groups[index],
+            "shape":solids.len()+index,"row":row,"triangles":mesh.triangles.len()}));
+    }
+    damage::region::parts(payload, definition, &groups)?;
+    for (field, declared, allocation) in [(0x180, 0x378, 0x2565fa53), (0x1a0, 0x37c, 0xead45d3b)] {
+        damage::array(payload, instance + field, 0x80800007, 4, count)?;
+        put(
+            &mut payload.0,
+            definition + declared,
+            &u32::try_from(count)?.to_le_bytes(),
+        )?;
+        damage::allocation(&mut layout, &[allocation], 0x80800007, count)?;
+    }
+    // The carrier's cloth hull belongs to its original silhouette.
     put(&mut payload.0, definition + 0x3b8, &[0; 16])?;
+    let previous = payload.u32(definition + 0x380)?;
+    let end = payload.0.len();
+    let template = native.tag(0x80b822ba, None)?;
+    let bytes = crate::tiger::physics::vehicle_shapes(&template.0, &hulls, &shape_groups, &meshes)?;
+    graph.add("vehicle-collision", previous, &bytes, None, Vec::new())?;
+    assembly.runtime_end(owner, end)?;
+    assembly.set_allocation(graph, owner, allocation_tag, &layout)?;
     assembly.resource(owner, definition + 0x380, "vehicle-collision".into())?;
     Ok(
-        json!({"owner":format!("{owner:08X}"),"source":source["tag"],"hulls":report,
-        "native_bodies":rows.len(),"root_bone":0,"gameplay_verified":false,
-        "limits":["Selected source convex hulls use a rigid compound. Source damage deformation and articulated collision are not translated. Live impacts and vehicle clearance require gameplay acceptance."]}),
+        json!({"owner":format!("{owner:08X}"),"source":scene.object.gameplay["rigid_body"]["tag"],
+        "solid_bodies":report,"hit_bodies":hit_report,"groups":groups,"native_bodies":count,
+        "source_initial_mass":initial_mass,"native_initial_mass":target_mass,
+        "root_bone":0,"solid_shape":"convex_leaf","child_filter":"inherit_live_parent","gameplay_verified":false,
+        "limits":["Source cooked masses, inertia, solid forms and separate hit geometry are authored. Live impacts, hit routing, state changes and wreck behavior require gameplay acceptance."]}),
     )
 }

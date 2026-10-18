@@ -4,6 +4,7 @@
 //! observed zero TCRF. Full graph and pointer coverage is required. A translated
 //! solver is a separate contract from its game component and render bindings.
 mod lower;
+mod native;
 mod pack;
 mod schema;
 mod source;
@@ -17,6 +18,20 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct Translated {
     pub bytes: Vec<u8>,
     pub report: Value,
+}
+
+/// Validate an already serialized Havok 2012 solver against native reflection.
+/// Exact signatures, complete pointer coverage and topology are required.
+/// This describes the data graph, not a live game instance.
+pub fn inspect_native(bytes: &[u8]) -> Result<Value> {
+    let schema = schema::Schema::read()?;
+    let objects = native::read(bytes, &schema).context("Read native cloth packfile")?;
+    let bindings = validate::graph(&objects).context("Validate native cloth topology")?;
+    Ok(
+        json!({"sdk":"hk_2012.2.0-r1", "native_objects":objects.len(),
+        "class_signatures_verified":true, "pointer_coverage_complete":true,
+        "bindings":bindings, "gameplay_verified":false}),
+    )
 }
 
 /// Translate a complete source solver, optionally adapting its bone palette.

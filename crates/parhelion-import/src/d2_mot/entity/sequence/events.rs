@@ -4,6 +4,10 @@ use crate::d2_mot::payload::Payload;
 use anyhow::{Context, Result, ensure};
 use std::collections::BTreeMap;
 
+mod functional;
+mod presentation;
+mod query;
+
 #[cfg(test)]
 mod tests;
 
@@ -302,8 +306,8 @@ fn spawn(
         "spawn entity reference encoding requires translation"
     );
     ensure!(
-        source.bytes::<48>(from + 0x80)? == [0; 48],
-        "spawn arrays require translation"
+        source.bytes::<32>(from + 0x80)? == [0; 32],
+        "spawn object overrides require translation"
     );
     for delta in (0xB4..0xC8).step_by(4) {
         ensure!(
@@ -405,6 +409,56 @@ fn sound(
     Ok(())
 }
 
+struct Shape {
+    definition: u32,
+    instance: u32,
+    definition_size: usize,
+    instance_size: usize,
+    kind: u32,
+}
+
+fn shape(source: &Payload, from: usize, omitted: bool) -> Result<Shape> {
+    let class = source.u32(from - 4)?;
+    let (mut dc, mut ic, mut size, mut isize, mut kind) = match class {
+        0x808091D7 => (0x808093CB, 0x808093CA, 0x38, 0x40, 0),
+        0x808067B9 => (0x80806CC6, 0x80806CC5, 0x128, 0x50, 4),
+        0x80806640 => (0x80806B38, 0x80806B37, 0x78, 0x60, 6),
+        0x8080694C => (0x80806E51, 0x80806E50, 0x118, 0x50, 34),
+        0x80803F1F => (0x80804AB4, 0x80804AB3, 0x80, 0x40, 30),
+        0x80808485 => (0x80808881, 0x80808880, 0xE0, 0x70, 15),
+        0x80806A48 => (0x80806F40, 0x80806F3F, 0x130, 0x90, 39),
+        0x80806A52 => (0x80806F49, 0x80806F48, 0x150, 0xB0, 33),
+        0x808091D1 => (0x808093C4, 0x808093C3, 0x80, 0x40, 2),
+        0x8080847E => (0x80808879, 0x80808878, 0x80, 0x50, 3),
+        0x80803F2F => (0x80804AC4, 0x80804AC3, 0x1A0, 0x60, 27),
+        0x80803F1B => (0x80804AB0, 0x80804AAF, 0x48, 0x40, 38),
+        0x808066AD => (0x80806B98, 0x80806B97, 0x138, 0x50, 5),
+        0x808091CF => (0x808093C2, 0x808093C1, 0x118, 0x50, 23),
+        0x80803F24 => (0x80804AB9, 0x80804AB8, 0x520, 0x50, 29),
+        _ => anyhow::bail!("unsupported sequence event {class:08X}"),
+    };
+    let source_kind = if class == 0x80808485 { 16 } else { kind };
+    ensure!(
+        source.u32(from + 0x1C)? == source_kind
+            && (matches!(kind, 0 | 34) || source.u32(from + 0x20)? == 0xFF),
+        "sequence event kind or selector differs"
+    );
+    if omitted {
+        ensure!(
+            matches!(kind, 4 | 5 | 6 | 23 | 33 | 34),
+            "only a qualified cosmetic event can become a timing-only event"
+        );
+        (dc, ic, size, isize, kind) = (0x808093CB, 0x808093CA, 0x38, 0x40, 0);
+    }
+    Ok(Shape {
+        definition: dc,
+        instance: ic,
+        definition_size: size,
+        instance_size: isize,
+        kind,
+    })
+}
+
 pub(super) fn write(
     source: &Payload,
     sequence: &Sequence,
@@ -421,11 +475,13 @@ pub(super) fn write(
     let count = source_rows.len();
     ensure!(count <= i16::MAX as usize, "too many sequence events");
     let mut envelopes = BTreeMap::new();
-    for row in template.array(template.pointer(24)? + 0x168, 24, Some(0x808093E6))? {
-        let node = template.pointer(row + 16)?;
-        let class = template.u32(node - 4)?;
-        let instance = usize::try_from(template.u64(node + 8)?)?;
-        envelopes.entry(class).or_insert(instance);
+    for envelope in std::iter::once(template).chain(bindings.event_templates.iter()) {
+        for row in envelope.array(envelope.pointer(24)? + 0x168, 24, Some(0x808093E6))? {
+            let node = envelope.pointer(row + 16)?;
+            let class = envelope.u32(node - 4)?;
+            let instance = usize::try_from(envelope.u64(node + 8)?)?;
+            envelopes.entry(class).or_insert((envelope, instance));
+        }
     }
     let ir = array(output, root + 0xB0, 0x808093E5, &vec![0; count * 48], 48)?;
     let dr = array(
@@ -439,26 +495,18 @@ pub(super) fn write(
     for (index, &row) in source_rows.iter().enumerate() {
         let from = source.pointer(row + 16)?;
         let class = source.u32(from - 4)?;
-        let (dc, ic, size, isize, kind) = match class {
-            0x808091D7 => (0x808093CB, 0x808093CA, 0x38, 0x40, 0),
-            0x808067B9 => (0x80806CC6, 0x80806CC5, 0x128, 0x50, 4),
-            0x80806640 => (0x80806B38, 0x80806B37, 0x78, 0x60, 6),
-            0x8080694C => (0x80806E51, 0x80806E50, 0x118, 0x50, 34),
-            0x80803F1F => (0x80804AB4, 0x80804AB3, 0x80, 0x40, 30),
-            0x80808485 => (0x80808881, 0x80808880, 0xE0, 0x70, 15),
-            0x80806A48 => (0x80806F40, 0x80806F3F, 0x130, 0x90, 39),
-            0x80806A52 => (0x80806F49, 0x80806F48, 0x150, 0xB0, 33),
-            _ => anyhow::bail!("unsupported sequence event {class:08X}"),
-        };
-        let source_kind = if class == 0x80808485 { 16 } else { kind };
+        let omitted = bindings.omitted_events.contains(&from);
+        let Shape {
+            definition: dc,
+            instance: ic,
+            definition_size: size,
+            instance_size: isize,
+            kind,
+        } = shape(source, from, omitted)?;
+        let (envelope, native_instance) =
+            *envelopes.get(&dc).context("native event envelope absent")?;
         ensure!(
-            source.u32(from + 0x1C)? == source_kind
-                && (matches!(kind, 0 | 34) || source.u32(from + 0x20)? == 0xFF),
-            "sequence event kind or selector differs"
-        );
-        let native_instance = *envelopes.get(&dc).context("native event envelope absent")?;
-        ensure!(
-            template.u32(native_instance - 4)? == ic,
+            envelope.u32(native_instance - 4)? == ic,
             "native event instance class differs"
         );
         let instance_row = ir + index * 48;
@@ -474,7 +522,7 @@ pub(super) fn write(
         relative(output, instance_row + 16, root)?;
         let instance = object(output, ic, isize);
         let target = object(output, dc, size);
-        let defaults = template
+        let defaults = envelope
             .0
             .get(native_instance..native_instance + isize)
             .context("native event instance extent")?;
@@ -491,7 +539,10 @@ pub(super) fn write(
         relative(output, instance + 16, instance_row)?;
         relative(output, instance_row + 32, instance)?;
         relative(output, definition_row + 16, target)?;
-        if kind == 0 {
+        if omitted {
+            common(source, from, output, target)?;
+            put(output, target + 0x2C, &[0; 12])?;
+        } else if kind == 0 {
             delay(source, from, output, target)?;
         } else if kind == 34 {
             render(source, from, output, target, bindings)?;
@@ -525,35 +576,18 @@ pub(super) fn write(
             put(output, target + 0x38, &0xFFu32.to_le_bytes())?;
         }
         match kind {
-            0 | 15 | 30 | 34 => {}
+            0 | 30 | 34 => {}
+            15 => functional::spawn_parameters(source, from, output, target, inputs)?,
+            2 | 3 | 27 | 38 => {
+                functional::write(source, from, output, target, bindings, inputs, kind)?
+            }
+            5 | 23 => presentation::write(source, from, output, target, bindings, kind)?,
+            29 => query::write(source, from, output, target, bindings, inputs)?,
             4 => particle(source, from, output, target, bindings, locators)?,
             6 => sound(
                 source, from, output, target, bindings, sequence, inputs, locators,
             )?,
-            33 | 39 => {
-                ensure!(
-                    source.u32(from + 0x28)? == 2 && source.u32(from + 0x2C)? == 0,
-                    "child entity event reference mode differs"
-                );
-                put(
-                    output,
-                    target + 0x40,
-                    &link(bindings, from + 0x24, 0x80809AD8, 0x80809C0F)?.to_le_bytes(),
-                )?;
-                let start = if kind == 33 { 0x58 } else { 0x40 };
-                let end = if kind == 33 { 0x78 } else { 0x60 };
-                put(
-                    output,
-                    target + 0x50,
-                    source
-                        .0
-                        .get(from + 0x30..from + start)
-                        .context("child entity event parameters")?,
-                )?;
-                for delta in [0, 72, 144] {
-                    expression::write(source, from + start + delta, output, target + end + delta)?;
-                }
-            }
+            33 | 39 => child(source, from, output, target, bindings, kind)?,
             _ => unreachable!(),
         }
         allocation.children.push(Allocation::node(ic));
@@ -565,4 +599,42 @@ pub(super) fn write(
         &u32::try_from(count)?.to_le_bytes(),
     )?;
     Ok(allocation)
+}
+
+fn child(
+    source: &Payload,
+    from: usize,
+    output: &mut Payload,
+    target: usize,
+    bindings: &Bindings,
+    kind: u32,
+) -> Result<()> {
+    ensure!(
+        matches!(source.u32(from + 0x28)?, 1 | 2) && source.u32(from + 0x2C)? == 0,
+        "sequence presentation reference mode differs"
+    );
+    let (sc, nc) = if kind == 33 {
+        (0x80806C71, 0x80807140)
+    } else {
+        (0x80809AD8, 0x80809C0F)
+    };
+    put(
+        output,
+        target + 0x40,
+        &link(bindings, from + 0x24, sc, nc)?.to_le_bytes(),
+    )?;
+    let start = if kind == 33 { 0x58 } else { 0x40 };
+    let end = if kind == 33 { 0x78 } else { 0x60 };
+    put(
+        output,
+        target + 0x50,
+        source
+            .0
+            .get(from + 0x30..from + start)
+            .context("child entity event parameters")?,
+    )?;
+    for delta in [0, 72, 144] {
+        expression::write(source, from + start + delta, output, target + end + delta)?;
+    }
+    Ok(())
 }

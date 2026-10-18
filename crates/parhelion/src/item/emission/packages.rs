@@ -28,6 +28,12 @@ enum Kind {
         references: Vec<crate::NewTagReferenceOverride>,
     },
     Standalone(crate::asset_packages::AssetPackage),
+    /// A standalone package whose extended header region names tags.
+    Named {
+        tags: Vec<NewTagSpec>,
+        named: Vec<crate::format::NamedTag>,
+        references: Vec<crate::extend::NewTagReferenceOverride>,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -102,6 +108,25 @@ impl<'a> Packages<'a> {
         )
     }
 
+    pub(super) fn named(
+        &mut self,
+        id: u16,
+        tags: Vec<NewTagSpec>,
+        named: Vec<crate::format::NamedTag>,
+        references: Vec<crate::extend::NewTagReferenceOverride>,
+    ) -> AuthoringResult<Ticket> {
+        let count = tags.len();
+        self.push(
+            id,
+            Kind::Named {
+                tags,
+                named,
+                references,
+            },
+            Check::Standalone(count),
+        )
+    }
+
     pub(super) fn host(&mut self, ticket: Ticket, count: usize) {
         self.jobs[ticket.0].check = Check::Host(count);
     }
@@ -123,6 +148,10 @@ impl<'a> Packages<'a> {
                 .fold(0usize, usize::saturating_add),
             Kind::Standalone(package) => package
                 .tags
+                .iter()
+                .map(|tag| tag.payload.len())
+                .fold(0usize, usize::saturating_add),
+            Kind::Named { tags, .. } => tags
                 .iter()
                 .map(|tag| tag.payload.len())
                 .fold(0usize, usize::saturating_add),
@@ -378,6 +407,19 @@ impl Job {
                 profile.file_name,
                 &package.tags,
                 &package.references,
+                &mut progress,
+            ),
+            Kind::Named {
+                tags,
+                named,
+                references,
+            } => crate::extend::build_named_package_with_chains(
+                chains,
+                self.id,
+                profile.file_name,
+                tags,
+                named,
+                references,
                 &mut progress,
             ),
         }

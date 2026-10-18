@@ -4,7 +4,7 @@
 
 Sundial edits accounts and settings for [Project Sunrise](https://github.com/stanuwu/Sunrise) and [Dawn](https://github.com/isinternets/Dawn), and includes Parhelion for authoring your own weapons and other items. It reads items from your installed Destiny 2 packages. No game assets are bundled.
 
-- Edit characters, equipment, subclasses, and inventories.
+- Edit characters, equipment, Subclasses, and inventories.
 - Search weapons, armor, cosmetics, and perks.
 - Browse or search every item in the Inspector.
 - Inspect the definitions behind items, perks, and progression, with model previews.
@@ -20,7 +20,7 @@ Sundial edits accounts and settings for [Project Sunrise](https://github.com/sta
 - Dawn 0.1.3 or newer (`player-state.db` schema v5)
 - Windows 10 or Linux x86-64 (glibc 2.35 or later)
 
-Newer Sunrise schemas may be opened with a warning, but future compatibility is not guaranteed.
+Newer Sunrise schemas may be opened with a warning, but future compatibility is not guaranteed. On Sunrise 0.6 or later, Sundial also reads content from other Sunrise mods, leaving out any that Sunrise would refuse.
 
 Sunrise schema v18 stores most account data in `data/investment.sqlite3`, with identity and runtime configuration in `settings.json`. Dawn stores account data, preferences, and key bindings in `player-state.db`, with identity, language, and runtime configuration in `Dawn/settings.json`. Sundial selects the active format automatically and still supports legacy Sunrise JSON accounts.
 
@@ -40,13 +40,13 @@ Close Destiny 2 before saving account changes, restoring backups, or installing 
 
 Parhelion is an experimental item workbench bundled with Sundial. Build your own Destiny weapons by mixing weapon types, perks, stats, and appearance, including Exotics and combinations that wouldn't normally exist in the sandbox. It can also author custom perks and mods, armor, vehicles, Emblems, Shaders, and Subclass abilities.
 
-Parhelion creates its own Tiger-compatible packages in your existing installation without modifying existing packages. Enable it under **Preferences > Editing > Experimental**, then choose **Open Parhelion**. Some combinations may not work and can freeze or crash the game. Before using future Dawn versions with online support, uninstall custom packages or Dawn may report an error. Please [report any issues](https://github.com/kylethmpsn/sundial/issues) with your recipe and a description of what happens in-game.
+Parhelion creates its own Tiger-compatible packages in your existing installation without modifying existing packages. On Project Sunrise 0.6 or later, it installs them as a Sunrise mod. Enable it under **Preferences > Editing > Experimental**, then choose **Open Parhelion**. Some combinations may not work and can freeze or crash the game. Before using future Dawn versions with online support, uninstall custom packages or Dawn may report an error. Please [report any issues](https://github.com/kylethmpsn/sundial/issues) with your recipe and a description of what happens in-game.
 
 See the [Parhelion README](crates/parhelion/README.md) for more about the authoring workflow.
 
 ## Backups and local files
 
-Sundial backs up account data and settings before saving, checks for outside changes, and preserves unknown JSON fields. Backups are kept separately for each installation. Open the backup folder or reset settings under **Preferences > Saving & recovery**.
+Sundial backs up account data and settings before saving, checks for outside changes, and preserves unknown JSON fields. Backups are kept separately for each installation. Open the backup folder or reset settings under **Preferences > Saving & Recovery**.
 
 | Data | Windows | Linux |
 | --- | --- | --- |
@@ -79,7 +79,7 @@ These control how broadly Sundial searches for plugs, not whether an experimenta
 | Item Type | Plugs found anywhere on every Weapon or every piece of Armor, regardless of socket. |
 | All | Every discovered plug, regardless of compatibility. |
 
-The plug picker itself carries the same control, labeled by the socket and item it is picking for. For example, Gnawing Hunger's barrel socket offers **Gnawing Hunger Barrels**, **Auto Rifle Barrels**, **All Barrels**, **Auto Rifles**, **All Weapons** and **All**, as Dawn's Loadout Studio does.
+The plug picker's **Plugs Offered** dropdown carries the same choices, labeled by the socket and item it is picking for. For example, Gnawing Hunger's barrel socket offers **Gnawing Hunger Barrels**, **Auto Rifle Barrels**, **All Barrels**, **Auto Rifles**, **All Weapons**, and **All**, as Dawn's Loadout Studio does.
 
 Broader choices can cause loading failures or crashes. Sundial warns before enabling **All**. Backups are still created when saving experimental selections.
 

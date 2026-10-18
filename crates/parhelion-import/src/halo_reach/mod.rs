@@ -3,10 +3,15 @@
 mod animation;
 mod audio;
 mod behavior;
+pub mod browse;
 mod cache;
+mod damage;
+mod effect;
 mod gltf;
 mod hud;
+pub mod level;
 mod material;
+mod melee;
 mod model;
 mod native;
 mod native_marker;
@@ -19,7 +24,13 @@ mod resource;
 mod rig;
 mod vehicle;
 
-pub use animation::first_person::Options as FirstPersonOptions;
+pub use animation::character::{
+    Controller as CharacterController, Options as CharacterOptions, Rider as RiderActions,
+};
+pub use animation::first_person::{
+    Action as FirstPersonAction, Destination as ActionDestination, Kind as ActionKind,
+    Options as FirstPersonOptions, Route as ActionRoute,
+};
 pub use animation::native::Binding as AnimationBinding;
 pub use audio::Options as AudioOptions;
 pub use native::{DriverPose, ImportRequest, Optic, OpticView, Reticle, Sights, prepare};
@@ -35,7 +46,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const REVISION: u32 = 4;
+pub const REVISION: u32 = 5;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -79,6 +90,16 @@ struct Scene {
     object: Object,
     models: Vec<PlacedModel>,
     limits: Vec<String>,
+    /// Uniform native length adaptation. Source exports retain one.
+    scale: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    damage: Option<damage::Geometry>,
+}
+
+impl Scene {
+    fn metres(&self) -> f32 {
+        rig::METRES_PER_UNIT * self.scale
+    }
 }
 
 fn source_path(maps: &Path, name: &str) -> Result<PathBuf> {
@@ -178,16 +199,7 @@ fn choices(
     let mut result = BTreeMap::new();
     if let Some(variant) = selected_variant(object, variant)? {
         for (region, permutations) in &variant.regions {
-            if let Some(p) = permutations
-                .iter()
-                .filter(|p| p.probability > 0.)
-                .max_by(|a, b| {
-                    a.probability
-                        .total_cmp(&b.probability)
-                        .then_with(|| (a.runtime_index >= 0).cmp(&(b.runtime_index >= 0)))
-                })
-                .or(permutations.first())
-            {
+            if let Some((_, p)) = object::select_permutation(permutations, None) {
                 result.insert(
                     region.clone(),
                     if p.runtime_index < 0 {
@@ -227,7 +239,7 @@ fn scene(
         .context("Selected object branch has no render model")?;
     let selection = choices(&object, request.variant.as_deref(), &request.permutations)?;
     let model = model::read(cache, pages, tag, &selection)?;
-    let mut result=Scene {object:object.clone(),models:vec![PlacedModel {model,animation:branch.animation.clone(),parent:None}],limits:vec![
+    let mut result=Scene {object:object.clone(),models:vec![PlacedModel {model,animation:branch.animation.clone(),parent:None}],scale:1.,damage:None,limits:vec![
         "Source material roles are approximated by portable surface shading. Dynamic effects, shader functions and gameplay are separate from this export.".into(),
     ]};
     if request.variant.is_none()

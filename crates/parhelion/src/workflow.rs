@@ -22,7 +22,8 @@ use crate::package_profile::{
 };
 use crate::package_profile::{
     CANONICAL_PACKAGES, PACKAGE_HEADER_PREFIX_SIZE, PackageHeaderPrefix, SHADOWKEEP_HEADER_VERSION,
-    authored_package, authored_packages_for_file_names, canonical_package,
+    authored_package, authored_package_for_file_name, authored_packages_for_file_names,
+    canonical_package,
 };
 use crate::recipe::WeaponRecipe;
 use crate::{NewWeaponProjectBundle, SUNDIAL_BUILD_SIGNATURE, WeaponProjectSpec};
@@ -39,6 +40,8 @@ pub struct BatchBuildRequest {
     pub staging_root: PathBuf,
     pub ignore_installed_authored_overlays: bool,
     pub recipes: Vec<WeaponRecipe>,
+    /// Crucible maps the build adds as new activities.
+    pub maps: Vec<crate::map::MapRecipe>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,8 +52,8 @@ pub struct BatchBuildSnapshot {
 
 impl BatchBuildSnapshot {
     pub fn new(mut request: BatchBuildRequest) -> Result<Self, String> {
-        if request.recipes.is_empty() {
-            return Err("No recipes are included in the package set".to_owned());
+        if request.recipes.is_empty() && request.maps.is_empty() {
+            return Err("No recipes or maps are included in the package set".to_owned());
         }
         request.recipes.sort_by_cached_key(|recipe| {
             (
@@ -58,6 +61,9 @@ impl BatchBuildSnapshot {
                 recipe.identity.item_hash.as_str().to_owned(),
             )
         });
+        request
+            .maps
+            .sort_by(|left, right| left.name.cmp(&right.name));
         let fingerprint = recipe_selection_fingerprint(&request.recipes)?;
         Ok(Self {
             request,
@@ -283,6 +289,10 @@ struct PlannedSnapshot {
     bundle: NewWeaponProjectBundle,
     /// The class of each subclass base, which the manifest records for the install.
     subclass_classes: BTreeMap<u32, u8>,
+    /// The build's turn with the package layout, held until its packages are staged.
+    profile: crate::package_profile::Profile,
+    /// A mod-folder build's merge data, written beside its packages.
+    merge_data: Option<crate::merge_data::MergeData>,
 }
 
 fn plan_snapshot(
@@ -300,11 +310,34 @@ fn plan_snapshot_naming(
     progress: &mut impl FnMut(BuildProgress),
     failed: &mut Option<String>,
 ) -> Result<PlannedSnapshot, String> {
-    // Every authored id the build places reads this window, so it is chosen before planning.
-    crate::package_profile::set_window(
-        crate::install::package_window(&snapshot.request.package_directory)
-            .map_err(|error| error.to_string())?,
-    );
+    // Every authored id the build places reads this window and host, so they are chosen before
+    // planning. Sunrise's mod loader refuses a patch that adds entries, so there the build's
+    // investment records take the window's first id and the asset packages start after it.
+    let directory = &snapshot.request.package_directory;
+    let window = crate::install::package_window(directory).map_err(|error| error.to_string())?;
+    let (window, host) = if crate::install::uses_mod_loader(directory) {
+        if window.base >= window.top {
+            return Err(
+                "The free package ids leave no room for the build's investment records".into(),
+            );
+        }
+        (
+            crate::package_profile::Window {
+                base: window.base + 1,
+                top: window.top,
+            },
+            crate::package_profile::Host::standalone(window.base),
+        )
+    } else {
+        (window, crate::package_profile::Host::APPENDED)
+    };
+    let profile = crate::package_profile::hold(window, host);
+    if host.is_standalone() {
+        crate::package_profile::name_standalone_package(
+            host.id,
+            crate::package_profile::RECORDS_FAMILY,
+        )?;
+    }
     progress(BuildProgress::artifact(
         BuildPhase::InspectingSource,
         "Checking Recipes",
@@ -379,6 +412,7 @@ fn plan_snapshot_naming(
         let compilation = compile_with_progress(
             source.path(),
             &project,
+            &snapshot.request.maps,
             crate::branding::Branding::detect(install_directory),
             &mut |event| {
                 progress(BuildProgress {
@@ -415,11 +449,22 @@ fn plan_snapshot_naming(
             })?;
         validate_source_artifacts_unchanged(&source_artifacts, &source_artifacts_after)?;
         let bundle = compilation?;
+        // Sunrise merges table rows only for mods in its mod folder.
+        let merge_data = host.is_standalone().then(|| {
+            let files = bundle
+                .artifacts
+                .iter()
+                .map(|artifact| (artifact.plan.output_file_name.as_str(), artifact.bytes()))
+                .collect::<Vec<_>>();
+            crate::merge_data::describe(source.path(), &files)
+        });
         Ok(PlannedSnapshot {
             source_inspection,
             source_artifacts,
             bundle,
             subclass_classes,
+            profile,
+            merge_data,
         })
     })();
     // Compilation has released its managers and returned owned package bytes. A view that
@@ -463,14 +508,19 @@ fn inspect_snapshot(snapshot: &BatchBuildSnapshot) -> Result<SourceInspection, S
             continue;
         };
         if header.build_signature == SUNDIAL_BUILD_SIGNATURE {
-            let profile = authored_package(header.package_id).ok_or_else(|| {
-                format!(
-                    "Authored package {} uses unrecognized package id {:04X}",
-                    path.display(),
-                    header.package_id
-                )
-            })?;
             let name = file_name(&path)?;
+            // A standalone package may carry a map's name instead of Parhelion's asset name, so
+            // its own name identifies it when that name holds the header's package id.
+            let profile = authored_package_for_file_name(&name)
+                .filter(|profile| profile.package_id == header.package_id)
+                .or_else(|| authored_package(header.package_id))
+                .ok_or_else(|| {
+                    format!(
+                        "Authored package {} uses unrecognized package id {:04X}",
+                        path.display(),
+                        header.package_id
+                    )
+                })?;
             if header.patch_id != profile.patch_id || name != profile.file_name {
                 return Err(format!(
                     "Authored package {} has identity {:04X}/{}; expected {} at patch {}",
@@ -525,10 +575,12 @@ pub fn build_and_stage_snapshot_reporting(
     mut progress: impl FnMut(BuildProgress),
 ) -> Result<BuildReport, BuildFailure> {
     let planned = plan_snapshot(snapshot, &mut progress)?;
+    let _profile = planned.profile;
     let source_inspection = planned.source_inspection;
     let source_artifacts = planned.source_artifacts;
     let bundle = planned.bundle;
     let subclass_classes = planned.subclass_classes;
+    let merge_data = planned.merge_data;
     fs::create_dir_all(&snapshot.request.staging_root).map_err(|error| {
         format!(
             "Could not create staging root {}: {error}",
@@ -555,6 +607,11 @@ pub fn build_and_stage_snapshot_reporting(
             .map_err(|error| format!("Could not write staged packages: {error}"))?;
         let artifacts = artifact_reports_with_progress(&paths, &mut progress)?;
         validate_outputs(&artifacts)?;
+        let merge_paths = match &merge_data {
+            Some(data) => crate::merge_data::stage(&run_directory, data)?,
+            None => Vec::new(),
+        };
+        let merge_artifacts = artifact_reports_with_progress(&merge_paths, &mut progress)?;
         let staged_recipe_paths =
             stage_recipe_snapshot_with_progress(&run_directory, snapshot, &mut progress)?;
         let staged_recipe_files = staged_recipe_paths
@@ -595,6 +652,7 @@ pub fn build_and_stage_snapshot_reporting(
                 &subclass_classes,
             )?,
             artifacts: artifacts.clone(),
+            merge_data: merge_artifacts,
         };
         write_manifest(&manifest_path, &manifest)?;
         progress(BuildProgress::artifact(
@@ -814,7 +872,7 @@ fn validate_authored_set(
     }
 
     // `inspect_snapshot` has already authenticated every entry in this list by build
-    // signature, package id, patch id, and canonical file name. A prior generation can
+    // signature, package id, patch id, and recognized file name. A prior generation can
     // legitimately be partial (for example, after adding a new output profile), and each
     // recognized overlay can be independently omitted from the filtered stock view. Do
     // not require an obsolete all-or-nothing artifact count here.

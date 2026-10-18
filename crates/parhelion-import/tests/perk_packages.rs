@@ -67,9 +67,9 @@ fn source_perks_reach_their_runtime_payloads() -> anyhow::Result<()> {
         let record = &auxiliary[0];
         assert_eq!(record["class"], "8080B843");
         assert_eq!(record["state_reference_class"], "8080B848");
-        assert_eq!(record["unknown_integer"], 150);
+        assert_eq!(record["priority"], 150);
         assert_eq!(record["state_keys"], json!(["43F19C55"]));
-        assert_eq!(record["source_record"].as_str().unwrap().len(), 112);
+        assert_eq!(record["source_record"].as_str().unwrap().len(), 128);
         let state_offsets = controller["states"]
             .as_array()
             .unwrap()

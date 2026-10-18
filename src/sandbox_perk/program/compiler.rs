@@ -56,6 +56,34 @@ enum Activation<'a> {
 }
 
 pub fn compile(manager: &PackageManager, program: &Program) -> Result<Compiled, String> {
+    if program.imported_labels.is_some() {
+        return Err(
+            "This program needs its imported label dictionary during package assembly.".into(),
+        );
+    }
+    compile_using_labels(manager, program, None)
+}
+
+/// Compile against a caller-owned private registry. Its resource tag remains
+/// the stock placeholder until the caller binds the emitted declared references.
+/// This entry point does not publish or mutate a stock label dictionary.
+pub fn compile_with_labels(
+    manager: &PackageManager,
+    program: &Program,
+    labels: &[u8],
+) -> Result<Compiled, String> {
+    crate::package_runtime::labels::Registry::read(labels)?;
+    if program.native.is_some() || program.imported_labels.is_none() {
+        return Err("A private label dictionary requires its imported program binding.".into());
+    }
+    compile_using_labels(manager, program, Some(labels))
+}
+
+fn compile_using_labels(
+    manager: &PackageManager,
+    program: &Program,
+    labels: Option<&[u8]>,
+) -> Result<Compiled, String> {
     program.validate()?;
     if let Some(native) = &program.native {
         return native::compile(manager, native);
@@ -64,8 +92,23 @@ pub fn compile(manager: &PackageManager, program: &Program) -> Result<Compiled, 
         validate_asset(manager, action)?;
     }
     let mut program = program.clone();
-    prepare_native(manager, &mut program)?;
-    let label_mask = kill_label_mask(manager, program.trigger)?;
+    if let Some(labels) = labels {
+        prepare_native_nodes(
+            &mut program,
+            &mut Installed {
+                manager,
+                registry: Some(labels.to_vec()),
+            },
+        )?;
+    } else {
+        prepare_native(manager, &mut program)?;
+    }
+    let label_mask = if let Some(registry) = labels.filter(|_| program.trigger.is_event()) {
+        let names = trigger_labels(program.trigger);
+        Some((names, compile_labels(registry, names)?))
+    } else {
+        kill_label_mask(manager, program.trigger)?
+    };
     assemble(&program, label_mask)
 }
 

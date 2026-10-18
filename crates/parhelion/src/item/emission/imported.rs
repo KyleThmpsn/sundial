@@ -2,6 +2,7 @@
 use super::*;
 use parhelion_import::d2_mot::arrays;
 use serde_json::Value;
+mod character;
 mod crosshair;
 mod dyes;
 mod gear;
@@ -11,12 +12,114 @@ mod ornament_icon;
 mod ornaments;
 mod shader;
 
+struct Shared {
+    companions: linking::Companions,
+    characters: BTreeMap<(u32, u32), [u8; 32]>,
+}
+
 /// An independently placed private part, either source geometry or marker-only geometry.
 struct Kept {
     assignment: u32,
     key: u32,
     parent: String,
-    source_region: Option<(u64, usize)>,
+    region: Option<Region>,
+}
+
+struct Region {
+    selector: u64,
+    position: usize,
+    native: bool,
+}
+
+fn kept_region(part: &Value) -> AuthoringResult<Option<Region>> {
+    let native = part["native_region"] == true;
+    if !native && part["source_region"] != true {
+        return Ok(None);
+    }
+    let selector = part["selector"]
+        .as_u64()
+        .ok_or_else(|| invalid("Kept art selector missing"))?;
+    let selector = if native {
+        selector
+    } else {
+        parhelion_import::d2_mot::artwork::native_selector(selector)
+            .map_err(|error| invalid(error.to_string()))?
+    };
+    let position = usize::try_from(
+        part["position"]
+            .as_u64()
+            .ok_or_else(|| invalid("Kept art position missing"))?,
+    )
+    .map_err(|_| invalid("Kept art position overflow"))?;
+    Ok(Some(Region {
+        selector,
+        position,
+        native,
+    }))
+}
+
+fn place_region(
+    slot: &mut Vec<u32>,
+    positions: BTreeMap<usize, u32>,
+    native: bool,
+) -> AuthoringResult<()> {
+    if native {
+        // A retained native alternative can occupy any source position.
+        // Empty positions remain empty and existing selector widths survive.
+        let width = positions
+            .last_key_value()
+            .unwrap()
+            .0
+            .checked_add(1)
+            .ok_or_else(|| invalid("Kept art position overflow"))?;
+        slot.try_reserve(width.saturating_sub(slot.len()))
+            .map_err(|_| invalid("Kept art alternatives exceed available capacity"))?;
+        slot.resize(
+            slot.len().max(width),
+            parhelion_import::d2_mot::artwork::EMPTY,
+        );
+        for (position, key) in positions {
+            slot[position] = key;
+        }
+    } else {
+        if !positions.keys().copied().eq(0..positions.len()) {
+            return Err(invalid("Source art alternatives are discontinuous"));
+        }
+        *slot = positions.into_values().collect();
+    }
+    Ok(())
+}
+
+fn place_regions(slots: &mut Vec<(u64, Vec<u32>)>, kept: &[Kept]) -> AuthoringResult<()> {
+    struct Group {
+        native: bool,
+        positions: BTreeMap<usize, u32>,
+    }
+    let mut regions = BTreeMap::<u64, Group>::new();
+    for part in kept {
+        let Some(region) = &part.region else {
+            continue;
+        };
+        let group = regions.entry(region.selector).or_insert_with(|| Group {
+            native: region.native,
+            positions: BTreeMap::new(),
+        });
+        if group.native != region.native
+            || group.positions.insert(region.position, part.key).is_some()
+        {
+            return Err(invalid("Conflicting kept art position"));
+        }
+    }
+    for (selector, group) in regions {
+        let slot = if let Some(index) = slots.iter().position(|slot| slot.0 == selector) {
+            &mut slots[index].1
+        } else {
+            slots.push((selector, Vec::new()));
+            &mut slots.last_mut().unwrap().1
+        };
+        place_region(slot, group.positions, group.native)?;
+    }
+    Ok(())
 }
 
 fn kept_parts(graph: &Value) -> AuthoringResult<Vec<Kept>> {
@@ -39,24 +142,7 @@ fn kept_parts(graph: &Value) -> AuthoringResult<Vec<Kept>> {
                     .as_str()
                     .ok_or_else(|| invalid("Kept part parent missing"))?
                     .to_owned(),
-                source_region: if part["source_region"] == true {
-                    Some((
-                        parhelion_import::d2_mot::artwork::native_selector(
-                            part["selector"]
-                                .as_u64()
-                                .ok_or_else(|| invalid("Source art selector missing"))?,
-                        )
-                        .map_err(|error| invalid(error.to_string()))?,
-                        usize::try_from(
-                            part["position"]
-                                .as_u64()
-                                .ok_or_else(|| invalid("Source art position missing"))?,
-                        )
-                        .map_err(|_| invalid("Source art position overflow"))?,
-                    ))
-                } else {
-                    None
-                },
+                region: kept_region(part)?,
             })
         })
         .collect()
@@ -85,7 +171,7 @@ fn replace(
                     *slot_key = key;
                 } else if let Some(part) = kept
                     .iter()
-                    .find(|part| part.source_region.is_none() && part.assignment == *slot_key)
+                    .find(|part| part.region.is_none() && part.assignment == *slot_key)
                 {
                     *slot_key = part.key;
                 }
@@ -98,30 +184,7 @@ fn replace(
         let keys = kept.iter().map(|part| part.key).collect::<Vec<_>>();
         parhelion_import::d2_mot::artwork::assembled(singles, slots, key, &keys)
             .map_err(|error| invalid(error.to_string()))?;
-        let mut regions = BTreeMap::<u64, BTreeMap<usize, u32>>::new();
-        for part in kept {
-            if let Some((selector, position)) = part.source_region
-                && regions
-                    .entry(selector)
-                    .or_default()
-                    .insert(position, part.key)
-                    .is_some()
-            {
-                return Err(invalid("Duplicate source art position"));
-            }
-        }
-        for (selector, positions) in regions {
-            if !positions.keys().copied().eq(0..positions.len()) {
-                return Err(invalid("Source art alternatives are discontinuous"));
-            }
-            let keys = positions.into_values().collect();
-            if let Some(slot) = slots.iter_mut().find(|slot| slot.0 == selector) {
-                slot.1 = keys;
-            } else {
-                slots.push((selector, keys));
-            }
-        }
-        Ok(())
+        place_regions(slots, kept)
     })
 }
 /// Checks every imported graph against the fingerprint taken when it was selected. Each
@@ -195,7 +258,9 @@ pub(super) fn apply(
                 if graph["kind"] != kind {
                     return Err(invalid("Imported asset kind does not match its recipe"));
                 }
-            } else if graph.get("gear_art").is_some() {
+            } else if graph.get("gear_art").is_some()
+                && !(spec.kind == ItemKind::Weapon && graph["kind"] == "weapon")
+            {
                 return Err(invalid("Imported gear cannot supply a weapon model"));
             }
         }
@@ -211,17 +276,22 @@ pub(super) fn apply(
         })
         .flat_map(|(weapon, graph)| {
             std::iter::once((graph.directory.as_path(), Some(weapon))).chain(
-                graph
-                    .attachments
-                    .iter()
-                    .map(|attachment| (attachment.directory.as_path(), None)),
+                graph.attachments.iter().map(move |attachment| {
+                    (
+                        attachment.directory.as_path(),
+                        (weapon.kind == ItemKind::Armor).then_some(weapon),
+                    )
+                }),
             )
         })
         .collect::<Vec<_>>();
     if folders.is_empty() {
         return Ok(Vec::new());
     }
-    let mut companions = linking::Companions::new();
+    let mut shared = Shared {
+        companions: linking::Companions::new(),
+        characters: BTreeMap::new(),
+    };
     let mut replacements = BTreeMap::new();
     // Custom shader dyes already extend the dye table, so imported dyes follow them.
     if let Some(table) = &emission.dye_table {
@@ -234,7 +304,7 @@ pub(super) fn apply(
             folder,
             &replacements,
             manager,
-            &mut companions,
+            &mut shared,
             spec,
         )
         .map_err(|error| error.context(format!("Imported graph {}", folder.display())))?
@@ -259,7 +329,7 @@ fn graph_node(
     n: &Value,
     model: bool,
     spec: Option<&WeaponCloneSpec>,
-    repaired: &mut BTreeMap<String, Vec<u8>>,
+    bound: &mut BTreeMap<String, Vec<u8>>,
     manager: &sundial::package_authoring::PackageManager,
 ) -> AuthoringResult<linking::Node> {
     let name = n["symbol"]
@@ -271,7 +341,7 @@ fn graph_node(
     let is_companion = name == "parent-companion" || n["shared_owner"].is_string();
     let mut payload = if is_companion {
         Vec::new()
-    } else if let Some(bytes) = repaired.remove(name) {
+    } else if let Some(bytes) = bound.remove(name) {
         bytes
     } else {
         fs::read(
@@ -306,17 +376,21 @@ fn graph_node(
         && manager
             .get_entry(TagHash(template))
             .is_some_and(|entry| entry.reference == 0x80809c36)
-        && let Some(fixed) = parhelion_import::tiger::instance::repair(&payload, &patches)
+        && let Some(fixed) = parhelion_import::tiger::instance::upgrade_owner(&payload, &patches)
             .map_err(|error| invalid(format!("Imported component {name}: {error:#}")))?
     {
         payload = fixed.payload;
         patches = fixed.patches;
     }
     let mut node = linking::Node::new(name, template, payload);
+    node.audio = serde_json::from_value(n.clone())
+        .map_err(|error| invalid(format!("Imported graph audio: {error}")))?;
     node.storage = match n["storage"].as_str() {
         None => crate::NewTagStorageMode::InheritTemplate,
         Some("audio_media") => crate::NewTagStorageMode::AudioMedia,
         Some("audio_bank") => crate::NewTagStorageMode::AudioBank,
+        Some("gpu_hull") => crate::NewTagStorageMode::GpuHull,
+        Some("gpu_domain") => crate::NewTagStorageMode::GpuDomain,
         Some(_) => return Err(invalid("Unsupported imported asset storage")),
     };
     for p in &patches {
@@ -353,13 +427,31 @@ fn apply_one(
     folder: &Path,
     previous: &BTreeMap<u32, Vec<u8>>,
     manager: &sundial::package_authoring::PackageManager,
-    companions: &mut linking::Companions,
+    shared: &mut Shared,
     spec: Option<&WeaponCloneSpec>,
 ) -> AuthoringResult<Vec<ReplacementSpec>> {
     let mut graph: Value = serde_json::from_slice(
         &fs::read(folder.join("asset-graph.json")).map_err(|e| invalid(e.to_string()))?,
     )
     .map_err(|e| invalid(e.to_string()))?;
+    if graph["source"] == "d1_roi"
+        && graph["kind"] == "armor"
+        && graph["converter_revision"].as_u64().unwrap_or(0) < 48
+    {
+        return Err(invalid(
+            "Reimport this D1 armor and its ornaments. Older prepared assets use experimental shader color bindings",
+        ));
+    }
+    if graph["source"] == "halo_reach"
+        && graph["animation"]["equipment_skeleton"]["source_parts"]["placement"] == "Trailing"
+        && (graph["animation"]["equipment_skeleton"]["source_parts"]["layout"].is_null()
+            || graph["animation"]["equipment_skeleton"]["source_parts"]["layout"]
+                == "trailing procedural range merged into its FK section")
+    {
+        return Err(invalid(
+            "Import this Reach weapon again. Its donor's moving parts lost their procedural bones, which draws nothing on the inspect screen",
+        ));
+    }
     if graph["kind"] == "shader" {
         shader::bind(
             &mut graph,
@@ -369,27 +461,25 @@ fn apply_one(
         gear::bind(
             &mut graph,
             spec.ok_or_else(|| invalid("Imported gear recipe missing"))?,
+            emission,
         )?;
     }
     let json_nodes = graph["nodes"]
         .as_array()
         .ok_or_else(|| invalid("Asset nodes missing"))?;
     let mut nodes = Vec::with_capacity(json_nodes.len());
-    let mut repaired = parhelion_import::tiger::material::repair(&graph, folder)
+    let mut bound = parhelion_import::tiger::material::bind(&graph, folder)
         .map_err(|e| invalid(format!("Imported model bindings: {e:#}")))?;
     let models = parhelion_import::model_symbols(&graph).map_err(|e| invalid(e.to_string()))?;
     for n in json_nodes {
         let model = n["symbol"]
             .as_str()
             .is_some_and(|name| models.contains(name));
-        nodes.push(graph_node(folder, n, model, spec, &mut repaired, manager)?);
+        nodes.push(graph_node(folder, n, model, spec, &mut bound, manager)?);
     }
-    loading::replication_companions(manager, directory, &mut nodes, companions)?;
-    let extra_bounds = if graph["ornament_icon_png"].is_string() {
-        8
-    } else {
-        0
-    };
+    loading::replication_companions(manager, directory, &mut nodes, &mut shared.companions)?;
+    let branding = crate::branding::Branding::for_packages(directory);
+    let extra_bounds = ornament_icon::entry_bound(manager, emission, &graph, folder, branding)?;
     let shader = graph["kind"] == "shader";
     let borrowed = if shader {
         shader::edit(
@@ -416,7 +506,7 @@ fn apply_one(
         manager,
         nodes,
         primary,
-        companions,
+        &mut shared.companions,
         extra_bounds,
         |symbols, groups| {
             loading::include_native_resources(manager, folder, json_nodes, symbols, groups)?;
@@ -443,8 +533,20 @@ fn apply_one(
             .ok_or_else(|| invalid("Imported shader has no dye rows"))?;
         return Ok(vec![replacement]);
     }
+    gear::collections(emission, &graph, spec)?;
     if graph.get("gear_art").is_some() {
-        return gear::apply(manager, emission, &symbols, &graph, previous);
+        let mut result = gear::apply(manager, emission, &symbols, &graph, previous)?;
+        ornaments::apply(emission, &graph)?;
+        ornament_icon::apply(manager, emission, &graph, package_index, folder, branding)?;
+        result.extend(character::apply(
+            manager,
+            emission,
+            &graph,
+            folder,
+            previous,
+            &mut shared.characters,
+        )?);
+        return Ok(result);
     }
     let symbol = |s: &str| -> AuthoringResult<TagHash> {
         symbols
@@ -542,10 +644,18 @@ fn apply_one(
     }
     let ordinal = definition_ordinal(emission, item)?;
     let definition = &mut emission.host_new_tags[ordinal].payload;
-    arrays::repair(definition).map_err(invalid)?;
+    arrays::add_array_markers(definition).map_err(invalid)?;
 
     ornaments::apply(emission, &graph)?;
-    ornament_icon::apply(manager, emission, &graph, package_index, folder)?;
+    ornament_icon::apply(manager, emission, &graph, package_index, folder, branding)?;
     ornament_collections::apply(emission, &graph)?;
+    result.extend(character::apply(
+        manager,
+        emission,
+        &graph,
+        folder,
+        previous,
+        &mut shared.characters,
+    )?);
     Ok(result)
 }

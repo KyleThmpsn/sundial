@@ -28,6 +28,7 @@ fn expansion_recipe(count: usize, alternative: u32, second_plug: u32) -> crate::
         });
     }
     recipe.overrides.socket_plug_variants = vec![WeaponSocketPlugVariantRecipe {
+        projectile: None,
         offer_everywhere: false,
         replace_effects: false,
         investment_stats: Vec::new(),
@@ -192,6 +193,7 @@ fn real_added_sockets_stage_and_rescan_with_private_plugs_and_unchanged_stock() 
         staging_root: temporary.path().join("staging"),
         ignore_installed_authored_overlays: false,
         recipes: recipes.clone(),
+        maps: Vec::new(),
     })
     .unwrap();
     let mut completed = false;
@@ -269,6 +271,7 @@ fn real_removed_socket_stages_and_rescans_without_shifting_neighbors() {
         staging_root: temporary.path().join("staging"),
         ignore_installed_authored_overlays: false,
         recipes: vec![recipe.clone()],
+        maps: Vec::new(),
     })
     .unwrap();
     let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |_| {}).unwrap();

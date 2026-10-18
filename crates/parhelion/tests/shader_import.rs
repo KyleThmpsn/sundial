@@ -221,6 +221,7 @@ fn verify_shader(hash: u32, matrix: bool) -> Result<(), Box<dyn std::error::Erro
         package_directory: native.clone(),
         staging_root: output.join("build"),
         ignore_installed_authored_overlays: true,
+        maps: Vec::new(),
         recipes: vec![
             original_recipe.clone(),
             recipe.clone(),

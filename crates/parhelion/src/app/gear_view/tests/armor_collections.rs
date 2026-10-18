@@ -116,6 +116,7 @@ fn armor_pages_and_badge_completion_follow_supported_classes() {
         staging_root: output.join("staging"),
         ignore_installed_authored_overlays: true,
         recipes: recipes.clone(),
+        maps: Vec::new(),
     })
     .unwrap();
     let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |_| {}).unwrap();
@@ -253,8 +254,8 @@ fn armor_pages_and_badge_completion_follow_supported_classes() {
     // Read the actual category-to-set links. Each set must be selectable, named and bounded.
     for (class, parent_hash, sizes) in [
         (0, 0x305A_5226, vec![5, 5, 1]),
-        (1, 0xDF3B_D502, vec![2]),
-        (2, 0x4BB1_6895, vec![2]),
+        (1, 0xDF3B_D502, vec![1, 1]),
+        (2, 0x4BB1_6895, vec![1, 1]),
     ] {
         let parent = node_rows
             .iter()
