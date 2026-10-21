@@ -109,7 +109,7 @@ pub fn set_armor_equipment_class(data: &[u8], selected: Option<u8>) -> Result<Ve
         programs,
     } = requirements(data)?;
     let slot = usize::from(bytes_at::<1>(data, ITEM_INVENTORY_SLOT_OFFSET)?[0] - 3);
-    // Native bucket order: helmet, arms, chest, class item, legs.
+    // Native bucket order: helmet, arms, chest, legs, class item.
     let flag: Option<u32> = selected.map(|class| {
         [
             [0x10C, 0x109, 0x10A, 0x10D, 0x10B],

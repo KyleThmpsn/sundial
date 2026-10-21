@@ -229,7 +229,7 @@ pub fn pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
         .1;
     let channels = word(fmt, 2)?;
     let rate = dword(fmt, 4)?;
-    let mut command = Command::new("ffmpeg");
+    let mut command = Command::new(crate::tools::executable(crate::tools::Tool::Ffmpeg));
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -252,7 +252,7 @@ pub fn pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .context("launch ffmpeg for Wwise Opus decode")?;
+        .with_context(|| crate::tools::Tool::Ffmpeg.missing())?;
     let mut input = process.stdin.take().context("ffmpeg stdin missing")?;
     // Large cues can fill stdout while ffmpeg is still reading stdin. Feed
     // input concurrently with draining both output pipes to avoid a deadlock.
@@ -321,10 +321,11 @@ pub fn normalize_pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
         "invalid 16-bit PCM sample layout"
     );
     let mask = match word(fmt, 0)? {
+        // A plain WAV of four channels, as the decoder writes Boardwalk's quad ambience, takes
+        // the side quad layout the writer supports.
         1 => {
             ensure!(
-                matches!(channels, 1 | 2)
-                    && (fmt.len() == 16 || (fmt.len() == 18 && word(fmt, 16)? == 0)),
+                fmt.len() == 16 || (fmt.len() == 18 && word(fmt, 16)? == 0),
                 "unsupported PCM format extension"
             );
             channel_mask(channels)
@@ -351,7 +352,11 @@ pub fn normalize_pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
 }
 
 fn channel_mask(channels: u16) -> u32 {
-    if channels == 1 { 4 } else { 3 }
+    match channels {
+        1 => 4,
+        4 => 0x603,
+        _ => 3,
+    }
 }
 
 /// Decode the checked Wwise 89 Vorbis layout without changing its frame count or speakers.

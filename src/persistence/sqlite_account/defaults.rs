@@ -10,6 +10,7 @@ pub(crate) struct AccountDefaults {
     pub(crate) rows: String,
     pub(crate) settings_schema: String,
     pub(crate) settings_rows: String,
+    pub(crate) starter: Option<String>,
 }
 
 pub(crate) struct ResetPlan {
@@ -43,6 +44,11 @@ impl ResetPlan {
                 SqliteAccountError::sqlite("initialize installed defaults for", error)
             })?;
         }
+        if let Some(starter) = &defaults.starter {
+            transaction.execute_batch(starter).map_err(|error| {
+                SqliteAccountError::sqlite("initialize character starters for", error)
+            })?;
+        }
         super::validation::connection(&transaction).map_err(SqliteAccountError::Backup)?;
         let after = snapshot::capture(&transaction).map_err(SqliteAccountError::Backup)?;
 
@@ -53,16 +59,20 @@ impl ResetPlan {
         let current = current.transaction().map_err(|error| {
             SqliteAccountError::sqlite("inspect the account before resetting", error)
         })?;
-        // Invalid account rows can be reset, but an unreviewed database format cannot.
+        // Reset can replace invalid rows within a supported schema. It cannot migrate formats.
         let version: i64 = current
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(|error| {
                 SqliteAccountError::sqlite("read the reset source version from", error)
             })?;
-        if version != super::contract::SCHEMA_VERSION {
+        let target_version: i64 = transaction
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(|error| {
+                SqliteAccountError::sqlite("read installed defaults version from", error)
+            })?;
+        if !matches!(version, 2 | 3) || version != target_version {
             return Err(SqliteAccountError::InvalidSchema(format!(
-                "Account reset requires SQLite schema {}, found {version}",
-                super::contract::SCHEMA_VERSION
+                "Account reset requires matching schemas. The account is schema {version} and installed defaults are schema {target_version}"
             )));
         }
         reader::validate_schema(&current)?;

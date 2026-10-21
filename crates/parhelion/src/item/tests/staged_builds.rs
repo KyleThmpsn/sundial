@@ -23,6 +23,8 @@ mod hud;
 #[cfg(feature = "d2-model-importer")]
 mod imported_attachments;
 #[cfg(feature = "d2-model-importer")]
+mod importer_mods;
+#[cfg(feature = "d2-model-importer")]
 mod kinetic_import;
 mod mod_loader_layout;
 mod native_objectives;

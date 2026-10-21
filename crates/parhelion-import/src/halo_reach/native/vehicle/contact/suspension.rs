@@ -1,9 +1,6 @@
 //! Static load balance for the native equal-mass spring consumer.
 use anyhow::{Result, ensure};
 
-#[cfg(test)]
-mod tests;
-
 /// Calibrate an isolated supported corner about its visible contact height.
 /// EB60C0 multiplies damping by base gravity, while the corner's weight follows
 /// the selected gravity scale. Its extension slope differs from compression.

@@ -34,7 +34,7 @@ use crate::{
     },
 };
 
-const SHARED_TAG_OWNER_FILE_TYPE: u8 = 0x10;
+pub(crate) const SHARED_TAG_OWNER_FILE_TYPE: u8 = 0x10;
 const SHARED_TAG_COMPANION_FILE_TYPE: u8 = 0x08;
 const SHARED_TAG_FILE_SUBTYPE: u8 = 0;
 
@@ -56,7 +56,7 @@ pub struct NewTagSpec {
 }
 
 /// Selects how an appended schema entry participates in the client's storage lifecycle.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum NewTagStorageMode {
     #[default]
     InheritTemplate,
@@ -82,6 +82,9 @@ pub enum NewTagReference {
     Template,
     /// Reference another tag appended by the same overlay operation.
     Appended(usize),
+    /// A resolved package tag, including a resource in another authored package.
+    /// The caller validates its target in the complete owning graph.
+    Tag(TagHash),
 }
 
 /// Overrides the entry-header reference for one appended tag without changing [`NewTagSpec`].
@@ -118,6 +121,7 @@ pub struct ExtendedOverlayPlan {
 pub struct ExtendedOverlayArtifact {
     pub plan: ExtendedOverlayPlan,
     bytes: Bytes,
+    pub(crate) reused: Option<Arc<Path>>,
 }
 
 /// Finalized bytes shared with the independent package reader. Each reader gets
@@ -137,6 +141,14 @@ impl ExtendedOverlayArtifact {
     }
 
     pub fn write_new(&self, directory: &Path) -> AuthoringResult<PathBuf> {
+        if let Some(path) = &self.reused {
+            let digest = crate::artifact::digest_file(path)
+                .map_err(|e| AuthoringError::io("verify kept package", path.as_ref(), e))?;
+            if digest != crate::artifact::digest_bytes(self.bytes.as_ref()) {
+                return Err(validation("A kept importer package changed during staging"));
+            }
+            return Ok(path.to_path_buf());
+        }
         fs::create_dir_all(directory)
             .map_err(|error| AuthoringError::io("create staging directory", directory, error))?;
         let path = directory.join(&self.plan.output_file_name);
@@ -150,6 +162,53 @@ impl ExtendedOverlayArtifact {
         file.sync_all()
             .map_err(|error| AuthoringError::io("flush extended overlay", &path, error))?;
         Ok(path)
+    }
+
+    pub(crate) fn reuse(path: &Path, tags: &[NewTagSpec]) -> AuthoringResult<Self> {
+        let bytes = fs::read(path).map_err(|e| AuthoringError::io("read kept package", path, e))?;
+        let layout = PackageLayout::parse(&bytes)?;
+        if layout.patch_id != 0 || layout.entry_count != tags.len() {
+            return Err(validation("Kept importer package metadata differs"));
+        }
+        let chain = discover_patch_chain(
+            path.parent()
+                .ok_or_else(|| invalid("Kept package has no directory"))?,
+            layout.package_id,
+        )?;
+        let package = PackageD2PreBL::from_reader(
+            path.to_str()
+                .ok_or_else(|| invalid("Package path is not UTF-8"))?,
+            Cursor::new(bytes.clone()),
+        )
+        .map_err(|e| validation(e.to_string()))?;
+        let mut appended_tags = Vec::new();
+        for (index, tag) in tags.iter().enumerate() {
+            if package
+                .read_entry(index)
+                .map_err(|e| validation(e.to_string()))?
+                != tag.payload
+            {
+                return Err(validation("A kept importer's linked payload differs"));
+            }
+            appended_tags.push(AppendedTag {
+                tag: TagHash::new(layout.package_id, index as u16),
+                template_tag: tag.template_tag,
+                file_size: tag.payload.len(),
+            });
+        }
+        Ok(Self {
+            plan: ExtendedOverlayPlan {
+                chain,
+                output_file_name: path.file_name().unwrap().to_string_lossy().into_owned(),
+                original_entry_count: 0,
+                append_start_entry_count: 0,
+                reserved_entry_count: 0,
+                final_entry_count: tags.len(),
+                appended_tags,
+            },
+            bytes: Bytes(Arc::new(bytes)),
+            reused: Some(Arc::from(path)),
+        })
     }
 }
 
@@ -304,6 +363,7 @@ fn build_extended_overlay_from(
         ));
     }
     let replacement_indices = validate_replacements(package_id, layout.entry_count, replacements)?;
+    let replacements = &with_size_words(&source, &for_merge(&source, replacements));
     // Replacement-only overlays preserve the latest generation exactly. Once tags are appended,
     // however, every datum index used by an older generation remains reserved even if a later
     // stock patch shortened the entry table.
@@ -533,6 +593,7 @@ fn build_extended_overlay_from(
     )?;
 
     Ok(ExtendedOverlayArtifact {
+        reused: None,
         plan: ExtendedOverlayPlan {
             chain,
             output_file_name,
@@ -590,6 +651,70 @@ fn write_reserved_entry_rows(
         entry[..size_of::<u32>()].copy_from_slice(&u32::MAX.to_le_bytes());
     }
     Ok(())
+}
+
+/// `replacements` laid out for Sunrise's merge when the build is for its mod loader. A table the
+/// merge recipes list keeps every stock byte where the game put it, with each array the build grew
+/// copied after the stock entry, so another mod's rows merge with the build's. Other runtimes load
+/// the entry as built, and so does an entry the relayout can't describe.
+fn for_merge(source: &PackageD2PreBL, replacements: &[ReplacementSpec]) -> Vec<ReplacementSpec> {
+    use sundial::package_authoring::mod_content::merge::{recipes, relayout};
+    if !crate::package_profile::host().is_standalone() {
+        return replacements.to_vec();
+    }
+    replacements
+        .iter()
+        .map(|spec| {
+            let relaid = recipes::table(spec.tag.0).and_then(|recipe| {
+                let stock = source.read_entry(spec.tag.entry_index() as usize).ok()?;
+                let mut relaid = relayout::relayout(&stock, &spec.payload, recipe)?;
+                // A relaid entry starts with its own length when the stock entry does.
+                let word = |bytes: &[u8]| {
+                    bytes
+                        .get(..8)
+                        .map(|bytes| u64::from_le_bytes(bytes.try_into().expect("eight bytes")))
+                };
+                if word(&stock) == Some(stock.len() as u64) && relaid.len() >= 8 {
+                    let length = relaid.len() as u64;
+                    relaid[..8].copy_from_slice(&length.to_le_bytes());
+                }
+                Some(relaid)
+            });
+            ReplacementSpec {
+                tag: spec.tag,
+                payload: relaid.unwrap_or_else(|| spec.payload.clone()),
+            }
+        })
+        .collect()
+}
+
+/// `replacements` with their size words kept in step. Many installed entries begin with a u64
+/// holding their own length. A replacement that grows such an entry and leaves the stock length
+/// there gets its own length, as the game's entries and Sunrise Studio's have. Sunrise's merge
+/// reads the word that way, and an entry whose word disagrees can't merge with another mod's.
+fn with_size_words(
+    source: &PackageD2PreBL,
+    replacements: &[ReplacementSpec],
+) -> Vec<ReplacementSpec> {
+    let entries = source.entries();
+    replacements
+        .iter()
+        .map(|spec| {
+            let mut spec = spec.clone();
+            let stock = entries
+                .get(spec.tag.entry_index() as usize)
+                .map(|entry| entry.file_size as u64);
+            let word = spec
+                .payload
+                .get(..8)
+                .map(|bytes| u64::from_le_bytes(bytes.try_into().expect("eight bytes")));
+            let length = spec.payload.len() as u64;
+            if stock.is_some_and(|stock| stock != length && word == Some(stock)) {
+                spec.payload[..8].copy_from_slice(&length.to_le_bytes());
+            }
+            spec
+        })
+        .collect()
 }
 
 fn validate_replacements(
@@ -942,6 +1067,12 @@ fn resolve_new_tag_reference(
 ) -> AuthoringResult<u32> {
     match reference {
         NewTagReference::Template => Ok(template_reference),
+        NewTagReference::Tag(tag) => {
+            if !is_valid_package_tag(tag) {
+                return Err(invalid("Entry reference is not a valid package tag"));
+            }
+            Ok(tag.0)
+        }
         NewTagReference::Appended(ordinal) => {
             if ordinal >= new_tag_count {
                 return Err(AuthoringError::InvalidInput(format!(

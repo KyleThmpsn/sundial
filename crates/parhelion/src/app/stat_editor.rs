@@ -1,6 +1,11 @@
 //! Focused stat editor controls; recipe mutation occurs on user actions.
 use super::*;
+mod contribution;
 pub(crate) mod table;
+use contribution::Contributions;
+pub(super) use contribution::starting_plugs;
+#[cfg(test)]
+mod tests;
 
 pub(crate) fn left_cell(
     ui: &mut egui::Ui,
@@ -128,20 +133,6 @@ impl StatColumns {
         ui.painter().galley(at, galley, color);
         cells
     }
-
-    /// A small caption over the value column, saying what its numbers are.
-    pub(crate) fn caption(&self, ui: &mut egui::Ui, value: &str) {
-        let cells = self.cells(ui, 14.0);
-        let color = style::secondary(ui.visuals());
-        let galley =
-            ui.painter()
-                .layout_no_wrap(value.to_owned(), egui::FontId::proportional(11.0), color);
-        let at = egui::pos2(
-            cells.value.center().x - galley.size().x / 2.0,
-            cells.value.bottom() - galley.size().y,
-        );
-        ui.painter().galley(at, galley, color);
-    }
 }
 
 /// The width `text` takes at the body size.
@@ -155,14 +146,26 @@ fn text_width(ui: &egui::Ui, text: &str) -> f32 {
     })
 }
 
-/// The base weapon's in-game value and this one's, for a stat the game shows as a bar.
-fn bar_change(stat: &WeaponInvestmentStat, value: i32, removed: bool) -> Option<(i32, i32)> {
+/// The weapon's own display value and its total with starting plugs, for a barred stat.
+fn bar_change(
+    stat: &WeaponInvestmentStat,
+    value: i32,
+    removed: bool,
+    sources: &[contribution::Contribution],
+) -> Option<(i32, i32)> {
     (!removed && !stat.display_as_numeric && !stat.display_interpolation.is_empty()).then(|| {
         (
-            stat.in_game_display_value(stat.value),
             stat.in_game_display_value(value),
+            stat.in_game_display_value(contribution::total(value, sources)),
         )
     })
+}
+
+struct StatRow {
+    stat: WeaponInvestmentStat,
+    added: bool,
+    removed: bool,
+    from_plug: bool,
 }
 
 /// One weapon stat as a Destiny stat row: its name, its bar and in-game reading, its raw value and
@@ -171,14 +174,25 @@ fn bar_change(stat: &WeaponInvestmentStat, value: i32, removed: bool) -> Option<
 fn draw_weapon_stat_row(
     ui: &mut egui::Ui,
     columns: &StatColumns,
-    (stat, added, removed, in_game): (&WeaponInvestmentStat, bool, bool, bool),
-    (value, warning): (i32, Option<&str>),
+    row: &StatRow,
+    (value, warning, in_game): (i32, Option<&str>, bool),
+    sources: &[contribution::Contribution],
 ) -> (Option<i32>, Option<StatRowAction>) {
+    let StatRow {
+        stat,
+        added,
+        removed,
+        from_plug,
+    } = row;
+    let (added, removed) = (*added, *removed);
     ui.push_id(("weapon-stat", stat.definition_index), |ui| {
         let modified = added || removed || value != stat.value;
         let cells = columns.row(ui, &stat.name, modified);
         draw_stat_identity(ui, &cells, stat, (added, removed, in_game, warning));
-        draw_stat_reading(ui, &cells, stat, (value, removed, in_game));
+        draw_stat_reading(ui, &cells, stat, (value, removed, in_game), sources);
+        if *from_plug {
+            return (None, None);
+        }
         let edited = draw_stat_value(ui, cells.value, stat, (value, removed));
         let action = draw_stat_action(ui, &cells, stat, (added, removed, modified));
         (edited, action)
@@ -238,38 +252,40 @@ fn draw_stat_reading(
     cells: &StatCells,
     stat: &WeaponInvestmentStat,
     (value, removed, in_game): (i32, bool, bool),
+    sources: &[contribution::Contribution],
 ) {
+    let base = stat.in_game_display_value(value);
+    let now = stat.in_game_display_value(contribution::total(value, sources));
+    let color = if now > base {
+        style::success_color(ui.visuals())
+    } else if now < base {
+        ui.visuals().error_fg_color
+    } else {
+        ui.visuals().text_color()
+    };
+    let breakdown = contribution::breakdown(value, sources, now);
     let (cell, text, hint) = if removed {
         (
             cells.bar,
             egui::RichText::new("Removed").color(style::secondary(ui.visuals())),
             "Removed from the weapon",
         )
-    } else if let Some((base, now)) = bar_change(stat, value, removed) {
+    } else if let Some((base, now)) = bar_change(stat, value, removed, sources) {
         style::stat_bar(ui, cells.bar, (base, now), 100);
-        if base != now {
-            ui.interact(cells.bar, ui.id().with("bar"), egui::Sense::hover())
-                .on_hover_text(format!("Base {base}"));
-        }
+        ui.interact(cells.bar, ui.id().with("bar"), egui::Sense::hover())
+            .on_hover_text(&breakdown);
         (
             cells.reading,
-            egui::RichText::new(now.to_string()),
-            "In-game value",
+            egui::RichText::new(now.to_string()).color(color),
+            breakdown.as_str(),
         )
     } else if !in_game {
         return;
-    } else if stat.display_interpolation.is_empty() {
-        (
-            cells.bar,
-            egui::RichText::new(value.to_string()),
-            "No display scaling. Shows the raw value",
-        )
     } else {
-        // A bare number, since the name already says what it counts, such as Rounds Per Minute.
         (
             cells.bar,
-            egui::RichText::new(stat.in_game_display_value(value).to_string()),
-            "In-game value",
+            egui::RichText::new(now.to_string()).color(color),
+            breakdown.as_str(),
         )
     };
     let mut reading = ui.new_child(
@@ -401,6 +417,7 @@ pub(super) fn draw_investment_stats(
     donor: &WeaponDonor,
     (show_internal_stats, order): (bool, &[u16]),
     warnings: &[(u32, String)],
+    contributions: &Contributions,
 ) {
     ui.add_space(3.0);
 
@@ -415,7 +432,12 @@ pub(super) fn draw_investment_stats(
         .cloned()
         .map(|stat| {
             let removed = removed_definitions.contains(&stat.definition_index);
-            (stat, false, removed)
+            StatRow {
+                stat,
+                added: false,
+                removed,
+                from_plug: false,
+            }
         })
         .collect::<Vec<_>>();
     let mut added_rows = values
@@ -439,30 +461,65 @@ pub(super) fn draw_investment_stats(
                     display_interpolation: Vec::new(),
                 });
             stat.value = value.value;
-            (stat, true, false)
+            StatRow {
+                stat,
+                added: true,
+                removed: false,
+                from_plug: false,
+            }
         })
         .collect::<Vec<_>>();
-    added_rows.sort_by_key(|(stat, _, _)| stat.definition_index);
+    added_rows.sort_by_key(|row| row.stat.definition_index);
     rows.extend(added_rows);
+    for &index in contributions.keys() {
+        if rows.iter().any(|row| row.stat.definition_index == index) {
+            continue;
+        }
+        let mut stat = donor
+            .addable_investment_stats
+            .iter()
+            .find(|stat| stat.definition_index == index)
+            .cloned()
+            .unwrap_or_else(|| WeaponInvestmentStat {
+                definition_index: index,
+                definition_hash: None,
+                name: format!("Stat {index}"),
+                value: 0,
+                minimum_value: None,
+                maximum_value: None,
+                display_as_numeric: false,
+                is_linear: false,
+                display_interpolation: vec![],
+            });
+        stat.value = 0;
+        rows.push(StatRow {
+            stat,
+            added: false,
+            removed: false,
+            from_plug: true,
+        });
+    }
     // As the game lists them, then the stats it does not show, which keep their own order.
-    rows.sort_by_key(|(stat, _, _)| {
+    rows.sort_by_key(|row| {
         order
             .iter()
-            .position(|index| *index == stat.definition_index)
+            .position(|index| *index == row.stat.definition_index)
             .unwrap_or(order.len())
     });
 
     let shown = rows
         .iter()
-        .filter(|(stat, _, _)| {
-            show_internal_stats || !is_internal_weapon_stat(stat.definition_index)
-        })
-        .map(|(stat, added, removed)| {
+        .filter(|row| show_internal_stats || !is_internal_weapon_stat(row.stat.definition_index))
+        .map(|row| {
+            let stat = &row.stat;
             let value = values
                 .iter()
                 .find(|candidate| candidate.definition_index == stat.definition_index)
                 .map_or(stat.value, |value| value.value);
-            (stat, *added, *removed, value)
+            let sources = contributions
+                .get(&stat.definition_index)
+                .map_or(&[][..], Vec::as_slice);
+            (row, value, sources)
         })
         .collect::<Vec<_>>();
     // Only a bar's reading follows it, so the readings take the room of the widest of those, and
@@ -470,7 +527,7 @@ pub(super) fn draw_investment_stats(
     // read where the bar would start.
     let reading = shown
         .iter()
-        .filter_map(|(stat, _, removed, value)| bar_change(stat, *value, *removed))
+        .filter_map(|(row, value, sources)| bar_change(&row.stat, *value, row.removed, sources))
         .map(|(_, now)| now.to_string())
         .chain(["000".to_owned()])
         .map(|text| text_width(ui, &text))
@@ -479,28 +536,30 @@ pub(super) fn draw_investment_stats(
     let id = if show_internal_stats { 34.0 } else { 0.0 };
     let columns = StatColumns::new(
         ui,
-        shown.iter().map(|(stat, _, _, _)| stat.name.as_str()),
+        shown.iter().map(|(row, _, _)| row.stat.name.as_str()),
         (id, reading),
     );
-    columns.caption(ui, "Raw");
     let mut row_action = None;
     let mut edited = false;
-    for &(stat, added, removed, value) in &shown {
+    for &(row, value, sources) in &shown {
+        let stat = &row.stat;
         let warning = warnings
             .iter()
             .find(|(hash, _)| Some(*hash) == stat.definition_hash)
             .map(|(_, warning)| warning.as_str());
         // A weapon whose stat group is unknown counts every stat as shown.
         let in_game = order.is_empty() || order.contains(&stat.definition_index);
-        let (changed, action) = draw_weapon_stat_row(
-            ui,
-            &columns,
-            (stat, added, removed, in_game),
-            (value, warning),
-        );
+        let (changed, action) =
+            draw_weapon_stat_row(ui, &columns, row, (value, warning, in_game), sources);
         if let Some(value) = changed {
             edited = true;
-            update_investment_stat_value(values, stat.definition_index, stat.value, value, added);
+            update_investment_stat_value(
+                values,
+                stat.definition_index,
+                stat.value,
+                value,
+                row.added,
+            );
         }
         row_action = row_action.or(action);
     }

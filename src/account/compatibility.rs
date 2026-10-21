@@ -5,10 +5,9 @@ use crate::persistence::native_account::snapshot::{Cell, Snapshot, Table};
 use std::collections::BTreeSet;
 
 impl AuthoredAccountCleanup {
-    /// The item and plug definitions the proposed state references that the incoming table
-    /// lacks, including stock rows and references already missing before this install, such as
-    /// items left from an older build. A replacement removes them the way it removes the items a
-    /// build leaves out. It does not read a second, potentially newer account.
+    /// Definitions referenced by the proposed account but absent from the incoming table,
+    /// including stock items, sockets and character starters. Reads the reviewed snapshot
+    /// so a later account change cannot alter the compatibility result.
     pub fn missing_incoming_definitions(
         &self,
         definitions: &BTreeSet<u32>,
@@ -145,6 +144,7 @@ impl Missing<'_> {
             "character_stacks",
             "dismantle_rewards",
             "pending_rewards",
+            "starter_items",
             "sockets",
             "item_sockets",
         ] {
@@ -202,6 +202,7 @@ fn row_location(table: &Table, row: &[Cell]) -> String {
     [
         "character_slot",
         "character_soid",
+        "class",
         "location",
         "position",
         "instance_soid",

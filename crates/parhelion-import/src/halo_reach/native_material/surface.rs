@@ -1,8 +1,28 @@
 use super::*;
 
+/// The shader function of Reach's `multilayer_additive` self illumination, read from the compiled
+/// program of `ca_heh_forerunner_halogram`'s template (`D3DDisassemble` of its per-pixel lightmap
+/// entry point). It steps the map's coordinates back along the view direction in the surface's
+/// tangent frame, `layer_depth` over the layer count per sample with the map's own scale and the
+/// U step times `texcoord_aspect_ratio`, takes `layers_of_4` times four samples each weighted by a
+/// running product of `depth_darken`, averages them and raises the average to `layer_contrast`.
+/// The caller multiplies by the color and intensity. Hang 'Em High's holograms set intensities of
+/// 171 and 472 for that sparse, squared average. Taken as one sample, they drew solid cyan.
+/// Which of Reach's two tangent vectors steps U was not traced, so U follows the tangent.
+pub(super) const MULTILAYER_FUNCTIONS: &str = "float3 multilayerIllumination(Texture2D<float4> map,SamplerState s,float2 uv,float2 scale,float3 toCamera,float3 tangent,float3 bitangent,float depth,float aspect,float layers4,float darken,float contrast){float3 view=normalize(toCamera);float count=4*layers4;float2 step=float2(dot(tangent,view)*aspect,dot(bitangent,view))*scale*depth/count;float3 sum=0;float weight=1;[loop]for(int i=0;i<(int)count;i++){sum+=weight*map.Sample(s,uv).rgb;uv-=step;weight*=darken;}return pow(max(sum/count,0.000001),contrast);}";
+
+/// The texture, sampler and coordinates of a `Map{slot}.Sample(sampler,uv)` sample expression.
+fn sample_parts(sample: &str) -> Option<(&str, &str, &str)> {
+    let (map, rest) = sample.split_once(".Sample(")?;
+    let (sampler, uv) = rest.split_once(',')?;
+    let uv = uv.strip_suffix(')')?;
+    map.starts_with("Map").then_some((map, sampler, uv))
+}
+
 pub(super) struct Surface<'a> {
     pub material: &'a Material,
     pub constants: BTreeMap<String, [f32; 4]>,
+    pub parameters: animation::Parameters,
     lens: Option<&'a Lens>,
 }
 
@@ -13,14 +33,17 @@ impl<'a> Surface<'a> {
             .first()
             .map(|p| p.constants.clone())
             .unwrap_or_default();
-        if let Some(values) = material
+        let overrides = material
             .tag
             .as_ref()
-            .and_then(|t| binding.overrides.get(&t.path))
-        {
+            .and_then(|t| binding.overrides.get(&t.path));
+        if let Some(values) = overrides {
             constants.extend(values.iter().map(|(k, v)| (k.clone(), *v)));
         }
         Self {
+            parameters: animation::Parameters::new(material, &constants, &|name| {
+                overrides.is_some_and(|values| values.contains_key(name))
+            }),
             material,
             constants,
             lens: binding.lenses.get(&key),
@@ -31,15 +54,29 @@ impl<'a> Surface<'a> {
         self.constants.get(name).copied()
     }
 
+    pub fn value(&self, name: &str, default: [f32; 4]) -> String {
+        self.parameters
+            .value(name, self.constant(name).unwrap_or(default))
+    }
+
+    pub fn scalar(&self, name: &str, default: f32) -> String {
+        format!("({}).x", self.value(name, [default; 4]))
+    }
+
+    pub fn color(&self, name: &str, default: [f32; 4]) -> String {
+        format!("({}).rgb", self.value(name, default))
+    }
+
     pub fn emission(&self, samples: &BTreeMap<usize, String>, albedo: &str) -> String {
-        let tint = self
-            .constant("self_illum_color")
-            .or_else(|| self.constant("self_illum_tint_color"))
-            .unwrap_or([1.; 4]);
-        let scale = self
-            .constant("self_illum_intensity")
-            .map_or(1., |v| v[0])
-            .max(0.);
+        let tint = self.color(
+            if self.constants.contains_key("self_illum_color") {
+                "self_illum_color"
+            } else {
+                "self_illum_tint_color"
+            },
+            [1.; 4],
+        );
+        let scale = format!("max({},0)", self.scalar("self_illum_intensity", 1.));
         let source = match self
             .material
             .options
@@ -56,12 +93,12 @@ impl<'a> Surface<'a> {
                     .into_iter()
                     .zip(["r", "g", "b"])
                     .map(|(name, lane)| {
-                        let c = self.constant(name).unwrap_or([0.; 4]);
-                        format!("({mask}).{lane}*{}*{:.9}", rgb(c), c[3])
+                        let c = self.value(name, [0.; 4]);
+                        format!("({mask}).{lane}*({c}).rgb*({c}).a")
                     })
                     .collect::<Vec<_>>()
                     .join("+");
-                return format!("max(({terms})*{scale:.9},0)");
+                return format!("max(({terms})*{scale},0)");
             }
             Some("palettized_plasma") => {
                 let (Some(a), Some(b)) = (samples.get(&6), samples.get(&7)) else {
@@ -73,19 +110,32 @@ impl<'a> Surface<'a> {
                 let alpha = samples
                     .get(&3)
                     .map_or_else(|| "1".into(), |a| format!("({a}).a"));
-                let modulation = self
-                    .constant("alpha_modulation_factor")
-                    .map_or(0., |v| v[0]);
-                let v = self.constant("v_coordinate").map_or(0.5, |v| v[0]);
+                let modulation = self.scalar("alpha_modulation_factor", 0.);
+                let v = self.scalar("v_coordinate", 0.5);
                 format!(
-                    "Map8.Sample(ClampSampler,float2(saturate(abs(({a}).r-({b}).r)+(1-{alpha})*{modulation:.9}),{v:.9})).rgb"
+                    "Map8.Sample(ClampSampler,float2(saturate(abs(({a}).r-({b}).r)+(1-{alpha})*{modulation}),{v})).rgb"
+                )
+            }
+            Some("multilayer_additive") => {
+                let Some((map, sampler, uv)) = samples.get(&4).and_then(|s| sample_parts(s)) else {
+                    return "float3(0,0,0)".into();
+                };
+                let value = |name: &str, default: f32| self.scalar(name, default);
+                let transform = self.value("self_illum_map", [1., 1., 0., 0.]);
+                format!(
+                    "multilayerIllumination({map},{sampler},{uv},({transform}).xy,v5.xyz,v1.xyz,v2.xyz,{},{},clamp({},1,64),{},{})",
+                    value("layer_depth", 1.),
+                    value("texcoord_aspect_ratio", 1.),
+                    value("layers_of_4", 1.),
+                    value("depth_darken", 1.),
+                    value("layer_contrast", 1.),
                 )
             }
             _ => samples
                 .get(&4)
                 .map_or_else(|| "float3(0,0,0)".into(), |s| format!("({s}).rgb")),
         };
-        format!("max(({source})*{}*{scale:.9},0)", rgb(tint))
+        format!("max(({source})*{tint}*{scale},0)")
     }
 
     pub fn transparent(&self) -> bool {
@@ -109,31 +159,27 @@ impl<'a> Surface<'a> {
         samples: &BTreeMap<usize, String>,
         ambient_scale: Option<f32>,
     ) -> (String, String) {
-        let tint = self.constant("albedo_color").unwrap_or([1.; 4]);
+        let tint = self.value("albedo_color", [1.; 4]);
         let base = samples
             .get(&0)
             .cloned()
             .unwrap_or_else(|| "float4(1,1,1,1)".into());
         let albedo = match samples.get(&5) {
             Some(detail) => format!(
-                "float4(({base}).rgb*({detail}).rgb*{}*{DETAIL_MULTIPLIER:.6},({base}).a*({detail}).a*{:.9})",
-                rgb(tint),
-                tint[3]
+                "float4(({base}).rgb*({detail}).rgb*({tint}).rgb*{DETAIL_MULTIPLIER:.6},({base}).a*({detail}).a*({tint}).a)"
             ),
-            None => format!(
-                "float4(({base}).rgb*{},({base}).a*{:.9})",
-                rgb(tint),
-                tint[3]
-            ),
+            None => format!("({base})*({tint})"),
         };
         let fresnel = match (
             self.constant("opacity_fresnel_coefficient"),
             self.constant("opacity_fresnel_curve_steepness"),
             self.constant("opacity_fresnel_curve_bias"),
         ) {
-            (Some(coefficient), Some(steepness), Some(bias)) => format!(
-                "float fresnel=v2.w>0?saturate({:.9}*pow(saturate(1-v2.w),{:.9})+{:.9}):0;",
-                coefficient[0], steepness[0], bias[0]
+            (Some(_), Some(_), Some(_)) => format!(
+                "float fresnel=v2.w>0?saturate({}*pow(saturate(1-v2.w),{})+{}):0;",
+                self.scalar("opacity_fresnel_coefficient", 0.),
+                self.scalar("opacity_fresnel_curve_steepness", 1.),
+                self.scalar("opacity_fresnel_curve_bias", 0.)
             ),
             _ => "float fresnel=0;".to_owned(),
         };
@@ -142,7 +188,7 @@ impl<'a> Surface<'a> {
             .map_or_else(|| "albedo.a".to_owned(), |s| format!("({s}).a"));
         let ambient = match ambient_scale {
             Some(scale) => format!(
-                "float3 glassAmbient=LightAmbient.Sample(ClampSampler,v3.zw).rgb;glassAmbient*=glassAmbient*{scale:.9};"
+                "float3 glassAmbient=LightAmbient.Sample(ClampSampler,abs(v3.zw)).rgb;glassAmbient*=glassAmbient*{scale:.9};"
             ),
             None => "float3 glassAmbient=float3(1,1,1);".to_owned(),
         };
@@ -154,12 +200,10 @@ impl<'a> Surface<'a> {
         {
             "float3(0,0,0)".to_owned()
         } else {
-            let contribution = self
-                .constant("environment_map_specular_contribution")
-                .map_or(0., |v| v[0]);
+            let contribution = self.scalar("environment_map_specular_contribution", 0.);
             format!(
-                "glassAmbient*{}*{contribution:.9}*(1+fresnel)",
-                rgb(self.constant("env_tint_color").unwrap_or([1.; 4]))
+                "glassAmbient*{}*{contribution}*(1+fresnel)",
+                self.color("env_tint_color", [1.; 4])
             )
         };
         let shading = format!(
@@ -202,8 +246,4 @@ impl<'a> Surface<'a> {
             "float strength=max(emission.r,max(emission.g,emission.b));float3 surface=lerp(albedo.rgb,emission/max(strength,0.00001),saturate(strength));float encodedEmission=strength>0 ? 0.5*(1+2.0/255.0+saturate((log2(strength+1.0/128.0)+7)/13)) : 0.5;o0=float4(saturate(surface),0.04);o1=float4(saturate(n*(roughness*0.125+0.375)+0.5),0);o2=float4(0,encodedEmission,0,v0.w);".into()
         }
     }
-}
-
-fn rgb(c: [f32; 4]) -> String {
-    format!("float3({:.9},{:.9},{:.9})", c[0], c[1], c[2])
 }

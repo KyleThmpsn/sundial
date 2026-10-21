@@ -3,7 +3,7 @@ use super::*;
 mod cache;
 mod dependencies;
 mod plan;
-pub(super) use plan::{Payloads, author};
+pub(super) use plan::{DependencyTimings, Payloads, author};
 
 /// Where imported runtime assets go: a group per weapon in the rolling asset packages, and
 /// the tags placed there for the runtime dependency index.

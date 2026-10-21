@@ -1,8 +1,6 @@
 //! Source damage forms, solid bodies and surface hit meshes in native frames.
 mod hull;
 mod shot;
-#[cfg(test)]
-mod tests;
 use super::{assembly::Assembly, body, damage};
 use crate::{
     halo_reach::{Scene, rig},

@@ -4,25 +4,45 @@ use super::*;
 fn shapes(
     source: &Value,
     shape: &Value,
-    path: &mut Vec<usize>,
+    path: &mut Vec<(i64, usize)>,
     out: &mut Vec<(i64, usize)>,
 ) -> Result<()> {
     let kind = shape[0].as_i64().context("Source collision shape kind")?;
     let index = usize::try_from(shape[1].as_u64().context("Source collision shape index")?)?;
     match kind {
         1 | 2 | 4 => out.push((kind, index)),
-        14 => {
+        14 | 15 => {
             ensure!(
-                !path.contains(&index) && path.len() < 16,
+                !path.contains(&(kind, index)) && path.len() < 16,
                 "Cyclic source collision compound"
             );
-            let children = source["lists"]
-                .get(index)
-                .and_then(Value::as_array)
-                .context("Source collision list")?;
-            path.push(index);
-            for child in children {
-                shapes(source, child, path, out)?;
+            path.push((kind, index));
+            if kind == 14 {
+                let children = source["lists"]
+                    .get(index)
+                    .and_then(Value::as_array)
+                    .context("Source collision list")?;
+                for child in children {
+                    shapes(source, child, path, out)?;
+                }
+            } else {
+                let mopp = source["mopps"]
+                    .get(index)
+                    .context("Source collision MOPP")?;
+                let info = vector::<4>(&mopp["code_info"])?;
+                ensure!(
+                    mopp["type"] == 10
+                        && mopp["shape"][0] == 14
+                        && mopp["code_size"].as_i64().is_some_and(|size| size > 0)
+                        && info[3] > 0.
+                        && mopp["tail"] == json!([0, 0, 0, 0]),
+                    "Source collision MOPP is not a supported unscaled list wrapper"
+                );
+                // The MOPP stores query acceleration over this collection, not
+                // another surface. Its code-info quantization is not a geometry
+                // transform. The native dynamic body builds its own acceleration
+                // from the same leaves and keeps their source mass and frames.
+                shapes(source, &mopp["shape"], path, out)?;
             }
             path.pop();
         }

@@ -147,7 +147,13 @@ pub(super) fn backup_recipe_snapshots(
     })?;
     for relative_path in &validated.selected_recipe_files {
         let source = validated.staged_run_directory.join(relative_path);
-        reject_symlink(&source, "staged recipe backup source").map_err(|error| error.message)?;
+        sundial::package_authoring::mod_content::checked_path(
+            &validated.staged_run_directory,
+            &source,
+        )?;
+        let expected = validated.staged_inputs.file(relative_path).ok_or_else(|| {
+            format!("Staged recipe has no validated content digest: {relative_path}")
+        })?;
         let file_name = Path::new(relative_path)
             .file_name()
             .ok_or_else(|| format!("Staged recipe path has no filename: {relative_path}"))?;
@@ -164,9 +170,9 @@ pub(super) fn backup_recipe_snapshots(
                 source.display()
             )
         })?;
-        if copied != current {
+        if copied != current || TransactionDigest::from(expected) != copied {
             return Err(format!(
-                "Staged recipe {} changed while it was being backed up",
+                "Staged recipe {} changed after validation or while it was being backed up",
                 source.display()
             ));
         }
@@ -243,19 +249,30 @@ pub(super) fn sync_backup_directories(backup: &Path, backup_root: &Path) -> Resu
 }
 
 pub(super) fn create_backup_directory(backup_root: &Path) -> io::Result<PathBuf> {
+    create_dated_backup_directory(backup_root, "packages")
+}
+
+pub(super) fn create_dated_backup_directory(
+    backup_root: &Path,
+    purpose: &str,
+) -> io::Result<PathBuf> {
     fs::create_dir_all(backup_root)?;
     let canonical_root = fs::canonicalize(backup_root)?;
+    let now = time::OffsetDateTime::now_utc();
+    let stamp = format!(
+        "{:04}-{:02}-{:02}_{:02}-{:02}-{:02}_UTC",
+        now.year(),
+        u8::from(now.month()),
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second()
+    );
     for attempt in 0..128u64 {
-        let token = unique_token()
-            .split('-')
-            .map(|part| {
-                let value = part.trim_start_matches('0');
-                if value.is_empty() { "0" } else { value }
-            })
-            .collect::<Vec<_>>()
-            .join("-");
-        let candidate = canonical_root.join(format!("parhelion-backup-v2-{token}-{attempt}"));
-        match fs::create_dir(&candidate) {
+        let candidate = canonical_root.join(format!(
+            "{AUTOMATIC_BACKUP_PREFIX}{stamp}-{purpose}-{attempt}"
+        ));
+        match create_private_directory(&candidate) {
             Ok(()) => return fs::canonicalize(candidate),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
@@ -411,6 +428,16 @@ pub(super) fn is_automatic_backup_name(name: &str) -> bool {
     let Some(suffix) = name.strip_prefix(AUTOMATIC_BACKUP_PREFIX) else {
         return false;
     };
+    if let Some((stamp, attempt)) = suffix.split_once("_UTC-packages-") {
+        return stamp.len() == 19
+            && stamp.bytes().enumerate().all(|(index, byte)| match index {
+                4 | 7 | 13 | 16 => byte == b'-',
+                10 => byte == b'_',
+                _ => byte.is_ascii_digit(),
+            })
+            && !attempt.is_empty()
+            && attempt.bytes().all(|byte| byte.is_ascii_digit());
+    }
     let compact = suffix.strip_prefix("v2-");
     let mut parts = compact.unwrap_or(suffix).split('-');
     let nanos = parts.next().unwrap_or_default();

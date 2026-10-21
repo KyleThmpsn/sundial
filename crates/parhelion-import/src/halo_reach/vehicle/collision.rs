@@ -1,4 +1,4 @@
-//! Cooked MCC U13 convex geometry and explicit compound-child indices.
+//! Cooked MCC U13 convex geometry and explicit collection and MOPP child indices.
 use super::*;
 
 pub(super) fn read(cache: &Cache, at: usize) -> Result<Value> {
@@ -90,5 +90,17 @@ pub(super) fn read(cache: &Cache, at: usize) -> Result<Value> {
         child_cursor == children.len(),
         "Unassigned collision children"
     );
-    Ok(json!({"polyhedra":polyhedra,"boxes":boxes,"capsules":capsules,"lists":lists}))
+    let mopps = cache
+        .block(at + 0xf8, 0x80)?
+        .into_iter()
+        .map(|row| {
+            Ok(json!({"type":cache.u32(row+0x18)?,
+                "shape":[cache.i16(row+0x58)?,cache.i16(row+0x5a)?],
+                "code_size":cache.i32(row+0x38)?,
+                "code_info":cache.floats::<4>(row+0x40)?,
+                "tail":(0x70..0x80).step_by(4).map(|offset| cache.u32(row+offset))
+                    .collect::<Result<Vec<_>>>()?}))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(json!({"polyhedra":polyhedra,"boxes":boxes,"capsules":capsules,"lists":lists,"mopps":mopps}))
 }

@@ -9,8 +9,10 @@ mod tests;
 
 mod loader;
 mod recovery;
-pub use loader::{UpgradeReview, preview_upgrade};
-pub(crate) use loader::{package_window, uses_mod_loader};
+#[cfg(test)]
+pub use loader::preview_upgrade;
+pub use loader::{UPGRADE_REVIEW_STEPS, UpgradeReview, preview_upgrade_with_progress};
+pub(crate) use loader::{other_mods_change, package_window, uses_mod_loader};
 pub use recovery::recover_interrupted_install;
 use recovery::*;
 mod locking;
@@ -76,9 +78,10 @@ use tiger_pkg::{Package, PackageD2PreBL};
 use crate::SUNDIAL_BUILD_SIGNATURE;
 use crate::artifact::{ArtifactMetadata, FileDigest, digest_file, has_pkg_extension};
 use crate::format::PackageLayout;
+#[cfg(test)]
+use crate::manifest::recipe_selection_fingerprint;
 use crate::manifest::{
-    MANIFEST_FILE_NAME, MANIFEST_SCHEMA, ManifestDocument, ManifestProject,
-    recipe_selection_fingerprint,
+    MANIFEST_FILE_NAME, MANIFEST_SCHEMA, ManifestDocument, ManifestProject, SelectionFingerprint,
 };
 #[cfg(test)]
 use crate::package_profile::AUTHORED_PACKAGES;
@@ -212,6 +215,7 @@ pub struct InvalidatedPackageHeaderCache {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstallReport {
+    pub mods: Vec<crate::ModReport>,
     pub mod_directory: Option<PathBuf>,
     pub manifest_schema: u32,
     pub staged_run_directory: PathBuf,
@@ -321,8 +325,11 @@ struct ValidatedRun {
     artifacts: Vec<ArtifactMetadata>,
     /// The merge data beside each package of a mod-folder build.
     merge_data: Vec<ArtifactMetadata>,
+    map_diagnostics: Option<ArtifactMetadata>,
+    mods: Vec<crate::mod_family::Member>,
     obsolete_artifacts: Vec<ArtifactMetadata>,
     selected_recipe_files: Vec<String>,
+    staged_inputs: validation::staged::Inputs,
     authored_unlocks: Vec<AuthoredCollectionUnlock>,
     authored_grants: Vec<identities::GrantedItem>,
     package_backup_retention: usize,
@@ -513,7 +520,7 @@ pub fn resync_account(
     sundial::package_authoring::mod_content::ensure_readable(game_root)?;
     // Installed identities include the mod folder on any runtime, but only Sunrise 0.6 or later
     // loads it, so granting its items elsewhere would add items the game can't find.
-    if sundial::package_authoring::mod_content::directory(game_root).exists()
+    if sundial::package_authoring::mod_content::has_family(game_root)?
         && !uses_mod_loader(target_packages_directory)
     {
         return Err(
@@ -656,7 +663,9 @@ fn install_with_progress(
         &validated.target_packages_directory,
         validated.sunrise_build_cache.runtime.brand(),
     )?;
-    let retired_mod_backup = loader::retire_inactive(&validated, request.game_running_check)?;
+    // A failure before the commit below, or a commit that rolls back, puts a retired mod folder
+    // back.
+    let retired = loader::retire_inactive(&validated, request.game_running_check)?;
     let backup_directory = create_backup_directory(&validated.backup_root).map_err(|error| {
         InstallError::validation(format!("Could not create a package backup: {error}"))
     })?;
@@ -836,7 +845,7 @@ fn install_with_progress(
         return Err(InstallError::after_backup(message, &backup_directory));
     }
 
-    let mut report = commit_and_verify(
+    let result = commit_and_verify(
         CommitContext {
             validated: &validated,
             backup_directory: &backup_directory,
@@ -853,7 +862,21 @@ fn install_with_progress(
         prepared,
         transaction,
         progress,
-    )?;
+    );
+    // A completed rollback restores the retired mod folder. A commit or a failed rollback, which
+    // recovery owns, keeps it retired.
+    let rolled_back = result
+        .as_ref()
+        .err()
+        .and_then(|error| error.rollback.as_ref())
+        .is_some_and(|rollback| rollback.succeeded());
+    let retired_mod_backup = if rolled_back {
+        drop(retired);
+        None
+    } else {
+        retired.keep()
+    };
+    let mut report = result?;
     report.retired_mod_backup = retired_mod_backup;
     Ok(report)
 }
@@ -884,10 +907,14 @@ fn check_game_immediately_before_commit(request: &InstallRequest) -> Result<(), 
     Ok(())
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ValidatedManifest {
+    inputs: validation::staged::Inputs,
     source_artifacts: Vec<ArtifactMetadata>,
     artifacts: Vec<ArtifactMetadata>,
     merge_data: Vec<ArtifactMetadata>,
+    map_diagnostics: Option<ArtifactMetadata>,
+    mods: Vec<crate::mod_family::Member>,
     selected_recipe_files: Vec<String>,
     authored_unlocks: Vec<AuthoredCollectionUnlock>,
     authored_grants: Vec<identities::GrantedItem>,
@@ -1258,6 +1285,7 @@ fn build_install_report(
         })
         .collect();
     InstallReport {
+        mods: Vec::new(),
         mod_directory: None,
         cleaned_account: validated
             .replacement_guard

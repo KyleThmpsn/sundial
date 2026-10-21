@@ -195,7 +195,7 @@ pub(super) fn draw(
     items: &[Weapon],
     source: Source,
 ) -> bool {
-    if source != Source::Modern {
+    if !matches!(source, Source::Modern | Source::Roi) {
         return draw_source(ui, browser, items, source);
     }
     let mut changed = false;
@@ -210,6 +210,10 @@ pub(super) fn draw(
             &mut filters.family,
             FAMILIES
                 .into_iter()
+                .filter(|family| {
+                    source != Source::Roi
+                        || matches!(family, service::Family::Weapon | service::Family::Armor)
+                })
                 .map(|value| (value, value.label().to_owned())),
             142.0,
         ) {
@@ -254,9 +258,11 @@ pub(super) fn draw(
             SLOTS
                 .into_iter()
                 .filter(|(bucket, _)| {
-                    filters
-                        .family
-                        .is_none_or(|family| service::Family::from_bucket(*bucket) == Some(family))
+                    (source != Source::Roi
+                        || service::Family::from_bucket(*bucket) == Some(service::Family::Armor))
+                        && filters.family.is_none_or(|family| {
+                            service::Family::from_bucket(*bucket) == Some(family)
+                        })
                 })
                 .map(|(value, name)| (value, name.to_owned())),
             142.0,
@@ -280,17 +286,19 @@ pub(super) fn draw(
             .family
             .is_none_or(|family| family == service::Family::Weapon)
         {
-            changed |= choice(
-                ui,
-                "import-damage",
-                "Damage Type",
-                "Damage",
-                &mut filters.damage,
-                DAMAGE
-                    .into_iter()
-                    .map(|value| (value.to_owned(), damage_label(value).to_owned())),
-                142.0,
-            );
+            if source != Source::Roi {
+                changed |= choice(
+                    ui,
+                    "import-damage",
+                    "Damage Type",
+                    "Damage",
+                    &mut filters.damage,
+                    DAMAGE
+                        .into_iter()
+                        .map(|value| (value.to_owned(), damage_label(value).to_owned())),
+                    142.0,
+                );
+            }
             changed |= choice(
                 ui,
                 "import-ammo",
@@ -318,14 +326,18 @@ pub(super) fn draw(
                 142.0,
             );
         }
-        changed |= ui
-            .checkbox(&mut browser.show_installed, "Show Installed")
-            .on_hover_text("Include items already present in the target installation.")
-            .changed();
-        changed |= ui
-            .checkbox(&mut browser.show_dummy, "Include Dummy Items")
-            .on_hover_text("Include display-only definitions. Some lack the data needed to import.")
-            .changed();
+        if source != Source::Roi {
+            changed |= ui
+                .checkbox(&mut browser.show_installed, "Show Installed")
+                .on_hover_text("Include items already present in the target installation.")
+                .changed();
+            changed |= ui
+                .checkbox(&mut browser.show_dummy, "Include Dummy Items")
+                .on_hover_text(
+                    "Include display-only definitions. Some lack the data needed to import.",
+                )
+                .changed();
+        }
         changed |= supported_only(ui, browser);
     });
     changed

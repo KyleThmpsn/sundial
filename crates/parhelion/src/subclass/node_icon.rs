@@ -21,7 +21,7 @@ pub(crate) fn author(
         )?
     } else {
         let allocator = crate::appended_tags::AppendedTagAllocator::new(
-            crate::package_profile::window().base,
+            crate::package_profile::window().first(),
             0,
         );
         let tag = allocator.assigned_tag(nodes.len(), "Node icon", "ability color")?;

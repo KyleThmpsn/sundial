@@ -29,8 +29,17 @@ impl Source {
         progress: &mut dyn FnMut(String),
     ) -> Result<PathBuf> {
         let output = self.output(output)?;
-        // Check each base's rigs against one export before converting on it, since the rigs
-        // decide most refusals and a conversion reads the whole source again.
+        let output = crate::io::outside(
+            &output,
+            native.parent().context("Native installation root")?,
+        )?;
+        ensure!(
+            !bases.is_empty(),
+            "No native runtime of this weapon type is available"
+        );
+        // Select a compatible runtime before any conversion. A source-data or tool failure
+        // cannot be repaired by rebuilding the same assets on another runtime.
+        progress("Reading source weapon".into());
         let export = self.export_weapon(hash, &output.join("source"))?;
         let source: Value = serde_json::from_slice(&fs::read(export)?)?;
         let mut reader = Reader::discovery(native, &output.join("rig-checks"), false)?;
@@ -41,22 +50,12 @@ impl Source {
                 refused.push(format!("{base:08X}: {error:#}"));
                 continue;
             }
-            progress(format!("Building on native base {base:08X}"));
-            match self.prepare_weapon(
-                hash,
-                native,
-                base,
-                &output.join(format!("{base:08X}")),
-                options,
-                progress,
-            ) {
-                Ok(recipe) => return Ok(recipe),
-                Err(error) if crate::cancellation::is_cancelled(&error) => return Err(error),
-                Err(error) => {
-                    progress(format!("Native base {base:08X} refused: {error:#}"));
-                    refused.push(format!("{base:08X}: {error:#}"));
-                }
-            }
+            progress(format!("Using native runtime {base:08X}"));
+            reader.finish()?;
+            drop(reader);
+            return self
+                .prepare_exported_weapon(hash, native, base, &output, &source, options, progress)
+                .with_context(|| format!("Source weapon {hash:08X}, native runtime {base:08X}"));
         }
         anyhow::bail!(
             "No native base of this type carries the source weapon:\n{}",
@@ -80,14 +79,28 @@ impl Source {
             &output,
             native.parent().context("Native installation root")?,
         )?;
+        let source_path = self.export_weapon(hash, &output.join("source"))?;
+        let source: Value = serde_json::from_slice(&fs::read(source_path)?)?;
+        self.prepare_exported_weapon(hash, native, donor, &output, &source, options, progress)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_exported_weapon(
+        &self,
+        hash: u32,
+        native: &Path,
+        donor: u32,
+        output: &Path,
+        source: &Value,
+        options: &NativeOptions,
+        progress: &mut dyn FnMut(String),
+    ) -> Result<PathBuf> {
         let weapon = self
             .weapons()?
             .into_iter()
             .find(|w| w.hash == hash)
             .context("Selected source weapon is missing")?;
         progress(format!("Reading {}", weapon.name));
-        let source_path = self.export_weapon(hash, &output.join("source"))?;
-        let source: Value = serde_json::from_slice(&fs::read(source_path)?)?;
         let namespace = format!("parhelion.import.d1_roi.{hash:08x}");
         let identity = crate::d2_mot::batch::identity(&namespace)?;
         let private_item = crate::graph::hash(&identity, "item_hash")?;
@@ -130,10 +143,22 @@ impl Source {
             row["template_index"] = json!(template);
         }
         let icon = assembly.item_icon(weapon.strings)?;
-        let (columns, variants, perks, damage) = perk::translate(&mut assembly, &source, donor)?;
-        let stats = stats::translate(&mut assembly, &source)?;
+        let (columns, variants, perks, damage) = perk::translate(&mut assembly, source, donor)?;
+        let stats = stats::translate(&mut assembly, source)?;
         progress(format!("Converting {} runtime animation", weapon.name));
-        let native_rig = assembly.evidence[0]["native_runtime"].clone();
+        let mut native_rig = assembly.evidence[0]["native_runtime"].clone();
+        progress(format!("Converting {} named audio", weapon.name));
+        let named_audio = crate::d1_roi::audio::prepare_named(
+            self,
+            &source["runtime"],
+            &mut assembly.native,
+            &mut native_rig,
+            &directory,
+        )
+        .unwrap_or_else(|error| {
+            json!({"status":"native_donor_only",
+            "reason":format!("{error:#}"),"gameplay_verified":false})
+        });
         let mut runtime_animation = super::animation::prepare(
             self,
             &source["runtime"],
@@ -155,7 +180,7 @@ impl Source {
         let mut limitations = [
             animation_limit,
             "Base stats are the source investment values. The native runtime's stat translation decides their gameplay effect, which requires in-game acceptance.",
-            "Auxiliary sight effects and audio outside translated clip events use the selected native runtime.",
+            "Matched named audio uses source banks and media with the native event's trigger and acoustic settings. Other audio and auxiliary sight effects use the selected native runtime.",
             "Unsupported talent choices, scaled source stat adjustments and talent progression are not translated.",
             "Rendering, aiming, repeated firing and selection cleanup require in-game acceptance.",
         ]
@@ -168,7 +193,7 @@ impl Source {
             "nodes":assembly.nodes,"parent":parts[0]["parent"],"dyes":[],"dye_rows":[[],[],[]],
             "gear_art":{"selector_format":"shadowkeep","rows":rows,"parts":parts},
             "source_talents":source["talents"],"perk_translation":perks,"stat_translation":stats.report,
-            "rendering":assembly.evidence,"equipment_animation":runtime_animation,
+            "rendering":assembly.evidence,"equipment_animation":runtime_animation,"audio":named_audio,
             "collections_unconditional":true,"installable":true,"gameplay_verified":false,"limitations":limitations});
         if let Some(audio) = audio_assets {
             graph["audio_assets"] = audio;

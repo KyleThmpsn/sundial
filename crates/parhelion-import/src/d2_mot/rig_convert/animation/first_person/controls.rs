@@ -231,6 +231,120 @@ fn owner(
     ))
 }
 
+fn operation(row: &[u8]) -> Vec<u8> {
+    let mut signature = row.to_vec();
+    for at in [4, 10, 24, 30, 44] {
+        signature[at..at + 2].fill(0);
+    }
+    signature
+}
+
+/// The private weapon section can change size. Shared arm controls retain the slots
+/// established by the carrier's paired clips. New weapon controls are emitted in their
+/// explicit serialized order, with every operation checked against that carrier.
+pub(super) fn owned_slots(
+    sr: &mut Reader,
+    nr: &mut Reader,
+    source: &Value,
+    native: &Value,
+    calibration: &Value,
+    slots: &mut clips::slots::Table,
+) -> Result<()> {
+    let (_, modern) = owner(sr, source, true, true)?;
+    let (_, reference) = owner(sr, calibration, true, true)?;
+    let (_, original) = owner(nr, native, false, true)?;
+    let rows = read(&modern, true)?;
+    let known = read(&reference, true)?;
+    check(&rows)?;
+    check(&known)?;
+    let reference_bones = u16::try_from(known[4].len())?;
+    let shape = slots
+        .shapes()
+        .get(&reference_bones)
+        .context("carrier lacks calibrated control slots")?;
+    ensure!(
+        lower(&known, shape)? == read(&original, false)?,
+        "paired rig control format evidence differs"
+    );
+    let pairs = super::super::super::owned::validate(source, calibration)?;
+    let weapon = pairs
+        .iter()
+        .find(|(_, _, fp)| !fp)
+        .context("weapon skeleton")?
+        .0;
+    let weapon_bones = source["skeletons"]
+        .as_array()
+        .context("skeletons")?
+        .iter()
+        .find(|s| s["owner"] == format!("{weapon:08X}"))
+        .and_then(|s| s["bones"].as_array())
+        .context("weapon bones")?
+        .len();
+    let arms = rows[4]
+        .len()
+        .checked_sub(weapon_bones)
+        .context("shared arm controls")?;
+    ensure!(
+        rows[4].get(..arms) == known[4].get(..arms),
+        "shared arm control bindings differ"
+    );
+    for (row, mapped) in known[1].iter().zip(&shape.map) {
+        ensure!(
+            mapped.is_some() || usize::from(short(row, 44)) < arms,
+            "calibration omits a weapon control"
+        );
+    }
+    let operations = known[1]
+        .iter()
+        .map(|row| operation(row))
+        .collect::<BTreeSet<_>>();
+    let mut map = Vec::with_capacity(rows[1].len());
+    let mut next = 0u16;
+    for row in &rows[1] {
+        ensure!(
+            operations.contains(&operation(row)),
+            "source rig control operation has no native format evidence"
+        );
+        let bone = usize::from(short(row, 44));
+        let keep = if bone < arms {
+            let reference_slot = usize::from(short(&known[4][bone], 0));
+            ensure!(
+                known[1].get(reference_slot) == Some(row),
+                "shared arm control operation differs"
+            );
+            let mapped = *shape.map.get(reference_slot).context("shared arm slot")?;
+            ensure!(
+                mapped.is_none_or(|slot| slot == next),
+                "shared arm control order differs"
+            );
+            mapped.is_some()
+        } else {
+            true
+        };
+        map.push(keep.then_some(next));
+        if keep {
+            next = next
+                .checked_add(1)
+                .context("private control slot overflow")?;
+        }
+    }
+    let shape = clips::slots::Shape {
+        native_slots: next,
+        map,
+    };
+    lower(&rows, &shape)?;
+    slots.insert_owned_shape(u16::try_from(rows[4].len())?, shape.clone())?;
+    slots.owned_groups(
+        rows[0]
+            .iter()
+            .map(|row| (word(row, 0), word(row, 4)))
+            .collect(),
+        rows[5].iter().map(|row| short(row, 0)).collect(),
+        shape,
+    );
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn prepare(
     sr: &mut Reader,
@@ -249,11 +363,11 @@ pub(super) fn prepare(
     validate(&original.0)?;
     let known = read(&reference, true)?;
     let native_rows = read(&original, false)?;
-    let weapon_shape;
-    let shape = if first_person {
+    let reference_shape;
+    let known_shape = if first_person {
         slots
             .shapes()
-            .get(&u16::try_from(bones)?)
+            .get(&u16::try_from(known[4].len())?)
             .context("rig controls lack calibrated clip slots")?
     } else {
         ensure!(
@@ -261,33 +375,47 @@ pub(super) fn prepare(
             "weapon control slot counts differ"
         );
         let count = u16::try_from(known[1].len())?;
+        reference_shape = clips::slots::Shape {
+            native_slots: count,
+            map: (0..count).map(Some).collect(),
+        };
+        &reference_shape
+    };
+    ensure!(
+        lower(&known, known_shape)? == native_rows,
+        "paired rig control format evidence differs"
+    );
+    let rows = read(&modern, true)?;
+    ensure!(
+        rows[4].len() == bones,
+        "source rig control shape differs from calibration"
+    );
+    // Only bone references may change a validated control operation here. New
+    // operations need their own evidence instead of borrowing an unrelated row.
+    let operations = known[1]
+        .iter()
+        .map(|row| operation(row))
+        .collect::<BTreeSet<_>>();
+    for row in &rows[1] {
+        ensure!(
+            operations.contains(&operation(row)),
+            "source rig control operation has no native format evidence"
+        );
+    }
+    let weapon_shape;
+    let shape = if first_person {
+        slots
+            .shapes()
+            .get(&u16::try_from(bones)?)
+            .context("source rig lacks calibrated control slots")?
+    } else {
+        let count = u16::try_from(rows[1].len())?;
         weapon_shape = clips::slots::Shape {
             native_slots: count,
             map: (0..count).map(Some).collect(),
         };
         &weapon_shape
     };
-    ensure!(
-        lower(&known, shape)? == native_rows,
-        "paired rig control format evidence differs"
-    );
-    let rows = read(&modern, true)?;
-    ensure!(
-        rows[4].len() == bones && rows[1].len() == known[1].len(),
-        "source rig control shape differs from calibration"
-    );
-    // Only bone references may change a validated control operation here. New
-    // operations need their own evidence instead of borrowing an unrelated row.
-    for (row, template) in rows[1].iter().zip(&known[1]) {
-        let mut signature = row.clone();
-        for at in [4, 10, 24, 30, 44] {
-            signature[at..at + 2].copy_from_slice(&template[at..at + 2]);
-        }
-        ensure!(
-            signature == *template,
-            "source rig control operation has no native format evidence"
-        );
-    }
     let converted = lower(&rows, shape)?;
     let mut result = original.clone();
     let base = result.pointer(24)?;

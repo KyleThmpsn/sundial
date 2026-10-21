@@ -358,6 +358,8 @@ pub struct WeaponCloneOverrides {
     pub imported_graph: Option<parhelion_import::GraphReference>,
     /// Optional Collections override. `None` derives the ammo and weapon-type destination.
     pub collection_destination: Option<crate::collection::Destination>,
+    /// Where the item sits among a stock Collections page's entries, `None` for automatic.
+    pub collection_position: Option<crate::collection::Position>,
     pub exclude_from_sunrise_badge: bool,
     pub badge: Option<crate::presentation::Badge>,
     pub corner_icon: Option<crate::presentation::Artwork>,

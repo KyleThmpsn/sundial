@@ -15,6 +15,7 @@ mod spill;
 mod transaction_safety;
 mod uninstall;
 mod validation;
+mod validation_reuse;
 
 fn test_manifest_sunrise_json() -> serde_json::Value {
     json!({

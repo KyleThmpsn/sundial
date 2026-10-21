@@ -40,6 +40,8 @@ $parts.Add("")
 $parts.Add("Generated from Cargo.lock for target $Target.")
 $parts.Add("Each package and bundled asset remains licensed by its respective authors under the terms shown below.")
 $parts.Add("")
+$parts.Add((Get-Content -LiteralPath "crates/parhelion-import/src/halo_reach/level/mission/NOTICE" -Raw).TrimEnd())
+$parts.Add("")
 foreach ($package in $packages) {
     $parts.Add("")
     $parts.Add("## $($package.name) $($package.version)")

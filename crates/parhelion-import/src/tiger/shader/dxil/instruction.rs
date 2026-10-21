@@ -9,7 +9,7 @@ pub(super) struct Emitter<'a> {
     pub resources: BTreeMap<(u32, u32), (u32, u32)>,
 }
 
-fn call(code: &str) -> Result<(&str, &str, Vec<&str>)> {
+pub(crate) fn call(code: &str) -> Result<(&str, &str, Vec<&str>)> {
     let (typ, rest) = code
         .strip_prefix("call ")
         .context("Expected DXIL call")?

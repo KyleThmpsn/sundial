@@ -343,6 +343,7 @@ fn duplicate_preserves_draft_mechanics_and_allocates_a_fresh_identity() {
     app.recipe_entries.push(RecipeLibraryEntry {
         kind: first_copy.kind,
         collection_destination: None,
+        collection_position: None,
         armor_class: None,
         armor_origin: None,
         badge: None,

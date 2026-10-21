@@ -24,14 +24,34 @@ pub(super) fn linearize(
     type Copy =
         unsafe extern "system" fn(*mut c_void, *mut u8, u32, u32, *const u8, u32, u32) -> i32;
     type Create = unsafe extern "system" fn(*const u32, *mut *mut c_void) -> i32;
-    let configured = path
-        .map(Path::to_owned)
-        .or_else(|| std::env::var_os("PARHELION_D1_XG").map(PathBuf::from));
-    let path = configured.unwrap_or_else(|| PathBuf::from("xgpc.dll"));
-    // SAFETY: The configured platform library exposes the checked 2014 or 2018
-    // XG ABI. It stays loaded until all objects and calls below have finished.
-    let library = unsafe { libloading::Library::new(&path) }
-        .with_context(|| format!("Load Xbox texture library {}", path.display()))?;
+    let tool = crate::tools::Tool::Xg;
+    let candidates = path.map_or_else(
+        || crate::tools::libraries(tool),
+        |path| vec![path.to_owned()],
+    );
+    // A library that exists but fails to load names the loader's reason, which a missing
+    // dependency or another architecture gives.
+    let mut failures = Vec::new();
+    let library = candidates
+        .iter()
+        .find_map(|path| {
+            // SAFETY: The configured platform library exposes the checked 2014 or 2018
+            // XG ABI. It stays loaded until all objects and calls below have finished.
+            unsafe { libloading::Library::new(path) }
+                .map_err(|error| {
+                    if path.exists() {
+                        failures.push(format!("{}: {error}", path.display()));
+                    }
+                })
+                .ok()
+        })
+        .with_context(|| {
+            if failures.is_empty() {
+                tool.missing()
+            } else {
+                format!("{}\n{}", tool.missing(), failures.join("\n"))
+            }
+        })?;
     let descriptor = [
         u32::from(header.u16(0x30)?),
         u32::from(header.u16(0x32)?),

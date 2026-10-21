@@ -31,8 +31,10 @@ const PROPERTIES: (usize, usize) = (0x334, 0x1C);
 const SYSTEM_DECALS: (usize, usize) = (0x2C, 0x98);
 const DECAL_RENDER_METHOD: usize = 0x08;
 /// How far a decal's triangles stand off the surface they were projected onto, in meters along
-/// their normals, so they do not fight its depth.
-const STANDOFF: f32 = 0.005;
+/// their normals, so they do not fight its depth. Reach draws them with a depth bias instead. At
+/// 5 mm, Breakneck's scorch marks on its tiled walls showed only on some tiles, with tile-shaped
+/// holes where the raised tile faces stood in front of them.
+const STANDOFF: f32 = 0.03;
 
 /// The decals of the structure BSP `tag` at `at` as primitives, whose materials follow
 /// `materials`, to which their decal systems' materials are added. A BSP without decal geometry
@@ -49,7 +51,7 @@ pub(super) fn read(
         return Ok(Vec::new());
     }
     let properties = cache.block(at + PROPERTIES.0, PROPERTIES.1)?;
-    let geometry = Geometry::read(cache, tag, at + GEOMETRY, true)
+    let geometry = Geometry::read(cache, tag, at + GEOMETRY)
         .with_context(|| format!("Decal geometry of {}", tag.path))?;
     let mut sections = BTreeMap::new();
     let mut systems = BTreeMap::<u32, usize>::new();
@@ -220,6 +222,7 @@ fn vertices(
                 "A decal vertex is not finite"
             );
             Ok(Vertex {
+                water_uv: None,
                 position: std::array::from_fn(|k| at[k] + normal[k] * STANDOFF),
                 normal,
                 tangent: [tangent[0], tangent[1], tangent[2], 1.],
@@ -228,6 +231,7 @@ fn vertices(
                 weights: [1., 0., 0., 0.],
                 source: vertex,
                 lightmap: None,
+                lighting: None,
             })
         })
         .collect()

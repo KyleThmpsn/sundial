@@ -235,8 +235,8 @@ pub(crate) fn prepare_one_reusing(
     // A glaive keeps its own first-person rig, which the shipped calibration pairs with the
     // glaive base's.
     let glaive = super::glaive::exported_glaive(&source_path)?;
-    let source_owned = row["source_owned_rig"] == true || glaive;
-    let calibration = rig_calibration(row, donor, glaive)?;
+    let mut source_owned = row["source_owned_rig"] == true || glaive;
+    let mut calibration = rig_calibration(row, donor, glaive)?;
     ensure!(
         !source_owned || calibration.is_some(),
         "source-owned rig needs a calibration rig export"
@@ -276,13 +276,40 @@ pub(crate) fn prepare_one_reusing(
             ));
         }
     }
+    if matches.is_empty() && !source_owned {
+        // A source can have a different weapon section while retaining the shared arms.
+        // Carry its private rig instead of requiring those new bones in stock geometry.
+        let pairs = rig_convert::owned::validate(&source_rig, &native_rig)?;
+        let (source_owner, owner, _) = pairs.iter().find(|(_, _, fp)| !fp).context("weapon rig")?;
+        ensure!(
+            from["owner"] == format!("{source_owner:08X}"),
+            "geometry does not select the equipment rig"
+        );
+        let config = json!({"source":source_path,"native":native_path,"source_geometry":source_path,"source_owner":from["owner"],"native_owner":format!("{owner:08X}"),"source_owned":true});
+        let mapping =
+            rig_convert::compatible_map(&config, &source["item_tag"], &template["item_tag"])?;
+        progress("Calibrating the source weapon rig…".into());
+        calibration = Some(rig_convert::owned::calibration(
+            modern,
+            donor,
+            &folder.join("calibration"),
+        )?);
+        source_owned = true;
+        matches.push((
+            mapping["native_bone_count"]
+                .as_u64()
+                .context("source bone count")?,
+            config,
+            mapping,
+        ));
+    }
     matches.sort_by_key(|(count, _, _)| *count);
     let (_, rig, mapping) = matches
         .first()
         .context("native donor lacks a matching source bone hierarchy")?;
     let namespace = super::compatibility::namespace(hash);
     let id = identity(&namespace)?;
-    let use_rig = !(rigid_root(mapping) && has_rigid_carrier(&template)?);
+    let use_rig = source_owned || !(rigid_root(mapping) && has_rigid_carrier(&template)?);
     progress("Checking all model parts against donor materials…".into());
     let stride = if use_rig { 24 } else { 20 };
     let mut template = template;
@@ -693,6 +720,7 @@ pub(crate) fn donors_with_reader(
             fs::create_dir_all(&folder)?;
             write_json(&folder.join("rig.json"), &report)?;
             let mut reasons = Vec::new();
+            let first_match = matches.len();
             for to in report["skeletons"].as_array().context("native skeletons")? {
                 let config = json!({"source":source,"source_geometry":source,"native":folder,"source_owner":from["owner"],"native_owner":to["owner"]});
                 match rig_convert::compatible_map_loaded(
@@ -714,12 +742,25 @@ pub(crate) fn donors_with_reader(
                     Err(error) => reasons.push(format!("{error:#}")),
                 }
             }
+            if matches.len() == first_match {
+                // Full payload, control and clip checks still run in prepare_one_reusing.
+                // Discovery only establishes the shared attachment boundary here.
+                match rig_convert::owned::validate(&source_rig, &report) {
+                    Ok(pairs)
+                        if pairs.iter().any(|(owner, _, fp)| {
+                            !fp && from["owner"] == format!("{owner:08X}")
+                        }) =>
+                    {
+                        matches.push(json!({"name":row["name"],"hash":hash,"exotic":exotic,"rarity":rarity,"bucket":row["bucket_hash"],"content_key":report["content_key"],"collection_backed":row["collection_backed"],"unrelated_collection_condition":row["unrelated_collection_condition"],"mapping":{"source_owned":true,"native_bone_count":from["bones"].as_array().context("source bones")?.len()}}));
+                    }
+                    Ok(_) => {
+                        reasons.push("source geometry does not select the equipment rig".into())
+                    }
+                    Err(error) => reasons.push(format!("source-owned rig: {error:#}")),
+                }
+            }
             ensure!(
-                reasons.len()
-                    < report["skeletons"]
-                        .as_array()
-                        .context("native skeletons")?
-                        .len(),
+                matches.len() > first_match,
                 "no compatible skeleton: {}",
                 reasons.join("; ")
             );

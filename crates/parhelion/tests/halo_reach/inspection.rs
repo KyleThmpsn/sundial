@@ -15,7 +15,7 @@ pub(super) fn verify(
     stock: &mut Reader,
     recipe: &WeaponRecipe,
     graph: &Value,
-    directory: &Path,
+    source: &Value,
     display_scale: f32,
 ) -> Result<Option<Value>> {
     if graph.get("inspection").is_none() {
@@ -36,12 +36,6 @@ pub(super) fn verify(
     ensure!(radius > 0., "Empty native display bounds");
     // The runtime mesh includes broken permutations. Inventory must match the
     // separately exported intact source, not that expanded runtime mesh.
-    let source: Value = serde_json::from_slice(&fs::read(
-        directory
-            .parent()
-            .context("Import directory")?
-            .join("source/source.json"),
-    )?)?;
     let source_models = source["models"].as_array().context("Source models")?;
     ensure!(
         source_models.len() == 1 && source_models[0]["parent"].is_null(),

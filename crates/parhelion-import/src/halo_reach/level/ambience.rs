@@ -226,9 +226,16 @@ fn layers(cache: &Cache, tag: &Tag) -> Result<(Vec<Layer>, Option<u16>)> {
     Ok((layers, limit))
 }
 
-/// The level's sounds and where each plays: area loops at their clusters, and placed loops.
+/// The level's sounds and where each plays: area loops at the clusters of `bsps`, and the loops of
+/// the sound scenery placed in them ([`super::objects::placed_in`]). Winter Contingency's
+/// `zoneset_insert` loads three of its BSPs, and 190 of its looping sound placements, such as the
+/// windmills in its fifth, belong to others.
 #[allow(clippy::type_complexity)]
-fn placements(cache: &Cache, offset: [f32; 3]) -> Result<(Vec<Sound>, Vec<(usize, [f32; 3])>)> {
+fn placements(
+    cache: &Cache,
+    bsps: &[Tag],
+    offset: [f32; 3],
+) -> Result<(Vec<Sound>, Vec<(usize, [f32; 3])>)> {
     let mut sounds = Vec::<Sound>::new();
     let mut emitters = Vec::new();
     let mut add = |sound: Sound, position: [f32; 3]| {
@@ -241,8 +248,8 @@ fn placements(cache: &Cache, offset: [f32; 3]) -> Result<(Vec<Sound>, Vec<(usize
         };
         emitters.push((index, std::array::from_fn(|k| position[k] + offset[k])));
     };
-    for bsp in super::bsps(cache)? {
-        let at = bsp.tag.address()?;
+    for bsp in bsps {
+        let at = bsp.address()?;
         let areas = cache
             .block(at + AREAS.0, AREAS.1)?
             .into_iter()
@@ -334,6 +341,7 @@ fn placements(cache: &Cache, offset: [f32; 3]) -> Result<(Vec<Sound>, Vec<(usize
         }
     }
     let scenario = cache.only("scnr")?.address()?;
+    let loaded = super::bsp_mask(cache, bsps)?;
     let palette = cache
         .block(scenario + SCENERY_PALETTE.0, SCENERY_PALETTE.1)?
         .into_iter()
@@ -352,6 +360,9 @@ fn placements(cache: &Cache, offset: [f32; 3]) -> Result<(Vec<Sound>, Vec<(usize
         })
         .collect::<Result<Vec<_>>>()?;
     for row in cache.block(scenario + SCENERY.0, SCENERY.1)? {
+        if !super::objects::placed_in(cache, row, loaded)? {
+            continue;
+        }
         let Some(source) = usize::try_from(cache.i16(row)?)
             .ok()
             .and_then(|index| palette.get(index))
@@ -472,9 +483,13 @@ fn fnv1a64(text: &str) -> u64 {
 
 /// Adds the level's ambience to `graph`: media, banks, attenuations and sound records for its
 /// sounds, and a copy of the donor's sound point table placing them. Returns the table's symbol,
-/// or none when the level places no looping sound, and a report.
+/// or none when the level places no looping sound, and a report. `bsps` are the structure BSPs the
+/// level loads.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn add(
     cache: &Cache,
+    pages: &mut crate::halo_reach::resource::Pages,
+    bsps: &[Tag],
     maps: &Path,
     map: &str,
     native: &mut Reader,
@@ -482,7 +497,7 @@ pub(super) fn add(
     templates: &Templates,
     offset: [f32; 3],
 ) -> Result<(Option<String>, Value)> {
-    let (sounds, emitters) = placements(cache, offset)?;
+    let (sounds, emitters) = placements(cache, bsps, offset)?;
     if emitters.is_empty() {
         return Ok((None, json!({"points": 0})));
     }
@@ -522,6 +537,8 @@ pub(super) fn add(
         .flat_map(|layer| layer.media.iter().copied())
         .collect::<BTreeSet<_>>();
     let fsb = maps.join("../fmod/pc/sfx.fsb");
+    pages.record(&fsb.canonicalize()?)?;
+    pages.record(&templates.decoder.canonicalize()?)?;
     let (decoded, missing) = audio::decode(
         &fsb,
         &templates.decoder,

@@ -16,6 +16,23 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
+fn dynamic_location(effect: &Value, part: &Value) -> Result<Option<String>> {
+    let location = part["location"]
+        .as_i64()
+        .context("Source effect location")?;
+    if location < 0 {
+        return Ok(None);
+    }
+    let marker = effect["locations"][usize::try_from(location)?]["name"]
+        .as_str()
+        .context("Source effect location name")?;
+    // The ReachMCC effect schema supplies these frames at runtime. In
+    // particular, gravity and up are not sockets on the render model.
+    Ok(matches!(marker, "gravity" | "up").then(|| {
+        format!("Source effect location {marker} requires a runtime gravity-aligned frame")
+    }))
+}
+
 fn repeat(scheduled: &mut Vec<Node>, effect: &Value, prefix: &str, loop_start: i64) -> Result<()> {
     if loop_start >= 0 {
         let index = usize::try_from(loop_start)?;
@@ -342,6 +359,11 @@ impl Compiler<'_> {
                 pending.push(json!({"event":event_index,"part":part_index,"source":source,"status":"Separate effect part translation"}));
                 continue;
             }
+            if let Some(reason) = dynamic_location(effect, part)? {
+                pending.push(json!({"event":event_index,"part":part_index,
+                    "source":source,"reasons":[reason]}));
+                continue;
+            }
             ensure!(
                 part["environment"] == 0
                     && part["violence"] == 0
@@ -401,6 +423,7 @@ impl Compiler<'_> {
         })
     }
 
+    #[allow(clippy::cognitive_complexity)]
     fn effect(
         &mut self,
         tag: &Tag,
@@ -452,6 +475,11 @@ impl Compiler<'_> {
                 .enumerate()
             {
                 if system["tag"].is_null() {
+                    continue;
+                }
+                if let Some(reason) = dynamic_location(&effect, system)? {
+                    pending.push(json!({"event":event_index,"system":system_index,
+                        "source":system["tag"],"reasons":[reason]}));
                     continue;
                 }
                 for (emitter_index, emitter) in system["emitters"]

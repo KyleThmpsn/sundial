@@ -28,6 +28,7 @@ pub(super) struct Assembly {
     allocations: BTreeMap<u32, String>,
     resources: BTreeMap<u32, BTreeMap<usize, String>>,
     runtime_ends: BTreeMap<u32, usize>,
+    registration_entities: BTreeMap<u32, Payload>,
 }
 
 fn patches(graph: &Graph, symbol: &str) -> Result<Vec<Value>> {
@@ -96,6 +97,7 @@ impl Assembly {
             allocations: BTreeMap::new(),
             resources: BTreeMap::new(),
             runtime_ends: BTreeMap::new(),
+            registration_entities: BTreeMap::new(),
         })
     }
 
@@ -661,7 +663,10 @@ impl Assembly {
                 owner: *owner,
                 payload: &self.payloads[owner],
                 template: &templates[owner],
-                entity: &template_entity,
+                entity: self
+                    .registration_entities
+                    .get(owner)
+                    .unwrap_or(&template_entity),
             })
             .collect::<Vec<_>>();
         let connections = self.links.native_rows(

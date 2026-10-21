@@ -357,12 +357,12 @@ impl WorkspaceDocument {
                 database_path: self.database_path.clone(),
                 contract: "JSON schema selected by settings.json version",
             },
-            AccountDocument::Sqlite(_) => AccountSourceInfo {
+            AccountDocument::Sqlite(document) => AccountSourceInfo {
                 kind: AccountSourceKind::Sqlite,
                 label: "investment.sqlite3",
                 detail: "Account data is saved to investment.sqlite3. Identity and runtime configuration stay in settings.json.".to_owned(),
                 database_path: self.database_path.clone(),
-                contract: "SQLite (Schema 2)",
+                contract: document.schema().label(),
             },
             AccountDocument::Dawn(_) => AccountSourceInfo {
                 kind: AccountSourceKind::Dawn,

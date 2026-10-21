@@ -258,6 +258,14 @@ fn check(scores: &BTreeMap<(u16, u16), u32>, shape: &Shape) -> Result<()> {
 pub struct Table {
     shapes: BTreeMap<u16, Shape>,
     slot_markers: BTreeSet<u32>,
+    owned: Option<Owned>,
+}
+
+#[derive(Debug)]
+struct Owned {
+    groups: Vec<(u32, u32)>,
+    bones: Vec<u16>,
+    shape: Shape,
 }
 
 impl Table {
@@ -361,8 +369,39 @@ impl Table {
         &self.shapes
     }
 
+    /// A private rig's serialized control order defines its newly authored slots. Callers
+    /// must validate the shared controls against a clip-calibrated native counterpart first.
+    pub(crate) fn insert_owned_shape(&mut self, bones: u16, shape: Shape) -> Result<()> {
+        ensure!(
+            shape
+                .map
+                .iter()
+                .flatten()
+                .copied()
+                .eq(0..shape.native_slots),
+            "private rig slots are not dense and ordered"
+        );
+        if let Some(existing) = self.shapes.get(&bones) {
+            ensure!(
+                *existing == shape,
+                "private rig conflicts with calibrated clip slots"
+            );
+        } else {
+            self.shapes.insert(bones, shape);
+        }
+        Ok(())
+    }
+
     pub fn slot_markers(&self) -> &BTreeSet<u32> {
         &self.slot_markers
+    }
+
+    pub(crate) fn owned_groups(&mut self, groups: Vec<(u32, u32)>, bones: Vec<u16>, shape: Shape) {
+        self.owned = Some(Owned {
+            groups,
+            bones,
+            shape,
+        });
     }
 
     /// Rewrite a converted clip, which already has the native layout, onto native slots.
@@ -372,11 +411,86 @@ impl Table {
     /// numbers change. Returns how many tracks were renumbered.
     pub fn apply(&self, clip: &mut Payload) -> Result<usize> {
         let (bones, declared) = counts(clip, NATIVE_COUNTS)?;
+        if !self.shapes.contains_key(&bones) && self.owned.is_some() {
+            return self.apply_groups(clip, declared);
+        }
         let shape = self
             .shapes
             .get(&bones)
             .with_context(|| format!("no paired clip establishes slots for a {bones}-bone rig"))?;
         self.apply_shape(clip, declared, shape)
+    }
+
+    /// The native mixer consumes matching leading control groups. Borrowed motion
+    /// may carry a foreign weapon group, whose constant tracks can be excluded.
+    /// Group identity and count establish the shared slots, never total rig size.
+    fn apply_groups(&self, clip: &mut Payload, declared: u16) -> Result<usize> {
+        let owned = self.owned.as_ref().context("private control groups")?;
+        let rows = clip.array(MARKERS, 8, Some(0x8080_907F))?;
+        let groups = rows
+            .iter()
+            .map(|at| Ok((clip.u32(*at)?, clip.u32(*at + 4)?)))
+            .collect::<Result<Vec<_>>>()?;
+        ensure!(
+            groups
+                .iter()
+                .map(|(_, count)| u64::from(*count))
+                .sum::<u64>()
+                == u64::from(declared),
+            "borrowed clip groups do not cover its slots"
+        );
+        let common = groups
+            .iter()
+            .zip(&owned.groups)
+            .take_while(|(a, b)| a == b)
+            .count();
+        ensure!(common > 0, "borrowed clip has no shared control groups");
+        let retained = groups[..common]
+            .iter()
+            .map(|(_, count)| *count as usize)
+            .sum::<usize>();
+        let prefix = owned
+            .shape
+            .map
+            .get(..retained)
+            .context("shared group slots")?;
+        let bones = owned
+            .bones
+            .get(..retained)
+            .context("shared group bones")?
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        ensure!(
+            bones.iter().copied().eq(0..u16::try_from(retained)?),
+            "shared control groups do not cover a complete bone prefix"
+        );
+        let native_slots = u16::try_from(prefix.iter().flatten().count())?;
+        ensure!(
+            prefix.iter().flatten().copied().eq(0..native_slots),
+            "shared control groups do not cover a native slot prefix"
+        );
+        let mut map = prefix.to_vec();
+        map.resize(usize::from(declared), None);
+        let changed = self.apply_shape(clip, declared, &Shape { native_slots, map })?;
+        clip.0[NATIVE_COUNTS..NATIVE_COUNTS + 2]
+            .copy_from_slice(&u16::try_from(retained)?.to_le_bytes());
+        let mut start = 0;
+        for (index, at) in rows.iter().enumerate() {
+            if index < common {
+                let end = start + groups[index].1 as usize;
+                let count = u32::try_from(prefix[start..end].iter().flatten().count())?;
+                clip.0[*at + 4..*at + 8].copy_from_slice(&count.to_le_bytes());
+                start = end;
+            } else {
+                clip.0[*at..*at + 8].fill(0);
+            }
+        }
+        let header = clip.pointer(MARKERS + 8)?;
+        let count = u64::try_from(common)?.to_le_bytes();
+        clip.0[MARKERS..MARKERS + 8].copy_from_slice(&count);
+        clip.0[header..header + 8].copy_from_slice(&count);
+        Ok(changed)
     }
 
     /// Project onto a calibrated prefix rig. Only constant trailing tracks can

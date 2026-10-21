@@ -36,7 +36,7 @@ pub use audio::Options as AudioOptions;
 pub use native::{DriverPose, ImportRequest, Optic, OpticView, Reticle, Sights, prepare};
 
 use anyhow::{Context, Result, ensure};
-pub use cache::Tag;
+pub use cache::{BUILD, Tag};
 pub use object::Object;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

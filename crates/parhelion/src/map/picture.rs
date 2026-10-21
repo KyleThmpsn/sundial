@@ -18,7 +18,7 @@ use crate::{
     tag_payload::{array_at, read_tag, read_u16, read_u32},
 };
 
-use super::{MapSource, Picture};
+use super::{MapRecipe, Picture};
 
 /// The item icon table's rows at `+0x08`: 24 bytes, the container at `+0x10`.
 const ICON_ROWS: usize = 0x08;
@@ -48,6 +48,41 @@ const LAYER_WORDS: [(usize, u32); 13] = [
 const HEADER_WIDTH: usize = 0x0E;
 const HEADER_HEIGHT: usize = 0x10;
 
+/// A stock activity's landscape artwork for the chooser, decoded through the shared texture reader.
+pub(super) fn preview(
+    manager: &PackageManager,
+    icons: &[u8],
+    row: u32,
+) -> AuthoringResult<RgbaImage> {
+    let (count, _, rows, class) = array_at(icons, ICON_ROWS)?;
+    let row =
+        usize::try_from(row).map_err(|_| invalid("Activity image index exceeds address space"))?;
+    if class != ICON_ROW_CLASS || row >= count {
+        return Err(invalid("Activity image index leaves the icon table"));
+    }
+    let container = TagHash(read_u32(
+        icons,
+        rows + row * ICON_ROW_SIZE + ICON_ROW_CONTAINER,
+    )?);
+    let layer = TagHash(read_u32(
+        &read_tag(manager, container, "activity image")?,
+        ICON_PRIMARY_LAYER_OFFSET,
+    )?);
+    let payload = read_tag(manager, layer, "activity image layer")?;
+    let references = crate::icon_edit::texture_reference_offsets(&payload, layer)?;
+    let (_, header) = references
+        .get(1)
+        .or_else(|| references.first())
+        .ok_or_else(|| invalid("Activity image has no textures"))?;
+    let pixels = crate::icon_edit::decode_texture(manager, *header).map_err(invalid)?;
+    Ok(image::imageops::resize(
+        &pixels,
+        200,
+        112,
+        FilterType::Triangle,
+    ))
+}
+
 /// The picture of map `map`, named `name`, whose donor's private match display names
 /// `donor_row` of the item icon table `icons`, or `None` when its source level has no picture.
 pub(super) fn load(
@@ -56,11 +91,20 @@ pub(super) fn load(
     donor_row: u32,
     map: usize,
     name: &str,
-    source: &MapSource,
+    recipe: &MapRecipe,
 ) -> AuthoringResult<Option<Picture>> {
-    let Some(level) = parhelion_import::halo_reach::level::picture::read(&source.maps, &source.map)
-        .map_err(|error| invalid(format!("Map {name} picture: {error:#}")))?
-    else {
+    let source = if let Some(image) = &recipe.image {
+        image.pixels().clone()
+    } else if let Some(source) = &recipe.source {
+        let Some(level) =
+            parhelion_import::halo_reach::level::picture::read(&source.maps, &source.map)
+                .map_err(|error| invalid(format!("Map {name} picture: {error:#}")))?
+        else {
+            return Ok(None);
+        };
+        RgbaImage::from_raw(level.width, level.height, level.rgba)
+            .ok_or_else(|| invalid(format!("Map {name}'s picture {} has no pixels", level.name)))?
+    } else {
         return Ok(None);
     };
     let (count, _, rows, class) = array_at(icons, ICON_ROWS)?;
@@ -94,8 +138,6 @@ pub(super) fn load(
         container,
         companion: read_and_validate_icon_companion(manager, container)?.tag,
     };
-    let source = RgbaImage::from_raw(level.width, level.height, level.rgba)
-        .ok_or_else(|| invalid(format!("Map {name}'s picture {} has no pixels", level.name)))?;
     let pixels = donor
         .textures
         .map(|texture| fit(&source, texture.width, texture.height));

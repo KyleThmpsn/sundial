@@ -176,6 +176,7 @@ fn draw_recipe_search(
     query: &mut String,
     sort: &mut SortOrder,
     kind: &mut Option<ItemKind>,
+    activities_only: &mut bool,
     focus: &mut bool,
 ) {
     ui.horizontal(|ui| {
@@ -193,11 +194,38 @@ fn draw_recipe_search(
         }
         egui::ComboBox::from_id_salt((id, "kind"))
             .width(132.0)
-            .selected_text(kind.map_or("All Items", ItemKind::plural))
+            .selected_text(if *activities_only {
+                "Activities"
+            } else {
+                kind.map_or("All Items", ItemKind::plural)
+            })
             .show_ui(ui, |ui| {
-                ui.selectable_value(kind, None, "All Items");
+                if ui
+                    .selectable_label(kind.is_none() && !*activities_only, "All Items")
+                    .clicked()
+                {
+                    *kind = None;
+                    *activities_only = false;
+                }
+                #[cfg(feature = "d2-model-importer")]
+                if ui
+                    .selectable_label(*activities_only, "Activities")
+                    .clicked()
+                {
+                    *kind = None;
+                    *activities_only = true;
+                }
                 for option in ItemKind::ALL {
-                    ui.selectable_value(kind, Some(option), option.plural());
+                    if ui
+                        .selectable_label(
+                            *kind == Some(option) && !*activities_only,
+                            option.plural(),
+                        )
+                        .clicked()
+                    {
+                        *kind = Some(option);
+                        *activities_only = false;
+                    }
                 }
             });
         egui::ComboBox::from_id_salt(id)
@@ -429,9 +457,9 @@ fn draw_library_row(
 /// A map's row details: what it is, and the game its level comes from.
 fn map_details(map: &crate::recipe_library::MapLibraryEntry) -> &'static str {
     if map.source {
-        "Crucible Map · Halo: Reach"
+        "Activity · Halo: Reach"
     } else {
-        "Crucible Map"
+        "Activity"
     }
 }
 
@@ -456,8 +484,8 @@ fn matching_maps<'a>(
 }
 
 /// A map's row, drawn as a recipe's is, with a map glyph for its icon. With `inclusion` it
-/// carries a build selection checkbox, and without one it opens nothing, as maps have no editor.
-/// Returns whether the selection toggled.
+/// carries a build selection checkbox, and without one it opens the activity editor.
+/// Returns whether the row was activated.
 fn draw_map_row(
     ui: &mut egui::Ui,
     map: &crate::recipe_library::MapLibraryEntry,
@@ -475,15 +503,7 @@ fn draw_map_row(
             egui::vec2(ui.available_width(), row_height),
             egui::Sense::hover(),
         );
-        let response = ui.interact(
-            rect,
-            ui.make_persistent_id("map-row"),
-            if inclusion.is_some() {
-                egui::Sense::CLICK
-            } else {
-                egui::Sense::hover()
-            },
-        );
+        let response = ui.interact(rect, ui.make_persistent_id("map-row"), egui::Sense::CLICK);
         let visuals = ui.style().interact_selectable(&response, current);
         let fill = if current {
             ui.visuals().selection.bg_fill
@@ -585,7 +605,7 @@ fn draw_map_row(
                 ui.label(if inclusion.is_some() {
                     "Toggle selection"
                 } else {
-                    "Maps have no editor yet"
+                    "Open activity recipe"
                 });
             })
             .clicked();
@@ -814,6 +834,7 @@ impl PackageAuthoringApp {
                     &mut self.build_selection_query,
                     &mut self.library_state.sort,
                     &mut self.library_state.kind,
+                    &mut self.library_state.activities_only,
                     &mut self.recipe_search_focus_pending,
                 );
                 let query = self.build_selection_query.trim().to_lowercase();

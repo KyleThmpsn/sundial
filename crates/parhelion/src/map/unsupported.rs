@@ -30,6 +30,7 @@ impl Plan {
         _manager: &PackageManager,
         recipes: Vec<MapRecipe>,
         _string_floor: u32,
+        _report: &mut dyn FnMut(&str),
     ) -> AuthoringResult<Self> {
         if recipes.is_empty() {
             Ok(Self::default())
@@ -50,15 +51,20 @@ impl Plan {
         0
     }
 
+    pub(crate) fn part_count(&self, _index: usize, _part: Part) -> usize {
+        0
+    }
+
     pub(crate) fn family(&self, _index: usize, _part: Part) -> String {
         String::new()
     }
 
     pub(crate) fn registration(
         &self,
-        _id: u16,
+        _ids: &[u16],
         _tags: &[crate::NewTagSpec],
         _registered: &std::collections::BTreeSet<u16>,
+        _manager: &PackageManager,
     ) -> AuthoringResult<Vec<TagHash>> {
         Ok(Vec::new())
     }
@@ -68,7 +74,7 @@ impl Plan {
         &self,
         _index: usize,
         _part: Part,
-        _id: u16,
+        _ids: &[u16],
     ) -> AuthoringResult<(
         Vec<NewTagSpec>,
         Vec<NamedTag>,

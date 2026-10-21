@@ -41,6 +41,14 @@ pub(crate) fn digest_file(path: &Path) -> io::Result<FileDigest> {
     })
 }
 
+/// As [`digest_file`], for bytes already read, so a check that also parses a file reads it once.
+pub(crate) fn digest_bytes(bytes: &[u8]) -> FileDigest {
+    FileDigest {
+        byte_length: bytes.len() as u64,
+        sha256: hex::encode_upper(Sha256::digest(bytes)),
+    }
+}
+
 pub(crate) fn has_pkg_extension(path: &Path) -> bool {
     path.extension()
         .and_then(OsStr::to_str)

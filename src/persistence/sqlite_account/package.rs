@@ -69,6 +69,22 @@ pub(crate) fn preview_replacement(
     let mut source = open(path, false)?;
     let tx = source.transaction().map_err(err)?;
     validate(&tx)?;
+    if super::Schema::read(&tx).map_err(err)? == super::Schema::V3 {
+        for hash in hashes {
+            let referenced: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM starter_items WHERE definition_hash=?)",
+                    [i64::from(*hash)],
+                    |row| row.get(0),
+                )
+                .map_err(err)?;
+            if referenced {
+                return Err(format!(
+                    "Cannot remove definition 0x{hash:08X} because starter_items still references it. Update the starter loadout in Sunrise before removing this content"
+                ));
+            }
+        }
+    }
     let original_bytes = capture(&tx)?;
     let mut staged = Connection::open_in_memory().map_err(err)?;
     rusqlite::backup::Backup::new(&tx, &mut staged)

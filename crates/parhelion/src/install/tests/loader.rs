@@ -24,6 +24,8 @@ use crate::install::loader as backend;
 use sundial::package_authoring::mod_content;
 mod coexistence;
 mod compliance;
+mod diagnostics;
+mod family;
 
 pub(super) fn fixture() -> Fixture {
     let mut fixture = Fixture::new();
@@ -174,15 +176,17 @@ pub(super) fn account(fixture: &Fixture, schema: u64) -> (PathBuf, Vec<u8>) {
     fs::write(
         &settings,
         serde_json::to_vec(&json!({
-            "version": schema, "unknown": {"keep": true},
+            "version": if schema == 3 { 18 } else { schema }, "unknown": {"keep": true},
             "state": {"characters": [{"inventory": [{"hash": 1234, "sockets": [77, 88]}]}]}
         }))
         .unwrap(),
     )
     .unwrap();
-    let path = if schema == 18 {
+    let path = if schema == 18 || schema == 3 {
         let path = root.join("data/investment.sqlite3");
         let db = rusqlite::Connection::open(&path).unwrap();
+        // Initialize the complete resource set in one transaction to avoid a disk sync per row.
+        db.execute_batch("BEGIN").unwrap();
         for sql in [
             include_str!(
                 "../../../../../src/persistence/sqlite_account/fixtures/investment_schema.sql"
@@ -199,7 +203,21 @@ pub(super) fn account(fixture: &Fixture, schema: u64) -> (PathBuf, Vec<u8>) {
         ] {
             db.execute_batch(sql).unwrap();
         }
+        if schema == 3 {
+            db.execute_batch(include_str!(
+                "../../../../../src/persistence/sqlite_account/fixtures/v3/migration.sql"
+            ))
+            .unwrap();
+            db.execute(
+                "UPDATE characters SET appearance_header=?,appearance_header_valid=1",
+                [vec![0x5a_u8; 36]],
+            )
+            .unwrap();
+            db.execute_batch("UPDATE starter_character SET level=42")
+                .unwrap();
+        }
         db.execute_batch("CREATE TABLE migration_extension(value TEXT); INSERT INTO migration_extension VALUES('retain');").unwrap();
+        db.execute_batch("COMMIT").unwrap();
         drop(db);
         path
     } else {
@@ -296,7 +314,7 @@ fn assert_retired_backup(fixture: &Fixture, retired: &BTreeMap<String, Vec<u8>>)
 
 #[test]
 fn install_retires_an_earlier_layout_and_preserves_persisted_accounts() {
-    let results = [8, 18]
+    let results = [8, 18, 3]
         .into_iter()
         .map(verify_lifecycle)
         .collect::<Vec<_>>();
@@ -327,6 +345,10 @@ fn verify_lifecycle(schema: u64) -> serde_json::Value {
     );
     assert_eq!(fs::read(&account).unwrap(), original_account);
     let report = install_staged_packages(&request(&fixture)).unwrap();
+    assert!(
+        report.backup_prune_warning.is_none(),
+        "Recovery backup retention is successful installation policy"
+    );
     let readback = assert_mod_readback(&fixture);
     let backup = assert_retired_backup(&fixture, &retired);
     // Reports name the canonical packages folder.
@@ -347,7 +369,7 @@ fn verify_lifecycle(schema: u64) -> serde_json::Value {
     verify_update_and_removal(&mut fixture, &account, &original_account, &stock);
     assert_eq!(fs::read(external_dll).unwrap(), runtime_before);
     assert_eq!(compliance::inventory(&fixture.target), directory_before);
-    if schema == 18 {
+    if schema == 18 || schema == 3 {
         assert_sqlite_account_kept(&account);
     }
     json!({"account_schema": schema, "stock": stock, "readback": readback,
@@ -384,6 +406,28 @@ fn assert_loader_manifest(directory: &Path) {
 /// A SQLite account keeps its migration extension and its items.
 fn assert_sqlite_account_kept(account: &Path) {
     let db = rusqlite::Connection::open(account).unwrap();
+    if db
+        .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+        .unwrap()
+        == 3
+    {
+        assert_eq!(
+            db.query_row(
+                "SELECT appearance_header FROM characters WHERE slot=0",
+                [],
+                |r| r.get::<_, Vec<u8>>(0)
+            )
+            .unwrap(),
+            vec![0x5a; 36]
+        );
+        assert_eq!(
+            db.query_row("SELECT level FROM starter_character", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            42
+        );
+    }
+
     assert_eq!(
         db.query_row("SELECT value FROM migration_extension", [], |row| row
             .get::<_, String>(0))
@@ -583,10 +627,15 @@ fn interrupted_install_with_an_account_change_recovers_on_the_side_it_reached() 
     // The first equipped definition of the SQLite defaults, which every character holds.
     const REMOVED: u32 = 3_843_477_312;
     let mut evidence = Vec::new();
-    for (stop, forward) in [("journaled", false), ("published", true)] {
+    for (schema, stop, forward) in [
+        (18, "journaled", false),
+        (18, "published", true),
+        (3, "journaled", false),
+        (3, "published", true),
+    ] {
         let fixture = fixture();
         let stock = compliance::inventory(&fixture.target);
-        let (path, _) = account(&fixture, 18);
+        let (path, _) = account(&fixture, schema);
         let held = item_count(&path, REMOVED);
         assert!(held > 0);
         let review =
@@ -619,8 +668,11 @@ fn interrupted_install_with_an_account_change_recovers_on_the_side_it_reached() 
             recover_interrupted_install(&recovery(&fixture)).unwrap(),
             RecoveryOutcome::NoTransaction
         ));
-        evidence.push(json!({"interruption": stop, "recovery": settled,
-            "account_sha256": hex::encode(Sha256::digest(fs::read(&path).unwrap()))}));
+        assert_sqlite_account_kept(&path);
+        evidence.push(
+            json!({"schema":schema,"interruption": stop, "recovery": settled,
+            "account_sha256": hex::encode(Sha256::digest(fs::read(&path).unwrap()))}),
+        );
     }
     crate::test_support::artifact("sunrise-mod-upgrade-account-recovery.json", &evidence);
 }
@@ -733,6 +785,64 @@ fn mod_update_and_uninstall_restore_the_previous_folder_after_interruption() {
     crate::test_support::artifact("sunrise-mod-update-recovery.json", &evidence);
 }
 
+/// Fails an install on a runtime without the mod loader after it retired the mod folder, at the
+/// last runtime check, or after `fail_after_commits` packages with a rollback, and returns the mod
+/// folder it left. Stock `packages` must be unchanged and no working folder left beside the mods.
+fn failed_install_restores(
+    fixture: &Fixture,
+    fail_after_commits: Option<usize>,
+    stock: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let root = fixture.target.parent().unwrap();
+    let mut failing = request(fixture);
+    if fail_after_commits.is_none() {
+        failing.runtime_feature_check = |packages| {
+            let mods = mod_content::directory(packages.parent().unwrap());
+            if mods.exists() {
+                Ok(())
+            } else {
+                Err("the mod folder is gone".into())
+            }
+        };
+    }
+    let error =
+        install_staged_packages_inner(&failing, fail_after_commits, DEFAULT_CACHE_INVALIDATION_OPS)
+            .unwrap_err();
+    let expected = if fail_after_commits.is_some() {
+        assert!(error.rollback.as_ref().unwrap().succeeded(), "{error}");
+        "Injected installation failure"
+    } else {
+        "Runtime check failed"
+    };
+    assert!(error.message.contains(expected), "{}", error.message);
+    let mods = mod_content::directory(root);
+    let leftovers: Vec<_> = fs::read_dir(mods.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".parhelion-"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+    assert_eq!(&compliance::inventory(&fixture.target), stock);
+    tree(&mods)
+}
+
+/// On `brand` `version`, which doesn't load mods, readers don't see `added` from the installed
+/// mod folder, nothing offers an upgrade, and removal reviews the folder's packages.
+fn inactive_runtime_ignores_the_mod_folder(
+    fixture: &Fixture,
+    brand: &str,
+    version: [u16; 4],
+    added: tiger_pkg::TagHash,
+) {
+    switch_runtime(fixture, brand, version);
+    let reader =
+        sundial::package_authoring::open_shadowkeep_package_manager(&fixture.target).unwrap();
+    assert!(reader.get_entry(added).is_none(), "{brand}");
+    assert!(preview_upgrade(&fixture.target).unwrap().is_none());
+    let removal = preview_uninstall(&fixture.target).unwrap();
+    assert_eq!(removal.artifacts().len(), fixture.staged_bytes.len());
+}
+
 #[test]
 fn switching_runtimes_keeps_reading_installing_and_removing_working() {
     let fixture = fixture();
@@ -744,14 +854,16 @@ fn switching_runtimes_keeps_reading_installing_and_removing_working() {
     // Dawn and Sunrise before 0.6 load stock `packages` alone, so readers see no mod content,
     // there is nothing to upgrade, and removal reviews the mod folder.
     for (brand, version) in [("Dawn", [0, 1, 3, 0]), ("Sunrise", [0, 5, 1, 0])] {
-        switch_runtime(&fixture, brand, version);
-        let reader =
-            sundial::package_authoring::open_shadowkeep_package_manager(&fixture.target).unwrap();
-        assert!(reader.get_entry(added).is_none(), "{brand}");
-        assert!(preview_upgrade(&fixture.target).unwrap().is_none());
-        let removal = preview_uninstall(&fixture.target).unwrap();
-        assert_eq!(removal.artifacts().len(), fixture.staged_bytes.len());
+        inactive_runtime_ignores_the_mod_folder(&fixture, brand, version, added);
     }
+    // An install there that fails after retiring the mod folder, at its last runtime check or by
+    // rolling back after publishing a package, puts the folder back and leaves no working copies
+    // beside it.
+    switch_runtime(&fixture, "Dawn", [0, 1, 3, 0]);
+    let restored = [None, Some(1)]
+        .map(|fail_after_commits| failed_install_restores(&fixture, fail_after_commits, &stock));
+    assert!(restored.iter().all(|folder| *folder == installed));
+    let [_, restored] = restored;
     // There an install goes to `packages` and retires the mod folder, with a backup, so it can't
     // load beside the new packages after a switch back. The other runtime's cache is cleared.
     let sunrise_cache = root.join("bin/x64/Sunrise/cache/build_data.bin");
@@ -766,7 +878,7 @@ fn switching_runtimes_keeps_reading_installing_and_removing_working() {
     let backup = report
         .retired_mod_backup
         .expect("the install names the retired mod folder's backup");
-    assert_eq!(tree(&backup.join("mod")), installed);
+    assert_eq!(tree(&backup.join("mods").join(mod_content::ID)), installed);
     assert!(!sunrise_cache.exists());
     let reader =
         sundial::package_authoring::open_shadowkeep_package_manager(&fixture.target).unwrap();
@@ -790,7 +902,8 @@ fn switching_runtimes_keeps_reading_installing_and_removing_working() {
         "sunrise-runtime-switching.json",
         &json!({
             "runtimes": ["Sunrise 0.6.0.0", "Dawn 0.1.3.0", "Sunrise 0.5.1.0"],
-            "mod_folder": installed, "retired_mod_backup": backup, "mod_readback": readback,
+            "mod_folder": installed, "mod_folder_after_failed_install": restored,
+            "retired_mod_backup": backup, "mod_readback": readback,
             "stock_after_removal": stock, "native_loader": "not executed"
         }),
     );

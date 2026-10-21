@@ -72,10 +72,14 @@ jobs:
       - name: Lint Sundial and Parhelion across All Targets
         run: cargo clippy --release --workspace --all-targets --locked -- -D warnings
 
+      # Each integration test file links the whole program, and most hold only opt-in tests that
+      # need private game data. The lint step compiles every target, so the test steps build the
+      # unit tests and only the integration tests with synthetic cases.
       - name: Test Sundial and Parhelion
         run: |
           rm -f target/cargo-timings/cargo-timing.html
-          cargo test --release --workspace --locked --timings
+          cargo test --release --workspace --locked --timings --lib --bins
+          cargo test --release --workspace --exclude parhelion --locked --test animation_clip --test d1_roi
 
       - name: Check Documentation
         env:
@@ -124,7 +128,9 @@ jobs:
       - name: Test Sundial and Parhelion with the D2 Model Importer
         run: |
           Remove-Item -LiteralPath target/cargo-timings/cargo-timing.html -ErrorAction SilentlyContinue
-          cargo test --release --workspace --locked --timings --features sundial-suite/d2-model-importer
+          cargo test --release --workspace --locked --timings --features sundial-suite/d2-model-importer --lib --bins
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --release --workspace --exclude parhelion --locked --features sundial-suite/d2-model-importer --test animation_clip --test d1_roi
 
       - name: Upload Build Timings
         if: always()

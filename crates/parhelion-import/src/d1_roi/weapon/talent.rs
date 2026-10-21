@@ -1,6 +1,7 @@
 //! Join source grid choices to their client artwork, finished runtime actions and stat
 //! adjustments.
 use super::*;
+mod choice;
 
 impl Source {
     pub(in super::super) fn weapon_talents(
@@ -62,16 +63,14 @@ impl Source {
         let mut labels = super::super::localization::Labels::new(self)?;
         let mut nodes = Vec::new();
         for (index, (node, display)) in shared_nodes.into_iter().zip(client_nodes).enumerate() {
-            let shared_steps = shared.array(node + 24, 144, Some(0x80801758))?;
-            let client_steps = client.array(display, 48, Some(0x80803468))?;
-            ensure!(
-                shared_steps.len() == client_steps.len(),
-                "Source talent step ordinals disagree"
-            );
             let mut steps = Vec::new();
-            for (step, (at, text)) in shared_steps.into_iter().zip(client_steps).enumerate() {
+            for (step, choice) in choice::read(&shared, &client, node, display)?
+                .into_iter()
+                .enumerate()
+            {
+                let (at, text) = (choice.offset, choice.text);
                 let mut variants = Vec::new();
-                for variant in shared.array(at, 88, Some(0x808016DE))? {
+                for variant in choice.variants {
                     let mut perks = Vec::new();
                     for row in shared.array(variant + 32, 2, Some(0x80804628))? {
                         let index = shared.u16(row)?;
@@ -111,10 +110,13 @@ impl Source {
                         "stat_adjustments":adjustments,"perks":perks}),
                     );
                 }
-                steps.push(json!({"index":step,"offset":at,
+                steps.push(
+                    json!({"index":step,"offset":at,"shared_step":choice.shared_index,
+                    "source_variant":choice.variant_index,
                     "name":labels.optional_text(self,&client,text)?.unwrap_or_default(),
                     "description":labels.optional_text(self,&client,text+8)?.unwrap_or_default(),
-                    "icon":client.u32(text+32)?,"variants":variants}));
+                    "icon":client.u32(text+32)?,"variants":variants}),
+                );
             }
             nodes.push(json!({"index":index,"offset":node,"hash":shared.u32(node)?,
                 "row":client.i16(display+64)?,"column":client.i16(display+66)?,"steps":steps}));

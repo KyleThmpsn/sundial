@@ -337,6 +337,7 @@ pub(super) fn damage(
                 .extend(transitions);
         }
         let mut verified = 0;
+        let mut unbound = 0;
         for response in s["Instant Responses@0x84"]
             .as_array()
             .context("Source damage responses")?
@@ -359,6 +360,14 @@ pub(super) fn damage(
                         .as_str()
                         .context("Source transition region")?,
                 );
+                if r["Runtime Region Index@0x6"] == -1 {
+                    ensure!(
+                        !actual.iter().any(|&(region, _)| region == key),
+                        "Unbound source region acquired a native transition"
+                    );
+                    unbound += 1;
+                    continue;
+                }
                 let state = *STATES
                     .get(
                         r["New State@0x4"]
@@ -376,7 +385,7 @@ pub(super) fn damage(
         readback.push(
             json!({"name":name,"capacity":vitality*health.f32(section+20)?/100.,
             "initial_fraction":health.f32(ri+0x60)?,"recovery_ceiling":health.f32(ri+0x58)?,
-            "region_transitions":verified,"transfers":transfers}),
+            "region_transitions":verified,"unbound_region_transitions":unbound,"transfers":transfers}),
         );
     }
     ensure!(

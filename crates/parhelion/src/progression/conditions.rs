@@ -676,10 +676,7 @@ pub(crate) fn patch_project_acquired_count_programs(
             u64::try_from(layout.count + authored_flags.len() * 2)
                 .map_err(|_| invalid("Project acquired-count length does not fit u64"))?,
         )?;
-        while !data.len().is_multiple_of(16) {
-            data.push(0);
-        }
-        let new_header = data.len();
+        let new_header = begin_array_block(&mut data);
         data.extend_from_slice(&authored);
         write_u64(
             &mut data,

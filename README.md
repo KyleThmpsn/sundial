@@ -40,7 +40,7 @@ Close Destiny 2 before saving account changes, restoring backups, or installing 
 
 Parhelion is an experimental item workbench bundled with Sundial. Build your own Destiny weapons by mixing weapon types, perks, stats, and appearance, including Exotics and combinations that wouldn't normally exist in the sandbox. It can also author custom perks and mods, armor, vehicles, Emblems, Shaders, and Subclass abilities.
 
-Parhelion creates its own Tiger-compatible packages in your existing installation without modifying existing packages. On Project Sunrise 0.6 or later, it installs them as a Sunrise mod. Enable it under **Preferences > Editing > Experimental**, then choose **Open Parhelion**. Some combinations may not work and can freeze or crash the game. Before using future Dawn versions with online support, uninstall custom packages or Dawn may report an error. Please [report any issues](https://github.com/kylethmpsn/sundial/issues) with your recipe and a description of what happens in-game.
+Parhelion creates its own Tiger-compatible packages in your existing installation without modifying existing packages. On Project Sunrise 0.6 or later, it installs them as a Sunrise mod. Enable it under **Preferences > Editing > Experimental**, then choose **Open Parhelion**. Some combinations may not work and can freeze or crash the game. Before using future Dawn versions with online support, uninstall custom packages or Dawn may report an error. Please [report any issues](https://github.com/kylethmpsn/sundial/issues) with your recipe and a description of what happens in game.
 
 See the [Parhelion README](crates/parhelion/README.md) for more about the authoring workflow.
 
@@ -91,7 +91,7 @@ Sundial builds its catalog from your existing game packages, then caches it. The
 
 Include steps to reproduce the problem and any error message or screenshot. Use **Preferences > Installation > Troubleshooting > Copy Report** to include diagnostics. A copy of the active runtime's `settings.json`, `investment.sqlite3`, or `player-state.db` may also help diagnose settings or startup issues.
 
-For Parhelion issues, include the recipe and describe what happens in-game.
+For Parhelion issues, include the recipe and describe what happens in game.
 
 Report bugs through [GitHub Issues](https://github.com/kylethmpsn/sundial/issues). You can also reach me on Discord or Twitter/X as `kylethmpsn`.
 
@@ -109,6 +109,7 @@ The executable is `target/release/sundial.exe` on Windows or `target/release/sun
 
 - [tiger-pkg](https://github.com/v4nguard/tiger-pkg) provides the Destiny 2 package reader. This project would not be possible without it.
 - Package-layout research was informed by Sunrise, [Charm](https://github.com/MontagueM/Charm), and [Alkahest](https://github.com/cohaereo/alkahest), whose Pre-Beyond Light branch helped guide the model preview.
+- Compatibility with other Sunrise mods is based on Project Sunrise's mod loader and [Sunrise Studio](https://github.com/stanuwu/SunriseStudio)'s merge data.
 - Thanks to [Solus](https://www.youtube.com/@Solus-yt) for creating the Project Sunrise logo used in Parhelion's badge and inspiring its watermark.
 - Thanks to [soul](https://github.com/chnsw) for creating the Dawn icon used in Parhelion's badge and inspiring its watermark, and to [Flumoxxed](https://www.youtube.com/@flumx) for the SVG!
 - [justrealmilk/destiny-icons](https://github.com/justrealmilk/destiny-icons) provides optional alternative icons for custom perks, badges, and watermarks.

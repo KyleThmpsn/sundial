@@ -47,7 +47,7 @@ pub struct Templates {
 
 /// One sky object: its model reference by graph symbol, where it sits, the center of its bounds,
 /// its world bounds in meters and the order it draws in among the map's sky objects.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Object {
     pub reference: String,
     pub position: [f32; 3],
@@ -115,6 +115,19 @@ const KEY_CONE: f64 = 15.;
 /// A key light dominates when no cone three cones or more away gathers this share of its own. A
 /// low sun taken from a light that does not dominate casts long shadows the baked light lacks.
 const KEY_RIVAL: f64 = 0.3;
+/// Texels the lightmapper counts as in the sun: a sun visibility byte (the ambient image's alpha)
+/// of at least 204 (0.8) and a lobe bandwidth byte of at least 153 (0.6).
+const SUN_VISIBLE: u8 = 204;
+const SUN_BANDWIDTH: u8 = 153;
+/// The sunlit texels name the level's sun when they are at least this share of the texels with a
+/// lobe and their lobes agree on a direction, the length of their luminance-weighted mean direction
+/// over their total luminance reaching `SUN_COHERENCE`. Forge World's 1.2 million such texels reach
+/// 0.96 at 75 degrees up, Breakneck's 97,000 reach 0.78 and Sword Base's 88,000 only 0.54.
+const SUN_SHARE: f64 = 0.01;
+const SUN_COHERENCE: f64 = 0.7;
+/// A fully sunlit texel: visibility byte 230 (0.9) or more, with its lobe within `KEY_CONE` of the
+/// sun. The median luminance of their lobes is the sun's baked level.
+const SUN_FULL: u8 = 230;
 
 /// One sky model's share of the sky: the primitives' triangles it draws, in order.
 struct Chunk {
@@ -676,7 +689,7 @@ fn sky_model(cache: &Cache, pages: &mut Pages, tag: &Tag) -> Result<Value> {
         .with_context(|| format!("Sky {}", tag.path))?;
     // Each section's flags, vertex type, PRT type and lighting policy, and the streams its vertex
     // buffer slots name, with the first vertices' bytes.
-    let geometry = model::Geometry::read(cache, render, render.address()? + 100, false)?;
+    let geometry = model::Geometry::read(cache, render, render.address()? + 100)?;
     let mut sections = Vec::new();
     for (index, &row) in geometry.sections.iter().enumerate() {
         let mut slots = Vec::new();
@@ -801,10 +814,145 @@ pub fn baked_light_color(atlas: &super::super::lightmap::Atlas) -> Option<[f32; 
 /// over three revisions of the atlas. Neutral texels have no lobe and weigh nothing. `None`
 /// without lit texels.
 pub fn baked_light_direction(atlas: &super::super::lightmap::Atlas) -> Option<[f32; 3]> {
-    fn normalized(v: [f64; 3]) -> Option<[f64; 3]> {
-        let length = v.iter().map(|x| x * x).sum::<f64>().sqrt();
-        (length > 1e-9).then(|| v.map(|x| x / length))
+    let light = key_light(atlas)?;
+    let chosen = if light.dominant {
+        light.key
+    } else {
+        light.broad
+    };
+    Some(chosen.map(|v| v as f32))
+}
+
+/// The sun Destiny's own sun stands in for on a level's surfaces, in the level's space with z up.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct BakedSun {
+    /// Toward the sun.
+    pub direction: [f32; 3],
+    /// The median luminance of a fully sunlit texel's lobe, as a share of the atlas' peak.
+    pub level: f32,
+    /// The mean color of the fully sunlit lobes, normalized to its brightest channel.
+    pub color: [f32; 3],
+    /// Whether each texel's baked sun visibility says how much of the sun reaches it. Otherwise a
+    /// texel's sun is the share of its sharp lobe that points at the key light.
+    pub visibility: bool,
+    /// How well the sunlit lobes agree on the direction, from 0 to 1.
+    pub coherence: f32,
+    /// The texels the direction was taken from.
+    pub texels: usize,
+}
+
+/// The level's baked sun, when its lightmap shows one. Reach bakes these levels' sun into the
+/// lobes with every other light, and the lightmapper still records each texel's sun visibility in
+/// the direction map's second channel. Where the texels it counts as sunlit
+/// (`SUN_VISIBLE`, with sharp lobes) agree on a direction, that direction is the sun's and
+/// their visibility says where it reaches. Forge World's sunlit lobes grow from 0.09 to 0.46 of
+/// the peak as visibility rises from zero to one, all about 75 degrees up. Otherwise a dominant key
+/// light ([`baked_light_direction`]) is the sun. `None` when the level shows neither, as Sword
+/// Base, whose sunlit texels point every way and whose key light has rivals of 0.41 to 0.71.
+pub fn baked_sun(atlas: &super::super::lightmap::Atlas) -> Option<BakedSun> {
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let share = |byte: u8| (f64::from(byte) / 255.).powi(2);
+    let texels = atlas
+        .lobe
+        .chunks_exact(4)
+        .zip(atlas.ambient.chunks_exact(4))
+        .zip(atlas.direction.chunks_exact(4))
+        .filter_map(|((lobe, ambient), direction)| {
+            let luminance =
+                0.2126 * share(lobe[0]) + 0.7152 * share(lobe[1]) + 0.0722 * share(lobe[2]);
+            let axis = normalized(std::array::from_fn(|k| {
+                f64::from(direction[k]) / 255. * 2. - 1.
+            }))?;
+            let color = [share(lobe[0]), share(lobe[1]), share(lobe[2])];
+            (luminance > 0.).then_some((luminance, lobe[3], ambient[3], axis, color))
+        })
+        .collect::<Vec<_>>();
+    // The median luminance of the lobes within a cone of `direction` that `full` keeps, and their
+    // mean color normalized to its brightest channel.
+    let level = |direction: [f64; 3], full: &dyn Fn(u8, u8) -> bool| {
+        let cone = KEY_CONE.to_radians().cos();
+        let kept = texels
+            .iter()
+            .filter(|(_, bandwidth, visible, axis, _)| {
+                full(*bandwidth, *visible) && dot(*axis, direction) >= cone
+            })
+            .collect::<Vec<_>>();
+        let mut levels = kept
+            .iter()
+            .map(|(luminance, ..)| *luminance)
+            .collect::<Vec<_>>();
+        let middle = levels.len().checked_sub(1)? / 2;
+        let median = *levels.select_nth_unstable_by(middle, f64::total_cmp).1;
+        let mut color = [0f64; 3];
+        for (.., lobe) in &kept {
+            for (total, value) in color.iter_mut().zip(lobe) {
+                *total += value;
+            }
+        }
+        let peak = color.iter().copied().fold(0f64, f64::max);
+        (peak > 0.).then(|| (median, color.map(|value| (value / peak) as f32)))
+    };
+    let mut sum = [0f64; 3];
+    let mut weight = 0.;
+    let mut count = 0usize;
+    for (luminance, bandwidth, visible, axis, _) in &texels {
+        if *visible >= SUN_VISIBLE && *bandwidth >= SUN_BANDWIDTH {
+            for (total, value) in sum.iter_mut().zip(axis) {
+                *total += value * luminance;
+            }
+            weight += luminance;
+            count += 1;
+        }
     }
+    if count > 0 && count as f64 >= SUN_SHARE * texels.len() as f64 {
+        let coherence = sum.iter().map(|v| v * v).sum::<f64>().sqrt() / weight;
+        if let Some(direction) =
+            normalized(sum).filter(|d| coherence >= SUN_COHERENCE && d[2] > 0.05)
+            && let Some((level, color)) = level(direction, &|bandwidth, visible| {
+                visible >= SUN_FULL && bandwidth >= SUN_BANDWIDTH
+            })
+        {
+            return Some(BakedSun {
+                direction: direction.map(|v| v as f32),
+                level: level as f32,
+                color,
+                visibility: true,
+                coherence: coherence as f32,
+                texels: count,
+            });
+        }
+    }
+    let light = key_light(atlas)?;
+    if !light.dominant || light.key[2] <= 0.05 {
+        return None;
+    }
+    let (level, color) = level(light.key, &|bandwidth, _| bandwidth >= KEY_BANDWIDTH)?;
+    Some(BakedSun {
+        direction: light.key.map(|v| v as f32),
+        level: level as f32,
+        color,
+        visibility: false,
+        coherence: 1. - light.rival as f32,
+        texels: light.texels,
+    })
+}
+
+fn normalized(v: [f64; 3]) -> Option<[f64; 3]> {
+    let length = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+    (length > 1e-9).then(|| v.map(|x| x / length))
+}
+
+/// The key light of a level's baked lobes, the luminance-weighted mean of every lit lobe, whether
+/// the key light dominates, its rival's share of its luminance and the bright, sharp lobes binned.
+struct KeyLight {
+    key: [f64; 3],
+    broad: [f64; 3],
+    dominant: bool,
+    rival: f64,
+    texels: usize,
+}
+
+fn key_light(atlas: &super::super::lightmap::Atlas) -> Option<KeyLight> {
     let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     // Lobe colors are stored as square roots of their share of the atlas' peak.
     let share = |byte: u8| (f64::from(byte) / 255.).powi(2);
@@ -875,7 +1023,13 @@ pub fn baked_light_direction(atlas: &super::super::lightmap::Atlas) -> Option<[f
         .enumerate()
         .max_by(|a, b| a.1.total_cmp(&b.1))
     else {
-        return Some(broad.map(|v| v as f32));
+        return Some(KeyLight {
+            key: broad,
+            broad,
+            dominant: false,
+            rival: 1.,
+            texels: 0,
+        });
     };
     let mut key = cells[best].2;
     for _ in 0..3 {
@@ -896,12 +1050,19 @@ pub fn baked_light_direction(atlas: &super::super::lightmap::Atlas) -> Option<[f
         .filter(|((_, _, axis), _)| dot(*axis, key) < apart)
         .map(|(_, score)| *score)
         .fold(0f64, f64::max);
-    let chosen = if rival <= KEY_RIVAL * best_score {
-        key
-    } else {
-        broad
-    };
-    Some(chosen.map(|v| v as f32))
+    let texels = lit
+        .iter()
+        .filter(|(luminance, bandwidth, axis)| {
+            *luminance >= cut && *bandwidth >= KEY_BANDWIDTH && dot(*axis, key) >= cone
+        })
+        .count();
+    Some(KeyLight {
+        key,
+        broad,
+        dominant: rival <= KEY_RIVAL * best_score,
+        rival: rival / best_score,
+        texels,
+    })
 }
 
 /// A report of `map`'s skies, its structure BSPs' default skies and lighting, and the sky, fog and
@@ -932,7 +1093,49 @@ pub fn survey(maps: &Path, map: &str) -> Result<Value> {
     }
     let mut bsps = Vec::new();
     for row in cache.block(scenario + SCENARIO_BSPS, SCENARIO_BSP_SIZE)? {
+        // Each cluster's bounds and the rows of its block at `+0x80`: two 16-bit values and a
+        // block of 16-byte rows whose first three floats read as points.
+        let clusters = match cache.reference(row, Some("sbsp"))? {
+            Some(bsp) => {
+                let at = bsp.address()?;
+                cache
+                    .block(at + 0x138, 0x8C)?
+                    .into_iter()
+                    .map(|cluster| {
+                        let entries = cache
+                            .block(cluster + 0x80, 0x10)?
+                            .into_iter()
+                            .map(|entry| {
+                                let points = cache
+                                    .block(entry + 4, 0x10)?
+                                    .into_iter()
+                                    .map(|point| {
+                                        Ok(json!([
+                                            cache.f32(point)?,
+                                            cache.f32(point + 4)?,
+                                            cache.f32(point + 8)?,
+                                            format!("{:08X}", cache.u32(point + 12)?)
+                                        ]))
+                                    })
+                                    .collect::<Result<Vec<_>>>()?;
+                                Ok(json!({
+                                    "a": cache.i16(entry)?,
+                                    "b": cache.i16(entry + 2)?,
+                                    "points": points,
+                                }))
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+                        Ok(json!({
+                            "bounds": cache.floats::<6>(cluster)?,
+                            "entries": entries,
+                        }))
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            }
+            None => Vec::new(),
+        };
         bsps.push(json!({
+            "clusters": clusters,
             "bsp": reference(&cache, row)?,
             "flags": format!("{:04X}", cache.u16(row + BSP_FLAGS)?),
             "default_sky": cache.i16(row + BSP_DEFAULT_SKY)?,
@@ -979,12 +1182,74 @@ pub fn survey(maps: &Path, map: &str) -> Result<Value> {
         })
         .collect::<Result<Vec<_>>>()?;
     references.insert("camera_fx".to_owned(), Value::Array(camera_fx));
+    // Every atmosphere fog (`fogg`) and atmosphere globals (`atgf`) tag with its leading words, and
+    // the count of tags in each group.
+    let mut groups = BTreeMap::<String, usize>::new();
+    let mut fog = Vec::new();
+    // Every bitmap's images, each its width, height and mip count, by datum.
+    let mut bitmaps = serde_json::Map::new();
+    for tag in cache.tags.iter().flatten() {
+        if tag.group == "bitm"
+            && let Ok(at) = tag.address()
+            && let Ok(rows) = cache.block(at + 124, 56)
+        {
+            let images = rows
+                .iter()
+                .map(|&row| {
+                    Ok(json!([
+                        cache.u16(row)?,
+                        cache.u16(row + 2)?,
+                        cache.u8(row + 16)?,
+                        cache.i16(row + 8)?,
+                        cache.u8(row + 17)?,
+                        cache.u8(row + 6)?
+                    ]))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            bitmaps.insert(
+                format!("{:08X}", tag.datum),
+                json!({"path": tag.path, "images": images}),
+            );
+        }
+        *groups.entry(tag.group.clone()).or_default() += 1;
+        if ["fogg", "atgf"].contains(&tag.group.as_str()) {
+            fog.push(json!({
+                "group": tag.group,
+                "path": tag.path,
+                "header": match tag.address() {
+                    Ok(at) => words(&cache, at, 0x100).unwrap_or(Value::Null),
+                    Err(_) => Value::Null,
+                },
+            }));
+        }
+    }
+    // The scenario's player spawn points' count and bounds, in meters, or why there are none. A
+    // scenario without spawns still has a sky to report.
+    let spawns = match crate::halo_reach::level::spawn::read(&cache, None, 0) {
+        Ok(spawns) => {
+            let (low, high) = spawns.iter().fold(
+                ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]),
+                |(low, high), spawn| {
+                    (
+                        std::array::from_fn(|k| low[k].min(spawn.position[k])),
+                        std::array::from_fn(|k| high[k].max(spawn.position[k])),
+                    )
+                },
+            );
+            json!({"count": spawns.len(), "low": low, "high": high})
+        }
+        Err(error) => json!({"error": format!("{error:#}")}),
+    };
     Ok(json!({
         "map": map,
         "metres_per_unit": METRES_PER_UNIT,
         "skies": skies,
         "bsps": bsps,
         "references": references,
+        "groups": groups,
+        "fog": fog,
+        "bitmaps": bitmaps,
+        "spawns": spawns,
     }))
 }
 

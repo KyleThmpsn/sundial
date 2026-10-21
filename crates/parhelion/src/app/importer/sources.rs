@@ -5,6 +5,42 @@ use parhelion_import::{halo_reach::browse as reach, marathon::browse as marathon
 
 const SPARROW_BUCKET: u32 = 2025709351;
 
+/// Retarget a vehicle's new graph for its persisted summon before conversion. The
+/// publication step preserves that selection together with the user's tuning.
+pub(super) fn reach_request(
+    entry: &reach::Entry,
+    donor: u32,
+    donor_name: &str,
+    previous: Option<&Path>,
+) -> anyhow::Result<parhelion_import::halo_reach::ImportRequest> {
+    use anyhow::{Context, ensure};
+    let mut request = entry.request(donor, donor_name)?;
+    if entry.vehicle()
+        && let Some(path) = previous
+    {
+        let saved = WeaponRecipe::load_json(path)
+            .with_context(|| format!("Read saved vehicle {}", path.display()))?;
+        ensure!(
+            saved.kind == ItemKind::Sparrow
+                && saved.identity.item_hash.parse_u32()? == entry.destination()?,
+            "The saved vehicle changed before reimport. Refresh the library and try again"
+        );
+        let summon = &saved
+            .overrides
+            .sparrow
+            .as_ref()
+            .context("The saved vehicle has no summon selection")?
+            .summon;
+        let entity = summon
+            .entity()
+            .map_err(anyhow::Error::msg)?
+            .context("Select a native vehicle for this imported appearance before reimporting")?;
+        request.runtime_entity = Some(entity);
+        request.recipe["overrides"]["sparrow"]["summon"] = serde_json::to_value(summon)?;
+    }
+    Ok(request)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(in crate::app) enum Source {
     #[default]
@@ -35,9 +71,9 @@ impl Source {
         }
     }
 
-    /// Only modern items carry inventory artwork to list.
+    /// These sources expose checked inventory artwork readers.
     pub fn icons(self) -> bool {
-        self == Source::Modern
+        matches!(self, Source::Modern | Source::Roi)
     }
 
     pub fn welcome(self) -> &'static str {
@@ -45,7 +81,7 @@ impl Source {
             Source::Modern => "Choose your modern Destiny 2 installation or its packages folder.",
             Source::Reach => "Choose your MCC installation or its Halo: Reach maps folder.",
             Source::Marathon => "Choose your Marathon installation or its packages folder.",
-            Source::Roi => "Choose your Rise of Iron installation or its packages folder.",
+            Source::Roi => "Choose your Rise of Iron Xbox One packages folder.",
         }
     }
 
@@ -54,7 +90,7 @@ impl Source {
             Source::Modern => "Modern Destiny 2 Build",
             Source::Reach => "Halo: Reach Maps",
             Source::Marathon => "Marathon Packages",
-            Source::Roi => "Rise of Iron Packages",
+            Source::Roi => "Rise of Iron Xbox One Packages",
         }
     }
 
@@ -228,6 +264,7 @@ impl Importer {
         self.donor_stamp = next.donor_stamp;
         self.origins = next.origins;
         self.source = source;
+        self.icons = icons::Icons::default();
         self.outcome = None;
         self.notice.clear();
     }
@@ -390,6 +427,11 @@ impl PackageAuthoringApp {
         let Ok(root) = data_root() else { return };
         let native = PathBuf::from(&self.packages);
         let risky = self.risky_donors();
+        let existing: BTreeMap<_, _> = self
+            .recipe_entries
+            .iter()
+            .map(|entry| (entry.identity_hash, entry.path.clone()))
+            .collect();
         let jobs: Vec<(Weapon, Origin, (u32, String))> = self
             .importer
             .selected_weapons()
@@ -414,7 +456,12 @@ impl PackageAuthoringApp {
             match origin {
                 Origin::Reach(entry) => {
                     progress("Translating source model…".into());
-                    let request = entry.request(*donor, donor_name)?;
+                    let request = reach_request(
+                        entry,
+                        *donor,
+                        donor_name,
+                        existing.get(&weapon.hash).map(PathBuf::as_path),
+                    )?;
                     reach::import(&request, &folder, &native, &output)
                 }
                 Origin::Marathon(entry) => marathon::import(

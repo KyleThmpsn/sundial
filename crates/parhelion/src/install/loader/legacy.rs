@@ -131,7 +131,11 @@ pub(in crate::install) fn recover_with_observer(
     check_stopped(request.game_running_check)?;
     mod_content::checked_path(root, &journal).map_err(InstallError::validation)?;
     mod_content::ensure_resolved_environment(root).map_err(InstallError::validation)?;
-    verify_folder(&mod_content::directory(root), None)?;
+    if mod_content::has_family(root).map_err(failure)? {
+        return Err(InstallError::validation(
+            "Legacy recovery cannot replace an installed managed mod family",
+        ));
+    }
     let recovery = capture(&target)?;
     if recovery
         .context
@@ -158,6 +162,8 @@ pub(in crate::install) fn recover_with_observer(
         .map(|name| metadata(&target.join(name), name))
         .collect::<Result<Vec<_>, _>>()?;
     let mut transaction = transaction::prepare(transaction::Plan {
+        original_family: BTreeMap::new(),
+        members: &[],
         target: &target,
         backup_root: &backups,
         original: None,

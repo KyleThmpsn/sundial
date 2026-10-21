@@ -1,21 +1,8 @@
-//! Retain inherited inputs, unbound zero values, bounded local constants and kind-2 callback
-//! channels.
+//! Retain inherited inputs, zero values, local expressions and kind-2 channel callbacks.
 use super::*;
-
-/// Rise of Iron's callback class for kind 2 and Shadowkeep's. Native callback classes are
-/// `808097B0` less the kind.
-const SOURCE_KIND_2_CALLBACK: u32 = 0x8080_072D;
-const NATIVE_KIND_2_CALLBACK: u32 = 0x8080_97AE;
-/// The procedure a callback channel runs: read the callback's output, then return it.
-const CALLBACK_CODE: [u8; 4] = [0x3C, 0, 0x3E, 0];
-
-/// A local channel whose value a kind-2 callback produces from one input channel. The callback
-/// object is kind 2, an unused `FFFFFFFF` word and two floats, the same 16 bytes in both
-/// versions. Shadowkeep's rocket launcher bank `8152A4F7` holds rows of this exact shape.
-struct Callback {
-    input: u32,
-    object: [u8; 16],
-}
+mod callback;
+mod incoming;
+mod program;
 
 struct Bank {
     names: Vec<u32>,
@@ -23,7 +10,9 @@ struct Bank {
     /// then name as the native lookup is.
     inherited: Vec<(u32, u32, usize)>,
     constants: BTreeMap<usize, [u8; 16]>,
-    callbacks: BTreeMap<usize, Callback>,
+    callbacks: BTreeMap<usize, callback::Callback>,
+    programs: BTreeMap<usize, program::Program>,
+    inputs: Vec<incoming::Input>,
     dependencies: Vec<Vec<u8>>,
 }
 
@@ -34,58 +23,13 @@ impl Bank {
             .constants
             .keys()
             .chain(self.callbacks.keys())
+            .chain(self.programs.keys())
+            .chain(self.inputs.iter().map(|input| &input.ordinal))
             .map(|&i| (0x811C9DC5, self.names[i], i))
             .collect::<Vec<_>>();
         locals.sort_unstable();
         locals
     }
-}
-
-/// A kind-2 callback channel row, or `None` when the row has no callback.
-fn callback(source: &Payload, row: usize, channels: usize) -> Result<Option<Callback>> {
-    if source.u64(row + 96)? == 0 {
-        return Ok(None);
-    }
-    let code = source
-        .array(row + 8, 1, Some(0x80800009))?
-        .iter()
-        .map(|at| source.u8(*at))
-        .collect::<Result<Vec<_>>>()?;
-    let inputs = source.array(row + 56, 4, Some(0x80800007))?;
-    ensure!(
-        code == CALLBACK_CODE
-            && source.u64(row + 24)? == 0
-            && source.u64(row + 40)? == 1
-            && source.u64(row + 48)? == 1
-            && inputs.len() == 1
-            && source.u16(row + 72)? == u16::MAX
-            && source.u16(row + 74)? == 1
-            && source.u64(row + 80)? == 0
-            && source.bytes::<2>(row + 104)? == [255, 254],
-        "Source callback channel requires procedure translation"
-    );
-    let input = source.u32(inputs[0])?;
-    ensure!(
-        usize::try_from(input)? < channels,
-        "Source callback input is not a channel of its bank"
-    );
-    let object = source.pointer(row + 96)?;
-    ensure!(
-        object >= 4 && source.u32(object - 4)? == SOURCE_KIND_2_CALLBACK,
-        "Source channel callback kind requires translation"
-    );
-    ensure!(
-        source.u32(object)? == 2
-            && source.u32(object + 4)? == u32::MAX
-            && [8, 12]
-                .iter()
-                .all(|at| source.f32(object + at).is_ok_and(f32::is_finite)),
-        "Source kind-2 callback layout differs"
-    );
-    Ok(Some(Callback {
-        input,
-        object: source.bytes::<16>(object)?,
-    }))
 }
 
 impl Bank {
@@ -138,11 +82,21 @@ impl Bank {
             .iter()
             .map(|(_, _, ordinal)| *ordinal)
             .collect::<BTreeSet<_>>();
+        let inputs = incoming::read(source, &names)?;
+        let input_ordinals = inputs
+            .iter()
+            .map(|input| input.ordinal)
+            .collect::<BTreeSet<_>>();
         let mut constants = BTreeMap::new();
         let mut callbacks = BTreeMap::new();
+        let mut programs = BTreeMap::new();
         let mut dependencies = Vec::new();
         for (ordinal, &row) in rows.iter().enumerate() {
-            if let Some(found) = callback(source, row, rows.len())? {
+            if let Some(found) = callback::read(source, row, rows.len())? {
+                ensure!(
+                    !inherited_ordinals.contains(&ordinal) && !input_ordinals.contains(&ordinal),
+                    "Source callback overlaps an inherited or incoming channel"
+                );
                 callbacks.insert(ordinal, found);
                 dependencies.push(Vec::new());
                 continue;
@@ -160,7 +114,8 @@ impl Bank {
                 ensure!(
                     source.0[row + 16..row + 72].iter().all(|v| *v == 0)
                         && source.u16(row + 74)? == 0
-                        && source.u16(row + 106)? == u16::MAX,
+                        && (source.u16(row + 106)? != u16::MAX)
+                            == input_ordinals.contains(&ordinal),
                     "Source channel has unsupported defaults or forwarding"
                 );
                 ensure!(
@@ -168,6 +123,20 @@ impl Bank {
                     "Source channel inherited slot lacks a name"
                 );
             } else {
+                if code != [0x34, 0, 0x3E, 0]
+                    || source.u64(row + 40)? != 0
+                    || source.u64(row + 24)? != 1
+                    || source.u16(row + 74)? != 1
+                {
+                    ensure!(
+                        !inherited_ordinals.contains(&ordinal)
+                            && !input_ordinals.contains(&ordinal),
+                        "Source procedure overlaps an inherited or incoming channel"
+                    );
+                    programs.insert(ordinal, program::read(source, row, rows.len())?);
+                    dependencies.push(Vec::new());
+                    continue;
+                }
                 let values = source.array(row + 24, 16, Some(0x80800090))?;
                 // D1 and native 8152B5B7 both use this zero-input vec4 return.
                 // Other sequencers require their own instruction and state contract.
@@ -196,7 +165,7 @@ impl Bank {
                 words.is_empty() || words.len() == rows.len().div_ceil(32),
                 "Source channel dependency width differs"
             );
-            if !inherited_ordinals.contains(&ordinal) {
+            if !inherited_ordinals.contains(&ordinal) && !input_ordinals.contains(&ordinal) {
                 ensure!(
                     words.is_empty(),
                     "Local source channel has unsupported dependencies"
@@ -215,9 +184,10 @@ impl Bank {
             }
             dependencies.push(bytes);
         }
+        program::validate_graph(&programs)?;
         let local = source.array(schema + 0xF8, 12, None)?;
         ensure!(
-            local.len() == constants.len() + callbacks.len() && source.u64(schema + 0x118)? == 0,
+            local.len() == constants.len() + callbacks.len() + programs.len() + inputs.len(),
             "Source channel local names differ"
         );
         let mut local_ordinals = BTreeSet::new();
@@ -230,7 +200,10 @@ impl Bank {
             // place in the sorted lookup, which the conversion writes afresh.
             let index = usize::from(source.u16(row + 106)?);
             ensure!(
-                (constants.contains_key(&ordinal) || callbacks.contains_key(&ordinal))
+                (constants.contains_key(&ordinal)
+                    || callbacks.contains_key(&ordinal)
+                    || programs.contains_key(&ordinal)
+                    || input_ordinals.contains(&ordinal))
                     && index < count
                     && local_indices.insert(index)
                     && local_ordinals.insert(ordinal)
@@ -243,7 +216,6 @@ impl Bank {
         ensure!(
             source.u64(instance + 0x70)? == 0
                 && source.u64(instance + 0x80)? == 0
-                && source.u64(schema + 0xC8)? == 0
                 && source.u64(schema + 0xE8)? == 0,
             "Source channel has unsupported receivers"
         );
@@ -260,6 +232,8 @@ impl Bank {
             inherited,
             constants,
             callbacks,
+            programs,
+            inputs,
             dependencies,
         })
     }
@@ -286,6 +260,7 @@ pub(super) fn channel_names(source: &Payload) -> Result<Vec<u32>> {
 }
 
 impl Assembly<'_> {
+    #[allow(clippy::cognitive_complexity)]
     pub(super) fn channel_bank(
         &mut self,
         source: &Payload,
@@ -300,7 +275,7 @@ impl Assembly<'_> {
             (0x8152B5B7, 0x81523111)
         };
         let mut component = self.component(template, entity, symbol, index)?;
-        let original = &component.template;
+        let original = component.template.clone();
         let instance = original.pointer(16)?;
         let schema = original.pointer(24)?;
         let original_rows = original.array(schema + 0xD8, 112, Some(0x808097A1))?;
@@ -357,17 +332,24 @@ impl Assembly<'_> {
                 row[8..40].fill(0);
                 put(&mut row, 106, &position(ordinal)?.to_le_bytes())?;
                 row
-            } else if bank.callbacks.contains_key(&ordinal) {
+            } else if let Some(program) = bank.programs.get(&ordinal).or_else(|| {
+                bank.callbacks
+                    .get(&ordinal)
+                    .map(|callback| &callback.program)
+            }) {
                 let mut row = [0; 112];
-                put(&mut row, 40, &1u64.to_le_bytes())?;
+                put(&mut row, 40, &(program.inputs.len() as u64).to_le_bytes())?;
                 put(&mut row, 48, &1u64.to_le_bytes())?;
-                put(&mut row, 74, &1u16.to_le_bytes())?;
+                put(&mut row, 74, &program.flags.to_le_bytes())?;
                 row[104..106].copy_from_slice(&[255, 254]);
                 put(&mut row, 106, &position(ordinal)?.to_le_bytes())?;
                 row
             } else {
                 let mut row = [0; 112];
                 row[104..108].copy_from_slice(&[255, 254, 255, 255]);
+                if bank.inputs.iter().any(|input| input.ordinal == ordinal) {
+                    put(&mut row, 106, &position(ordinal)?.to_le_bytes())?;
+                }
                 row
             };
             put(&mut row, 0, &name.to_le_bytes())?;
@@ -399,24 +381,10 @@ impl Assembly<'_> {
                 array(&mut p.0, row + 24, 0x80800090, value, 16)?;
             }
             if let Some(callback) = bank.callbacks.get(&ordinal) {
-                array(&mut p.0, row + 8, 0x80800009, &CALLBACK_CODE, 1)?;
-                array(
-                    &mut p.0,
-                    row + 56,
-                    0x80800007,
-                    &callback.input.to_le_bytes(),
-                    4,
-                )?;
-                // The callback object follows inline, eight-byte aligned behind its class word.
-                let object = (p.0.len() + 4).next_multiple_of(8);
-                p.0.resize(object - 4, 0);
-                p.0.extend(NATIVE_KIND_2_CALLBACK.to_le_bytes());
-                p.0.extend(callback.object);
-                put(
-                    &mut p.0,
-                    row + 96,
-                    &(object as i64 - (row + 96) as i64).to_le_bytes(),
-                )?;
+                callback.write(p, row)?;
+            }
+            if let Some(program) = bank.programs.get(&ordinal) {
+                program.write(p, row)?;
             }
         }
         array(
@@ -455,6 +423,15 @@ impl Assembly<'_> {
             12,
         )?;
         array(&mut p.0, schema + 0xF8, 0x808097A0, &lookup(&locals)?, 12)?;
+        let input_template = if bank.inputs.is_empty() {
+            None
+        } else {
+            Some(self.native.tag(0x80FF0240, Some(0x80809C36))?)
+        };
+        if let Some(template) = &input_template {
+            incoming::write(&bank.inputs, source, &mut component, template)?;
+        }
+        let p = &mut component.payload;
         for (at, count) in [
             (0x134, bank.names.len()),
             (0x13C, locals.len()),
@@ -516,6 +493,15 @@ impl Assembly<'_> {
                 &u32::try_from(after)?.to_le_bytes(),
             )?;
         }
+        if let Some(template) = &input_template {
+            let input_allocation = self.native.tag(template.u32(0x44)?, None)?;
+            incoming::allocate(
+                &mut allocation,
+                &input_allocation,
+                bank.inputs.len(),
+                usize::try_from(source.u64(source.pointer(16)? + 0x60)?)?,
+            )?;
+        }
         let allocation_symbol = format!("{symbol}-allocation");
         self.node(&allocation_symbol, tag, &allocation.0, None, &[])?;
         component.patch(0x44, &allocation_symbol)?;
@@ -523,6 +509,8 @@ impl Assembly<'_> {
         self.evidence.push(json!({"source_channel_bank":source.u32(source.pointer(16)?)?,
             "declarations":bank.names.len(),"inherited":bank.inherited.len(),"local_constants":bank.constants.len(),
             "local_callbacks":bank.callbacks.len(),
+            "local_programs":bank.programs.len(),
+            "incoming_values":bank.inputs.len(),
             "unbound_zero":bank.names.len()-bank.inherited.len()-locals.len()}));
         Ok((component, bank.names))
     }

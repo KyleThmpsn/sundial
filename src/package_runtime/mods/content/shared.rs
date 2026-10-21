@@ -1,9 +1,9 @@
 //! Entries several mods change, as Sunrise f1e7c66's loader serves them
 //! (`state/mods/packages/mod_package_serve.cpp`). Where the mods describe their changes in merge
 //! data, the loader merges their rows into one entry. Elsewhere the mod that loads last wins.
-use super::super::ID;
 use super::super::merge::{self, EntryInputs, Input, Outcome, Status, recipes, sidecar::Sidecar};
 use super::super::plaintext::{self, Unreadable};
+use super::super::{ID, is_family_id};
 use super::{Added, Claim, Stage};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -339,7 +339,11 @@ fn report(
     }
     // Parhelion's merge data names the references to its rows that recipes describe, which
     // aren't yet all of them.
-    for item in outcome.shifted.iter().filter(|item| name(item.owner) == ID) {
+    for item in outcome
+        .shifted
+        .iter()
+        .filter(|item| is_family_id(name(item.owner)))
+    {
         notices.push(format!(
             "{} loads before Parhelion and adds rows to the {}, so Sunrise renumbers Parhelion's rows there. Parhelion's merge data can't follow every reference to them yet, so its items may show the wrong content.",
             earlier(stage, groups, item.owner, item.table),
@@ -386,6 +390,7 @@ fn coexistence(
     let Some(own) = stage.admitted.iter().position(|id| id == ID) else {
         return result;
     };
+    let owned = |owner: usize| is_family_id(&stage.admitted[owner]);
     let fallbacks = outcome
         .fallbacks
         .iter()
@@ -393,10 +398,10 @@ fn coexistence(
         .collect::<HashMap<_, _>>();
     let mut shares = false;
     for (&package, group) in groups {
-        let Some(ours) = group.iter().find(|claim| claim.owner == ID) else {
+        let Some(ours) = group.iter().find(|claim| is_family_id(&claim.owner)) else {
             continue;
         };
-        for other in group.iter().filter(|claim| claim.owner != ID) {
+        for other in group.iter().filter(|claim| !is_family_id(&claim.owner)) {
             let (joined, apart): (Vec<TagHash>, Vec<TagHash>) = ours
                 .changed
                 .intersection(&other.changed)
@@ -410,19 +415,45 @@ fn coexistence(
                     other.owner,
                 ));
             }
-            let Some(first) = apart.first() else {
-                continue;
-            };
-            let reason = match fallbacks.get(first) {
-                Some(status) => status.text().to_owned(),
-                None => "neither mod describes them in merge data".to_owned(),
-            };
-            result.problems.push(format!(
-                "{} and Parhelion both change {} {} of package {package:04X} that Sunrise can't merge: {reason}. Remove the overlapping edits from one of them.",
-                other.owner,
-                apart.len(),
-                entries(apart.len()),
-            ));
+            // One line per table, naming its entries, why Sunrise can't combine them and what
+            // makes the two mods load together.
+            let mut tables = BTreeMap::<String, Vec<TagHash>>::new();
+            for changed in &apart {
+                tables
+                    .entry(table_name(changed.0))
+                    .or_default()
+                    .push(*changed);
+            }
+            for (table, changed) in tables {
+                let reason = match fallbacks.get(&changed[0]) {
+                    Some(status) => status.text().to_owned(),
+                    None => "neither mod describes it in merge data".to_owned(),
+                };
+                let list = changed
+                    .iter()
+                    .map(|tag| format!("0x{:08X}", tag.0))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let fix = if changed
+                    .iter()
+                    .any(|tag| tag.0 == recipes::PRESENTATION_NODES)
+                {
+                    format!(
+                        "Build again with {} installed, and on the Collections tab set Position to Automatic or Last on items set to First.",
+                        other.owner
+                    )
+                } else {
+                    format!(
+                        "Build again with {} installed, or remove the overlapping edits from one of them.",
+                        other.owner
+                    )
+                };
+                result.problems.push(format!(
+                    "{} and Parhelion both change the {table} (package {package:04X}, {} {list}), which Sunrise can't combine: {reason}. {fix}",
+                    other.owner,
+                    entries(changed.len()),
+                ));
+            }
         }
     }
     if shares && let Some(reason) = ignored.get(&own) {
@@ -432,7 +463,7 @@ fn coexistence(
     }
     let name = |owner: usize| stage.admitted[owner].as_str();
     for item in &outcome.conflicts {
-        let other = match (item.earlier == own, item.later == own) {
+        let other = match (owned(item.earlier), owned(item.later)) {
             (true, _) => item.later,
             (_, true) => item.earlier,
             _ => continue,
@@ -446,7 +477,7 @@ fn coexistence(
             name(item.later),
         ));
     }
-    for item in outcome.shifted.iter().filter(|item| item.owner == own) {
+    for item in outcome.shifted.iter().filter(|item| owned(item.owner)) {
         result.problems.push(format!(
             "{} loads before Parhelion and adds rows to the {} that Parhelion adds to as well. Sunrise would renumber Parhelion's rows there, which its merge data can't follow yet. Remove the overlapping edits from one of them.",
             earlier(stage, groups, own, item.table),

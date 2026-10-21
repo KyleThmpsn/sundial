@@ -750,8 +750,14 @@ fn batch_snapshot_is_sorted_stable_and_sensitive_to_dirty_edits() {
     dirty_request.recipes[0].flavor.push_str(" edited");
     let dirty = BatchBuildSnapshot::new(dirty_request).unwrap();
 
-    assert_eq!(snapshot.fingerprint, reversed.fingerprint);
-    assert_ne!(snapshot.fingerprint, dirty.fingerprint);
+    assert_eq!(
+        snapshot.fingerprint().unwrap(),
+        reversed.fingerprint().unwrap()
+    );
+    assert_ne!(
+        snapshot.fingerprint().unwrap(),
+        dirty.fingerprint().unwrap()
+    );
     assert!(
         snapshot
             .request

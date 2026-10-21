@@ -18,8 +18,9 @@
 //! lightmap BSP data names per instance and per cluster, which Reach's per-vertex vertex shader
 //! decodes into a lobe direction from a lookup table, the sun's visibility, an ambient color and a
 //! lobe color, scaled by the buffer's own scale. A coloring row is the four lighting constants of an
-//! instance lit as one. The translation averages each such part's vertices, or takes its instance's
-//! coloring row, into one lighting probe, a block of the atlas that every vertex of the part samples.
+//! instance lit as one. Render vertices retain their decoded lobe, ambient and direction values.
+//! Averaged probes remain available for atlas normalization and ground-light queries, while a
+//! coloring row supplies a constant-lit instance's shared probe.
 use super::super::{
     cache::{Cache, Tag},
     resource::Pages,
@@ -235,6 +236,34 @@ fn vertex_lighting(c: &[u8], lut: &[[f32; 3]]) -> ([f32; 3], [f32; 3], [f32; 3],
         .unwrap_or([0., 0., 1.]);
     let sun = (f32::from(2 * (c[1] & 1) + (c[0] >> 7)) / 3.).powi(2);
     (lobe, ambient, direction, sun)
+}
+
+/// Decoded vertex lighting before interpolation, in the level's space and source radiance units.
+pub(super) fn vertex(
+    bytes: &[u8],
+    lighting: PerVertex,
+    source: u32,
+    lut: &[[f32; 3]],
+) -> Option<[[f32; 4]; 3]> {
+    let index = usize::try_from(source.checked_sub(lighting.first)?).ok()?;
+    let at = index.checked_mul(PER_VERTEX_BYTES)?;
+    let c = bytes.get(at..at + PER_VERTEX_BYTES)?;
+    let (lobe, ambient, direction, sun) = vertex_lighting(c, lut);
+    Some([
+        [
+            lobe[0] * lighting.scale,
+            lobe[1] * lighting.scale,
+            lobe[2] * lighting.scale,
+            1.,
+        ],
+        [
+            ambient[0] * lighting.scale,
+            ambient[1] * lighting.scale,
+            ambient[2] * lighting.scale,
+            sun,
+        ],
+        [direction[0], direction[1], direction[2], 1.],
+    ])
 }
 
 /// The lighting probe of the mesh vertices of a part lit per vertex by `bytes`, the contents of the

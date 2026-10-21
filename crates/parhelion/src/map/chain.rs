@@ -7,7 +7,9 @@
 //! Sound emitters and the donor's entities that draw, collide or play an effect move far below
 //! the map in copies of their tables, and the donor's spawn set gives way to one holding the map's
 //! own spawn points. The donor's world collision gives way to the map's own in a copy of its table
-//! and record, and its sky object collection to one holding the map's own sky. Its sun draws no
+//! and record, and its sky object collection to one holding the map's own sky. A donor whose
+//! bubble places no sky, as a mission's may not, has the map's own container place a copy of a
+//! Crucible world's sky table instead. Its sun draws no
 //! sun disc or lens flare and, given the map's baked light direction, holds that direction in
 //! copies of its sun record and direction track. One container of
 //! the map's own places each converted piece's entity, copied from the donor's first prop: an
@@ -33,8 +35,11 @@ use crate::{
 
 use super::world::{BubbleName, Owner, renamed_counted};
 
+mod cubemaps;
+pub(super) use cubemaps::Cubemap;
+
 const MAP_ROOT_CLASS: u32 = 0x8080_91DE;
-/// The map root names its bubble layout here, whose counted name is the activity's.
+/// The map root names its bubble layout here, whose counted name is the world's.
 const ROOT_LAYOUT: usize = 0x08;
 const LAYOUT_CLASS: u32 = 0x8080_9962;
 const LAYOUT_NAME: usize = 0x08;
@@ -48,6 +53,10 @@ const RENDER_CLASS: u32 = 0x8080_72BD;
 const BODY_CLASS: u32 = 0x8080_8A0C;
 /// An effect flow component, the particle effects an entity plays.
 const EFFECT_CLASS: u32 = 0x8080_84E9;
+/// Entity components that light the donor's scenery, naming shadowing-light records
+/// (`80807140`) and lens-flare records (`80806F68`).
+const LIGHT_CLASS: u32 = 0x8080_7134;
+const FLARE_CLASS: u32 = 0x8080_6CBE;
 /// An entity's components, 12-byte rows naming each owner.
 const ENTITY_COMPONENTS: usize = 0x10;
 const COMPONENT_SIZE: usize = 12;
@@ -64,6 +73,18 @@ const TAG_ROW_SIZE: usize = 0x10;
 /// A tag row that names a tag directly rather than by 64-bit hash.
 const DIRECT_TAG_ROW: u32 = 1;
 const PARENT_BUBBLE: usize = 0x08;
+/// A bubble parent's bounds records (`8080964E`), 16-byte tag rows. A record is three least and
+/// greatest corner pairs, `float4`s with w 1. `trophy_hall`'s parent lists two, the empty
+/// `80FEB3E9`, whose corners are `FLT_MAX` inverted, and `8151A4CB`, numbered beside its main
+/// container `8151A4CA`. What the client bounds with each box was not traced.
+const PARENT_BOUNDS: usize = 0x40;
+const BOUNDS_CLASS: u32 = 0x8080_964E;
+/// How far the map's own bounds reach past its pieces, in meters: the first and third boxes, and
+/// the second, which every surveyed record holds wider. The Other Side's main record holds
+/// (-580, -94, -1643) to (168, 1421, 61), (-1600, -269, -2514) to (442, 2343, 101) and
+/// (-656, -99, -1640) to (163, 1458, 101).
+const BOUNDS_MARGIN: f32 = 16.;
+const WIDE_BOUNDS_MARGIN: f32 = 256.;
 /// A container's placement tables, by `u32` tag.
 const CONTAINER_TABLES: usize = 0x28;
 /// A placement table's rows: entity, rotation, translation, identity and resource pointer.
@@ -92,32 +113,39 @@ const VISIBILITY: u32 = 0x8080_7246;
 const BARRIERS: [u32; 2] = [0x8080_89CD, 0x8080_6FAD];
 /// Placement resource classes of the donor's lighting and surface detail, which belong to its own
 /// geometry: light collections (`8080713A` records), shadowing lights (`80807140`), lens flares
-/// (`80806F68`), cubemap volumes, cubemap collections (`80806B8C`), decal collections (`80806E68`),
-/// road decals (`80806DF3`), static ambient occlusion and probes (`80807268`) and the resource list
-/// beside them (`80806F8D`). They light Distant Shore's surfaces, reflect its jungle and mark its
-/// ground. A table of them gives way to an empty table too, and in a table with other kinds their
-/// rows move far below the map. Without the ambient occlusion record the converted level's surfaces
-/// drew slightly brighter in game, by 3 to 7 of 255.
-const DETAIL: [u32; 9] = [
+/// (`80806F68`), cubemap collections (`80806B8C`), decal collections (`80806E68`) and road decals
+/// (`80806DF3`). They light the donor's surfaces, reflect its scenery and mark its ground. A table
+/// of the donor's cubemap volumes ([`CUBEMAP_VOLUME`]) gives way to the map's own
+/// ([`cubemaps::table`]). So does a volume over the donor's play area (`80808CB6` records): The Dead Cliffs' names
+/// two grid records (`80808CB8`, `80808CBA`) and the box from (-132.5, -100.5, -4.5) to
+/// (100.5, 68.5, 44), which describe its own arena. With it kept, Paradiso's held weapon drew with a
+/// strong blue cast, and without it in natural colors. Distant Shore places none. So does the
+/// resource list beside the donor's ambient occlusion (`80806F8D`, rows of textures, cube
+/// textures, models and materials per static instance). With Distant Shore's kept, the held weapon
+/// drew a bright teal over Hang 'Em High, and without it a darker, faintly green metal. A table of
+/// them gives way to an empty table too, and in a table with other kinds their rows move far below
+/// the map. The donor's static ambient occlusion and probes (`80807268`, rows of a position and
+/// monochrome occlusion coefficients) stay for the objects Destiny lights. With them dropped, the
+/// held weapon and players drew nearly black wherever the sun did not reach them, indoors and in
+/// shade alike.
+const DETAIL: [u32; 8] = [
     0x8080_6F5A,
     0x8080_7133,
     0x8080_6CBF,
-    0x8080_6B7F,
     0x8080_6B87,
     0x8080_6E62,
     0x8080_6DF1,
-    0x8080_6F38,
+    0x8080_8C76,
     0x8080_6F78,
 ];
+/// A placement resource for one cubemap volume, kept inline: a box whose players, weapons and other
+/// objects Destiny lights take their reflections from its cube texture. In a table with other kinds
+/// the donor's rows move far below the map with the detail rows.
+const CUBEMAP_VOLUME: u32 = 0x8080_6B7F;
 /// Placement resource classes of the donor's sound emitters, points and paths, both naming
 /// `80809802` records. Their rows move far below the map.
 const SOUND_POINT: u32 = 0x8080_6B5B;
 const LEFTOVERS: [u32; 2] = [SOUND_POINT, 0x8080_6B59];
-/// A placement resource that sets component values of the entity its row places, rows of
-/// `8080389F` for that entity's `808038A1` component. Such a row places its entity as an
-/// entity-only row does, so a leftover entity among them moves too: Distant Shore's one places a
-/// drawn, colliding entity with an effect flow at (-7.1, 21.6, 13.0).
-const ENTITY_VALUES: u32 = 0x8080_38A0;
 /// A placement resource that places sky objects, naming its sky object collection at `+0x10`. A
 /// collection keeps its objects at `+0x08`, each object's bounds at `+0x18`, their indices at
 /// `+0x28` and the bounds of all at `+0x40` and `+0x50`.
@@ -160,6 +188,23 @@ const SUN_DIRECTION_CLASS: u32 = 0x8080_0090;
 /// table.
 const ATMOSPHERE: u32 = 0x8080_7086;
 const ATMOSPHERE_VOLUME: usize = 0x90;
+/// The atmosphere's 2D distance lookup, 16 by 1,024 in Distant Shore's, which a map whose
+/// surfaces draw their own fog replaces with a black copy.
+const ATMOSPHERE_LOOKUP: usize = 0x98;
+/// A placement resource for the donor's static ambient occlusion, naming its record at `+0x10`.
+/// The record names three buffers at `+0x08`, `+0x20` and `+0x38`, which hold the occlusion of
+/// the donor's own static geometry, and at `+0x50` an array of probes that shade players and other
+/// dynamic objects: 48-byte rows of a position and 1, a sky visibility (0.505 on open ground, the
+/// open half of the sphere), six small directional terms and zero. Distant Shore's first probe sits
+/// at the origin with 0.505 and nothing else, and its others range from 0.009 to 0.641.
+const OCCLUSION: u32 = 0x8080_6F38;
+const OCCLUSION_RECORD: usize = 0x10;
+const OCCLUSION_RECORD_CLASS: u32 = 0x8080_7268;
+const OCCLUSION_BUFFERS: [usize; 3] = [0x08, 0x20, 0x38];
+const OCCLUSION_PROBES: usize = 0x50;
+const OCCLUSION_PROBE_CLASS: u32 = 0x8080_726D;
+const OCCLUSION_PROBE_SIZE: usize = 48;
+const OCCLUSION_PROBE_VISIBILITY: usize = 16;
 /// The lowest elevation a baked light direction may give the sun, as the sine of its angle. A
 /// direction lower than this keeps the donor's tracks.
 const SUN_LOWEST: f32 = 0.05;
@@ -175,7 +220,7 @@ const MATERIAL_CLASS: u32 = 0x8080_71E8;
 const TRANSPARENT_STAGE: usize = 7;
 const LIGHT_SHAFT_STAGE: usize = 9;
 /// Where moved rows sit, in meters below the map's origin.
-const BURIED: f32 = -5000.;
+pub(super) const BURIED: f32 = -5000.;
 /// A placement resource that registers a spawn set with the client's spawn point manager, and
 /// the spawn set tag it names.
 const SPAWN_SET: u32 = 0x8080_9160;
@@ -252,6 +297,17 @@ enum Slot {
         collection: TagHash,
         collection_payload: Vec<u8>,
     },
+    /// A copy of the donor's table of cubemap volumes that places the map's own volumes.
+    Cubemaps { template: u32, payload: Vec<u8> },
+    /// A copy of the donor's ambient occlusion table whose row at `field` names a copy of
+    /// occlusion record `record` whose probes, after the first, are the map's own.
+    Occlusion {
+        template: u32,
+        payload: Vec<u8>,
+        field: usize,
+        record: TagHash,
+        record_payload: Vec<u8>,
+    },
 }
 
 /// A donor container a filtered copy stands in for: its owner with its shared-tag companion, or
@@ -312,6 +368,9 @@ pub(super) struct Piece {
     pub entity: TagHash,
     pub identity: u64,
     pub position: [f32; 3],
+    /// The least and greatest corners of its geometry, in the map's space.
+    pub minimum: [f32; 3],
+    pub maximum: [f32; 3],
 }
 
 /// One of the map's sky objects: its model reference, where it sits, its world bounds and the
@@ -359,6 +418,57 @@ pub(super) struct Chain {
     sound_points: Option<u32>,
     /// The direction the map's baked light mostly comes from, toward the light with z up.
     light: Option<[f32; 3]>,
+    /// Without a sky in the donor's bubble, a sky table of another world ([`SKY_WORLDS`]), whose
+    /// copy the map's own container places to hold the map's sky.
+    borrowed_sky: Option<Slot>,
+    /// The donor parent's bounds records, in order, each that bounds something as the type-16
+    /// owner the map's copy widens to hold the level ([`widened_bounds`]).
+    bounds_rows: Vec<(TagHash, Option<Owner>)>,
+}
+
+/// Crucible worlds whose sky table and sky objects a map copies when its donor's bubble places no
+/// sky, as `mission_proton`'s does not, in the order tried. Without one, a converted campaign
+/// stretch drew Destiny's sky in place of its own.
+const SKY_WORLDS: [&str; 2] = ["pvp_sabre", "pvp_greenhouse_2"];
+
+/// The first sky table, with objects, that the bubbles of world `world` place.
+fn world_sky(manager: &PackageManager, world: &str) -> AuthoringResult<Option<Slot>> {
+    let Ok((root, _)) = super::donor_tag(manager, &format!("map:{world}:root")) else {
+        return Ok(None);
+    };
+    let root = read_tag(manager, root, "map root")?;
+    for parent in tag_rows(manager, &root, ROOT_PARENTS)? {
+        if class(manager, parent) != Some(BUBBLE_PARENT_CLASS) {
+            continue;
+        }
+        let bubble = TagHash(read_u32(
+            &read_tag(manager, parent, "bubble parent")?,
+            PARENT_BUBBLE,
+        )?);
+        if class(manager, bubble) != Some(BUBBLE_CLASS) {
+            continue;
+        }
+        let bubble = read_tag(manager, bubble, "bubble")?;
+        for container in tag_rows(manager, &bubble, BUBBLE_CONTAINERS)? {
+            if class(manager, container) != Some(CONTAINER_CLASS) {
+                continue;
+            }
+            let payload = read_tag(manager, container, "map container")?;
+            if read_u64(&payload, CONTAINER_TABLES)? == 0 {
+                continue;
+            }
+            let (count, _, rows, _) = array_at(&payload, CONTAINER_TABLES)?;
+            for index in 0..count {
+                let table = read_u32(&payload, rows + index * 4)?;
+                // Only a table of sky objects matters here, so a table that cannot be copied is
+                // passed over.
+                if let Ok(Table::Replaced(slot @ Slot::Sky { .. })) = kept_table(manager, table) {
+                    return Ok(Some(slot));
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// The first table without rows among those `containers` list, which stands in for the donor's
@@ -532,6 +642,13 @@ fn kept_table(manager: &PackageManager, table: u32) -> AuthoringResult<Table> {
         spawn_slot(manager, table, bytes, &resources)?
     } else if kinds.iter().all(|&kind| kind == SKY) {
         sky_slot(manager, table, bytes, &resources)?
+    } else if kinds.iter().all(|&kind| kind == OCCLUSION) {
+        occlusion_slot(manager, table, bytes, &resources)?
+    } else if kinds.iter().all(|&kind| kind == CUBEMAP_VOLUME) {
+        Some(Slot::Cubemaps {
+            template: table,
+            payload: bytes,
+        })
     } else if kinds.iter().all(|&kind| {
         GEOMETRY.contains(&kind)
             || kind == VISIBILITY
@@ -618,10 +735,13 @@ fn mixed_slot(
         if *kind == ATMOSPHERE && atmosphere.is_none() {
             atmosphere = atmosphere_row(&bytes, row)?;
         }
-        let leftover = match *kind {
-            0 | ENTITY_VALUES => leftover_entity(manager, read_u32(&bytes, row)?)?,
-            kind => LEFTOVERS.contains(&kind) || BARRIERS.contains(&kind) || DETAIL.contains(&kind),
-        };
+        // An inline resource configures the placed entity. Its class does not limit which
+        // components that entity can contain, so every row needs the component check.
+        let leftover = LEFTOVERS.contains(kind)
+            || BARRIERS.contains(kind)
+            || DETAIL.contains(kind)
+            || *kind == CUBEMAP_VOLUME
+            || leftover_entity(manager, read_u32(&bytes, row)?)?;
         if leftover {
             bury(&mut bytes, row);
             moved = true;
@@ -793,6 +913,63 @@ fn sky_slot(
         collection,
         collection_payload,
     }))
+}
+
+/// A copy of donor ambient occlusion table `table`, when its one row names an occlusion record
+/// with more than one probe.
+fn occlusion_slot(
+    manager: &PackageManager,
+    table: u32,
+    payload: Vec<u8>,
+    resources: &[usize],
+) -> AuthoringResult<Option<Slot>> {
+    let [resource] = resources[..] else {
+        return Ok(None);
+    };
+    let field = resource + OCCLUSION_RECORD;
+    let record = TagHash(read_u32(&payload, field)?);
+    if class(manager, record) != Some(OCCLUSION_RECORD_CLASS) {
+        return Ok(None);
+    }
+    let record_payload = read_tag(manager, record, "ambient occlusion record")?;
+    let (count, _, _, row_class) = array_at(&record_payload, OCCLUSION_PROBES)?;
+    if count < 2 || row_class != OCCLUSION_PROBE_CLASS {
+        return Ok(None);
+    }
+    Ok(Some(Slot::Occlusion {
+        template: table,
+        payload,
+        field,
+        record,
+        record_payload,
+    }))
+}
+
+/// A copy of donor occlusion record `donor` whose probes after the first take `probes`, each a
+/// position and a sky visibility, with no directional terms. The first stays the donor's.
+fn occlusion_record(donor: &[u8], probes: &[[f32; 4]]) -> AuthoringResult<Vec<u8>> {
+    let mut payload = donor.to_vec();
+    let (count, _, rows, row_class) = array_at(donor, OCCLUSION_PROBES)?;
+    if row_class != OCCLUSION_PROBE_CLASS
+        || rows + count * OCCLUSION_PROBE_SIZE > donor.len()
+        || probes.len() + 1 != count
+    {
+        return Err(invalid(format!(
+            "The donor occlusion record holds {count} probes for the map's {}",
+            probes.len()
+        )));
+    }
+    for (index, probe) in probes.iter().enumerate() {
+        let at = rows + (index + 1) * OCCLUSION_PROBE_SIZE;
+        let mut row = [0f32; OCCLUSION_PROBE_SIZE / 4];
+        row[..3].copy_from_slice(&probe[..3]);
+        row[3] = 1.;
+        row[OCCLUSION_PROBE_VISIBILITY / 4] = probe[3];
+        for (k, value) in row.into_iter().enumerate() {
+            payload[at + k * 4..at + k * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+    Ok(payload)
 }
 
 /// The tags a map's sky objects copy from the donor's sky: its first object's model reference,
@@ -1089,10 +1266,10 @@ fn component(
     Ok(Some((read_u32(&payload, resource - 4)?, resource, payload)))
 }
 
-/// Whether `entity` is a donor leftover: an entity that draws a model, collides or plays an effect,
-/// with a render model, physical body or effect flow component. Distant Shore's invisible walls
-/// and kill boxes are entities with only a physical body, its rocks also draw, and its ambient
-/// particles are entities with effect flows.
+/// Whether `entity` is donor scenery: a model, physical body, effect flow, shadowing light or
+/// lens flare. These components can also appear on rows with inline placement resources.
+/// Distant Shore's invisible walls and kill boxes have only a physical body. The Other Side's
+/// light entities reference the same light records as direct shadowing-light placements.
 pub(super) fn leftover_entity(manager: &PackageManager, entity: u32) -> AuthoringResult<bool> {
     if class(manager, TagHash(entity)) != Some(ENTITY_CLASS) {
         return Ok(false);
@@ -1106,7 +1283,11 @@ pub(super) fn leftover_entity(manager: &PackageManager, entity: u32) -> Authorin
         let owner = read_u32(&payload, rows + index * COMPONENT_SIZE)?;
         if matches!(
             component(manager, owner)?,
-            Some((RENDER_CLASS | BODY_CLASS | EFFECT_CLASS, _, _))
+            Some((
+                RENDER_CLASS | BODY_CLASS | EFFECT_CLASS | LIGHT_CLASS | FLARE_CLASS,
+                _,
+                _
+            ))
         ) {
             return Ok(true);
         }
@@ -1115,7 +1296,7 @@ pub(super) fn leftover_entity(manager: &PackageManager, entity: u32) -> Authorin
 }
 
 /// Moves placement row `row` far below the map.
-fn bury(payload: &mut [u8], row: usize) {
+pub(super) fn bury(payload: &mut [u8], row: usize) {
     payload[row + ROW_TRANSLATION + 8..row + ROW_TRANSLATION + 12]
         .copy_from_slice(&BURIED.to_le_bytes());
 }
@@ -1175,7 +1356,8 @@ pub(super) fn place_row(
     Ok(())
 }
 
-/// The prop `entity` is when it has one render model and one physical body with one body.
+/// The prop `entity` is when it has one render model and one physical body with one body, whose
+/// Havok packfile the pieces' bodies can copy.
 fn prop(manager: &PackageManager, entity: u32) -> AuthoringResult<Option<Prop>> {
     if class(manager, TagHash(entity)) != Some(ENTITY_CLASS) {
         return Ok(None);
@@ -1201,15 +1383,22 @@ fn prop(manager: &PackageManager, entity: u32) -> AuthoringResult<Option<Prop>> 
             _ => {}
         }
     }
-    Ok(render
-        .zip(body)
-        .map(|((render, model), (body, collision))| Prop {
-            entity,
-            render,
-            body,
-            model,
-            collision,
-        }))
+    let Some(((render, model), (body, collision))) = render.zip(body) else {
+        return Ok(None);
+    };
+    let Ok(packfile) = read_tag(manager, TagHash(collision), "prop collision") else {
+        return Ok(None);
+    };
+    if !parhelion_import::halo_reach::level::native::usable_prop_collision(&packfile) {
+        return Ok(None);
+    }
+    Ok(Some(Prop {
+        entity,
+        render,
+        body,
+        model,
+        collision,
+    }))
 }
 
 /// The tags a payload's tag rows at `descriptor` name, direct or by 64-bit hash.
@@ -1241,6 +1430,63 @@ fn class(manager: &PackageManager, tag: TagHash) -> Option<u32> {
     manager.get_entry(tag).map(|entry| entry.reference)
 }
 
+/// Whether bounds record `payload` (`8080964E`) bounds anything: `80FEB3E9`'s boxes hold inverted
+/// `FLT_MAX` corners.
+fn bounds_any(payload: &[u8]) -> AuthoringResult<bool> {
+    if payload.len() < 0x60 {
+        return Ok(false);
+    }
+    for index in 0..3 {
+        for k in 0..3 {
+            let low = f32::from_bits(read_u32(payload, index * 0x20 + k * 4)?);
+            let high = f32::from_bits(read_u32(payload, index * 0x20 + 0x10 + k * 4)?);
+            if low <= high && low.is_finite() && high.abs() < 1e30 {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// The bounds record `donor` (`8080964E`) with each of its three boxes widened to also hold
+/// `pieces`, the first and third reaching [`BOUNDS_MARGIN`] past them and the second
+/// [`WIDE_BOUNDS_MARGIN`]. A record whose boxes bound nothing, as `80FEB3E9`'s inverted `FLT_MAX`
+/// corners, gives none.
+fn widened_bounds(donor: &[u8], pieces: &[Piece]) -> AuthoringResult<Option<Vec<u8>>> {
+    if donor.len() < 0x60 || pieces.is_empty() {
+        return Ok(None);
+    }
+    let mut low = [f32::MAX; 3];
+    let mut high = [f32::MIN; 3];
+    for piece in pieces {
+        for k in 0..3 {
+            low[k] = low[k].min(piece.minimum[k]);
+            high[k] = high[k].max(piece.maximum[k]);
+        }
+    }
+    let value = |at: usize| -> AuthoringResult<f32> { Ok(f32::from_bits(read_u32(donor, at)?)) };
+    let mut payload = donor.to_vec();
+    let mut bounds_any = false;
+    for (index, margin) in [BOUNDS_MARGIN, WIDE_BOUNDS_MARGIN, BOUNDS_MARGIN]
+        .into_iter()
+        .enumerate()
+    {
+        let (least, greatest) = (index * 0x20, index * 0x20 + 0x10);
+        for k in 0..3 {
+            let (donor_low, donor_high) = (value(least + k * 4)?, value(greatest + k * 4)?);
+            if !(donor_low <= donor_high && donor_low.is_finite() && donor_high.abs() < 1e30) {
+                continue;
+            }
+            bounds_any = true;
+            let widened_low = donor_low.min(low[k] - margin);
+            let widened_high = donor_high.max(high[k] + margin);
+            write_u32(&mut payload, least + k * 4, widened_low.to_bits())?;
+            write_u32(&mut payload, greatest + k * 4, widened_high.to_bits())?;
+        }
+    }
+    Ok(bounds_any.then_some(payload))
+}
+
 /// Replaces the tag rows at `descriptor` with `tags`, each named directly.
 fn set_tag_rows(payload: &mut Vec<u8>, descriptor: usize, tags: &[TagHash]) -> AuthoringResult<()> {
     let (_, _, _, row_class) = array_at(payload, descriptor)?;
@@ -1254,7 +1500,8 @@ fn set_tag_rows(payload: &mut Vec<u8>, descriptor: usize, tags: &[TagHash]) -> A
 }
 
 impl Chain {
-    /// The chain of `donor`'s map root, for the map `name`.
+    /// The chain of the map root of the donor's world `donor`, for the map `name`. A Crucible
+    /// donor's world takes its activity's name.
     pub(super) fn load(
         directory: &Path,
         manager: &PackageManager,
@@ -1310,6 +1557,26 @@ impl Chain {
                 "Donor {donor}'s bubble parent does not name its bubble {donor}"
             )));
         }
+        let mut bounds_rows = Vec::new();
+        if read_u64(&parent.payload, PARENT_BOUNDS)? != 0 {
+            for tag in tag_rows(manager, &parent.payload, PARENT_BOUNDS)? {
+                let owner = if class(manager, tag) == Some(BOUNDS_CLASS)
+                    && bounds_any(&read_tag(manager, tag, "bubble bounds")?)?
+                {
+                    Some(Owner::load_tag(
+                        directory,
+                        manager,
+                        companions,
+                        tag,
+                        BOUNDS_CLASS,
+                        "bubble bounds",
+                    )?)
+                } else {
+                    None
+                };
+                bounds_rows.push((tag, owner));
+            }
+        }
         let bubble = TagHash(read_u32(&parent.payload, PARENT_BUBBLE)?);
         let bubble = Owner::load_tag(
             directory,
@@ -1361,6 +1628,21 @@ impl Chain {
             .into_iter()
             .map(|tag| keep(directory, manager, companions, tag, empty))
             .collect::<AuthoringResult<Vec<_>>>()?;
+        let donor_sky = kept.iter().any(|kept| match kept {
+            Kept::Filtered { slots, .. } => {
+                slots.iter().any(|slot| matches!(slot, Slot::Sky { .. }))
+            }
+            Kept::Unchanged => false,
+        });
+        let mut borrowed_sky = None;
+        if !donor_sky {
+            for world in SKY_WORLDS {
+                borrowed_sky = world_sky(manager, world)?;
+                if borrowed_sky.is_some() {
+                    break;
+                }
+            }
+        }
         let (container, prop_table, prop_row, prop) = found.ok_or_else(|| {
             invalid(format!(
                 "Donor {donor} places no prop with a render model and a physical body to copy"
@@ -1388,6 +1670,8 @@ impl Chain {
             prop,
             sound_points,
             light: None,
+            borrowed_sky,
+            bounds_rows,
         })
     }
 
@@ -1399,6 +1683,17 @@ impl Chain {
     /// The volume texture of the atmosphere the donor places beside its sun, which the map's own
     /// atmosphere volume recolors and stands in for.
     pub(super) fn atmosphere_volume(&self) -> AuthoringResult<Option<u32>> {
+        self.atmosphere_field(ATMOSPHERE_VOLUME)
+    }
+
+    /// The distance lookup of the atmosphere the donor places beside its sun, which the map's
+    /// black copy stands in for.
+    pub(super) fn atmosphere_lookup(&self) -> AuthoringResult<Option<u32>> {
+        self.atmosphere_field(ATMOSPHERE_LOOKUP)
+    }
+
+    /// The tag the donor's atmosphere beside its sun names at `field`, when it names one.
+    fn atmosphere_field(&self, field: usize) -> AuthoringResult<Option<u32>> {
         for kept in &self.kept {
             let Kept::Filtered { slots, .. } = kept else {
                 continue;
@@ -1410,7 +1705,8 @@ impl Chain {
                     ..
                 } = slot
                 {
-                    return Ok(Some(read_u32(payload, resource + ATMOSPHERE_VOLUME)?));
+                    let tag = read_u32(payload, resource + field)?;
+                    return Ok((tag != u32::MAX).then_some(tag));
                 }
             }
         }
@@ -1418,9 +1714,16 @@ impl Chain {
     }
 
     /// Entries the chain takes: the fixed ones, then each filtered container with its companion,
-    /// moved tables, and spawn set tables with their sets.
+    /// moved tables, and spawn set tables with their sets, then a borrowed sky's table and
+    /// collection.
     pub(super) fn entries(&self) -> usize {
         FIXED_ENTRIES
+            + if self.borrowed_sky.is_some() { 2 } else { 0 }
+            + 2 * self
+                .bounds_rows
+                .iter()
+                .filter(|(_, owner)| owner.is_some())
+                .count()
             + self
                 .kept
                 .iter()
@@ -1432,10 +1735,11 @@ impl Chain {
                                 .iter()
                                 .map(|slot| match slot {
                                     Slot::Table(_) => 0,
-                                    Slot::Moved { .. } => 1,
-                                    Slot::Spawns { .. } | Slot::World { .. } | Slot::Sky { .. } => {
-                                        2
-                                    }
+                                    Slot::Moved { .. } | Slot::Cubemaps { .. } => 1,
+                                    Slot::Spawns { .. }
+                                    | Slot::World { .. }
+                                    | Slot::Sky { .. }
+                                    | Slot::Occlusion { .. } => 2,
                                     Slot::Sun { .. } => {
                                         if self.sun().is_some() {
                                             3
@@ -1455,9 +1759,9 @@ impl Chain {
         self.prop
     }
 
-    /// The donor world collision's main packfile and first mesh packfile, which the map's own
-    /// world collision copies.
-    pub(super) fn world_templates(&self) -> AuthoringResult<(u32, u32)> {
+    /// The donor world collision's main packfile and its mesh packfiles, which the map's own world
+    /// collision copies.
+    pub(super) fn world_templates(&self) -> AuthoringResult<(u32, Vec<u32>)> {
         let record = self
             .kept
             .iter()
@@ -1475,7 +1779,10 @@ impl Chain {
         if count == 0 {
             return Err(invalid("The donor world collision has no mesh packfiles"));
         }
-        Ok((read_u32(record, WORLD_COMPOUND)?, read_u32(record, rows)?))
+        let meshes = (0..count)
+            .map(|index| read_u32(record, rows + index * 4))
+            .collect::<AuthoringResult<Vec<_>>>()?;
+        Ok((read_u32(record, WORLD_COMPOUND)?, meshes))
     }
 
     /// Sets the direction the map's baked light mostly comes from, which its sun takes.
@@ -1490,8 +1797,38 @@ impl Chain {
         })
     }
 
+    /// Whether the donor places a table of cubemap volumes, which the map's own volumes replace.
+    pub(super) fn cubemaps(&self) -> bool {
+        self.kept
+            .iter()
+            .filter_map(|kept| match kept {
+                Kept::Filtered { slots, .. } => Some(slots),
+                Kept::Unchanged => None,
+            })
+            .flatten()
+            .any(|slot| matches!(slot, Slot::Cubemaps { .. }))
+    }
+
+    /// How many probes the map's occlusion record takes from the map, every one of the donor's
+    /// after the first, when the donor places an occlusion record with probes.
+    pub(super) fn occlusion_probes(&self) -> AuthoringResult<Option<usize>> {
+        self.kept
+            .iter()
+            .filter_map(|kept| match kept {
+                Kept::Filtered { slots, .. } => Some(slots),
+                Kept::Unchanged => None,
+            })
+            .flatten()
+            .find_map(|slot| match slot {
+                Slot::Occlusion { record_payload, .. } => Some(record_payload),
+                _ => None,
+            })
+            .map(|record| Ok(array_at(record, OCCLUSION_PROBES)?.0 - 1))
+            .transpose()
+    }
+
     /// The tags the map's sky objects copy from the donor's sky, when the donor's bubble places a
-    /// sky object collection that holds objects.
+    /// sky object collection that holds objects, else from the sky the map borrows.
     pub(super) fn sky_templates(
         &self,
         manager: &PackageManager,
@@ -1503,6 +1840,7 @@ impl Chain {
                 Kept::Unchanged => None,
             })
             .flatten()
+            .chain(&self.borrowed_sky)
             .find_map(|slot| match slot {
                 Slot::Sky {
                     collection_payload, ..
@@ -1548,9 +1886,11 @@ impl Chain {
     /// The chain's entries starting at `first`, whose placement table places `pieces`, whose
     /// spawn set holds `spawns`, whose world collision is `world` and whose sky holds `sky`. The
     /// container also places `sounds`, the map's sound point table, its atmosphere names
-    /// `atmosphere`, the map's atmosphere volume, and its companion loads `content`, every tag the
-    /// pieces, sky, sounds and atmosphere use.
-    #[allow(clippy::too_many_arguments)]
+    /// `atmosphere`, the map's atmosphere volume, and `lookup`, the map's distance lookup, its
+    /// occlusion record holds `occlusion`, the map's probes, its cubemap volume table places
+    /// `cubemaps`, and its companion loads `content`, every tag the pieces, sky, sounds and
+    /// atmosphere use.
+    #[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
     pub(super) fn tags(
         &self,
         first: TagHash,
@@ -1560,12 +1900,17 @@ impl Chain {
         sky: &[SkyObject],
         sounds: Option<TagHash>,
         atmosphere: Option<TagHash>,
+        lookup: Option<TagHash>,
+        occlusion: &[[f32; 4]],
+        cubemaps: &[Cubemap],
         content: &[TagHash],
     ) -> AuthoringResult<(Vec<NewTagSpec>, TagHash)> {
         let at = |offset: usize| {
-            u16::try_from(first.entry_index() as usize + offset)
-                .map(|index| TagHash::new(first.pkg_id(), index))
-                .map_err(|_| invalid("The map package has too many entries"))
+            let index = first.entry_index() as usize + offset;
+            if index >= crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
+                return Err(invalid("The map root chain exceeds one package"));
+            }
+            Ok(TagHash::new(first.pkg_id(), index as u16))
         };
         let [
             root,
@@ -1600,6 +1945,9 @@ impl Chain {
         let mut next = FIXED_ENTRIES;
         // The first of the donor's skies holds the map's sky, and any further one holds none.
         let mut sky_left = sky;
+        // Likewise the first of the donor's cubemap volume tables places the map's volumes, and
+        // any further one places none, so no volume or identity is placed twice.
+        let mut cubemaps_left = cubemaps;
         for (index, kept) in self.kept.iter().enumerate() {
             match kept {
                 Kept::Unchanged => container_rows.extend_from_slice(
@@ -1627,6 +1975,18 @@ impl Chain {
                                 next += 1;
                                 tables.push(tag.0);
                                 added.push((TagHash(*template), payload.clone(), tag));
+                            }
+                            Slot::Cubemaps { template, payload } => {
+                                let tag = at(next)?;
+                                next += 1;
+                                tables.push(tag.0);
+                                let volumes = std::mem::take(&mut cubemaps_left);
+                                added.push((
+                                    TagHash(*template),
+                                    cubemaps::table(payload, volumes)?,
+                                    tag,
+                                ));
+                                named.extend(volumes.iter().map(|cubemap| cubemap.texture));
                             }
                             Slot::Spawns {
                                 template,
@@ -1691,6 +2051,9 @@ impl Chain {
                                 {
                                     write_u32(&mut payload, row + ATMOSPHERE_VOLUME, volume.0)?;
                                 }
+                                if let (Some(row), Some(lookup)) = (atmosphere_resource, lookup) {
+                                    write_u32(&mut payload, row + ATMOSPHERE_LOOKUP, lookup.0)?;
+                                }
                                 // New tags are written in the order their entries were taken.
                                 let mut copies = Vec::new();
                                 if let Some(direction) = self.sun() {
@@ -1736,6 +2099,40 @@ impl Chain {
                                 // container loads its own sky's.
                                 named.extend(objects.iter().map(|object| object.reference));
                             }
+                            Slot::Occlusion {
+                                template,
+                                payload,
+                                field,
+                                record,
+                                record_payload,
+                            } => {
+                                let (table, own_record) = (at(next)?, at(next + 1)?);
+                                next += 2;
+                                let mut payload = payload.clone();
+                                write_u32(&mut payload, *field, own_record.0)?;
+                                tables.push(table.0);
+                                added.push((TagHash(*template), payload, table));
+                                // Without the map's probes the copy keeps the donor's. The map's
+                                // probes are counted from the first record, so another record
+                                // that holds a different number keeps its donor's too.
+                                let copy = if occlusion.is_empty()
+                                    || array_at(record_payload, OCCLUSION_PROBES)?.0
+                                        != occlusion.len() + 1
+                                {
+                                    record_payload.clone()
+                                } else {
+                                    occlusion_record(record_payload, occlusion)?
+                                };
+                                added.push((*record, copy, own_record));
+                                // The copy names the donor's occlusion buffers, which the
+                                // container loads as the donor's loads them through its record.
+                                for buffer in OCCLUSION_BUFFERS {
+                                    let tag = read_u32(record_payload, buffer)?;
+                                    if tag != u32::MAX {
+                                        named.push(TagHash(tag));
+                                    }
+                                }
+                            }
                         }
                     }
                     container_rows.extend_from_slice(&direct(copy));
@@ -1759,10 +2156,32 @@ impl Chain {
             container_rows.len() / TAG_ROW_SIZE,
             &container_rows,
         )?;
+        // A borrowed sky's table and collection take the last entries, and the map's own
+        // container places the table.
+        let mut borrowed = Vec::new();
+        if let Some(Slot::Sky {
+            template,
+            payload,
+            field,
+            collection,
+            collection_payload,
+        }) = &self.borrowed_sky
+        {
+            let (sky_table, own_collection) = (at(next)?, at(next + 1)?);
+            let mut payload = payload.clone();
+            write_u32(&mut payload, *field, own_collection.0)?;
+            borrowed.push((TagHash(*template), payload, sky_table));
+            borrowed.push((
+                *collection,
+                sky_collection(collection_payload, sky)?,
+                own_collection,
+            ));
+        }
         let mut container_payload = self.container.payload.clone();
         let (_, _, _, table_class) = array_at(&container_payload, CONTAINER_TABLES)?;
         let tables = std::iter::once(table)
             .chain(sounds)
+            .chain(borrowed.first().map(|(_, _, tag)| *tag))
             .flat_map(|tag| tag.0.to_le_bytes())
             .collect::<Vec<_>>();
         append_native_array(
@@ -1784,6 +2203,7 @@ impl Chain {
             table,
         ];
         loads.extend_from_slice(content);
+        loads.extend(borrowed.iter().map(|(_, _, tag)| *tag));
         // The bubble's companion loads each copy and its companion, or, for a copy without one,
         // the tables it adds.
         let mut bubble_loads = loads[4..6].to_vec();
@@ -1801,6 +2221,38 @@ impl Chain {
             }
         }
 
+        // Each of the parent's bounds records that bounds something gives way to a copy widened to
+        // hold the level, after a borrowed sky's entries. With the donor's, its rooms bounded the
+        // level: on Tip of the Spear, players walking from the beach toward the hills were pulled
+        // back a few steps where The Other Side's boxes end, at y -94 to -99.
+        // Each copy and its companion take two entries.
+        let mut own_bounds = Vec::new();
+        if self.bounds_rows.iter().any(|(_, owner)| owner.is_some()) {
+            let mut rows = Vec::with_capacity(self.bounds_rows.len());
+            for (tag, owner) in &self.bounds_rows {
+                match owner {
+                    Some(owner) => {
+                        let at_entry = next + borrowed.len() + 2 * own_bounds.len();
+                        let (own, own_companion) = (at(at_entry)?, at(at_entry + 1)?);
+                        let widened = widened_bounds(&owner.payload, pieces)?
+                            .unwrap_or_else(|| owner.payload.clone());
+                        own_bounds.push((owner, widened, own, own_companion));
+                        rows.push(own);
+                    }
+                    None => rows.push(*tag),
+                }
+            }
+            set_tag_rows(&mut parent_payload, PARENT_BOUNDS, &rows)?;
+        }
+        let parent_loads = loads[2..4]
+            .iter()
+            .copied()
+            .chain(
+                own_bounds
+                    .iter()
+                    .flat_map(|(_, _, own, companion)| [*own, *companion]),
+            )
+            .collect::<Vec<_>>();
         let spec = |template: TagHash, payload: Vec<u8>| NewTagSpec {
             template_tag: template,
             payload,
@@ -1822,13 +2274,13 @@ impl Chain {
                     &root_drops,
                 )?,
             ),
-            spec(self.parent.tag, parent_payload),
+            spec(self.parent.tag, synchronize_payload_size(parent_payload)?),
             spec(
                 self.parent.companion_template(),
                 crate::shared_tag_dependency_index::remove_dependencies(
                     &self
                         .parent
-                        .companion_with(parent_companion, parent, &loads[2..4])?,
+                        .companion_with(parent_companion, parent, &parent_loads)?,
                     parent_companion,
                     parent,
                     &bubble_drops,
@@ -1885,6 +2337,16 @@ impl Chain {
             for (template, payload, _) in added {
                 tags.push(spec(template, payload));
             }
+        }
+        for (template, payload, _) in borrowed {
+            tags.push(spec(template, payload));
+        }
+        for (owner, payload, own, own_companion) in own_bounds {
+            tags.push(spec(owner.tag, payload));
+            tags.push(spec(
+                owner.companion_template(),
+                owner.companion_with(own_companion, own, &[])?,
+            ));
         }
         Ok((tags, root))
     }

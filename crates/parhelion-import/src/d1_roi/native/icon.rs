@@ -127,59 +127,14 @@ impl Assembly<'_> {
 
     /// An icon container's single image as RGBA pixels.
     fn container_rgba(&mut self, container: u32) -> Result<Option<(u16, u16, Vec<u8>)>> {
-        if matches!(container, 0 | u32::MAX) {
-            return Ok(None);
-        }
-        let class = self.source.reference(container)?;
-        if class != 0x80802797 {
-            let definition = self.source.read(class)?;
-            ensure!(
-                definition.u32(8)? == class && definition.u32(12)? == 0x80802797,
-                "Source icon container ancestry differs"
-            );
-        }
-        let container = self.source.read(container)?;
-        let layer = container.u32(0x14)?;
-        ensure!(
-            self.source.reference(layer)? == 0x80802070,
-            "Source icon layer class differs"
-        );
-        let layer = self.source.read(layer)?;
-        let resource = layer.pointer(16)?;
-        ensure!(
-            layer.u32(resource - 4)? == 0x808029CD,
-            "Source icon resource differs"
-        );
-        let lanes = layer.array(resource, 16, Some(0x80802478))?;
-        ensure!(lanes.len() == 1, "Source inventory icon has multiple lanes");
-        let textures = layer.array(lanes[0], 4, Some(0x80802B99))?;
-        ensure!(
-            textures.len() == 1,
-            "Source inventory icon has multiple frames"
-        );
-        let tag = layer.u32(textures[0])?;
-        let texture = self
+        let Some(icon) = self
             .source
-            .linear_texture(tag, self.options.xg_library.as_deref())?;
-        ensure!(
-            texture.layers == 1,
-            "Source inventory icon is not a single image"
-        );
-        let (_, length) = super::super::texture::surface(
-            texture.format,
-            texture.width as usize,
-            texture.height as usize,
-        )?;
-        let rgba = crate::d2_mot::icon::decode(&crate::d2_mot::icon::Layer {
-            slot: 0x14,
-            texture: tag,
-            format: texture.format,
-            width: texture.width,
-            height: texture.height,
-            data: texture.bytes[..length].to_vec(),
-        })?;
+            .container_icon(container, self.options.xg_library.as_deref())?
+        else {
+            return Ok(None);
+        };
         self.evidence
-            .push(json!({"source_icon":tag,"width":texture.width,"height":texture.height}));
-        Ok(Some((texture.width, texture.height, rgba)))
+            .push(json!({"source_icon":icon.texture,"width":icon.width,"height":icon.height}));
+        Ok(Some((icon.width, icon.height, icon.rgba)))
     }
 }

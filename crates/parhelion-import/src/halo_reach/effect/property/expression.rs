@@ -2,7 +2,7 @@
 use anyhow::{Result, bail, ensure};
 
 #[derive(Clone)]
-pub(in crate::halo_reach::effect) enum Expr {
+pub(in crate::halo_reach) enum Expr {
     Value([f32; 4]),
     Input(u8),
     Register(u8, u8, u8),
@@ -10,6 +10,8 @@ pub(in crate::halo_reach::effect) enum Expr {
     Binary(u8, Box<Expr>, Box<Expr>),
     Ternary(u8, Box<Expr>, Box<Expr>, Box<Expr>),
     Periodic(u8, Box<Expr>),
+    Transition(u8, Box<Expr>),
+    Exponent(Box<Expr>, f32, f32, f32),
 }
 
 impl Expr {
@@ -41,6 +43,16 @@ impl Expr {
     }
 
     pub fn hlsl(&self, input: &impl Fn(u8) -> Result<String>) -> Result<String> {
+        self.shader(input, &|_, _| {
+            bail!("CPU periodic table has no source shader expression")
+        })
+    }
+
+    pub fn shader(
+        &self,
+        input: &impl Fn(u8) -> Result<String>,
+        periodic: &impl Fn(u8, String) -> Result<String>,
+    ) -> Result<String> {
         Ok(match self {
             Self::Value(values) => {
                 ensure!(
@@ -48,32 +60,60 @@ impl Expr {
                     "Nonfinite curve constant"
                 );
                 format!(
-                    "float4({:.9},{:.9},{:.9},{:.9})",
+                    "float4({:e},{:e},{:e},{:e})",
                     values[0], values[1], values[2], values[3]
                 )
             }
             Self::Input(index) => format!("float4({0},{0},{0},{0})", input(*index)?),
             Self::Register(..) => bail!("Native particle register has no source shader expression"),
-            Self::Periodic(..) => bail!("CPU periodic table has no source shader expression"),
+            Self::Periodic(wave, time) => periodic(*wave, time.shader(input, periodic)?)?,
+            Self::Transition(kind, value) => periodic(12 + kind, value.shader(input, periodic)?)?,
+            Self::Exponent(value, low, high, power) => {
+                let value = value.shader(input, periodic)?;
+                if power.abs() < 0.0001 {
+                    "float4(1,1,1,1)".into()
+                } else {
+                    let raised = if power.fract() == 0. {
+                        let sign = if power.rem_euclid(2.) == 1. {
+                            format!("(({value}).x<0?-1:1)*")
+                        } else {
+                            String::new()
+                        };
+                        format!("{sign}pow(abs({value}),{:e})", power)
+                    } else {
+                        format!("pow({value},{:e})", power)
+                    };
+                    let result = format!("({low:e}+({high:e}-{low:e})*({raised}))");
+                    if *power < 0. {
+                        format!("(abs(({value}).x)<0.0001?float4(1,1,1,1):{result})")
+                    } else {
+                        result
+                    }
+                }
+            }
             Self::Unary(op, a) => {
-                let a = a.hlsl(input)?;
+                let a = a.shader(input, periodic)?;
                 match op {
                     0x17 => format!("floor({a})"),
+                    0x18 => format!("ceil({a})"),
                     0x1a => format!("frac({a})"),
                     0x1d => format!("(-{a})"),
                     0x1e => format!("sin(6.28318530718*{a})"),
                     0x1f => format!("cos(6.28318530718*{a})"),
                     0x23 => format!("saturate({a})"),
+                    0x24 => format!("exp2({a})"),
+                    0x25 => format!("log2({a})"),
                     _ => bail!("Unsupported curve unary operation {op}"),
                 }
             }
             Self::Binary(op, a, b) => {
-                let (a, b) = (a.hlsl(input)?, b.hlsl(input)?);
+                let (a, b) = (a.shader(input, periodic)?, b.shader(input, periodic)?);
                 match op {
                     1 => format!("({a}+{b})"),
                     2 => format!("({a}-{b})"),
                     3 => format!("({a}*{b})"),
                     4 => format!("({a}/{b})"),
+                    9 => format!("max({a},{b})"),
                     0x0a => format!("float4({a}<={b})"),
                     0x0f => format!("((({b}.xxxx*{a}+{b}.yyyy)*{a}+{b}.zzzz)*{a}+{b}.wwww)"),
                     _ => bail!("Unsupported curve binary operation {op}"),
@@ -81,9 +121,9 @@ impl Expr {
             }
             Self::Ternary(0x10, a, b, c) => format!(
                 "lerp({},{},{})",
-                a.hlsl(input)?,
-                b.hlsl(input)?,
-                c.hlsl(input)?
+                a.shader(input, periodic)?,
+                b.shader(input, periodic)?,
+                c.shader(input, periodic)?
             ),
             Self::Ternary(op, _, _, _) => bail!("Unsupported curve ternary operation {op}"),
         })
@@ -118,6 +158,9 @@ impl Expr {
             }
             Self::Periodic(wave, time) => {
                 super::periodic::emit(*wave, time, program, phase, input)?;
+            }
+            Self::Transition(..) | Self::Exponent(..) => {
+                bail!("This CPU curve requires a material shader consumer")
             }
         }
         Ok(())

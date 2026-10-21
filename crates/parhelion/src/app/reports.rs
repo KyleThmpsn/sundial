@@ -172,6 +172,9 @@ pub(super) fn draw_install_report(ui: &mut egui::Ui, report: &InstallReport) {
     for overlap in &report.mod_overlaps {
         ui.label(overlap);
     }
+    for member in &report.mods {
+        ui.label(format!("{}: {}", member.name, member.status.label()));
+    }
     ui.add_space(6.0);
     egui::CollapsingHeader::new("Installation Details").show(ui, |ui| {
         path_row(ui, "Installed To", &report.target_packages_directory);

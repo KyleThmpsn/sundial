@@ -919,7 +919,7 @@ impl SundialApp {
                         game_settings::Capabilities::detect(
                             launch.and_then(|copy| copy.version.as_deref()),
                             launch.is_some_and(|copy| copy.dawn),
-                        )
+                        ).with_trace_logging(launch.is_some_and(|copy| copy.trace_logging))
                     };
                     let dawn = self.runtime_choice.inspection.copies.iter_mut()
                         .find(|copy| copy.settings_path == self.settings_path)

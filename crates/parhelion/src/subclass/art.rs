@@ -214,7 +214,7 @@ pub(crate) fn author(
     nodes: &mut Vec<NewTagSpec>,
     references: &mut Vec<NewTagReferenceOverride>,
 ) -> AuthoringResult<TagHash> {
-    let package = crate::package_profile::window().base;
+    let package = crate::package_profile::window().first();
     let allocator = crate::appended_tags::AppendedTagAllocator::new(package, 0);
     let painters = art
         .sources

@@ -17,8 +17,9 @@ pub(crate) struct AppendedTagAllocator {
     package_id: u16,
     current_entry_count: usize,
     /// The standalone package that takes the tags past this package's last entry, then each one
-    /// below it, every one from its first entry. Without one, those tags are refused.
-    overflow: Option<u16>,
+    /// after it, every one from its first entry, and whether those count up. Without one, those
+    /// tags are refused.
+    overflow: Option<(u16, bool)>,
 }
 
 impl AppendedTagAllocator {
@@ -31,19 +32,23 @@ impl AppendedTagAllocator {
     }
 
     /// Where a build's private runtime goes: the private perk-runtime package's table after its
-    /// historical high-water mark `start`, then fresh standalone packages from the top of the
-    /// build's window down. The asset packages count up from its bottom, so the two meet only
-    /// once the window is spent.
+    /// historical high-water mark `start`, then fresh standalone packages from the far end of the
+    /// build's window toward its first id. The asset packages count from its first id, so the two
+    /// meet only once the window is spent.
     pub(crate) fn private_runtime(start: usize) -> Self {
-        Self::new(PRIVATE_PERK_RUNTIME_PACKAGE_ID, start)
-            .overflowing_into(crate::package_profile::window().top)
+        let window = crate::package_profile::window();
+        Self {
+            overflow: Some((window.last(), window.descending)),
+            ..Self::new(PRIVATE_PERK_RUNTIME_PACKAGE_ID, start)
+        }
     }
 
     /// This allocation, continuing past its package's last entry in standalone package `top`, then
     /// each one below it.
+    #[cfg(test)]
     pub(crate) const fn overflowing_into(self, top: u16) -> Self {
         Self {
-            overflow: Some(top),
+            overflow: Some((top, false)),
             ..self
         }
     }
@@ -110,22 +115,39 @@ impl AppendedTagAllocator {
                 AuthoringError::InvalidInput(format!("{destination_description} index overflowed"))
             })?;
         if index >= MAX_PACKAGE_ENTRY_COUNT {
-            let Some(top) = self.overflow else {
+            let Some((start, upward)) = self.overflow else {
                 return Err(AuthoringError::InvalidInput(format!(
                     "{destination_description} index {index} exceeds the package-table limit"
                 )));
             };
             // Each overflow package holds a whole table, from its first entry.
             let spill = index - MAX_PACKAGE_ENTRY_COUNT;
-            let package = u16::try_from(spill / MAX_PACKAGE_ENTRY_COUNT)
-                .ok()
-                .and_then(|below| top.checked_sub(below))
-                .filter(|&package| is_authored_standalone_package_id(package))
-                .ok_or_else(|| {
-                    AuthoringError::InvalidInput(format!(
-                        "{destination_description} index {index} exceeds every authored package"
-                    ))
-                })?;
+            let offset = spill / MAX_PACKAGE_ENTRY_COUNT;
+            let package = if self.package_id == PRIVATE_PERK_RUNTIME_PACKAGE_ID
+                && crate::package_profile::host().is_standalone()
+            {
+                let window = crate::package_profile::window();
+                (window.base..=window.top)
+                    .filter(|id| !crate::mod_family::build::reserved(*id))
+                    .nth(offset)
+            } else {
+                u16::try_from(offset)
+                    .ok()
+                    .and_then(|n| {
+                        if upward {
+                            start.checked_add(n)
+                        } else {
+                            start.checked_sub(n)
+                        }
+                    })
+                    .filter(|&package| is_authored_standalone_package_id(package))
+            }
+            .ok_or_else(|| {
+                AuthoringError::InvalidInput(format!(
+                    "{destination_description} index {index} exceeds every authored package"
+                ))
+            })?;
+            crate::mod_family::build::native(package);
             return Self::new(package, 0).assigned_tag(
                 spill % MAX_PACKAGE_ENTRY_COUNT,
                 destination_description,

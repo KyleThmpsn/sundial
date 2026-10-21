@@ -11,8 +11,15 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs};
+mod animation;
+mod environment;
+mod fog;
 pub(super) mod sky;
 mod surface;
+mod terrain;
+pub(super) mod vertex_data;
+mod water;
+pub(super) use fog::{Band, Fog};
 
 pub(super) struct Binding<'a> {
     pub palette: &'a [u8],
@@ -24,6 +31,8 @@ pub(super) struct Binding<'a> {
     /// A level's decoded baked lighting, sampled with the lightmap coordinates its meshes carry in
     /// the detail coordinates.
     pub lightmap: Option<&'a Lightmap>,
+    /// Optional vertex-stage data texture, independent of the pixel texture bindings.
+    pub vertex_data: Option<&'a str>,
 }
 
 /// The map slot of a level material's diffuse table, which Reach's lightmap shaders read at the
@@ -31,9 +40,9 @@ pub(super) struct Binding<'a> {
 const VMF_TABLE_SLOT: usize = 15;
 /// The map slot of a glass material's opacity map, whose alpha is its coverage.
 const GLASS_OPACITY_SLOT: usize = 10;
-/// The texture registers a level surface may bind. Its maps and lighting take consecutive registers
-/// from zero. Distant Shore's 100 stock surfaces bind none above eleven.
-const MAX_TEXTURE_REGISTERS: usize = 16;
+/// Translation budget for fixed texture bindings, separate from the sixteen sampler registers.
+/// Four terrain layers can require seventeen surface maps before the three lighting maps.
+const MAX_TEXTURE_REGISTERS: usize = 32;
 
 /// The shell's pixel sampler table row holding its anisotropic clamping sampler, `80C6B566` in
 /// Shadowkeep (filter 0x55, address mode 3, anisotropy 4, bias -0.5).
@@ -45,12 +54,15 @@ const FIRST_SAMPLER_REGISTER: usize = 3;
 const SAMPLER_REGISTERS: usize = 16;
 /// D3D11 anisotropic filtering, address modes and the anisotropy surfaces sample with.
 const ANISOTROPIC: u32 = 0x55;
+const TRILINEAR: u32 = 0x15;
 const WRAP: u32 = 1;
 const MIRROR: u32 = 2;
 const CLAMP: u32 = 3;
 const BORDER: u32 = 4;
 const MIRROR_ONCE: u32 = 5;
 const MAX_ANISOTROPY: u32 = 16;
+/// A sampler description's mip bias, a float after its filter and three address modes.
+const MIP_BIAS: usize = 16;
 
 /// The scale of a detail map sample. A neutral detail map reads 0.5^2.2, either stored so on the
 /// linear curve or as middle gray on a gamma curve, so its sample scales by 2^2.2.
@@ -68,12 +80,11 @@ const DETAIL_MULTIPLIER: f32 = 4.594_79;
 /// 76 to 103 against the screenshots' median of 75, before the large bloom's floor added light to
 /// the shade.
 pub(super) const LIGHT_RADIANCE: f32 = 0.35;
-/// The same scale for the sky. Reach captures of Hang 'Em High show its sky two to five times as
-/// bright as its lit walls. At the surfaces' scale of 3 the sky drew darker than the walls in game,
-/// so the sky kept that scale while the surfaces took a fifth of it, and it stays five times the
-/// surfaces' scale. Reach's own sky programs scale their self illumination and their result by
-/// runtime exposure constants that were not recovered.
-pub(super) const SKY_RADIANCE: f32 = 5. * LIGHT_RADIANCE;
+/// Sky and level surfaces share one radiance conversion. Their final programs already compensate
+/// for the different native exposure paths, so an additional sky multiplier amplifies every
+/// overlapping cloud and light-shaft layer. Source vertex lighting and self illumination retain
+/// the authored brightness differences. Reach's runtime exposure constants are not reproduced.
+pub(super) const SKY_RADIANCE: f32 = LIGHT_RADIANCE;
 /// The frame constants at `b13`, which a baked surface's pixel program reads for its exposure.
 const FRAME: &str = "cbuffer Frame : register(b13) {float4 frameData[2];};";
 
@@ -88,10 +99,11 @@ pub(super) struct Lens {
 const VERTEX: &str = r#"
 $SOURCE_PALETTE$
 $SHADOW_RESOURCE$
+$VERTEX_LIGHT_DECL$
 cbuffer Object : register(b11) {float4 objectData[776];};
 cbuffer View : register(b12) {float4 viewData[14];};
 void main(float4 position:POSITION0,float4 weight:BLENDWEIGHT0,uint4 bone:BLENDINDICES0,float2 uv:TEXCOORD0,float4 normal:NORMAL0,float4 tangent:TANGENT0,float2 detail:TEXCOORD2,
-out float4 o0:TEXCOORD0,out float4 o1:TEXCOORD1,out float4 o2:TEXCOORD2,out float4 o3:TEXCOORD3,out float3 o4:TEXCOORD4,out float4 projected:SV_POSITION0) {
+out float4 o0:TEXCOORD0,out float4 o1:TEXCOORD1,out float4 o2:TEXCOORD2,out float4 o3:TEXCOORD3,out float3 o4:TEXCOORD4,out float4 projected:SV_POSITION0,out float4 o5:TEXCOORD5,out float4 o6:TEXCOORD6,out float4 o7:TEXCOORD7,out float4 o8:TEXCOORD8,out float4 o9:TEXCOORD9) {
 float4 p=float4(position.xyz*objectData[5].www+objectData[5].xyz,1);
 $MOTION$
 float3 world=float3(dot(r0,p),dot(r1,p),dot(r2,p));
@@ -101,8 +113,10 @@ float3 relative=world-viewData[7].xyz;
 projected=viewData[0]*relative.x+viewData[1]*relative.y+viewData[2]*relative.z+viewData[13];
 $SHADOW_PROJECTION$
 o0=float4(n,saturate(objectData[7].w+saturate(objectData[7].z*n.z)));
-o1=float4(t,p.z);o2=float4(cross(n,t)*tangent.w,dot(n,normalize(-relative)));
-o3=float4(uv*objectData[6].xy+objectData[6].zw,detail);o4=p.xyz;
+o1=float4(t,length(relative)/3.048);o2=float4(cross(n,t)*tangent.w,dot(n,normalize(-relative)));
+o3=float4(uv*objectData[6].xy+objectData[6].zw,detail);o4=p.xyz;o5=float4(-relative,world.z);
+o9=float4(o3.xy,1/max(o1.w,0.01),0);
+$VERTEX_LIGHT_READ$
 }
 "#;
 
@@ -173,15 +187,6 @@ pub(super) fn texture(
             }
         }
     }
-    let symbol = format!(
-        "{}-{}{}",
-        image.name(),
-        if srgb { "srgb" } else { "linear" },
-        if animated { "-decimal" } else { "" }
-    );
-    if g.nodes.iter().any(|n| n["symbol"] == symbol) {
-        return Ok(symbol);
-    }
     // Smaller levels of a digit strip would blend neighboring digits, and palettes and diffuse
     // tables are lookup tables read at exact coordinates.
     let mips = if animated || matches!(mapping.role.as_str(), "palette" | "g_sample_vmf_diffuse") {
@@ -193,6 +198,20 @@ pub(super) fn texture(
     } else {
         Mips::Data
     };
+    let symbol = format!(
+        "{}-{}{}{}",
+        image.name(),
+        if srgb { "srgb" } else { "linear" },
+        if animated { "-decimal" } else { "" },
+        if mips == Mips::None && !animated {
+            "-lookup"
+        } else {
+            ""
+        }
+    );
+    if g.nodes.iter().any(|n| n["symbol"] == symbol) {
+        return Ok(symbol);
+    }
     rgba_texture(
         native,
         g,
@@ -204,6 +223,64 @@ pub(super) fn texture(
         mips,
     )?;
     Ok(symbol)
+}
+
+/// Distant Shore's interior cube texture header (`80EB038A`), type 32:2, whose six faces, cube flags
+/// (`0xFF` at `+0x1B`, 2 at `+0x20`) and resident data tag a map's cube textures copy.
+const CUBE_TEMPLATE: u32 = 0x80EB_038A;
+/// DXGI's four 16-bit floats per texel.
+const RGBA16_FLOAT: u32 = 10;
+
+/// Native cube payloads are mip-major. Alpha remains separate until the shader samples it.
+pub(super) fn cube_mips(
+    native: &mut Reader,
+    g: &mut Graph,
+    symbol: &str,
+    size: usize,
+    mips: &[[Vec<[f32; 4]>; 6]],
+) -> Result<()> {
+    ensure!(
+        size.is_power_of_two() && !mips.is_empty() && mips.len() <= size.ilog2() as usize + 1,
+        "Invalid native cube mip extent"
+    );
+    let mut data = Vec::new();
+    for (level, faces) in mips.iter().enumerate() {
+        let side = (size >> level).max(1);
+        for face in faces {
+            ensure!(
+                face.len() == side * side,
+                "Native cube mip face extent differs"
+            );
+            for texel in face {
+                for &value in texel {
+                    ensure!(value.is_finite(), "Nonfinite cube channel");
+                    let value = half::f16::from_f32(value.max(0.));
+                    ensure!(value.is_finite(), "Cube channel exceeds half-float range");
+                    data.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+    }
+    let mut header = native.tag(CUBE_TEMPLATE, None)?.0.clone();
+    put(&mut header, 0, &u32::try_from(data.len())?.to_le_bytes())?;
+    put(&mut header, 4, &RGBA16_FLOAT.to_le_bytes())?;
+    put(&mut header, 14, &u16::try_from(size)?.to_le_bytes())?;
+    put(&mut header, 16, &u16::try_from(size)?.to_le_bytes())?;
+    put(&mut header, 18, &1u16.to_le_bytes())?;
+    put(&mut header, 20, &6u16.to_le_bytes())?;
+    header[23] = u8::try_from(mips.len())?;
+    put(&mut header, 36, &u32::MAX.to_le_bytes())?;
+    crate::tiger::texture::resident(&mut header, data.len())?;
+    let data_symbol = format!("{symbol}-data");
+    g.add(symbol, CUBE_TEMPLATE, &header, Some(&data_symbol), vec![])?;
+    g.add(
+        &data_symbol,
+        native.reference(CUBE_TEMPLATE)?,
+        &data,
+        Some(symbol),
+        vec![],
+    )?;
+    Ok(())
 }
 
 /// How a texture's smaller mip levels are filtered from its top level.
@@ -336,8 +413,8 @@ fn rgba_texture(
 
 /// A level's decoded baked lighting: its three atlas textures, the scale of their lighting and the
 /// average lit level that lighting is a share of, as [`super::level::lightmap::Atlas`] describes
-/// them, and the light its opaque surfaces add for the level's large bloom, as a share of that
-/// level.
+/// them, the light its opaque surfaces add for the level's large bloom, as a share of that level,
+/// and the level's fog.
 pub(super) struct Lightmap {
     pub lobe: String,
     pub ambient: String,
@@ -345,7 +422,43 @@ pub(super) struct Lightmap {
     pub scale: f32,
     pub level: f32,
     pub veil: [f32; 3],
+    pub sun: Option<Sun>,
+    pub fog: Option<Fog>,
 }
+
+/// The baked sun a level's opaque surfaces leave to Destiny's sun: its direction toward the light
+/// in the level's space, the luminance of a fully sunlit lobe as a share of the atlas' peak, and
+/// whether each texel's baked sun visibility says how much of it reaches the texel.
+#[derive(Clone, Copy)]
+pub(super) struct Sun {
+    pub direction: [f32; 3],
+    pub level: f32,
+    pub visibility: bool,
+}
+
+/// Destiny's sun on a surface, in the scale of the baked light the surface emits, as a share of a
+/// fully sunlit baked lobe. A hybrid surface's target zero holds its albedo times its share of the
+/// sun over this, so Destiny's sun lights it as Reach's baked sun did when this is right. Its true
+/// value was not measured. At 1 the sun takes the scale of the light surfaces emit, which kept the
+/// held weapon in sunlight about as bright as the sunlit walls beside it.
+const HYBRID_SUN_SCALE: f32 = 1.;
+/// The share of a lobeless texel's light (a lighting probe's or a neutral texel's) that the sun
+/// gave it where fully sunlit. Their light is irradiance with the sun in it, and Destiny's sun
+/// takes this share over by their sun visibility.
+const PROBE_SUN_SHARE: f32 = 0.7;
+/// The share of a texel's baked sun that Destiny's sun takes over. The surface keeps the rest as
+/// fill. Taking all of it left ground in Destiny's shadow but in Reach's sun with only the baked
+/// ambient light, which on Forge World is under a hundredth of the sun's: tree shadows on sunlit
+/// grass measured (18, 29, 41) against (73, 79, 65) beside them.
+const HYBRID_SUN_SHARE: f32 = 0.7;
+/// The share of a fully sunlit lobe below which a hybrid texel emits all of its baked light,
+/// Reach's sun included, and turns Destiny's light off. Target zero holds the albedo times the
+/// texel's sun share, so a shaded texel's color fell to a few eight-bit steps. Countdown's and
+/// Boardwalk's shaded walls drew as two or three flat colors with hard edges between them, their
+/// orange paint stepping between brown and olive where only the green channel changed a step.
+/// Half of the 0.7 a fully sunlit lobe reaches keeps a lit texel's color above a third of its
+/// albedo's.
+const HYBRID_SHADE: f32 = 0.35;
 
 /// Adds a level's decoded baked lighting as three linear RGBA8 textures. Each keeps one level, as
 /// smaller levels would blend neighboring charts of its atlas.
@@ -354,6 +467,8 @@ pub(super) fn lightmap_textures(
     g: &mut Graph,
     atlas: &super::level::lightmap::Atlas,
     veil: [f32; 3],
+    sun: Option<Sun>,
+    fog: Option<Fog>,
 ) -> Result<Lightmap> {
     let mut add = |name: &str, rgba: &[u8]| -> Result<String> {
         let symbol = format!("lightmap-{name}-linear");
@@ -376,6 +491,8 @@ pub(super) fn lightmap_textures(
         scale: atlas.scale,
         level: atlas.level,
         veil,
+        sun,
+        fog,
     })
 }
 
@@ -403,10 +520,13 @@ fn sampler_name(index: usize) -> String {
     }
 }
 
-/// Adds a sampler surfaces read their maps with: the native anisotropic sampler `template` with the
-/// U and V address `modes` of the source mappings that use it.
-fn sampler(native: &mut Reader, g: &mut Graph, template: u32, modes: [u32; 2]) -> Result<String> {
-    let symbol = format!("sampler-{}-{}", modes[0], modes[1]);
+/// Adds a sampler surfaces read their maps with: the native sampler `template` with the
+/// U and V address and filter `modes` of the mappings that use it, and no
+/// mip bias. The shell's sampler biases mips by -0.5, a sharpening Shadowkeep's own maps are made
+/// for. Reach's maps tile far more densely, base maps up to 256 times and detail maps up to 250
+/// times, and Reach sampled them unbiased.
+fn sampler(native: &mut Reader, g: &mut Graph, template: u32, modes: [u32; 3]) -> Result<String> {
+    let symbol = format!("sampler-{}-{}-{}", modes[0], modes[1], modes[2]);
     if g.nodes.iter().any(|n| n["symbol"] == symbol) {
         return Ok(symbol);
     }
@@ -421,14 +541,21 @@ fn sampler(native: &mut Reader, g: &mut Graph, template: u32, modes: [u32; 2]) -
     for (offset, mode) in [(4, modes[0]), (8, modes[1]), (12, WRAP)] {
         put(&mut description, offset, &mode.to_le_bytes())?;
     }
-    put(&mut description, 20, &MAX_ANISOTROPY.to_le_bytes())?;
+    put(&mut description, 0, &modes[2].to_le_bytes())?;
+    put(&mut description, MIP_BIAS, &0f32.to_le_bytes())?;
+    let anisotropy = if modes[2] == ANISOTROPIC {
+        MAX_ANISOTROPY
+    } else {
+        1
+    };
+    put(&mut description, 20, &anisotropy.to_le_bytes())?;
     let raw = format!("{symbol}-data");
     g.add(&symbol, template, &header, Some(&raw), vec![])?;
     g.add(&raw, data, &description, Some(&symbol), vec![])?;
     Ok(symbol)
 }
 
-/// A surface's pixel samplers: one per address mode pair its maps use, then the shell's clamping
+/// A surface's pixel samplers: one per address and filter combination, then the shell's clamping
 /// sampler for its lightmap and palette lookups, bound to consecutive registers from
 /// `FIRST_SAMPLER_REGISTER`.
 struct Samplers {
@@ -448,7 +575,7 @@ fn samplers(
     native: &mut Reader,
     g: &mut Graph,
     clamped: [u8; 16],
-    modes: &[[u32; 2]],
+    modes: &[[u32; 3]],
 ) -> Result<Samplers> {
     let template = u32::from_le_bytes(clamped[..4].try_into()?);
     ensure!(
@@ -488,12 +615,33 @@ fn samplers(
     Ok(result)
 }
 
-fn sample(c: &Cache, slot: usize, mapping: &material::Mapping, sampler: &str) -> Result<String> {
+/// The sample of the map in `slot` through its source sampler and mapping transform.
+/// With `animated`, as for a level surface,
+/// the transform's translation and scale animations run on the game clock, as the sky's do, so
+/// Forge World's waterfalls scroll their detail maps down over 20 and 30 seconds.
+#[allow(clippy::too_many_arguments)]
+fn sample(
+    c: &Cache,
+    slot: usize,
+    mapping: &material::Mapping,
+    sampler: &str,
+    animated: bool,
+    notes: &mut Vec<String>,
+) -> Result<String> {
     let transform = mapping.transform;
-    let uv = format!(
-        "v3.xy*float2({:.9},{:.9})+float2({:.9},{:.9})",
-        transform[0], transform[1], transform[2], transform[3]
-    );
+    let base = if matches!(slot, WATER_COLOR_SLOT | WATER_SHAPE_SLOT) {
+        "v9.xy"
+    } else {
+        "v3.xy"
+    };
+    let uv = if animated {
+        animation::coordinates(mapping, base, notes)
+    } else {
+        format!(
+            "{base}*float2({:.9},{:.9})+float2({:.9},{:.9})",
+            transform[0], transform[1], transform[2], transform[3]
+        )
+    };
     Ok(if let Some(place) = mapping.ammunition_place(c)? {
         format!("Map{slot}.Sample({sampler},decimalUv({uv},{place}.0))")
     } else {
@@ -529,11 +677,12 @@ fn decimal_display(c: &Cache, pages: &mut Pages, material: &Material) -> Result<
 }
 
 struct TextureBindings {
+    notes: Vec<String>,
     /// Each bound texture's register and symbol.
     bindings: Vec<(usize, String)>,
     samples: BTreeMap<usize, String>,
-    /// The address modes of each sampler the samples name, by sampler index.
-    samplers: Vec<[u32; 2]>,
+    /// Address U, address V and filter of each sampler, by sampler index.
+    samplers: Vec<[u32; 3]>,
     /// Each bound map's register, by map slot.
     registers: BTreeMap<usize, usize>,
     /// The sampler of the bound diffuse table, in map slot `VMF_TABLE_SLOT`.
@@ -546,18 +695,38 @@ struct TextureBindings {
 const TERRAIN_BLEND: usize = 6;
 const TERRAIN_LAYERS: [usize; 4] = [0, 7, 8, 9];
 const TERRAIN_DETAIL: [usize; 4] = [11, 12, 13, 14];
+const TERRAIN_BUMP: [usize; 4] = [1, 20, 21, 22];
+const TERRAIN_DETAIL_BUMP: [usize; 4] = [23, 24, 25, 26];
+/// A standard level surface's detail normal map, for `bump_mapping` `detail`. Terrain keeps slots 11
+/// to 14 for its layers' detail maps, and other surfaces leave them free. A lightmapped surface
+/// binds its maps to consecutive registers whatever their slots, so slots past 15 serve as well.
+const BUMP_DETAIL_SLOT: usize = 11;
+/// A standard level surface's second and third detail maps, for the `two_detail`, `detail_blend` and
+/// `three_detail_blend` albedos, and its second and third detail normal maps, for
+/// `three_detail_blend` bump mapping.
+const DETAIL2_SLOT: usize = 12;
+const DETAIL3_SLOT: usize = 13;
+const BUMP_DETAIL2_SLOT: usize = 14;
+const BUMP_DETAIL3_SLOT: usize = 16;
+/// A standard level surface's color mask, for the `color_mask` albedo.
+const COLOR_MASK_SLOT: usize = 17;
+/// A water surface's color texture and its shape texture, whose alpha fades it at the shore.
+const WATER_COLOR_SLOT: usize = 18;
+const WATER_SHAPE_SLOT: usize = 19;
+const WATER_FOAM_SLOT: usize = 27;
+const WATER_FOAM_DETAIL_SLOT: usize = 28;
 
 /// Whether `material` is a terrain shader, which blends up to four layers by its blend map.
 fn terrain(material: &Material) -> bool {
     material.tag.as_ref().is_some_and(|tag| tag.group == "rmtr")
 }
 
-/// A terrain shader's blend weights: the blend map's channels for its active layers, the first
-/// layer alone where the blend map is absent.
+/// A terrain shader's blend weights: the blend map's channels for its active layers. Missing
+/// or black blend maps share weight among active layers through the source epsilon.
 fn terrain_weights(material: &Material, samples: &BTreeMap<usize, String>) -> String {
-    let Some(blend) = samples.get(&TERRAIN_BLEND) else {
-        return "float4(1,0,0,0)".into();
-    };
+    let blend = samples
+        .get(&TERRAIN_BLEND)
+        .map_or("float4(0,0,0,0)", String::as_str);
     let active = TERRAIN_LAYERS
         .iter()
         .enumerate()
@@ -574,15 +743,41 @@ fn terrain_weights(material: &Material, samples: &BTreeMap<usize, String>) -> St
         })
         .collect::<Vec<_>>()
         .join(",");
-    format!("terrainWeights(({blend})*float4({active}))")
+    format!("terrainWeights(({blend}),float4({active}))")
 }
 
-/// Shader functions terrain blending uses: weights summing to one, falling back to the first
-/// layer where the blend map gives none.
-const TERRAIN_FUNCTIONS: &str = "float4 terrainWeights(float4 w){float total=dot(w,float4(1,1,1,1));return total>0.0001?w/total:float4(1,0,0,0);}";
+/// MCC adds 1e-8 to active channels before normalization. It affects the 0.04 cutoff as well as
+/// black blend maps. Albedo and normals apply that cutoff separately from lighting's full blend.
+const TERRAIN_FUNCTIONS: &str = "float4 terrainWeights(float4 w,float4 active){w=(max(w,0)+1e-8)*active;float total=((w.x+w.y)+w.z)+w.w;return total>0?w/total:float4(0,0,0,0);}";
+
+/// MCC terrain adds each layer's signed bump and detail XY, blends those slopes and reconstructs Z.
+fn terrain_normal(samples: &BTreeMap<usize, String>, weights: &str) -> String {
+    let terms = (0..4)
+        .map(|layer| {
+            let xy = |slot: usize| {
+                samples.get(&slot).map_or_else(
+                    || "float2(0,0)".into(),
+                    |sample| format!("(({sample}).xy*2-1)"),
+                )
+            };
+            format!(
+                "({}+{})*({weights})[{}]",
+                xy(TERRAIN_BUMP[layer]),
+                xy(TERRAIN_DETAIL_BUMP[layer]),
+                layer
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("+");
+    format!("terrainNormal({terms})")
+}
+
+const TERRAIN_NORMAL: &str =
+    "float3 terrainNormal(float2 xy){return float3(xy,sqrt(max(1-dot(xy,xy),0)));}";
 
 /// The maps `material` binds and their samples. With `dense`, as for a lightmapped level material,
 /// they take consecutive registers from zero and the material's diffuse table binds too.
+#[allow(clippy::cognitive_complexity)]
 fn textures(
     c: &Cache,
     pages: &mut Pages,
@@ -594,8 +789,9 @@ fn textures(
 ) -> Result<TextureBindings> {
     let mut bindings = Vec::new();
     let mut samples = BTreeMap::new();
+    let mut notes = Vec::new();
     let mut registers = BTreeMap::new();
-    let mut samplers = vec![[WRAP, WRAP]];
+    let mut samplers = vec![[WRAP, WRAP, ANISOTROPIC]];
     let layers: &[(usize, &[&str], bool, bool)] = &[
         (TERRAIN_BLEND, &["blend_map"][..], false, false),
         (TERRAIN_LAYERS[1], &["base_map_m_1"][..], false, true),
@@ -605,6 +801,33 @@ fn textures(
         (TERRAIN_DETAIL[1], &["detail_map_m_1"][..], false, true),
         (TERRAIN_DETAIL[2], &["detail_map_m_2"][..], false, true),
         (TERRAIN_DETAIL[3], &["detail_map_m_3"][..], false, true),
+        (TERRAIN_BUMP[1], &["bump_map_m_1"][..], true, false),
+        (TERRAIN_BUMP[2], &["bump_map_m_2"][..], true, false),
+        (TERRAIN_BUMP[3], &["bump_map_m_3"][..], true, false),
+        (
+            TERRAIN_DETAIL_BUMP[0],
+            &["detail_bump_m_0"][..],
+            true,
+            false,
+        ),
+        (
+            TERRAIN_DETAIL_BUMP[1],
+            &["detail_bump_m_1"][..],
+            true,
+            false,
+        ),
+        (
+            TERRAIN_DETAIL_BUMP[2],
+            &["detail_bump_m_2"][..],
+            true,
+            false,
+        ),
+        (
+            TERRAIN_DETAIL_BUMP[3],
+            &["detail_bump_m_3"][..],
+            true,
+            false,
+        ),
     ];
     let standard: [(usize, &[&str], bool, bool); 10] = [
         (0, &["base_map", "base_map_m_0"][..], false, true),
@@ -642,9 +865,81 @@ fn textures(
         table.push((GLASS_OPACITY_SLOT, &["opacity_texture"][..], false, false));
         table
     } else {
-        standard.to_vec()
+        let mut table = standard.to_vec();
+        if dense {
+            let option = |name: &str| material.options.get(name).map(String::as_str);
+            if matches!(
+                option("bump_mapping"),
+                Some("detail" | "three_detail_blend")
+            ) {
+                table.push((BUMP_DETAIL_SLOT, &["bump_detail_map"][..], true, false));
+            }
+            if option("bump_mapping") == Some("three_detail_blend") {
+                table.push((BUMP_DETAIL2_SLOT, &["bump_detail_map2"][..], true, false));
+                table.push((BUMP_DETAIL3_SLOT, &["bump_detail_map3"][..], true, false));
+            }
+            if matches!(
+                option("albedo"),
+                Some("two_detail" | "detail_blend" | "three_detail_blend")
+            ) {
+                table.push((DETAIL2_SLOT, &["detail_map2"][..], false, true));
+            }
+            if option("albedo") == Some("three_detail_blend") {
+                table.push((DETAIL3_SLOT, &["detail_map3"][..], false, true));
+            }
+            if option("albedo") == Some("color_mask") {
+                table.push((COLOR_MASK_SLOT, &["color_mask_map"][..], false, false));
+            }
+            if material.water() {
+                table.push((WATER_COLOR_SLOT, &["watercolor_texture"][..], false, true));
+                table.push((
+                    WATER_SHAPE_SLOT,
+                    &["global_shape_texture"][..],
+                    false,
+                    false,
+                ));
+                table.push((BUMP_DETAIL_SLOT, &["bump_detail_map"][..], true, false));
+                if option("foam") == Some("paint") {
+                    table.push((WATER_FOAM_SLOT, &["foam_texture"][..], false, true));
+                    table.push((
+                        WATER_FOAM_DETAIL_SLOT,
+                        &["foam_texture_detail"][..],
+                        false,
+                        true,
+                    ));
+                }
+            }
+        }
+        table
     };
     for (slot, roles, normal, srgb) in table {
+        // The four-layer MCC permutation omits detail bumps to fit its source sampler budget.
+        if terrain(material)
+            && TERRAIN_DETAIL_BUMP.contains(&slot)
+            && (0..4)
+                .filter(|&layer| terrain::active(material, layer))
+                .count()
+                == 4
+        {
+            continue;
+        }
+        if terrain(material)
+            && let Some(layer) = (0..4).find(|&layer| {
+                [
+                    TERRAIN_LAYERS[layer],
+                    TERRAIN_DETAIL[layer],
+                    TERRAIN_BUMP[layer],
+                    TERRAIN_DETAIL_BUMP[layer],
+                ]
+                .contains(&slot)
+            })
+            && material
+                .options
+                .get(&format!("material_{layer}"))
+                .is_some_and(|option| option == "off")
+        {
+            continue;
+        }
         if slot == 9
             && !terrain(material)
             && paint.is_none_or(|paint| !matches!(paint.mask, super::paint::PaintMask::ChangeColor))
@@ -652,17 +947,26 @@ fn textures(
             continue;
         }
         if let Some(mapping) = material.mapping(roles) {
+            let symbol = texture(c, pages, native, g, mapping, normal, srgb)?;
             let target = if dense {
-                bindings.len()
+                bindings
+                    .iter()
+                    .find(|(_, existing)| existing == &symbol)
+                    .map_or(bindings.len(), |(register, _)| *register)
             } else if paint.is_some() && slot >= 3 {
                 slot + 6
             } else {
                 slot
             };
-            bindings.push((target, texture(c, pages, native, g, mapping, normal, srgb)?));
+            if !dense || !bindings.iter().any(|(register, _)| *register == target) {
+                bindings.push((target, symbol));
+            }
             registers.insert(slot, target);
-            let index = sampler_index(&mut samplers, address_modes(mapping.address)?);
-            samples.insert(slot, sample(c, slot, mapping, &sampler_name(index))?);
+            let index = sampler_index(&mut samplers, sampler_modes(mapping)?);
+            samples.insert(
+                slot,
+                sample(c, slot, mapping, &sampler_name(index), dense, &mut notes)?,
+            );
         }
     }
     let mut table = None;
@@ -670,10 +974,11 @@ fn textures(
         let target = bindings.len();
         bindings.push((target, texture(c, pages, native, g, mapping, false, false)?));
         registers.insert(VMF_TABLE_SLOT, target);
-        let index = sampler_index(&mut samplers, address_modes(mapping.address)?);
+        let index = sampler_index(&mut samplers, sampler_modes(mapping)?);
         table = Some(sampler_name(index));
     }
     Ok(TextureBindings {
+        notes,
         bindings,
         samples,
         samplers,
@@ -683,7 +988,7 @@ fn textures(
 }
 
 /// The index of the sampler with address `modes` in `samplers`, which gains it when absent.
-fn sampler_index(samplers: &mut Vec<[u32; 2]>, modes: [u32; 2]) -> usize {
+fn sampler_index(samplers: &mut Vec<[u32; 3]>, modes: [u32; 3]) -> usize {
     samplers
         .iter()
         .position(|existing| *existing == modes)
@@ -691,6 +996,22 @@ fn sampler_index(samplers: &mut Vec<[u32; 2]>, modes: [u32; 2]) -> usize {
             samplers.push(modes);
             samplers.len() - 1
         })
+}
+
+/// Filter zero is source trilinear on both base and detail roles. Bind a real trilinear
+/// descriptor so the hardware derives the footprint in texels, including nonsquare images.
+/// Other modes retain the anisotropic approximation until their MCC descriptors are recovered.
+fn sampler_modes(mapping: &material::Mapping) -> Result<[u32; 3]> {
+    let [u, v] = address_modes(mapping.address)?;
+    Ok([
+        u,
+        v,
+        if mapping.filter == 0 {
+            TRILINEAR
+        } else {
+            ANISOTROPIC
+        },
+    ])
 }
 
 fn dye_tint(
@@ -718,79 +1039,124 @@ fn dye_tint(
     Ok(tinting)
 }
 
-/// The environment reflection a lightmapped surface adds to its albedo before its baked light
-/// multiplies both, as an HLSL expression, and its per-channel scale for the report. Reach's
+/// The environment reflection a lightmapped surface adds to its diffuse light, as an HLSL
+/// expression of the baked light ([`level_lighting`]), and its per-channel scale for the report. Reach's
 /// deferred lightmap programs for `two_lobe_phong` and `cook_torrance` surfaces add, to the
 /// diffuse `(lobe * table + ambient) / pi * albedo`, the environment map sampled at the reflected
 /// view times `(lobe * 3 * specular_table + ambient) * tint`, the specular mask, the specular
 /// coefficient, `environment_map_specular_contribution` and `env_tint_color`. The tint blends from
 /// the model's normal tint (`normal_specular_tint`, or `specular_tint`) toward the albedo by its
 /// blend (`albedo_specular_tint_blend`, or `albedo_blend`), and toward the glancing tint by a
-/// fresnel term. The translation has no view direction, so it takes the cube map's mean, the
-/// normal tint's blend without the fresnel term, and the diffuse response for the specular table's.
-/// Its reflection is then the term over the diffuse light, times pi.
+/// fresnel term `pow(1 - n.v, fresnel_curve_steepness)`. Reach reads its specular table along the
+/// view reflected about the normal, so the translation lights the term by the lobe through a
+/// Phong lobe about that reflection, of the material's power (`normal_specular_power`, or
+/// `roughness` as Reach's `roughness_to_power`), in place of the diffuse response where the lobe is
+/// sharp, plus the ambient light. A `dynamic` environment map, which Reach captures from the scene
+/// at run time, remains with Destiny's dynamic lighting. A mask from a texture the translation
+/// does not bind takes the diffuse alpha (`specular_mask_mult_diffuse`) or none
+/// (`specular_mask_from_texture`). The expression is the term's radiance in the irradiance's units,
+/// which the surface adds to its diffuse light.
 fn reflection(
-    c: &Cache,
-    pages: &mut Pages,
     material: &Material,
     surface: &surface::Surface<'_>,
-    means: &mut BTreeMap<u32, [f32; 3]>,
-) -> Result<Option<(String, [f32; 3])>> {
+    environment: Option<&str>,
+) -> Option<(String, [f32; 3])> {
     let option = |name: &str| material.options.get(name).map(String::as_str);
     if option("environment_mapping") != Some("per_pixel") {
-        return Ok(None);
+        return None;
     }
-    let (normal_tint, blend) = match option("material_model") {
-        Some("two_lobe_phong") => ("normal_specular_tint", "albedo_specular_tint_blend"),
-        Some("cook_torrance") => ("specular_tint", "albedo_blend"),
-        _ => return Ok(None),
+    let environment = environment?;
+    let (normal_tint, blend, glancing, power) = match option("material_model") {
+        Some("two_lobe_phong") => (
+            "normal_specular_tint",
+            "albedo_specular_tint_blend",
+            "glancing_specular_tint",
+            surface.scalar("normal_specular_power", 16.),
+        ),
+        Some("cook_torrance") => (
+            "specular_tint",
+            "albedo_blend",
+            "fresnel_color",
+            format!(
+                "2/pow(clamp({},0.05,1),2)-2",
+                surface.scalar("roughness", 0.5)
+            ),
+        ),
+        _ => return None,
     };
     let mask = match option("specular_mask") {
-        Some("specular_mask_from_diffuse") => "albedo.a",
-        Some("no_specular_mask") => "1",
-        _ => return Ok(None),
+        Some("specular_mask_from_diffuse" | "specular_mask_mult_diffuse") => "albedo.a",
+        Some("no_specular_mask" | "specular_mask_from_texture") => "1",
+        _ => return None,
     };
-    let Some(bitmap) = material
-        .properties
-        .iter()
-        .flat_map(|property| &property.textures)
-        .find(|mapping| mapping.role == "environment_map")
-        .and_then(|mapping| mapping.bitmap.as_ref())
-    else {
-        return Ok(None);
-    };
-    let mean = match means.get(&bitmap.datum) {
-        Some(&mean) => mean,
-        None => {
-            let mean = material::cube_mean(c, pages, bitmap)
-                .with_context(|| format!("Environment map {}", bitmap.path))?;
-            means.insert(bitmap.datum, mean);
-            mean
-        }
-    };
-    let first = |name: &str, default: f32| surface.constant(name).map_or(default, |v| v[0]);
-    let strength = first("environment_map_specular_contribution", 0.)
-        * first("specular_coefficient", 1.)
-        * std::f32::consts::PI;
-    let tint = surface.constant("env_tint_color").unwrap_or([1.; 4]);
-    let scale: [f32; 3] = std::array::from_fn(|k| (mean[k] * tint[k] * strength).max(0.));
-    if scale.iter().all(|&v| v <= 0.) {
-        return Ok(None);
-    }
-    let normal = surface.constant(normal_tint).unwrap_or([1.; 4]);
-    Ok(Some((
+    let contribution = surface.scalar("environment_map_specular_contribution", 0.);
+    let coefficient = surface.scalar("specular_coefficient", 1.);
+    let tint = surface.color("env_tint_color", [1.; 4]);
+    let normal = surface.color(normal_tint, [1.; 4]);
+    let edge = surface.color(glancing, surface.constant(normal_tint).unwrap_or([1.; 4]));
+    let blend = surface.scalar(blend, 0.);
+    let steepness = surface.scalar("fresnel_curve_steepness", 5.);
+    let power = format!("clamp({power},1,{MAX_SPECULAR_POWER})");
+    Some((
         format!(
-            "lerp(float3({:.9},{:.9},{:.9}),albedo.rgb,{:.9})*float3({:.9},{:.9},{:.9})*{mask}",
-            normal[0],
-            normal[1],
-            normal[2],
-            first(blend, 0.),
-            scale[0],
-            scale[1],
-            scale[2]
+            "lerp(lerp({normal},albedo.rgb,{blend}),{edge},pow(1-saturate(dot(n,normalize(v5.xyz))),max({steepness},0)))*({environment})*{tint}*max({contribution}*{coefficient},0)*3.141592654*{mask}*(lightLobeIrradiance*lerp(lightResponse,min(pow(saturate(dot(reflect(-normalize(v5.xyz),n),lightDirection)),{power})*(({power})+2)/8,{MAX_SPECULAR_PEAK}),lightLobe.a)+lightAmbientIrradiance)"
         ),
-        scale,
-    )))
+        surface.constant("env_tint_color").unwrap_or([1.; 4])[..3]
+            .try_into()
+            .unwrap(),
+    ))
+}
+
+/// The sharpest specular lobe the translation draws, and its brightest peak over the diffuse
+/// response, so a mirror-like Reach material does not draw one pixel of glare.
+const MAX_SPECULAR_POWER: f32 = 256.;
+const MAX_SPECULAR_PEAK: f32 = 8.;
+
+/// Water retains source color, Fresnel and wave-normal reflection. Coverage still approximates
+/// refraction depth because the converted forward pass has no Reach scene-depth input.
+fn water_albedo(
+    material: &Material,
+    surface: &surface::Surface<'_>,
+    samples: &BTreeMap<usize, String>,
+) -> String {
+    let option = |name: &str| material.options.get(name).map(String::as_str);
+    let body_name = if option("watercolor") == Some("pure") {
+        "water_color_pure"
+    } else {
+        "water_diffuse"
+    };
+    let body = match samples.get(&WATER_COLOR_SLOT) {
+        Some(color) if option("watercolor") == Some("texture") => format!(
+            "({color}).rgb*max({},0)",
+            surface.scalar("watercolor_coefficient", 1.)
+        ),
+        _ => surface.color(body_name, [0.03, 0.08, 0.1, 1.]),
+    };
+    let bank = match samples.get(&WATER_SHAPE_SLOT) {
+        Some(shape)
+            if matches!(
+                option("bankalpha"),
+                Some("paint" | "from_shape_texture_alpha")
+            ) =>
+        {
+            format!("saturate(({shape}).a)")
+        }
+        _ => "1".into(),
+    };
+    let fresnel = water::fresnel(surface);
+    let murkiness = surface.scalar("water_murkiness", 8.);
+    format!("float4({body},lerp(1-exp(-0.15*max({murkiness},0)),1,{fresnel})*{bank})")
+}
+
+/// Bump water uses its authored mapping transforms, including their animation functions.
+fn water_normal(samples: &BTreeMap<usize, String>) -> String {
+    match (samples.get(&1), samples.get(&BUMP_DETAIL_SLOT)) {
+        (Some(bump), Some(detail)) => {
+            format!("float4(normalize(float3((({bump}).xy+({detail}).xy)*2-2,1))*0.5+0.5,1)")
+        }
+        (Some(bump), None) => bump.clone(),
+        _ => "float4(0.5,0.5,1,1)".into(),
+    }
 }
 
 /// A lightmapped level surface's lighting, applied once its normal is known, and its lighting
@@ -799,12 +1165,17 @@ fn reflection(
 /// per-pixel lightmap shader does, irradiance is the lobe's color times the diffuse table read at
 /// the normal's cosine to the lobe and at its bandwidth, plus the ambient color. Without a table,
 /// the cosine response blends from flat to clamped with the bandwidth. The irradiance lights the
-/// albedo and the surface's environment `reflection` together.
+/// albedo, and the surface's environment `reflection` ([`reflection`]) adds its own radiance. A
+/// placed object's vertices hold
+/// their ground's lightmap coordinates with the first negated, which the samples read back
+/// unsigned and a hybrid surface reads as the object's mark ([`hybrid_lighting`]).
 fn level_lighting(
     lightmap: &Lightmap,
+    sun: Option<Sun>,
     bindings: &mut Vec<(usize, String)>,
     table: Option<&str>,
     reflection: Option<&str>,
+    water: Option<&str>,
 ) -> Result<(String, String)> {
     let first = bindings.len();
     ensure!(
@@ -825,17 +1196,97 @@ fn level_lighting(
         }
         None => "lerp(0.5,saturate(dot(n,lightDirection)),lightLobe.a)".to_owned(),
     };
-    let lit = reflection.map_or_else(|| "albedo.rgb".to_owned(), |r| format!("(albedo.rgb+{r})"));
-    let lighting = format!(
-        "float4 lightLobe=LightLobe.Sample(ClampSampler,v3.zw);float4 lightAmbient=LightAmbient.Sample(ClampSampler,v3.zw);float3 lightDirection=normalize(LightDirection.Sample(ClampSampler,v3.zw).xyz*2-1+float3(0,0,0.00001));float lightResponse={response};albedo.rgb={lit}*(lightResponse*lightLobe.rgb*lightLobe.rgb+lightAmbient.rgb*lightAmbient.rgb)*{:.9};",
-        lightmap.scale
-    );
+    let specular = reflection.unwrap_or("float3(0,0,0)");
+    let finish = water.unwrap_or("albedo.rgb=albedo.rgb*(lightResponse*lightLobeIrradiance+lightAmbientIrradiance)+lightSpecular;");
+    let sample = "float2 lightCoordinates=abs(v3.zw);float4 lightLobe=LightLobe.Sample(ClampSampler,lightCoordinates);float4 lightAmbient=LightAmbient.Sample(ClampSampler,lightCoordinates);float3 lightDirection=LightDirection.Sample(ClampSampler,lightCoordinates).xyz*2-1;if(v8.w>0.5){lightLobe=v6;lightAmbient=v7;lightDirection=v8.xyz;}lightDirection=normalize(lightDirection+float3(0,0,0.00001));";
+    let lighting = match sun {
+        None => format!(
+            "{sample}float lightResponse={response};float3 lightLobeIrradiance=(v8.w>0.5?lightLobe.rgb:lightLobe.rgb*lightLobe.rgb)*{scale:.9};float3 lightAmbientIrradiance=(v8.w>0.5?lightAmbient.rgb:lightAmbient.rgb*lightAmbient.rgb)*{scale:.9};float3 lightSpecular={specular};{finish}",
+            scale = lightmap.scale
+        ),
+        Some(sun) => hybrid_lighting(sample, &response, specular, lightmap.scale, sun),
+    };
     let declarations = format!(
         "Texture2D<float4> LightLobe:register(t{first});Texture2D<float4> LightAmbient:register(t{});Texture2D<float4> LightDirection:register(t{});",
         first + 1,
         first + 2
     );
     Ok((lighting, declarations))
+}
+
+/// The lighting of a level surface that leaves its baked `sun` to Destiny's sun. Of each texel's
+/// lobe, the share that is the sun is the texel's sun visibility (or, without visibility, how sharp
+/// its lobe is) where the lobe points within 15 degrees of the sun, fading out by 40 degrees, and
+/// Destiny's sun takes [`HYBRID_SUN_SHARE`] of that. A lobeless texel, a lighting probe's or a
+/// neutral one, holds irradiance with the sun in it, and its visibility takes [`PROBE_SUN_SHARE`]
+/// of it, of which Destiny's sun takes the same share. The rest lights `baseColor`, the albedo,
+/// into `albedo.rgb`, which the surface emits with its environment reflection (`lightSpecular`). Destiny's sun lights a
+/// face by its cosine to the sun, so the lobe keeps what its response gives beyond that cosine: a
+/// face turned from the sun keeps the broad lobe's light, where taking the share from the whole
+/// response left the shaded sides of Forge pieces with a third of it. `sunAmount` is the share of
+/// a fully sunlit lobe that Destiny's sun lights the texel by, and `bakedFull` the texel's whole
+/// baked light, its sun included, which a shaded texel emits.
+///
+/// A placed object's lightmap coordinates come negated ([`level_lighting`]) and mark it
+/// (`lightPlaced`). Its texel is its ground's, one texel for the whole object, so neighbouring
+/// Forge pieces took fills as different as their grounds and every face of a piece the same. A
+/// placed object therefore keeps none of its baked light: Destiny's sun lights it as fully sunlit,
+/// its shadows decide where that reaches, and Destiny's ambient light fills it, as it lights a
+/// player standing there.
+fn hybrid_lighting(sample: &str, response: &str, specular: &str, scale: f32, sun: Sun) -> String {
+    let [x, y, z] = sun.direction;
+    let wide = 40f32.to_radians().cos();
+    let narrow = 15f32.to_radians().cos();
+    let (lobe_share, probe_sun) = if sun.visibility {
+        (
+            format!("lightAmbient.a*{HYBRID_SUN_SHARE:.9}"),
+            format!("lightAmbient.a*(1-lightHasLobe)*{HYBRID_SUN_SHARE:.9}"),
+        )
+    } else {
+        (
+            format!("saturate((lightLobe.a-0.5)*4)*{HYBRID_SUN_SHARE:.9}"),
+            "0".to_owned(),
+        )
+    };
+    format!(
+        "{sample}float lightResponse={response};float3 baseColor=albedo.rgb;float3 lightLobeIrradiance=(v8.w>0.5?lightLobe.rgb:lightLobe.rgb*lightLobe.rgb)*{scale:.9};float3 lightAmbientIrradiance=(v8.w>0.5?lightAmbient.rgb:lightAmbient.rgb*lightAmbient.rgb)*{scale:.9};float3 lightSpecular={specular};float lightHasLobe=saturate((lightLobe.a-0.1)*5);float lightAlign=saturate((dot(lightDirection,float3({x:.9},{y:.9},{z:.9}))-{wide:.9})/{span:.9});float lightSunShare=lightAlign*lightHasLobe*{lobe_share};float lightProbeSun={probe_sun};float lightSunCosine=saturate(dot(n,float3({x:.9},{y:.9},{z:.9})));bool lightPlaced=v3.z<0;float sunAmount=lightPlaced?1:saturate(dot(lightLobeIrradiance,float3(0.2126,0.7152,0.0722))*lightSunShare/{level:.9}+lightProbeSun);albedo.rgb=lightPlaced?float3(0,0,0):baseColor*((lightResponse-lightSunShare*min(lightResponse,lightSunCosine))*lightLobeIrradiance+lightAmbientIrradiance*(1-{PROBE_SUN_SHARE:.9}*lightProbeSun))+lightSpecular;float3 bakedFull=baseColor*(lightResponse*lightLobeIrradiance+lightAmbientIrradiance)+lightSpecular;",
+        span = narrow - wide,
+        level = (sun.level * scale).max(1e-6),
+    )
+}
+
+/// A hybrid level surface's G-buffer writes: Destiny's sun, sky and shadows light it, and it emits
+/// the rest of its baked light as [`baked_finish`] emits all of it. Target zero's color serves both
+/// the emission, which the deferred program scales by its decoded strength, and Destiny's light,
+/// which scales by it alone. The strength is chosen so that target zero's luminance is the albedo's
+/// times the texel's share of the sun over [`HYBRID_SUN_SCALE`], and target zero takes the
+/// emitted radiance over that strength, so its color is the emission's and its brightness the
+/// sun's. The strength never falls below the radiance's brightest channel, so target zero stays at
+/// or below one, and stops at its largest step. A texel that emits nothing writes its sunlit albedo
+/// and no strength. The normal is the surface's own. Target two's `w` is 1, the ambient term's
+/// visibility, which is also what lets Destiny's sun shadows reach the texel: in lab build
+/// hybrid-31 Pinnacle's floors took the pieces' shadows with it at 1 and none with it at 0, while
+/// filling target two's `z` or target one's `w` instead changed nothing. The level's fog (`fog`,
+/// the inscatter in Reach's units and the extinction) dims the emitted light and the sun's share
+/// alike and adds its inscatter to the emitted light, including placed objects. The map replaces
+/// Destiny's atmosphere, so excluding placed objects would leave them without distance haze.
+/// Placed surfaces split the combined sun and emitted color by luminance before packing. Both
+/// outputs share target zero's chromaticity, so encoding only blue fog as that color would turn
+/// even nearby sunlit rocks blue. This preserves the combined color under unit deferred lighting.
+/// Target zero divides that sum by one plus the decoded emission strength. Dividing radiance by
+/// the rounded strength alone would darken sunlight abruptly when faint fog begins emitting.
+/// Independent fog color in dynamic shadows still requires a separate composition pass.
+/// A texel whose sun share is under [`HYBRID_SHADE`] emits its whole baked light, Reach's
+/// sun included, at the strength of its brightest channel, and writes target zero's alpha as 1
+/// and target two's `w` as 0, at which Destiny's deferred programs drop their own light from it.
+fn hybrid_finish(level: f32, veil: [f32; 3]) -> String {
+    format!(
+        "bool shade=sunAmount<{HYBRID_SHADE:.9};float3 radiance=(max((shade?bakedFull:albedo.rgb)+emission*{inverse:.9},0)*fog.a+fog.rgb*{inverse:.9}+(lightPlaced?0:1)*float3({veil_r:.9},{veil_g:.9},{veil_b:.9}))*{LIGHT_RADIANCE:.9}*frameData[1].z/max(frameData[1].x,0.000001);float3 sunlit=saturate(baseColor*sunAmount/{HYBRID_SUN_SCALE:.9})*fog.a;if(lightPlaced){{float3 total=sunlit+radiance;float emittedShare=saturate(dot(radiance,float3(0.2126,0.7152,0.0722))/max(dot(total,float3(0.2126,0.7152,0.0722)),0.000001));radiance=total*emittedShare;sunlit=total*(1-emittedShare);}}float strength=max(radiance.r,max(radiance.g,radiance.b));float emitted=dot(radiance,float3(0.2126,0.7152,0.0722));float wanted=shade?strength:min(max(emitted/max(dot(sunlit,float3(0.2126,0.7152,0.0722)),0.0001),strength),63.9);float encoded=0.5*(1+2.0/255.0+saturate((log2(wanted+1.0/128.0)+7)/13));float packed=min(ceil(encoded*255)/255,1);float decoded=exp2(13*saturate(2*packed-(1+2.0/255.0))-7)-1.0/128.0;bool emits=emitted>0.00001;o0=float4(lightPlaced?saturate((radiance+sunlit)/(1+(emits?decoded:0))):(emits?saturate(radiance/max(decoded,0.000001)):sunlit),shade?1:0.04);o1=float4(saturate(n*(roughness*0.125+0.375)+0.5),0);o2=float4(0,emits?packed:0.5,0,shade?0:1);",
+        inverse = 1. / level,
+        veil_r = veil[0],
+        veil_g = veil[1],
+        veil_b = veil[2],
+    )
 }
 
 /// A lightmapped opaque level surface's G-buffer writes. Reach lights such a surface by its baked
@@ -852,10 +1303,11 @@ fn level_lighting(
 /// radiance is therefore written times `z / x`, which brings the level to the sky's scale. It
 /// also adds the level's large bloom `veil`, a share of the average lit level, before that scale.
 /// Reach adds the bloom over the finished image, so the surface's own light no longer decides the
-/// color of its shade.
+/// color of its shade. Before the bloom, the level's fog (`fog`) dims the light by its extinction
+/// and adds its inscatter, as Reach fogs the finished pixel.
 fn baked_finish(level: f32, veil: [f32; 3]) -> String {
     format!(
-        "float3 radiance=(max(albedo.rgb+emission*{inverse:.9},0)+float3({veil_r:.9},{veil_g:.9},{veil_b:.9}))*{LIGHT_RADIANCE:.9}*frameData[1].z/max(frameData[1].x,0.000001);float strength=max(radiance.r,max(radiance.g,radiance.b));float encoded=0.5*(1+2.0/255.0+saturate((log2(strength+1.0/128.0)+7)/13));float packed=min(ceil(encoded*255)/255,1);float decoded=exp2(13*saturate(2*packed-(1+2.0/255.0))-7)-1.0/128.0;o0=float4(saturate(radiance/max(decoded,0.000001)),0.04);o1=float4(saturate(float3(0,0,-1)*(roughness*0.125+0.375)+0.5),0);o2=float4(0,packed,0,0);",
+        "float3 radiance=(max(albedo.rgb+emission*{inverse:.9},0)*fog.a+fog.rgb*{inverse:.9}+float3({veil_r:.9},{veil_g:.9},{veil_b:.9}))*{LIGHT_RADIANCE:.9}*frameData[1].z/max(frameData[1].x,0.000001);float strength=max(radiance.r,max(radiance.g,radiance.b));float encoded=0.5*(1+2.0/255.0+saturate((log2(strength+1.0/128.0)+7)/13));float packed=min(ceil(encoded*255)/255,1);float decoded=exp2(13*saturate(2*packed-(1+2.0/255.0))-7)-1.0/128.0;o0=float4(saturate(radiance/max(decoded,0.000001)),0.04);o1=float4(saturate(float3(0,0,-1)*(roughness*0.125+0.375)+0.5),0);o2=float4(0,packed,0,0);",
         inverse = 1. / level,
         veil_r = veil[0],
         veil_g = veil[1],
@@ -869,15 +1321,17 @@ fn baked_finish(level: f32, veil: [f32; 3]) -> String {
 /// blend mode. The opaque surface behind it already holds the large bloom's floor. Additive
 /// surfaces add their self illumination. A multiplying surface, such as a dirt decal, darkens what
 /// lies behind it by its unlit albedo's mean faded by its coverage, the nearest a premultiplied
-/// blend comes to a product.
+/// blend comes to a product. As Reach's blended programs do, the level's fog (`fog`) dims a
+/// blended surface and adds its inscatter, and only dims an additive one.
 fn baked_transparent_finish(material: &Material, level: f32) -> String {
     let scale = format!("{LIGHT_RADIANCE:.9}*frameData[1].z*frameData[1].w");
-    let emission = format!("emission*{:.9}", 1. / level);
+    let inverse = 1. / level;
+    let emission = format!("emission*{inverse:.9}");
     match material.options.get("blend_mode").map(String::as_str) {
-        Some("additive") => format!("o0=float4({emission}*{scale},0);"),
+        Some("additive") => format!("o0=float4({emission}*fog.a*{scale},0);"),
         Some("multiply") => "float3 product=lerp(float3(1,1,1),unlit.rgb,saturate(unlit.a));o0=float4(0,0,0,1-saturate(dot(product,float3(1,1,1))/3));".to_owned(),
         _ => format!(
-            "float coverage=saturate(albedo.a);o0=float4((albedo.rgb+{emission})*{scale}*coverage,coverage);"
+            "float coverage=saturate(albedo.a);o0=float4(((albedo.rgb+{emission})*fog.a+fog.rgb*{inverse:.9})*{scale}*coverage,coverage);"
         ),
     }
 }
@@ -890,6 +1344,19 @@ pub(super) fn build(
     g: &mut Graph,
     materials: &BTreeMap<u32, Material>,
     binding: Binding<'_>,
+) -> Result<Vec<Value>> {
+    build_with_progress(c, pages, native, g, materials, binding, &mut |_| {})
+}
+
+#[allow(clippy::cognitive_complexity, clippy::too_many_arguments)]
+pub(super) fn build_with_progress(
+    c: &Cache,
+    pages: &mut Pages,
+    native: &mut Reader,
+    g: &mut Graph,
+    materials: &BTreeMap<u32, Material>,
+    binding: Binding<'_>,
+    report_progress: &mut dyn FnMut(&str),
 ) -> Result<Vec<Value>> {
     let shell = native.tag(0x80ec270d, Some(0x808071e8))?;
     let transparent_shell = native.tag(0x815246aa, Some(0x808071e8))?;
@@ -930,10 +1397,27 @@ pub(super) fn build(
         shell.u32(0x48)?,
         &vertex
             .replace("$SHADOW_RESOURCE$", "")
-            .replace("$SHADOW_PROJECTION$", ""),
+            .replace("$SHADOW_PROJECTION$", "")
+            .replace(
+                "$VERTEX_LIGHT_DECL$",
+                if binding.vertex_data.is_some() {
+                    vertex_data::DECLARATION
+                } else {
+                    ""
+                },
+            )
+            .replace(
+                "$VERTEX_LIGHT_READ$",
+                if binding.vertex_data.is_some() {
+                    vertex_data::READ
+                } else {
+                    "o6=0;o7=0;o8=0;"
+                },
+            ),
         true,
     )?;
-    // Surfaces read their maps through a wrapping copy of the shell's anisotropic sampler, and a
+    // Surfaces read their maps through copies of the shell's sampler with source addressing and
+    // trilinear filtering where requested, and a
     // lightmap atlas through the clamping original.
     let sampler_rows = shell.array(0x308, 16, None)?;
     let clamped = shell.bytes::<16>(
@@ -943,15 +1427,24 @@ pub(super) fn build(
     )?;
     let sampler_class = shell.u32(sampler_rows[0] - 8)?;
     let mut report = Vec::new();
-    let mut cube_means = BTreeMap::new();
-    for (&key, material) in materials {
+    for (index, (&key, material)) in materials.iter().enumerate() {
+        report_progress(&format!(
+            "Converting Material {}/{} / {}",
+            index + 1,
+            materials.len(),
+            material
+                .tag
+                .as_ref()
+                .map_or("Unnamed Material", |tag| tag.path.as_str())
+        ));
         let surface = surface::Surface::new(material, &binding, key);
         let paint = binding.paint.get(&key);
         let display = decimal_display(c, pages, material)?;
         let animated = display.is_some();
         let display = display.unwrap_or_default();
-        let dense = binding.lightmap.is_some();
+        let dense = binding.lightmap.is_some() || terrain(material) || material.water();
         let TextureBindings {
+            mut notes,
             mut bindings,
             samples,
             samplers: modes,
@@ -959,26 +1452,107 @@ pub(super) fn build(
             table,
         } = textures(c, pages, native, g, material, paint, dense)?;
         let samplers = samplers(native, g, clamped, &modes)?;
+        let mut samples = samples;
+        notes.extend(surface.parameters.notes.iter().cloned());
+        let parameter_source = &surface.parameters.source;
+        let curve_functions = if samples
+            .values()
+            .any(|sample| sample.contains("reachPeriodic("))
+            || parameter_source.contains("reachPeriodic(")
+        {
+            animation::periodic(native, g, &mut bindings)?
+        } else {
+            String::new()
+        };
+        let mut wave_functions = String::new();
+        if material.water() {
+            ensure!(
+                material.options.get("foam").map(String::as_str) != Some("paint")
+                    || [WATER_SHAPE_SLOT, WATER_FOAM_SLOT, WATER_FOAM_DETAIL_SLOT]
+                        .iter()
+                        .all(|slot| samples.contains_key(slot)),
+                "Painted water foam is missing its shape or foam textures"
+            );
+            let normal = if material
+                .options
+                .get("waveshape")
+                .is_some_and(|shape| shape == "bump")
+            {
+                water_normal(&samples)
+            } else {
+                let (functions, normal) =
+                    water::waves(c, pages, native, g, material, &surface, &mut bindings)
+                        .with_context(|| {
+                            format!(
+                                "Water waves for {}",
+                                material.tag.as_ref().map_or("unnamed", |tag| &tag.path)
+                            )
+                        })?;
+                wave_functions = functions;
+                normal
+            };
+            samples.insert(1, normal);
+            samples.remove(&BUMP_DETAIL_SLOT);
+        }
+        let (environment_declarations, environment) = if binding.lightmap.is_some() {
+            environment::bind(
+                c,
+                pages,
+                native,
+                g,
+                material,
+                &surface,
+                &mut bindings,
+                &mut notes,
+            )?
+        } else {
+            (String::new(), None)
+        };
         let reflected = match binding.lightmap {
+            Some(lightmap) if terrain(material) => terrain::reflection(
+                &surface,
+                table.as_deref(),
+                environment.as_deref(),
+                lightmap.level,
+            ),
             Some(_) if !surface.transparent() => {
-                reflection(c, pages, material, &surface, &mut cube_means)?
+                reflection(material, &surface, environment.as_deref())
             }
             _ => None,
         };
+        let water_lighting = binding
+            .lightmap
+            .filter(|_| material.water())
+            .map(|lightmap| {
+                water::lighting(&surface, &samples, environment.as_deref(), lightmap.level)
+            });
         let (lighting, lighting_declarations) = match binding.lightmap {
+            // The transparent stage draws after Destiny's light, so a blended surface keeps all of
+            // its baked light, the sun's share too.
             Some(lightmap) => level_lighting(
                 lightmap,
+                lightmap.sun.filter(|_| !surface.transparent()),
                 &mut bindings,
                 table.as_deref(),
                 reflected
                     .as_ref()
                     .map(|(expression, _)| expression.as_str()),
+                water_lighting.as_deref(),
             )?,
             None => (String::new(), String::new()),
         };
         let tint = surface.constant("albedo_color").unwrap_or([1.; 4]);
-        let weights = terrain(material).then(|| terrain_weights(material, &samples));
-        let mut color = albedo(material, &samples, tint, weights.as_deref());
+        let terrain_parameters = if terrain(material) {
+            terrain::parameters(&surface, &terrain_weights(material, &samples))
+        } else {
+            String::new()
+        };
+        let weights = terrain(material).then_some("terrainDraw");
+        let mut color = if material.water() {
+            water_albedo(material, &surface, &samples)
+        } else {
+            albedo(material, &samples, &surface, weights)
+        };
         // Glass replaces its lighting with the blend its compiled programs write.
         let lighting = if material.glass() {
             let (albedo, shading) =
@@ -997,18 +1571,64 @@ pub(super) fn build(
             .map_or(1., |v| v[0])
             .max(0.);
         let emission = surface.emission(&samples, &color);
-        let normal = samples
-            .get(&1)
-            .map(|s| match &weights {
-                // The first layer's bump fades where other layers cover it.
-                Some(weights) => format!("lerp(float3(0,0,1),({s}).xyz*2-1,({weights}).x)"),
-                None => format!("({s}).xyz*2-1"),
-            })
-            .unwrap_or_else(|| "float3(0,0,1)".into());
-        let rough = samples
-            .get(&2)
-            .map(|s| format!("saturate(1-({s}).r)"))
-            .unwrap_or_else(|| "0.48".into());
+        // Reach's `detail` bump mapping, read from `ca_heh_catwalk_floor1`'s compiled albedo entry
+        // point: both normals unit length, the detail's XY added to the bump's, the bump's Z kept,
+        // then normalized. `three_detail_blend`, read from Forge World's `big_cliffs`, adds the
+        // three detail normals' XY blended by the base map's alpha as its albedo blends them.
+        let unit_xy = |s: &str| format!("normalize(({s}).xyz*2-1).xy");
+        let detail_xy = match (
+            samples.get(&BUMP_DETAIL_SLOT),
+            samples.get(&BUMP_DETAIL2_SLOT),
+            samples.get(&BUMP_DETAIL3_SLOT),
+        ) {
+            (Some(d1), Some(d2), Some(d3)) => {
+                let (first, second) = three_detail_weights(&surface, &samples);
+                Some(format!(
+                    "lerp(lerp({},{},{first}),{},{second})",
+                    unit_xy(d1),
+                    unit_xy(d2),
+                    unit_xy(d3)
+                ))
+            }
+            (Some(d1), None, None) => Some(unit_xy(d1)),
+            _ => None,
+        };
+        let normal = if let Some(weights) = weights {
+            terrain_normal(&samples, weights)
+        } else {
+            samples
+                .get(&1)
+                .map(|s| match &detail_xy {
+                    Some(d) => format!(
+                        "normalize(float3({}+{d},normalize(({s}).xyz*2-1).z))",
+                        unit_xy(s)
+                    ),
+                    None => format!("({s}).xyz*2-1"),
+                })
+                .unwrap_or_else(|| "float3(0,0,1)".into())
+        };
+        // Destiny's sun and environment light a hybrid surface by the material's own roughness:
+        // `roughness` for Reach's `cook_torrance` and `two_lobe_phong` models.
+        let rough = if terrain(material) {
+            terrain::roughness(material)
+        } else {
+            samples
+                .get(&2)
+                .map(|s| format!("saturate(1-({s}).r)"))
+                .unwrap_or_else(|| {
+                    match material.options.get("material_model").map(String::as_str) {
+                        Some("cook_torrance" | "two_lobe_phong") => {
+                            format!("clamp({},0.05,1)", surface.scalar("roughness", 0.48))
+                        }
+                        _ => "0.48".into(),
+                    }
+                })
+        };
+        let diffuse = if terrain(material) {
+            "albedo.rgb*=terrainDiffuse;"
+        } else {
+            ""
+        };
         let clip = if material.alpha_mode() == "MASK" {
             format!(
                 "clip({}-0.5);",
@@ -1020,22 +1640,65 @@ pub(super) fn build(
         } else {
             String::new()
         };
+        // A decal draws only within its own coordinates ([`material::Material::decal`]). Drawn
+        // with a clamped texture past them, Boardwalk's dirt decals smeared their edge texels into
+        // streaks and flat brown across its floors.
+        let clip = if material.decal() {
+            format!("clip(float4(v3.xy,1-v3.xy));{clip}")
+        } else {
+            clip
+        };
         let output = surface.output();
         let (finish, frame) = match binding.lightmap {
-            Some(lightmap) if !surface.transparent() => {
-                (baked_finish(lightmap.level, lightmap.veil), FRAME)
-            }
+            Some(lightmap) if !surface.transparent() => (
+                if lightmap.sun.is_some() {
+                    hybrid_finish(lightmap.level, lightmap.veil)
+                } else {
+                    baked_finish(lightmap.level, lightmap.veil)
+                },
+                FRAME,
+            ),
             Some(lightmap) => (baked_transparent_finish(material, lightmap.level), FRAME),
             None => (surface.finish(), ""),
         };
+        // A lightmapped surface's finish reads the level's fog, or none where the level has none.
+        let finish = match binding.lightmap.map(|lightmap| lightmap.fog.is_some()) {
+            Some(true) => format!("float4 fog=reachFog(v5.xyz,v5.w);{finish}"),
+            Some(false) => format!("float4 fog=float4(0,0,0,1);{finish}"),
+            None => finish,
+        };
+        // An animated transform reads the game clock from the frame constants.
+        let clock = samples
+            .values()
+            .any(|sample| sample.contains("reachPhase("))
+            || parameter_source.contains("reachPhase(");
+        let frame = if clock && frame.is_empty() {
+            FRAME
+        } else {
+            frame
+        };
+        let time = if clock {
+            "float time=frameData[0].x;"
+        } else {
+            ""
+        };
         let detail_slots = weights.as_ref().map_or(&[][..], |_| &TERRAIN_DETAIL[..]);
         let declarations = if dense {
-            registers
-                .iter()
-                .map(|(slot, register)| {
-                    format!("Texture2D<float4> Map{slot}:register(t{register});")
-                })
-                .collect::<String>()
+            // Roles can share one texture binding. HLSL requires one resource declaration per
+            // register, even when the native bindings point at the same image.
+            let mut declared = BTreeMap::new();
+            let mut declarations = String::new();
+            for (slot, register) in &registers {
+                if let Some(first) = declared.get(register) {
+                    declarations.push_str(&format!("\n#define Map{slot} Map{first}\n"));
+                } else {
+                    declared.insert(register, slot);
+                    declarations.push_str(&format!(
+                        "Texture2D<float4> Map{slot}:register(t{register});\n"
+                    ));
+                }
+            }
+            declarations
         } else {
             (0..=9)
                 .chain(detail_slots.iter().copied())
@@ -1057,7 +1720,16 @@ pub(super) fn build(
             )
         });
         let tinting = dye_tint(paint, &samples)?;
-        let functions = weights.as_ref().map_or("", |_| TERRAIN_FUNCTIONS);
+        let functions = format!(
+            "{TERRAIN_NORMAL}{}{}{}{}",
+            animation::CLOCK,
+            surface::MULTILAYER_FUNCTIONS,
+            weights.as_ref().map_or("", |_| TERRAIN_FUNCTIONS),
+            binding
+                .lightmap
+                .and_then(|lightmap| lightmap.fog)
+                .map_or_else(String::new, |fog| fog.functions())
+        );
         let sampler_declarations = &samplers.declarations;
         let text = format!(
             r#"
@@ -1067,15 +1739,22 @@ pub(super) fn build(
 {dye}
 {display}
 {functions}
+{curve_functions}
 {sampler_declarations}
-void main(float4 v0:TEXCOORD0,float4 v1:TEXCOORD1,float4 v2:TEXCOORD2,float4 v3:TEXCOORD3,float3 v4:TEXCOORD4,float4 position:SV_POSITION0,uint front:SV_isFrontFace0,
+{environment_declarations}
+{wave_functions}
+void main(float4 v0:TEXCOORD0,float4 v1:TEXCOORD1,float4 v2:TEXCOORD2,float4 v3:TEXCOORD3,float3 v4:TEXCOORD4,float4 position:SV_POSITION0,float4 v5:TEXCOORD5,float4 v6:TEXCOORD6,float4 v7:TEXCOORD7,float4 v8:TEXCOORD8,float4 v9:TEXCOORD9,uint front:SV_isFrontFace0,
 {output}) {{
-float4 albedo={color};{tinting}{clip}float3 n={normal};n=normalize(n.x*v1.xyz+n.y*v2.xyz+n.z*v0.xyz);float4 unlit=albedo;{lighting}
+{time}{parameter_source}{terrain_parameters}float3 n={normal};n=normalize(n.x*v1.xyz+n.y*v2.xyz+n.z*v0.xyz);float4 albedo={color};{tinting}{clip}float4 unlit=albedo;{diffuse}{lighting}
 float3 emission={emission};float roughness={rough};{finish}
 }}
 "#
         );
         let shader = format!("pixel-{key:08X}");
+        notes.extend(surface.parameters.unused(&text));
+        if material.water() {
+            notes.push("Water retains source slope animation and uses separate body coordinates where the geometry supplies them. Map reports count base-UV fallbacks. Painted foam and source reflection require baked lighting. Refraction depth, ripple interactions and geometry displacement remain untranslated.".into());
+        }
         program(native, g, &shader, shell.u32(0x2c8)?, &text, false)?;
         let (template, envelope, stage) = if surface.transparent() {
             (0x815246aa, &transparent_shell, 7)
@@ -1130,7 +1809,14 @@ float3 emission={emission};float roughness={rough};{finish}
         )?;
         put(&mut bytes, 0x34c, &u32::MAX.to_le_bytes())?;
         append(&mut bytes, 0x2e8, 0x80800009, &expression, 1)?;
-        let patches = surface_patches(&bytes, &shader, &bindings, &samplers.symbols)?;
+        let mut patches = surface_patches(&bytes, &shader, &bindings, &samplers.symbols)?;
+        if let Some(symbol) = binding.vertex_data {
+            let mut row = 0u32.to_le_bytes().to_vec();
+            row.extend(u32::MAX.to_le_bytes());
+            append(&mut bytes, 0x50, 0x80807211, &row, 8)?;
+            let at = Payload(bytes.clone()).array(0x50, 8, None)?[0];
+            patches.push(json!({"offset":at+4,"symbol":symbol}));
+        }
         g.add(
             &format!("material-{key:08X}"),
             template,
@@ -1138,37 +1824,98 @@ float3 emission={emission};float roughness={rough};{finish}
             None,
             patches,
         )?;
-        report.push(json!({"source":material.tag,"source_properties":material.properties,"effective_constants":surface.constants,"options":material.options,"bound_textures":bindings,"albedo_color":tint,"emission_color":emission_tint,"emission_scale":emission_scale,"alpha":material.alpha_mode(),"native_stage":stage,"baked_emission":binding.lightmap.is_some()&&!surface.transparent(),"environment_reflection":reflected.as_ref().map(|(_, scale)| scale),"paint":paint.map(|paint| json!({"channel":paint.channel+10,"mask":paint.mask,"constant_buffer":paint.slot,"scope_mask":paint.scopes,"method":"Native equipped dye color multiplied through the authored surface mask. A missing or entirely empty dye record preserves source color."})),"limits":["Opaque surfaces use the native deferred approximation. Transparent surfaces use premultiplied output. Decimal ammunition frame functions are bound to the live magazine input. Other source functions, activation events, plasma depth fading and layered overlays are not translated. Explicit overrides select a static appearance state."]}));
+        report.push(json!({"source":material.tag,"source_properties":material.properties,"effective_constants":surface.constants,"animation_notes":notes,"animated_parameters":surface.parameters.bindings(),"options":material.options,"bound_textures":bindings,"albedo_color":tint,"emission_color":emission_tint,"emission_scale":emission_scale,"alpha":material.alpha_mode(),"native_stage":stage,"baked_emission":binding.lightmap.is_some()&&!surface.transparent(),"environment_reflection":reflected.as_ref().map(|(_, scale)| scale),"paint":paint.map(|paint| json!({"channel":paint.channel+10,"mask":paint.mask,"constant_buffer":paint.slot,"scope_mask":paint.scopes,"method":"Native equipped dye color multiplied through the authored surface mask. A missing or entirely empty dye record preserves source color."})),"limits":["Opaque surfaces use the native deferred approximation. Transparent surfaces use premultiplied output. Decimal ammunition frame functions are bound to the live magazine input. Time-driven texture scale and translation use the Reach mapping evaluator. Unbound material inputs are reported in animation_notes. Scalar and color overlays use the source constant routes. Activation events, unbound object inputs and plasma depth fading remain limited. Explicit overrides select a static appearance state."]}));
     }
     shadow(native, g, &vertex)?;
     Ok(report)
 }
 
-/// A surface's albedo: its base map times its `tint`. The default albedo multiplies the base map
-/// by its detail map, as detail options do. A terrain shader instead mixes its layers by their
-/// blend `weights`, each at its own tiling and each multiplied by its own detail map.
+/// The two blend weights of a `three_detail_blend` surface: with `a` its base map's alpha times
+/// `blend_alpha`, saturated, the first detail gives way to the second by `min(2a, 1)` and that
+/// blend to the third by `max(2a - 1, 0)`.
+fn three_detail_weights(
+    surface: &surface::Surface<'_>,
+    samples: &BTreeMap<usize, String>,
+) -> (String, String) {
+    let blend = surface.scalar("blend_alpha", 1.);
+    let alpha = samples.get(&0).map_or_else(
+        || "1".into(),
+        |base| format!("saturate(({base}).a*{blend})"),
+    );
+    (format!("min(2*{alpha},1)"), format!("max(2*{alpha}-1,0)"))
+}
+
+/// A surface's albedo as Reach's `albedo.fx` forms it for its albedo option. Each detail map's
+/// color is scaled by [`DETAIL_MULTIPLIER`], and alpha, the specular mask and coverage, is the
+/// product or blend of the maps' alphas. Only `default`, `simple`, `constant_color` and
+/// `color_mask` read `albedo_color`. `two_detail` multiplies both details in, `detail_blend` blends
+/// the second detail over the first by the base map's alpha times `blend_alpha`, and
+/// `three_detail_blend` walks from the first detail to the second over that factor's lower half and
+/// to the third over its upper. `color_mask` tints by each of its mask's three channels toward
+/// `albedo_color`, `albedo_color2` and `albedo_color3` over `neutral_gray`. Options without a
+/// translation keep the base map times `albedo_color`, with the detail map for those named for
+/// details. A terrain shader instead mixes its layers by their blend `weights`, each at its own
+/// tiling and each multiplied by its own detail map.
 fn albedo(
     material: &Material,
     samples: &BTreeMap<usize, String>,
-    tint: [f32; 4],
+    surface: &surface::Surface<'_>,
     weights: Option<&str>,
 ) -> String {
     let base = samples
         .get(&0)
         .cloned()
         .unwrap_or_else(|| "float4(1,1,1,1)".into());
-    let mut color = format!(
-        "({base})*float4({:.9},{:.9},{:.9},{:.9})",
-        tint[0], tint[1], tint[2], tint[3]
+    let tint = surface.value("albedo_color", [1.; 4]);
+    let option = material.options.get("albedo").map(String::as_str);
+    let details = (
+        samples.get(&5),
+        samples.get(&DETAIL2_SLOT),
+        samples.get(&DETAIL3_SLOT),
     );
-    if material
-        .options
-        .get("albedo")
-        .is_some_and(|m| m == "default" || m.contains("detail"))
-        && let Some(detail) = samples.get(&5)
-    {
-        color = format!("({color})*float4({DETAIL_MULTIPLIER:.6}*({detail}).rgb,1)");
-    }
+    let dm = DETAIL_MULTIPLIER;
+    let detail = |d: &str| format!("float4({dm:.6}*({d}).rgb,({d}).a)");
+    let mut color = match (option, details) {
+        (Some("constant_color"), _) => tint.clone(),
+        (Some("two_detail" | "two_detail_black_point"), (Some(d1), Some(d2), _)) => {
+            format!("({base})*{}*{}", detail(d1), detail(d2))
+        }
+        (Some("detail_blend"), (Some(d1), Some(d2), _)) => {
+            let blend = format!("saturate(({base}).a*{})", surface.scalar("blend_alpha", 1.));
+            format!(
+                "float4(({base}).rgb,1)*{}",
+                detail(&format!("lerp({d1},{d2},{blend})"))
+            )
+        }
+        (Some("three_detail_blend"), (Some(d1), Some(d2), Some(d3))) => {
+            let (first, second) = three_detail_weights(surface, samples);
+            format!(
+                "float4(({base}).rgb,1)*{}",
+                detail(&format!("lerp(lerp({d1},{d2},{first}),{d3},{second})"))
+            )
+        }
+        (Some("color_mask"), (Some(d), _, _)) => {
+            let gray = surface.color("neutral_gray", [1.; 4]);
+            let mask = samples
+                .get(&COLOR_MASK_SLOT)
+                .map_or_else(|| "(float4(0,0,0,0))".into(), |m| format!("({m})"));
+            let channel = |k: &str, name: &str| {
+                let c = surface.value(name, [1.; 4]);
+                format!("(1-{mask}.{k}+{mask}.{k}*float4(({c}).rgb/max({gray},0.000001),({c}).a))")
+            };
+            format!(
+                "({base})*{}*{}*{}*{}",
+                detail(d),
+                channel("x", "albedo_color"),
+                channel("y", "albedo_color2"),
+                channel("z", "albedo_color3")
+            )
+        }
+        (Some("simple"), _) | (None, _) => format!("({base})*{tint}"),
+        (Some("default"), (Some(d), _, _)) => format!("({base})*{}*{tint}", detail(d)),
+        (Some(m), (Some(d), _, _)) if m.contains("detail") => format!("({base})*{}", detail(d)),
+        _ => format!("({base})*{tint}"),
+    };
     // A decal's `diffuse_plus_alpha_mask` albedo takes its coverage from its alpha map.
     if material
         .options
@@ -1176,7 +1923,7 @@ fn albedo(
         .is_some_and(|m| m == "diffuse_plus_alpha_mask")
         && let Some(mask) = samples.get(&3)
     {
-        color = format!("float4(({color}).rgb,({mask}).a*{:.9})", tint[3]);
+        color = format!("float4(({color}).rgb,({mask}).a*({tint}).a)");
     }
     if let Some(weights) = weights {
         let [a, b, c, d] = std::array::from_fn(|layer| {
@@ -1184,14 +1931,18 @@ fn albedo(
                 .get(&TERRAIN_LAYERS[layer])
                 .cloned()
                 .unwrap_or_else(|| "float4(0,0,0,1)".into());
+            let base = terrain::base(surface, layer, base);
             match samples.get(&TERRAIN_DETAIL[layer]) {
                 Some(detail) => {
-                    format!("float4(({base}).rgb*{DETAIL_MULTIPLIER:.6}*({detail}).rgb,({base}).a)")
+                    format!(
+                        "float4(({base}).rgb*{DETAIL_MULTIPLIER:.6}*({detail}).rgb,({base}).a*({detail}).a)"
+                    )
                 }
                 None => base,
             }
         });
-        color = format!("mul({weights},float4x4({a},{b},{c},{d}))");
+        let tint = surface.scalar("global_albedo_tint", 1.);
+        color = format!("mul({weights},float4x4({a},{b},{c},{d}))*float4({tint},{tint},{tint},1)");
     }
     color
 }
@@ -1252,6 +2003,8 @@ fn shadow(native: &mut Reader, g: &mut Graph, vertex: &str) -> Result<()> {
     // Its projection is distinct from the full-view surface projection even
     // though both use the same object pose and view constants.
     let vertex = vertex
+        .replace("$VERTEX_LIGHT_DECL$", "")
+        .replace("$VERTEX_LIGHT_READ$", "o6=0;o7=0;o8=0;")
         .replace(
             "$SHADOW_RESOURCE$",
             "Texture2D<float4> ShadowAtlas : register(t2);",

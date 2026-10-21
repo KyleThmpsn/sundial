@@ -426,7 +426,7 @@ pub(super) fn author_images<'a>(
         return Ok(layers);
     }
     let stock = stock(manager)?;
-    let allocator = AppendedTagAllocator::new(crate::package_profile::window().base, 0);
+    let allocator = AppendedTagAllocator::new(crate::package_profile::window().first(), 0);
     for (asset, status) in assets {
         let Some(image) = &status.image else {
             continue;

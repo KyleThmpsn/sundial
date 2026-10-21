@@ -98,18 +98,14 @@ pub(super) fn verify(
     recipe: &WeaponRecipe,
     graph: &Value,
     runtime: &Value,
-    directory: &Path,
+    source: &Value,
     scale: f32,
 ) -> Result<()> {
     if recipe.kind != parhelion::ItemKind::Sparrow {
         return Ok(());
     }
-    let source: Value = serde_json::from_slice(&fs::read(
-        directory
-            .parent()
-            .context("Vehicle import directory")?
-            .join("source/source.json"),
-    )?)?;
+    // Portable recipes unpack only the asset graph. The configured E2E keeps
+    // the source document independently of that graph's extraction directory.
     let contacts = &source["object"]["gameplay"]["contacts"];
     let source_wheels = contacts["wheels"].as_array().context("Source wheels")?;
     let maximum_mass = source_wheels.iter().try_fold(0f64, |maximum, wheel| {

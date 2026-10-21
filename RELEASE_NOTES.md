@@ -6,7 +6,7 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 
 ### Subclasses and Abilities
 
-- Subclass abilities are now fully customizable, not just swappable. Any grenade, melee, class ability, movement ability, Super, or attunement node can fire a different projectile, switch damage type, gain extra charges, recharge faster, travel farther, change color, carry its own perks, including custom perks, and adjust many other properties.
+- Subclass abilities are now fully customizable, not just swappable. Any grenade, melee, class ability, movement ability, Super, or attunement node can fire a different projectile, switch damage type, gain extra charges, recharge faster, travel farther, change color, carry its own stock or custom perks, and adjust many other properties.
   - Rename any ability and give it a new description and icon. Your edits stay with that ability and everything it creates.
   - Set a color for the Subclass with **Subclass Color** and for each ability with its **Color**. It shows on the HUD's ability icons and charge bars and on the Subclass screen's tree. Pick the game's **Arc**, **Solar**, or **Void** color or any hex code, or restore the original with **Donor Colors**.
   - Each ability's page has **Ability**, **Perks**, **Gameplay**, and **Visuals** tabs, marked once you change something.
@@ -32,6 +32,7 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 
 ### Weapons
 
+- **Weapon Stats** includes starting perk bonuses, with green and red changes on taller bars and a hover breakdown. The value field still edits the weapon's own stat, and the **Raw** heading has been removed.
 - **Firing Behavior**, **Barrel**, and **Magazine** on **Gameplay** can each come from a different weapon and no longer need Experimental Features. Each one now copies just that part's values into your base weapon and keeps the rest of its gameplay intact, so these swaps are much more reliable.
 - The **Gameplay** tab puts **Parts** and **Barrel Settings** side by side, with **Runtime** (formerly **Firing & Runtime Baseline**) at the top of **Parts**.
 - **Barrel Settings** on **Gameplay** adds **Pellets per Bullet**, **Spread**, and **Pattern**. Choose **Filled Circle**, **Ring**, or **Custom**, then edit each ring's pellet count, inner and outer radius, rotation, and randomness beside a preview.
@@ -49,9 +50,11 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 
 ### Project Sunrise 0.6
 
+- Backup folders use readable UTC timestamps. Mod backups keep every saved mod under `mods/<its-id>`, so the main mod and its companions have the same layout. Recovery still supports older backups.
 - Parhelion supports Project Sunrise 0.6's mods feature. Builds install to the mod folder, and Sunrise's **Mods** page lists them as **Parhelion**, with the version of Sundial that built them. Packages from earlier builds can't move there, so Parhelion offers to build them again, and installing backs up and removes the old ones. **Review Sunrise Mod Upgrade…** in **Preferences… > Builds & Backups** opens that review again.
 - You can switch between Sunrise 0.6 and Dawn or an earlier Sunrise. Sundial and Parhelion read whichever runtime is active, and installing there backs up and removes the packages installed for the other one. A build is made for one kind of runtime, so build again after switching.
 - On Sunrise 0.6, Parhelion installs alongside other mods, including Sunrise Studio mods. Builds include merge data, so Sunrise can combine the rows Parhelion and a Studio mod both add to item, Collections, and other shared tables. Installation stops and says why when Sunrise can't combine an entry both mods change, when both mods set the same values differently, or when a mod that loads before Parhelion adds rows to a table Parhelion adds to. Sunrise loads mods in order of their IDs. Builds avoid package IDs other mods use, and installation also stops if a mod declares Parhelion incompatible.
+- Items that join a game Collections page, such as weapons, exotic armor and items shown beside their base item, have a Collections **Position**. **Automatic** keeps them first on their page, as before, unless another installed Sunrise mod changes Collections. Then they go last, so both mods load. The Sunrise badge and added pages follow the same rule. **Build & Stage** asks before building items set to **First** beside such a mod.
 - Sundial and Parhelion also read content from other Sunrise mods, including their configuration values and the tables Sunrise combines from several mods, and refresh when a mod changes. A mod Sunrise would refuse is left out, and Sundial's **Copy Report** lists why.
 
 ### Vehicles
@@ -100,7 +103,8 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 - **Technical Build** now also shows the rig, moved markers, and animation sources, flags when the recipe has changed since the build, and names about 1,040 of the game's native fields, up from 277.
 - **Resync Account** shows its progress, then the Collections and inventory changes it made and anything it couldn't add.
 - Leaving a recipe with unsaved changes now offers to save them.
-- Rebuilds are faster. Unchanged weapons and Subclass abilities reuse their compiled data, and independent packages build in parallel.
+- Builds and installs are faster. Unchanged weapons and Subclass abilities reuse their compiled data, recipes are read and packages are compressed on several cores at once, and installation reviews each package once.
+- Installing a reviewed build reuses its package and recipe validation, while still checking file contents and current account changes. Installation no longer repeats the full validation during its account review.
 - Parhelion uses less memory when browsing artwork and the recipe library.
 - **Build & Install** is easier to follow, with a resizable window and clearer progress. The recipe library and **Items in This Build** mark recipes whose items are installed, and **Build & Stage** warns before a build would remove installed items and offers **Add to Build**.
 
@@ -123,6 +127,7 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 - Fixed a second Parhelion window replacing the first window's autosaved custom perk drafts.
 - Fixed custom perk ability and event conditions accepting values the game ignores. The game signal conditions are now **When a Game Signal Starts** and **When a Game Signal Ends**.
 - Fixed installs overwriting a package file another program changed during the install.
+- Fixed successful mod installs reporting retained recovery backups as a cleanup failure.
 - Fixed installs and removals leaving a `.parhelion-transaction.lock` file in the Destiny 2 folder.
 - Fixed installs, recovery, and removals failing when the Sunrise or Dawn DLL is linked to a build outside the game folder.
 - Fixed installs and removals clearing only the active runtime's item cache, so switching between Dawn and Sunrise could start the game with outdated custom items.
@@ -135,6 +140,8 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 
 ## Sundial
 
+- Current Sunrise accounts can be edited alongside older SQLite and JSON accounts. Saves preserve character appearances and starter loadouts. Reset and recovery require matching account formats, and Parhelion protects items used by starter loadouts during removal.
+- Logging settings support **Off** and preserve **Trace**. **Trace** is available when the installed Sunrise module supports it.
 - The catalog cache is about 50 times smaller and inspection caches are compressed, so Sundial starts faster and uses far less memory and disk space. The first start after updating rescans the installation once.
 - The perk picker's **Plugs Offered** dropdown adds a sixth scope. On an Auto Rifle's barrel socket, they range from the item's own barrels through **Auto Rifle Barrels**, **All Barrels**, **Auto Rifles**, and **All Weapons** to **All**.
 - The **Inspector** is redesigned, inspired by the Armory design I used for Dawn's in-game Loadout Studio. Its home page browses every item without a search.
@@ -151,6 +158,7 @@ Model previews in Sundial and Parhelion support more models and reproduce more o
 - Previews do more of their work on the graphics card, including animation, cloth, particles, and exports, so they use less CPU.
 - More models load with their textures and lighting, including props, map pieces, and vehicles. Terrain can now be previewed too.
 - Materials better reproduce painted and worn surfaces, reflections, decals, and line effects. Armor, Ghost Shells, Ships, and Sparrows also have more accurate shader colors and glow.
+- Iridescent paint now shifts color with viewing angle as it does in game, such as the purple sheen on Age-Old Bond.
 - Transparent and glowing effects, such as ornament sights and energy, blend more accurately over the model as the camera moves.
 - Finer detail survives, such as normal maps on mirrored parts, distant patterns, and partly filled texture sheets.
 - Glowing surfaces follow their material's brightness and have bloom halos. **View > Bloom** and **Filmic Output** control glow and highlights.
@@ -166,6 +174,7 @@ Model previews in Sundial and Parhelion support more models and reproduce more o
 
 ### Fixes
 
+- Fixed external links not opening in your default browser.
 - Fixed wider perk picker scopes listing shaders and ornaments on sockets that aren't cosmetic.
 - Fixed quests, bounties, currencies, and consumables in a character's inventory reading as not valid for the character.
 - Fixed swapping a Subclass offering every item instead of other Subclasses.

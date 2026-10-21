@@ -136,8 +136,20 @@ impl<'a> Packages<'a> {
     }
 
     fn push(&mut self, id: u16, kind: Kind, check: Check) -> AuthoringResult<Ticket> {
-        crate::package_profile::authored_package(id)
+        let profile = crate::package_profile::authored_package(id)
             .ok_or_else(|| invalid("An emitted package has no registered profile"))?;
+        match &kind {
+            Kind::Standalone(package) => crate::mod_family::build::record_package(
+                id,
+                profile.file_name,
+                &package.tags,
+                &package.references,
+            ),
+            Kind::Named {
+                tags, references, ..
+            } => crate::mod_family::build::record_package(id, profile.file_name, tags, references),
+            Kind::Overlay { .. } => {}
+        }
         let payload = match &kind {
             Kind::Overlay {
                 replacements, tags, ..
@@ -246,14 +258,22 @@ impl<'a> Packages<'a> {
                                 if state.failed || state.pending.is_empty() {
                                     return;
                                 }
-                                let weight =
-                                    state.pending.front().expect("nonempty queue").1.weight;
-                                if state.active == 0
-                                    || state.bytes.saturating_add(weight) <= WORKING_BUDGET
-                                {
+                                // The first job in plan order that fits the budget starts. A job
+                                // over the budget alone starts once nothing else runs.
+                                let bytes = state.bytes;
+                                let fitting = if state.active == 0 {
+                                    Some(0)
+                                } else {
+                                    state.pending.iter().position(|(_, job)| {
+                                        bytes.saturating_add(job.weight) <= WORKING_BUDGET
+                                    })
+                                };
+                                if let Some(position) = fitting {
+                                    let next =
+                                        state.pending.remove(position).expect("listed position");
                                     state.active += 1;
-                                    state.bytes = state.bytes.saturating_add(weight);
-                                    break state.pending.pop_front().expect("nonempty queue");
+                                    state.bytes = state.bytes.saturating_add(next.1.weight);
+                                    break next;
                                 }
                                 state = queue
                                     .1
@@ -381,6 +401,17 @@ impl Job {
     ) -> AuthoringResult<crate::ExtendedOverlayArtifact> {
         let profile = crate::package_profile::authored_package(self.id)
             .ok_or_else(|| invalid("An emitted package has no registered profile"))?;
+        if let Some(path) = crate::mod_family::build::kept_path(profile.file_name) {
+            report(&format!("Keeping Installed Package: {}", profile.file_name));
+            let tags = match &self.kind {
+                Kind::Standalone(package) => &package.tags,
+                Kind::Named { tags, .. } => tags,
+                Kind::Overlay { .. } => {
+                    return Err(invalid("A stock patch cannot be kept in an importer"));
+                }
+            };
+            return crate::ExtendedOverlayArtifact::reuse(&path, tags);
+        }
         let mut current = profile.file_name.to_owned();
         let mut progress = |stage: &str| {
             current = format!("{stage}: {}", profile.file_name);

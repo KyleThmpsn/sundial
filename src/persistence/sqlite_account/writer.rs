@@ -71,9 +71,12 @@ pub(super) fn save_with_backup(
         create_verified_backup(document.path(), &backup, document.revision())?;
         backup
     } else {
-        indexed_backup(document.path(), "investment-v2", true, |backup| {
-            create_verified_backup(document.path(), backup, document.revision())
-        })?
+        indexed_backup(
+            document.path(),
+            document.schema().backup_prefix(),
+            true,
+            |backup| create_verified_backup(document.path(), backup, document.revision()),
+        )?
     };
     let before = super::snapshot::capture(&transaction).map_err(SqliteAccountError::Backup)?;
     write_document(&transaction, &candidate)?;

@@ -738,7 +738,7 @@ pub fn prepare_with_rig(
     // any of them; a donor whose clips do not align cleanly keeps its native clips.
     let mut pairs = clip_pairs(&mut sr, &mut nr, &native_clips, &source_clips)?;
     let calibration_pairs = calibration_clips(&mut sr, &mut nr, &native_clips, calibration)?;
-    let slots = match clips::slots::Table::derive(
+    let mut slots = match clips::slots::Table::derive(
         pairs
             .iter()
             .chain(&calibration_pairs)
@@ -753,6 +753,15 @@ pub fn prepare_with_rig(
             )));
         }
     };
+    if let Some(reference) = calibration
+        && !slots
+            .shapes()
+            .contains_key(&u16::try_from(source.bones.len())?)
+    {
+        controls::owned_slots(
+            &mut sr, &mut nr, source_rig, native_rig, reference, &mut slots,
+        )?;
+    }
     let alignment = slots
         .shapes()
         .iter()

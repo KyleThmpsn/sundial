@@ -105,13 +105,21 @@ pub(super) fn convert(source: &Payload, native: &mut Payload) -> Result<usize> {
         );
         let target_transforms = native.array_range(target + 32, 32, Some(0x80809F75))?;
         ensure!(
-            target_transforms.len() == bytes.len(),
+            target_transforms.len() >= bytes.len(),
             "FK section size requires relocation of the native instance image"
         );
         // These arrays belong to the copied instance image, unlike the bone
         // tables in the resource. Appending them to the file leaves relative
         // pointers outside that image and corrupts the live pose allocation.
-        native.0[target_transforms].copy_from_slice(bytes);
+        let header = native.pointer(target + 40)?;
+        let count = source.u64(row + 32)?;
+        native.0[target_transforms.start..target_transforms.start + bytes.len()]
+            .copy_from_slice(bytes);
+        native.0[target_transforms.start + bytes.len()..target_transforms.end].fill(0);
+        // A shorter source section fits the existing allocation. Keep its pointer inside
+        // the native instance and lower both counts, leaving the spare capacity unused.
+        native.0[target + 32..target + 40].copy_from_slice(&count.to_le_bytes());
+        native.0[header..header + 8].copy_from_slice(&count.to_le_bytes());
         native.0[target + 24..target + 32].copy_from_slice(&source.0[row + 24..row + 32]);
         native.0[target + 48..target + 64].copy_from_slice(&source.0[row + 48..row + 64]);
         native.0[target_schema + 16..target_schema + 24]

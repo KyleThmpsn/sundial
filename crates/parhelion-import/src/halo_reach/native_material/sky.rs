@@ -47,19 +47,6 @@ const RIGID_MODEL_SCOPE: u32 = 1 << 2;
 /// Reach's detail multiplier, `2^2.2`, and its square, as its compiled programs write them.
 const REACH_DETAIL: f32 = 4.594_79;
 const REACH_DETAIL_SQUARED: f32 = 21.112_095;
-/// The texture-transform animation kinds Reach's sky surfaces use: a uniform scale, and U and V
-/// translations. Each runs on the game clock over its period.
-const SCALE_UNIFORM: u32 = 2;
-const SCALE_X: u32 = 3;
-const SCALE_Y: u32 = 4;
-const TRANSLATION_X: u32 = 5;
-const TRANSLATION_Y: u32 = 6;
-/// A Reach function blob's identity type, which ramps from its minimum to its maximum, and the
-/// offsets of those two values.
-const IDENTITY_FUNCTION: u8 = 0;
-const FUNCTION_MINIMUM: usize = 4;
-const FUNCTION_MAXIMUM: usize = 8;
-
 /// One sky surface and the keys of its transparent and light-shaft materials, which take the
 /// symbols `material-{key:08X}` a sky model's draws name.
 pub(in crate::halo_reach) struct SkySurface<'a> {
@@ -85,69 +72,6 @@ pub(in crate::halo_reach) struct SkyScale {
 enum Stage {
     Transparent,
     Shafts,
-}
-
-/// The texture coordinates of `mapping`: its stored transform, with each component a translation
-/// or scale animation drives replaced by that animation's value on the game clock. Animations
-/// other than linear ramps hold their first value, which `notes` records.
-fn coordinates(mapping: &material::Mapping, notes: &mut Vec<String>) -> String {
-    let [sx, sy, ox, oy] = mapping.transform;
-    let mut parts = [
-        format!("{sx:.9}"),
-        format!("{sy:.9}"),
-        format!("{ox:.9}"),
-        format!("{oy:.9}"),
-    ];
-    for function in &mapping.functions {
-        let slots: &[usize] = match function.kind {
-            SCALE_UNIFORM => &[0, 1],
-            SCALE_X => &[0],
-            SCALE_Y => &[1],
-            TRANSLATION_X => &[2],
-            TRANSLATION_Y => &[3],
-            other => {
-                notes.push(format!(
-                    "{} animation kind {other} is not translated",
-                    mapping.role
-                ));
-                continue;
-            }
-        };
-        let read = |at: usize| {
-            function
-                .data
-                .get(at..at + 4)
-                .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap_or([0; 4])))
-        };
-        let (Some(&kind), Some(minimum), Some(maximum)) = (
-            function.data.first(),
-            read(FUNCTION_MINIMUM),
-            read(FUNCTION_MAXIMUM),
-        ) else {
-            notes.push(format!("{} animation has no range", mapping.role));
-            continue;
-        };
-        let value =
-            if kind == IDENTITY_FUNCTION && function.period > 0. && function.input.is_empty() {
-                format!(
-                    "lerp({minimum:.9},{maximum:.9},frac(time/{:.9}))",
-                    function.period
-                )
-            } else {
-                notes.push(format!(
-                    "{} animation type {kind} over input {:?} holds its first value",
-                    mapping.role, function.input
-                ));
-                format!("{minimum:.9}")
-            };
-        for &slot in slots {
-            parts[slot] = value.clone();
-        }
-    }
-    format!(
-        "v3.xy*float2({},{})+float2({},{})",
-        parts[0], parts[1], parts[2], parts[3]
-    )
 }
 
 /// The texture roles a surface's albedo and self illumination read, by their Reach options.
@@ -189,20 +113,12 @@ fn roles(material: &Material, notes: &mut Vec<String>) -> Vec<&'static str> {
     roles
 }
 
-fn rgb(c: [f32; 4]) -> String {
-    format!("float3({:.9},{:.9},{:.9})", c[0], c[1], c[2])
-}
-
-fn rgba(c: [f32; 4]) -> String {
-    format!("float4({:.9},{:.9},{:.9},{:.9})", c[0], c[1], c[2], c[3])
-}
-
 /// The albedo and self illumination of a surface, following the per-vertex color entry point of
 /// its Reach template, and whether its albedo is lit: self illumination from the diffuse map
 /// replaces the albedo's lighting.
 fn shading(
     material: &Material,
-    constant: &dyn Fn(&str) -> Option<[f32; 4]>,
+    value: &dyn Fn(&str, [f32; 4]) -> String,
     samples: &BTreeMap<&str, String>,
     notes: &mut Vec<String>,
 ) -> (String, String, bool) {
@@ -212,9 +128,9 @@ fn shading(
             .cloned()
             .unwrap_or_else(|| "float4(1,1,1,1)".to_owned())
     };
-    let tint = constant("albedo_color").unwrap_or([1.; 4]);
+    let tint = value("albedo_color", [1.; 4]);
     let albedo = match material.options.get("albedo").map(String::as_str) {
-        Some("constant_color") => rgba(tint),
+        Some("constant_color") => tint.clone(),
         Some("two_detail_overlay") => format!(
             "float4(({base}).rgb*lerp({d1},{d2},({base}).a).rgb*({ov}).rgb*{REACH_DETAIL_SQUARED:.6},({ov}).a*lerp({d1},{d2},({base}).a).a)",
             base = sample("base_map"),
@@ -232,11 +148,11 @@ fn shading(
             "(({base})*({detail})*{tint})*float4({REACH_DETAIL:.6},{REACH_DETAIL:.6},{REACH_DETAIL:.6},1)",
             base = sample("base_map"),
             detail = sample("detail_map"),
-            tint = rgba(tint),
+            tint = tint,
         ),
     };
-    let intensity = constant("self_illum_intensity").map_or(1., |v| v[0]);
-    let color = constant("self_illum_color").unwrap_or([1.; 4]);
+    let intensity = format!("({}).x", value("self_illum_intensity", [1.; 4]));
+    let color = format!("({}).rgb", value("self_illum_color", [1.; 4]));
     let mut lit = true;
     let self_illumination = match material
         .options
@@ -246,54 +162,43 @@ fn shading(
         Some("off") | None => "float3(0,0,0)".to_owned(),
         Some("from_diffuse") => {
             lit = false;
-            format!("albedo.rgb*{}*{intensity:.9}", rgb(color))
+            format!("albedo.rgb*{}*{intensity}", color)
         }
         Some("3_channel_self_illum") => {
             let map = sample("self_illum_map");
-            let [a, b, c] = ["channel_a", "channel_b", "channel_c"]
-                .map(|name| constant(name).unwrap_or([0.; 4]));
-            format!(
-                "(({map}).r*{}*{:.9}+({map}).g*{}*{:.9}+({map}).b*{}*{:.9})*{intensity:.9}",
-                rgb(a),
-                a[3],
-                rgb(b),
-                b[3],
-                rgb(c),
-                c[3]
-            )
+            let terms = ["channel_a", "channel_b", "channel_c"]
+                .into_iter()
+                .zip(["r", "g", "b"])
+                .map(|(name, lane)| {
+                    let channel = value(name, [0.; 4]);
+                    format!("({map}).{lane}*({channel}).rgb*({channel}).a")
+                })
+                .collect::<Vec<_>>()
+                .join("+");
+            format!("({terms})*{intensity}")
         }
         Some("illum_detail") => format!(
-            "({map}).rgb*({detail}).rgb*{}*{intensity:.9}*{REACH_DETAIL:.6}",
-            rgb(color),
+            "({map}).rgb*({detail}).rgb*{}*{intensity}*{REACH_DETAIL:.6}",
+            color,
             map = sample("self_illum_map"),
             detail = sample("self_illum_detail_map"),
         ),
         Some("plasma") => {
-            let [medium, sharp, wide] = ["color_medium", "color_sharp", "color_wide"]
-                .map(|name| constant(name).unwrap_or([0.; 4]));
+            let [medium, sharp, wide] =
+                ["color_medium", "color_sharp", "color_wide"].map(|name| value(name, [0.; 4]));
             let [thin_medium, thin_sharp, thin_wide] =
                 ["thinness_medium", "thinness_sharp", "thinness_wide"]
-                    .map(|name| constant(name).map_or(1., |v| v[0]));
+                    .map(|name| format!("({}).x", value(name, [1.; 4])));
             format!(
-                "plasma(({mask}).a,({a}).r,({b}).r,{},{:.9},{},{:.9},{},{:.9},{thin_medium:.9},{thin_sharp:.9},{thin_wide:.9})*{intensity:.9}",
-                rgb(medium),
-                medium[3],
-                rgb(sharp),
-                sharp[3],
-                rgb(wide),
-                wide[3],
+                "plasma(({mask}).a,({a}).r,({b}).r,({medium}).rgb,({medium}).a,({sharp}).rgb,({sharp}).a,({wide}).rgb,({wide}).a,{thin_medium},{thin_sharp},{thin_wide})*{intensity}",
                 mask = sample("alpha_mask_map"),
                 a = sample("noise_map_a"),
-                b = sample("noise_map_b"),
+                b = sample("noise_map_b")
             )
         }
         Some(_) => {
             // Recorded by `roles`.
-            format!(
-                "({}).rgb*{}*{intensity:.9}",
-                sample("self_illum_map"),
-                rgb(color)
-            )
+            format!("({}).rgb*{}*{intensity}", sample("self_illum_map"), color)
         }
     };
     if material
@@ -380,8 +285,7 @@ pub(in crate::halo_reach) fn surfaces(
         SKY_VERTEX,
         true,
     )?;
-    // Surfaces read their maps through wrapping copies of the opaque shell's anisotropic sampler,
-    // as level surfaces do.
+    // Sky maps use the same address and filter translation as level surfaces.
     let shell = native.tag(0x80ec270d, Some(0x808071e8))?;
     let sampler_rows = shell.array(0x308, 16, None)?;
     let clamped = shell.bytes::<16>(
@@ -399,11 +303,15 @@ pub(in crate::halo_reach) fn surfaces(
             .first()
             .map(|p| p.constants.clone())
             .unwrap_or_default();
-        let constant = |name: &str| constants.get(name).copied();
-        // Every role the surface reads takes the next register, and each distinct address mode
-        // pair a sampler.
+        let parameters = animation::Parameters::new(material, &constants, &|_| false);
+        notes.extend(parameters.notes.iter().cloned());
+        let parameter_source = &parameters.source;
+        let value = |name: &str, default| {
+            parameters.value(name, constants.get(name).copied().unwrap_or(default))
+        };
+        // Every role takes the next register, with one sampler per address and filter combination.
         let mut bindings = Vec::new();
-        let mut modes = vec![[WRAP, WRAP]];
+        let mut modes = vec![[WRAP, WRAP, ANISOTROPIC]];
         let mut samples = BTreeMap::new();
         for role in roles(material, &mut notes) {
             let Some(mapping) = material.mapping(&[role]) else {
@@ -415,23 +323,33 @@ pub(in crate::halo_reach) fn surfaces(
                 register,
                 texture(c, pages, native, g, mapping, false, true)?,
             ));
-            let index = sampler_index(&mut modes, address_modes(mapping.address)?);
+            let index = sampler_index(&mut modes, sampler_modes(mapping)?);
             samples.insert(
                 role,
                 format!(
                     "Map{register}.Sample({},{})",
                     sampler_name(index),
-                    coordinates(mapping, &mut notes)
+                    animation::coordinates(mapping, "v3.xy", &mut notes)
                 ),
             );
         }
+        let texture_count = bindings.len();
+        let curve_functions = if samples
+            .values()
+            .any(|sample| sample.contains("reachPeriodic("))
+            || parameter_source.contains("reachPeriodic(")
+        {
+            animation::periodic(native, g, &mut bindings)?
+        } else {
+            String::new()
+        };
         ensure!(
             bindings.len() <= MAX_TEXTURE_REGISTERS,
             "A sky surface reads {} maps",
             bindings.len()
         );
         let samplers = samplers(native, g, clamped, &modes)?;
-        let (albedo, self_illumination, lit) = shading(material, &constant, &samples, &mut notes);
+        let (albedo, self_illumination, lit) = shading(material, &value, &samples, &mut notes);
         let lighting = if lit {
             "vertexColor*albedo.rgb"
         } else {
@@ -442,7 +360,7 @@ pub(in crate::halo_reach) fn surfaces(
         } else {
             ""
         };
-        let declarations = (0..bindings.len())
+        let declarations = (0..texture_count)
             .map(|register| format!("Texture2D<float4> Map{register}:register(t{register});"))
             .collect::<String>();
         let sampler_declarations = &samplers.declarations;
@@ -457,9 +375,12 @@ pub(in crate::halo_reach) fn surfaces(
 {sampler_declarations}
 cbuffer Frame : register(b13) {{float4 frameData[2];}};
 {PLASMA}
+{clock_function}
+{curve_functions}
 void main(float4 v0:TEXCOORD0,float4 v1:TEXCOORD1,float4 v2:TEXCOORD2,float4 v3:TEXCOORD3,float3 v4:TEXCOORD4,float4 position:SV_POSITION0,uint front:SV_isFrontFace0,
 out float4 o0:SV_TARGET0) {{
 float time=frameData[0].x;
+{parameter_source}
 float3 vertexColor=v1.xyz*v1.xyz*{vertex_color:.9};
 float4 albedo={albedo};{clip}
 float3 selfIllumination={self_illumination};
@@ -467,11 +388,15 @@ float3 color=clamp({lighting}+selfIllumination,0,{white:.9})*{radiance:.9};
 {finish}
 }}
 "#,
+                clock_function = animation::CLOCK,
                 vertex_color = scale.vertex_color,
                 radiance = scale.radiance,
                 white = scale.white,
             );
             let shader = format!("sky-pixel-{key:08X}");
+            if stage == Stage::Transparent {
+                notes.extend(parameters.unused(&text));
+            }
             program(native, g, &shader, envelope.u32(0x2c8)?, &text, false)?;
             let mut bytes = fresh_surface(envelope)?;
             let mut fixed = Vec::new();
@@ -525,6 +450,8 @@ float3 color=clamp({lighting}+selfIllumination,0,{white:.9})*{radiance:.9};
                 "source": material.tag,
                 "options": material.options,
                 "constants": constants,
+                "source_properties": material.properties,
+                "animated_parameters": parameters.bindings(),
                 "bound_textures": bindings,
                 "stage": if stage == Stage::Transparent { 7 } else { 9 },
                 "envelope": format!("{envelope_tag:08X}"),

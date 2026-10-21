@@ -27,6 +27,7 @@ use super::{
 
 pub(super) struct Geometry {
     chain: Chain,
+    kept: bool,
     folder: PathBuf,
     nodes: Vec<Value>,
     pieces: Vec<parhelion_import::halo_reach::level::native::Piece>,
@@ -39,6 +40,12 @@ pub(super) struct Geometry {
     ambience: Option<String>,
     /// The symbol of the atmosphere volume the map's atmosphere names.
     atmosphere: Option<String>,
+    /// The symbol of the distance lookup the map's atmosphere names.
+    atmosphere_lookup: Option<String>,
+    /// The level's occlusion probes, each a position and a sky visibility.
+    occlusion: Vec<[f32; 4]>,
+    /// The level's cubemap volumes.
+    cubemaps: Vec<parhelion_import::halo_reach::level::native::CubemapVolume>,
     /// An exclusive lock on the map's cache folder, held until the stage has read its payloads.
     /// The conversion clears the folder, so a second stage of the same map in another process
     /// waits here rather than removing files the first is still reading.
@@ -52,19 +59,46 @@ fn fnv1a64(text: &str) -> u64 {
 }
 
 impl Geometry {
-    /// Converts `source` for map `name`, placed by a copy of `donor`'s map root chain.
+    /// Converts `source` for map `name`, placed by a copy of the map root chain of the donor's
+    /// world `world`.
     pub(super) fn load(
         directory: &Path,
         manager: &PackageManager,
         companions: &mut Companions,
-        donor: &str,
+        world: &str,
         name: &str,
         source: &MapSource,
+        report: &mut dyn FnMut(&str),
     ) -> AuthoringResult<Self> {
-        let mut chain = Chain::load(directory, manager, companions, donor, name)?;
-        let (world_compound, world_mesh) = chain.world_templates()?;
+        let mission_bindings = source
+            .mission_bindings
+            .as_ref()
+            .map(|path| {
+                if source.mission_scripts.is_empty() {
+                    return Err(invalid("Mission bindings require selected mission scripts"));
+                }
+                let bytes = std::fs::read(path).map_err(|error| {
+                    invalid(format!(
+                        "Could not read mission bindings {}: {error}",
+                        path.display()
+                    ))
+                })?;
+                serde_json::from_slice(&bytes).map_err(|error| {
+                    invalid(format!(
+                        "Invalid mission bindings {}: {error}",
+                        path.display()
+                    ))
+                })
+            })
+            .transpose()?;
+        report("Reading Donor World Templates");
+        let mut chain = Chain::load(directory, manager, companions, world, name)?;
+        let (world_compound, world_meshes) = chain.world_templates()?;
         let sky = chain.sky_templates(manager)?;
         let atmosphere = chain.atmosphere_volume()?;
+        let atmosphere_lookup = chain.atmosphere_lookup()?;
+        let occlusion_probes = chain.occlusion_probes()?;
+        let cubemaps = chain.cubemaps();
         let maps = sundial::package_authoring::parhelion_data_directory()
             .ok_or_else(|| invalid("Could not locate Parhelion's data folder"))?
             .join("cache")
@@ -78,42 +112,86 @@ impl Geometry {
             .write(true)
             .open(&lock_path)
             .map_err(|error| invalid(format!("Could not open {}: {error}", lock_path.display())))?;
+        report("Waiting for Map Cache Lock");
         folder_lock
             .lock()
             .map_err(|error| invalid(format!("Could not lock {}: {error}", lock_path.display())))?;
         let folder = maps.join(name);
-        if folder.exists() {
-            std::fs::remove_dir_all(&folder).map_err(|error| {
-                invalid(format!("Could not clear {}: {error}", folder.display()))
-            })?;
-        }
-        let converted = parhelion_import::halo_reach::level::native::convert(
-            &source.maps,
-            &source.map,
-            source.variant.as_deref(),
-            directory,
-            &folder,
-            source.offset.map(|v| v as f32),
-            &parhelion_import::halo_reach::level::native::Templates {
-                entity: chain.prop().entity,
-                render: chain.prop().render,
-                body: chain.prop().body,
-                model: chain.prop().model,
-                collision: chain.prop().collision,
-                world_compound,
-                world_mesh,
-                sky,
-                ambience: chain.sound_points().zip(source.audio_decoder.clone()).map(
-                    |(points, decoder)| parhelion_import::halo_reach::level::ambience::Templates {
-                        points,
-                        decoder,
+        let decoder = source
+            .audio_decoder
+            .clone()
+            .or_else(|| parhelion_import::tools::located(parhelion_import::tools::Tool::Vgmstream));
+        let mission_audio = decoder.clone().map(|decoder| {
+            let banks = if source.audio_banks.is_empty() {
+                let root = source.maps.join("../fmod/pc");
+                vec![root.join("sfx.fsb"), root.join("english.fsb")]
+            } else {
+                source.audio_banks.clone()
+            };
+            parhelion_import::halo_reach::level::mission::AudioOptions { banks, decoder }
+        });
+        let cached = crate::mod_family::build::map_state(name).map_err(invalid)?;
+        let kept = cached.is_some();
+        let converted: parhelion_import::halo_reach::level::native::Converted =
+            if let Some(cached) = cached {
+                report("Reusing Verified Map Geometry");
+                serde_json::from_value(cached)
+                    .map_err(|e| invalid(format!("Kept map metadata: {e}")))?
+            } else {
+                if folder.exists() {
+                    std::fs::remove_dir_all(&folder).map_err(|error| {
+                        invalid(format!("Could not clear {}: {error}", folder.display()))
+                    })?;
+                }
+                let converted = parhelion_import::halo_reach::level::native::convert_with_progress(
+                    &source.maps,
+                    &source.map,
+                    &source.zone_sets,
+                    source.variant.as_deref(),
+                    directory,
+                    &folder,
+                    source.offset.map(|v| v as f32),
+                    &parhelion_import::halo_reach::level::native::Templates {
+                        entity: chain.prop().entity,
+                        render: chain.prop().render,
+                        body: chain.prop().body,
+                        model: chain.prop().model,
+                        collision: chain.prop().collision,
+                        world_compound,
+                        world_meshes,
+                        sky,
+                        // Without a decoder in the recipe, the one chosen in the importer's Tools.
+                        ambience: chain.sound_points().zip(decoder).map(|(points, decoder)| {
+                            parhelion_import::halo_reach::level::ambience::Templates {
+                                points,
+                                decoder,
+                            }
+                        }),
+                        mission_audio,
+                        mission_execution: (!source.mission_scripts.is_empty()).then(|| {
+                            parhelion_import::halo_reach::level::mission::execution::Options {
+                                entrypoints: source.mission_scripts.clone(),
+                                namespace: name.to_owned(),
+                                native: mission_bindings,
+                            }
+                        }),
+                        atmosphere,
+                        atmosphere_lookup,
+                        occlusion_probes,
+                        cubemaps,
                     },
-                ),
-                atmosphere,
-            },
-        )
-        .map_err(|error| invalid(format!("Map {name} geometry: {error:#}")))?;
+                    report,
+                )
+                .map_err(|error| invalid(format!("Map {name} geometry: {error:#}")))?;
+                crate::mod_family::build::remember_map(
+                    name,
+                    serde_json::to_value(&converted).map_err(|e| invalid(e.to_string()))?,
+                )
+                .map_err(invalid)?;
+                converted
+            };
         chain.set_light(converted.light);
+        report("Reading Source Spawns, Objectives and Death Boundaries");
         let activity = parhelion_import::halo_reach::level::activity::load(
             &source.maps,
             &source.map,
@@ -124,6 +202,7 @@ impl Geometry {
         .map_err(|error| invalid(format!("Map {name} activity: {error:#}")))?;
         Ok(Self {
             chain,
+            kept,
             folder,
             nodes: converted.nodes,
             pieces: converted.pieces,
@@ -134,12 +213,19 @@ impl Geometry {
             sky: converted.sky,
             ambience: converted.ambience,
             atmosphere: converted.atmosphere,
+            atmosphere_lookup: converted.atmosphere_lookup,
+            occlusion: converted.occlusion,
+            cubemaps: converted.cubemaps,
             _folder_lock: folder_lock,
         })
     }
 
     pub(super) fn entries(&self) -> usize {
         self.chain.entries() + self.nodes.len()
+    }
+
+    pub(super) fn disable_ambience(&mut self) {
+        self.ambience = None;
     }
     /// The level's player spawn points, in the map's coordinates.
     pub(super) fn spawns(&self) -> &[parhelion_import::halo_reach::level::spawn::Spawn] {
@@ -158,19 +244,46 @@ impl Geometry {
         &self.volumes
     }
 
-    /// The geometry's entries starting at `first`, the map root among them, and the entry-header
-    /// references its buffer headers need, by entry ordinal in the package.
+    /// The geometry's entries across `ids`, the map root among them, and the entry-header
+    /// references its buffer headers need, by ordinal across the whole world.
     pub(super) fn tags(
+        &self,
+        ids: &[u16],
+        name: &str,
+    ) -> AuthoringResult<(Vec<NewTagSpec>, TagHash, Vec<NewTagReferenceOverride>)> {
+        self.tags_with(super::plan::entry_tag(ids, 0)?, name, |index| {
+            super::plan::entry_tag(ids, self.chain.entries() + index)
+        })
+    }
+
+    pub(super) fn chain_entries(&self) -> usize {
+        self.chain.entries()
+    }
+    pub(super) fn resource_entries(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub(super) fn split_tags(
+        &self,
+        native: u16,
+        ids: &[u16],
+        name: &str,
+    ) -> AuthoringResult<(Vec<NewTagSpec>, TagHash, Vec<NewTagReferenceOverride>)> {
+        self.tags_with(TagHash::new(native, 0), name, |index| {
+            super::plan::entry_tag(ids, index)
+        })
+    }
+
+    fn tags_with(
         &self,
         first: TagHash,
         name: &str,
+        entry: impl Fn(usize) -> AuthoringResult<TagHash>,
     ) -> AuthoringResult<(Vec<NewTagSpec>, TagHash, Vec<NewTagReferenceOverride>)> {
-        let base = first.entry_index() as usize + self.chain.entries();
-        let entry = |index: usize| {
-            u16::try_from(base + index)
-                .map(|entry| TagHash::new(first.pkg_id(), entry))
-                .map_err(|_| invalid("The map package has too many entries"))
-        };
+        let base = self.chain.entries();
+        if base > crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
+            return Err(invalid("The map root chain exceeds one package"));
+        }
         let mut symbols = BTreeMap::new();
         for (index, node) in self.nodes.iter().enumerate() {
             let symbol = node["symbol"]
@@ -188,7 +301,40 @@ impl Geometry {
         };
         let mut content = Vec::<NewTagSpec>::with_capacity(self.nodes.len());
         let mut references = Vec::new();
+        let mut restored = BTreeMap::new();
         for (index, node) in self.nodes.iter().enumerate() {
+            if self.kept {
+                let address = entry(index)?;
+                if let std::collections::btree_map::Entry::Vacant(slot) =
+                    restored.entry(address.pkg_id())
+                {
+                    slot.insert(
+                        crate::mod_family::build::restore(address.pkg_id()).map_err(invalid)?,
+                    );
+                }
+                let package = &restored[&address.pkg_id()];
+                let spec = package
+                    .tags
+                    .get(usize::from(address.entry_index()))
+                    .ok_or_else(|| invalid("Kept map resource entry is missing"))?;
+                content.push(spec.clone());
+                for reference in package
+                    .references
+                    .iter()
+                    .filter(|r| r.new_tag_ordinal == usize::from(address.entry_index()))
+                {
+                    references.push(NewTagReferenceOverride {
+                        new_tag_ordinal: base + index,
+                        reference: match reference.reference {
+                            NewTagReference::Appended(at) => {
+                                NewTagReference::Tag(TagHash::new(address.pkg_id(), at as u16))
+                            }
+                            other => other,
+                        },
+                    });
+                }
+                continue;
+            }
             let file = node["file"]
                 .as_str()
                 .ok_or_else(|| invalid("Map graph node has no payload"))?;
@@ -215,7 +361,7 @@ impl Geometry {
                 })?;
                 references.push(NewTagReferenceOverride {
                     new_tag_ordinal: base + index,
-                    reference: NewTagReference::Appended(base + target),
+                    reference: NewTagReference::Tag(entry(target)?),
                 });
             }
             let template = node["template"]
@@ -229,7 +375,7 @@ impl Geometry {
                 Some("audio_media") => {
                     references.push(NewTagReferenceOverride {
                         new_tag_ordinal: base + index,
-                        reference: NewTagReference::Appended(base + index),
+                        reference: NewTagReference::Tag(entry(index)?),
                     });
                     NewTagStorageMode::AudioMedia
                 }
@@ -245,7 +391,9 @@ impl Geometry {
                 storage,
             });
         }
-        bind_audio(&self.nodes, &mut content, &tag, name)?;
+        if !self.kept {
+            bind_audio(&self.nodes, &mut content, &tag, name)?;
+        }
         let pieces = self
             .pieces
             .iter()
@@ -255,11 +403,13 @@ impl Geometry {
                     entity: tag(&piece.entity)?,
                     identity: fnv1a64(&format!("parhelion/map/{name}/piece/{index}")) | 1,
                     position: piece.position,
+                    minimum: piece.minimum,
+                    maximum: piece.maximum,
                 })
             })
             .collect::<AuthoringResult<Vec<_>>>()?;
         let loads = (0..self.nodes.len())
-            .map(entry)
+            .map(&entry)
             .collect::<AuthoringResult<Vec<_>>>()?;
         let meshes = self
             .world
@@ -286,6 +436,22 @@ impl Geometry {
             .collect::<AuthoringResult<Vec<_>>>()?;
         let sounds = self.ambience.as_deref().map(tag).transpose()?;
         let atmosphere = self.atmosphere.as_deref().map(tag).transpose()?;
+        let lookup = self.atmosphere_lookup.as_deref().map(tag).transpose()?;
+        let cubemaps = self
+            .cubemaps
+            .iter()
+            .enumerate()
+            .map(|(index, volume)| {
+                Ok(chain::Cubemap {
+                    texture: tag(&volume.texture)?,
+                    center: volume.center,
+                    extents: volume.extents,
+                    capture: volume.capture,
+                    priority: volume.priority,
+                    identity: fnv1a64(&format!("parhelion/map/{name}/cubemap/{index}")) | 1,
+                })
+            })
+            .collect::<AuthoringResult<Vec<_>>>()?;
         let (mut tags, root) = self.chain.tags(
             first,
             &pieces,
@@ -294,6 +460,9 @@ impl Geometry {
             &sky,
             sounds,
             atmosphere,
+            lookup,
+            &self.occlusion,
+            &cubemaps,
             &loads,
         )?;
         tags.extend(content);

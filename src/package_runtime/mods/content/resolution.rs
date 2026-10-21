@@ -1,6 +1,6 @@
 //! The loader's manifest checks and dependency ordering, which decide the mods it places.
 use super::{Incoming, name};
-use crate::package_runtime::mods::{MANIFEST, Manifest, checked_path, config, read_json};
+use crate::package_runtime::mods::{MANIFEST, checked_path, config, read_json};
 use serde::Deserialize;
 use std::{
     collections::{BTreeSet, HashSet},
@@ -83,7 +83,7 @@ impl Mod {
     /// Parhelion's mod as an installation would publish it, with its own manifest.
     pub(super) fn incoming(incoming: Incoming) -> Self {
         let manifest =
-            serde_json::to_value(Manifest::default()).expect("Parhelion's manifest serializes");
+            serde_json::to_value(&incoming.manifest).expect("Parhelion's manifest serializes");
         let mut item: Self =
             serde_json::from_value(manifest).expect("Parhelion's manifest reads as a mod");
         item.incoming = Some(incoming);
@@ -174,7 +174,7 @@ impl Dependency {
 pub(super) fn resolve(
     install: &Path,
     folders: &[PathBuf],
-    extra: Option<Mod>,
+    extra: Vec<Mod>,
 ) -> (Vec<Mod>, Vec<String>) {
     let mut notices = Vec::new();
     let mut mods = Vec::new();

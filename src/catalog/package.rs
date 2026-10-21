@@ -67,22 +67,33 @@ pub(super) fn install_fingerprint(install: &Path) -> Result<String, String> {
     Ok(hex::encode(digest.finalize()))
 }
 
-/// A mod package's size and header bytes, or a mod's whole metadata file.
+/// A mod package's size and header, or a metadata file's size and bytes, streamed. Merge data over
+/// the readers' byte limit contributes only its size.
 fn hash_mod_input(digest: &mut Sha256, path: &Path) -> std::io::Result<()> {
+    use crate::package_runtime::mods::merge::sidecar;
     let file = File::open(path)?;
     let size = file.metadata()?.len();
-    let package = path
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("pkg"));
-    let limit = if package {
+    let extension = |name: &str| {
+        path.extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case(name))
+    };
+    let limit = if extension("pkg") {
         PACKAGE_HEADER_SIZE as u64
+    } else if extension(sidecar::EXTENSION) && size > sidecar::BYTE_LIMIT as u64 {
+        0
     } else {
         size
     };
-    let mut bytes = Vec::new();
-    file.take(limit).read_to_end(&mut bytes)?;
     digest.update(size.to_le_bytes());
-    digest.update(bytes);
+    let mut reader = file.take(limit);
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
     Ok(())
 }
 

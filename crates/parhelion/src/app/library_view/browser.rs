@@ -39,6 +39,7 @@ impl PackageAuthoringApp {
             &mut self.library_query,
             &mut self.library_state.sort,
             &mut self.library_state.kind,
+            &mut self.library_state.activities_only,
             &mut self.recipe_search_focus_pending,
         );
     }
@@ -55,7 +56,7 @@ impl PackageAuthoringApp {
                 .matching_entries(&self.recipe_entries, &self.library_donors, &query);
         self.library_state
             .sort_entries(&mut shown, &self.library_donors);
-        // Maps are listed for builds. They have no editor and do not export.
+        // Activity recipes have their own editor. Item bundles do not carry activities.
         let shown_maps = if self.library_state.export_selection.is_some() {
             Vec::new()
         } else {
@@ -124,7 +125,15 @@ impl PackageAuthoringApp {
                     ui.label("No Matching Results");
                 }
                 for map in &shown_maps {
-                    ui.add_enabled_ui(!busy, |ui| super::draw_map_row(ui, map, None));
+                    let clicked = ui
+                        .add_enabled_ui(!busy, |ui| super::draw_map_row(ui, map, None))
+                        .inner;
+                    #[cfg(feature = "d2-model-importer")]
+                    if clicked {
+                        *action = Some(LibraryAction::OpenActivity(map.path.clone()));
+                    }
+                    #[cfg(not(feature = "d2-model-importer"))]
+                    let _ = clicked;
                 }
             });
         shown.len() + shown_maps.len()

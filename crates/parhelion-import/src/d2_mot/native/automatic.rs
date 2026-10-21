@@ -2,7 +2,7 @@
 use super::*;
 use crate::d2_mot::reader::Reader;
 use sha2::{Digest, Sha256};
-mod decompiler;
+pub(crate) mod decompiler;
 mod references;
 
 /// Add source optic rendering to a copied import without rebuilding its audio or animations.

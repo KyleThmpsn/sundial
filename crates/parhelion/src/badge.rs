@@ -1,3 +1,4 @@
+use crate::progression::begin_array_block;
 use crate::progression::presentation::*;
 mod custom;
 mod membership;
@@ -130,6 +131,8 @@ pub(crate) struct SunriseBadgePlacement {
     pub donor_collectible_index: usize,
     pub authored_collectible_index: usize,
     pub authored_unlock_index: u16,
+    /// Whether the entry goes before the stock entries of the pages it joins.
+    pub first: bool,
 }
 
 pub(crate) struct SunriseBadgeGraph {
@@ -271,21 +274,22 @@ fn author_graph(
         }
     }
     if layout.node_start == STOCK_PRESENTATION_NODE_COUNT {
-        let mut pages = BTreeMap::<u16, Vec<(usize, usize)>>::new();
+        // Each page takes the entries placed first, then those placed after its own.
+        let mut pages = BTreeMap::<(u16, bool), Vec<(usize, usize)>>::new();
         for placement in placements {
             for page in placement
                 .pages
                 .iter()
                 .filter(|&page| usize::from(page) < STOCK_PRESENTATION_NODE_COUNT)
             {
-                pages.entry(page).or_default().push((
+                pages.entry((page, placement.first)).or_default().push((
                     placement.donor_collectible_index,
                     placement.authored_collectible_index,
                 ));
             }
         }
-        for (page, members) in pages {
-            prepend_collectible_children_to_node(&mut nodes, usize::from(page), &members)?;
+        for ((page, first), members) in pages {
+            add_collectible_children_to_node(&mut nodes, usize::from(page), &members, first)?;
         }
     }
     let node_strings = append_strings(
@@ -606,10 +610,7 @@ fn append_nodes(
         let row = rows_end + position * PRESENTATION_NODE_ROW_SIZE;
         nodes[row..row + PRESENTATION_NODE_ROW_SIZE].copy_from_slice(template);
         for clone in &descriptor_clones[position] {
-            while !nodes.len().is_multiple_of(16) {
-                nodes.push(0);
-            }
-            let header = nodes.len();
+            let header = begin_array_block(&mut nodes);
             nodes.extend_from_slice(&clone.segment);
             write_relative_pointer(&mut nodes, row + clone.field + 8, header)?;
         }
@@ -693,6 +694,7 @@ fn append_nodes(
         BADGES_ROOT_NODE_INDEX,
         ACE_BADGE_GROUP_NODE_INDEX,
         layout.node_start,
+        crate::collection::first(None),
     )?;
     Ok(nodes)
 }

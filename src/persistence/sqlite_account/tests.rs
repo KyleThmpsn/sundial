@@ -10,6 +10,7 @@ use sundial_account::{
 
 mod package;
 mod safety;
+pub(crate) mod versions;
 
 pub(crate) fn default_resources() -> super::AccountDefaults {
     super::AccountDefaults {
@@ -17,6 +18,7 @@ pub(crate) fn default_resources() -> super::AccountDefaults {
         rows: include_str!("fixtures/investment_defaults.sql").to_owned(),
         settings_schema: super::contract::SETTINGS_SCHEMA.to_owned(),
         settings_rows: include_str!("fixtures/account_settings_defaults.sql").to_owned(),
+        starter: None,
     }
 }
 

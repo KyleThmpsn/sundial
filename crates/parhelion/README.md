@@ -2,7 +2,7 @@
 
 Parhelion is an **experimental** item workbench bundled with [Sundial](../../README.md) for Project Sunrise and Dawn. Build weapons by mixing gameplay, appearance, perks, and stats, including Exotics and unusual combinations. You can also author armor, Sparrows, Ships, Ghost Shells, Emblems, Shaders, and Subclasses from stock items, and mods from your custom perks.
 
-Your items are saved as **recipes** that you can edit and share. Some combinations may not work or may crash the game, so test them in-game after installing them.
+Your items are saved as **recipes** that you can edit and share. Some combinations may not work or may crash the game, so test them in game after installing them.
 
 See Sundial's [Compatibility](../../README.md#compatibility) section for supported game and runtime versions. Before using future Dawn versions with online support, uninstall custom packages or Dawn may report an error.
 
@@ -76,7 +76,7 @@ You can also write flavor text and a custom **Lore** tab on **Weapon**. Leave bo
 
 ### Stats and Power
 
-**Weapon Stats** lists the values saved on your weapon in the game's order. Each row shows what the game displays, such as a stat bar or rounds per minute, and a bar marks the change from the base weapon in green or red. The number you edit under **Raw** is what gets written. A raw value of 30 on a rate of fire stat is not 30 rounds per minute. A stat you add only shows in-game if the weapon's stat group supports it, so check its displayed value.
+**Weapon Stats** lists the values saved on your weapon in the game's order. Each row shows what the game displays, such as a stat bar or rounds per minute, and a bar marks the change from the base weapon in green or red. The number you edit under **Raw** is what gets written. A raw value of 30 on a rate of fire stat is not 30 rounds per minute. A stat you add only shows in game if the weapon's stat group supports it, so check its displayed value.
 
 **Stat Options** holds the less common controls. **Show Internal Stats** reveals package-level rows such as Attack and Power along with unnamed ones. Hidden rows are kept either way, so turning it off doesn't discard anything. The reset button beside **Weapon Stats** puts every value back to the base weapon.
 
@@ -196,7 +196,7 @@ You can try a behavior on a different weapon type than the Exotic it came from, 
 
 Damage switching is set by the damage type rather than here. Choose **Variable (Hold Reload)** and your weapon gets The Fundamentals and the behavior that drives it, while keeping its own appearance. Choosing Hard Light or Borealis as a **Behavior** does the same and locks the damage type, since those two switch damage as well as fire differently.
 
-If a borrowed behavior launches projectiles and your base weapon normally fires instantly, those projectiles may travel very slowly. **Projectile Speed Multiplier** raises their launch speed, with the increase capped at the value you choose. Sources already above that value keep their own speed. The default is a starting point, so adjust it a little at a time and test in-game.
+If a borrowed behavior launches projectiles and your base weapon normally fires instantly, those projectiles may travel very slowly. **Projectile Speed Multiplier** raises their launch speed, with the increase capped at the value you choose. Sources already above that value keep their own speed. The default is a starting point, so adjust it a little at a time and test in game.
 
 For example, to put Malfeasance's rounds on an ordinary Hand Cannon:
 
@@ -221,19 +221,21 @@ Use **Edit Artwork…** under **Release Watermark** on **Appearance** to customi
 
 Authored weapons accept shaders even when their base, appearance, or ornament is Exotic. The original colors remain when no shader is selected. Shader colors still depend on the model's supported dye channels. **Render Dyes** under **Appearance > Technical Appearance Data** edits the underlying dye rows when experimental features are enabled.
 
-To change the small weapon icon beside the ammo count, click **Import PNG…** on **Ammo HUD Icon** and choose a transparent PNG. This doesn't change the inventory icon. **Use Appearance** switches back to the donor's HUD icon. Rebuild and install to see your changes in-game.
+To change the small weapon icon beside the ammo count, click **Import PNG…** on **Ammo HUD Icon** and choose a transparent PNG. This doesn't change the inventory icon. **Use Appearance** switches back to the donor's HUD icon. Rebuild and install to see your changes in game.
 
 ### Barrel Settings
 
 **Barrel Settings** on **Gameplay** controls how many pellets each bullet fires and how they spread. Set **Pellets per Bullet** and **Spread**, then choose a **Pattern**: **Filled Circle**, **Ring**, or **Custom**. A custom pattern lists each ring's pellet count, inner and outer radius, rotation, and randomness beside a preview. **Random Rotation** turns the pattern to a new angle for each bullet. Turn it off to keep a pattern, such as a level row, at the same angle every shot.
 
-**Bullets per Shot** sets how many bullets fire with each trigger pull. On pulse rifles, sidearms, and rocket launchers, the weapon's **Rounds Per Minute** decides it.
+**Bullets per Shot** sets how many bullets fire with each trigger pull. On Pulse Rifles, Sidearms, and Rocket Launchers, the weapon's **Rounds Per Minute** decides it.
 
 Extra pellets are confirmed working on Fusion Rifles, Shotguns, Pulse Rifles, Auto Rifles, Scout Rifles, Submachine Guns, Sniper Rifles, Grenade Launchers, Sidearms, and Hand Cannons. On Rocket Launchers, the extra rockets collide with each other as soon as they're fired.
 
 ### Collections Placement
 
-**Collections** chooses where your weapon appears in the game's Collections. By default it uses the node matching your weapon's ammo type and weapon type, creating that node when the game has no stock one for the combination. Your weapon goes at the start of the node rather than beside its base weapon, so it is easier to find. Adding a page creates one shared page that uses the stock weapon-type name and icon. Exotic weapons always use the Exotics collection for their inventory slot.
+**Collections** chooses where your weapon appears in the game's Collections. By default it uses the node matching your weapon's ammo type and weapon type, creating that node when the game has no stock one for the combination. Adding a page creates one shared page that uses the stock weapon-type name and icon. Exotic weapons always use the Exotics collection for their inventory slot.
+
+**Position** sets whether your weapon goes before or after the node's own entries. **Automatic** puts it first, so it is easier to find, unless another installed Sunrise mod changes Collections. Then it goes last, since Sunrise can only add one mod's entries after another's. The Sunrise badge and added pages follow the same rule. **First** and **Last** always place it there, and on Sunrise 0.6 or later **First** warns that it isn't compatible with Sunrise Studio mods that change Collections.
 
 Enable **Custom Badge** to group weapons under your own badge, with a name, description, and artwork. Use the same badge settings for each member, or select an existing badge with **Choose from Library**. You can also choose whether the weapon appears in the default Sunrise or Dawn badge.
 
@@ -374,7 +376,11 @@ On Project Sunrise 0.6 or later, Parhelion installs each build as a Sunrise mod,
 
 Packages from an earlier build can't move into the mod folder. When Parhelion finds them in the game's `packages` folder, it asks you to build again, and the next install backs them up and removes them. Keep every installed item in that build so it stays in your account. **Review Sunrise Mod Upgrade…** in **Preferences… > Builds & Backups** opens that review again.
 
-Parhelion installs beside other mods, including Sunrise Studio mods. Builds skip the package IDs other mods use, and each package carries merge data, so Sunrise can combine the rows Parhelion and another mod both add to item, Collections, and other shared tables. Where another mod changes an entry Parhelion also changes, installation goes ahead only if Sunrise would combine it intact. It stops and names the other mod when Sunrise can't combine the entry, when both mods set the same values differently, or when the other mod loads first and adds rows to a table Parhelion adds to, since Sunrise would then renumber Parhelion's rows. Sunrise loads mods in order of their IDs, so a mod whose ID sorts before `dev.kylethmpsn.parhelion` loads first. Remove the overlapping edits from one of them to install both.
+Parhelion installs beside other mods, including Sunrise Studio mods. Builds skip the package IDs other mods use, and each package carries merge data, so Sunrise can combine the rows Parhelion and another mod both add to item, Collections, and other shared tables. Where another mod changes an entry Parhelion also changes, installation goes ahead only if Sunrise would combine it intact.
+
+Installation stops and names the other mod when Sunrise can't combine the entry, when both mods set the same values differently, or when the other mod loads first and adds rows to a table Parhelion adds to, since Sunrise would then renumber Parhelion's rows. The message names each table, why Sunrise can't combine it, and what to change. Sunrise loads mods in order of their IDs, so a mod whose ID sorts before `dev.kylethmpsn.parhelion` loads first.
+
+Build with the other mods installed, so Parhelion can place its Collections entries where they combine. If a weapon set to **First** shares a Collections page with another mod, **Build & Stage** asks first and offers **Use Automatic Position**.
 
 Installation also stops where Sunrise would refuse a mod:
 
@@ -394,8 +400,8 @@ Parhelion installs each build's packages together. On Dawn and on Project Sunris
 
 | Package File | Purpose |
 | --- | --- |
-| `w64_parhelion_assets_0aa0_0.pkg` | Holds authored artwork, models, materials, and other private assets, including badges and watermarks. On Sunrise 0.6 or later, the first asset package is `w64_parhelion_assets_0aa1_0.pkg`. |
-| `w64_parhelion_investment_0aa0_0.pkg` | Sunrise 0.6 or later only. Holds the authored item records that other runtimes add to `w64_investment_globals_client_0914_4.pkg`. |
+| `w64_parhelion_assets_0aa0_0.pkg` | Holds authored artwork, models, materials, and other private assets, including badges and watermarks. On Sunrise 0.6 or later, the first asset package is `w64_parhelion_assets_0cfe_0.pkg`. |
+| `w64_parhelion_investment_0cff_0.pkg` | Sunrise 0.6 or later only. Holds the authored item records that other runtimes add to `w64_investment_globals_client_0914_4.pkg`. |
 | `w64_investment_0361_7.pkg` | Connects authored items and perks to their in-game behavior. |
 | `w64_investment_globals_client_058c_4.pkg` | Adds Collections entries, unlocks, and Sunrise or Dawn badge progression. |
 | `w64_investment_globals_client_0593_4.pkg` | Registers authored items and connects them to their Collections entries. |
@@ -444,13 +450,13 @@ Under **Preferences… > Builds & Backups**, choose where to save backups, how m
 
 Save or discard open edits, then choose **Restore Default Recipes…** in the recipe library. Review the confirmation and click **Restore Defaults**. This restores every bundled recipe to the version included with your current Parhelion build, including missing defaults. Changed files are backed up first.
 
-Custom recipes, build selection, and installed packages are kept. Rebuild and install to use the restored defaults in-game.
+Custom recipes, build selection, and installed packages are kept. Rebuild and install to use the restored defaults in game.
 
 ### Restoring a Recipe
 
 1. Open **Preferences… > Editor & Library > Open Recipe Folder**, then close Parhelion.
 2. Copy the current recipe somewhere outside the recipe folder as a backup. Replace it with your earlier exported copy, keeping the existing filename.
-3. Reopen Parhelion and check the restored recipe. To use it in-game, select it for the build, rebuild, then close Destiny and install.
+3. Reopen Parhelion and check the restored recipe. To use it in game, select it for the build, rebuild, then close Destiny and install.
 
 ### Uninstalling
 
@@ -489,7 +495,7 @@ Turning them off hides the controls without removing your saved changes.
 
 ### Why Doesn't the Borrowed Behavior Do Anything?
 
-Some behavior is split between the weapon and its perk. Check that **Include Its Perks** is on, then get a fresh copy from Collections so the new perks are selected. If the behavior still does nothing, that combination may simply not carry over. Hover **Behavior** to see whether that source has been confirmed in-game.
+Some behavior is split between the weapon and its perk. Check that **Include Its Perks** is on, then get a fresh copy from Collections so the new perks are selected. If the behavior still does nothing, that combination may simply not carry over. Hover **Behavior** to see whether that source has been confirmed in game.
 
 A weapon fires through one behavior at a time, so two sources that replace the projectile cannot both apply. Thorn's poison and Lumina's Noble Rounds are an example. Pick the one you want.
 

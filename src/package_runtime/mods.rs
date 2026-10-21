@@ -9,6 +9,11 @@ use std::{
 
 mod config;
 mod content;
+mod family;
+pub use family::{
+    ImportContent, Importer, family_directories, has_family, is_family_id, member_directory,
+};
+pub mod map_diagnostics;
 pub mod merge;
 pub mod plaintext;
 mod view;
@@ -67,6 +72,17 @@ pub struct Manifest {
     pub authors: Vec<String>,
     #[serde(rename = "src")]
     pub source: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<Dependency>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct Dependency {
+    pub id: String,
+    pub min_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_version: Option<String>,
 }
 
 impl Default for Manifest {
@@ -78,18 +94,37 @@ impl Default for Manifest {
             name: "Parhelion".into(),
             authors: vec![AUTHOR.into()],
             source: SOURCE.into(),
+            dependencies: Vec::new(),
         }
     }
 }
 
 impl Manifest {
+    pub fn for_importer(importer: Importer) -> Self {
+        Self {
+            id: importer.id(),
+            name: importer.name().into(),
+            ..Self::default()
+        }
+    }
+
+    pub fn require(&mut self, importer: &Self) {
+        self.dependencies.push(Dependency {
+            id: importer.id.clone(),
+            min_version: importer.version.clone(),
+            max_version: Some(importer.version.clone()),
+        });
+        self.dependencies
+            .sort_by(|left, right| left.id.cmp(&right.id));
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         // The loader's text limits: names and authors up to 64 bytes, at most eight authors and a
         // source up to 256 bytes, none holding a control character.
         let text =
             |value: &str, limit: usize| value.len() <= limit && !value.contains(char::is_control);
         if self.manifest_version != 3
-            || self.id != ID
+            || !is_family_id(&self.id)
             || self.name.is_empty()
             || !text(&self.name, 64)
             || self.authors.len() > 8
@@ -100,6 +135,21 @@ impl Manifest {
             || !text(&self.source, 256)
         {
             return Err("The managed Parhelion mod manifest has an unsupported identity".into());
+        }
+        let mut dependencies = BTreeSet::new();
+        if self.dependencies.len() > 32
+            || self.dependencies.iter().any(|dependency| {
+                !is_family_id(&dependency.id)
+                    || dependency.id == self.id
+                    || dependency.min_version != self.version
+                    || dependency.max_version.as_deref() != Some(&self.version)
+                    || !dependencies.insert(&dependency.id)
+            })
+            || (self.id != ID && !self.dependencies.is_empty())
+        {
+            return Err(
+                "Managed mod dependencies must name each used importer at the same release".into(),
+            );
         }
         let parts = self.version.split('.').collect::<Vec<_>>();
         if parts.len() != 3
@@ -133,11 +183,13 @@ pub struct Receipt {
     pub schema: u32,
     pub mod_id: String,
     pub artifacts: Vec<Artifact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<ImportContent>,
 }
 
 impl Receipt {
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema != 1 || self.mod_id != ID || self.artifacts.is_empty() {
+        if self.schema != 1 || !is_family_id(&self.mod_id) || self.artifacts.is_empty() {
             return Err(
                 "The managed mod receipt has an unsupported schema, identity or package count"
                     .into(),
@@ -146,6 +198,17 @@ impl Receipt {
         let mut names = BTreeSet::new();
         let mut packages = BTreeSet::new();
         for artifact in &self.artifacts {
+            if artifact.path == map_diagnostics::FILE_NAME {
+                if self.mod_id != ID
+                    || !names.insert(artifact.path.clone())
+                    || artifact.byte_length == 0
+                    || artifact.byte_length > map_diagnostics::BYTE_LIMIT
+                    || !valid_sha256(&artifact.sha256)
+                {
+                    return Err("Invalid map diagnostics receipt".into());
+                }
+                continue;
+            }
             let (folder, name) = artifact
                 .path
                 .split_once('/')
@@ -153,6 +216,8 @@ impl Receipt {
             if !matches!(folder, "packages" | "patches")
                 || name.contains(['/', '\\'])
                 || name.contains("_unp1_")
+                || (self.mod_id != ID
+                    && (folder != "packages" || name.starts_with("w64_parhelion_investment_")))
             {
                 return Err("The managed mod receipt contains an unsupported package path".into());
             }
@@ -191,6 +256,12 @@ impl Receipt {
                 "The managed mod receipt has an unsupported schema, identity or package count"
                     .into(),
             );
+        }
+        if let Some(content) = &self.content {
+            if self.mod_id == ID {
+                return Err("Importer content cannot belong to the main mod receipt".into());
+            }
+            content.validate(&packages)?;
         }
         Ok(())
     }
@@ -243,6 +314,10 @@ pub fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Strin
     }
     let limit = if path.file_name().is_some_and(|n| n == MANIFEST) {
         256 * 1024
+    } else if path.file_name().is_some_and(|n| n == RECEIPT) {
+        // Linked metadata carries one compact entry descriptor per imported resource. Large
+        // map families can exceed the ordinary one-megabyte metadata limit.
+        32 * 1024 * 1024
     } else {
         1024 * 1024
     };
@@ -263,6 +338,21 @@ pub fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Strin
 /// are allowed, since Sunrise merges patches from several mods. A mod the loader would refuse
 /// for its own name or manifest is the loader's to report and is skipped here.
 pub fn ensure_resolved_environment(install: &Path) -> Result<(), String> {
+    let mut proposed = family_directories(install)?
+        .into_keys()
+        .collect::<BTreeSet<_>>();
+    proposed.insert(ID.into());
+    ensure_family_environment(install, &proposed)
+}
+
+/// Checks the complete proposed family, excluding members the transaction retires.
+pub fn ensure_family_environment(
+    install: &Path,
+    proposed: &BTreeSet<String>,
+) -> Result<(), String> {
+    if proposed.iter().any(|id| !is_family_id(id)) {
+        return Err("The proposed managed mod family contains an unknown identity".into());
+    }
     let mods = runtime_directory(install).join("mods");
     checked_path(install, &mods)?;
     let entries = match fs::read_dir(&mods) {
@@ -284,23 +374,26 @@ pub fn ensure_resolved_environment(install: &Path) -> Result<(), String> {
         if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
             continue;
         }
-        count += 1;
-        if name == ID {
+        if is_family_id(name) {
             continue;
         }
+        count += 1;
         let manifest = entry.path().join(MANIFEST);
         checked_path(install, &manifest)?;
         if manifest.exists()
-            && read_json::<serde_json::Value>(&manifest)
-                .is_ok_and(|value| value.get("id").and_then(serde_json::Value::as_str) == Some(ID))
+            && read_json::<serde_json::Value>(&manifest).is_ok_and(|value| {
+                value
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(is_family_id)
+            })
         {
             return Err(format!(
-                "Mod folder {name} declares Parhelion's mod id. Remove or rename that mod"
+                "Mod folder {name} declares a Parhelion family mod ID. Remove or rename that mod"
             ));
         }
     }
-    let own = directory(install);
-    let proposed_count = count + usize::from(!own.exists());
+    let proposed_count = count + proposed.len();
     if proposed_count > FOLDER_LIMIT {
         return Err("Installing Parhelion would exceed the loader's 64-mod limit".into());
     }
@@ -313,8 +406,15 @@ pub fn ensure_resolved_environment(install: &Path) -> Result<(), String> {
 /// verifies the receipt's full digests.
 pub fn files(install: &Path) -> Result<Vec<PathBuf>, String> {
     ensure_readable(install)?;
-    let folder = directory(install);
-    checked_path(install, &folder)?;
+    let mut files = Vec::new();
+    for (id, folder) in family_directories(install)? {
+        files.extend(member_files(install, &id, &folder)?);
+    }
+    Ok(files)
+}
+
+fn member_files(install: &Path, id: &str, folder: &Path) -> Result<Vec<PathBuf>, String> {
+    checked_path(install, folder)?;
     if !folder.try_exists().map_err(|e| e.to_string())? {
         return Ok(Vec::new());
     }
@@ -324,12 +424,22 @@ pub fn files(install: &Path) -> Result<Vec<PathBuf>, String> {
     manifest.validate()?;
     let receipt: Receipt = read_json(&folder.join(RECEIPT))?;
     receipt.validate()?;
+    if manifest.id != id || receipt.mod_id != id {
+        return Err(format!(
+            "Managed mod {id} has a manifest or receipt for another family member"
+        ));
+    }
     let expected = receipt
         .artifacts
         .iter()
         .map(|a| a.path.clone())
         .collect::<BTreeSet<_>>();
     let mut actual = BTreeSet::new();
+    let diagnostics = folder.join(map_diagnostics::FILE_NAME);
+    checked_path(install, &diagnostics)?;
+    if diagnostics.try_exists().map_err(|e| e.to_string())? {
+        actual.insert(map_diagnostics::FILE_NAME.to_owned());
+    }
     for child in ["packages", "patches"] {
         let path = folder.join(child);
         checked_path(install, &path)?;
@@ -366,7 +476,9 @@ pub fn files(install: &Path) -> Result<Vec<PathBuf>, String> {
             ));
         }
         let name = path.file_name().ok_or("Mod package has no filename")?;
-        if install.join("packages").join(name).exists() {
+        if artifact.path != map_diagnostics::FILE_NAME
+            && install.join("packages").join(name).exists()
+        {
             return Err("Both legacy and mod-folder Parhelion packages are present. Recover or review the upgrade before reading content.".into());
         }
         files.push(path);

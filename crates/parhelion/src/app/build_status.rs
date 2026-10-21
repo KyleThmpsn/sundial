@@ -13,6 +13,33 @@ struct BuildBlocker {
     open: bool,
 }
 
+fn draw_mods(ui: &mut egui::Ui, mods: &[crate::ModReport]) {
+    if mods.is_empty() {
+        return;
+    }
+    ui.strong("Managed Mods");
+    ui.label("Imported resources belong to their importer mods. Parhelion holds the records, native assets and stock patches. Changed folders are backed up together.");
+    if mods.iter().any(|member| {
+        member.id == sundial::package_authoring::mod_content::ID
+            && member.status == crate::ModStatus::Updated
+    }) && mods.iter().any(|member| {
+        member.id != sundial::package_authoring::mod_content::ID
+            && member.status == crate::ModStatus::Installed
+    }) {
+        ui.label("Imported resources move into the new importer mods listed below. Parhelion and the importer mods change in one transaction.");
+    }
+    for member in mods {
+        ui.collapsing(
+            format!("{}: {}", member.name, member.status.label()),
+            |ui| {
+                for package in &member.packages {
+                    ui.monospace(package);
+                }
+            },
+        );
+    }
+}
+
 impl PackageAuthoringApp {
     pub(super) fn draw_build_status_window(&mut self, ctx: &egui::Context) {
         if !self.build_status_open {
@@ -351,6 +378,7 @@ impl PackageAuthoringApp {
             }
             None => return,
         };
+        draw_mods(ui, review.mods());
         if !review.changes_account() {
             ui.label("No account changes needed.");
             return;

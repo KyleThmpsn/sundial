@@ -1,0 +1,24 @@
+{
+  "upstream": "https://github.com/stanuwu/Sunrise",
+  "revision": "ec2df8bd0f6f32ec1b139975701ffff34c289e12",
+  "resources": {
+    "character_starter.sql": {
+      "sha256": "e4f15dbca17b1186c302d8e9d0d239f9130a271d2bf813dbc2f16c0f90988d4f",
+      "upstream_path": "Sunrise/resources/database/character_starter.sql"
+    },
+    "investment_defaults.sql": {
+      "sha256": "d6861b7ac9e04f28acc9ef9f9ff627425389bb048d888d1bf7d4c64a31615500",
+      "upstream_path": "Sunrise/resources/database/investment_defaults.sql"
+    },
+    "investment_schema.sql": {
+      "sha256": "68f4dee0dcce6917b4a01a80cac258bf5c3099139397452d9a60b3bc79f4d988",
+      "upstream_path": "Sunrise/resources/database/investment_schema.sql"
+    }
+  },
+  "migration": {
+    "file": "migration.sql",
+    "sha256": "86ea34e148558d6f2597afd5ebfbe27ab1e79f2f30d316cb794bf674553ad3b4",
+    "source": "Sunrise/src/state/investment/investment_database.cpp",
+    "extraction": "The version == 2 branch ALTER TABLE statements, character_starter.sql, and user_version assignment in execution order."
+  }
+}

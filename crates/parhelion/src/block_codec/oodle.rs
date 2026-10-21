@@ -43,8 +43,8 @@ type Decompress = unsafe extern "C" fn(
     i32,
 ) -> i64;
 
-// Keep legacy encoder initialization and calls serialized across encoder instances. No global
-// Oodle plugins or options are changed, and every call owns independent input and output buffers.
+// Library loading and the version check are serialized. Compression and verification run
+// concurrently on separate buffers, and every block is decoded again and compared.
 static NATIVE_CALLS: Mutex<()> = Mutex::new(());
 
 pub(super) struct Compressor {
@@ -114,14 +114,7 @@ impl Compressor {
                 "Native package compression requires 1 to {BLOCK_SIZE} bytes"
             ));
         }
-        let waiting = Instant::now();
-        let _guard = NATIVE_CALLS
-            .lock()
-            .map_err(|_| "The native package encoder lock is poisoned")?;
-        super::Timings::record(|timings| {
-            timings.wait += waiting.elapsed();
-            timings.blocks += 1;
-        });
+        super::Timings::record(|timings| timings.blocks += 1);
         // Tiger reads compressed blocks as complete logical spans, including the final block.
         // Raw fallback still stores the original unpadded input in the parent encoder.
         let mut padded = vec![0_u8; BLOCK_SIZE];

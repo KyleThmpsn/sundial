@@ -43,6 +43,8 @@ fn review_shows_current_work_copies_timing_and_clears_failed_work_on_retry() {
         build_status_open: true,
         build_dialog_step: BuildDialogStep::ReviewInstall,
         latest_build: Some(Ok(BuildReport {
+            mods: Vec::new(),
+            import_conversions: Default::default(),
             weapons: vec![],
             run_directory: "review-fixture".into(),
             manifest_path: "review-fixture/manifest.json".into(),

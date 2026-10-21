@@ -132,6 +132,7 @@ fn higher_resolution_output_keeps_the_approved_design_in_all_six_lanes() {
             .sum();
         assert!(error / f64::from(width * height * 4) < 3.0, "lane {index}");
         if let Some(directory) = crate::test_support::artifacts("icon-previews") {
+            std::fs::create_dir_all(&directory).unwrap();
             output
                 .save(
                     std::path::Path::new(&directory).join(format!("watermark-output-{index}.png")),

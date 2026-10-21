@@ -398,7 +398,15 @@ fn real_workbench_socket_layout_is_read_only_and_fits() {
                 "{} ends in its raw value",
                 stat.name
             );
-            let in_game = stat.in_game_display_value(stat.value).to_string();
+            let plugs: i32 = donor
+                .sockets
+                .iter()
+                .filter_map(|socket| socket.native_default)
+                .flat_map(|hash| app.catalog.as_ref().unwrap().item_stat_contributions(hash))
+                .filter(|contribution| contribution.definition_index == stat.definition_index)
+                .map(|contribution| contribution.value)
+                .sum();
+            let in_game = stat.in_game_display_value(stat.value + plugs).to_string();
             let bar = !stat.display_as_numeric && !stat.display_interpolation.is_empty();
             if bar || order.contains(&stat.definition_index) {
                 let [(text, rect)] = reading else {

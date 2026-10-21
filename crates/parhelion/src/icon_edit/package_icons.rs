@@ -182,8 +182,10 @@ pub(crate) fn author(
     nodes: &mut Vec<NewTagSpec>,
     references: &mut Vec<crate::NewTagReferenceOverride>,
 ) -> AuthoringResult<TagHash> {
-    let allocator =
-        crate::appended_tags::AppendedTagAllocator::new(crate::package_profile::window().base, 0);
+    let allocator = crate::appended_tags::AppendedTagAllocator::new(
+        crate::package_profile::window().first(),
+        0,
+    );
     let pixels = match icon {
         crate::perk::Icon::Texture { tag } => {
             let texture = TagHash(
@@ -209,7 +211,7 @@ pub(crate) fn author(
     // an independent texture/header pair for every donor size, for either icon source.
     let plan = super::build_weapon_icon_edit_plan(
         manager,
-        crate::package_profile::window().base,
+        crate::package_profile::window().first(),
         0,
         nodes.len(),
         template,

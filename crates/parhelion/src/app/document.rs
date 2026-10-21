@@ -2,6 +2,18 @@
 use super::*;
 
 impl PackageAuthoringApp {
+    pub(super) fn activity_dirty(&self) -> bool {
+        #[cfg(feature = "d2-model-importer")]
+        {
+            self.activity_editor
+                .as_ref()
+                .is_some_and(super::activity_view::Editor::dirty)
+        }
+        #[cfg(not(feature = "d2-model-importer"))]
+        {
+            false
+        }
+    }
     /// Persistent storage belongs to the desktop open action, not UI construction.
     pub(super) fn initialize_storage(&mut self) {
         if self.recipe_library.is_some() {
@@ -85,6 +97,7 @@ impl PackageAuthoringApp {
                 .invalid_weapon_name
                 .as_ref()
                 .map(|(_, error)| error.clone()),
+            activity_dirty: self.activity_dirty(),
             open: self.recipe_path.clone().map(|path| OpenRecipe {
                 path,
                 recipe: self.recipe.clone(),
@@ -140,6 +153,7 @@ impl PackageAuthoringApp {
 /// What a build reads from the window, so its recipes load and are checked away from it.
 pub(super) struct BuildInputs {
     invalid_name: Option<String>,
+    activity_dirty: bool,
     open: Option<OpenRecipe>,
     /// The recipes and maps the build includes.
     enabled: BTreeSet<PathBuf>,
@@ -184,12 +198,23 @@ impl RecipeRead {
 }
 
 impl BuildInputs {
+    #[cfg(test)]
     pub(super) fn request(&self) -> Result<BatchBuildRequest, String> {
+        self.request_reporting(&mut |_, _, _| {})
+    }
+
+    /// As [`Self::request`], calling `progress` with each selected recipe's file, how many were
+    /// read before it and how many there are, as it starts reading the file. A recipe that embeds
+    /// an imported model can be hundreds of megabytes, so a build reports each one.
+    pub(super) fn request_reporting(
+        &self,
+        progress: &mut dyn FnMut(&Path, usize, usize),
+    ) -> Result<BatchBuildRequest, String> {
         Ok(BatchBuildRequest {
             package_directory: self.package_directory.clone(),
             staging_root: self.staging_root.clone(),
             ignore_installed_authored_overlays: self.ignore_installed,
-            recipes: self.recipes(RecipeRead::Build)?,
+            recipes: self.recipes(RecipeRead::Build, progress)?,
             maps: crate::map::load_selected(
                 self.enabled
                     .intersection(&self.map_paths)
@@ -202,7 +227,7 @@ impl BuildInputs {
     /// The removal warning needs identities and socket dependencies, not restored assets.
     /// The build still rereads complete recipes and checks the open draft against disk.
     pub(super) fn included_item_hashes(&self) -> Result<BTreeSet<u32>, String> {
-        self.recipes(RecipeRead::Listing)?
+        self.recipes(RecipeRead::Listing, &mut |_, _, _| {})?
             .iter()
             .map(|recipe| {
                 recipe
@@ -214,7 +239,14 @@ impl BuildInputs {
             .collect()
     }
 
-    fn recipes(&self, read: RecipeRead) -> Result<Vec<WeaponRecipe>, String> {
+    fn recipes(
+        &self,
+        read: RecipeRead,
+        progress: &mut dyn FnMut(&Path, usize, usize),
+    ) -> Result<Vec<WeaponRecipe>, String> {
+        if self.activity_dirty {
+            return Err("Save or close the activity editor before building.".into());
+        }
         if self
             .open
             .as_ref()
@@ -223,10 +255,8 @@ impl BuildInputs {
         {
             return Err(error.clone());
         }
-        let mut recipes = Vec::with_capacity(self.enabled.len());
-        for path in self.enabled.difference(&self.map_paths) {
-            recipes.push(self.recipe(path, read)?);
-        }
+        let paths = self.enabled.difference(&self.map_paths).collect::<Vec<_>>();
+        let mut recipes = self.read_all(&paths, read, progress)?;
         if let Some(library) = &self.library {
             let included = recipes
                 .iter()
@@ -266,6 +296,85 @@ impl BuildInputs {
                     ));
                 }
                 recipes.push(recipe);
+            }
+        }
+        Ok(recipes)
+    }
+
+    /// Reads `paths` on up to four threads, in their order. `progress` sees each file as a thread
+    /// starts it. An error stops further reads, and the first error in order is returned.
+    fn read_all(
+        &self,
+        paths: &[&PathBuf],
+        read: RecipeRead,
+        progress: &mut dyn FnMut(&Path, usize, usize),
+    ) -> Result<Vec<WeaponRecipe>, String> {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        enum Event {
+            Started(usize),
+            Read(usize, Box<Result<WeaponRecipe, String>>),
+        }
+        let total = paths.len();
+        let workers = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZero::get)
+            .clamp(1, 4)
+            .min(total);
+        if workers <= 1 {
+            return paths
+                .iter()
+                .enumerate()
+                .map(|(index, path)| {
+                    progress(path, index, total);
+                    self.recipe(path, read)
+                })
+                .collect();
+        }
+        let next = AtomicUsize::new(0);
+        let stop = AtomicBool::new(false);
+        let mut results = (0..total).map(|_| None).collect::<Vec<_>>();
+        std::thread::scope(|scope| {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            for _ in 0..workers {
+                let sender = sender.clone();
+                let (next, stop) = (&next, &stop);
+                scope.spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(path) = paths.get(index) else {
+                            break;
+                        };
+                        if sender.send(Event::Started(index)).is_err() {
+                            break;
+                        }
+                        let result = self.recipe(path, read);
+                        if result.is_err() {
+                            stop.store(true, Ordering::Relaxed);
+                        }
+                        if sender.send(Event::Read(index, Box::new(result))).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+            drop(sender);
+            let mut completed = 0;
+            for event in receiver {
+                match event {
+                    Event::Started(index) => progress(paths[index], completed, total),
+                    Event::Read(index, result) => {
+                        completed += 1;
+                        results[index] = Some(*result);
+                    }
+                }
+            }
+        });
+        // Reads are claimed in order, so every recipe before a failed one was read, and those
+        // never claimed come after it.
+        let mut recipes = Vec::with_capacity(total);
+        for result in results {
+            match result {
+                Some(result) => recipes.push(result?),
+                None => break,
             }
         }
         Ok(recipes)
@@ -437,6 +546,11 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn request_recipe_action(&mut self, action: PendingRecipeAction) -> bool {
+        #[cfg(feature = "d2-model-importer")]
+        if matches!(action, PendingRecipeAction::Close) && self.activity_dirty() {
+            self.confirm_activity_close();
+            return false;
+        }
         self.pending_recipe_error = None;
         if self.recipe_dirty {
             self.pending_recipe_action = Some(action);

@@ -164,7 +164,18 @@ pub(super) fn build(
             shader_tags[1].map(|tag| listings[&tag].as_str()),
             surface,
             &model,
-        )?;
+        )
+        .with_context(|| {
+            format!(
+                "Marathon material {:08X}, model {:08X}, stage {}: translating pixel shader {}",
+                surface.material,
+                surface.model,
+                surface.stage,
+                shader_tags[1]
+                    .map(|tag| format!("{tag:08X}"))
+                    .unwrap_or_else(|| "absent".into())
+            )
+        })?;
         let pixel_name = format!("pixel-{key:08X}");
         let pixel_code = program(
             native,
@@ -175,8 +186,15 @@ pub(super) fn build(
             false,
         )?;
         let inspection = inspect(&pixel_code, surface.stage)?;
-        let source_vertex = &listings[&shader_tags[0].context("Missing source vertex program")?];
-        let (vertex_text, uses_colors) = vertex::hlsl(source_vertex, &pixel_code, surface)?;
+        let vertex_tag = shader_tags[0].context("Missing source vertex program")?;
+        let source_vertex = &listings[&vertex_tag];
+        let (vertex_text, uses_colors) = vertex::hlsl(source_vertex, &pixel_code, surface)
+            .with_context(|| {
+                format!(
+                    "Marathon material {:08X}, model {:08X}, stage {}: translating vertex shader {:08X}",
+                    surface.material, surface.model, surface.stage, vertex_tag
+                )
+            })?;
         let vertex_name = format!("vertex-{key:08X}");
         let vertex_code = program(
             native,

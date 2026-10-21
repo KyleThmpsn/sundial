@@ -144,7 +144,7 @@ pub(crate) fn build<'a>(
     {
         return Err(invalid("HUD texture buffer is invalid"));
     }
-    let allocator = AppendedTagAllocator::new(crate::package_profile::window().base, 0);
+    let allocator = AppendedTagAllocator::new(crate::package_profile::window().first(), 0);
     let mut rows = vec![];
     for (key, image) in images {
         let ordinal = nodes.len();

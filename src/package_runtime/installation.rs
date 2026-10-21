@@ -55,6 +55,7 @@ pub(crate) struct RuntimeCopy {
     pub settings_hash: Option<String>,
     pub schema: Option<u64>,
     pub bundled_schema: Option<u64>,
+    pub trace_logging: bool,
     pub dawn: bool,
     pub dawn_runtime: Option<DawnRuntime>,
     pub compatibility: Vec<String>,
@@ -77,8 +78,9 @@ impl RuntimeInspection {
             let defaults = dll.as_ref().ok().and_then(|b| embedded_defaults(b));
             let bundled_schema = defaults.as_ref().and_then(crate::game_settings::schema_version);
             let dawn = identity.as_ref().is_some_and(|(name, _)| *name == "Dawn");
-            // A runtime owns the folder named after it, so its settings and durable account are
-            // read from there rather than from whatever an earlier runtime left behind.
+            let trace_logging = !dawn && dll.as_ref().ok().and_then(|bytes| embedded_account_schema(bytes))
+                == Some(crate::persistence::sqlite_account::Schema::V3);
+            // Each runtime reads its settings and account from its own named folder.
             let settings_path = directory.join(runtime_folder(dawn)).join("settings.json");
             let settings = fs::read(&settings_path);
             let version = identity.map(|(_, version)| version);
@@ -112,7 +114,7 @@ impl RuntimeInspection {
                 }
             }
             let mut copy = RuntimeCopy {
-                location, version, schema, bundled_schema, dawn, dawn_runtime, compatibility, selection_problem,
+                location, version, schema, bundled_schema, trace_logging, dawn, dawn_runtime, compatibility, selection_problem,
                 dll_modified: modified(&dll_path), settings_modified: modified(&settings_path),
                 dll_hash: dll.as_ref().ok().map(|b| hash(b)),
                 settings_hash: settings.as_ref().ok().map(|b| hash(b)),
@@ -141,10 +143,8 @@ impl RuntimeCopy {
     }
 
     pub(crate) fn persistence_problem(&self, json: &Value) -> Option<String> {
-        // This is Sunrise's own storage migration: it moved accounts out of settings.json and
-        // into data/investment.sqlite3 at v18. Dawn keeps its account in player-state.db at every
-        // schema, so the rule says nothing about it, and what Dawn does expect of its settings is
-        // reported by `DawnRuntime::validate` instead.
+        // Sunrise settings v18 requires data/investment.sqlite3. Earlier settings embed
+        // accounts in JSON. Dawn's player-state.db contract is validated independently.
         if self.dawn {
             return None;
         }
@@ -180,6 +180,15 @@ fn embedded_defaults(bytes: &[u8]) -> Option<Value> {
             .ok()?,
     )
     .ok()
+}
+
+fn embedded_account_schema(bytes: &[u8]) -> Option<crate::persistence::sqlite_account::Schema> {
+    let image = pelite::PeFile::from_bytes(bytes).ok()?;
+    let resources = image.resources().ok()?;
+    let sql = resources
+        .find_resource(&[Name::Id(10), Name::Id(106)])
+        .ok()?;
+    crate::persistence::sqlite_account::Schema::from_sql(std::str::from_utf8(sql).ok()?).ok()
 }
 
 fn settings_document(bytes: &[u8]) -> Option<Value> {

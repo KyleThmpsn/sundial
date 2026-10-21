@@ -10,6 +10,7 @@ pub struct UninstallPlan {
     pub(super) cleanup: Option<AuthoredAccountCleanup>,
     pub(super) cleanup_error: Option<String>,
     pub(super) mod_folder: Option<loader::Folder>,
+    pub(super) mod_family: BTreeMap<String, loader::Folder>,
 }
 
 impl UninstallPlan {
@@ -17,6 +18,7 @@ impl UninstallPlan {
     pub(crate) fn preview_fixture() -> Self {
         Self {
             mod_folder: None,
+            mod_family: BTreeMap::new(),
             target: PathBuf::from("C:/Example Game/packages"),
             artifacts: AUTHORED_PACKAGES
                 .iter()
@@ -76,7 +78,9 @@ pub fn preview_uninstall(packages: &Path) -> Result<UninstallPlan, InstallError>
         .ok_or_else(|| InstallError::validation("Missing game root"))?;
     sundial::package_authoring::mod_content::ensure_readable(install)
         .map_err(InstallError::validation)?;
-    if sundial::package_authoring::mod_content::directory(install).exists() {
+    if sundial::package_authoring::mod_content::has_family(install)
+        .map_err(InstallError::validation)?
+    {
         return loader::preview_uninstall(&target);
     }
     preview_legacy(&target)
@@ -106,6 +110,7 @@ pub(super) fn preview_legacy(packages: &Path) -> Result<UninstallPlan, InstallEr
         .collect::<Result<Vec<_>, _>>()?;
     Ok(UninstallPlan {
         mod_folder: None,
+        mod_family: BTreeMap::new(),
         target,
         artifacts,
         stock,
@@ -403,6 +408,7 @@ fn verify_plan(plan: &UninstallPlan) -> Result<(), InstallError> {
     if current.artifacts != plan.artifacts
         || current.stock != plan.stock
         || current.mod_folder != plan.mod_folder
+        || current.mod_family != plan.mod_family
     {
         return Err(InstallError::validation(
             "Packages changed since the uninstall review. Review the current set again. No files were removed.",

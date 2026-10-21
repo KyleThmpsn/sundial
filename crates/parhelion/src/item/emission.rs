@@ -151,11 +151,38 @@ pub(super) fn emit_packages(
     weapons: &[WeaponCloneSpec],
     progress: &mut build::Progress<'_>,
 ) -> AuthoringResult<NewWeaponProjectBundle> {
+    // These passes run before the package count is known, so their labels don't advance it.
+    let mut timings = Vec::new();
+    let mut timed = |label: &'static str, started: std::time::Instant| {
+        timings.push(format!("{label} {:.3}s", started.elapsed().as_secs_f64()));
+    };
     #[cfg(feature = "d2-model-importer")]
-    let mut replacements = imported::apply(package_directory, &manager, &mut emission, weapons)?;
+    let mut replacements = {
+        progress.start("Checking Imported Models");
+        let started = std::time::Instant::now();
+        imported::validate_graphs(weapons)?;
+        timed("model check", started);
+        progress.start("Linking Imported Models");
+        let started = std::time::Instant::now();
+        let (replacements, stages) =
+            imported::apply(package_directory, &manager, &mut emission, weapons)?;
+        timed("model linking", started);
+        progress.diagnostic(format!("Model linking timings: {stages}."));
+        // The files must still be the ones selected now that linking has read them.
+        progress.start("Rechecking Imported Models");
+        let started = std::time::Instant::now();
+        imported::validate_graphs(weapons)?;
+        timed("model recheck", started);
+        replacements
+    };
     #[cfg(not(feature = "d2-model-importer"))]
     let mut replacements: Vec<ReplacementSpec> = Vec::new();
+    progress.start("Applying Ornaments");
+    let started = std::time::Instant::now();
     ornament::apply(&manager, &mut emission, weapons)?;
+    timed("ornaments", started);
+    progress.start("Applying Reskins");
+    let started = std::time::Instant::now();
     reskin::apply(
         package_directory,
         &manager,
@@ -163,6 +190,9 @@ pub(super) fn emit_packages(
         weapons,
         &mut replacements,
     )?;
+    timed("reskins", started);
+    progress.start("Applying Vehicle Art");
+    let started = std::time::Instant::now();
     vehicle_art::apply(
         package_directory,
         &manager,
@@ -170,6 +200,8 @@ pub(super) fn emit_packages(
         weapons,
         &mut replacements,
     )?;
+    timed("vehicle art", started);
+    progress.diagnostic(format!("Item art timings: {}.", timings.join(", ")));
     // The crosshair table joins the other UI tables of its package.
     let (crosshair_table, replacements): (Vec<_>, Vec<_>) = replacements
         .into_iter()
@@ -324,8 +356,6 @@ pub(super) fn emit_packages(
         },
     )?;
     let loading = loading.to_vec();
-    // The package writer must not retain the source manager's open file handles.
-    drop(manager);
     // Validate the completed map after every authoring pass, not only the stock source.
     validate_sandbox_perk_runtime_map(&entity_assignments).map_err(validation)?;
     progress.finish("Checking Asset Dependencies");
@@ -384,18 +414,22 @@ pub(super) fn emit_packages(
     packages.host(host_overlay, expected_host_count);
     let mut asset_packages = asset_packages;
     name_audio_media(&mut asset_packages);
-    let mut assets_end =
-        usize::from(crate::package_profile::window().base) + asset_packages.packages.len();
+    let mut assets_end = asset_packages.native_count();
     let mut assets = plan_assets(&mut packages, asset_packages)?;
-    // Each map's packages, named after the map, take the next ids after the asset packages.
+    // Each map's packages, named after the map, take the next ids in the window after the asset
+    // packages.
     assets_end = plan_maps(
         &mut packages,
+        &manager,
         &maps,
         assets_end,
         &mut assets,
         &mut runtime_dependencies,
         &loading,
     )?;
+    // Map registration reads template metadata during planning. Release all source handles
+    // before any of the planned package jobs starts writing.
+    drop(manager);
     let map_tables = maps.replacements;
     let private_runtime_overflow =
         plan_private_runtime_overflow(&mut packages, assets_end, private_runtime_overflow)?;
@@ -690,32 +724,111 @@ fn plan_assets(
         .collect()
 }
 
-/// Plans each map's packages into `planned`, at the ids from `assets_end`, and returns the end of
-/// the ids they take. The client registers a package once a loading index names one of its
+/// Plans each map's packages into `planned`, at the window's ids from position `assets_end`, and
+/// returns how many positions the build then uses. The client registers a package once a loading index names one of its
 /// entries, and a name lookup alone does not. The investment loading root, whose index starts as
 /// `runtime_dependencies` or else as `loading`, names the entries `Plan::registration` chooses,
 /// so both packages are registered before an activity looks up its root.
+#[allow(clippy::too_many_arguments)]
 fn plan_maps(
     packages: &mut packages::Packages<'_>,
+    manager: &PackageManager,
     maps: &crate::map::Plan,
     mut assets_end: usize,
     planned: &mut Vec<packages::Ticket>,
     runtime_dependencies: &mut Option<Vec<u8>>,
     loading: &[u8],
 ) -> AuthoringResult<usize> {
+    const CAPACITY: usize = crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT;
     for index in 0..maps.len() {
         for part in maps.parts(index) {
-            let id = u16::try_from(assets_end)
-                .ok()
-                .filter(|&id| id <= crate::package_profile::window().top)
-                .ok_or_else(|| {
-                    validation(
-                        "The build's maps need more packages than the free authored ids hold",
-                    )
-                })?;
-            crate::package_profile::name_standalone_package(id, &maps.family(index, part))
-                .map_err(validation)?;
-            let (tags, named, references) = maps.package(index, part, id)?;
+            #[cfg(feature = "d2-model-importer")]
+            if crate::package_profile::host().is_standalone() {
+                let native = crate::package_profile::window()
+                    .nth(assets_end)
+                    .ok_or_else(|| {
+                        validation("The build's maps exceed the free authored package IDs")
+                    })?;
+                if let Some(split) = maps.split_world(index, part, native)? {
+                    let index_payload = runtime_dependencies.as_deref().unwrap_or(loading);
+                    let registered = crate::shared_tag_dependency_index::dependency_entries(
+                        index_payload,
+                        RUNTIME_DEPENDENCY_COMPANION,
+                        RUNTIME_DEPENDENCY_ROOT,
+                    )?
+                    .into_iter()
+                    .map(|(package, _)| package)
+                    .collect();
+                    let registration =
+                        maps.registration_at(&split.addresses, &split.tags, &registered, manager)?;
+                    let family = maps.family(index, part);
+                    let counts = std::iter::once((native, 0, split.native_entries, family.clone()))
+                        .chain(split.resource_ids.iter().enumerate().map(|(chunk, &id)| {
+                            let start = split.native_entries + chunk * CAPACITY;
+                            let end = (start + CAPACITY).min(split.tags.len());
+                            let name = if chunk == 0 {
+                                format!("{family}_resources")
+                            } else {
+                                format!("{family}_resources_part_{chunk}")
+                            };
+                            (id, start, end, name)
+                        }));
+                    for (id, start, end, family) in counts {
+                        crate::package_profile::name_standalone_package(id, &family)
+                            .map_err(validation)?;
+                        let references = split.references.iter().filter(|r| (start..end).contains(&r.new_tag_ordinal))
+                            .map(|r| Ok(crate::NewTagReferenceOverride {
+                                new_tag_ordinal: r.new_tag_ordinal - start,
+                                reference: match r.reference {
+                                    crate::NewTagReference::Appended(at) => crate::NewTagReference::Tag(
+                                        *split.addresses.get(at).ok_or_else(|| validation("Map entry reference exceeds its allocation"))?),
+                                    other => other,
+                                },
+                            })).collect::<AuthoringResult<Vec<_>>>()?;
+                        let names = split
+                            .names
+                            .iter()
+                            .filter(|name| TagHash(name.tag).pkg_id() == id)
+                            .cloned()
+                            .collect();
+                        planned.push(packages.named(
+                            id,
+                            split.tags[start..end].to_vec(),
+                            names,
+                            references,
+                        )?);
+                    }
+                    assets_end += 1;
+                    *runtime_dependencies =
+                        Some(crate::shared_tag_dependency_index::enroll_dependencies(
+                            index_payload,
+                            RUNTIME_DEPENDENCY_COMPANION,
+                            RUNTIME_DEPENDENCY_ROOT,
+                            &registration,
+                        )?);
+                    continue;
+                }
+            }
+            let ids = (0..maps.part_count(index, part))
+                .map(|chunk| {
+                    crate::package_profile::window()
+                        .nth(assets_end + chunk)
+                        .ok_or_else(|| {
+                            validation(
+                                "The build's maps need more packages than the free authored ids hold",
+                            )
+                        })
+                })
+                .collect::<AuthoringResult<Vec<_>>>()?;
+            let (tags, named, references) = maps.package(index, part, &ids)?;
+            for &id in &ids {
+                crate::mod_family::build::native(id);
+            }
+            if tags.len().div_ceil(CAPACITY) != ids.len() {
+                return Err(validation(
+                    "Map package allocation does not match its entries",
+                ));
+            }
             let index_payload = runtime_dependencies.as_deref().unwrap_or(loading);
             let registered = crate::shared_tag_dependency_index::dependency_entries(
                 index_payload,
@@ -725,9 +838,54 @@ fn plan_maps(
             .into_iter()
             .map(|(package, _)| package)
             .collect();
-            let registration = maps.registration(id, &tags, &registered)?;
-            planned.push(packages.named(id, tags, named, references)?);
-            assets_end += 1;
+            let registration = maps.registration(&ids, &tags, &registered, manager)?;
+            let mut tags = tags.into_iter();
+            for (chunk, &id) in ids.iter().enumerate() {
+                let family = maps.family(index, part);
+                let family = if chunk == 0 {
+                    family
+                } else {
+                    format!("{family}_part_{chunk}")
+                };
+                crate::package_profile::name_standalone_package(id, &family).map_err(validation)?;
+                let start = chunk * CAPACITY;
+                let part_tags = tags.by_ref().take(CAPACITY).collect::<Vec<_>>();
+                let end = start + part_tags.len();
+                let part_references = references
+                    .iter()
+                    .filter(|reference| (start..end).contains(&reference.new_tag_ordinal))
+                    .map(|reference| {
+                        Ok(crate::NewTagReferenceOverride {
+                            new_tag_ordinal: reference.new_tag_ordinal - start,
+                            reference: match reference.reference {
+                                crate::NewTagReference::Appended(target) => {
+                                    let package = ids.get(target / CAPACITY).ok_or_else(|| {
+                                        validation(
+                                            "Map entry reference exceeds its allocated packages",
+                                        )
+                                    })?;
+                                    crate::NewTagReference::Tag(TagHash::new(
+                                        *package,
+                                        (target % CAPACITY) as u16,
+                                    ))
+                                }
+                                other => other,
+                            },
+                        })
+                    })
+                    .collect::<AuthoringResult<Vec<_>>>()?;
+                // The first package keeps aliases to stock donor tags as well as the world names.
+                let part_named = named
+                    .iter()
+                    .filter(|name| {
+                        let owner = TagHash(name.tag).pkg_id();
+                        owner == id || (chunk == 0 && !ids.contains(&owner))
+                    })
+                    .cloned()
+                    .collect();
+                planned.push(packages.named(id, part_tags, part_named, part_references)?);
+            }
+            assets_end += ids.len();
             *runtime_dependencies = Some(crate::shared_tag_dependency_index::enroll_dependencies(
                 index_payload,
                 RUNTIME_DEPENDENCY_COMPANION,
@@ -747,7 +905,10 @@ fn plan_private_runtime_overflow(
 ) -> AuthoringResult<Vec<packages::Ticket>> {
     let mut planned = Vec::new();
     for (id, tags) in overflow {
-        if usize::from(id) < assets_end {
+        if crate::package_profile::window()
+            .position(id)
+            .is_none_or(|position| position < assets_end)
+        {
             return Err(validation(
                 "The build's private copies and assets need more packages than the free authored ids hold",
             ));

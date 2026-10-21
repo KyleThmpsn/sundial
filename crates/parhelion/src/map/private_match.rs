@@ -9,6 +9,8 @@
 //! screen draws map `n` with display `n`, its title, description and image. A map entry with no
 //! display entry is offered without a name and with a generic emblem.
 //!
+//! A mission or strike donor is in no list, so a map cloned from one is offered in none.
+//!
 //! Every list that holds a donor row gains a copy of that entry for the map's copy of the row,
 //! after the stock entries, so no stock entry moves. The copy keeps the donor's traits, which
 //! modes match against their requirements, so the map is offered in every mode that offers the
@@ -53,6 +55,52 @@ const MAP_DISPLAY_SIZE: usize = 20;
 const MAP_DISPLAY_TITLE: usize = 0;
 const MAP_DISPLAY_DESCRIPTION: usize = 8;
 pub(super) const MAP_DISPLAY_IMAGE: usize = 16;
+/// The prefix of a Crucible activity's internal name, as Destiny names them.
+const CRUCIBLE_PREFIX: &str = "pvp_";
+
+/// Stock private-match artwork indexed by its activity's internal name. The two parallel
+/// native lists determine the relationship, independently of display titles or row ordering.
+pub(super) fn image_rows(
+    activities: &[u8],
+    table: &[u8],
+    displays: &[u8],
+) -> AuthoringResult<std::collections::BTreeMap<String, u32>> {
+    let rows = super::activity::Rows::read(activities)?;
+    let (groups, _, first, class) = array_at(table, GROUPS)?;
+    let (display_groups, _, display_first, display_class) = array_at(displays, GROUPS)?;
+    if class != GROUP_CLASS || display_class != DISPLAY_GROUP_CLASS || groups != display_groups {
+        return Err(invalid("Private-match image groups do not match"));
+    }
+    let mut images = std::collections::BTreeMap::new();
+    for group in 0..groups {
+        let at = first + group * GROUP_SIZE;
+        let display = display_first + group * DISPLAY_GROUP_SIZE;
+        if read_u32(table, at)? != read_u32(displays, display)? {
+            return Err(invalid("Private-match image group identities do not match"));
+        }
+        let (count, _, maps, class) = array_at(table, at + GROUP_MAPS)?;
+        if count == 0 {
+            continue;
+        }
+        let (display_count, _, entries, display_class) =
+            array_at(displays, display + DISPLAY_GROUP_MAPS)?;
+        if count != display_count || class != MAP_CLASS || display_class != MAP_DISPLAY_CLASS {
+            return Err(invalid("Private-match image entries do not match"));
+        }
+        for index in 0..count {
+            let ordinal = read_u16(table, maps + index * MAP_SIZE + MAP_ACTIVITY)?;
+            let name = rows.name(activities, usize::from(ordinal))?;
+            let image = read_u32(
+                displays,
+                entries + index * MAP_DISPLAY_SIZE + MAP_DISPLAY_IMAGE,
+            )?;
+            if name.starts_with(CRUCIBLE_PREFIX) && image != u32::MAX {
+                images.entry(name).or_insert(image);
+            }
+        }
+    }
+    Ok(images)
+}
 
 /// A map's new display entry: its map, its offset in the display table, and the image row its
 /// donor's display names, which the entry keeps until the map has a picture of its own.
@@ -185,11 +233,11 @@ pub(super) fn append(
             });
         }
     }
-    if let Some(map) = maps
-        .iter()
-        .zip(&offered)
-        .find_map(|(map, offered)| (!offered).then_some(map))
-    {
+    // A Crucible donor (`pvp_`) must be offered, or its map could not be. A mission or strike
+    // donor never is, and its map launches through the activity launcher alone.
+    if let Some(map) = maps.iter().zip(&offered).find_map(|(map, offered)| {
+        (!offered && map.recipe.donor.starts_with(CRUCIBLE_PREFIX)).then_some(map)
+    }) {
         return Err(invalid(format!(
             "No private match list offers donor {}, so map {} would not be offered",
             map.recipe.donor, map.recipe.name

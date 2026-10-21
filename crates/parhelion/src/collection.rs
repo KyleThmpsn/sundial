@@ -110,6 +110,36 @@ impl Family {
     }
 }
 
+/// Where an authored entry sits among the stock entries of a Collections node it joins.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Position {
+    First,
+    Last,
+}
+
+impl Position {
+    pub const ALL: [Self; 2] = [Self::First, Self::Last];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::First => "First",
+            Self::Last => "Last",
+        }
+    }
+}
+
+/// Whether an entry goes before a stock node's own entries. `None` is automatic: first, as
+/// Parhelion has always placed them, unless another installed Sunrise mod changes the
+/// presentation nodes. Sunrise's merge adds a mod's entries after a node's stock entries and
+/// can't combine an edit that puts them first with another mod's, so they go last then.
+pub(crate) fn first(position: Option<Position>) -> bool {
+    position.map_or_else(
+        || !crate::package_profile::presentation_nodes_shared(),
+        |position| position == Position::First,
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Destination {

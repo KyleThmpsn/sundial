@@ -1,6 +1,89 @@
 use super::*;
 
 #[test]
+fn account_resource_sets_select_v2_or_v3_and_require_starter_defaults() {
+    for version in [2, 3] {
+        let base = crate::persistence::sqlite_account::tests::default_resources();
+        let schema = if version == 3 {
+            include_str!("../../../persistence/sqlite_account/fixtures/v3/investment_schema.sql")
+        } else {
+            &base.schema
+        };
+        let rows = if version == 3 {
+            include_str!("../../../persistence/sqlite_account/fixtures/v3/investment_defaults.sql")
+        } else {
+            &base.rows
+        };
+        let resources = std::collections::BTreeMap::from([
+            (106, schema),
+            (107, rows),
+            (109, base.settings_schema.as_str()),
+            (110, base.settings_rows.as_str()),
+            (
+                111,
+                include_str!(
+                    "../../../persistence/sqlite_account/fixtures/v3/character_starter.sql"
+                ),
+            ),
+        ]);
+        let mut requested = Vec::new();
+        let defaults = decode_account_defaults(&mut |id, _| {
+            requested.push(id);
+            Ok(resources[&id].to_owned())
+        })
+        .unwrap();
+        assert_eq!(requested.contains(&111), version == 3);
+        let dir = crate::test_support::TestDirectory::new("resource-defaults");
+        let path = dir.0.join("investment.sqlite3");
+        crate::persistence::sqlite_account::tests::versions::fixture(
+            &path,
+            if version == 3 { "v3-fresh" } else { "v2" },
+        );
+        crate::persistence::sqlite_account::ResetPlan::prepare(&path, &defaults)
+            .unwrap()
+            .apply()
+            .unwrap();
+        let db = rusqlite::Connection::open(&path).unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            version
+        );
+        if version == 3 {
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM starter_items", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                3
+            );
+            assert!(
+                decode_account_defaults(&mut |id, _| if id == 111 {
+                    Err("missing starter resource".into())
+                } else {
+                    Ok(resources[&id].into())
+                })
+                .is_err()
+            );
+        }
+    }
+}
+
+#[test]
+fn logging_off_and_trace_survive_loading_and_unrelated_edits() {
+    let mut value: Value = serde_json::from_str(include_str!(
+        "../../../../tests/fixtures/sunrise-v18-169fd29-defaults.json"
+    ))
+    .unwrap();
+    value["core"]["logging"]["levels"]["core"] = Value::from("trace");
+    value["core"]["logging"]["levels"]["client"] = Value::from("off");
+    let mut loaded = decode_settings_defaults(&value.to_string()).unwrap();
+    loaded["unknown"] = Value::from("preserved");
+    let saved = decode_settings_defaults(&loaded.to_string()).unwrap();
+    assert_eq!(saved["core"]["logging"], value["core"]["logging"]);
+    assert_eq!(saved["unknown"], "preserved");
+}
+
+#[test]
 fn bundled_defaults_follow_the_json_and_sqlite_account_contracts() {
     let legacy = decode_settings_defaults(include_str!(
         "../../../../tests/fixtures/sunrise-v8-d0fe8886-defaults.json"

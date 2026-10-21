@@ -8,6 +8,18 @@ use super::{
 use eframe::egui;
 use serde_json::Value;
 
+fn choice_label(value: &str) -> &str {
+    match value {
+        "warn" => "Warning",
+        "error" => "Error",
+        "info" => "Info",
+        "debug" => "Debug",
+        "trace" => "Trace",
+        "off" => "Off",
+        _ => value,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Tab {
     #[default]
@@ -192,7 +204,13 @@ fn draw_group(
     {
         ui.push_id(field.path, |ui| {
             ui.add_enabled_ui(account_available || !field.account_owned(), |ui| {
-                changed |= draw_field(ui, document, field, account_available);
+                changed |= draw_field_with_trace(
+                    ui,
+                    document,
+                    field,
+                    account_available,
+                    capabilities.trace_logging(),
+                );
             })
             .response
             .on_disabled_hover_text("The active account is unavailable.");
@@ -201,11 +219,22 @@ fn draw_group(
     changed
 }
 
+#[cfg(test)]
 pub(super) fn draw_field(
     ui: &mut egui::Ui,
     document: &mut Value,
     field: Field,
     account_available: bool,
+) -> bool {
+    draw_field_with_trace(ui, document, field, account_available, false)
+}
+
+fn draw_field_with_trace(
+    ui: &mut egui::Ui,
+    document: &mut Value,
+    field: Field,
+    account_available: bool,
+    trace_logging: bool,
 ) -> bool {
     let field = field.for_document(document);
     let mut value = match optional_value(document, field.path) {
@@ -256,11 +285,14 @@ pub(super) fn draw_field(
                 ui.label(field.label).on_hover_text(field.help);
                 let mut selected = value.as_str().unwrap_or(choices[0]).to_owned();
                 egui::ComboBox::from_id_salt(field.path)
-                    .selected_text(&selected)
+                    .selected_text(choice_label(&selected))
                     .show_ui(ui, |ui| {
                         for choice in choices {
+                            if *choice == "trace" && !trace_logging && value.as_str() != Some("trace") {
+                                continue;
+                            }
                             requested |= ui
-                                .selectable_value(&mut selected, (*choice).to_owned(), *choice)
+                                .selectable_value(&mut selected, (*choice).to_owned(), choice_label(choice))
                                 .changed();
                         }
                     });

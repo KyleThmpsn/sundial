@@ -6,6 +6,8 @@ use crate::tiger::{
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+mod routing;
+pub(super) use routing::prepare as prepare_named;
 
 struct Cue {
     events: [u32; 2],
@@ -136,19 +138,11 @@ pub(super) fn cue_symbol(tag: u32) -> String {
     symbol("cue", tag)
 }
 
-/// Emit only after every bank, cue and medium in the requested closure has validated.
-#[allow(clippy::cognitive_complexity)]
-pub(super) fn prepare(
+fn prepare_banks(
     source: &Source,
     native: &mut Reader,
-    folder: &Path,
-    tags: &BTreeSet<u32>,
-) -> Result<Value> {
-    ensure!(!tags.is_empty(), "source audio cue set is empty");
-    let cues = tags
-        .iter()
-        .map(|&tag| Ok((tag, Cue::read(source, tag)?)))
-        .collect::<Result<BTreeMap<_, _>>>()?;
+    cues: &BTreeMap<u32, Cue>,
+) -> Result<BTreeMap<u32, bank::Bank>> {
     let source_init = source.read(source_bank(source, bank::hash("init"))?)?;
     let source_settings = bank::settings::Settings::read(&source_init.0, 89)?;
     let init_tags = native
@@ -211,6 +205,16 @@ pub(super) fn prepare(
             namespace.object(id)?;
         }
     }
+    Ok(banks)
+}
+
+type Media = BTreeMap<u32, (u32, Vec<u8>)>;
+
+fn prepare_media(
+    source: &Source,
+    cues: &BTreeMap<u32, Cue>,
+    banks: &BTreeMap<u32, bank::Bank>,
+) -> Result<Media> {
     let mut media = BTreeMap::<u32, (u32, Vec<u8>)>::new();
     for tag in cues
         .values()
@@ -248,9 +252,45 @@ pub(super) fn prepare(
             ),
         );
     }
+    Ok(converted_media)
+}
+
+/// Emit only after every bank, cue and medium in the requested closure has validated.
+pub(super) fn prepare(
+    source: &Source,
+    native: &mut Reader,
+    folder: &Path,
+    tags: &BTreeSet<u32>,
+) -> Result<Value> {
+    prepare_with_settings(source, native, folder, tags, None)
+}
+
+fn prepare_with_settings(
+    source: &Source,
+    native: &mut Reader,
+    folder: &Path,
+    tags: &BTreeSet<u32>,
+    overrides: Option<&BTreeMap<u32, u32>>,
+) -> Result<Value> {
+    ensure!(!tags.is_empty(), "source audio cue set is empty");
+    let cues = tags
+        .iter()
+        .map(|&tag| Ok((tag, Cue::read(source, tag)?)))
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let banks = prepare_banks(source, native, &cues)?;
+    let converted_media = prepare_media(source, &cues, &banks)?;
     let mut settings = BTreeMap::new();
     let mut profiles = Vec::new();
-    for tag in native.classes(0x80808E68) {
+    let profile_tags = overrides.map_or_else(
+        || {
+            native
+                .classes(0x80808E68)
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+        },
+        |rows| rows.values().copied().collect(),
+    );
+    for tag in profile_tags {
         profiles.push((tag, native.tag(tag, Some(0x80808E68))?));
     }
     for cue in cues.values() {
@@ -266,11 +306,21 @@ pub(super) fn prepare(
             p.0.len() == 24 && p.u64(0)? == 24,
             "source cue settings envelope differs"
         );
-        let (tag, _) = profiles
-            .iter()
-            .find(|(_, native)| native.0 == p.0)
-            .context("source acoustic settings have no identical native profile")?;
-        settings.insert(cue.settings, (*tag, p));
+        let (tag, profile) = if let Some(overrides) = overrides {
+            let tag = overrides
+                .get(&cue.settings)
+                .context("named cue has no selected native settings")?;
+            profiles
+                .iter()
+                .find(|(candidate, _)| candidate == tag)
+                .context("selected native acoustic profile is absent")?
+        } else {
+            profiles
+                .iter()
+                .find(|(_, native)| native.0 == p.0)
+                .context("source acoustic settings have no identical native profile")?
+        };
+        settings.insert(cue.settings, (*tag, profile.clone()));
     }
     // All data conversion is complete before nodes become visible to the graph assembler.
     fs::create_dir_all(folder)?;
@@ -312,6 +362,7 @@ pub(super) fn prepare(
             Vec::new(),
         )?;
         nodes[index]["storage"] = json!("audio_bank");
+        nodes[index]["source_bank_tag"] = json!(tag);
         nodes[index]["audio_bank"] = serde_json::to_value(bank)?;
         nodes[index]["audio_media"] = json!(
             bank.media_fields()

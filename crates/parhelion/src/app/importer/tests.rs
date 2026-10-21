@@ -1,6 +1,7 @@
 //! Headless checks for the importer window against a fake catalog.
 use super::*;
 use crate::app::custom_perks::workbench::tests::capture;
+mod vehicle;
 
 #[test]
 fn shader_selection_and_reimport_keep_authored_library_edits() {

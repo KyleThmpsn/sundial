@@ -85,6 +85,37 @@ pub struct Settings {
     pub marathon_packages: Option<PathBuf>,
     pub d1_roi: Option<PathBuf>,
     pub d1_xg_library: Option<PathBuf>,
+    pub d1_oodle: Option<PathBuf>,
+    pub ffmpeg: Option<PathBuf>,
+    pub vgmstream: Option<PathBuf>,
+    pub dxc: Option<PathBuf>,
+}
+
+impl Settings {
+    /// The chosen tool paths, with the Shadowkeep packages whose install carries Oodle 3.
+    pub fn tools(&self, native_packages: Option<PathBuf>) -> crate::tools::Paths {
+        crate::tools::Paths {
+            ffmpeg: self.ffmpeg.clone(),
+            oodle: self.d1_oodle.clone(),
+            xg: self.d1_xg_library.clone(),
+            vgmstream: self.vgmstream.clone(),
+            dxc: self.dxc.clone(),
+            native_packages,
+        }
+    }
+
+    /// The stored path for a tool the user picks as a file.
+    pub fn tool_mut(&mut self, tool: crate::tools::Tool) -> Option<&mut Option<PathBuf>> {
+        use crate::tools::Tool;
+        match tool {
+            Tool::Ffmpeg => Some(&mut self.ffmpeg),
+            Tool::Oodle => Some(&mut self.d1_oodle),
+            Tool::Xg => Some(&mut self.d1_xg_library),
+            Tool::Vgmstream => Some(&mut self.vgmstream),
+            Tool::Dxc => Some(&mut self.dxc),
+            Tool::Decompiler => None,
+        }
+    }
 }
 
 pub fn packages_path(path: &Path) -> Result<PathBuf> {

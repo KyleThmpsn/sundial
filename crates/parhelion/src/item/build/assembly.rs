@@ -77,11 +77,38 @@ impl Output {
     }
 }
 
+/// How long linking spent in each of its parts, for the build's diagnostic log.
+#[derive(Default)]
+pub(super) struct Timings {
+    pub payload_sizes: std::time::Duration,
+    pub dependencies: runtime::DependencyTimings,
+}
+
+impl Timings {
+    pub(super) fn diagnostic(&self) -> String {
+        let seconds = |duration: std::time::Duration| duration.as_secs_f64();
+        let dependencies = &self.dependencies;
+        format!(
+            "Linking timings: payload sizes {:.3}s, loading roots {:.3}s, native prerequisites {:.3}s ({} graphs, {} added), dependency index {:.3}s ({} entries).",
+            seconds(self.payload_sizes),
+            seconds(dependencies.roots),
+            seconds(dependencies.prerequisites),
+            dependencies.graphs,
+            dependencies.prerequisite_count,
+            seconds(dependencies.enrollment),
+            dependencies.additions,
+        )
+    }
+}
+
 pub(super) fn prepare(
     sources: sources::ProjectSources,
     mut output: Output,
+    timings: &mut Timings,
 ) -> AuthoringResult<(emission::PackageEmission, PackageManager)> {
+    let started = std::time::Instant::now();
     output.synchronize_payloads()?;
+    timings.payload_sizes = started.elapsed();
     let Output {
         dye_table,
         lore,
@@ -111,6 +138,7 @@ pub(super) fn prepare(
         &sources.manager,
         &assets,
         sources.table_tags.entity_assignment_tag,
+        &mut timings.dependencies,
     )?;
     let subclass_lists_added = tables.subclass.count()? != sources.subclass_tables.count()?;
 

@@ -155,6 +155,12 @@ pub(crate) fn stage(directory: &Path, data: &MergeData) -> Result<Vec<PathBuf>, 
     data.sidecars
         .iter()
         .map(|(name, bytes)| {
+            if let Some(path) = crate::mod_family::build::kept_path(name) {
+                if std::fs::read(&path).map_err(|e| e.to_string())? != *bytes {
+                    return Err(format!("Kept merge data {name} changed with this build"));
+                }
+                return Ok(path);
+            }
             let path = directory.join(name);
             write_new(&path, bytes)?;
             Ok(path)

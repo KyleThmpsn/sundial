@@ -29,7 +29,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.5.2"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.95"
 license = "GPL-3.0-only"
@@ -56,7 +56,7 @@ test-support = []
 
 [dependencies]
 bcdec_rs = "0.2.0"
-eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "wayland", "x11"] }
+eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "default_fonts", "glow", "links", "persistence", "wayland", "x11"] }
 egui_commonmark = { version = "0.25.0", default-features = false }
 egui-phosphor = { version = "0.14.0", features = ["light"] }
 directories = "6.0.0"
@@ -65,7 +65,7 @@ flate2 = "1.1.10"
 hex = "0.4.3"
 lewton = "0.10.2"
 pelite = { version = "0.10.0", default-features = false, features = ["std"] }
-serde_json = { version = "1.0.151", features = ["preserve_order"] }
+serde_json = { version = "1.0.151", features = ["preserve_order", "float_roundtrip"] }
 serde = { version = "1", features = ["derive"] }
 sha1 = "0.11.0"
 sha2 = "0.11.0"

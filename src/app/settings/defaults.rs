@@ -41,21 +41,29 @@ fn decode_settings_defaults(encoded: &str) -> Result<Value, String> {
 pub(in crate::app) fn load_installed_account_defaults(
     install_path: &Path,
 ) -> Result<crate::persistence::sqlite_account::AccountDefaults, String> {
-    // These are the four resources used by Sunrise's investment database initialization.
-    let [schema, rows, settings_schema, settings_rows] = installed_resources(
-        install_path,
-        [
-            (106, "investment schema"),
-            (107, "default investment data"),
-            (109, "account settings schema"),
-            (110, "default account settings"),
-        ],
-    )?;
+    with_installed_resources(install_path, |read| decode_account_defaults(read))
+}
+
+fn decode_account_defaults(
+    read: &mut dyn FnMut(u32, &str) -> Result<String, String>,
+) -> Result<crate::persistence::sqlite_account::AccountDefaults, String> {
+    use crate::persistence::sqlite_account::Schema;
+    let schema = read(106, "investment schema")?;
+    let version = Schema::from_sql(&schema).map_err(|error| error.to_string())?;
+    let rows = read(107, "default investment data")?;
+    let settings_schema = read(109, "account settings schema")?;
+    let settings_rows = read(110, "default account settings")?;
+    let starter = if version == Schema::V3 {
+        Some(read(111, "character starter defaults")?)
+    } else {
+        None
+    };
     Ok(crate::persistence::sqlite_account::AccountDefaults {
         schema,
         rows,
         settings_schema,
         settings_rows,
+        starter,
     })
 }
 
@@ -63,6 +71,19 @@ fn installed_resources<const N: usize>(
     install_path: &Path,
     requested: [(u32, &str); N],
 ) -> Result<[String; N], String> {
+    with_installed_resources(install_path, |read| {
+        let mut result = std::array::from_fn(|_| String::new());
+        for (text, (id, label)) in result.iter_mut().zip(requested) {
+            *text = read(id, label)?;
+        }
+        Ok(result)
+    })
+}
+
+fn with_installed_resources<T>(
+    install_path: &Path,
+    decode: impl FnOnce(&mut dyn FnMut(u32, &str) -> Result<String, String>) -> Result<T, String>,
+) -> Result<T, String> {
     let module_path = sunrise_module_path(install_path);
     let bytes = fs::read(&module_path).map_err(|error| {
         format!(
@@ -82,8 +103,7 @@ fn installed_resources<const N: usize>(
             module_path.display()
         )
     })?;
-    let mut result = std::array::from_fn(|_| String::new());
-    for (text, (id, label)) in result.iter_mut().zip(requested) {
+    decode(&mut |id, label| {
         let encoded = resources.find_resource(&[Name::Id(10), Name::Id(id)]).map_err(|_| {
             format!("The installed Project Sunrise module does not contain its {label} resource: {}", module_path.display())
         })?;
@@ -92,13 +112,12 @@ fn installed_resources<const N: usize>(
                 "The installed Project Sunrise {label} resource is empty"
             ));
         }
-        *text = std::str::from_utf8(encoded)
+        Ok(std::str::from_utf8(encoded)
             .map_err(|error| {
                 format!("Project Sunrise's {label} resource is not valid UTF-8: {error}")
             })?
-            .to_owned();
-    }
-    Ok(result)
+            .to_owned())
+    })
 }
 
 #[cfg(test)]

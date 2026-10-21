@@ -192,14 +192,16 @@ fn compile_canonical(
     let mut sources = progress.step("Loading Source Tables", || {
         sources::load_project_sources(package_directory)
     })?;
-    let mut maps = progress.step("Planning Maps", || {
-        crate::map::Plan::load(
-            package_directory,
-            &sources.manager,
-            maps.to_vec(),
-            LOCALIZATION_DONOR_STRING_HASHES[1],
-        )
-    })?;
+    progress.start("Planning Maps");
+    let mut maps = crate::map::Plan::load(
+        package_directory,
+        &sources.manager,
+        maps.to_vec(),
+        LOCALIZATION_DONOR_STRING_HASHES[1],
+        &mut |label| progress.start(label),
+    )
+    .map_err(|error| error.context("Planning Maps"))?;
+    progress.finish("Planning Maps");
     // Sunrise groups subclasses in threes by item index, so the items take their indices with
     // the subclasses grouped by class, and the plans return in the recipes' own order.
     let order = resolve::subclass_order(&sources, weapons)?;
@@ -515,9 +517,11 @@ fn compile_canonical(
         runtime,
         maps,
     };
+    let mut linking = assembly::Timings::default();
     let (emission, manager) = progress.step("Linking Package Data", || {
-        assembly::prepare(sources, output)
+        assembly::prepare(sources, output, &mut linking)
     })?;
+    progress.diagnostic(linking.diagnostic());
     let mut bundle =
         emission::emit_packages(package_directory, manager, emission, weapons, progress)?;
     let plug_plan =

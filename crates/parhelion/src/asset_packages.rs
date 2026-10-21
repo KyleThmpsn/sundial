@@ -18,6 +18,8 @@ pub(crate) struct AssetPackages {
     pub packages: Vec<AssetPackage>,
     /// Allocation decisions, retained so a cached fragment can replay its resource groups.
     pub reservations: Vec<Reservation>,
+    /// A complete import graph uses its own last package. Native authoring uses `None`.
+    pub owner: Option<sundial::package_authoring::mod_content::Importer>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -104,11 +106,8 @@ fn choose(
             bounds,
         });
     }
-    let window = window();
-    let id = u16::try_from(count)
-        .ok()
-        .and_then(|n| window.base.checked_add(n))
-        .filter(|id| *id <= window.top)
+    let id = window()
+        .nth(count)
         .ok_or_else(|| invalid("The authored asset package id range is exhausted"))?;
     Ok(GroupPlan {
         package_index: count,
@@ -173,6 +172,7 @@ impl AssetPackages {
         let mut assets = Self {
             packages: Vec::new(),
             reservations: Vec::new(),
+            owner: None,
         };
         let index = assets.reserve_group(tags.iter().map(|tag| tag.payload.len()))?;
         assets.packages[index].tags = tags;
@@ -194,6 +194,7 @@ impl AssetPackages {
                 references: Vec::new(),
             });
         }
+        self.register(plan.package_id);
         self.reservations.push(plan.reservation());
         Ok(plan.package_index)
     }
@@ -211,8 +212,47 @@ impl AssetPackages {
             }
             bounds.push(length);
         }
-        let layout = self.layout()?;
-        choose(layout.count, layout.last, bounds)
+        if !crate::package_profile::host().is_standalone() {
+            let layout = self.layout()?;
+            return choose(layout.count, layout.last, bounds);
+        }
+        let added = Budget::for_lengths(bounds.iter().copied())?;
+        if added.entries == 0 || !added.within_capacity() {
+            return Err(invalid(
+                "A resource group exceeds one native asset package's capacity",
+            ));
+        }
+        let owned = self
+            .packages
+            .iter()
+            .enumerate()
+            .filter(|(_, package)| crate::mod_family::build::owner(package.id) == self.owner)
+            .collect::<Vec<_>>();
+        if let Some(&(index, package)) = owned.last() {
+            let budget = Budget::for_lengths(package.tags.iter().map(|tag| tag.payload.len()))?;
+            if budget.fits(added) {
+                return Ok(GroupPlan {
+                    package_index: index,
+                    package_id: package.id,
+                    base: budget.entries,
+                    bounds,
+                });
+            }
+        }
+        let id = match self.owner {
+            Some(owner) => {
+                crate::mod_family::build::allocate(owner, owned.len()).map_err(invalid)?
+            }
+            None => window()
+                .nth(owned.len())
+                .ok_or_else(|| invalid("The authored asset package id range is exhausted"))?,
+        };
+        Ok(GroupPlan {
+            package_index: self.packages.len(),
+            package_id: id,
+            base: 0,
+            bounds,
+        })
     }
 
     pub(crate) fn layout(&self) -> AuthoringResult<Layout> {
@@ -271,6 +311,7 @@ impl AssetPackages {
             }
         }
         self.reservations.push(plan.reservation());
+        self.register(plan.package_id);
         if plan.package_index == self.packages.len() {
             self.packages.push(AssetPackage {
                 id: plan.package_id,
@@ -286,10 +327,16 @@ impl AssetPackages {
     }
 
     pub(crate) fn validate(&self) -> AuthoringResult<()> {
-        let base = usize::from(window().base);
-        for (index, package) in self.packages.iter().enumerate() {
+        let window = window();
+        let mut native = 0;
+        let mut ids = std::collections::BTreeSet::new();
+        for package in &self.packages {
             let budget = Budget::for_lengths(package.tags.iter().map(|tag| tag.payload.len()))?;
-            if package.id as usize != base + index
+            let imported = crate::mod_family::build::owner(package.id).is_some();
+            let valid_id = imported || window.nth(native) == Some(package.id);
+            native += usize::from(!imported);
+            if !valid_id
+                || !ids.insert(package.id)
                 || budget.entries == 0
                 || !budget.within_capacity()
             {
@@ -299,6 +346,21 @@ impl AssetPackages {
             }
         }
         Ok(())
+    }
+
+    fn register(&self, id: u16) {
+        if let Some(owner) = self.owner {
+            crate::mod_family::build::use_id(owner, id);
+        } else {
+            crate::mod_family::build::native(id);
+        }
+    }
+
+    pub(crate) fn native_count(&self) -> usize {
+        self.packages
+            .iter()
+            .filter(|p| crate::mod_family::build::owner(p.id).is_none())
+            .count()
     }
 }
 

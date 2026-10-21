@@ -1,5 +1,7 @@
 mod account_resync;
 mod activity_log;
+#[cfg(feature = "d2-model-importer")]
+mod activity_view;
 mod events;
 mod fields;
 mod icon_preview;
@@ -123,6 +125,8 @@ struct PackageAuthoringApp {
     recipe_entries: Vec<RecipeLibraryEntry>,
     /// The maps folder's recipes, none without the D2 model importer.
     map_entries: Vec<crate::recipe_library::MapLibraryEntry>,
+    #[cfg(feature = "d2-model-importer")]
+    activity_editor: Option<activity_view::Editor>,
     /// The recipes and maps the next build includes.
     enabled_recipe_paths: BTreeSet<PathBuf>,
     packages: PathBuf,
@@ -227,6 +231,8 @@ struct PackageAuthoringApp {
     socket_choice_pages: Vec<usize>,
     plug_selection_mode: PlugSelectionMode,
     show_plug_safety_warnings: bool,
+    /// Whether the selected installation's runtime loads Sunrise mods, read when the window opens.
+    mod_loader: bool,
     show_experimental_options: bool,
     preferences_changed: bool,
     open_sundial_preferences: bool,
@@ -316,6 +322,8 @@ impl Default for PackageAuthoringApp {
             recipe_library,
             recipe_entries,
             map_entries: Vec::new(),
+            #[cfg(feature = "d2-model-importer")]
+            activity_editor: None,
             enabled_recipe_paths,
             packages: PathBuf::new(),
             staging: default_staging_root().display().to_string(),
@@ -400,6 +408,7 @@ impl Default for PackageAuthoringApp {
             socket_choice_pages: Vec::new(),
             plug_selection_mode: sundial::investment::default_plug_selection_mode(),
             show_plug_safety_warnings: sundial::investment::show_plug_safety_warnings(),
+            mod_loader: false,
             show_experimental_options: false,
             behavior_pins: socket_editor::BehaviorPins::default(),
             preferences_changed: false,
@@ -468,12 +477,11 @@ impl PackageAuthoringApp {
         self.runtime_dependencies.poll();
         self.barrel_controls.poll_finished();
         if self.upgrade.open || self.upgrade.busy() {
-            egui::CentralPanel::default().show(ui, |ui| {
-                if !self.upgrade.open {
-                    ui.spinner();
-                    ui.label("Checking Installation…");
-                }
-            });
+            if self.upgrade.open {
+                egui::CentralPanel::default().show(ui, |_| {});
+            } else {
+                self.draw_upgrade_loading_screen(ui);
+            }
             if self.upgrade.open {
                 self.draw_upgrade_window(ctx);
             }
@@ -562,6 +570,8 @@ impl PackageAuthoringApp {
         self.draw_build_check(ctx);
         self.draw_discard_confirmation(ctx);
         self.draw_library_windows(ctx);
+        #[cfg(feature = "d2-model-importer")]
+        self.draw_activity_editor(ctx);
         self.synchronize_recipe_dirty();
         self.follow_appearance_preview(ctx);
         if self.has_background_work() {
@@ -594,6 +604,27 @@ impl PackageAuthoringApp {
                 message: progress.message,
                 completed: progress.completed,
                 total: progress.total,
+                source_path: self.packages.parent().or(Some(self.packages.as_path())),
+            },
+        );
+    }
+
+    /// The startup check for packages an earlier build left, on the catalog's loading surface.
+    fn draw_upgrade_loading_screen(&mut self, ui: &mut egui::Ui) {
+        let logo = self
+            .logo
+            .get_or_insert_with(|| load_parhelion_logo_texture(ui.ctx()))
+            .clone();
+        let (message, completed, total) = self.upgrade.progress();
+        draw_catalog_loading_view(
+            ui,
+            &logo,
+            CatalogLoadingView {
+                product_name: WINDOW_TITLE,
+                version: sundial::version::display(),
+                message,
+                completed,
+                total,
                 source_path: self.packages.parent().or(Some(self.packages.as_path())),
             },
         );

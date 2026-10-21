@@ -4,6 +4,8 @@ use super::*;
 use crate::test_support::driver::painted_text as text;
 
 mod accessibility;
+#[cfg(feature = "d2-model-importer")]
+mod activities;
 mod added_sockets;
 mod artwork;
 mod authoring_safety;
@@ -294,6 +296,8 @@ fn successful_build_event_reports_completion() {
     sender
         .send(BuildWorkerEvent::Finished {
             result: Ok(BuildReport {
+                mods: Vec::new(),
+                import_conversions: Default::default(),
                 weapons: Vec::new(),
                 run_directory: PathBuf::from("staged-run"),
                 manifest_path: PathBuf::from("staged-run/manifest.json"),

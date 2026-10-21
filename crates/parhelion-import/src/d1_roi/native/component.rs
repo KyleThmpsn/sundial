@@ -27,6 +27,8 @@ struct Component {
     symbol: String,
     patches: Vec<Value>,
     inputs: Vec<(u32, usize)>,
+    /// Source owner and input definition paired with the emitted getter definition.
+    incoming: Vec<(u32, usize, usize)>,
 }
 
 impl Component {
@@ -115,6 +117,7 @@ impl Assembly<'_> {
             symbol: symbol.to_owned(),
             patches: Vec::new(),
             inputs: Vec::new(),
+            incoming: Vec::new(),
         })
     }
 
@@ -210,6 +213,7 @@ impl Assembly<'_> {
             u32::try_from(body["entity"].as_u64().context("Source body entity")?)?;
         let source_entity = self.source.read(source_entity_tag)?;
         let mut components = Vec::new();
+        let mut source_owners = BTreeMap::new();
         let mut bank = None;
         // Materials index the body's channel bank by ordinal, so its names are read before
         // any model component converts.
@@ -335,6 +339,7 @@ impl Assembly<'_> {
                     components.push(component);
                 }
                 0x808027FC if self.weapon => {
+                    source_owners.insert(tag, components.len());
                     components.push(self.optic(tag, &source, &source_entity, &name, components.len())?);
                 }
                 0x80802733 | 0x80801B6F | 0x8080203D if self.weapon => {
@@ -349,7 +354,8 @@ impl Assembly<'_> {
             self.weapon || bank.is_some(),
             "Source body has no inherited material bank"
         );
-        let mut connections = Vec::new();
+        let mut connections =
+            self.channel_connections(&source_entity, &components, &source_owners)?;
         for (index, component) in components.iter().enumerate() {
             for at in component.entity.array(0x20, 72, Some(0x80809BC9))? {
                 if component.entity.u32(at + 8)? == component.template_tag

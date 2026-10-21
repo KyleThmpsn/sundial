@@ -68,6 +68,19 @@ pub(super) struct Rows {
 }
 
 impl Rows {
+    pub(super) fn name(&self, data: &[u8], ordinal: usize) -> AuthoringResult<String> {
+        if ordinal >= self.count {
+            return Err(invalid("Activity image row is outside the activity table"));
+        }
+        let record = self.record(data, ordinal)?;
+        let start = target(data, record + ACTIVITY_NAME_FIELD)?;
+        let end = data[start..]
+            .iter()
+            .position(|&byte| byte == 0)
+            .ok_or_else(|| invalid("An activity name is unterminated"))?;
+        String::from_utf8(data[start..start + end].to_vec())
+            .map_err(|_| invalid("Activity name is not UTF-8"))
+    }
     pub(super) fn read(data: &[u8]) -> AuthoringResult<Self> {
         Self::read_class(data, ACTIVITY_ROW_CLASS, "activity table")
     }

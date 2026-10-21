@@ -342,10 +342,10 @@ pub(super) fn materialize(
     let private: BTreeSet<_> = symbols.values().copied().collect();
     for group in loading_groups.values() {
         for tag in group {
-            let committed = tag
-                .pkg_id()
-                .checked_sub(crate::package_profile::window().base)
-                .and_then(|index| assets.packages.get(index as usize))
+            let committed = assets
+                .packages
+                .iter()
+                .find(|package| package.id == tag.pkg_id())
                 .is_some_and(|package| {
                     package.id == tag.pkg_id()
                         && package.tags.get(tag.entry_index() as usize).is_some()

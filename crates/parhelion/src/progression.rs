@@ -22,10 +22,10 @@ pub(crate) use conditions::{
 #[cfg(feature = "d2-model-importer")]
 pub(crate) use conditions::patch_project_collection_objectives;
 
-mod collectibles;
+mod collections;
 #[cfg(test)]
-use collectibles::*;
-pub(crate) use collectibles::{
+use collections::*;
+pub(crate) use collections::{
     append_collectible, append_collectible_display, collectible_clone_template,
     collection_unlock_index, donor_weapon_collection_page, gear_collection_page,
     node_collectible_children, template_presentation_parents,
@@ -79,6 +79,21 @@ use crate::{
         write_u32, write_u64,
     },
 };
+
+/// Starts a typed array at the end of `data` and returns its header's offset. A header follows
+/// [`NESTED_ARRAY_TRAILER`], whose last four bytes are the array marker, at a 16-byte boundary,
+/// as the game's entries hold their arrays. Sunrise's merge refuses an array without its marker.
+/// A block written here ends with the trailer, which then serves the block after it, so the
+/// trailer is written only where the bytes don't already end with one at a boundary.
+pub(crate) fn begin_array_block(data: &mut Vec<u8>) -> usize {
+    if !(data.len().is_multiple_of(16) && data.ends_with(&NESTED_ARRAY_TRAILER)) {
+        while !(data.len() + NESTED_ARRAY_TRAILER.len()).is_multiple_of(16) {
+            data.push(0);
+        }
+        data.extend_from_slice(&NESTED_ARRAY_TRAILER);
+    }
+    data.len()
+}
 
 pub(crate) const COLLECTIBLE_CURATED_ACQUISITION_FLAG_OFFSET: usize = 0x00;
 pub(crate) const COLLECTIBLE_CURATED_ACQUISITION_FLAG: u8 = 1;

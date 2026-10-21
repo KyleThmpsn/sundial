@@ -417,6 +417,7 @@ pub(crate) fn build_with_sources(
         root: out.join("graph"),
         manifest: load(&original.join("asset-graph.json"))?,
     };
+    graph.manifest["source"] = json!("d2_mot");
     fs::create_dir_all(&graph.root)?;
     for node in graph.manifest["nodes"].as_array().context("graph nodes")? {
         let symbol = node["symbol"].as_str().context("graph symbol")?;

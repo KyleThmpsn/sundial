@@ -221,16 +221,22 @@ fn transfers(cache: &Cache, at: usize, sections: usize) -> Result<Vec<Value>> {
         .block(at, 0x10)?
         .into_iter()
         .map(|row| {
+            let flags = cache.u32(row)?;
             let section = cache.i16(row + 0xa)?;
             let function = cache.i16(row + 8)?;
+            // Only bit 0 selects a local section. Parent, child and seat routes
+            // can retain an unused index outside this model's section table.
             ensure!(
-                section >= -1
-                    && (section < 0 || (section as usize) < sections)
-                    && (0..=2).contains(&function),
-                "Invalid source damage transfer"
+                flags & 1 == 0
+                    || (section >= -1 && (section < 0 || (section as usize) < sections)),
+                "Source damage transfer at {row:#x} selects section {section} outside {sections} sections (flags {flags:#x})"
+            );
+            ensure!(
+                (0..=2).contains(&function),
+                "Invalid source damage transfer function {function} at {row:#x}"
             );
             Ok(
-                json!({"flags":cache.u32(row)?,"amount":number(cache,row+4)?,
+                json!({"flags":flags,"amount":number(cache,row+4)?,
             "function":function,"section":section,"seat":name(cache,row+0xc)?}),
             )
         })

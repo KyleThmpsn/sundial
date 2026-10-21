@@ -111,10 +111,7 @@ fn append_parents(
             "Custom badge membership duplicates a collectible parent",
         ));
     }
-    while !data.len().is_multiple_of(16) {
-        data.push(0);
-    }
-    let header = data.len();
+    let header = begin_array_block(data);
     data.extend_from_slice(&(parents.len() as u64).to_le_bytes());
     data.extend_from_slice(&class.to_le_bytes());
     data.extend_from_slice(&0u32.to_le_bytes());

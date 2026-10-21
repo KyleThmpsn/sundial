@@ -40,12 +40,9 @@ pub(super) fn ceilings(sections: &[Value]) -> Result<Vec<BTreeSet<u32>>> {
                 .as_array()
                 .context("Source response transfers")?
             {
-                let target = transfer["section"]
-                    .as_i64()
-                    .context("Source response target")?;
-                if target < 0 {
+                let Some(target) = transfer::destination(transfer)? else {
                     continue;
-                }
+                };
                 ensure!(
                     transfer["function"] == 2 && flags(transfer)? == 0x11 && transfer["seat"] == "",
                     "Source response transfer needs another native operation"
@@ -55,7 +52,7 @@ pub(super) fn ceilings(sections: &[Value]) -> Result<Vec<BTreeSet<u32>>> {
                     fraction <= 1.,
                     "Source response ceiling exceeds full vitality"
                 );
-                out.get_mut(usize::try_from(target)?)
+                out.get_mut(target)
                     .context("Source response target exceeds section table")?
                     .insert(fraction.to_bits());
             }
@@ -64,15 +61,25 @@ pub(super) fn ceilings(sections: &[Value]) -> Result<Vec<BTreeSet<u32>>> {
     Ok(out)
 }
 
-fn state(payload: &mut Payload, geometry: &Geometry, transition: &Value) -> Result<usize> {
+fn state(payload: &mut Payload, geometry: &Geometry, transition: &Value) -> Result<Option<usize>> {
     let name = transition["region"]
         .as_str()
         .context("Source damage region name")?;
-    let region = geometry
-        .regions
-        .iter()
-        .position(|r| r.name == name)
-        .context("Source response region is not in the selected model")?;
+    let region = geometry.regions.iter().position(|r| r.name == name);
+    let source_index = transition["runtime_index"]
+        .as_i64()
+        .context("Source response region index")?;
+    ensure!(source_index >= -1, "Invalid source response region index");
+    if source_index == -1 {
+        // Compiled Reach responses can retain names whose region was removed
+        // from this model. The negative selector has no source region target.
+        ensure!(
+            region.is_none(),
+            "Unbound source response names a selected region"
+        );
+        return Ok(None);
+    }
+    let region = region.context("Source response region is not in the selected model")?;
     let ordinal = usize::try_from(
         transition["state"]
             .as_u64()
@@ -87,7 +94,7 @@ fn state(payload: &mut Payload, geometry: &Geometry, transition: &Value) -> Resu
     put(&mut bytes, 0x18, &u32::MAX.to_le_bytes())?;
     put(&mut bytes, 0x20, &u32::try_from(region)?.to_le_bytes())?;
     put(&mut bytes, 0x24, &u32::try_from(ordinal)?.to_le_bytes())?;
-    dynamic(payload, 0x80804c3e, &bytes)
+    dynamic(payload, 0x80804c3e, &bytes).map(Some)
 }
 
 fn named_ceiling(payload: &mut Payload, target: u32, fraction: f32) -> Result<usize> {
@@ -156,17 +163,16 @@ pub(super) fn build(
             .as_array()
             .context("Source damage region transitions")?
         {
-            targets.push(state(payload, geometry, transition)?);
+            targets.extend(state(payload, geometry, transition)?);
         }
         for transfer in response["damage_transfers"]
             .as_array()
             .context("Source response damage transfers")?
         {
-            let target = transfer["section"]
-                .as_i64()
-                .context("Source response target")?;
-            if target >= 0 {
-                let destination = names[usize::try_from(target)?];
+            if let Some(target) = transfer::destination(transfer)? {
+                let destination = *names
+                    .get(target)
+                    .context("Source response target exceeds section table")?;
                 targets.push(named_ceiling(
                     payload,
                     destination,
@@ -201,6 +207,8 @@ pub(super) fn build(
         }
         report.push(json!({"source_index":source_index,"threshold_name":format!("{name:08X}"),
             "fraction":fraction,"regions":response["regions"],"transfers":response["damage_transfers"],
+            "unbound_regions":response["regions"].as_array().unwrap().iter()
+                .filter(|region| region["runtime_index"] == -1).collect::<Vec<_>>(),
             "source_skip_fraction":response["skip_fraction"],"source_flags":flags,
             "pending_effects":pending,"chance_translated":scalar(response,"skip_fraction")? == 0.}));
     }

@@ -217,6 +217,60 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn draw_collection_destination(&mut self, ui: &mut egui::Ui) {
+        self.draw_destination(ui);
+        let donor = self.recipe.donor.item_hash.parse_u32().unwrap_or_default();
+        if self.joins_stock_page(self.recipe.kind, self.recipe.overrides.rarity, donor) {
+            self.draw_collection_position(ui);
+        }
+    }
+
+    /// Whether an item joins a stock Collections page: weapons, exotic armor and items beside
+    /// their base. Armor categories and gear pages are Parhelion's own.
+    pub(super) fn joins_stock_page(
+        &self,
+        kind: crate::ItemKind,
+        rarity: Option<crate::RecipeRarity>,
+        donor_hash: u32,
+    ) -> bool {
+        if kind.is_weapon() {
+            true
+        } else if kind == crate::ItemKind::Armor {
+            self.collection_is_exotic(rarity, donor_hash)
+        } else {
+            GearPage::for_kind(kind).is_none()
+        }
+    }
+
+    /// Where the item sits among the stock entries of the page it joins.
+    fn draw_collection_position(&mut self, ui: &mut egui::Ui) {
+        use crate::collection::Position;
+        ui.strong("Position");
+        let position = &mut self.recipe.overrides.collection_position;
+        ui.horizontal_wrapped(|ui| {
+            let automatic = ui
+                .add(egui::Button::new("Automatic").selected(position.is_none()))
+                .on_hover_text("First, or Last when another Sunrise mod changes Collections");
+            if automatic.clicked() {
+                *position = None;
+            }
+            for choice in Position::ALL {
+                if ui
+                    .add(egui::Button::new(choice.label()).selected(*position == Some(choice)))
+                    .clicked()
+                {
+                    *position = Some(choice);
+                }
+            }
+        });
+        if self.mod_loader && *position == Some(Position::First) {
+            style::warning(
+                ui,
+                "Not compatible with Sunrise Studio mods that change Collections.",
+            );
+        }
+    }
+
+    fn draw_destination(&mut self, ui: &mut egui::Ui) {
         if !self.recipe.kind.is_weapon() {
             ui.strong("Destination");
             ui.label(if self.recipe.kind == crate::ItemKind::Armor {

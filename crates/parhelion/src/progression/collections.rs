@@ -712,10 +712,7 @@ pub(crate) fn append_collectible(
         material_set_index,
     )?;
 
-    while !data.len().is_multiple_of(16) {
-        data.push(0);
-    }
-    let new_parent_target = data.len();
+    let new_parent_target = begin_array_block(&mut data);
     let mut parent_block = source_parent_header_bytes;
     write_u64(&mut parent_block, 0, presentation_parents.len() as u64)?;
     for parent in presentation_parents {
@@ -738,10 +735,7 @@ pub(crate) fn append_collectible(
     )?;
 
     for nested in nested_clones {
-        while !data.len().is_multiple_of(16) {
-            data.push(0);
-        }
-        let new_target = data.len();
+        let new_target = begin_array_block(&mut data);
         data.extend_from_slice(&nested.bytes);
         write_u64(&mut data, rows_end + nested.field, nested.count as u64)?;
         write_relative_pointer(&mut data, rows_end + nested.field + 8, new_target)?;

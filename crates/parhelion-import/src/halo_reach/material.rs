@@ -14,6 +14,12 @@ pub struct Mapping {
     pub frame: usize,
     /// The sampler address mode byte stored after the frame.
     pub address: u8,
+    /// The sampler filter mode, the low four bits of the byte after the address mode, in the order
+    /// of TagTool's Gen3 texture constants: 0 trilinear, 1 point, 2 bilinear, 3 through 6 anisotropic.
+    /// Across the eight converted maps' level materials the byte reads 0xA0, 0xA2 and 0xA4 for
+    /// most maps, and 0x80, 0xB0, 0xC0 and 0x40 with the same low values. What the high bits
+    /// select was not traced.
+    pub filter: u8,
     pub functions: Vec<Function>,
 }
 #[derive(Clone, Debug, Serialize)]
@@ -76,6 +82,8 @@ pub struct Property {
     pub constants: BTreeMap<String, [f32; 4]>,
     pub textures: Vec<Mapping>,
     pub functions: Vec<Function>,
+    /// Constant row names and overlay indices selected by the compiled real-parameter routes.
+    pub overlays: BTreeMap<String, Vec<usize>>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Material {
@@ -153,7 +161,8 @@ fn read_at(c: &Cache, result: &mut Material, at: usize) -> Result<()> {
             .collect::<Result<Vec<_>>>()?;
         ensure!(values.len() >= args.len(), "Missing material constants");
         let constants = args
-            .into_iter()
+            .iter()
+            .cloned()
             .zip(values.iter().copied())
             .collect::<BTreeMap<_, _>>();
         let mut textures = Vec::new();
@@ -179,6 +188,35 @@ fn read_at(c: &Cache, result: &mut Material, at: usize) -> Result<()> {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        // MCC 00262840 uses routing byte two as the overlay index and byte three
+        // as the destination float4 row. The u16 destination is the later GPU
+        // binding, not an index into the named source constants.
+        let routes = c.block(row + 0x50, 4)?;
+        let mut overlays = BTreeMap::<String, Vec<usize>>::new();
+        for pass in c.block(row + 0x44, 6)? {
+            for offset in [2, 4] {
+                let packed = usize::from(c.u16(pass + offset)?);
+                let first = packed & 1023;
+                let count = packed >> 10;
+                for &route in routes
+                    .get(first..first + count)
+                    .context("Material real-parameter route range outside table")?
+                {
+                    let function = usize::from(c.u8(route + 2)?);
+                    ensure!(
+                        function < functions.len(),
+                        "Material route overlay outside table"
+                    );
+                    let name = args
+                        .get(usize::from(c.u8(route + 3)?))
+                        .context("Material route constant outside template")?;
+                    let selected = overlays.entry(name.clone()).or_default();
+                    if !selected.contains(&function) {
+                        selected.push(function);
+                    }
+                }
+            }
+        }
         let maps = c.block(row + 16, 24)?;
         ensure!(maps.len() >= roles.len(), "Missing shader texture slots");
         for (i, mapping) in maps.into_iter().enumerate() {
@@ -203,6 +241,7 @@ fn read_at(c: &Cache, result: &mut Material, at: usize) -> Result<()> {
                 transform,
                 frame: usize::try_from(frame)?,
                 address: c.u8(mapping + 18)?,
+                filter: c.u8(mapping + 19)? & 0x0F,
                 functions: selected.to_vec(),
             });
         }
@@ -211,6 +250,7 @@ fn read_at(c: &Cache, result: &mut Material, at: usize) -> Result<()> {
             constants,
             textures,
             functions,
+            overlays,
         });
     }
     Ok(())
@@ -232,8 +272,20 @@ impl Material {
     pub fn glass(&self) -> bool {
         self.tag.as_ref().is_some_and(|tag| tag.group == "rmgl")
     }
+    /// Whether the material is a water shader (`rmw `). Reach draws water over the refracted scene
+    /// behind it, so it blends.
+    pub fn water(&self) -> bool {
+        self.tag.as_ref().is_some_and(|tag| tag.group == "rmw ")
+    }
+    /// Whether the material is a decal system's (`decs`). A preplaced decal is projected onto whole
+    /// surface triangles, so its triangles reach past the decal, and Reach's decal pixel program
+    /// discards every pixel whose decal coordinates leave 0 to 1
+    /// (`clip(float4(texcoord, 1 - texcoord))` in `effects\decal.fx`).
+    pub fn decal(&self) -> bool {
+        self.tag.as_ref().is_some_and(|tag| tag.group == "decs")
+    }
     pub fn alpha_mode(&self) -> &'static str {
-        if self.glass() {
+        if self.glass() || self.water() {
             "BLEND"
         } else if self.options.get("alpha_test").is_some_and(|o| o != "none") {
             "MASK"
@@ -265,6 +317,10 @@ impl Material {
             && self
                 .constant("albedo_color")
                 .is_some_and(|color| color[3] <= 0.)
+            && !self
+                .properties
+                .first()
+                .is_some_and(|property| property.overlays.contains_key("albedo_color"))
         {
             return Ok(true);
         }
@@ -363,6 +419,62 @@ pub fn image(c: &Cache, pages: &mut Pages, tag: &Tag, image: usize, normal: bool
     })
 }
 
+/// MCC water's signed BC5 array, with each slice followed by its complete mip chain.
+pub(super) struct Slopes {
+    pub width: usize,
+    pub height: usize,
+    pub levels: u8,
+    pub frames: Vec<Vec<u8>>,
+}
+
+pub(super) fn slopes(c: &Cache, pages: &mut Pages, tag: &Tag, image: usize) -> Result<Slopes> {
+    let row = *c
+        .block(tag.address()? + 124, 56)?
+        .get(image)
+        .context("Wave image outside bitmap table")?;
+    let width = usize::from(c.u16(row)?);
+    let height = usize::from(c.u16(row + 2)?);
+    let layers = usize::from(c.u8(row + 4)?);
+    ensure!(
+        width > 0 && height > 0 && width <= 4096 && height <= 4096,
+        "Wave array dimensions are invalid"
+    );
+    ensure!(
+        c.u8(row + 5)? & 8 == 0 && c.u8(row + 6)? == 3 && c.i16(row + 8)? == 38,
+        "Wave slopes require a linear MCC BC5_SNORM array"
+    );
+    ensure!(
+        (1..=32).contains(&layers),
+        "Wave array layer count is invalid"
+    );
+    let levels = c
+        .u8(row + 16)?
+        .checked_add(1)
+        .context("Wave mip count overflow")?;
+    ensure!(
+        u32::from(levels) <= width.max(height).ilog2() + 1,
+        "Wave mip count exceeds dimensions"
+    );
+    let chain = (0..levels)
+        .map(|level| image_length((width >> level).max(1), (height >> level).max(1), 16, true))
+        .sum::<usize>();
+    let length = chain
+        .checked_mul(layers)
+        .context("Wave array byte count overflow")?;
+    ensure!(
+        length <= 256 * 1024 * 1024 && usize::try_from(c.u32(row + 24)?)? == length,
+        "Wave array payload does not match its slices and mips"
+    );
+    let resource = image_resource(c, tag, row, image)?;
+    let raw = pages.bytes(c, &resource, 0, length)?;
+    Ok(Slopes {
+        width,
+        height,
+        levels,
+        frames: raw.chunks_exact(chain).map(<[u8]>::to_vec).collect(),
+    })
+}
+
 /// Accumulates each texel's color times its alpha, linear unless `gamma`.
 fn add_texels(sum: &mut [f64; 3], rgba: &[u8], gamma: bool) {
     for texel in rgba.chunks_exact(4) {
@@ -374,12 +486,10 @@ fn add_texels(sum: &mut [f64; 3], rgba: &[u8], gamma: bool) {
     }
 }
 
-/// The mean color of a cube map's six faces at full size, each texel's color times its alpha, as
-/// Reach's environment lighting multiplies them, and linear unless the bitmap's curve stores gamma
-/// encoded values. The faces are read as six consecutive mip chains, each down to one texel. Were
-/// the six full-size faces stored first instead, those reads would still fall across all six, so
-/// the mean changes little either way. A 2D image in the environment slot, as Breakneck's 256 by
-/// 192 `cex_headlong_city`, gives the mean of its full-size image.
+/// The mean color of a cube map's six faces at full size ([`cube_faces`]), each texel's color times
+/// its alpha, as Reach's environment lighting multiplies them, and linear unless the bitmap's curve
+/// stores gamma encoded values. A 2D image in the environment slot, as Breakneck's 256 by 192
+/// `cex_headlong_city`, gives the mean of its full-size image.
 pub fn cube_mean(c: &Cache, pages: &mut Pages, tag: &Tag) -> Result<[f32; 3]> {
     let at = tag.address()?;
     let row = *c
@@ -396,8 +506,44 @@ pub fn cube_mean(c: &Cache, pages: &mut Pages, tag: &Tag) -> Result<[f32; 3]> {
         let count = (image.width * image.height) as f64;
         return Ok(sum.map(|total| (total / count) as f32));
     }
+    let (size, faces) = cube_faces(c, pages, tag, 0)?;
+    let mut sum = [0f64; 3];
+    for face in &faces {
+        add_texels(&mut sum, face, gamma);
+    }
+    let count = (6 * size * size) as f64;
+    Ok(sum.map(|total| (total / count) as f32))
+}
+
+/// Decoded source cube mips, each containing six RGBA8 faces in source face order.
+pub struct Cube {
+    pub size: usize,
+    pub mips: Vec<[Vec<u8>; 6]>,
+}
+
+/// The six full-size faces of cube image `image`, decoded to RGBA8, and their size.
+pub fn cube_faces(
+    c: &Cache,
+    pages: &mut Pages,
+    tag: &Tag,
+    image: usize,
+) -> Result<(usize, [Vec<u8>; 6])> {
+    let mut cube = cube(c, pages, tag, image)?;
+    Ok((cube.size, cube.mips.remove(0)))
+}
+
+/// MCC cube resources store all six faces of each mip together, unlike the layer-major wave
+/// arrays. Keep authored lower mips, which a box reduction of the top face cannot recover.
+pub fn cube(c: &Cache, pages: &mut Pages, tag: &Tag, image: usize) -> Result<Cube> {
+    let at = tag.address()?;
+    let row = *c
+        .block(at + 124, 56)?
+        .get(image)
+        .context("Cube map image outside table")?;
+    let size = c.u16(row)? as usize;
+    let height = c.u16(row + 2)? as usize;
     ensure!(
-        size > 0 && size <= 4096 && height == size,
+        size.is_power_of_two() && size <= 4096 && height == size && c.u8(row + 6)? == 2,
         "Cube map faces are not square: {size} by {height}, image type {}",
         c.u8(row + 6)?
     );
@@ -407,30 +553,39 @@ pub fn cube_mean(c: &Cache, pages: &mut Pages, tag: &Tag) -> Result<[f32; 3]> {
     );
     let format = c.i16(row + 8)?;
     let (unit, compressed) = texel_layout(format, tag)?;
-    let face = image_length(size, size, unit, compressed);
-    let chain = (0..=size.ilog2())
+    let levels = usize::from(c.u8(row + 16)?) + 1;
+    ensure!(
+        levels <= size.ilog2() as usize + 1,
+        "Cube has too many mip levels"
+    );
+    let lengths = (0..levels)
         .map(|level| {
             let side = (size >> level).max(1);
             image_length(side, side, unit, compressed)
         })
-        .sum::<usize>();
-    let resource = image_resource(c, tag, row, 0)?;
+        .collect::<Vec<_>>();
+    let chain = lengths.iter().sum::<usize>();
+    ensure!(
+        c.u32(row + 24)? as usize == chain * 6,
+        "Cube pixel extent differs from its declared mip faces"
+    );
+    let resource = image_resource(c, tag, row, image)?;
     let raw = pages
-        .bytes(c, &resource, 0, chain * 5 + face)
+        .bytes(c, &resource, 0, chain * 6)
         .with_context(|| format!("Cube map {} holds fewer than six faces", tag.path))?;
-    let mut sum = [0f64; 3];
-    for index in 0..6 {
-        let rgba = decode(
-            &raw[index * chain..index * chain + face],
-            size,
-            size,
-            format,
-            false,
-        )?;
-        add_texels(&mut sum, &rgba, gamma);
+    let mut mips = Vec::with_capacity(levels);
+    let mut offset = 0;
+    for (level, length) in lengths.into_iter().enumerate() {
+        let side = (size >> level).max(1);
+        let mut faces: [Vec<u8>; 6] = Default::default();
+        for (index, out) in faces.iter_mut().enumerate() {
+            let start = offset + index * length;
+            *out = decode(&raw[start..start + length], side, side, format, false)?;
+        }
+        mips.push(faces);
+        offset += length * 6;
     }
-    let count = (6 * size * size) as f64;
-    Ok(sum.map(|total| (total / count) as f32))
+    Ok(Cube { size, mips })
 }
 
 /// The source bitmap curve whose values are stored linear, not gamma encoded.

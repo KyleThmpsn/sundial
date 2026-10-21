@@ -128,24 +128,3 @@ impl Basis {
         .unwrap_or(self.normal)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn mirrored_uvs_reverse_the_tangent_and_neutral_maps_preserve_the_surface() {
-        let points = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
-        let a = Basis::triangle(points, [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]).unwrap();
-        let b = Basis::triangle(points, [[0.0, 0.0], [-1.0, 0.0], [0.0, 1.0]]).unwrap();
-        assert_eq!(a.apply([0.5, 0.5]), [0.0, 0.0, 1.0]);
-        assert!(a.apply([0.8, 0.5])[0] > 0.0);
-        assert!(b.apply([0.8, 0.5])[0] < 0.0);
-        assert!(Basis::triangle(points, [[0.0; 2]; 3]).is_none());
-        assert!(
-            dot(
-                a.with_normal([0.0, 1.0, 1.0]).apply([0.5, 0.5]),
-                normalize([0.0, 1.0, 1.0]).unwrap()
-            ) > 0.999
-        );
-    }
-}

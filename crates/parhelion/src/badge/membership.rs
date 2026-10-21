@@ -52,10 +52,7 @@ pub(super) fn set_members(
         }
         write_u64(&mut data, 0, retained as u64)?;
         append_presentation_child_array_terminator(&mut data)?;
-        while !graph.nodes.len().is_multiple_of(16) {
-            graph.nodes.push(0);
-        }
-        let header = graph.nodes.len();
+        let header = begin_array_block(&mut graph.nodes);
         graph.nodes.extend(data);
         write_u64(&mut graph.nodes, descriptor, retained as u64)?;
         write_relative_pointer(&mut graph.nodes, descriptor + 8, header)?;

@@ -6,8 +6,9 @@ mod transaction;
 mod validation;
 pub(super) use legacy::recover_with_observer as recover_legacy_with_observer;
 pub(super) use transaction::recover;
+pub(super) use validation::verify_file;
 use validation::*;
-pub(crate) use validation::{package_window, uses_mod_loader};
+pub(crate) use validation::{other_mods_change, package_window, uses_mod_loader};
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -64,13 +65,36 @@ pub(super) fn selected(
     runtime.uses_mod_loader().map_err(InstallError::validation)
 }
 
+/// What an upgrade review is doing at each step, in order, as Parhelion shows it.
+pub const UPGRADE_REVIEW_STEPS: [&str; 5] = [
+    "Reading the active game runtime…",
+    "Checking for an interrupted package operation…",
+    "Reading other Sunrise mods…",
+    "Checking Parhelion's mod folder…",
+    "Looking for packages from earlier builds…",
+];
+
 /// The packages from an earlier layout that the next install or removal retires, or `None`
 /// when the runtime does not load Sunrise mods or nothing remains in stock `packages`.
+#[cfg(test)]
 pub fn preview_upgrade(packages: &Path) -> Result<Option<UpgradeReview>, InstallError> {
-    review_upgrade(packages)
+    review_upgrade(packages, &mut |_| {})
 }
 
-fn review_upgrade(packages: &Path) -> Result<Option<UpgradeReview>, InstallError> {
+/// As [`preview_upgrade`], calling `progress` with the index in [`UPGRADE_REVIEW_STEPS`] of each
+/// step as it starts.
+pub fn preview_upgrade_with_progress(
+    packages: &Path,
+    progress: &mut dyn FnMut(usize),
+) -> Result<Option<UpgradeReview>, InstallError> {
+    review_upgrade(packages, progress)
+}
+
+fn review_upgrade(
+    packages: &Path,
+    progress: &mut dyn FnMut(usize),
+) -> Result<Option<UpgradeReview>, InstallError> {
+    progress(0);
     let target = canonical_packages_directory(packages)?;
     let runtime = sundial::package_authoring::installed_runtime(
         target
@@ -87,6 +111,7 @@ fn review_upgrade(packages: &Path) -> Result<Option<UpgradeReview>, InstallError
     let install = target
         .parent()
         .ok_or_else(|| InstallError::validation("Missing game root"))?;
+    progress(1);
     if target
         .join(INSTALL_TRANSACTION_FILE_NAME)
         .try_exists()
@@ -96,11 +121,19 @@ fn review_upgrade(packages: &Path) -> Result<Option<UpgradeReview>, InstallError
             "An earlier package operation needs recovery. Recover it before building for the Sunrise mod folder",
         ));
     }
+    progress(2);
     mod_content::ensure_readable(install).map_err(InstallError::validation)?;
     mod_content::ensure_resolved_environment(install).map_err(InstallError::validation)?;
-    if managed(&target)?.is_some() {
+    progress(3);
+    // With Parhelion's mod folder in place there is nothing to upgrade. The review runs at every
+    // start, so it checks the folder's manifest, receipt and file list without hashing its
+    // packages, which can run to gigabytes. Installation and removal verify them in full before
+    // they change anything.
+    if mod_content::has_family(install).map_err(failure)? {
+        mod_content::files(install).map_err(InstallError::validation)?;
         return Ok(None);
     }
+    progress(4);
     let plan = uninstall::preview_legacy(&target)?;
     if plan.artifacts.is_empty() {
         return Ok(None);
@@ -135,18 +168,51 @@ fn retired_legacy(
     Ok(legacy)
 }
 
+/// The mod folder an install on Dawn or an earlier Sunrise retired. Dropped before
+/// [`Retired::keep`], it puts the folder back from its backup, so an install that fails before it
+/// commits leaves the installation as it was. Those runtimes ignore the folder, so it does no harm
+/// there.
+pub(super) struct Retired {
+    install: PathBuf,
+    backup: Option<PathBuf>,
+}
+
+impl Retired {
+    /// The install is committing: the folder stays retired. Returns its backup.
+    pub(super) fn keep(mut self) -> Option<PathBuf> {
+        self.backup.take()
+    }
+}
+
+impl Drop for Retired {
+    fn drop(&mut self) {
+        if let Some(backup) = &self.backup {
+            // A folder that can't be put back stays in its backup, as it was before.
+            let _ = transaction::restore_retired(&self.install, backup);
+        }
+    }
+}
+
 /// Retires the mod folder before an install on Dawn or Sunrise before 0.6 publishes to stock
-/// `packages`. Those runtimes don't load the folder, and left in place it would load beside the
-/// new packages after a switch back to Sunrise 0.6. It is backed up first, and the install makes
-/// any account change. Returns the backup.
+/// `packages`. Left in place it would load beside the new packages after a switch back to
+/// Sunrise 0.6. It is backed up first, and the install makes any account change.
 pub(super) fn retire_inactive(
     validated: &ValidatedRun,
     check: GameRunningCheck,
-) -> Result<Option<PathBuf>, InstallError> {
+) -> Result<Retired, InstallError> {
     let target = &validated.target_packages_directory;
-    let Some(original) = managed(target)? else {
-        return Ok(None);
-    };
+    let install = target
+        .parent()
+        .ok_or_else(|| InstallError::validation("Missing game root"))?
+        .to_owned();
+    let mut original_family = managed_family(target)?;
+    if original_family.is_empty() {
+        return Ok(Retired {
+            install,
+            backup: None,
+        });
+    }
+    let original = original_family.remove(mod_content::ID);
     if !uninstall::preview_legacy(target)?.artifacts.is_empty() {
         return Err(InstallError::validation(
             "Legacy and mod-folder packages are both present",
@@ -155,7 +221,9 @@ pub(super) fn retire_inactive(
     let mut transaction = transaction::prepare(transaction::Plan {
         target,
         backup_root: &validated.backup_root,
-        original: Some(original),
+        original,
+        original_family,
+        members: &[],
         legacy: Vec::new(),
         stock: validated.source_artifacts.clone(),
         incoming: None,
@@ -163,11 +231,15 @@ pub(super) fn retire_inactive(
     })?;
     let backup = transaction.record.context.backup_directory.clone();
     finish_commit(&mut transaction, check, &mut |_| {}, |_| Ok(()))?;
-    Ok(Some(backup))
+    Ok(Retired {
+        install,
+        backup: Some(backup),
+    })
 }
 
 pub(super) fn preview_uninstall(target: &Path) -> Result<uninstall::UninstallPlan, InstallError> {
-    let original = managed(target)?;
+    let mut family = managed_family(target)?;
+    let original = family.remove(mod_content::ID);
     let mut plan = uninstall::preview_legacy(target)?;
     if let Some(original) = original {
         if !plan.artifacts.is_empty() {
@@ -176,7 +248,9 @@ pub(super) fn preview_uninstall(target: &Path) -> Result<uninstall::UninstallPla
             ));
         }
         plan.artifacts = artifacts(&original);
+        plan.artifacts.extend(family.values().flat_map(artifacts));
         plan.mod_folder = Some(original);
+        plan.mod_family = family;
     }
     Ok(plan)
 }
@@ -194,22 +268,44 @@ pub(super) fn install_with_observer(
         .parent()
         .ok_or_else(|| InstallError::validation("Missing game root"))?;
     mod_content::ensure_resolved_environment(install).map_err(InstallError::validation)?;
-    let original = managed(target)?;
+    let mut original_family = managed_family(target)?;
+    let original = original_family.remove(mod_content::ID);
     // Packages an earlier layout left in stock `packages` cannot load beside the mod, so this
     // transaction retires them, after backing them up, while it publishes the build.
     let legacy = retired_legacy(target, original.as_ref())?;
-    let staged = |artifacts: &[ArtifactMetadata]| {
+    let staged = |artifacts: &[ArtifactMetadata]| -> Result<Vec<_>, InstallError> {
         artifacts
             .iter()
-            .map(|a| (a.clone(), validated.staged_run_directory.join(&a.file_name)))
-            .collect::<Vec<_>>()
+            .map(|a| {
+                crate::mod_family::source(
+                    &validated.mods,
+                    &validated.staged_run_directory,
+                    target,
+                    &a.file_name,
+                )
+                .map(|path| (a.clone(), path))
+                .map_err(InstallError::validation)
+            })
+            .collect()
     };
-    let sources = staged(&validated.artifacts);
+    let sources = staged(&validated.artifacts)?;
     validate_packages(target, &sources)?;
     reject_installed_conflicts(target, &sources, &legacy)?;
-    let mod_overlaps = check_other_mods(target, &sources, &legacy)?;
+    let mod_overlaps = check_other_mods(target, &sources, &legacy, &validated.mods)?;
+    let mod_reports = crate::mod_family::reports(&validated.mods, install, &validated.artifacts)
+        .map_err(InstallError::validation)?;
     // The merge data is published beside its packages.
-    let published = [sources.as_slice(), &staged(&validated.merge_data)].concat();
+    let diagnostics = validated
+        .map_diagnostics
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    let published = [
+        sources.as_slice(),
+        &staged(&validated.merge_data)?,
+        &staged(&diagnostics)?,
+    ]
+    .concat();
     if !legacy.is_empty() {
         clear_other_runtime_caches(target, validated.sunrise_build_cache.runtime.brand())?;
     }
@@ -217,6 +313,8 @@ pub(super) fn install_with_observer(
         target,
         backup_root: &validated.backup_root,
         original: original.clone(),
+        original_family: original_family.clone(),
+        members: &validated.mods,
         legacy: legacy.clone(),
         stock: validated.source_artifacts.clone(),
         incoming: Some(&published),
@@ -266,6 +364,7 @@ pub(super) fn install_with_observer(
         .then(|| identities::grant_items(install, target, &validated.authored_grants));
     progress(InstallProgress::stage(InstallPhase::Complete));
     Ok(InstallReport {
+        mods: mod_reports,
         manifest_schema: MANIFEST_SCHEMA,
         staged_run_directory: validated.staged_run_directory.clone(),
         target_packages_directory: target.clone(),
@@ -276,39 +375,74 @@ pub(super) fn install_with_observer(
             .iter()
             .map(|a| {
                 let path = package_path(a).expect("validated package");
-                let replaced = original
-                    .as_ref()
-                    .is_some_and(|o| o.files.contains_key(&path));
+                let owner = validated.mods.iter().find(|m| {
+                    m.receipt
+                        .artifacts
+                        .iter()
+                        .any(|owned| owned.path.rsplit('/').next() == Some(a.file_name.as_str()))
+                });
+                let id = owner.map_or(mod_content::ID, |m| m.manifest.id.as_str());
+                let kept = owner.is_some_and(|m| m.kept);
+                let old = if id == mod_content::ID {
+                    original.as_ref()
+                } else {
+                    original_family.get(id)
+                };
+                let replaced = !kept && old.is_some_and(|o| o.files.contains_key(&path));
                 InstalledArtifact {
                     file_name: a.file_name.clone(),
-                    target_path: directory.join(&path),
+                    target_path: mod_content::member_directory(install, id).join(&path),
                     byte_length: a.byte_length,
                     sha256: a.sha256.clone(),
                     replaced_existing_file: replaced,
-                    backup_path: replaced.then(|| backup.join("mod").join(path)),
+                    backup_path: replaced.then(|| backup.join("mods").join(id).join(&path)),
                 }
             })
             .collect(),
-        removed_obsolete_packages: original
-            .as_ref()
-            .map(artifacts)
-            .unwrap_or_default()
-            .iter()
-            .filter(|old| {
-                !validated
-                    .artifacts
+        removed_obsolete_packages: std::iter::once((mod_content::ID, original.as_ref()))
+            .chain(
+                original_family
                     .iter()
-                    .any(|a| a.file_name == old.file_name)
+                    .map(|(id, folder)| (id.as_str(), Some(folder))),
+            )
+            .flat_map(|(id, folder)| {
+                folder
+                    .into_iter()
+                    .flat_map(artifacts)
+                    .map(move |artifact| (id, artifact))
             })
-            .map(|a| directory.join(package_path(a).expect("validated package")))
+            .filter(|(id, old)| {
+                !validated
+                    .mods
+                    .iter()
+                    .find(|m| m.manifest.id == *id)
+                    .map_or_else(
+                        || {
+                            *id == mod_content::ID
+                                && validated.mods.is_empty()
+                                && validated
+                                    .artifacts
+                                    .iter()
+                                    .any(|a| a.file_name == old.file_name)
+                        },
+                        |m| {
+                            m.receipt
+                                .artifacts
+                                .iter()
+                                .any(|a| a.path.rsplit('/').next() == Some(old.file_name.as_str()))
+                        },
+                    )
+            })
+            .map(|(id, artifact)| {
+                mod_content::member_directory(install, id)
+                    .join(package_path(&artifact).expect("validated package"))
+            })
             .chain(legacy.iter().map(|a| target.join(&a.file_name)))
             .collect(),
         recipe_backup_directory,
         pruned_backup_directories: vec![],
-        backup_prune_warning: Some(
-            "Mod recovery backups are retained separately from automatic package backup cleanup"
-                .into(),
-        ),
+        // Recovery sets are intentionally retained. They are not failed cleanup attempts.
+        backup_prune_warning: None,
         invalidated_sunrise_cache,
         invalidated_package_header_caches,
         profile_sync,
@@ -340,6 +474,7 @@ pub(super) fn uninstall_with_observer(
     })?;
     let current = preview_uninstall(&plan.target)?;
     if current.mod_folder != plan.mod_folder
+        || current.mod_family != plan.mod_family
         || current.artifacts != plan.artifacts
         || current.stock != plan.stock
         || plan.artifacts.is_empty()
@@ -367,6 +502,8 @@ pub(super) fn uninstall_with_observer(
         target: &plan.target,
         backup_root: backups,
         original: plan.mod_folder.clone(),
+        original_family: plan.mod_family.clone(),
+        members: &[],
         legacy: legacy.clone(),
         stock: plan.stock.clone(),
         incoming: None,
@@ -389,13 +526,20 @@ pub(super) fn uninstall_with_observer(
             }
             Ok(())
         })?;
-    let directory = mod_content::directory(plan.target.parent().unwrap());
     lock.finish(check, sundial::package_authoring::installed_runtime)?;
     Ok(UninstallReport {
         removed_files: if legacy.is_empty() {
             plan.artifacts
                 .iter()
-                .map(|a| directory.join(package_path(a).expect("validated package")))
+                .map(|a| {
+                    let path = package_path(a).expect("validated package");
+                    let id = plan
+                        .mod_family
+                        .iter()
+                        .find(|(_, folder)| folder.files.contains_key(&path))
+                        .map_or(mod_content::ID, |(id, _)| id.as_str());
+                    mod_content::member_directory(plan.target.parent().unwrap(), id).join(path)
+                })
                 .collect()
         } else {
             legacy

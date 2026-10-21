@@ -15,6 +15,39 @@ mod shader;
 struct Shared {
     companions: linking::Companions,
     characters: BTreeMap<(u32, u32), [u8; 32]>,
+    timings: Timings,
+}
+
+/// Where linking the imported graphs spent its time, summed over every graph.
+#[derive(Default)]
+pub(super) struct Timings {
+    graphs: usize,
+    /// Reading and parsing each graph's description.
+    read: std::time::Duration,
+    /// Binding materials and reading and preparing each node's payload.
+    nodes: std::time::Duration,
+    /// Replication companions, ornament icon bounds and shader edits.
+    companions: std::time::Duration,
+    /// Allocating, converting and linking the nodes.
+    link: std::time::Duration,
+    /// Everything else: the item tables each graph edits afterwards.
+    tables: std::time::Duration,
+}
+
+impl std::fmt::Display for Timings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let seconds = |duration: std::time::Duration| duration.as_secs_f64();
+        write!(
+            f,
+            "{} graphs: read {:.3}s, nodes {:.3}s, companions {:.3}s, link {:.3}s, tables {:.3}s",
+            self.graphs,
+            seconds(self.read),
+            seconds(self.nodes),
+            seconds(self.companions),
+            seconds(self.link),
+            seconds(self.tables)
+        )
+    }
 }
 
 /// An independently placed private part, either source geometry or marker-only geometry.
@@ -189,7 +222,8 @@ fn replace(
 }
 /// Checks every imported graph against the fingerprint taken when it was selected. Each
 /// graph hashes tens of megabytes of its own files, so the graphs are checked side by side.
-fn validate_graphs(weapons: &[WeaponCloneSpec]) -> AuthoringResult<()> {
+/// The build checks before [`apply`] links them and again after.
+pub(super) fn validate_graphs(weapons: &[WeaponCloneSpec]) -> AuthoringResult<()> {
     let graphs = weapons
         .iter()
         .filter_map(|weapon| {
@@ -240,8 +274,16 @@ pub(super) fn apply(
     manager: &sundial::package_authoring::PackageManager,
     emission: &mut PackageEmission,
     weapons: &[WeaponCloneSpec],
-) -> AuthoringResult<Vec<ReplacementSpec>> {
-    validate_graphs(weapons)?;
+) -> AuthoringResult<(Vec<ReplacementSpec>, Timings)> {
+    let mut timings = Timings::default();
+    let started = std::time::Instant::now();
+    // Native runtime cache replay can append whole packages without reserving new groups.
+    // Claim that complete native prefix before any importer or map chooses its package IDs.
+    if crate::package_profile::host().is_standalone() {
+        for package in &emission.asset_packages.packages {
+            crate::mod_family::build::native(package.id);
+        }
+    }
     for spec in weapons {
         if let Some(reference) = &spec.overrides.imported_graph {
             let graph: Value = serde_json::from_slice(
@@ -285,20 +327,26 @@ pub(super) fn apply(
             )
         })
         .collect::<Vec<_>>();
+    timings.read = started.elapsed();
     if folders.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), timings));
     }
     let mut shared = Shared {
         companions: linking::Companions::new(),
         characters: BTreeMap::new(),
+        timings,
     };
     let mut replacements = BTreeMap::new();
     // Custom shader dyes already extend the dye table, so imported dyes follow them.
     if let Some(table) = &emission.dye_table {
         replacements.insert(table.tag.0, table.payload.clone());
     }
+    let accounted =
+        |timings: &Timings| timings.read + timings.nodes + timings.companions + timings.link;
     for (folder, spec) in folders {
-        for replacement in apply_one(
+        let started = std::time::Instant::now();
+        let before = accounted(&shared.timings);
+        let applied = apply_one(
             directory,
             emission,
             folder,
@@ -307,20 +355,22 @@ pub(super) fn apply(
             &mut shared,
             spec,
         )
-        .map_err(|error| error.context(format!("Imported graph {}", folder.display())))?
-        {
+        .map_err(|error| error.context(format!("Imported graph {}", folder.display())))?;
+        for replacement in applied {
             replacements.insert(replacement.tag.0, replacement.payload);
         }
+        let staged = accounted(&shared.timings) - before;
+        shared.timings.tables += started.elapsed().saturating_sub(staged);
+        shared.timings.graphs += 1;
     }
-    // The files must still be the ones selected now that linking has read them.
-    validate_graphs(weapons)?;
-    Ok(replacements
+    let replacements = replacements
         .into_iter()
         .map(|(tag, payload)| ReplacementSpec {
             tag: TagHash(tag),
             payload,
         })
-        .collect())
+        .collect();
+    Ok((replacements, shared.timings))
 }
 /// One node of an imported asset graph, with its payload read from `folder` and prepared:
 /// model draw indices declared and moved markers applied.
@@ -430,10 +480,12 @@ fn apply_one(
     shared: &mut Shared,
     spec: Option<&WeaponCloneSpec>,
 ) -> AuthoringResult<Vec<ReplacementSpec>> {
+    let started = std::time::Instant::now();
     let mut graph: Value = serde_json::from_slice(
         &fs::read(folder.join("asset-graph.json")).map_err(|e| invalid(e.to_string()))?,
     )
     .map_err(|e| invalid(e.to_string()))?;
+    shared.timings.read += started.elapsed();
     if graph["source"] == "d1_roi"
         && graph["kind"] == "armor"
         && graph["converter_revision"].as_u64().unwrap_or(0) < 48
@@ -467,63 +519,138 @@ fn apply_one(
     let json_nodes = graph["nodes"]
         .as_array()
         .ok_or_else(|| invalid("Asset nodes missing"))?;
-    let mut nodes = Vec::with_capacity(json_nodes.len());
-    let mut bound = parhelion_import::tiger::material::bind(&graph, folder)
-        .map_err(|e| invalid(format!("Imported model bindings: {e:#}")))?;
-    let models = parhelion_import::model_symbols(&graph).map_err(|e| invalid(e.to_string()))?;
-    for n in json_nodes {
-        let model = n["symbol"]
-            .as_str()
-            .is_some_and(|name| models.contains(name));
-        nodes.push(graph_node(folder, n, model, spec, &mut bound, manager)?);
-    }
-    loading::replication_companions(manager, directory, &mut nodes, &mut shared.companions)?;
     let branding = crate::branding::Branding::for_packages(directory);
-    let extra_bounds = ornament_icon::entry_bound(manager, emission, &graph, folder, branding)?;
     let shader = graph["kind"] == "shader";
-    let borrowed = if shader {
-        shader::edit(
-            &mut nodes,
-            &graph,
-            spec.ok_or_else(|| invalid("Source shader recipe missing"))?,
-            manager,
-        )?
-    } else {
-        BTreeMap::new()
-    };
-    let primary = if shader {
-        graph["dyes"]
-            .as_array()
-            .and_then(|dyes| dyes.first())
-            .and_then(|dye| dye["parent"].as_str())
-            .ok_or_else(|| invalid("Imported shader has no dye parent"))?
-    } else {
-        graph["parent"].as_str().unwrap_or("parent")
-    };
-    let linked = linking::link(
-        directory,
-        emission,
-        manager,
-        nodes,
-        primary,
-        &mut shared.companions,
-        extra_bounds,
-        |symbols, groups| {
-            loading::include_native_resources(manager, folder, json_nodes, symbols, groups)?;
-            for (scope, resources) in &borrowed {
-                let tag = symbols
-                    .get(scope)
-                    .ok_or_else(|| invalid("Source shader scope was not allocated"))?;
-                for group in groups.values_mut().filter(|g| g.contains(tag)) {
-                    group.extend(resources.iter().copied());
-                    group.sort();
-                    group.dedup();
-                }
+    let origin = crate::package_profile::host()
+        .is_standalone()
+        .then(|| crate::mod_family::build::graph_origin(&graph, spec))
+        .flatten();
+    let cache_key = crate::mod_family::build::group_key(folder, spec);
+    let reused = origin.and_then(|origin| crate::mod_family::build::group(origin, &cache_key));
+    let linked = if let Some(symbols) = reused {
+        let owner = origin.unwrap();
+        let ids = symbols
+            .values()
+            .map(|tag| tag.pkg_id())
+            .collect::<BTreeSet<_>>();
+        for id in ids {
+            crate::mod_family::build::use_id(owner, id);
+            if !emission
+                .asset_packages
+                .packages
+                .iter()
+                .any(|package| package.id == id)
+            {
+                emission
+                    .asset_packages
+                    .packages
+                    .push(crate::mod_family::build::restore(id).map_err(invalid)?);
             }
-            Ok(())
-        },
-        Some(&folder.join("linked")),
-    )?;
+        }
+        let id = symbols
+            .values()
+            .next()
+            .ok_or_else(|| invalid("Cached imported graph has no symbols"))?
+            .pkg_id();
+        let package_index = emission
+            .asset_packages
+            .packages
+            .iter()
+            .position(|package| package.id == id)
+            .unwrap();
+        linking::Linked {
+            symbols,
+            package_index,
+        }
+    } else {
+        emission.asset_packages.owner = origin;
+        let linked = (|| {
+            let started = std::time::Instant::now();
+            let mut nodes = Vec::with_capacity(json_nodes.len());
+            let mut bound = parhelion_import::tiger::material::bind(&graph, folder)
+                .map_err(|e| invalid(format!("Imported model bindings: {e:#}")))?;
+            let models =
+                parhelion_import::model_symbols(&graph).map_err(|e| invalid(e.to_string()))?;
+            for n in json_nodes {
+                let model = n["symbol"]
+                    .as_str()
+                    .is_some_and(|name| models.contains(name));
+                nodes.push(graph_node(folder, n, model, spec, &mut bound, manager)?);
+            }
+            shared.timings.nodes += started.elapsed();
+            let started = std::time::Instant::now();
+            loading::replication_companions(
+                manager,
+                directory,
+                &mut nodes,
+                &mut shared.companions,
+            )?;
+            let extra_bounds = if crate::package_profile::host().is_standalone() {
+                0
+            } else {
+                ornament_icon::entry_bound(manager, emission, &graph, folder, branding)?
+            };
+            let borrowed = if shader {
+                shader::edit(
+                    &mut nodes,
+                    &graph,
+                    spec.ok_or_else(|| invalid("Source shader recipe missing"))?,
+                    manager,
+                )?
+            } else {
+                BTreeMap::new()
+            };
+            let primary = if shader {
+                graph["dyes"]
+                    .as_array()
+                    .and_then(|dyes| dyes.first())
+                    .and_then(|dye| dye["parent"].as_str())
+                    .ok_or_else(|| invalid("Imported shader has no dye parent"))?
+            } else {
+                graph["parent"].as_str().unwrap_or("parent")
+            };
+            shared.timings.companions += started.elapsed();
+            let started = std::time::Instant::now();
+            let linked = linking::link(
+                directory,
+                emission,
+                manager,
+                nodes,
+                primary,
+                &mut shared.companions,
+                extra_bounds,
+                |symbols, groups| {
+                    loading::include_native_resources(
+                        manager, folder, json_nodes, symbols, groups,
+                    )?;
+                    for (scope, resources) in &borrowed {
+                        let tag = symbols
+                            .get(scope)
+                            .ok_or_else(|| invalid("Source shader scope was not allocated"))?;
+                        for group in groups.values_mut().filter(|g| g.contains(tag)) {
+                            group.extend(resources.iter().copied());
+                            group.sort();
+                            group.dedup();
+                        }
+                    }
+                    Ok(())
+                },
+                // Linked payloads are written only on request, to compare with staged packages.
+                std::env::var_os("PARHELION_KEEP_LINKED")
+                    .is_some()
+                    .then(|| folder.join("linked"))
+                    .as_deref(),
+            )?;
+            shared.timings.link += started.elapsed();
+            Ok::<_, crate::AuthoringError>(linked)
+        })();
+        emission.asset_packages.owner = None;
+        let linked = linked?;
+        if let Some(origin) = origin {
+            crate::mod_family::build::remember_group(origin, cache_key, &linked.symbols);
+        }
+        linked
+    };
     let linking::Linked {
         symbols,
         package_index,
@@ -616,17 +743,19 @@ fn apply_one(
         assignments.push((part.key, symbol(&part.parent)?));
     }
     let table = art::insert_assignments(&original, &assignments)?;
-    fs::write(
-        folder.join("allocated.json"),
-        serde_json::to_vec_pretty(
-            &symbols
-                .iter()
-                .map(|(k, v)| (k, v.0))
-                .collect::<BTreeMap<_, _>>(),
+    if origin.is_none() || !crate::mod_family::build::is_kept(origin.unwrap()) {
+        fs::write(
+            folder.join("allocated.json"),
+            serde_json::to_vec_pretty(
+                &symbols
+                    .iter()
+                    .map(|(k, v)| (k, v.0))
+                    .collect::<BTreeMap<_, _>>(),
+            )
+            .map_err(|e| invalid(e.to_string()))?,
         )
-        .map_err(|e| invalid(e.to_string()))?,
-    )
-    .map_err(|e| invalid(e.to_string()))?;
+        .map_err(|e| invalid(e.to_string()))?;
+    }
     eprintln!(
         "Imported {} private asset tags; art index {}; parent {}",
         nodes.len(),

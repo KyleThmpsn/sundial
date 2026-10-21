@@ -35,6 +35,7 @@ pub(crate) struct LibraryState {
     pub(super) sort: SortOrder,
     /// `None` shows every kind.
     pub(super) kind: Option<ItemKind>,
+    pub(super) activities_only: bool,
     pub(super) highlighted: BTreeSet<PathBuf>,
     pub(super) reveal: Option<PathBuf>,
     pub(super) export_selection: Option<BTreeSet<PathBuf>>,
@@ -82,6 +83,7 @@ impl LibraryState {
     ) -> Vec<(&'a RecipeLibraryEntry, String)> {
         entries
             .iter()
+            .filter(|_| !self.activities_only)
             .filter(|entry| self.kind.is_none_or(|kind| entry.kind == kind))
             .filter_map(|entry| {
                 let details = library_entry_details(entry, self.donor(donors, entry.donor_hash));

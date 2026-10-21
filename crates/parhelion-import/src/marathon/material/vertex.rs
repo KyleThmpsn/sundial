@@ -3,15 +3,22 @@ use super::*;
 use crate::tiger::shader::dxil::{arguments, id, number};
 
 fn call(code: &str) -> Result<(&str, Vec<&str>)> {
-    let tail = code
-        .split_once("@dx.op.")
-        .context("Expected a source vertex intrinsic")?
-        .1;
-    let (name, args) = tail.split_once('(').context("Source intrinsic arguments")?;
-    Ok((
-        name.split('.').next().unwrap(),
-        arguments(args.split(')').next().context("Source intrinsic close")?)?,
-    ))
+    let (_, name, args) = dxil::call(code)?;
+    let (opcode, arity) = match name {
+        "loadInput" => (4, 5),
+        "storeOutput" => (5, 5),
+        "binary" => (40, 3),
+        "cbufferLoadLegacy" => (59, 3),
+        "bufferLoad" => (68, 4),
+        "annotateHandle" => (216, 3),
+        "createHandleFromBinding" => (217, 4),
+        _ => anyhow::bail!("Unsupported source vertex intrinsic {name}"),
+    };
+    ensure!(
+        args.len() == arity && number(args[0])? == opcode,
+        "Source vertex intrinsic {name} has unexpected operands"
+    );
+    Ok((name, args))
 }
 
 struct Source<'a> {
@@ -37,6 +44,7 @@ impl Source<'_> {
             "Unsupported source vertex handle"
         );
         if args[1].ends_with("zeroinitializer") {
+            ensure!(number(args[2])? == 0, "Source vertex resource array");
             return Ok((0, 0));
         }
         let row = args[1]
@@ -47,7 +55,10 @@ impl Source<'_> {
             .trim();
         let row = arguments(row)?;
         ensure!(
-            row.len() == 4 && number(row[0])? == number(row[1])? && number(row[2])? == 0,
+            row.len() == 4
+                && number(row[0])? == number(row[1])?
+                && number(row[2])? == 0
+                && number(args[2])? == number(row[0])?,
             "Source vertex resource array"
         );
         Ok((number(row[3])?, number(row[0])?))
@@ -76,6 +87,7 @@ impl Source<'_> {
         }
         if let Some(rest) = code.strip_prefix("extractvalue ") {
             let args = arguments(rest)?;
+            ensure!(args.len() == 2, "Source vector extraction arity");
             let lane = number(args[1])? as usize;
             ensure!(lane < 4, "Source vector lane");
             let (name, read) = call(self.definition(args[0])?)?;
@@ -122,8 +134,10 @@ impl Source<'_> {
                             .strip_prefix("extractvalue ")
                             .context("Source color bound lane")?;
                         let parts = arguments(extract)?;
-                        let (_, load) = call(self.definition(parts[0])?)?;
-                        count = number(parts[1])? == 2
+                        ensure!(parts.len() == 2, "Source color bound extraction arity");
+                        let (operation, load) = call(self.definition(parts[0])?)?;
+                        count = operation == "cbufferLoadLegacy"
+                            && number(parts[1])? == 2
                             && self.binding(load[1])? == (2, 1)
                             && number(load[2])? == 11;
                     }
@@ -186,13 +200,30 @@ pub(super) fn hlsl(
         surface,
     };
     let mut writes = BTreeMap::new();
-    for line in listing.lines().map(str::trim) {
+    // DXC also emits intrinsic declarations. Only the executable body owns
+    // SSA definitions and output writes, and each function has its own SSA IDs.
+    let mut functions = listing.split("define void @").skip(1);
+    let function = functions
+        .next()
+        .context("Missing source vertex entry point")?;
+    ensure!(
+        functions.next().is_none(),
+        "Multiple source vertex entry points"
+    );
+    let body = function
+        .split_once("() {")
+        .context("Unsupported source vertex entry point")?
+        .1
+        .split_once("\n}")
+        .context("Unterminated source vertex entry point")?
+        .0;
+    for line in body.lines().map(str::trim) {
         let line = line.split(';').next().unwrap().trim();
         if let Some((name, code)) = line.strip_prefix('%').and_then(|s| s.split_once(" = ")) {
             if name.bytes().all(|b| b.is_ascii_digit()) {
                 source.definitions.insert(name.parse()?, code);
             }
-        } else if line.contains("@dx.op.storeOutput.f32") {
+        } else if line.starts_with("call void @dx.op.storeOutput.f32(") {
             let (_, args) = call(line)?;
             ensure!(number(args[2])? == 0, "Source vertex output row");
             writes.insert((number(args[1])?, number(args[3])?), args[4]);
@@ -252,12 +283,16 @@ pub(super) fn hlsl(
                 _ => {
                     let components = (0..width)
                         .map(|lane| {
-                            source.scalar(
-                                writes
-                                    .get(&(ordinal as u32, lane as u32))
-                                    .context("Missing source varying lane")?,
-                                0,
-                            )
+                            source
+                                .scalar(
+                                    writes
+                                        .get(&(ordinal as u32, lane as u32))
+                                        .context("Missing source varying lane")?,
+                                    0,
+                                )
+                                .with_context(|| {
+                                    format!("Source vertex varying TEXCOORD{index} lane {lane}")
+                                })
                         })
                         .collect::<Result<Vec<_>>>()?;
                     colors |= components.iter().any(|s| s.contains("vertexColor"));

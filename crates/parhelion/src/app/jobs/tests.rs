@@ -174,6 +174,8 @@ fn invalidated_build_does_not_become_installable_when_its_worker_finishes() {
     sender
         .send(BuildWorkerEvent::Finished {
             result: Ok(BuildReport {
+                mods: Vec::new(),
+                import_conversions: Default::default(),
                 weapons: vec![],
                 run_directory: "older-staged-run".into(),
                 manifest_path: "older-staged-run/manifest.json".into(),

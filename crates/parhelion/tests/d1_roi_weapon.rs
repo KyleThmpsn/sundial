@@ -147,6 +147,32 @@ fn mounted_weapons_reload_and_stage_with_private_art_and_source_perk_contracts()
         );
         let (tag, bytes) = item(&mut stock, donor)?;
         unchanged.insert(tag, bytes);
+        for event in graph["audio"]["matched_events"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            let mut tags = Vec::new();
+            for field in ["owner", "parent", "group"] {
+                tags.push(
+                    event["native_group"][field]
+                        .as_str()
+                        .ok_or("Native audio group")?,
+                );
+            }
+            for sound in event["native_sounds"].as_array().ok_or("Native sounds")? {
+                for field in ["tag", "bank"] {
+                    tags.push(sound[field].as_str().ok_or("Native audio asset")?);
+                }
+                for medium in sound["media"].as_array().ok_or("Native media")? {
+                    tags.push(medium.as_str().ok_or("Native medium")?);
+                }
+            }
+            for tag in tags {
+                let tag = u32::from_str_radix(tag, 16)?;
+                unchanged.insert(tag, stock.tag(tag, None)?.0.clone());
+            }
+        }
         for plug in &reloaded.overrides.socket_plug_variants {
             let (tag, bytes) = item(&mut stock, plug.source_plug_hash.parse_u32()?)?;
             unchanged.insert(tag, bytes);
@@ -182,7 +208,20 @@ fn mounted_weapons_reload_and_stage_with_private_art_and_source_perk_contracts()
         );
     }
     for (recipe, receipt) in recipes.iter().zip(&mut receipts) {
-        let (_, bytes) = item(&mut readback, recipe.identity.item_hash.parse_u32()?)?;
+        let (item_tag, bytes) = item(&mut readback, recipe.identity.item_hash.parse_u32()?)?;
+        receipt["named_audio_readback"] = d1_roi_weapon::readback::audio(
+            &mut readback,
+            &source,
+            item_tag,
+            &receipt["graph"],
+            recipe
+                .overrides
+                .imported_graph
+                .as_ref()
+                .ok_or("Imported graph")?
+                .directory
+                .as_path(),
+        )?;
         let definition = parhelion_import::tiger::payload::Payload(bytes);
         assert!(
             definition.u8(0xB8)? <= 2,

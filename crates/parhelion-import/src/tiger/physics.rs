@@ -81,6 +81,17 @@ impl Hull {
     }
 }
 
+/// Whether `bytes` is a native Havok 2012.2 packfile whose first object is of class `root`.
+pub(crate) fn rooted(bytes: &[u8], root: &str) -> bool {
+    Template::read(bytes, root).is_ok()
+}
+
+/// Whether `bytes` is a native Havok 2012.2 packfile rooted at `root` that holds an object of
+/// class `class`.
+pub(crate) fn holds(bytes: &[u8], root: &str, class: &str) -> bool {
+    Template::read(bytes, root).is_ok_and(|template| template.objects.contains_key(class))
+}
+
 struct Template {
     prefix: Vec<u8>,
     bytes: Vec<u8>,

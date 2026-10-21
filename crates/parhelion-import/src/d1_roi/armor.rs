@@ -37,7 +37,7 @@ impl Source {
                 .selected
                 .iter()
                 .all(|package| package.platform == 8),
-            "Armor discovery currently supports Xbox One Rise of Iron packages"
+            "Only the Xbox One build of Rise of Iron is supported"
         );
         let (_, definitions) = self.table(0x80801933)?;
         let (_, strings) = self.table(0x808034C7)?;

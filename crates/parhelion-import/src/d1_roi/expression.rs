@@ -214,6 +214,8 @@ const POWER_SCALE: f32 = 400.0 / 1060.0;
 pub(super) struct Inputs<'a> {
     pub globals: &'a Globals,
     pub dye: Option<&'a Payload>,
+    /// No channel can populate the freshly zeroed source gear-dye extern.
+    pub empty_palette: bool,
     pub secondary: bool,
     pub plates: &'a [String; 3],
     pub detail: &'a [String; 2],
@@ -285,6 +287,7 @@ pub(super) fn operand_bytes(op: u8) -> Result<usize> {
     })
 }
 
+#[allow(clippy::cognitive_complexity)]
 pub(super) fn translate(code: &[u8], constants: Vec<u8>, inputs: &Inputs<'_>) -> Result<Program> {
     ensure!(
         constants.len().is_multiple_of(16) && constants.len() / 16 <= 256,
@@ -336,10 +339,14 @@ pub(super) fn translate(code: &[u8], constants: Vec<u8>, inputs: &Inputs<'_>) ->
                 };
                 if symbol.is_empty()
                     && let [27, index @ 0..=1] = args
-                    && let Some(dye) = inputs.dye
-                    && dye.u32(0x60 + usize::from(*index) * 4)? == u32::MAX
+                    && (if let Some(dye) = inputs.dye {
+                        dye.u32(0x60 + usize::from(*index) * 4)? == u32::MAX
+                    } else {
+                        inputs.empty_palette
+                    })
                 {
-                    // Source 008C4080 writes a null resource for the absent tag.
+                    // Source 008C4080 writes a null resource for an absent tag. With no dyes,
+                    // the gear extern retains the null pointers from allocator 00855E80.
                     // Native 34 pushes its raw vector and 47 binds its low qword.
                     result.constant([0; 16])?;
                     result.code.extend([0x47, slot]);
@@ -387,8 +394,19 @@ pub(super) fn translate(code: &[u8], constants: Vec<u8>, inputs: &Inputs<'_>) ->
                             }
                             value
                         } else {
-                            ensure!(*index == 3, "Source material needs an absent equipment dye");
-                            vector([0., 0., 0., 1.])
+                            ensure!(
+                                inputs.empty_palette || *index == 3,
+                                "Source material needs an absent equipment dye"
+                            );
+                            // Fresh gear externs are zeroed. Source 00885547 sets specular to
+                            // (0, 0, 1, 0), then 00885560 sets normal W to one for a missing dye.
+                            // Only a wholly empty palette guarantees the other fields were not
+                            // populated by a previously drawn channel.
+                            match *index {
+                                2 => vector([0., 0., 1., 0.]),
+                                3 => vector([0., 0., 0., 1.]),
+                                _ => [0; 16],
+                            }
                         }
                     }
                     _ => anyhow::bail!("Unsupported source equipment vector {args:?}"),

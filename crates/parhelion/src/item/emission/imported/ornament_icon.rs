@@ -71,7 +71,7 @@ pub(super) fn entry_bound(
     // does not describe every donor's actual resource count.
     let plan = crate::watermark::build_presented_watermark_plan(
         manager,
-        crate::package_profile::window().base,
+        crate::package_profile::window().first(),
         0,
         0,
         &[artwork.request],
@@ -100,6 +100,25 @@ pub(super) fn apply(
     }) = artwork(emission, graph, folder)?
     else {
         return Ok(());
+    };
+    let package_index = if crate::package_profile::host().is_standalone() {
+        let draft = crate::watermark::build_presented_watermark_plan(
+            manager,
+            crate::package_profile::window().first(),
+            0,
+            0,
+            std::slice::from_ref(&request),
+            crate::watermark::Presentation {
+                branding,
+                artwork: &[None],
+            },
+            &|_| format!("Ornament {target:08X}"),
+        )?;
+        emission
+            .asset_packages
+            .reserve_group(draft.new_tags.iter().map(|tag| tag.payload.len()))?
+    } else {
+        package_index
     };
     let donor = request.donor_container_tag;
     let package = &emission.asset_packages.packages[package_index];

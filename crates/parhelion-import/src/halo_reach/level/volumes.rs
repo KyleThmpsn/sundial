@@ -288,6 +288,18 @@ impl Volume {
     }
 }
 
+/// Every trigger volume of the scenario of `map` in `maps` with a footprint and a height, by name,
+/// in meters.
+pub fn triggers(maps: &std::path::Path, map: &str) -> Result<Vec<Volume>> {
+    let cache = Cache::open(&maps.join(map))?;
+    let scenario = cache.only("scnr")?.address()?;
+    let mut volumes = Vec::new();
+    for row in cache.block(scenario + TRIGGER_VOLUMES, TRIGGER_VOLUME_SIZE)? {
+        volumes.extend(trigger(&cache, row)?);
+    }
+    Ok(volumes)
+}
+
 /// The trigger volume at `row`, in meters, or none when it has no footprint or height.
 fn trigger(cache: &Cache, row: usize) -> Result<Option<Volume>> {
     let name = cache.string_id(cache.u32(row + VOLUME_NAME)?)?;

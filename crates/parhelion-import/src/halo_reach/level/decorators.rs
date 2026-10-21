@@ -19,8 +19,7 @@
 //!
 //! A set names its level of detail models from `+0x00` and its types at `+0x40` by string ID,
 //! each the name of an instance of those models. The translation draws each instance with the
-//! instance of its type in the set's second model, or its first when it has one alone or the
-//! second holds a different number of instances ([`DRAWN_DETAIL`]), from the set's texture, alpha
+//! instance of its type in one of the set's models ([`place`]), from the set's texture, alpha
 //! tested, lit by a probe of the instance's light, and from both sides. A type without an instance
 //! in that model draws nothing.
 use super::{
@@ -34,7 +33,7 @@ use super::{
     CLUSTER_SIZE, CLUSTERS, lightmap,
 };
 use anyhow::{Context, Result, ensure};
-use serde_json::{Value, json};
+use serde_json::json;
 use std::collections::{BTreeMap, HashSet};
 
 const PALETTE: usize = 0x274;
@@ -53,12 +52,21 @@ const SET_MODELS: usize = 0x00;
 const SET_MODEL_SIZE: usize = 0x10;
 const SET_TYPES: usize = 0x40;
 const SET_TEXTURE: usize = 0x50;
-/// The level of detail every instance draws with, when the set has it, and otherwise its first.
-/// A set fades its first model out within 2 to 8 world units and its second within 4 to 15, so
-/// most decorators in view draw with the second or a later one. Hang 'Em High's first models made
-/// its 3,795 decorators 1,341,857 triangles, against about 570,000 for the rest of the level. Its
-/// grass's second model is a strip of 32 vertices against the first's 230.
+/// The most detailed model a set draws with, when it has it, and otherwise its first. A set fades
+/// its first model out within 2 to 8 world units and its second within 4 to 15, so most decorators
+/// in view draw with the second or a later one. Hang 'Em High's first models made its 3,795
+/// decorators 1,341,857 triangles, against about 570,000 for the rest of the level. Its grass's
+/// second model is a strip of 32 vertices against the first's 230.
 const DRAWN_DETAIL: usize = 1;
+/// A set's level of detail models, the most detailed first.
+const DETAILS: usize = 4;
+/// The triangles a level draws, its structure's and its decorators', past which its decorators
+/// draw coarser models ([`place`]). Every decorator is its own copy of its model, so they cost
+/// Destiny's GPU memory as the structure does. Boardwalk's 4,155,834 triangles and Asylum's
+/// 4,020,988, 2,682,046 of them decorators, load. Tip of the Spear's stretches from `set_hill` to
+/// `set_twin`, 8,267,324 triangles with 6,266,043 of decorators' second models, exhausted it on
+/// load ("Cortex GPU OOM").
+const LEVEL_TRIANGLES: usize = 4_200_000;
 /// A render model's instances, each naming itself first.
 const MODEL_INSTANCES: usize = 0x20;
 const MODEL_INSTANCE_SIZE: usize = 60;
@@ -191,6 +199,7 @@ fn material(set: &Tag, texture: Tag) -> Material {
             ("alpha_test".to_owned(), "simple".to_owned()),
         ]),
         properties: vec![Property {
+            overlays: Default::default(),
             template: set.clone(),
             constants: BTreeMap::from([("albedo_color".to_owned(), [1.; 4])]),
             textures: vec![Mapping {
@@ -199,6 +208,7 @@ fn material(set: &Tag, texture: Tag) -> Material {
                 transform: [1., 1., 0., 0.],
                 frame: 0,
                 address: 0,
+                filter: 0,
                 functions: Vec::new(),
             }],
             functions: Vec::new(),
@@ -215,46 +225,37 @@ fn instance_names(cache: &Cache, tag: &Tag) -> Result<Vec<String>> {
         .collect()
 }
 
-/// A decorator set's material, by index among the BSP's materials, each of its types'
-/// primitives in the type's own space, two sided, none for a type its model lacks, and the path
-/// of the model they come from.
-type Set = (usize, Vec<Vec<Primitive>>, String);
+/// Each of a set's types drawn with one of its models: the type's primitives in its own space, two
+/// sided, none for a type that model lacks.
+type Types = Vec<Vec<Primitive>>;
 
-/// Reads set `tag`, adding its material to `materials`.
-fn read_set(
+/// Set `tag`'s types drawn with its model `detail`, counted from `+0x00`, and that model's path.
+/// Types name the first model's instances. A later model holds the same instances in the same order
+/// under names of its own, as Hang 'Em High's grass instance `0x230D` is `0x2311` in its second
+/// model. A later model with a different count, as Asylum's `forge_flowers_lod2` holds 2 of
+/// `forge_flowers`'s 3, cannot be paired with the types, and gives none, as does a model the set
+/// lacks.
+fn types_at(
     cache: &Cache,
     pages: &mut Pages,
     tag: &Tag,
-    materials: &mut Vec<Material>,
-) -> Result<Set> {
+    detail: usize,
+) -> Result<Option<(Types, String)>> {
     let at = tag.address()?;
-    let texture = cache
-        .reference(at + SET_TEXTURE, Some("bitm"))?
-        .with_context(|| format!("Decorator set {} names no texture", tag.path))?;
     let first = cache
         .reference(at + SET_MODELS, Some("mode"))?
         .with_context(|| format!("Decorator set {} names no model", tag.path))?;
-    // Types name the first model's instances. A later model holds the same instances in the same
-    // order under names of its own, as Hang 'Em High's grass instance `0x230D` is `0x2311` in its
-    // second model. A later model with a different count, as Asylum's `forge_flowers_lod2` holds
-    // 2 of `forge_flowers`'s 3, cannot be paired with the types, so that set draws its first.
+    let Some(render) = cache.reference(at + SET_MODELS + detail * SET_MODEL_SIZE, Some("mode"))?
+    else {
+        return Ok(None);
+    };
     let first_names = instance_names(cache, &first)?;
-    let mut render = first.clone();
-    let mut drawn_names = first_names.clone();
-    if let Some(later) = cache.reference(
-        at + SET_MODELS + DRAWN_DETAIL * SET_MODEL_SIZE,
-        Some("mode"),
-    )? {
-        let names = instance_names(cache, &later)?;
-        if names.len() == first_names.len() {
-            render = later;
-            drawn_names = names;
-        }
+    let drawn_names = instance_names(cache, &render)?;
+    if drawn_names.len() != first_names.len() {
+        return Ok(None);
     }
     let model = model::read_static(cache, pages, &render, &BTreeMap::new())
         .with_context(|| format!("Decorator set {}", tag.path))?;
-    materials.push(material(tag, texture));
-    let index = materials.len() - 1;
     let types = cache
         .block(at + SET_TYPES, 4)?
         .into_iter()
@@ -271,35 +272,41 @@ fn read_set(
                 .primitives
                 .iter()
                 .filter(|primitive| primitive.instance.as_deref() == Some(drawn.as_str()))
-                .map(|primitive| {
-                    let mut primitive = two_sided(primitive.clone());
-                    primitive.material = Some(index);
-                    primitive
-                })
+                .map(|primitive| two_sided(primitive.clone()))
                 .collect::<Vec<_>>())
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok((index, types, render.path))
+    Ok(Some((types, render.path)))
 }
 
-/// The decorators of the structure BSP `tag` at `at`: each instance's primitives with the probe of
-/// its light, whose materials follow `materials`, to which each set's material is added, and a
-/// report. A BSP without decorator sets gives none.
-#[allow(clippy::type_complexity)]
+/// One structure BSP's decorators before their sets' models are chosen ([`place`]).
+#[derive(Default)]
+pub(super) struct Decorators {
+    /// Each set in palette order and its material's index among the BSP's materials.
+    sets: Vec<(Tag, usize)>,
+    /// Each instance's set, by palette index, its place and the index of its light's probe.
+    instances: Vec<(usize, Instance, usize)>,
+    grids: usize,
+}
+
+/// The decorators of the structure BSP `tag` at `at`, adding each set's material to `materials`
+/// and passing each instance's light to `probe`, which gives the index of its probe. A BSP without
+/// decorator sets gives none.
 pub(super) fn read(
     cache: &Cache,
     pages: &mut Pages,
     tag: &Tag,
     at: usize,
     materials: &mut Vec<Material>,
-) -> Result<(Vec<(Vec<Primitive>, lightmap::Texel)>, Value)> {
+    probe: &mut dyn FnMut(lightmap::Texel) -> usize,
+) -> Result<Decorators> {
     let palette = cache.block(at + PALETTE, PALETTE_SIZE)?;
     if palette.is_empty() {
-        return Ok((Vec::new(), json!({"sets": 0})));
+        return Ok(Decorators::default());
     }
-    let geometry = Geometry::read(cache, tag, at + GEOMETRY, true)
+    let geometry = Geometry::read(cache, tag, at + GEOMETRY)
         .with_context(|| format!("Decorator geometry of {}", tag.path))?;
-    let mut sets = Vec::with_capacity(palette.len());
+    let mut decorators = Decorators::default();
     let mut buffers = Vec::with_capacity(palette.len());
     for (index, &row) in palette.iter().enumerate() {
         let set = cache
@@ -311,71 +318,165 @@ pub(super) fn read(
             "Decorator set {index} of {} holds no instance buffer",
             tag.path
         );
-        let loaded = read_set(cache, pages, &set, materials)?;
-        sets.push((set, loaded));
+        let texture = cache
+            .reference(set.address()? + SET_TEXTURE, Some("bitm"))?
+            .with_context(|| format!("Decorator set {} names no texture", set.path))?;
+        materials.push(material(&set, texture));
+        decorators.sets.push((set, materials.len() - 1));
         buffers.push(bytes);
     }
-    let mut out = Vec::<(Vec<Primitive>, lightmap::Texel)>::new();
-    let mut placed = vec![0usize; sets.len()];
-    let mut untyped = vec![0usize; sets.len()];
-    let mut grids = 0;
     for cluster in cache.block(at + CLUSTERS, CLUSTER_SIZE)? {
         for grid in cache.block(cluster + GRIDS, GRID_SIZE)? {
-            grids += 1;
+            decorators.grids += 1;
             let count = usize::try_from(cache.i16(grid)?)?;
             let set = usize::try_from(cache.u8(grid + GRID_SET)? as i8)?;
             let start = usize::try_from(cache.u32(grid + GRID_START)?)?;
             let corner = cache.floats::<3>(grid + GRID_CORNER)?;
             let extent = cache.floats::<3>(grid + GRID_EXTENT)?;
-            let (_, (_, types, _)) = sets
+            let bytes = buffers
                 .get(set)
-                .with_context(|| format!("A decorator grid names set {set} of {}", sets.len()))?;
-            let bytes = buffers[set]
+                .with_context(|| format!("A decorator grid names set {set} of {}", buffers.len()))?
                 .get(start..start + count * INSTANCE_SIZE)
                 .with_context(|| {
                     format!("A decorator grid of set {set} reaches past its buffer")
                 })?;
             for row in bytes.chunks_exact(INSTANCE_SIZE) {
                 let instance = Instance::decode(row, corner, extent)?;
-                let primitives = types.get(instance.kind).filter(|kind| !kind.is_empty());
-                let Some(primitives) = primitives else {
-                    untyped[set] += 1;
-                    continue;
-                };
-                placed[set] += 1;
-                let group = primitives
-                    .iter()
-                    .map(|primitive| {
-                        let mut primitive = instance.place(primitive);
-                        primitive.instance = Some(format!("decorator{set}"));
-                        primitive
-                    })
-                    .collect();
-                out.push((
-                    group,
-                    lightmap::Texel::ambient(instance.light, instance.sun),
-                ));
+                let light = probe(lightmap::Texel::ambient(instance.light, instance.sun));
+                decorators.instances.push((set, instance, light));
             }
         }
     }
-    let triangles = out
-        .iter()
-        .flat_map(|(group, _)| group)
-        .map(|primitive| primitive.indices.len() / 3)
-        .sum::<usize>();
-    let report = json!({
-        "sets": sets.iter().zip(placed.iter().zip(&untyped)).map(|((set, (material, types, model)), (placed, untyped))| json!({
-            "set": set.path,
-            "model": model,
-            "material": material,
-            "types": types.iter().map(Vec::len).collect::<Vec<_>>(),
-            "placed": placed,
-            "untyped": untyped,
-        })).collect::<Vec<_>>(),
-        "grids": grids,
-        "placed": placed.iter().sum::<usize>(),
-        "untyped": untyped.iter().sum::<usize>(),
-        "triangles": triangles,
-    });
-    Ok((out, report))
+    Ok(decorators)
+}
+
+/// Draws the decorators of every BSP in `parts`, appending each instance's primitives, lit by its
+/// probe, to its BSP's own, and writes each BSP's report. Each set draws its second model, or its
+/// first when its second cannot be paired with its types ([`types_at`]). While the level's
+/// triangles, the `structure`'s and the decorators', exceed [`LEVEL_TRIANGLES`], the set whose next
+/// coarser model saves the most triangles draws that one instead. Every instance still draws.
+pub(super) fn place(
+    cache: &Cache,
+    pages: &mut Pages,
+    parts: &mut [super::Part],
+    structure: usize,
+) -> Result<()> {
+    // Each set's tag and how many instances of each of its types the level places.
+    let mut sets = BTreeMap::<String, (Tag, Vec<usize>)>::new();
+    for part in parts.iter() {
+        for (tag, _) in &part.decorated.sets {
+            sets.entry(tag.path.clone())
+                .or_insert_with(|| (tag.clone(), Vec::new()));
+        }
+        for (set, instance, _) in &part.decorated.instances {
+            let tag = &part.decorated.sets[*set].0;
+            let (_, counts) = sets
+                .entry(tag.path.clone())
+                .or_insert_with(|| (tag.clone(), Vec::new()));
+            if counts.len() <= instance.kind {
+                counts.resize(instance.kind + 1, 0);
+            }
+            counts[instance.kind] += 1;
+        }
+    }
+    // Each set's drawable models, most detailed first.
+    let mut models = BTreeMap::<String, Vec<(Types, String)>>::new();
+    for (path, (tag, _)) in &sets {
+        let mut drawable = Vec::new();
+        for detail in DRAWN_DETAIL..DETAILS {
+            drawable.extend(types_at(cache, pages, tag, detail)?);
+        }
+        if drawable.is_empty() {
+            drawable.extend(types_at(cache, pages, tag, 0)?);
+        }
+        ensure!(
+            !drawable.is_empty(),
+            "Decorator set {path} has no model to draw"
+        );
+        models.insert(path.clone(), drawable);
+    }
+    let cost = |path: &str, choice: usize| -> usize {
+        let types = &models[path][choice].0;
+        sets[path]
+            .1
+            .iter()
+            .enumerate()
+            .map(|(kind, count)| {
+                count
+                    * types.get(kind).map_or(0, |primitives| {
+                        primitives
+                            .iter()
+                            .map(|primitive| primitive.indices.len() / 3)
+                            .sum()
+                    })
+            })
+            .sum()
+    };
+    let mut chosen = models
+        .keys()
+        .map(|path| (path.clone(), 0usize))
+        .collect::<BTreeMap<_, _>>();
+    let mut total = structure + chosen.keys().map(|path| cost(path, 0)).sum::<usize>();
+    while total > LEVEL_TRIANGLES {
+        let coarser = chosen
+            .iter()
+            .filter(|&(path, &choice)| choice + 1 < models[path].len())
+            .map(|(path, &choice)| {
+                (
+                    cost(path, choice).saturating_sub(cost(path, choice + 1)),
+                    path.clone(),
+                )
+            })
+            .max();
+        let Some((saved, path)) = coarser.filter(|&(saved, _)| saved > 0) else {
+            break;
+        };
+        total -= saved;
+        *chosen.entry(path).or_default() += 1;
+    }
+    for part in parts.iter_mut() {
+        let decorated = std::mem::take(&mut part.decorated);
+        if decorated.sets.is_empty() {
+            part.decorators = json!({"sets": 0});
+            continue;
+        }
+        let mut placed = vec![0usize; decorated.sets.len()];
+        let mut untyped = vec![0usize; decorated.sets.len()];
+        let mut triangles = 0;
+        for (set, instance, probe) in decorated.instances {
+            let (tag, material) = &decorated.sets[set];
+            let (types, _) = &models[&tag.path][chosen[&tag.path]];
+            let Some(primitives) = types.get(instance.kind).filter(|kind| !kind.is_empty()) else {
+                untyped[set] += 1;
+                continue;
+            };
+            placed[set] += 1;
+            for primitive in primitives {
+                let mut primitive = instance.place(primitive);
+                primitive.material = Some(*material);
+                primitive.instance = Some(format!("decorator{set}"));
+                triangles += primitive.indices.len() / 3;
+                part.primitives.push(primitive);
+                part.primitive_probes.push(Some(probe));
+            }
+        }
+        part.decorators = json!({
+            "sets": decorated.sets.iter().zip(placed.iter().zip(&untyped)).map(|((tag, material), (placed, untyped))| {
+                let (types, model) = &models[&tag.path][chosen[&tag.path]];
+                json!({
+                    "set": tag.path,
+                    "model": model,
+                    "material": material,
+                    "types": types.iter().map(Vec::len).collect::<Vec<_>>(),
+                    "placed": placed,
+                    "untyped": untyped,
+                })
+            }).collect::<Vec<_>>(),
+            "grids": decorated.grids,
+            "placed": placed.iter().sum::<usize>(),
+            "untyped": untyped.iter().sum::<usize>(),
+            "triangles": triangles,
+        });
+    }
+    Ok(())
 }

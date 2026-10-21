@@ -168,7 +168,10 @@ fn a_created_shader_is_selected_saved_and_built_with_its_weapon() {
     let mut changed = shader.clone();
     changed.flavor = "Changed after the first snapshot".into();
     library.save_existing(&shader_path, &changed).unwrap();
-    assert_ne!(snapshot.fingerprint, app.snapshot().unwrap().fingerprint);
+    assert_ne!(
+        snapshot.fingerprint().unwrap(),
+        app.snapshot().unwrap().fingerprint().unwrap()
+    );
     library.save_existing(&shader_path, &shader).unwrap();
     assert!(app.open_recipe_path(&shader_path));
     library.save_existing(&shader_path, &changed).unwrap();

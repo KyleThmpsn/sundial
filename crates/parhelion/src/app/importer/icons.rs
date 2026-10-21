@@ -1,5 +1,7 @@
 use super::*;
-use parhelion_import::d2_mot::{icon, reader::Reader};
+use parhelion_import::d2_mot::icon;
+mod reader;
+use reader::Reader;
 
 // Older thumbnails contain only the primary artwork. The package stamp cannot
 // invalidate those when our layer composition changes.
@@ -73,7 +75,19 @@ impl Icons {
         }
     }
 
-    pub fn request(&mut self, ctx: &egui::Context, modern: &Path, visible: &[usize]) {
+    pub fn request(
+        &mut self,
+        ctx: &egui::Context,
+        source: Source,
+        settings: &Settings,
+        visible: &[usize],
+    ) {
+        let folder = match source {
+            Source::Modern => settings.modern_packages.as_deref(),
+            Source::Roi => settings.d1_roi.as_deref(),
+            _ => None,
+        };
+        let Some(folder) = folder else { return };
         let missing: Vec<_> = visible
             .iter()
             .copied()
@@ -88,16 +102,23 @@ impl Icons {
         }
         if self.requests.is_none() {
             let Ok(root) = data_root() else { return };
-            let modern = modern.to_owned();
+            let folder = folder.to_owned();
+            let xg = settings.d1_xg_library.clone();
             let ctx = ctx.clone();
             let (requests, incoming) = mpsc::sync_channel::<Vec<usize>>(1);
             let (sender, results) = mpsc::channel();
             self.requests = Some(requests);
             self.results = Some(results);
             thread::spawn(move || {
-                let generation = service::package_stamp(&modern).ok().and_then(|stamp| {
+                let generation = service::package_stamp(&folder).ok().and_then(|stamp| {
                     parhelion_import::cache::Generation::directory(
-                        &root.join("importer/icons").join(CACHE_VERSION),
+                        &root.join("importer/icons").join(CACHE_VERSION).join(
+                            if source == Source::Roi {
+                                "d1-roi"
+                            } else {
+                                "d2-mot"
+                            },
+                        ),
                         &stamp,
                     )
                 });
@@ -139,21 +160,12 @@ impl Icons {
                             continue;
                         }
                         let reader = reader.get_or_insert_with(|| {
-                            Reader::discovery(&modern, &root.join("importer/icons"), true)
-                                .map_err(|error| format!("{error:#}"))
+                            Reader::open(source, &folder, &root.join("importer/icons"), xg.clone())
                         });
                         let result = reader
                             .as_mut()
                             .map_err(|error| error.clone())
-                            .and_then(|reader| {
-                                icon::read_layers(reader, index)
-                                    .map_err(|error| format!("{error:#}"))
-                            })
-                            .and_then(|layers| composite(&layers))
-                            .and_then(|(size, rgba)| {
-                                image::RgbaImage::from_raw(size[0] as u32, size[1] as u32, rgba)
-                                    .ok_or_else(|| "Invalid icon pixel buffer".to_owned())
-                            })
+                            .and_then(|reader| reader.read(index))
                             .map(|image| {
                                 let image = thumbnail(&image);
                                 if let Some(path) = &path

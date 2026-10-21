@@ -71,6 +71,7 @@ pub(super) fn build(
             lenses: &BTreeMap::new(),
             paint: &BTreeMap::new(),
             lightmap: None,
+            vertex_data: None,
         },
     )?;
     Ok((

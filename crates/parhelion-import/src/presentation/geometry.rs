@@ -24,7 +24,35 @@ pub fn encode_with_stages(
         stages.values().all(|stage| matches!(stage, 0 | 7)),
         "Unsupported surface stage"
     );
-    encode_passes(mesh, native, native_mesh, stages, true, None)
+    encode_passes(mesh, native, native_mesh, stages, true, None, None)
+}
+
+/// As [`encode_with_stages`], with positions on one grid of `step` meters from the origin: the
+/// model's center lies on the grid and its range is 32,767 steps, so pieces that share a corner
+/// store it as the same point. A model too wide for `step` takes the smallest power-of-two
+/// multiple of it that holds the model. The surface groups `shadowless` names cast no shadow.
+pub fn encode_on_grid(
+    mesh: &Mesh,
+    native: &Payload,
+    native_mesh: usize,
+    stages: &std::collections::BTreeMap<u32, u8>,
+    shadowless: &std::collections::BTreeSet<u32>,
+    step: f32,
+) -> Result<Encoded> {
+    ensure!(
+        stages.values().all(|stage| matches!(stage, 0 | 7)),
+        "Unsupported surface stage"
+    );
+    ensure!(step > 0. && step.is_finite(), "Invalid position grid");
+    encode_passes(
+        mesh,
+        native,
+        native_mesh,
+        stages,
+        true,
+        None,
+        Some((step, shadowless)),
+    )
 }
 
 /// Bind each authored primitive to a declared component activation group.
@@ -43,7 +71,7 @@ pub(crate) fn encode_grouped(
         groups.len() == mesh.groups.len() && groups.iter().all(|&group| group <= i16::MAX as u16),
         "Authored activation groups differ from primitive groups"
     );
-    encode_passes(mesh, native, native_mesh, stages, true, Some(groups))
+    encode_passes(mesh, native, native_mesh, stages, true, Some(groups), None)
 }
 
 /// Keep explicitly supplied surface, decal, shadow, transparent, depth and reticle
@@ -64,7 +92,7 @@ pub fn encode_source_passes(
             .all(|stage| matches!(stage, 0 | 1 | 3 | 7 | 9 | 12 | 16)),
         "Unsupported source presentation pass"
     );
-    encode_passes(mesh, native, native_mesh, stages, false, None)
+    encode_passes(mesh, native, native_mesh, stages, false, None, None)
 }
 
 #[expect(
@@ -78,6 +106,7 @@ fn encode_passes(
     stages: &std::collections::BTreeMap<u32, u8>,
     automatic_shadows: bool,
     groups: Option<&[u16]>,
+    grid: Option<(f32, &std::collections::BTreeSet<u32>)>,
 ) -> Result<Encoded> {
     ensure!(
         !mesh.positions.is_empty() && mesh.positions.len() == mesh.attributes.len(),
@@ -118,10 +147,20 @@ fn encode_passes(
             .map(|p| p[a])
             .fold(f32::NEG_INFINITY, f32::max)
     });
-    let center = std::array::from_fn::<_, 3, _>(|a| (lo[a] + hi[a]) / 2.);
-    let scale = (0..3)
+    let mut center = std::array::from_fn::<_, 3, _>(|a| (lo[a] + hi[a]) / 2.);
+    let mut scale = (0..3)
         .map(|a| (hi[a] - lo[a]) / 2.)
         .fold(0.000001, f32::max);
+    if let Some((step, _)) = grid {
+        // The snapped center moves by up to half a step, so the range holds the half extent and
+        // one step more.
+        let mut step = step;
+        while scale + step > 32767. * step {
+            step *= 2.;
+        }
+        center = center.map(|value| (value / step).round() * step);
+        scale = 32767. * step;
+    }
     let ulo = std::array::from_fn::<_, 2, _>(|a| {
         mesh.attributes
             .iter()
@@ -173,8 +212,9 @@ fn encode_passes(
         if [0, 1, 3, 7, 9, 12, 16].contains(&stage) {
             for (group_index, (mat, faces)) in mesh.groups.iter().enumerate() {
                 let surface_stage = usize::from(*stages.get(mat).unwrap_or(&0));
+                let shadowless = grid.is_some_and(|(_, shadowless)| shadowless.contains(mat));
                 if stage != surface_stage
-                    && !(automatic_shadows && stage == 3 && surface_stage == 0)
+                    && !(automatic_shadows && stage == 3 && surface_stage == 0 && !shadowless)
                 {
                     continue;
                 }

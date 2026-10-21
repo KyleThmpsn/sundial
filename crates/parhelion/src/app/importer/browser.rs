@@ -668,8 +668,8 @@ impl PackageAuthoringApp {
                 }
             }
         }
-        if let Some(modern) = settings.modern_packages.as_ref().filter(|_| with_icons) {
-            icons.request(ui.ctx(), modern, &icon_indices);
+        if with_icons {
+            icons.request(ui.ctx(), *source, settings, &icon_indices);
         }
     }
 }

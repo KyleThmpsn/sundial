@@ -14,6 +14,9 @@ pub struct Vertex {
     pub normal: [f32; 3],
     pub tangent: [f32; 4],
     pub uv: [f32; 2],
+    /// Water body and global-shape coordinates, indexed by source triangle corner.
+    #[serde(skip)]
+    pub water_uv: Option<[f32; 2]>,
     pub joints: [u16; 4],
     pub weights: [f32; 4],
     /// The vertex's index in its section's vertex buffer, which other per-vertex streams share.
@@ -22,6 +25,9 @@ pub struct Vertex {
     /// Lightmap texture coordinates, which a level fills where its lightmap covers the vertex.
     #[serde(skip)]
     pub lightmap: Option<[f32; 2]>,
+    /// Source per-vertex lobe, ambient and direction. The fourth lanes hold bandwidth and sun.
+    #[serde(skip)]
+    pub lighting: Option<[[f32; 4]; 3]>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Primitive {
@@ -340,6 +346,7 @@ fn decode_vertices(
             "Skin bone outside skeleton"
         );
         vertices.push(Vertex {
+            water_uv: None,
             position,
             normal,
             tangent,
@@ -348,6 +355,7 @@ fn decode_vertices(
             weights,
             source: u32::try_from(source)?,
             lightmap: None,
+            lighting: None,
         });
     }
     Ok(vertices)
@@ -377,8 +385,8 @@ pub(super) struct Section {
 }
 
 impl Geometry {
-    /// The block at `base` of `tag`. With `unowned`, its buffer resource may name no owner.
-    pub(super) fn read(cache: &Cache, tag: &Tag, base: usize, unowned: bool) -> Result<Self> {
+    /// The block at `base` of `tag`.
+    pub(super) fn read(cache: &Cache, tag: &Tag, base: usize) -> Result<Self> {
         let sections = cache.block(base + 4, 92)?;
         let bounds = cache
             .block(base + 16, 52)?
@@ -394,7 +402,7 @@ impl Geometry {
             "Inverted compression bounds"
         );
         let node_maps = cache.block(base + 76, 12)?;
-        let resource = cache.resource_from(tag, cache.u32(base + 148)?, unowned)?;
+        let resource = cache.resource(tag, cache.u32(base + 148)?)?;
         ensure!(resource.fixup_size >= 24, "Short geometry fixup");
         let fixup = resource.fixup_offset;
         let vertex_buffers = usize::try_from(cache.i32(fixup + resource.fixup_size - 24)?)?;
@@ -426,7 +434,23 @@ impl Geometry {
         }
     }
 
-    /// Section `si`'s vertices and indices, or none when it has no vertices.
+    /// The primary vertex buffer, or none for a fully empty section placeholder.
+    fn primary_buffer(&self, cache: &Cache, si: usize) -> Result<Option<usize>> {
+        let Some(buffer) = self.section_buffer(cache, si, 0)? else {
+            let row = self.sections[si];
+            ensure!(
+                cache.block(row, 24)?.is_empty()
+                    && cache.block(row + 12, 16)?.is_empty()
+                    && cache.i16(row + 40)? == -1
+                    && (1..8).all(|slot| cache.i16(row + 24 + slot * 2).ok() == Some(-1)),
+                "Section {si} has draw data without a primary vertex buffer"
+            );
+            return Ok(None);
+        };
+        Ok(Some(buffer))
+    }
+
+    /// Section `si`'s vertices and indices, or none for an empty section or buffer.
     pub(super) fn section(
         &self,
         cache: &Cache,
@@ -437,7 +461,9 @@ impl Geometry {
     ) -> Result<Option<Section>> {
         let row = *self.sections.get(si).context("Section outside geometry")?;
         let fixup = self.resource.fixup_offset;
-        let vb = usize::try_from(cache.i16(row + 24)?)?;
+        let Some(vb) = self.primary_buffer(cache, si)? else {
+            return Ok(None);
+        };
         ensure!(vb < self.vertex_buffers, "Vertex buffer outside fixup");
         let count = usize::try_from(cache.i32(fixup + vb * 28)?)?;
         if count == 0 {
@@ -485,7 +511,7 @@ impl Geometry {
     }
 
     /// Section `si`'s vertex buffer bytes, vertex format, index list, restart value and
-    /// topology, with its vertices undecoded, or none when it has no vertices.
+    /// topology, with its vertices undecoded, or none for an empty section or buffer.
     pub(super) fn raw_section(
         &self,
         cache: &Cache,
@@ -493,7 +519,9 @@ impl Geometry {
         si: usize,
     ) -> Result<Option<RawSection>> {
         let row = *self.sections.get(si).context("Section outside geometry")?;
-        let vb = usize::try_from(cache.i16(row + 24)?)?;
+        let Some(vb) = self.primary_buffer(cache, si)? else {
+            return Ok(None);
+        };
         let (count, _, data) = self.vertex_buffer(cache, pages, vb)?;
         if count == 0 {
             return Ok(None);
@@ -570,6 +598,10 @@ impl Geometry {
         ensure!(slot < 8, "Vertex buffer slot outside section");
         let row = *self.sections.get(si).context("Section outside geometry")?;
         let vb = cache.i16(row + 24 + slot * 2)?;
+        ensure!(
+            vb >= -1,
+            "Invalid vertex buffer sentinel {vb} in section {si} slot {slot}"
+        );
         Ok(usize::try_from(vb).ok())
     }
 
@@ -667,7 +699,7 @@ fn decode(
     cache.meta(at, 252)?;
     let bones = model_bones(cache, at, posed)?;
     let markers = read_markers(cache, at, bones.len())?;
-    let geometry = Geometry::read(cache, tag, at + 100, false)?;
+    let geometry = Geometry::read(cache, tag, at + 100)?;
     let sections = &geometry.sections;
     let Selection {
         regions,

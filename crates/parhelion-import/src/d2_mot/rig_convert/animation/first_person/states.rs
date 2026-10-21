@@ -595,15 +595,49 @@ pub(super) fn convert_for_profile(
     profile: Option<u32>,
     implied: Option<(u32, u32)>,
 ) -> Result<Converted> {
-    let source = Dictionary::read(source_parameters, true)?;
+    let mut source = Dictionary::read(source_parameters, true)?;
     let native = Dictionary::read(native_parameters, false)?;
+    let source_header = source
+        .header
+        .chunks_exact(2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .collect::<Vec<_>>();
+    let native_header = native
+        .header
+        .chunks_exact(2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .collect::<Vec<_>>();
     ensure!(
-        source.header == native.header && source.groups.len() == native.groups.len(),
+        source.groups.len() <= native.groups.len()
+            && source_header.iter().zip(&native_header).all(|(s, n)| {
+                *s == u16::MAX || (s == n && usize::from(*s) < source.groups.len())
+            })
+            && (0..source.groups.len()).all(|group| source_header.contains(&(group as u16)))
+            && native_header
+                .iter()
+                .all(|group| *group == u16::MAX || usize::from(*group) < native.groups.len()),
         "animation builtin parameter map differs"
     );
     let mut ss = States::read(source_states, &source, true)?;
-    let profile_choices = profile_choices(&mut ss, &source, profile)?;
+    let mut profile_choices = profile_choices(&mut ss, &source, profile)?;
     let ns = States::read(native_states, &native, false)?;
+    // A source controller can omit trailing dictionaries that native fallback
+    // states still use. Keep those native domains and builtin bindings, provided
+    // source selectors never run against a changed binding. Incompatible named
+    // actions keep their native state node through the usual fallback path.
+    ss.names.retain(|_, index| {
+        ss.nodes[*index].selector.as_ref().is_none_or(|selector| {
+            selector
+                .parameters
+                .iter()
+                .all(|p| source_header[usize::from(*p)] == native_header[usize::from(*p)])
+        })
+    });
+    profile_choices.retain(|name, _| ss.names.contains_key(name));
+    source
+        .groups
+        .extend_from_slice(&native.groups[source.groups.len()..]);
+    source.header = native.header.clone();
     let (nodes, source_count, fallback) = convert_nodes(&ns, &ss, descriptor_map);
     ensure!(
         source_count > 0,

@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(in crate::item) mod audio;
 pub(in crate::item) mod projectile;
 pub(in crate::item) mod replication;
+mod texture;
 
 pub(in crate::item) struct Node<M = ()> {
     pub(in crate::item) symbol: String,
@@ -28,24 +29,49 @@ pub(in crate::item) fn author<M>(
 ) -> AuthoringResult<(BTreeMap<String, TagHash>, Vec<TagHash>)> {
     let required = replication::requirements(nodes, manager)?;
     let loading = replication::Loading::all(nodes, manager, roots, &required)?;
+    let aliases = texture::aliases(nodes, manager);
     let mut bounds = nodes
         .iter()
-        .map(|node| node.payload.len())
+        .enumerate()
+        .filter(|(index, _)| aliases[*index] == *index)
+        .map(|(_, node)| node.payload.len())
         .collect::<Vec<_>>();
     bounds.extend(loading.iter().map(|loading| loading.bound));
     let index = packages.reserve_group(bounds)?;
     let package = &mut packages.packages[index];
     let allocator = AppendedTagAllocator::new(package.id, 0);
     let base = package.tags.len();
+    let mut ordinals = vec![0; nodes.len()];
+    let mut next = base;
+    for (index, canonical) in aliases.iter().enumerate() {
+        if index == *canonical {
+            ordinals[index] = next;
+            next += 1;
+        }
+    }
     let mut symbols = BTreeMap::new();
     for (index, node) in nodes.iter().enumerate() {
         symbols.insert(
             node.symbol.clone(),
-            allocator.assigned_tag(base + index, "Private asset group", "asset")?,
+            allocator.assigned_tag(ordinals[aliases[index]], "Private asset group", "asset")?,
         );
     }
     let mut replacements = bind(&symbols)?;
-    for node in nodes {
+    // Bind-time edits cannot change a texture whose identity is shared. Audio
+    // replacements retain their own identities and are unaffected.
+    for (index, canonical) in aliases.iter().enumerate() {
+        if index != *canonical {
+            for node in [&nodes[index], &nodes[*canonical]] {
+                if replacements
+                    .get(&node.symbol)
+                    .is_some_and(|bytes| *bytes != node.payload)
+                {
+                    return Err(invalid("A shared resident texture changed during binding"));
+                }
+            }
+        }
+    }
+    for (index, node) in nodes.iter().enumerate() {
         if node.storage != crate::NewTagStorageMode::InheritTemplate
             && (node.reference.is_some()
                 || manager
@@ -89,6 +115,9 @@ pub(in crate::item) fn author<M>(
             );
         }
         validate(node, &payload, entity)?;
+        if aliases[index] != index {
+            continue;
+        }
         if let Some(target) = &node.reference {
             package.references.push(crate::NewTagReferenceOverride {
                 new_tag_ordinal: package.tags.len(),
@@ -115,6 +144,8 @@ pub(in crate::item) fn author<M>(
         .iter()
         .map(|node| symbols[&node.symbol])
         .chain(required)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect();
     Ok((symbols, eager))
 }

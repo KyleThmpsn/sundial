@@ -10,18 +10,111 @@ pub(super) struct Record {
     legacy: Vec<ArtifactMetadata>,
     original: Option<Folder>,
     incoming: Option<Folder>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    family: BTreeMap<String, Change>,
     token: String,
     #[serde(default)]
     pub(super) legacy_recovery: Option<legacy::Recovery>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Change {
+    original: Option<Folder>,
+    incoming: Option<Folder>,
+    kept: bool,
+}
+
+/// Every member keeps its own manifest and package folders inside the backup.
+struct Member<'a> {
+    id: &'a str,
+    original: Option<&'a Folder>,
+    incoming: Option<&'a Folder>,
+    kept: bool,
+}
+
+impl Member<'_> {
+    fn live(&self, record: &Record) -> PathBuf {
+        mod_content::member_directory(record.install(), self.id)
+    }
+    fn temporary(&self, record: &Record, kind: &str) -> PathBuf {
+        if self.id == mod_content::ID {
+            record.temporary(kind)
+        } else {
+            record
+                .live()
+                .parent()
+                .unwrap()
+                .join(format!(".{}-{kind}-{}", self.id, record.token))
+        }
+    }
+    fn backup(&self, record: &Record) -> PathBuf {
+        let backup = &record.context.backup_directory;
+        if record.schema == 1 && self.id == mod_content::ID {
+            backup.join("mod")
+        } else {
+            backup.join("mods").join(self.id)
+        }
+    }
 }
 
 pub(super) struct Transaction {
     pub record: Record,
     pub sunrise: OriginalSunriseCache,
     pub headers: OriginalPackageHeaderCaches,
+    unjournaled: Unjournaled,
+}
+
+/// The new backup and stage folders, removed if the transaction ends before the journal names them.
+#[derive(Default)]
+struct Unjournaled(Vec<PathBuf>);
+
+impl Drop for Unjournaled {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
 }
 
 impl Record {
+    fn members(&self) -> impl Iterator<Item = Member<'_>> {
+        std::iter::once(Member {
+            id: mod_content::ID,
+            original: self.original.as_ref(),
+            incoming: self.incoming.as_ref(),
+            kept: false,
+        })
+        .chain(self.family.iter().map(|(id, change)| Member {
+            id,
+            original: change.original.as_ref(),
+            incoming: change.incoming.as_ref(),
+            kept: change.kept,
+        }))
+    }
+    fn verify_family(&self, incoming: bool) -> Result<(), InstallError> {
+        for member in self.members() {
+            verify_folder(
+                &member.live(self),
+                if incoming {
+                    member.incoming
+                } else {
+                    member.original
+                },
+            )?;
+        }
+        let recorded = self.members().map(|m| m.id).collect::<BTreeSet<_>>();
+        if mod_content::family_directories(self.install())
+            .map_err(failure)?
+            .keys()
+            .any(|id| !recorded.contains(id.as_str()))
+        {
+            return Err(InstallError::validation(
+                "A managed family mod appeared after review",
+            ));
+        }
+        Ok(())
+    }
     fn install(&self) -> &Path {
         self.context
             .target_packages_directory
@@ -66,19 +159,39 @@ impl Record {
 
     /// Studio and other editors do not take Parhelion's lock. Recheck their packages before
     /// publishing and before recording success. Removal and rollback never depend on them.
-    fn verify_coexistence(&self, incoming_directory: &Path) -> Result<(), InstallError> {
-        let Some(incoming) = &self.incoming else {
+    fn verify_coexistence(&self, published: bool) -> Result<(), InstallError> {
+        if self.incoming.is_none() {
             return Ok(());
-        };
-        mod_content::ensure_resolved_environment(self.install())
-            .map_err(InstallError::validation)?;
-        let sources = artifacts(incoming)
-            .into_iter()
-            .map(|artifact| {
-                let path = incoming_directory.join(package_path(&artifact)?);
-                Ok((artifact, path))
-            })
-            .collect::<Result<Vec<_>, InstallError>>()?;
+        }
+        let mut sources = Vec::new();
+        let mut members = Vec::new();
+        for member in self.members().filter(|member| member.incoming.is_some()) {
+            let directory = if published
+                || member.kept
+                || !member
+                    .temporary(self, "stage")
+                    .try_exists()
+                    .map_err(failure)?
+            {
+                member.live(self)
+            } else {
+                member.temporary(self, "stage")
+            };
+            verify_folder(&directory, member.incoming)?;
+            let manifest =
+                mod_content::read_json(&directory.join(mod_content::MANIFEST)).map_err(failure)?;
+            let receipt =
+                mod_content::read_json(&directory.join(mod_content::RECEIPT)).map_err(failure)?;
+            members.push(crate::mod_family::Member {
+                manifest,
+                receipt,
+                kept: member.kept,
+            });
+            for artifact in artifacts(member.incoming.unwrap()) {
+                let path = directory.join(package_path(&artifact)?);
+                sources.push((artifact, path));
+            }
+        }
         reject_installed_conflicts(
             &self.context.target_packages_directory,
             &sources,
@@ -88,6 +201,7 @@ impl Record {
             &self.context.target_packages_directory,
             &sources,
             &self.legacy,
+            &members,
         )?;
         Ok(())
     }
@@ -97,6 +211,8 @@ pub(super) struct Plan<'a> {
     pub target: &'a Path,
     pub backup_root: &'a Path,
     pub original: Option<Folder>,
+    pub original_family: BTreeMap<String, Folder>,
+    pub members: &'a [crate::mod_family::Member],
     pub legacy: Vec<ArtifactMetadata>,
     pub stock: Vec<ArtifactMetadata>,
     pub incoming: Option<&'a [(ArtifactMetadata, PathBuf)]>,
@@ -108,6 +224,8 @@ pub(super) fn prepare(plan: Plan<'_>) -> Result<Transaction, InstallError> {
         target,
         backup_root,
         original,
+        mut original_family,
+        members,
         legacy,
         stock,
         incoming,
@@ -147,120 +265,240 @@ pub(super) fn prepare(plan: Plan<'_>) -> Result<Transaction, InstallError> {
     fs::create_dir_all(&root).map_err(failure)?;
     let root = canonical_directory(&root, "mod backup root")?;
     let token = unique_token();
-    let backup = root.join(format!("parhelion-mod-backup-{token}"));
-    create_private_directory(&backup).map_err(failure)?;
-    let backup = canonical_directory(&backup, "mod backup")?;
-    if !path_is_within(&backup, &root)
-        || path_is_within(&backup, target)
-        || path_is_within(&backup, &mod_content::runtime_directory(install))
-    {
-        return Err(InstallError::validation(
-            "The resolved mod backup escaped its selected location",
-        ));
-    }
-    if let Some(folder) = &original {
-        copy_folder(
-            &mod_content::directory(install),
-            &backup.join("mod"),
-            folder,
-        )?;
-    }
-    if !legacy.is_empty() {
-        fs::create_dir(backup.join("legacy")).map_err(failure)?;
-    }
-    for artifact in &legacy {
-        let copied = copy_file_create_new(
-            &target.join(&artifact.file_name),
-            &backup.join("legacy").join(&artifact.file_name),
-        )
-        .map_err(failure)?;
-        if TransactionDigest::from(artifact) != copied {
+    let backup = create_dated_backup_directory(
+        &root,
+        if incoming.is_some() {
+            "before-install"
+        } else {
+            "before-removal"
+        },
+    )
+    .map_err(failure)?;
+    let mut unjournaled = Unjournaled(vec![
+        mods.join(format!(".parhelion-stage-{token}")),
+        backup.clone(),
+    ]);
+    let prepared = (|| {
+        let backup = canonical_directory(&backup, "mod backup")?;
+        if !path_is_within(&backup, &root)
+            || path_is_within(&backup, target)
+            || path_is_within(&backup, &mod_content::runtime_directory(install))
+        {
             return Err(InstallError::validation(
-                "Legacy package changed during backup",
+                "The resolved mod backup escaped its selected location",
             ));
         }
-    }
-    let sunrise = backup_sunrise_cache(&sunrise, &backup).map_err(InstallError::validation)?;
-    let headers =
-        backup_package_header_caches(&headers, &backup).map_err(InstallError::validation)?;
-    fs::create_dir_all(&mods).map_err(failure)?;
-    mod_content::checked_path(install, &mods).map_err(InstallError::validation)?;
-    let mut record = Record {
-        schema: 1,
-        state: InstallTransactionState::Pending,
-        stock,
-        legacy,
-        original,
-        incoming: None,
-        token,
-        legacy_recovery: None,
-        context: InstallTransactionRecord {
-            schema: 1,
-            state: InstallTransactionState::Pending,
-            target_packages_directory: target.to_owned(),
-            backup_directory: backup,
-            artifacts: vec![],
-            runtime: Some(runtime.clone()),
-            account_cleanup: None,
-            client_settings: None,
-        },
-    };
-    if let Some(sources) = incoming {
-        let staging = record.temporary("stage");
-        create_private_directory(&staging).map_err(failure)?;
-        fs::create_dir(staging.join("packages")).map_err(failure)?;
-        fs::create_dir(staging.join("patches")).map_err(failure)?;
-        let mut receipt = mod_content::Receipt {
-            schema: 1,
-            mod_id: mod_content::ID.into(),
-            artifacts: vec![],
-        };
-        for (artifact, source) in sources {
-            let path = package_path(artifact)?;
-            let copied = copy_file_create_new(source, &staging.join(&path)).map_err(failure)?;
+        if let Some(folder) = &original {
+            fs::create_dir_all(backup.join("mods")).map_err(failure)?;
+            copy_folder(
+                &mod_content::directory(install),
+                &backup.join("mods").join(mod_content::ID),
+                folder,
+            )?;
+        }
+        original_family.remove(mod_content::ID);
+        for (id, folder) in &original_family {
+            if !members
+                .iter()
+                .any(|member| member.manifest.id == *id && member.kept)
+            {
+                let destination = backup.join("mods").join(id);
+                fs::create_dir_all(destination.parent().unwrap()).map_err(failure)?;
+                copy_folder(
+                    &mod_content::member_directory(install, id),
+                    &destination,
+                    folder,
+                )?;
+            }
+        }
+        if !legacy.is_empty() {
+            fs::create_dir(backup.join("legacy")).map_err(failure)?;
+        }
+        for artifact in &legacy {
+            let copied = copy_file_create_new(
+                &target.join(&artifact.file_name),
+                &backup.join("legacy").join(&artifact.file_name),
+            )
+            .map_err(failure)?;
             if TransactionDigest::from(artifact) != copied {
                 return Err(InstallError::validation(
-                    "Package changed while staging its mod folder",
+                    "Legacy package changed during backup",
                 ));
             }
-            receipt.artifacts.push(mod_content::Artifact {
-                path,
-                byte_length: copied.byte_length,
-                sha256: copied.sha256,
-            });
         }
-        receipt.validate().map_err(InstallError::validation)?;
-        write_json(
-            &staging.join(mod_content::MANIFEST),
-            &mod_content::Manifest::default(),
-        )?;
-        write_json(&staging.join(mod_content::RECEIPT), &receipt)?;
-        record.incoming = Some(snapshot_folder(&staging)?);
-        sync_backup_directories(&staging, &mods).map_err(InstallError::validation)?;
-    }
-    // Account recovery uses the existing account journal contract. Its package rows serve only
-    // as evidence that an account edit belongs to a nonempty content operation.
-    let involved = record
-        .incoming
-        .as_ref()
-        .or(record.original.as_ref())
-        .map(artifacts)
-        .unwrap_or_else(|| record.legacy.clone());
-    record.context.artifacts = involved
-        .iter()
-        .map(|a| InstallTransactionArtifact {
-            remove_target: false,
-            file_name: a.file_name.clone(),
-            authored: TransactionDigest::from(a),
-            original: None,
-            backup_file_name: None,
-            temporary_file_name: format!(".parhelion-{}.tmp", record.token),
+        let sunrise = backup_sunrise_cache(&sunrise, &backup).map_err(InstallError::validation)?;
+        let headers =
+            backup_package_header_caches(&headers, &backup).map_err(InstallError::validation)?;
+        fs::create_dir_all(&mods).map_err(failure)?;
+        mod_content::checked_path(install, &mods).map_err(InstallError::validation)?;
+        let mut record = Record {
+            schema: 2,
+            state: InstallTransactionState::Pending,
+            stock,
+            legacy,
+            original,
+            incoming: None,
+            family: original_family
+                .into_iter()
+                .map(|(id, original)| {
+                    (
+                        id,
+                        Change {
+                            original: Some(original),
+                            incoming: None,
+                            kept: false,
+                        },
+                    )
+                })
+                .collect(),
+            token,
+            legacy_recovery: None,
+            context: InstallTransactionRecord {
+                schema: 1,
+                state: InstallTransactionState::Pending,
+                target_packages_directory: target.to_owned(),
+                backup_directory: backup,
+                artifacts: vec![],
+                runtime: Some(runtime.clone()),
+                account_cleanup: None,
+                client_settings: None,
+            },
+        };
+        if let Some(sources) = incoming {
+            let main = members.iter().find(|m| m.manifest.id == mod_content::ID);
+            let staging = record.temporary("stage");
+            create_private_directory(&staging).map_err(failure)?;
+            fs::create_dir(staging.join("packages")).map_err(failure)?;
+            fs::create_dir(staging.join("patches")).map_err(failure)?;
+            let mut receipt = mod_content::Receipt {
+                schema: 1,
+                mod_id: mod_content::ID.into(),
+                artifacts: vec![],
+                content: None,
+            };
+            for (artifact, source) in sources {
+                if main.is_some_and(|main| {
+                    !main
+                        .receipt
+                        .artifacts
+                        .iter()
+                        .any(|a| a.path.rsplit('/').next() == Some(artifact.file_name.as_str()))
+                }) {
+                    continue;
+                }
+                let path = if artifact.file_name == mod_content::map_diagnostics::FILE_NAME {
+                    artifact.file_name.clone()
+                } else {
+                    package_path(artifact)?
+                };
+                let copied = copy_file_create_new(source, &staging.join(&path)).map_err(failure)?;
+                if TransactionDigest::from(artifact) != copied {
+                    return Err(InstallError::validation(
+                        "Package changed while staging its mod folder",
+                    ));
+                }
+                receipt.artifacts.push(mod_content::Artifact {
+                    path,
+                    byte_length: copied.byte_length,
+                    sha256: copied.sha256,
+                });
+            }
+            receipt.validate().map_err(InstallError::validation)?;
+            write_json(
+                &staging.join(mod_content::MANIFEST),
+                &main.map_or_else(mod_content::Manifest::default, |m| m.manifest.clone()),
+            )?;
+            write_json(&staging.join(mod_content::RECEIPT), &receipt)?;
+            record.incoming = Some(snapshot_folder(&staging)?);
+            sync_backup_directories(&staging, &mods).map_err(InstallError::validation)?;
+            for member in members.iter().filter(|m| m.manifest.id != mod_content::ID) {
+                let id = &member.manifest.id;
+                let change = record.family.entry(id.clone()).or_insert(Change {
+                    original: None,
+                    incoming: None,
+                    kept: false,
+                });
+                if member.kept {
+                    let directory = mod_content::member_directory(install, id);
+                    let installed_manifest: mod_content::Manifest =
+                        mod_content::read_json(&directory.join(mod_content::MANIFEST))
+                            .map_err(failure)?;
+                    let installed_receipt: mod_content::Receipt =
+                        mod_content::read_json(&directory.join(mod_content::RECEIPT))
+                            .map_err(failure)?;
+                    if installed_manifest != member.manifest
+                        || installed_receipt != member.receipt
+                        || change.original.is_none()
+                    {
+                        return Err(InstallError::validation(
+                            "A kept importer changed after staging",
+                        ));
+                    }
+                    change.incoming = change.original.clone();
+                    change.kept = true;
+                    continue;
+                }
+                let staging = mods.join(format!(".{id}-stage-{}", record.token));
+                unjournaled.0.push(staging.clone());
+                create_private_directory(&staging).map_err(failure)?;
+                fs::create_dir(staging.join("packages")).map_err(failure)?;
+                for artifact in &member.receipt.artifacts {
+                    let name = artifact.path.rsplit('/').next().unwrap();
+                    let source = &sources
+                        .iter()
+                        .find(|(a, _)| a.file_name == name)
+                        .ok_or_else(|| {
+                            InstallError::validation(format!("Missing importer artifact {name}"))
+                        })?
+                        .1;
+                    let expected = TransactionDigest {
+                        byte_length: artifact.byte_length,
+                        sha256: artifact.sha256.to_ascii_uppercase(),
+                    };
+                    if expected
+                        != copy_file_create_new(source, &staging.join(&artifact.path))
+                            .map_err(failure)?
+                    {
+                        return Err(InstallError::validation(
+                            "Importer content changed during staging",
+                        ));
+                    }
+                }
+                write_json(&staging.join(mod_content::MANIFEST), &member.manifest)?;
+                write_json(&staging.join(mod_content::RECEIPT), &member.receipt)?;
+                change.incoming = Some(snapshot_folder(&staging)?);
+                sync_backup_directories(&staging, &mods).map_err(InstallError::validation)?;
+            }
+        }
+        // Account recovery uses the existing account journal contract. Its package rows serve only
+        // as evidence that an account edit belongs to a nonempty content operation.
+        let involved = record
+            .incoming
+            .as_ref()
+            .or(record.original.as_ref())
+            .map(artifacts)
+            .unwrap_or_else(|| record.legacy.clone());
+        record.context.artifacts = involved
+            .iter()
+            .map(|a| InstallTransactionArtifact {
+                remove_target: false,
+                file_name: a.file_name.clone(),
+                authored: TransactionDigest::from(a),
+                original: None,
+                backup_file_name: None,
+                temporary_file_name: format!(".parhelion-{}.tmp", record.token),
+            })
+            .collect();
+        Ok(Transaction {
+            record,
+            sunrise,
+            headers,
+            unjournaled: Unjournaled::default(),
         })
-        .collect();
-    Ok(Transaction {
-        record,
-        sunrise,
-        headers,
+    })();
+    prepared.map(|mut transaction| {
+        transaction.unjournaled = unjournaled;
+        transaction
     })
 }
 
@@ -278,19 +516,21 @@ pub(super) fn commit(
 > {
     let record = &mut transaction.record;
     check_stopped(check)?;
-    for path in [
-        record.live(),
-        record.temporary("stage"),
-        record.temporary("retired"),
-    ] {
-        mod_content::checked_path(record.install(), &path).map_err(InstallError::validation)?;
+    for member in record.members() {
+        for path in [
+            member.live(record),
+            member.temporary(record, "stage"),
+            member.temporary(record, "retired"),
+        ] {
+            mod_content::checked_path(record.install(), &path).map_err(InstallError::validation)?;
+        }
     }
     verify_source_artifacts(&record.context.target_packages_directory, &record.stock)?;
     if record.incoming.is_some() {
         mod_content::ensure_resolved_environment(record.install())
             .map_err(InstallError::validation)?;
     }
-    verify_folder(&record.live(), record.original.as_ref())?;
+    record.verify_family(false)?;
     if let Some(legacy) = &record.legacy_recovery {
         legacy.verify_files(&record.context.target_packages_directory, false)?;
         legacy.verify_account()?;
@@ -317,6 +557,8 @@ pub(super) fn commit(
         record.context.backup_directory.parent().unwrap(),
     )
     .map_err(InstallError::validation)?;
+    // From here recovery owns both folders, even if the journal write itself fails.
+    transaction.unjournaled.0.clear();
     record.write()?;
     observer("journaled");
     check_stopped(check)?;
@@ -327,26 +569,17 @@ pub(super) fn commit(
     .map_err(InstallError::validation)?;
     verify_source_artifacts(&record.context.target_packages_directory, &record.stock)?;
     verify_legacy(record, false)?;
-    record.verify_coexistence(&record.temporary("stage"))?;
+    record.verify_coexistence(false)?;
     apply_account(&record.context)?;
     if let Some(legacy) = &record.legacy_recovery {
         legacy.apply_account(check)?;
     }
-    if record.original.is_some() {
-        verify_folder(&record.live(), record.original.as_ref())?;
-        rename_absent(&record.live(), &record.temporary("retired"))?;
-        observer("retired");
-    }
-    if record.incoming.is_some() {
-        verify_folder(&record.temporary("stage"), record.incoming.as_ref())?;
-        rename_absent(&record.temporary("stage"), &record.live())?;
-        observer("published");
-    }
+    publish_family(record, check, observer)?;
     remove_legacy(record, false, observer)?;
     if !record.legacy.is_empty() {
         observer("legacy_removed");
     }
-    verify_folder(&record.live(), record.incoming.as_ref())?;
+    record.verify_family(true)?;
     verify_source_artifacts(&record.context.target_packages_directory, &record.stock)?;
     record.verify_finished_account()?;
     let (sunrise, headers) = if record.loads_mods()? {
@@ -360,7 +593,7 @@ pub(super) fn commit(
         (None, Vec::new())
     };
     observer("verified");
-    record.verify_coexistence(&record.live())?;
+    record.verify_coexistence(true)?;
     record.state = InstallTransactionState::Committed;
     record.write()?;
     observer("committed");
@@ -370,6 +603,114 @@ pub(super) fn commit(
     )?;
     cleanup(record)?;
     Ok((sunrise, headers))
+}
+
+fn publish_family(
+    record: &Record,
+    check: GameRunningCheck,
+    observer: &mut dyn FnMut(&str),
+) -> Result<(), InstallError> {
+    record.verify_family(false)?;
+    for member in record.members() {
+        check_stopped(check)?;
+        if member.kept {
+            verify_folder(&member.live(record), member.incoming)?;
+            observer(&format!("kept:{}", member.id));
+            continue;
+        }
+        if member.original.is_some() {
+            verify_folder(&member.live(record), member.original)?;
+            rename_absent(&member.live(record), &member.temporary(record, "retired"))?;
+            observer(&format!("retired:{}", member.id));
+            observer("retired");
+        }
+        if member.incoming.is_some() {
+            verify_folder(&member.temporary(record, "stage"), member.incoming)?;
+            rename_absent(&member.temporary(record, "stage"), &member.live(record))?;
+            observer(&format!("published:{}", member.id));
+            observer("published");
+        }
+    }
+    Ok(())
+}
+
+/// Inspect the complete family before recovery mutates any member. A known new generation may
+/// be rolled back, but an editor's later changes are never silently replaced from a backup.
+fn verify_pending_family(record: &Record) -> Result<(), InstallError> {
+    let ids = record.members().map(|m| m.id).collect::<BTreeSet<_>>();
+    if mod_content::family_directories(record.install())
+        .map_err(failure)?
+        .keys()
+        .any(|id| !ids.contains(id.as_str()))
+    {
+        return Err(InstallError::validation(
+            "A managed family mod appeared after interruption",
+        ));
+    }
+    for member in record.members() {
+        if member.kept {
+            verify_folder(&member.live(record), member.original)?;
+        } else if let Some(original) = member.original {
+            verify_folder(&member.backup(record), Some(original))?;
+        }
+        for (kind, expected) in [
+            ("stage", member.incoming),
+            ("retired", member.original),
+            ("rollback", member.incoming),
+            ("restore", member.original),
+        ] {
+            let path = member.temporary(record, kind);
+            if path.exists() {
+                if kind == "restore" {
+                    verify_subset(
+                        &path,
+                        expected.ok_or_else(|| {
+                            InstallError::validation("Unexpected recovery folder")
+                        })?,
+                    )?;
+                } else {
+                    verify_folder(&path, expected)?;
+                }
+            }
+        }
+        let live = member.live(record);
+        if live.exists() {
+            let current = snapshot_folder(&live)?;
+            if Some(&current) != member.original && Some(&current) != member.incoming {
+                return Err(InstallError::validation(
+                    "Managed content changed after interruption. Recovery preserved the changed files",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn rollback_family(record: &Record, check: GameRunningCheck) -> Result<Vec<PathBuf>, InstallError> {
+    let mut removed = Vec::new();
+    for member in record.members().filter(|m| !m.kept) {
+        check_stopped(check)?;
+        let live = member.live(record);
+        let current = live.exists().then(|| snapshot_folder(&live)).transpose()?;
+        if current.as_ref() == member.original {
+            continue;
+        }
+        if current.is_some() {
+            rename_absent(&live, &member.temporary(record, "rollback"))?;
+            removed.push(live.clone());
+        }
+        if let Some(original) = member.original {
+            let retired = member.temporary(record, "retired");
+            if retired.exists() {
+                rename_absent(&retired, &live)?;
+            } else {
+                let restore = member.temporary(record, "restore");
+                copy_folder(&member.backup(record), &restore, original)?;
+                rename_absent(&restore, &live)?;
+            }
+        }
+    }
+    Ok(removed)
 }
 
 pub(in crate::install) fn recover(
@@ -403,7 +744,7 @@ pub(in crate::install) fn recover(
         legacy.verify_account()?;
     }
     if record.state == InstallTransactionState::Committed {
-        verify_folder(&record.live(), record.incoming.as_ref())?;
+        record.verify_family(true)?;
         for artifact in &record.legacy {
             if target.join(&artifact.file_name).exists() {
                 return Err(InstallError::validation(
@@ -420,7 +761,7 @@ pub(in crate::install) fn recover(
         return Ok(Some(RecoveryOutcome::CommittedTransaction));
     }
     if record.state == InstallTransactionState::Recovered {
-        verify_folder(&record.live(), record.original.as_ref())?;
+        record.verify_family(false)?;
         verify_legacy(&record, false)?;
         cleanup(&record)?;
         return Ok(Some(RecoveryOutcome::Recovered {
@@ -432,9 +773,7 @@ pub(in crate::install) fn recover(
     verify_source_artifacts(&target, &record.stock)?;
     verify_legacy(&record, true)?;
     account::verify_account_recovery(&record.context)?;
-    if let Some(original) = &record.original {
-        verify_folder(&record.context.backup_directory.join("mod"), Some(original))?;
-    }
+    verify_pending_family(&record)?;
     for artifact in &record.legacy {
         verify_file(
             &record
@@ -449,26 +788,6 @@ pub(in crate::install) fn recover(
             verify_file(&path, &TransactionDigest::from(artifact))?;
         }
     }
-    for (kind, expected) in [
-        ("stage", record.incoming.as_ref()),
-        ("retired", record.original.as_ref()),
-        ("rollback", record.incoming.as_ref()),
-    ] {
-        let path = record.temporary(kind);
-        if path.exists() {
-            verify_folder(&path, expected)?;
-        }
-    }
-    let current = if record.live().exists() {
-        Some(snapshot_folder(&record.live())?)
-    } else {
-        None
-    };
-    if current.is_some() && current != record.original && current != record.incoming {
-        return Err(InstallError::validation(
-            "Managed content changed after interruption. Recovery preserved the changed files",
-        ));
-    }
     if record.migration() {
         // Commit writes the account before any package moves. A migration whose account change
         // was not written yet moved nothing, so recovery restores the account and keeps every
@@ -480,28 +799,10 @@ pub(in crate::install) fn recover(
         return Ok(Some(RecoveryOutcome::CommittedTransaction));
     }
     check_stopped(request.game_running_check)?;
-    let mut removed = vec![];
-    if current != record.original {
-        if current.is_some() {
-            rename_absent(&record.live(), &record.temporary("rollback"))?;
-            removed.push(record.live());
-        }
-        if let Some(original) = &record.original {
-            if record.temporary("retired").exists() {
-                rename_absent(&record.temporary("retired"), &record.live())?;
-            } else {
-                copy_folder(
-                    &record.context.backup_directory.join("mod"),
-                    &record.temporary("restore"),
-                    original,
-                )?;
-                rename_absent(&record.temporary("restore"), &record.live())?;
-            }
-        }
-    }
+    let removed = rollback_family(&record, request.game_running_check)?;
     account::recover_account(&record.context, request.game_running_check)?;
     uninstall::refresh_recovery_caches(&record.context, request.runtime_snapshot_check)?;
-    verify_folder(&record.live(), record.original.as_ref())?;
+    record.verify_family(false)?;
     record.state = InstallTransactionState::Recovered;
     record.write()?;
     cleanup(&record)?;
@@ -512,7 +813,7 @@ pub(in crate::install) fn recover(
 }
 
 fn validate_record(record: &Record, target: &Path, backup_root: &Path) -> Result<(), InstallError> {
-    if record.schema != 1
+    if !matches!(record.schema, 1 | 2)
         || !paths_equal(&record.context.target_packages_directory, target)
         || record.context.runtime.is_none()
         || record.token.is_empty()
@@ -535,21 +836,35 @@ fn validate_record(record: &Record, target: &Path, backup_root: &Path) -> Result
         ));
     }
     mod_content::checked_path(&root, backup).map_err(InstallError::validation)?;
-    for path in [
-        record.live(),
-        record.temporary("stage"),
-        record.temporary("retired"),
-        record.temporary("restore"),
-        record.temporary("rollback"),
-    ] {
-        mod_content::checked_path(record.install(), &path).map_err(InstallError::validation)?;
+    for (id, change) in &record.family {
+        if id == mod_content::ID
+            || !mod_content::is_family_id(id)
+            || (change.kept && (change.original.is_none() || change.original != change.incoming))
+        {
+            return Err(InstallError::validation(
+                "Invalid managed family recovery record",
+            ));
+        }
     }
-    for folder in record.original.iter().chain(record.incoming.iter()) {
+    for member in record.members() {
+        for path in std::iter::once(member.live(record)).chain(
+            ["stage", "retired", "restore", "rollback"].map(|kind| member.temporary(record, kind)),
+        ) {
+            mod_content::checked_path(record.install(), &path).map_err(InstallError::validation)?;
+        }
+    }
+    for folder in record
+        .members()
+        .flat_map(|m| m.original.into_iter().chain(m.incoming))
+    {
         if folder.files.is_empty() || folder.files.len() > FOLDER_FILE_LIMIT {
             return Err(InstallError::validation("Invalid recovery inventory"));
         }
         for (name, digest) in &folder.files {
-            if name != mod_content::MANIFEST && name != mod_content::RECEIPT {
+            if name != mod_content::MANIFEST
+                && name != mod_content::RECEIPT
+                && name != mod_content::map_diagnostics::FILE_NAME
+            {
                 let file_name = name
                     .split_once('/')
                     .ok_or_else(|| InstallError::validation("Invalid mod recovery path"))?
@@ -577,7 +892,7 @@ fn validate_record(record: &Record, target: &Path, backup_root: &Path) -> Result
     if let Some(legacy) = &record.legacy_recovery {
         legacy.validate(target, &root)?;
     }
-    if record.migration() && record.original.is_some() {
+    if record.migration() && record.members().any(|m| m.original.is_some()) {
         return Err(InstallError::validation(
             "Legacy migration cannot replace an existing managed mod",
         ));
@@ -590,19 +905,22 @@ fn cleanup(record: &Record) -> Result<(), InstallError> {
     if let Some(legacy) = &record.legacy_recovery {
         legacy.cleanup(&record.context.target_packages_directory)?;
     }
-    for (kind, expected) in [
-        ("stage", record.incoming.as_ref()),
-        ("retired", record.original.as_ref()),
-        ("restore", record.original.as_ref()),
-        ("rollback", record.incoming.as_ref()),
-    ] {
-        let path = record.temporary(kind);
-        if path.exists() {
-            remove_folder(
-                &path,
-                expected
-                    .ok_or_else(|| InstallError::validation("Unexpected temporary mod folder"))?,
-            )?;
+    for member in record.members() {
+        for (kind, expected) in [
+            ("stage", member.incoming),
+            ("retired", member.original),
+            ("restore", member.original),
+            ("rollback", member.incoming),
+        ] {
+            let path = member.temporary(record, kind);
+            if path.exists() {
+                remove_folder(
+                    &path,
+                    expected.ok_or_else(|| {
+                        InstallError::validation("Unexpected temporary mod folder")
+                    })?,
+                )?;
+            }
         }
     }
     fs::remove_file(record.journal()).map_err(failure)
@@ -610,25 +928,27 @@ fn cleanup(record: &Record) -> Result<(), InstallError> {
 
 fn complete_migration(record: &mut Record, request: &RecoveryRequest) -> Result<(), InstallError> {
     let target = &record.context.target_packages_directory;
-    if !record.live().exists() && record.incoming.is_some() {
-        verify_folder(&record.temporary("stage"), record.incoming.as_ref())?;
-    }
     check_stopped(request.game_running_check)?;
     verify_source_artifacts(target, &record.stock)?;
     verify_legacy(record, true)?;
-    record.verify_coexistence(&if record.live().exists() {
-        record.live()
-    } else {
-        record.temporary("stage")
-    })?;
+    record.verify_coexistence(false)?;
+    for member in record.members().filter(|m| m.incoming.is_some()) {
+        if !member.live(record).exists() {
+            verify_folder(&member.temporary(record, "stage"), member.incoming)?;
+        }
+    }
     if let Some(legacy) = &record.legacy_recovery {
         legacy.verify_files(target, false)?;
         legacy.apply_account(request.game_running_check)?;
     }
-    if !record.live().exists() && record.incoming.is_some() {
-        rename_absent(&record.temporary("stage"), &record.live())?;
+    for member in record.members().filter(|m| m.incoming.is_some()) {
+        if !member.live(record).exists() {
+            check_stopped(request.game_running_check)?;
+            rename_absent(&member.temporary(record, "stage"), &member.live(record))?;
+        }
     }
-    verify_folder(&record.live(), record.incoming.as_ref())?;
+    record.verify_family(true)?;
+    record.verify_coexistence(true)?;
     remove_legacy(record, true, &mut |_| {})?;
     record.verify_finished_account()?;
     uninstall::refresh_recovery_caches(&record.context, request.runtime_snapshot_check)?;
@@ -647,7 +967,7 @@ fn roll_back_unstarted_migration(
 ) -> Result<Option<RecoveryOutcome>, InstallError> {
     check_stopped(request.game_running_check)?;
     verify_legacy(record, false)?;
-    verify_folder(&record.live(), record.original.as_ref())?;
+    record.verify_family(false)?;
     account::recover_account(&record.context, request.game_running_check)?;
     uninstall::refresh_recovery_caches(&record.context, request.runtime_snapshot_check)?;
     record.state = InstallTransactionState::Recovered;
@@ -701,6 +1021,35 @@ fn remove_folder(path: &Path, expected: &Folder) -> Result<(), InstallError> {
         }
     }
     fs::remove_dir(path).map_err(failure)
+}
+
+/// Puts a retired mod folder back from its backup: copied beside it, checked against the backup's
+/// files and moved into place. A folder already there is left alone.
+pub(super) fn restore_retired(install: &Path, backup: &Path) -> Result<(), InstallError> {
+    let record: Record =
+        mod_content::read_json(&backup.join("mod-recovery.json")).map_err(failure)?;
+    if !matches!(record.schema, 1 | 2) {
+        return Err(InstallError::validation("Unsupported mod recovery record"));
+    }
+    for member in record.members().filter(|m| m.original.is_some()) {
+        let directory = mod_content::member_directory(install, member.id);
+        if directory.try_exists().map_err(failure)? {
+            continue;
+        }
+        let source = member.backup(&record);
+        let folder = member.original.unwrap();
+        let staging = directory
+            .parent()
+            .ok_or_else(|| InstallError::validation("The mod folder has no parent"))?
+            .join(format!(".{}-restore-{}", member.id, unique_token()));
+        let restored = copy_folder(&source, &staging, folder)
+            .and_then(|()| rename_absent(&staging, &directory));
+        if restored.is_err() {
+            let _ = fs::remove_dir_all(&staging);
+        }
+        restored?;
+    }
+    Ok(())
 }
 
 fn copy_folder(source: &Path, destination: &Path, expected: &Folder) -> Result<(), InstallError> {

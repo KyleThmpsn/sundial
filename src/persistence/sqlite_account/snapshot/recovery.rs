@@ -25,6 +25,14 @@ pub(in super::super) fn restore_snapshot(
                 .into(),
         );
     }
+    // Guided recovery can repair an unreadable format, but cannot upgrade or downgrade
+    // either supported account format. Migration belongs to Sunrise.
+    if matches!(before.version, 2 | 3) && before.version != after.version {
+        return Err(format!(
+            "Cannot restore schema {} over schema {}. Restore a matching account backup",
+            after.version, before.version
+        ));
+    }
     if before.schema != after.schema {
         replace_schema(&tx, &before, &after)?;
     }

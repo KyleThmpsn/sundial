@@ -54,6 +54,7 @@ pub(crate) fn resident(header: &mut [u8], bytes: usize) -> Result<()> {
     // Dye templates can be exchanged across these native texture encodings.
     // Keep the upload pitch metadata consistent with the new block format.
     match p.u32(4)? {
+        10 => header[22] = 64,
         28 | 29 => header[22] = 32,
         71 | 72 | 80 | 81 => header[22] = 4,
         77 | 78 | 83 | 84 | 98 | 99 => header[22] = 8,

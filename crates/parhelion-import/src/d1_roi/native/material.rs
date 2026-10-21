@@ -209,6 +209,7 @@ impl Assembly<'_> {
                 &expression::Inputs {
                     globals: &self.globals,
                     dye: dye_data.as_ref(),
+                    empty_palette: equipment.dyes.is_empty(),
                     secondary: dye % 2 != 0,
                     plates: &equipment.plates,
                     detail: &detail,

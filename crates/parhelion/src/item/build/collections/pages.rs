@@ -178,6 +178,7 @@ pub(super) fn append(
                 usize::from(page.parent),
                 usize::from(page.sibling),
                 count,
+                crate::collection::first(None),
             )?;
         } else {
             let descriptor = node_rows

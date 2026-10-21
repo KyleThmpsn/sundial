@@ -1,9 +1,8 @@
-//! Adapter for the official Sunrise investment database (schema 2).
+//! Adapter for the official Sunrise investment database (schemas 2 and 3).
 //!
-//! The contract is pinned to one reviewed commit. Sundial never implicitly creates or migrates an active database,
-//! and unknown nested versions are surfaced explicitly so they cannot be mistaken for the pinned
-//! layout. Writes require an exact loaded document, a matching in-transaction revision, and a
-//! verified SQLite-native backup.
+//! The database version selects its required tables and columns. Loading never creates or
+//! migrates an active database. Writes require the loaded document's revision to match inside
+//! the transaction and a verified SQLite backup before mutation.
 
 mod contract;
 mod defaults;
@@ -23,6 +22,7 @@ mod writer;
 
 use sundial_account::{AccountSettingsState, CharacterState, InstanceSoid, ProfileState};
 
+pub(crate) use contract::Schema;
 pub(crate) use defaults::{AccountDefaults, ResetPlan};
 pub(crate) use document::{
     SqliteAccountDocument, SqliteAccountDocumentLoad, load as load_document,
@@ -36,6 +36,7 @@ pub(crate) use writer::{
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SqliteAccountSnapshot {
+    schema: Schema,
     primary_soid: InstanceSoid,
     profile: ProfileState,
     characters: CharacterState,

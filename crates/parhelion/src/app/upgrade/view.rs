@@ -63,14 +63,12 @@ fn heading(ui: &mut egui::Ui, state: &UpgradeUi) {
 
 fn content(ui: &mut egui::Ui, state: &UpgradeUi, backup: &str) {
     if state.busy() {
+        let (message, completed, total) = state.progress();
         ui.horizontal_wrapped(|ui| {
             ui.spinner();
-            ui.label(if state.recovering {
-                "Recovering the interrupted operation and checking your installation."
-            } else {
-                "Checking the installed Sunrise version and your custom packages."
-            });
+            ui.label(message);
         });
+        hint(ui, &format!("Step {} of {total}", completed + 1));
         hint(ui, "Keep Parhelion open until this finishes.");
     } else if let Some(error) = &state.error {
         ui.label("The operation could not finish. Review the details before trying again.");

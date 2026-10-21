@@ -35,6 +35,7 @@ sha1 = "0.11.0"
 sha2 = "0.11.0"
 sundial = { path = "../.." }
 tempfile = "3.27.0"
+time = "0.3.55"
 tiger-pkg = { version = "0.21.0", features = ["ignore_caches"] }
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2"] }

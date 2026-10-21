@@ -72,13 +72,6 @@ impl Default for Scene {
 }
 impl Scene {
     #[cfg(test)]
-    pub(crate) fn unit_exposure() -> Self {
-        Self {
-            exposure: 1.0,
-            ..Self::default()
-        }
-    }
-    #[cfg(test)]
     pub(crate) fn unprocessed() -> Self {
         Self {
             filmic: false,

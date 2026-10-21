@@ -8,6 +8,7 @@ fn entry(name: &str, path: &str, donor_hash: u32) -> RecipeLibraryEntry {
     RecipeLibraryEntry {
         kind: crate::ItemKind::Weapon,
         collection_destination: None,
+        collection_position: None,
         armor_class: None,
         armor_origin: None,
         badge: None,

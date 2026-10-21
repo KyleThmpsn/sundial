@@ -8,6 +8,7 @@ use parhelion::{
 use parhelion_import::tiger::{payload::Payload, reader::Reader};
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     env, fs,
     path::{Path, PathBuf},
 };
@@ -54,6 +55,7 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
     let entries = report["items"].as_array().context("prepared items")?;
     ensure!(!entries.is_empty(), "Empty required native corpus");
     let mut recipes = Vec::new();
+    let mut source_documents = BTreeMap::new();
     let mut evidence = Vec::new();
     let mut stock = Reader::discovery(&native, &output.join("stock-readback"), false)?;
     for entry in entries {
@@ -103,6 +105,19 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
             .context("imported graph")?;
         let graph: Value =
             serde_json::from_slice(&fs::read(reference.directory.join("asset-graph.json"))?)?;
+        if recipe.kind == parhelion::ItemKind::Sparrow || graph.get("inspection").is_some() {
+            let source = path
+                .parent()
+                .context("Prepared item directory")?
+                .join("source/source.json");
+            let bytes = fs::read(&source)
+                .with_context(|| format!("Read prepared source {}", source.display()))?;
+            source_documents.insert(
+                recipe.identity.item_hash.parse_u32()?,
+                serde_json::from_slice::<Value>(&bytes)
+                    .with_context(|| format!("Parse prepared source {}", source.display()))?,
+            );
+        }
         let request = requested
             .as_array()
             .context("Import plan")?
@@ -265,7 +280,7 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
                 &recipe,
                 &graph,
                 &runtime,
-                &reference.directory,
+                source_documents.get(&hash).unwrap_or(&Value::Null),
                 request["scale"].as_f64().unwrap_or(1.) as f32,
             )?;
             verify_staged_barrel(&mut staged, &recipe, &runtime, &barrel_witness)?;
@@ -297,9 +312,11 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
                 &mut stock,
                 &recipe,
                 &graph,
-                &reference.directory,
+                source_documents.get(&hash).unwrap_or(&Value::Null),
                 request["inspection_scale"].as_f64().unwrap_or(1.) as f32,
-            )? {
+            )
+            .context("Staged inspection geometry")?
+            {
                 fs::write(
                     output.join(format!("inspection-{hash:08X}.json")),
                     serde_json::to_vec_pretty(&inspection)?,

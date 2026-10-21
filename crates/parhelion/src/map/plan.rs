@@ -12,6 +12,7 @@ use tiger_pkg::TagHash;
 
 use crate::{
     AuthoringResult, NewTagSpec, ReplacementSpec,
+    appended_tags::MAX_PACKAGE_ENTRY_COUNT,
     error::invalid,
     format::NamedTag,
     tag_payload::{read_tag, read_u32, write_u32},
@@ -38,22 +39,23 @@ const LOADING_SUFFIXES: [&str; 3] = [
     ":spaceflight_out",
 ];
 
-fn entry_tag(id: u16, entry: usize) -> AuthoringResult<TagHash> {
-    u16::try_from(entry)
-        .map(|entry| TagHash::new(id, entry))
-        .map_err(|_| invalid("A map has too many entries for one package"))
+pub(super) fn entry_tag(ids: &[u16], entry: usize) -> AuthoringResult<TagHash> {
+    let id = ids
+        .get(entry / MAX_PACKAGE_ENTRY_COUNT)
+        .ok_or_else(|| invalid("A map entry exceeds its allocated packages"))?;
+    Ok(TagHash::new(*id, (entry % MAX_PACKAGE_ENTRY_COUNT) as u16))
 }
 
 /// A companion, its owner and the package and entry of everything it lists.
 type Companion = (TagHash, TagHash, BTreeSet<(u16, u16)>);
 
-/// The companion at `entry` of package `id`: a dependency index that names its own entry at
-/// `+0x08` and another owner of the package at `+0x0C`.
-fn companion(id: u16, entry: usize, spec: &NewTagSpec) -> Option<Companion> {
-    let tag = entry_tag(id, entry).ok()?;
+/// The companion at world ordinal `entry`: a dependency index that names its own entry at
+/// `+0x08` and another owner in the allocated packages at `+0x0C`.
+fn companion(addresses: &[TagHash], entry: usize, spec: &NewTagSpec) -> Option<Companion> {
+    let tag = *addresses.get(entry)?;
     let own = read_u32(&spec.payload, 0x08).ok()?;
     let owner = TagHash(read_u32(&spec.payload, 0x0C).ok()?);
-    if own != tag.0 || owner == tag || owner.pkg_id() != id {
+    if own != tag.0 || owner == tag || !addresses.iter().any(|tag| tag.pkg_id() == owner.pkg_id()) {
         return None;
     }
     let dependencies =
@@ -61,27 +63,38 @@ fn companion(id: u16, entry: usize, spec: &NewTagSpec) -> Option<Companion> {
     Some((tag, owner, dependencies))
 }
 
-/// Makes each companion of package `id` also list what the companions of the package's other
+/// Makes each companion also list what the companions of the allocated packages' other
 /// owners in its list list, recursively. The client walks the list of an owner it requests, but an
 /// owner that loads as an entry of that list loads without its own companion's list. With the
 /// map's container copies in the bubble's list, the containers loaded and their placement tables
 /// did not, and placing the bubble's containers faulted at `exe+0x422C78` on the unloaded tables.
 /// Distant Shore's bubble companion `80F2D244` lists none of its enrolled containers but
 /// `80EB0469`.
-fn flatten(id: u16, tags: &mut [NewTagSpec]) -> AuthoringResult<()> {
+fn flatten(ids: &[u16], tags: &mut [NewTagSpec]) -> AuthoringResult<()> {
+    let addresses = (0..tags.len())
+        .map(|entry| entry_tag(ids, entry))
+        .collect::<AuthoringResult<Vec<_>>>()?;
+    flatten_at(&addresses, tags)
+}
+
+fn flatten_at(addresses: &[TagHash], tags: &mut [NewTagSpec]) -> AuthoringResult<()> {
+    let ids = addresses
+        .iter()
+        .map(|tag| tag.pkg_id())
+        .collect::<BTreeSet<_>>();
     let found = (0..tags.len())
-        .filter_map(|entry| companion(id, entry, &tags[entry]).map(|found| (entry, found)))
+        .filter_map(|entry| companion(addresses, entry, &tags[entry]).map(|found| (entry, found)))
         .collect::<Vec<_>>();
     let by_owner = found
         .iter()
         .enumerate()
-        .map(|(index, (_, (_, owner, _)))| (owner.entry_index(), index))
+        .map(|(index, (_, (_, owner, _)))| ((owner.pkg_id(), owner.entry_index()), index))
         .collect::<BTreeMap<_, _>>();
     let own = |listed: &BTreeSet<(u16, u16)>| {
         listed
             .iter()
-            .filter(|&&(package, _)| package == id)
-            .map(|&(_, entry)| entry)
+            .filter(|&&(package, _)| ids.contains(&package))
+            .copied()
             .collect::<Vec<_>>()
     };
     let mut flattened = Vec::new();
@@ -123,33 +136,42 @@ fn flatten(id: u16, tags: &mut [NewTagSpec]) -> AuthoringResult<()> {
     Ok(())
 }
 
-/// The entries of package `id`, holding `tags`, that are companions. Together they must name
+/// The entries across `ids`, holding `tags`, that are companions. Together they must name
 /// every other entry, or that entry could never load. Also returns every other package they name.
-fn companions(id: u16, tags: &[NewTagSpec]) -> AuthoringResult<(Vec<TagHash>, BTreeSet<u16>)> {
+fn companions(
+    addresses: &[TagHash],
+    tags: &[NewTagSpec],
+) -> AuthoringResult<(Vec<TagHash>, BTreeSet<u16>)> {
+    let ids = addresses
+        .iter()
+        .map(|tag| tag.pkg_id())
+        .collect::<BTreeSet<_>>();
     let mut companions = Vec::new();
     let mut covered = BTreeSet::new();
     let mut packages = BTreeSet::new();
     for (entry, spec) in tags.iter().enumerate() {
-        let Some((tag, _, dependencies)) = companion(id, entry, spec) else {
+        let Some((tag, _, dependencies)) = companion(addresses, entry, spec) else {
             continue;
         };
-        covered.insert(tag.entry_index() as usize);
+        covered.insert((tag.pkg_id(), tag.entry_index()));
         for (package, entry) in dependencies {
-            if package == id {
-                covered.insert(usize::from(entry));
+            if ids.contains(&package) {
+                covered.insert((package, entry));
             } else {
                 packages.insert(package);
             }
         }
         companions.push(tag);
     }
-    if companions.is_empty()
-        || covered.len() != tags.len()
-        || covered.iter().any(|&e| e >= tags.len())
-    {
+    let expected = addresses
+        .iter()
+        .map(|tag| (tag.pkg_id(), tag.entry_index()))
+        .collect::<BTreeSet<_>>();
+    if companions.is_empty() || covered != expected {
         return Err(invalid(format!(
-            "Map package {id:04X} has {} entries its companions do not name",
-            tags.len().saturating_sub(covered.len())
+            "Map packages {ids:04X?} have {} unnamed entries and {} out-of-range dependencies",
+            expected.difference(&covered).count(),
+            covered.difference(&expected).count(),
         )));
     }
     Ok((companions, packages))
@@ -218,6 +240,15 @@ pub(crate) enum Part {
     Activity,
 }
 
+pub(crate) struct SplitWorld {
+    pub native_entries: usize,
+    pub resource_ids: Vec<u16>,
+    pub addresses: Vec<TagHash>,
+    pub tags: Vec<NewTagSpec>,
+    pub names: Vec<NamedTag>,
+    pub references: Vec<crate::NewTagReferenceOverride>,
+}
+
 /// What the build emits for every library map.
 #[derive(Default)]
 pub(crate) struct Plan {
@@ -253,10 +284,12 @@ impl Plan {
         manager: &PackageManager,
         recipes: Vec<MapRecipe>,
         string_floor: u32,
+        report: &mut dyn FnMut(&str),
     ) -> AuthoringResult<Self> {
         if recipes.is_empty() {
             return Ok(Self::default());
         }
+        report("Planning Maps: Reading Activity Tables");
         let globals_tag =
             resolve_live_named_tag(manager, "investment_globals", None).map_err(invalid)?;
         let globals = read_tag(manager, globals_tag, "investment globals")?;
@@ -292,7 +325,15 @@ impl Plan {
         let mut taken = rows.hashes(&activities)?;
         let mut strings = BTreeSet::new();
         let mut maps = Vec::with_capacity(recipes.len());
-        for recipe in recipes {
+        let total = recipes.len();
+        for (index, recipe) in recipes.into_iter().enumerate() {
+            report(&format!(
+                "Planning Map {}/{} / {} / Resolving Donor {}",
+                index + 1,
+                total,
+                recipe.title,
+                recipe.donor
+            ));
             if !rows.ordinals_named(&activities, &recipe.name)?.is_empty() {
                 return Err(invalid(format!(
                     "Map {} already has activity rows",
@@ -330,20 +371,19 @@ impl Plan {
                 description_hash,
             });
         }
+        report("Planning Maps: Preparing Activity and Display Rows");
         let (activities, displays, copies) = activity::append(&activities, &displays, &maps)?;
+        let private_table = read_tag(manager, private_match_tag, "private match table")?;
+        let private_displays = read_tag(
+            manager,
+            private_match_display_tag,
+            "private match display table",
+        )?;
+        let image_rows = private_match::image_rows(&activities, &private_table, &private_displays)?;
         let bank = u32::try_from(crate::package_profile::LOCALIZATION_DONOR_TABLE_INDEX)
             .map_err(|_| invalid("Localized bank index does not fit 32 bits"))?;
-        let (private_matches, private_match_displays, picture_displays) = private_match::append(
-            &read_tag(manager, private_match_tag, "private match table")?,
-            &read_tag(
-                manager,
-                private_match_display_tag,
-                "private match display table",
-            )?,
-            &maps,
-            &copies,
-            bank,
-        )?;
+        let (private_matches, mut private_match_displays, picture_displays) =
+            private_match::append(&private_table, &private_displays, &maps, &copies, bank)?;
         let icons = read_tag(
             manager,
             root_slot(
@@ -355,19 +395,38 @@ impl Plan {
         )?;
         let mut pictures = Vec::new();
         for (index, map) in maps.iter().enumerate() {
-            let (Some(source), Some(display)) = (
-                map.recipe.source.as_ref(),
-                picture_displays.iter().find(|display| display.map == index),
-            ) else {
+            report(&format!(
+                "Planning Map {}/{} / {} / Preparing Images",
+                index + 1,
+                total,
+                map.recipe.title
+            ));
+            let Some(display) = picture_displays.iter().find(|display| display.map == index) else {
                 continue;
             };
+            if let Some(donor) = &map.recipe.image_donor {
+                let row = *image_rows.get(donor).ok_or_else(|| {
+                    invalid(format!("Activity {donor} has no private-match artwork"))
+                })?;
+                for display in picture_displays
+                    .iter()
+                    .filter(|display| display.map == index)
+                {
+                    write_u32(
+                        &mut private_match_displays,
+                        display.offset + private_match::MAP_DISPLAY_IMAGE,
+                        row,
+                    )?;
+                }
+                continue;
+            }
             pictures.extend(picture::load(
                 manager,
                 &icons,
                 display.donor_image,
                 index,
                 &map.recipe.name,
-                source,
+                &map.recipe,
             )?);
         }
         let mut plan = Self {
@@ -395,7 +454,14 @@ impl Plan {
             ..Self::default()
         };
         let mut companions = Default::default();
-        for map in &maps {
+        for (index, map) in maps.iter().enumerate() {
+            let prefix = format!(
+                "Planning Map {}/{} / {}",
+                index + 1,
+                total,
+                map.recipe.title
+            );
+            let mut detail = |step: &str| report(&format!("{prefix} / {step}"));
             plan.worlds.push(world::World::load(
                 directory,
                 manager,
@@ -403,7 +469,10 @@ impl Plan {
                 &map.recipe.donor,
                 &map.recipe.name,
                 map.recipe.source.as_ref(),
+                &map.recipe.options,
+                &mut detail,
             )?);
+            detail("Preparing Loading Screens and Package Names");
             plan.aliases.push(aliases(manager, map)?);
         }
         plan.maps = maps;
@@ -427,7 +496,69 @@ impl Plan {
 
     /// How many packages the build's maps take.
     pub(crate) fn package_count(&self) -> usize {
-        (0..self.len()).map(|index| self.parts(index).len()).sum()
+        (0..self.len())
+            .map(|index| {
+                self.parts(index)
+                    .iter()
+                    .map(|part| self.part_count(index, *part))
+                    .sum::<usize>()
+            })
+            .sum()
+    }
+
+    pub(crate) fn part_count(&self, index: usize, part: Part) -> usize {
+        match part {
+            Part::World if crate::package_profile::host().is_standalone() => {
+                let (_, resources) = self.worlds[index].split_counts().unwrap();
+                1 + resources.div_ceil(MAX_PACKAGE_ENTRY_COUNT)
+            }
+            Part::World => self.worlds[index]
+                .world_entries()
+                .div_ceil(MAX_PACKAGE_ENTRY_COUNT),
+            Part::Activity => 1,
+        }
+    }
+
+    pub(crate) fn split_world(
+        &self,
+        index: usize,
+        part: Part,
+        native: u16,
+    ) -> AuthoringResult<Option<SplitWorld>> {
+        if part != Part::World || !crate::package_profile::host().is_standalone() {
+            return Ok(None);
+        }
+        let world = &self.worlds[index];
+        let (native_entries, resources) = world
+            .split_counts()
+            .ok_or_else(|| invalid("Map geometry is missing"))?;
+        crate::mod_family::build::native(native);
+        let resource_ids = crate::mod_family::build::map_packages(
+            &self.maps[index].recipe.name,
+            resources.div_ceil(MAX_PACKAGE_ENTRY_COUNT),
+        )
+        .map_err(invalid)?;
+        let mut addresses = (0..native_entries)
+            .map(|entry| TagHash::new(native, entry as u16))
+            .collect::<Vec<_>>();
+        addresses.extend(
+            (0..resources)
+                .map(|entry| entry_tag(&resource_ids, entry))
+                .collect::<AuthoringResult<Vec<_>>>()?,
+        );
+        let (mut tags, names, references) = world.split_tags(native, &resource_ids)?;
+        if tags.len() != addresses.len() {
+            return Err(invalid("Split map entry counts differ"));
+        }
+        flatten_at(&addresses, &mut tags)?;
+        Ok(Some(SplitWorld {
+            native_entries,
+            resource_ids,
+            addresses,
+            tags,
+            names,
+            references,
+        }))
     }
 
     /// The family in the file name of map `index`'s package `part`: the map's name for its world
@@ -440,7 +571,7 @@ impl Plan {
         }
     }
 
-    /// The entries the investment loading root names for a map package numbered `id` and holding
+    /// The entries the investment loading root names for map packages `ids` holding
     /// `tags`. Its companions register the package and stay resident from boot, as stock maps keep
     /// only their companions in packages loaded early. Each owner then loads with its companion's
     /// dependency list when the map is played.
@@ -454,11 +585,67 @@ impl Plan {
     /// stock lists. The bubble's placement fault was the unloaded tables [`flatten`] answers.
     pub(crate) fn registration(
         &self,
-        id: u16,
+        ids: &[u16],
         tags: &[NewTagSpec],
         registered: &BTreeSet<u16>,
+        manager: &PackageManager,
     ) -> AuthoringResult<Vec<TagHash>> {
-        let (mut entries, packages) = companions(id, tags)?;
+        let addresses = (0..tags.len())
+            .map(|entry| entry_tag(ids, entry))
+            .collect::<AuthoringResult<Vec<_>>>()?;
+        self.registration_at(&addresses, tags, registered, manager)
+    }
+
+    pub(crate) fn registration_at(
+        &self,
+        addresses: &[TagHash],
+        tags: &[NewTagSpec],
+        registered: &BTreeSet<u16>,
+        manager: &PackageManager,
+    ) -> AuthoringResult<Vec<TagHash>> {
+        let ids = addresses
+            .iter()
+            .map(|tag| tag.pkg_id())
+            .collect::<BTreeSet<_>>();
+        let (mut entries, packages) = companions(addresses, tags)?;
+        // World overflow contains raw resources rather than companions. Register each package
+        // through its smallest inert data entry before any named root can request its content.
+        for &id in &ids {
+            if entries.iter().any(|tag| tag.pkg_id() == id) {
+                continue;
+            }
+            let anchor = addresses
+                .iter()
+                .enumerate()
+                .filter(|(_, tag)| tag.pkg_id() == id)
+                .filter_map(|(index, _)| {
+                    let spec = &tags[index];
+                    let entry = manager.get_entry(spec.template_tag)?;
+                    let rank = match spec.storage {
+                        crate::NewTagStorageMode::AudioMedia => 2,
+                        crate::NewTagStorageMode::AudioBank => return None,
+                        crate::NewTagStorageMode::GpuHull | crate::NewTagStorageMode::GpuDomain => {
+                            return None;
+                        }
+                        crate::NewTagStorageMode::InheritTemplate => {
+                            match (entry.file_type, entry.file_subtype) {
+                                (40..=42, _) => 0,
+                                (26, 7) => 1,
+                                (26, 6) => 2,
+                                _ => return None,
+                            }
+                        }
+                    };
+                    Some((rank, spec.payload.len(), index))
+                })
+                .min()
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "Map package {id:04X} has no inert registration entry"
+                    ))
+                })?;
+            entries.push(addresses[anchor.2]);
+        }
         let authored = crate::package_profile::window();
         for package in packages {
             if registered.contains(&package) || (authored.base..=authored.top).contains(&package) {
@@ -471,14 +658,14 @@ impl Plan {
         Ok(entries)
     }
 
-    /// The entries and names of map `index`'s package `part`, numbered `id`. The activity package
+    /// The entries and names of map `index`'s `part`, allocated across `ids`. The activity package
     /// also holds the names the map shares with its donor's world.
     #[allow(clippy::type_complexity)]
     pub(crate) fn package(
         &self,
         index: usize,
         part: Part,
-        id: u16,
+        ids: &[u16],
     ) -> AuthoringResult<(
         Vec<NewTagSpec>,
         Vec<NamedTag>,
@@ -487,13 +674,16 @@ impl Plan {
         let world = &self.worlds[index];
         match part {
             Part::World => {
-                let (mut tags, named, references) = world.world_tags(TagHash::new(id, 0))?;
-                flatten(id, &mut tags)?;
+                let (mut tags, named, references) = world.world_tags(ids)?;
+                flatten(ids, &mut tags)?;
                 Ok((tags, named, references))
             }
             Part::Activity => {
-                let (mut tags, names) = world.activity_tags(TagHash::new(id, 0))?;
-                flatten(id, &mut tags)?;
+                let (mut tags, names) = world.activity_tags(entry_tag(ids, 0)?)?;
+                if tags.len() > MAX_PACKAGE_ENTRY_COUNT {
+                    return Err(invalid("The map activity exceeds one package"));
+                }
+                flatten(ids, &mut tags)?;
                 let mut named = self.aliases[index].clone();
                 named.extend(names);
                 Ok((tags, named, Vec::new()))

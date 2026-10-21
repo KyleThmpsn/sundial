@@ -2,11 +2,12 @@
 use super::*;
 use sundial::package_authoring::sandbox_perk::{action, entity::residency, program::NativeProgram};
 
+/// The prerequisites to enroll, and how many graphs they were walked from.
 pub(super) fn native_prerequisites<'a>(
     manager: &PackageManager,
     groups: impl IntoIterator<Item = (AppendedTagAllocator, &'a [NewTagSpec])>,
     grafted_graphs: &[u32],
-) -> AuthoringResult<Vec<TagHash>> {
+) -> AuthoringResult<(Vec<TagHash>, usize)> {
     let groups = groups.into_iter().collect::<Vec<_>>();
     let mut authored = BTreeSet::new();
     for (allocator, tags) in &groups {
@@ -70,11 +71,13 @@ pub(super) fn native_prerequisites<'a>(
             }
         }
     }
-    Ok(residency::additions(manager, graphs)
+    let count = graphs.len();
+    let additions = residency::additions(manager, graphs)
         .map_err(invalid)?
         .into_iter()
         .map(TagHash)
-        .collect())
+        .collect();
+    Ok((additions, count))
 }
 
 #[cfg(test)]
@@ -122,6 +125,7 @@ mod tests {
             }];
             let additions = native_prerequisites(&manager, [(allocator, tags.as_slice())], &[])
                 .unwrap()
+                .0
                 .into_iter()
                 .map(|tag| tag.0)
                 .collect::<BTreeSet<_>>();

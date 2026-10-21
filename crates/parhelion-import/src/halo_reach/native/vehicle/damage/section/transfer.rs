@@ -1,6 +1,21 @@
 //! Compile source pool destinations without recursive damage-transfer cycles.
 use super::*;
 
+pub(super) fn destination(row: &Value) -> Result<Option<usize>> {
+    // Nonlocal routes can carry a stale section index. Keep it in the source
+    // receipt, but never turn it into a native local transfer or cycle edge.
+    if flags(row)? & 1 == 0 {
+        return Ok(None);
+    }
+    let target = row["section"].as_i64().context("Source transfer section")?;
+    ensure!(target >= -1, "Invalid source transfer section {target}");
+    if target == -1 {
+        Ok(None)
+    } else {
+        Ok(Some(usize::try_from(target)?))
+    }
+}
+
 pub(super) fn validate(sections: &[Value]) -> Result<()> {
     let mut edges = vec![Vec::new(); sections.len()];
     let mut incoming = vec![0usize; sections.len()];
@@ -9,13 +24,11 @@ pub(super) fn validate(sections: &[Value]) -> Result<()> {
             .as_array()
             .context("Source section damage transfers")?
         {
-            let target = row["section"].as_i64().context("Source transfer section")?;
-            if target < 0 {
+            let Some(target) = destination(row)? else {
                 continue;
-            }
+            };
             i8::try_from(target)
                 .context("Damage transfer destination exceeds the native signed index")?;
-            let target = usize::try_from(target)?;
             let count = incoming
                 .get_mut(target)
                 .context("Source transfer section exceeds table")?;
@@ -57,11 +70,10 @@ pub(super) fn build(
         .as_array()
         .context("Source section damage transfers")?
     {
-        let target = row["section"].as_i64().context("Source transfer section")?;
-        if target < 0 {
-            report.push(json!({"source":row,"status":"Rider and parent transfer requires an explicit native route"}));
+        let Some(target) = destination(row)? else {
+            report.push(json!({"source":row,"status":"Transfer without a local destination requires an explicit native route"}));
             continue;
-        }
+        };
         let kind = row["function"]
             .as_i64()
             .context("Source transfer function")?;
@@ -69,7 +81,6 @@ pub(super) fn build(
             kind == 0 && flags(row)? == 0x71 && row["seat"] == "",
             "Source section transfer needs a different native contract"
         );
-        let target = usize::try_from(target)?;
         let name = *names
             .get(target)
             .context("Source transfer section exceeds table")?;

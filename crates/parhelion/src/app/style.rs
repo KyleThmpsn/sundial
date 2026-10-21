@@ -358,6 +358,24 @@ pub(crate) fn reset_icon(ui: &mut egui::Ui, name: &str) -> bool {
         .clicked()
 }
 
+/// A warning line: the warning glyph and `text` in the warning colour.
+pub(crate) fn warning(ui: &mut egui::Ui, text: &str) {
+    ui.horizontal_wrapped(|ui| {
+        let color = ui.visuals().warn_fg_color;
+        // Painted, as in `missing`, so a screen reader reads the text and not the glyph.
+        let glyph = egui::WidgetText::from(icon(ui, egui_phosphor::regular::WARNING).color(color))
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Extend),
+                f32::INFINITY,
+                egui::TextStyle::Body,
+            );
+        let (rect, _) = ui.allocate_exact_size(glyph.size(), egui::Sense::hover());
+        ui.painter().galley(rect.min, glyph, color);
+        ui.colored_label(color, text);
+    });
+}
+
 /// A saved choice the current data no longer has: a warning and its label in the error colour,
 /// the detail on hover, and Remove. Returns whether Remove was clicked.
 pub(crate) fn missing(ui: &mut egui::Ui, label: &str, detail: &str) -> bool {
@@ -447,6 +465,17 @@ pub(crate) fn muted_warning(visuals: &egui::Visuals) -> egui::Color32 {
         egui::Color32::from_rgb(201, 142, 78)
     } else {
         egui::Color32::from_rgb(150, 88, 24)
+    }
+}
+
+/// A muted red for a control whose contents need attention, such as a missing tool. Quieter than
+/// an error and still 4.5:1 or better on the card fills.
+#[cfg(feature = "d2-model-importer")]
+pub(crate) fn muted_error(visuals: &egui::Visuals) -> egui::Color32 {
+    if visuals.dark_mode {
+        egui::Color32::from_rgb(214, 120, 120)
+    } else {
+        egui::Color32::from_rgb(160, 40, 40)
     }
 }
 
@@ -832,7 +861,7 @@ pub(crate) fn tile_field<R>(
 /// track, `scale` filling it. A change from the base shows as its own segment, green where it adds
 /// and red where it takes away.
 pub(crate) fn stat_bar(ui: &egui::Ui, rect: egui::Rect, (base, value): (i32, i32), scale: i32) {
-    const HEIGHT: f32 = 8.0;
+    const HEIGHT: f32 = 10.0;
     let bar = egui::Rect::from_center_size(rect.center(), egui::vec2(rect.width(), HEIGHT));
     let painter = ui.painter();
     let visuals = ui.visuals();

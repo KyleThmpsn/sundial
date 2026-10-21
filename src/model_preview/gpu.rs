@@ -1170,7 +1170,9 @@ float studio(vec3 n, float rough) {
     return mix(sharp, 0.32, sat(rough * 2.5));
 }
 
-vec3 light(vec3 albedo, float rough, float metal, float ao, vec3 emission, vec3 n, vec3 tint, float ambient) {
+// iri.rgb is an iridescent texel's specular base and iri.a the factor on its lit colour; a negative
+// alpha means none. Mirrors shader.rs `light`.
+vec3 light(vec3 albedo, float rough, float metal, float ao, vec3 emission, vec3 n, vec4 iri, float ambient) {
     if (n.z > 0.0) n = -n;
     float diffuse = max(dot(n, uKeyDir), 0.0);
     float half_ = max(dot(n, uHalfDir), 0.0);
@@ -1180,15 +1182,16 @@ vec3 light(vec3 albedo, float rough, float metal, float ao, vec3 emission, vec3 
     float highlight = pow(half_, exponent) * (1.2 - 0.8 * glint);
     float fresnel = pow(1.0 - abs(n.z), 5.0);
     float surroundings = studio(n, r);
-    vec3 specular = mix(mix(vec3(0.04), albedo, metal), vec3(1.0), fresnel);
+    bool iridescent = iri.a >= 0.0;
+    vec3 specular = mix(iridescent ? clamp(iri.rgb + albedo * metal, 0.0, 1.0) : mix(vec3(0.04), albedo, metal), vec3(1.0), fresnel);
     vec3 diff = albedo * (1.0 - metal) * (vec3(1.0) - specular) * (uFill * ambient + uKey * diffuse);
-    vec3 refl = tint * specular * (uFill * surroundings * ao + uKey * highlight);
-    return (diff + refl + emission) * uExposure;
+    vec3 refl = specular * (uFill * surroundings * ao + uKey * highlight);
+    return ((diff + refl) * (iridescent ? iri.a : 1.0) + emission) * uExposure;
 }
 
 // EFFECT FUNCTIONS
 void main() {
-    if(uStyle==0 && uNativeIndex>=0){vec3 albedo;vec4 normal;float metal;float ambient;vec3 emission;float coverage;if(nativeSurface(albedo,normal,metal,ambient,emission,coverage)){fragColor=vec4(light(albedo,normal.w,metal,ambient,emission,uRotate*normal.xyz,vec3(1.0),ambient)*coverage,coverage);return;}}
+    if(uStyle==0 && uNativeIndex>=0){vec3 albedo;vec4 normal;float metal;float ambient;vec3 emission;float coverage;if(nativeSurface(albedo,normal,metal,ambient,emission,coverage)){fragColor=vec4(light(albedo,normal.w,metal,ambient,emission,uRotate*normal.xyz,vec4(0.0,0.0,0.0,-1.0),ambient)*coverage,coverage);return;}}
     if(uStyle==0 && uNativeIndex>=0 && uEffect>=0){float ambient;fragColor=nativePixel(vec3(0.0),ambient);return;}
     vec2 uv = vUv;
     if (uHasDyeMap == 1 && uStyle == 0) {
@@ -1351,22 +1354,14 @@ void main() {
         albedo=nativeValue.rgb;
         if(nHasIntensity())emission=albedo*nativeValue.a;
     }
-    vec3 tint = vec3(1.0);
+    vec4 iri = vec4(0.0, 0.0, 0.0, -1.0);
     if (painted && uHasIridescence == 1 && uIridescenceId >= 0.0) {
-        float nDotV = sat(abs(n.z));
-        // Row per id, top down. Unused rows hold a magenta placeholder.
+        // Row per id, top down, read at column (n.v)^2 and squared, as the native deferred pass does.
+        // Unused rows hold a magenta placeholder.
         float rows = float(textureSize(uIridescence, 0).y);
-        vec4 iri = texture(uIridescence, vec2(nDotV, (uIridescenceId + 0.5) / rows));
-        bool placeholder = iri.r > 0.98 && iri.g < 0.02 && iri.b > 0.98;
-        float strength = placeholder ? 0.0 : 1.0 - dot(dyeColor, vec3(0.2126, 0.7152, 0.0722));
-        if (placeholder) {
-        } else if (mod(uIridescenceId, 2.0) < 0.5) {
-            albedo = mix(albedo, iri.rgb, strength);
-            metal = mix(metal, 1.0, strength);
-        } else {
-            tint = mix(vec3(1.0), iri.rgb, strength);
-        }
+        vec4 lookup = texture(uIridescence, vec2(sat(n.z * n.z), (uIridescenceId + 0.5) / rows));
+        if (!(lookup.r > 0.98 && lookup.g < 0.02 && lookup.b > 0.98)) iri = lookup * lookup;
     }
-    fragColor = vec4(light(albedo, rough, metal, ao, emission, n, tint, nativeAmbient>=0.0?nativeAmbient:ao), 1.0);
+    fragColor = vec4(light(albedo, rough, metal, ao, emission, n, iri, nativeAmbient>=0.0?nativeAmbient:ao), 1.0);
 }
 "#;

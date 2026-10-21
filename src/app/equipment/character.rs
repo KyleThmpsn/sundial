@@ -57,6 +57,7 @@ struct CharacterFieldUiContext<'a> {
     settings_schema: Option<u64>,
     original_class_type: u64,
     abilities_editable: bool,
+    appearance_editable: bool,
     all_subclasses: &'a [Arc<ItemDef>],
     allow_cross_class_subclasses: bool,
     ability_unlocks_available: bool,
@@ -187,20 +188,32 @@ fn draw_character_identity_group(
                 ui.end_row();
 
                 crate::app::ui::field_label(ui, "Race", IDENTITY_LABEL_WIDTH);
-                state.selection_requested |= combo_u64(
-                    ui,
-                    "race",
-                    &mut state.values.race,
-                    &[(0, "Human"), (1, "Awoken"), (2, "Exo")],
+                ui.add_enabled_ui(context.appearance_editable, |ui| {
+                    state.selection_requested |= combo_u64(
+                        ui,
+                        "race",
+                        &mut state.values.race,
+                        &[(0, "Human"), (1, "Awoken"), (2, "Exo")],
+                    );
+                })
+                .response
+                .on_disabled_hover_text(
+                    "Race is tied to this character's saved native appearance.",
                 );
                 ui.end_row();
 
                 crate::app::ui::field_label(ui, "Gender", IDENTITY_LABEL_WIDTH);
-                state.selection_requested |= combo_u64(
-                    ui,
-                    "gender",
-                    &mut state.values.gender,
-                    &[(0, "Male"), (1, "Female")],
+                ui.add_enabled_ui(context.appearance_editable, |ui| {
+                    state.selection_requested |= combo_u64(
+                        ui,
+                        "gender",
+                        &mut state.values.gender,
+                        &[(0, "Male"), (1, "Female")],
+                    );
+                })
+                .response
+                .on_disabled_hover_text(
+                    "Gender is tied to this character's saved native appearance.",
                 );
                 ui.end_row();
                 draw_identity_details(ui, IDENTITY_LABEL_WIDTH);
@@ -605,6 +618,10 @@ impl SundialApp {
                 settings_schema,
                 original_class_type,
                 abilities_editable,
+                appearance_editable: self
+                    .document
+                    .native_account()
+                    .is_none_or(|document| document.appearance_editable(index)),
                 all_subclasses: &all_subclasses,
                 allow_cross_class_subclasses,
                 ability_unlocks_available: self.document.native_account().is_some(),

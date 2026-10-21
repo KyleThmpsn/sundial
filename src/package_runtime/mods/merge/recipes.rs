@@ -235,6 +235,13 @@ const COLLECTIBLE_ROW: Shape = Shape {
     ],
     local: &[],
 };
+/// A node's child-node row: the child's index, then the condition program that shows it, a typed
+/// array at `+8`.
+const CHILD_NODE_ROW: Shape = Shape {
+    stride: 24,
+    fields: &[owned(8, 0, None)],
+    local: &[],
+};
 const NODE_ROW: Shape = Shape {
     stride: 168,
     fields: &[
@@ -242,7 +249,13 @@ const NODE_ROW: Shape = Shape {
         owned(48, 0, None),
         owned(64, 0, None),
         owned(88, 0, None),
-        owned(104, 24, None),
+        // Parhelion adds its badge and its pages after a stock node's own children. Studio's
+        // recipe leaves the array fixed, and a mod that keeps its count merges with one that
+        // grows it.
+        Field {
+            nestable: true,
+            ..owned(104, 24, Some(&CHILD_NODE_ROW))
+        },
         Field {
             nestable: true,
             ..owned(120, 4, None)
@@ -351,6 +364,11 @@ pub const TABLES: &[Recipe] = &[
             append("integers", 24, &PLAIN_4, None, EDITOR_ROW_LIMIT),
             append("fields", 40, &PLAIN_8, None, EDITOR_ROW_LIMIT),
             append("items", 56, &PLAIN_16, Some("item"), SIGNED_ROW_LIMIT),
+            // One presentation row per socket entry list, which the inspect screen reads by the
+            // list's index. Studio's recipe stops at the items, as Studio adds no lists. A build
+            // that adds a list grows this array, and a mod that doesn't keeps its stock count,
+            // which the merge accepts.
+            append("lists", 72, &PLAIN_8, None, EDITOR_ROW_LIMIT),
         ],
     },
     Recipe {

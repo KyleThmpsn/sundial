@@ -1,7 +1,7 @@
 //! Streaming Oodle 3 reads stop at input exhaustion, including short D1 blocks.
 use anyhow::{Context, Result, ensure};
 use libloading::Library;
-use std::{ffi::c_void, path::PathBuf};
+use std::ffi::c_void;
 
 type Create = unsafe extern "C" fn(i32, isize, *mut c_void, isize) -> *mut c_void;
 type Destroy = unsafe extern "C" fn(*mut c_void);
@@ -49,22 +49,9 @@ impl Drop for Instance {
 
 impl Decoder {
     pub fn open() -> Result<Self> {
-        let name = if cfg!(windows) {
-            "oo2core_3_win64.dll"
-        } else {
-            "liblinoodle3.so"
-        };
-        let paths = if let Some(path) = std::env::var_os("PARHELION_D1_OODLE") {
-            vec![PathBuf::from(path)]
-        } else {
-            vec![
-                std::env::current_exe()?.with_file_name(name),
-                std::env::current_dir()?.join(name),
-                PathBuf::from(name),
-            ]
-        };
+        let tool = crate::tools::Tool::Oodle;
         let mut failures = Vec::new();
-        for path in paths {
+        for path in crate::tools::libraries(tool) {
             // SAFETY: This is the user-provided decoder, following the same library lookup as Tiger.
             let library = match unsafe { Library::new(&path) } {
                 Ok(library) => library,
@@ -88,10 +75,7 @@ impl Decoder {
                 decode,
             });
         }
-        anyhow::bail!(
-            "Rise of Iron needs the Oodle 3 decoder. Set PARHELION_D1_OODLE to its path. {}",
-            failures.join("\n")
-        )
+        anyhow::bail!("{}\n{}", tool.missing(), failures.join("\n"))
     }
 
     pub fn decode(&self, stored: &[u8]) -> Result<Vec<u8>> {

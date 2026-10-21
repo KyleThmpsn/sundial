@@ -129,6 +129,7 @@ pub struct LibraryBadge {
 pub struct RecipeLibraryEntry {
     pub kind: crate::ItemKind,
     pub collection_destination: Option<crate::collection::Destination>,
+    pub collection_position: Option<crate::collection::Position>,
     pub armor_class: Option<crate::ArmorClass>,
     pub(crate) armor_origin: Option<crate::collection::armor::Origin>,
     pub badge: Option<LibraryBadge>,
@@ -196,7 +197,7 @@ pub struct RecipeLibrary {
     root: PathBuf,
     canonical_root: PathBuf,
     refresh: Option<DefaultsRefresh>,
-    /// The folder of map recipes the library lists, none without the D2 model importer.
+    /// Activities belong to builds with the D2 model importer.
     maps: Option<PathBuf>,
 }
 
@@ -224,11 +225,14 @@ impl RecipeLibrary {
                 root.display()
             )
         })?;
+        let maps = cfg!(feature = "d2-model-importer")
+            .then(|| root.parent().map(|parent| parent.join("maps")))
+            .flatten();
         let mut library = Self {
             root,
             canonical_root,
             refresh: None,
-            maps: None,
+            maps,
         };
         library.refresh = library.materialize_bundled_recipes()?;
         Ok(library)
@@ -237,6 +241,51 @@ impl RecipeLibrary {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Saves a complete activity only while its original bytes and library location still match.
+    #[cfg(feature = "d2-model-importer")]
+    pub(crate) fn save_map(
+        &self,
+        path: &Path,
+        recipe: &crate::map::MapRecipe,
+        original: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        let _lock = self.lock()?;
+        recipe.validate().map_err(|error| error.to_string())?;
+        let directory = self
+            .maps
+            .as_ref()
+            .ok_or("Activity library is unavailable")?;
+        if path.parent() != Some(directory.as_path()) {
+            return Err("Activity recipe is outside the library".into());
+        }
+        let canonical = fs::canonicalize(directory).map_err(|error| error.to_string())?;
+        let before = mutation::read_optional(path)?.ok_or("Activity recipe was removed")?;
+        if before != original
+            || fs::canonicalize(path)
+                .map_err(|error| error.to_string())?
+                .parent()
+                != Some(canonical.as_path())
+        {
+            return Err(
+                "Activity recipe changed outside this editor. Close and reopen it before saving."
+                    .into(),
+            );
+        }
+        for (other, loaded) in
+            crate::map::library_files(directory).map_err(|error| error.to_string())?
+        {
+            if other != path && loaded.map_err(|error| error.to_string())?.name == recipe.name {
+                return Err(format!(
+                    "Another activity already uses the internal name {}",
+                    recipe.name
+                ));
+            }
+        }
+        let bytes = serde_json::to_vec_pretty(recipe).map_err(|error| error.to_string())?;
+        mutation::publish(path, &bytes, Some(original))?;
+        Ok(bytes)
     }
 
     /// Bundled recipes replaced while opening, because a release changed them.
@@ -262,6 +311,7 @@ impl RecipeLibrary {
                     armor_origin,
                     kind: recipe.kind,
                     collection_destination: recipe.overrides.collection_destination,
+                    collection_position: recipe.overrides.collection_position,
                     armor_class: recipe.overrides.armor_class,
                     badge: recipe.overrides.badge.as_ref().map(|badge| LibraryBadge {
                         name: badge.name.clone(),

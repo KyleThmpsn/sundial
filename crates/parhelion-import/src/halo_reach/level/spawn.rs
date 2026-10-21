@@ -1,5 +1,7 @@
 //! A level's player spawn points: the scenario's scenery placements of the multiplayer respawn
-//! and initial spawn point objects, or a map variant's in place of those its palette offers.
+//! and initial spawn point objects, or a map variant's in place of those its palette offers. A
+//! campaign scenario places none, and its player starting locations in the loaded zone set stand
+//! in for them.
 use super::{super::cache::Cache, METRES_PER_UNIT, variant::Variant};
 use anyhow::{Context, Result, ensure};
 
@@ -19,17 +21,85 @@ const SPAWN_OBJECTS: [&str; 2] = [
     r"objects\multi\spawning\respawn_point",
     r"objects\multi\spawning\initial_spawn_point",
 ];
+/// The scenario's player starting locations: each row's position in world units, facing in
+/// radians, yaw first, and the insertion point it belongs to.
+const STARTS: usize = 0x274;
+const START_SIZE: usize = 0x1C;
+const START_FACING: usize = 0x0C;
+const START_INSERTION: usize = 0x14;
+/// How far outside a cluster's bounds, in meters, a starting location still counts as inside it.
+const START_MARGIN: f32 = 2.;
 
 /// One spawn point in meters, facing `yaw` radians about the vertical axis.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Spawn {
     pub position: [f32; 3],
     pub yaw: f32,
 }
 
+/// One player starting location: where it stands, in meters, and its insertion point, the place a
+/// mission starts from.
+pub struct Start {
+    pub spawn: Spawn,
+    pub insertion: i16,
+}
+
+/// The scenario's player starting locations.
+pub fn starts(cache: &Cache) -> Result<Vec<Start>> {
+    let scenario = cache.only("scnr")?.address()?;
+    cache
+        .block(scenario + STARTS, START_SIZE)?
+        .into_iter()
+        .map(|row| {
+            Ok(Start {
+                spawn: Spawn {
+                    position: cache.floats::<3>(row)?.map(|value| value * METRES_PER_UNIT),
+                    yaw: cache.f32(row + START_FACING)?,
+                },
+                insertion: cache.i16(row + START_INSERTION)?,
+            })
+        })
+        .collect()
+}
+
+/// The starting locations of the first insertion point with any inside the clusters of the
+/// unshared BSPs among `bsps`, else of the first with any inside the clusters of any of them. A
+/// campaign stretch loads the mission's shared terrain BSP, whose clusters can hold every insertion
+/// point's starting locations: Tip of the Spear's span 1.1 km over three insertion points.
+pub fn starts_in(cache: &Cache, bsps: &[super::Bsp]) -> Result<Vec<Spawn>> {
+    let starts = starts(cache)?;
+    for boxes in [
+        super::cluster_boxes(cache, bsps.iter().filter(|bsp| !bsp.shared))?,
+        super::cluster_boxes(cache, bsps)?,
+    ] {
+        let Some(insertion) = starts
+            .iter()
+            .find(|start| inside(&boxes, start.spawn.position))
+            .map(|start| start.insertion)
+        else {
+            continue;
+        };
+        return Ok(starts
+            .iter()
+            .filter(|start| start.insertion == insertion && inside(&boxes, start.spawn.position))
+            .map(|start| start.spawn)
+            .collect());
+    }
+    Ok(Vec::new())
+}
+
+/// Whether `point` lies within `START_MARGIN` of any of `boxes`.
+pub fn inside(boxes: &[([f32; 3], [f32; 3])], point: [f32; 3]) -> bool {
+    boxes.iter().any(|(low, high)| {
+        (0..3).all(|k| point[k] >= low[k] - START_MARGIN && point[k] <= high[k] + START_MARGIN)
+    })
+}
+
 /// Reads the scenario's spawn points, and with a map `variant` the variant's, facing along their
 /// forward axes, in place of the scenario's own placements of spawn objects its palette offers.
-pub fn read(cache: &Cache, variant: Option<&Variant>) -> Result<Vec<Spawn>> {
+/// Without either, the scenario's player starting locations in the structure BSPs its zone set
+/// `zone_set` loads stand in ([`starts_in`]).
+pub fn read(cache: &Cache, variant: Option<&Variant>, zone_set: usize) -> Result<Vec<Spawn>> {
     let scenario = cache.only("scnr")?.address()?;
     let mut spawn_rows = Vec::new();
     for (index, row) in cache
@@ -70,9 +140,12 @@ pub fn read(cache: &Cache, variant: Option<&Variant>) -> Result<Vec<Spawn>> {
             });
         }
     }
+    if spawns.is_empty() {
+        spawns = starts_in(cache, &super::bsps(cache, &[zone_set])?)?;
+    }
     ensure!(
         !spawns.is_empty(),
-        "The scenario places no player spawn points"
+        "The scenario places no player spawn points or starting locations in zone set {zone_set}"
     );
     Ok(spawns)
 }

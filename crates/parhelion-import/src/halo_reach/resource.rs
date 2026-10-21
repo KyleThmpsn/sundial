@@ -171,14 +171,24 @@ impl Pages {
     }
 }
 
-impl Cache {
-    pub fn resource(&self, owner: &Tag, handle: u32) -> Result<Resource> {
-        self.resource_from(owner, handle, false)
-    }
+/// The error of a resource whose gestalt entry holds no data in its cache: its segment index is
+/// negative. Lone Wolf's `space_alpha_halo` sky model is one, in a campaign cache.
+#[derive(Debug)]
+pub struct Absent(pub u32);
 
-    /// A resource whose gestalt entry names `owner` or, when `unowned` holds, no owner at all,
-    /// as a structure BSP's render geometry entry does.
-    pub fn resource_from(&self, owner: &Tag, handle: u32, unowned: bool) -> Result<Resource> {
+impl std::fmt::Display for Absent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Resource {:#x} holds no data in this cache", self.0)
+    }
+}
+
+impl std::error::Error for Absent {}
+
+impl Cache {
+    /// A resource of `owner`'s, whose gestalt entry names `owner` or no owner at all. A structure
+    /// BSP's render geometry entry names none, and campaign caches leave some model resources'
+    /// owners empty, as Lone Wolf's `space_alpha_halo` sky does.
+    pub fn resource(&self, owner: &Tag, handle: u32) -> Result<Resource> {
         ensure!(handle != u32::MAX, "Null resource handle");
         let zone = self.only("zone")?.address()?;
         let play = self.only("play")?.offset.unwrap_or(zone + 28);
@@ -186,28 +196,48 @@ impl Cache {
         let entry = *entries
             .get((handle & 65535) as usize)
             .context("Resource outside gestalt")?;
+        let entry_owner = self.reference(entry, None)?;
         ensure!(
-            self.reference(entry, None)?
-                .map_or(unowned, |t| t.datum == owner.datum),
-            "Resource owner differs from tag"
+            entry_owner.as_ref().is_none_or(|t| t.datum == owner.datum),
+            "Resource {handle:#x} belongs to {}, not {}",
+            entry_owner.map_or_else(|| "no tag".to_owned(), |t| t.path),
+            owner.path
         );
+        let Ok(segment) = usize::try_from(self.i16(entry + 34)?) else {
+            return Err(Absent(handle).into());
+        };
         let segment = *self
             .block(play + 60, 16)?
-            .get(usize::try_from(self.i16(entry + 34)?)?)
-            .context("Resource has no segment")?;
+            .get(segment)
+            .context("Resource segment outside table")?;
+        // The segment names its primary page at `+0` and an optional secondary page at `+2`. A
+        // secondary page with a negative `+8` or no compressed bytes gives way to the primary. A
+        // campaign cache leaves some segments without a usable page, as Winter Contingency's
+        // placed Warthog's.
         let pages = self.block(play + 24, 88)?;
-        let mut secondary = self.i16(segment + 2)? >= 0;
-        let mut page = *pages
-            .get(usize::try_from(
-                self.i16(segment + if secondary { 2 } else { 0 })?,
-            )?)
-            .context("Resource page outside table")?;
-        if self.i32(page + 8)? < 0 || self.i32(page + 12)? == 0 {
-            secondary = false;
-            page = *pages
-                .get(usize::try_from(self.i16(segment)?)?)
-                .context("Primary page outside table")?;
-        }
+        let page_at = |slot: usize| -> Result<Option<usize>> {
+            usize::try_from(self.i16(segment + slot)?)
+                .ok()
+                .map(|index| {
+                    pages
+                        .get(index)
+                        .copied()
+                        .context("Resource page outside table")
+                })
+                .transpose()
+        };
+        let usable = |page: usize| -> Result<bool> {
+            Ok(self.i32(page + 8)? >= 0 && self.i32(page + 12)? != 0)
+        };
+        // The primary is read only when the secondary gives way, so a usable secondary serves
+        // even where the primary's index is out of the table.
+        let (page, secondary) = match page_at(2)? {
+            Some(page) if usable(page)? => (page, true),
+            _ => match page_at(0)? {
+                Some(page) if self.i32(page + 12)? != 0 => (page, false),
+                _ => return Err(Absent(handle).into()),
+            },
+        };
         let page_offset = usize::try_from(self.i32(segment + if secondary { 8 } else { 4 })?)?;
         let index = self.i16(page + 4)?;
         let cache = if index < 0 {

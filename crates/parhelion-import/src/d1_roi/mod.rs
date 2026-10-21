@@ -5,6 +5,7 @@ mod cloth;
 mod codec;
 mod dye;
 mod expression;
+mod icon;
 mod layout;
 mod localization;
 mod material;
@@ -16,6 +17,7 @@ mod shader;
 mod texture;
 mod weapon;
 pub use armor::Armor;
+pub use icon::Icon;
 pub use native::NativeOptions;
 pub use weapon::Weapon;
 

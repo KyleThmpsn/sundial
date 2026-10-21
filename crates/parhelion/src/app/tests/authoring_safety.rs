@@ -175,13 +175,29 @@ fn stat_maximum_without_minimum_clamps_edits_but_not_existing_values() {
     let before = values.clone();
     let mut removed = vec![];
     render(640.0, |ui| {
-        draw_investment_stats(ui, &mut values, &mut removed, &donor, (false, &[]), &[])
+        draw_investment_stats(
+            ui,
+            &mut values,
+            &mut removed,
+            &donor,
+            (false, &[]),
+            &[],
+            &BTreeMap::new(),
+        )
     });
     assert_eq!(values, before);
     values[0].value = 99;
     let ctx = egui::Context::default();
     let mut draw = |ui: &mut egui::Ui| {
-        draw_investment_stats(ui, &mut values, &mut removed, &donor, (false, &[]), &[])
+        draw_investment_stats(
+            ui,
+            &mut values,
+            &mut removed,
+            &donor,
+            (false, &[]),
+            &[],
+            &BTreeMap::new(),
+        )
     };
     frame(&ctx, vec![], &mut draw);
     let output = frame(&ctx, vec![], &mut draw);

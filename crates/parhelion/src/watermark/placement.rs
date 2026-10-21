@@ -186,6 +186,7 @@ mod tests {
             let source = image.into_raw();
             let adjusted = adjust_corner_glyph(index, width, height, source.clone()).unwrap();
             if let Some(directory) = crate::test_support::artifacts("icon-previews") {
+                std::fs::create_dir_all(&directory).unwrap();
                 let path = std::path::Path::new(&directory).join(format!("watermark-{index}.png"));
                 image::save_buffer(path, &adjusted, width, height, image::ColorType::Rgba8)
                     .unwrap();

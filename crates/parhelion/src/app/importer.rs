@@ -19,14 +19,15 @@ use std::time::Instant;
 
 mod batch;
 mod browser;
+mod d1_roi;
 mod filters;
 mod icons;
 mod models;
 mod perks;
-mod roi;
 mod sources;
 #[cfg(test)]
 mod tests;
+mod tools;
 use sources::{Origin, Shelf, Source};
 
 pub(super) struct Importer {
@@ -38,7 +39,7 @@ pub(super) struct Importer {
     shelves: BTreeMap<Source, Shelf>,
     /// Halo: Reach and Marathon sources of the shown rows, keyed like `weapons`.
     origins: BTreeMap<u32, Origin>,
-    roi: Option<roi::Inspected>,
+    roi: Option<d1_roi::Inspected>,
     weapons: Vec<Weapon>,
     selected: BTreeSet<u32>,
     browser: browser::Browser,
@@ -59,6 +60,12 @@ pub(super) struct Importer {
     cancel: Arc<AtomicBool>,
     /// (donor count, weapon count) the no-donor set was computed for.
     donor_stamp: (usize, usize),
+    /// The shown source's outside tools. Cleared when a chosen path changes.
+    tools: Option<tools::Checked>,
+    /// Whether the Tools window is open.
+    tools_open: bool,
+    /// A running decompiler download or unpack.
+    fetching: Option<Receiver<Result<(), String>>>,
 }
 
 /// A running import: one slot per worker thread.
@@ -78,7 +85,7 @@ struct Outcome {
 }
 
 enum Event {
-    RoiInspected(Box<Result<roi::Inspected, String>>),
+    RoiInspected(Box<Result<d1_roi::Inspected, String>>),
     RoiExported(Result<PathBuf, String>),
     ScanProgress(ScanProgress),
     /// A listing and, for Halo: Reach and Marathon, each row's source.
@@ -101,6 +108,9 @@ fn data_root() -> Result<PathBuf, String> {
     sundial::package_authoring::parhelion_data_directory()
         .ok_or_else(|| "Could not locate Sundial’s data folder".into())
 }
+
+const MISSING_TOOLS: &str = "Missing tools.";
+const CHECKING_TOOLS: &str = "Checking tools.";
 
 fn clock(seconds: u64) -> String {
     format!("{}:{:02}", seconds / 60, seconds % 60)
@@ -126,6 +136,8 @@ impl Default for Importer {
             Ok(settings) => (settings, String::new()),
             Err(error) => (Settings::default(), error),
         };
+        // Map builds find vgmstream through the same chosen paths.
+        parhelion_import::tools::configure(settings.tools(None));
         let mut browser = browser::Browser::default();
         let view_path = data_root()
             .ok()
@@ -160,6 +172,9 @@ impl Default for Importer {
             outcome: None,
             cancel: Arc::new(AtomicBool::new(false)),
             donor_stamp: (usize::MAX, usize::MAX),
+            tools: None,
+            tools_open: false,
+            fetching: None,
         }
     }
 }
@@ -218,6 +233,7 @@ impl PackageAuthoringApp {
         if closed {
             return;
         }
+        self.check_importer_tools(ctx);
         self.importer.icons.poll(ctx);
         let stamp = (
             self.donor_summaries.len() + self.gear_donors.values().map(Vec::len).sum::<usize>(),
@@ -298,7 +314,12 @@ impl PackageAuthoringApp {
                     self.importer.scan_started = None;
                     self.importer.notice.clear();
                     match *result {
-                        Ok(inspected) => self.importer.roi = Some(inspected),
+                        Ok(inspected) => {
+                            self.importer.weapons = inspected.rows();
+                            self.importer.browser.dirty = true;
+                            self.importer.donor_stamp = (0, 0);
+                            self.importer.roi = Some(inspected);
+                        }
                         Err(error) => self.importer.scan_error = Some(error),
                     }
                 }
@@ -425,7 +446,7 @@ impl PackageAuthoringApp {
         if self.donor_summaries.is_empty() && self.gear_donors.values().all(Vec::is_empty) {
             return BTreeSet::new();
         }
-        if self.importer.source != Source::Modern {
+        if !matches!(self.importer.source, Source::Modern | Source::Roi) {
             let risky = self.risky_donors();
             return self
                 .importer
@@ -468,6 +489,16 @@ impl PackageAuthoringApp {
                                 .as_ref()
                                 .and_then(|catalog| catalog.item_class_type(donor.hash)),
                         )
+                    });
+                }
+                if self.importer.source == Source::Roi {
+                    return !self.donor_summaries.iter().any(|donor| {
+                        donor.type_name == weapon.weapon_type
+                            && self
+                                .catalog
+                                .as_ref()
+                                .and_then(|catalog| catalog.item_definition_tag(donor.hash))
+                                .is_some_and(crate::package_profile::is_stock_item_definition)
                     });
                 }
                 !types.contains(weapon.weapon_type.as_str())
@@ -515,8 +546,6 @@ impl PackageAuthoringApp {
                     ui.vertical_centered(|ui| {
                         ui.label(egui::RichText::new("Reading Item Catalog").heading().weak());
                     });
-                } else if self.importer.source == Source::Roi {
-                    self.draw_roi_source(ui);
                 } else {
                     self.draw_importer_toolbar(ui);
                     ui.add_space(2.0);
@@ -525,6 +554,7 @@ impl PackageAuthoringApp {
                 }
             });
         self.draw_modern_perk_window(ui.ctx());
+        self.draw_importer_tools_window(ui.ctx());
     }
 
     fn draw_importer_header(&mut self, ui: &mut egui::Ui, idle: bool) {
@@ -540,6 +570,7 @@ impl PackageAuthoringApp {
                         .add_enabled(has_source, egui::Button::new("Refresh"))
                         .clicked()
                     {
+                        self.importer.tools = None;
                         self.scan_importer(ui.ctx(), true);
                     }
                     if ui
@@ -551,6 +582,10 @@ impl PackageAuthoringApp {
                         .clicked()
                     {
                         self.choose_source_folder(ui.ctx());
+                    }
+                    self.draw_importer_tools_button(ui);
+                    if self.importer.source == Source::Roi {
+                        self.draw_roi_details(ui);
                     }
                 });
             });
@@ -566,7 +601,13 @@ impl PackageAuthoringApp {
                     .on_hover_text(&path);
             });
         }
-        let blockers = self.importer_blockers();
+        self.draw_missing_tools(ui, idle);
+        // Missing tools show above with their own lines, and a check in progress only in the footer.
+        let blockers: Vec<_> = self
+            .importer_blockers()
+            .into_iter()
+            .filter(|blocker| ![MISSING_TOOLS, CHECKING_TOOLS].contains(blocker))
+            .collect();
         if !blockers.is_empty() && !self.importer.weapons.is_empty() {
             ui.horizontal_wrapped(|ui| {
                 ui.label(
@@ -651,6 +692,11 @@ impl PackageAuthoringApp {
         if self.build_receiver.is_some() || self.install_receiver.is_some() {
             blockers.push("Build in progress.");
         }
+        if self.importer.tools_checking() {
+            blockers.push(CHECKING_TOOLS);
+        } else if !self.importer.tools_ready() {
+            blockers.push(MISSING_TOOLS);
+        }
         blockers
     }
 
@@ -660,7 +706,7 @@ impl PackageAuthoringApp {
             ui.label(egui::RichText::new("Choose a Source Folder").heading().weak());
             style::hint(ui, self.importer.source.welcome());
             style::hint(ui, if self.importer.source == Source::Roi {
-                "Import Rise of Iron armor and its linked ornaments as editable recipes. Choose the source packages to browse armor."
+                "Only the Xbox One build is supported."
             } else {
                 "Imports become editable recipes in your library. Build and install them when you are ready."
             });
@@ -984,6 +1030,10 @@ impl PackageAuthoringApp {
     }
 
     fn import_selected(&mut self, ctx: &egui::Context) {
+        if self.importer.source == Source::Roi {
+            self.import_roi_selected(ctx);
+            return;
+        }
         if self.importer.source != Source::Modern {
             self.import_foreign(ctx);
             return;

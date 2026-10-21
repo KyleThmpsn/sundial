@@ -36,12 +36,14 @@ pub(super) fn author(
     }
     let badge_placements = project_rows
         .iter()
-        .map(|row| SunriseBadgePlacement {
+        .zip(weapons)
+        .map(|(row, weapon)| SunriseBadgePlacement {
             pages: row.pages,
             classes: row.classes,
             donor_collectible_index: row.donor_collectible_index,
             authored_collectible_index: row.authored_collectible_index,
             authored_unlock_index: row.authored_unlock_index,
+            first: crate::collection::first(weapon.overrides.collection_position),
         })
         .collect::<Vec<_>>();
     let badge = author_sunrise_badge_graph(SunriseBadgeGraphInput {

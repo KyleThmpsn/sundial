@@ -477,8 +477,27 @@ impl PackageAuthoringApp {
         self.build_activity = build_status::Activity::default();
         self.install_status = build_status::InstallStatus::default();
         thread::spawn(move || {
-            // Loading and checking the included recipes reads each embedded model in full.
-            let snapshot = inputs.request().and_then(BatchBuildSnapshot::new);
+            // Loading and checking the included recipes reads each embedded model in full, which
+            // can take a while, so each recipe is reported as its file is read.
+            let snapshot = inputs
+                .request_reporting(&mut |path, index, total| {
+                    let name = path.file_name().and_then(|name| name.to_str()).map_or_else(
+                        || path.display().to_string(),
+                        |name| name.trim_end_matches(".parhelion.json").to_owned(),
+                    );
+                    let _ = sender.send(BuildWorkerEvent::Progress(
+                        TimedBuildProgress::from_progress(
+                            BuildProgress::artifact(
+                                BuildPhase::InspectingSource,
+                                format!("Reading recipe {name}"),
+                                index,
+                                total,
+                            ),
+                            started,
+                        ),
+                    ));
+                })
+                .and_then(BatchBuildSnapshot::new);
             // The window releases package access by dropping its catalog, so this copy goes first.
             drop(inputs);
             let snapshot = match snapshot {
@@ -946,6 +965,13 @@ impl PackageAuthoringApp {
                 }
                 for overlap in &report.mod_overlaps {
                     self.log.push(LogEntry::info(overlap.as_str()));
+                }
+                for member in &report.mods {
+                    self.log.push(LogEntry::info(format!(
+                        "{}: {}",
+                        member.name,
+                        member.status.label()
+                    )));
                 }
                 self.latest_install = Some(Ok(report));
                 self.install_receiver = None;

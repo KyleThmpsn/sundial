@@ -34,8 +34,11 @@ const FILE_LIMIT: usize = 1024;
 /// Parhelion's installed folder.
 #[derive(Clone, Debug, Default)]
 pub struct Incoming {
+    pub manifest: super::Manifest,
     pub packages: Vec<PathBuf>,
     pub patches: Vec<PathBuf>,
+    /// Importer members published with the main mod, including verified installed members.
+    pub family: Vec<Incoming>,
     /// Names of files in stock `packages` the installation removes, which an earlier layout left.
     pub retired: Vec<String>,
 }
@@ -50,7 +53,7 @@ struct Folders {
 /// Every folder in Sunrise's `mods` folder whose name doesn't start with a dot, as the loader
 /// lists them. A leading dot marks a folder being staged or set aside. With `incoming`,
 /// Parhelion's folder counts toward the limit whether or not it is installed yet.
-fn folders(install: &Path, incoming: bool) -> Result<Folders, String> {
+fn folders(install: &Path, incoming: Option<&Incoming>) -> Result<Folders, String> {
     let root = runtime_directory(install).join("mods");
     checked_path(install, &root)?;
     let entries = match fs::read_dir(&root) {
@@ -65,8 +68,15 @@ fn folders(install: &Path, incoming: bool) -> Result<Folders, String> {
             names.push(name);
         }
     }
-    if incoming && !names.iter().any(|name| name == ID) {
-        names.push(ID.into());
+    if let Some(incoming) = incoming {
+        names.retain(|name| !name.to_str().is_some_and(super::is_family_id));
+        names.push(incoming.manifest.id.clone().into());
+        names.extend(
+            incoming
+                .family
+                .iter()
+                .map(|member| OsString::from(&member.manifest.id)),
+        );
     }
     names.sort();
     let skipped = names.split_off(names.len().min(FOLDER_LIMIT));
@@ -127,7 +137,7 @@ fn packages(path: &Path) -> Result<Vec<PathBuf>, String> {
 /// data, and the saved configuration. Refused mods are included, since an edit can admit one.
 /// A runtime that doesn't load Sunrise mods reads none of them.
 pub(super) fn files(install: &Path) -> Result<Vec<PathBuf>, String> {
-    let folders = folders(install, false)?;
+    let folders = folders(install, None)?;
     if folders.read.is_empty() || !super::loads_mods(install)? {
         return Ok(Vec::new());
     }
@@ -197,7 +207,7 @@ impl Plan {
         refused: &[Refusal],
         incoming: Option<&Incoming>,
     ) -> Result<Self, String> {
-        let mut folders = folders(install, incoming.is_some())?;
+        let mut folders = folders(install, incoming)?;
         let mut notices = folders
             .skipped
             .iter()
@@ -208,12 +218,21 @@ impl Plan {
                 )
             })
             .collect::<Vec<_>>();
-        let own = super::directory(install);
         let extra = incoming
-            .filter(|_| folders.read.contains(&own))
-            .map(|incoming| Mod::incoming(incoming.clone()));
+            .into_iter()
+            .flat_map(|incoming| std::iter::once(incoming).chain(&incoming.family))
+            .filter(|member| {
+                folders
+                    .read
+                    .contains(&super::member_directory(install, &member.manifest.id))
+            })
+            .cloned()
+            .map(Mod::incoming)
+            .collect();
         if incoming.is_some() {
-            folders.read.retain(|folder| *folder != own);
+            folders
+                .read
+                .retain(|folder| !super::is_family_id(&name(folder)));
         }
         let (mods, left_out) = resolve(install, &folders.read, extra);
         let mut refusal = left_out
@@ -235,7 +254,7 @@ impl Plan {
                 }
                 Err(reason) => {
                     let notice = format!("{} was left out: {reason}", item.id);
-                    if item.id == ID {
+                    if super::is_family_id(&item.id) {
                         refusal = Some(notice.clone());
                     }
                     notices.push(notice);
@@ -644,7 +663,7 @@ impl Stage {
                 .collect::<HashMap<_, _>>();
             let shown = group
                 .iter()
-                .position(|claim| claim.owner == ID)
+                .position(|claim| super::is_family_id(&claim.owner))
                 .unwrap_or(0);
             primary.push(group[shown].path.clone());
             for (index, claim) in group.iter().enumerate() {

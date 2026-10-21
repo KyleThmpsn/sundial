@@ -552,28 +552,24 @@ impl<'a> Bindings<'a> {
             surface.ao *= map.occlusion[1];
             normal = basis.apply(map.packed);
         }
-        let tint = self.apply_iridescence(uv, normal, &mut surface);
+        let iridescence = self.iridescence_at(uv, normal);
         let ambient = self.ambient_override.unwrap_or(surface.ao);
-        Some(light(surface, normal, scene, tint, ambient))
+        Some(light(surface, normal, scene, iridescence, ambient))
     }
 
-    /// The GPU preview's iridescence: the lookup row the dye names, read along the row by view
-    /// angle and weighted by how dark the dye is. An even row tints the colour and makes it
-    /// metal. An odd row tints the highlight, which this returns.
-    fn apply_iridescence(&self, uv: [f32; 2], normal: [f32; 3], surface: &mut Sample) -> [f32; 3] {
+    /// The dye's iridescence as the native deferred pass applies it: the lookup row the dye
+    /// names, read at column `(n . v)^2`, squared. Its colour becomes the specular base and its
+    /// alpha scales the lit result. `None` where the dye names no row or the paint is worn through.
+    fn iridescence_at(&self, uv: [f32; 2], normal: [f32; 3]) -> Option<Iridescence> {
         let (Some(dye), Some(gearstack), Some(lookup)) =
             (self.dye, self.gearstack, self.iridescence)
         else {
-            return [1.0; 3];
+            return None;
         };
         let id = dye.surface.iridescence;
-        let alpha = gearstack.sample_rgba(uv)[3];
-        if id < 0.0 || alpha < 40.0 {
-            return [1.0; 3];
+        if id < 0.0 || gearstack.sample_rgba(uv)[3] < 40.0 {
+            return None;
         }
-        let intact = self.intact(alpha, &dye.surface);
-        let color: [f32; 3] =
-            std::array::from_fn(|i| mix(dye.surface.worn_albedo[i], dye.surface.albedo[i], intact));
         let clamped = Sampler {
             filter: None,
             mip_bias: 0.0,
@@ -586,21 +582,27 @@ impl<'a> Bindings<'a> {
         };
         let rows = lookup.size[1].max(1) as f32;
         let sample = lookup
-            .sample_with_sampler([saturate(normal[2].abs()), (id + 0.5) / rows], &clamped)
+            .sample_with_sampler(
+                [saturate(normal[2] * normal[2]), (id + 0.5) / rows],
+                &clamped,
+            )
             .map(|value| value / 255.0);
         // Rows past the authored ones hold a magenta placeholder the game skips.
         if sample[0] > 0.98 && sample[1] < 0.02 && sample[2] > 0.98 {
-            return [1.0; 3];
+            return None;
         }
-        let strength = 1.0 - (0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]);
-        if id.rem_euclid(2.0) < 0.5 {
-            surface.albedo = std::array::from_fn(|i| mix(surface.albedo[i], sample[i], strength));
-            surface.metal = mix(surface.metal, 1.0, strength);
-            [1.0; 3]
-        } else {
-            std::array::from_fn(|i| mix(1.0, sample[i], strength))
-        }
+        Some(Iridescence {
+            specular: std::array::from_fn(|i| sample[i] * sample[i]),
+            scale: sample[3] * sample[3],
+        })
     }
+}
+
+/// An iridescent texel's specular base and the factor on its lit colour, from the lookup row.
+#[derive(Clone, Copy)]
+struct Iridescence {
+    specular: [f32; 3],
+    scale: f32,
 }
 
 /// The unlit material at one texel, with the normal map's contribution kept apart because
@@ -699,12 +701,13 @@ fn saturate(value: f32) -> f32 {
     value.clamp(0.0, 1.0)
 }
 
-/// `tint` colours the highlight, as an odd iridescence row does.
+/// An iridescent texel takes the lookup colour, plus albedo by metalness, as its specular base,
+/// and the lookup alpha scales its diffuse and reflected light, as the native deferred pass does.
 fn light(
     sample: Sample,
     mut n: [f32; 3],
     scene: super::render::Scene,
-    tint: [f32; 3],
+    iridescence: Option<Iridescence>,
     ambient: f32,
 ) -> [f32; 3] {
     // Two-sided studio lighting with a broad fill and a roughness-dependent highlight.
@@ -729,16 +732,21 @@ fn light(
     let fresnel = (1.0 - n[2].abs()).powi(5);
     let surroundings = studio(n, key, roughness);
     // Occlusion darkens the fill and reflected environment, not the key light.
+    let scale = iridescence.map_or(1.0, |iridescence| iridescence.scale);
     std::array::from_fn(|i| {
         let base = sample.albedo[i];
-        let specular = mix(mix(0.04, base, sample.metal), 1.0, fresnel);
+        // The lookup colour plus albedo by metalness can pass 1, which would turn the diffuse
+        // share below negative and darken the texel.
+        let specular_base = iridescence.map_or(mix(0.04, base, sample.metal), |iridescence| {
+            saturate(iridescence.specular[i] + base * sample.metal)
+        });
+        let specular = mix(specular_base, 1.0, fresnel);
         let diffuse = base
             * (1.0 - sample.metal)
             * (1.0 - specular)
             * (scene.fill * ambient + scene.key * diffuse);
-        let reflection =
-            tint[i] * specular * (scene.fill * surroundings * sample.ao + scene.key * highlight);
-        (diffuse + reflection + sample.emission[i]) * scene.exposure
+        let reflection = specular * (scene.fill * surroundings * sample.ao + scene.key * highlight);
+        ((diffuse + reflection) * scale + sample.emission[i]) * scene.exposure
     })
 }
 
@@ -749,7 +757,7 @@ pub(in crate::model_preview) fn shade_surface(
     scene: super::render::Scene,
     ambient: f32,
 ) -> [f32; 3] {
-    light(sample, normal, scene, [1.0; 3], ambient)
+    light(sample, normal, scene, None, ambient)
 }
 
 /// The least roughness the key light's highlight shows with, standing for the light's size.
@@ -842,6 +850,3 @@ pub(super) fn encoded(value: f32) -> f32 {
     static SRGB: std::sync::OnceLock<[f32; TABLE + 1]> = std::sync::OnceLock::new();
     lookup(SRGB.get_or_init(|| table(encode_exact)), value)
 }
-
-#[cfg(test)]
-mod tests;

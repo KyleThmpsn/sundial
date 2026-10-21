@@ -2,6 +2,8 @@
 //! places them, with every point a player starts or respawns at moved onto the map's own spawn
 //! points, the donor's kill volumes refilled with the map's own, its out-of-bounds volumes left
 //! out, and the donor's barriers, props and effects in its object lists moved far below the map.
+//! The donor's music sensor is left out, and objective records that place something on the map
+//! with no role move far below it.
 //!
 //! A slice set names a registry at `+0x14`, whose three arrays list objects. Each object lists,
 //! per bubble, handles whose redirects name placed records. A placed record's descriptors each
@@ -65,13 +67,19 @@ const DESCRIPTOR_SIZE: usize = 0x80;
 const POINT_ROTATION: usize = 0x60;
 const POINT_POSITION: usize = 0x70;
 const POINT_SCALE: usize = 0x7C;
-/// An object list, a placement table.
+/// An object list, a placement table, whose rows are at `+0x08`, 144 bytes each.
 const LIST_CLASS: u32 = 0x8080_99D6;
+const TABLE_ROWS: usize = 0x08;
+const LIST_ROW_SIZE: usize = 0x90;
 /// Component classes: a respawn point, a named point, a trigger volume and an objective.
 const RESPAWN_POINT: u32 = 0x8080_94D1;
 const NAMED_POINT: u32 = 0x8080_94D5;
 const VOLUME: u32 = 0x8080_99C8;
 const OBJECTIVE: u32 = 0x8080_9927;
+/// The component class of a mission's music sensor (slot type 11, `m_music_sensor`), which plays
+/// the donor's score. A map plays its own level's ambience, so its copy leaves the sensor out:
+/// Lone Wolf and Tip of the Spear played The Other Side's music over Reach's sound.
+const MUSIC_SENSOR: u32 = 0x8080_4E8E;
 /// An objective record embeds one placement row, the row class of an object list, behind an
 /// array marker and a 16-byte header.
 const ARRAY_MARKER: u32 = 0x8080_9FBD;
@@ -292,6 +300,9 @@ fn handle(manager: &PackageManager, handle: u32, key: u32) -> AuthoringResult<Ha
         return Ok(Handle::Kept(handle));
     };
     let component = read_u32(&record_payload, first + DESCRIPTOR_CLASS)?;
+    if component == MUSIC_SENSOR {
+        return Ok(Handle::Dropped);
+    }
     if component == VOLUME {
         // The copy fills a record of kill volumes with the map's own, and leaves any other out.
         let Some(packfile) = super::volumes::packfile_of(&record_payload)? else {
@@ -332,17 +343,18 @@ fn handle(manager: &PackageManager, handle: u32, key: u32) -> AuthoringResult<Ha
             keyed.len()
         )));
     };
+    // The move writes a unit rotation, the position and a unit scale. A donor's own point need only
+    // read as a rotation and a scale there: The Dead Cliffs places points that are not unit.
     let rotation = floats::<4>(&record_payload, descriptor + POINT_ROTATION)?;
     let length = rotation
         .iter()
         .map(|value| value * value)
         .sum::<f32>()
         .sqrt();
-    if (length - 1.).abs() > 1e-3
-        || f32::from_bits(read_u32(&record_payload, descriptor + POINT_SCALE)?) != 1.
-    {
+    let scale = f32::from_bits(read_u32(&record_payload, descriptor + POINT_SCALE)?);
+    if !(length.is_finite() && length > 1e-3 && scale.is_finite() && scale > 0.) {
         return Err(invalid(format!(
-            "Placed point {record:08X} has no unit rotation and unit scale"
+            "Placed point {record:08X} has no rotation and scale"
         )));
     }
     Ok(Handle::Moved {
@@ -355,9 +367,69 @@ fn handle(manager: &PackageManager, handle: u32, key: u32) -> AuthoringResult<Ha
     })
 }
 
+/// Moves every row that stays of `handle`'s object list far below the map, making a handle that
+/// names a list with rows into a copy of it. A handle naming no list stays as it is.
+fn bury_list(manager: &PackageManager, handle: &mut Handle) -> AuthoringResult<()> {
+    match handle {
+        Handle::Listed {
+            list_payload, kept, ..
+        } => {
+            for &row in kept.iter() {
+                chain::bury(list_payload, row);
+            }
+            kept.clear();
+        }
+        Handle::Kept(tag) => {
+            let tag = *tag;
+            if class(manager, tag) != Some(HANDLE_CLASS) {
+                return Ok(());
+            }
+            let payload = read_tag(manager, TagHash(tag), "object handle")?;
+            let list = read_u32(&payload, HANDLE_LIST)?;
+            // A copy of a type-16 owner needs a shared-tag companion of its own, which a list
+            // copy does not build, so such a handle or list stays as it is.
+            let owner = |tag: u32| {
+                manager.get_entry(TagHash(tag)).is_some_and(|entry| {
+                    entry.file_type == crate::extend::SHARED_TAG_OWNER_FILE_TYPE
+                })
+            };
+            if list == u32::MAX
+                || class(manager, list) != Some(LIST_CLASS)
+                || owner(tag)
+                || owner(list)
+            {
+                return Ok(());
+            }
+            let mut list_payload = read_tag(manager, TagHash(list), "object list")?;
+            if read_u64(&list_payload, TABLE_ROWS)? == 0 {
+                return Ok(());
+            }
+            let (count, _, rows, _) = array_at(&list_payload, TABLE_ROWS)?;
+            for index in 0..count {
+                chain::bury(&mut list_payload, rows + index * LIST_ROW_SIZE);
+            }
+            *handle = Handle::Listed {
+                handle: TagHash(tag),
+                payload,
+                list: TagHash(list),
+                list_payload,
+                kept: Vec::new(),
+                spawns: Vec::new(),
+            };
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// What becomes of an objective record: a record that places its objective somewhere moves,
-/// when its name gives it a role, and any other stays. `tags` and `payloads` are the donor's
-/// handle, redirect and record.
+/// when its name gives it a role, onto the level's objectives. One that places something somewhere
+/// without a role moves far below the map, whatever its entity holds: the placement belongs to the
+/// donor's own rooms. The Other Side's records place the Leviathan's door banks (`815B53C4`, whose
+/// components hold no render model, body or effect) and its hallway door at its trophy hall, which
+/// stood in Lone Wolf's valley and on Tip of the Spear's beach. A record at the origin, which its
+/// activity places elsewhere, stays. `tags` and `payloads` are the donor's handle, redirect and
+/// record.
 fn objective(tags: [TagHash; 3], payloads: [Vec<u8>; 3]) -> AuthoringResult<Handle> {
     let record = &payloads[2];
     let mut row = None;
@@ -380,12 +452,32 @@ fn objective(tags: [TagHash; 3], payloads: [Vec<u8>; 3]) -> AuthoringResult<Hand
                 .map_or(record.len(), |length| start + length);
             record[start..end].to_vec()
         });
-    let (Some(row), Some(name)) = (row, name) else {
+    let Some(row) = row else {
         return Ok(Handle::Kept(tags[0].0));
     };
     let placed = chain::row_translation(record, row)?;
-    let Some(role) = Role::of(&name).filter(|_| placed.iter().any(|&value| value != 0.)) else {
-        return Ok(Handle::Kept(tags[0].0));
+    let role = name
+        .as_deref()
+        .and_then(Role::of)
+        .filter(|_| placed.iter().any(|&value| value != 0.));
+    let (role, name) = match (role, name) {
+        (Some(role), Some(name)) => (role, name),
+        _ if placed.iter().any(|&value| value != 0.) => {
+            return Ok(Handle::Objective {
+                handle: tags[0],
+                redirect: tags[1],
+                record: tags[2],
+                payloads,
+                row,
+                role: Role::Center,
+                group: Vec::new(),
+                place: Some(Spawn {
+                    position: [placed[0], placed[1], chain::BURIED],
+                    yaw: 0.,
+                }),
+            });
+        }
+        _ => return Ok(Handle::Kept(tags[0].0)),
     };
     Ok(Handle::Objective {
         handle: tags[0],
@@ -500,12 +592,28 @@ impl Registry {
                                 .into_iter()
                                 .map(|tag| handle(manager, tag, key))
                                 .collect::<AuthoringResult<Vec<_>>>()?;
-                        changed |= handles
-                            .iter()
-                            .any(|handle| !matches!(handle, Handle::Kept(_)));
                         bubbles.push(handles);
                     }
                 }
+                // An object that places no point is not a Crucible object, whose lists hold
+                // logical nodes the map's spawns take, but the donor activity's own: its lists
+                // place the donor's scripted scenery, which every row of moves below the map.
+                // The Other Side's place the Leviathan's doors and pots at its trophy hall, 91
+                // rows of whose entities hold no render, body or effect component, and moved onto
+                // the level's spawns they stood in Lone Wolf and Tip of the Spear.
+                if !bubbles
+                    .iter()
+                    .flatten()
+                    .any(|handle| matches!(handle, Handle::Moved { .. }))
+                {
+                    for handle in bubbles.iter_mut().flatten() {
+                        bury_list(manager, handle)?;
+                    }
+                }
+                changed |= bubbles
+                    .iter()
+                    .flatten()
+                    .any(|handle| !matches!(handle, Handle::Kept(_)));
                 list.push(Object {
                     tag: TagHash(object),
                     payload,
@@ -563,6 +671,7 @@ impl Registry {
                     row,
                     role,
                     group,
+                    place: None,
                     ..
                 } = handle
                 {
@@ -607,7 +716,11 @@ impl Registry {
                             })
                             .collect::<AuthoringResult<_>>()?;
                     }
-                    Handle::Objective { group, place, .. } => {
+                    Handle::Objective {
+                        group,
+                        place: place @ None,
+                        ..
+                    } => {
                         *place = Some(
                             placed
                                 .get_mut(group)
@@ -615,7 +728,10 @@ impl Registry {
                                 .ok_or_else(|| invalid("Objective assignment ended early"))?,
                         );
                     }
-                    Handle::Kept(_) | Handle::Dropped | Handle::Volumes { .. } => {}
+                    Handle::Kept(_)
+                    | Handle::Dropped
+                    | Handle::Volumes { .. }
+                    | Handle::Objective { .. } => {}
                 }
             }
         }
@@ -831,6 +947,11 @@ impl Registry {
                 f32::to_bits(value),
             )?;
         }
+        write_u32(
+            &mut record_payload,
+            descriptor + POINT_SCALE,
+            1f32.to_bits(),
+        )?;
         let spec = |template: TagHash, payload: Vec<u8>| NewTagSpec {
             template_tag: template,
             payload,

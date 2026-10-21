@@ -66,6 +66,26 @@ impl Generation {
             .collect::<Vec<_>>();
         let view = crate::workflow::FilteredPackageView::create(target, &ignored)?;
         let manager = (|| {
+            let manifest_path = authored_directory.join(MANIFEST_FILE_NAME);
+            if manifest_path.is_file() {
+                let manifest: ManifestDocument = sundial::package_authoring::read_json(
+                    File::open(&manifest_path).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+                manifest.validate()?;
+                if !manifest.mods.is_empty() {
+                    for artifact in &manifest.artifacts {
+                        let path = crate::mod_family::source(
+                            &manifest.mods,
+                            authored_directory,
+                            target,
+                            &artifact.file_name,
+                        )?;
+                        view.add_overlay(&path)?;
+                    }
+                    return open_shadowkeep_package_manager(view.path());
+                }
+            }
             for profile in &profiles {
                 let path = authored_directory.join(profile.file_name);
                 if path.is_file() {

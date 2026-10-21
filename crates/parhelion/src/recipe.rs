@@ -693,6 +693,10 @@ pub struct WeaponRecipeOverrides {
     /// donor's weapon type and creates the shared page when that combination is not stock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collection_destination: Option<crate::collection::Destination>,
+    /// Where the item sits among a stock Collections page's own entries. `None` places it first
+    /// unless another installed Sunrise mod changes the presentation nodes, then last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_position: Option<crate::collection::Position>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exclude_from_sunrise_badge: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1145,6 +1149,7 @@ impl WeaponRecipe {
         let previous = std::mem::take(&mut self.overrides);
         self.overrides = WeaponRecipeOverrides {
             collection_destination: previous.collection_destination,
+            collection_position: previous.collection_position,
             exclude_from_sunrise_badge: previous.exclude_from_sunrise_badge,
             badge: previous.badge,
             corner_icon: previous.corner_icon,

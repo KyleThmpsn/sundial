@@ -7,7 +7,7 @@ use super::Expr;
 use crate::tiger::particle::Program;
 use anyhow::{Result, ensure};
 
-const TABLES: &[u8; 12 * 1024] = include_bytes!("periodic/tables.bin");
+pub(super) const TABLES: &[u8; 12 * 1024] = include_bytes!("periodic/tables.bin");
 
 fn trunc(value: Expr) -> Expr {
     let normal = Expr::select(

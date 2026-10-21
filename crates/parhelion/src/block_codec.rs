@@ -10,7 +10,6 @@ const COMPRESSED_FLAGS: u16 = 1;
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Timings {
     pub blocks: usize,
-    pub wait: Duration,
     pub compression: Duration,
     pub verification: Duration,
 }
@@ -22,6 +21,17 @@ thread_local! {
 impl Timings {
     pub(crate) fn take() -> Self {
         TIMINGS.with(|timings| timings.replace(Self::default()))
+    }
+
+    /// Adds timings another thread recorded to this thread's.
+    fn absorb(other: Self) {
+        TIMINGS.with(|timings| {
+            let mut value = timings.get();
+            value.blocks += other.blocks;
+            value.compression += other.compression;
+            value.verification += other.verification;
+            timings.set(value);
+        });
     }
 
     #[cfg(all(windows, target_pointer_width = "64"))]
@@ -153,6 +163,53 @@ impl PackageBlockEncoder {
         #[cfg(not(all(windows, target_pointer_width = "64")))]
         let compressed = None;
         select_verified_storage(plaintext, compressed)
+    }
+
+    /// Encodes `blocks` in order across the available cores, each kept raw when its flag is set.
+    /// The calling thread's timings include every block.
+    pub(crate) fn encode_all(
+        &self,
+        package_id: u16,
+        blocks: &[(Vec<u8>, bool)],
+    ) -> AuthoringResult<Vec<EncodedPackageBlock>> {
+        let encode = |(plaintext, raw): &(Vec<u8>, bool)| {
+            if *raw {
+                EncodedPackageBlock::raw(plaintext)
+            } else {
+                self.encode(package_id, plaintext)
+            }
+        };
+        let threads = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZero::get)
+            .min(blocks.len());
+        if threads <= 1 {
+            return blocks.iter().map(encode).collect();
+        }
+        let share = blocks.len().div_ceil(threads);
+        let parts = std::thread::scope(|scope| {
+            let workers = blocks
+                .chunks(share)
+                .map(|part| {
+                    scope.spawn(move || {
+                        let encoded = part.iter().map(encode).collect::<AuthoringResult<Vec<_>>>();
+                        (encoded, Timings::take())
+                    })
+                })
+                .collect::<Vec<_>>();
+            workers
+                .into_iter()
+                .map(|worker| worker.join())
+                .collect::<Vec<_>>()
+        });
+        let mut encoded = Vec::with_capacity(blocks.len());
+        for part in parts {
+            let (part, timings) = part.map_err(|_| {
+                AuthoringError::InvalidInput("A package block encoder thread panicked".into())
+            })?;
+            Timings::absorb(timings);
+            encoded.extend(part?);
+        }
+        Ok(encoded)
     }
 }
 

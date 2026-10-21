@@ -86,10 +86,10 @@ impl<'a> Reporter<'a> {
         let _ = self.send.send(Event::Activity {
             index: self.index, label: String::new(), timestamp: now, completed: false,
             activity: BuildActivity::Diagnostic(format!(
-                "Package timings: {file}. Queue {:.3}s, elapsed {:.3}s, progress wait {:.3}s, codec wait {:.3}s, compression {:.3}s, codec verification {:.3}s, {} blocks.",
+                "Package timings: {file}. Queue {:.3}s, elapsed {:.3}s, progress wait {:.3}s, compression {:.3}s, codec verification {:.3}s, {} blocks.",
                 self.queued.as_secs_f64(), now.saturating_duration_since(self.admitted).as_secs_f64(),
                 self.reporting.as_secs_f64(),
-                timings.wait.as_secs_f64(), timings.compression.as_secs_f64(), timings.verification.as_secs_f64(), timings.blocks,
+                timings.compression.as_secs_f64(), timings.verification.as_secs_f64(), timings.blocks,
             )),
         });
     }

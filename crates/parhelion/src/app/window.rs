@@ -76,6 +76,7 @@ impl PackageAuthoringUtility for Parhelion {
             self.app.reset_catalog_load();
             self.app.invalidate_results();
         }
+        self.app.mod_loader = crate::install::uses_mod_loader(&self.app.packages);
         self.app.show_plug_safety_warnings = sundial::investment::show_plug_safety_warnings();
         self.app.initialize_storage();
         self.app.upgrade.request();
@@ -150,7 +151,7 @@ impl PackageAuthoringUtility for Parhelion {
         PackageAuthoringUpdate {
             open: self.open,
             busy: self.app.has_background_work(),
-            dirty: self.app.recipe_dirty,
+            dirty: self.app.recipe_dirty || self.app.activity_dirty(),
             packages_changed: self.app.take_packages_changed(),
             account_changed: std::mem::take(&mut self.app.account_changed),
             preferences_changed: self.app.take_preferences_changed(),

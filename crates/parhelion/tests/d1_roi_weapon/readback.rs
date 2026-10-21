@@ -1,6 +1,149 @@
 use super::*;
 use parhelion_import::tiger::payload::Payload;
 
+pub fn audio(
+    reader: &mut Reader,
+    source: &Source,
+    item: u32,
+    graph: &Value,
+    directory: &Path,
+) -> Result<Value> {
+    let expected = graph["audio"]["matched_events"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if env::var_os("PARHELION_D1_REQUIRE_NAMED_AUDIO").is_some() {
+        assert!(
+            !expected.is_empty(),
+            "Required source named audio was not linked"
+        );
+    }
+    if expected.is_empty() {
+        return Ok(json!([]));
+    }
+    let rig = parhelion_import::tiger::rig::inspect_with_audio(reader, item, false)?;
+    let groups = rig["audio"]["named_groups"]
+        .as_array()
+        .ok_or("Emitted named audio")?;
+    let mut result = Vec::new();
+    for event in expected {
+        let matches = groups
+            .iter()
+            .flat_map(|g| g["events"].as_array().into_iter().flatten())
+            .filter(|e| e["hash"] == event["hash"])
+            .collect::<Vec<_>>();
+        assert_eq!(
+            matches.len(),
+            1,
+            "Named event is absent or ambiguous in the actual item runtime"
+        );
+        let sounds = matches[0]["sounds"].as_array().ok_or("Emitted sounds")?;
+        let sources = event["sounds"].as_array().ok_or("Source sounds")?;
+        assert_eq!(sounds.len(), sources.len(), "Named event lost a source cue");
+        for (sound, original) in sounds.iter().zip(sources) {
+            let tag = u32::from_str_radix(sound["tag"].as_str().ok_or("Emitted cue")?, 16)?;
+            let cue = reader.tag(tag, Some(0x80809802))?;
+            let source_tag =
+                u32::from_str_radix(original["tag"].as_str().ok_or("Source cue")?, 16)?;
+            let input = source.read(source_tag)?;
+            let media = input.array(0x38, 4, Some(0x80800014))?;
+            assert_eq!(cue.u64(0x18)?, media.len() as u64);
+            assert_eq!(cue.u64(0x40)?, media.len() as u64);
+            let (streams, count) = audio_bank(reader, &cue)?;
+            for (i, at) in media.iter().enumerate() {
+                let source_medium = format!("{:08X}", input.u32(*at)?);
+                let row = graph["audio"]["transcoded_media"]
+                    .as_array()
+                    .ok_or("Converted media")?
+                    .iter()
+                    .find(|r| r["source_tag"] == source_medium)
+                    .ok_or("Source medium was omitted")?;
+                let private = cue.u32(0x50 + i * 4)?;
+                assert!(
+                    streams.contains(&private),
+                    "Cue medium is not referenced by its bank"
+                );
+                let entry = reader
+                    .manager
+                    .get_entry(tiger_pkg::TagHash(private))
+                    .ok_or("Stored medium")?;
+                assert_eq!((entry.file_type, entry.file_subtype), (26, 6));
+                assert_eq!(
+                    reader.tag(private, None)?.0,
+                    fs::read(directory.join(row["file"].as_str().ok_or("PCM file")?))?
+                );
+            }
+            result.push(json!({"event":event["hash"],"cue":tag,"bank":cue.u32(0x14)?,"event_actions":count,"streams":streams}));
+        }
+    }
+    Ok(json!(result))
+}
+
+fn audio_bank(reader: &mut Reader, cue: &Payload) -> Result<(BTreeSet<u32>, u32)> {
+    let bank = reader.tag(cue.u32(0x14)?, None)?;
+    assert_eq!(&bank.0[..4], b"BKHD");
+    assert_eq!(bank.u32(8)?, 113);
+    let objects = audio_objects(&bank)?;
+    let event_record = objects
+        .get(&cue.u32(8)?)
+        .ok_or("Cue event is absent from its persisted bank")?;
+    assert_eq!(event_record.0, 4);
+    let payload = Payload(event_record.1.clone());
+    let count = payload.u32(4)?;
+    assert!(count > 0);
+    for i in 0..count as usize {
+        assert_eq!(
+            objects
+                .get(&payload.u32(8 + i * 4)?)
+                .ok_or("Persisted event action")?
+                .0,
+            3
+        );
+    }
+    let mut streams = BTreeSet::new();
+    for (kind, bytes) in objects.values() {
+        if *kind == 2 {
+            let p = Payload(bytes.clone());
+            assert_eq!(p.u32(4)?, 0x10001);
+            assert_eq!(p.u8(8)?, 2);
+            streams.insert(p.u32(9)?);
+            assert_eq!(reader.tag(p.u32(9)?, None)?.0.len(), p.u32(13)? as usize);
+        }
+    }
+    Ok((streams, count))
+}
+
+type AudioObjects = BTreeMap<u32, (u8, Vec<u8>)>;
+
+fn audio_objects(bank: &Payload) -> Result<AudioObjects> {
+    let mut cursor = 0;
+    let mut objects = BTreeMap::new();
+    while cursor < bank.0.len() {
+        let end = cursor + 8 + bank.u32(cursor + 4)? as usize;
+        assert!(end <= bank.0.len());
+        if bank.0[cursor..cursor + 4] == *b"HIRC" {
+            let mut at = cursor + 12;
+            for _ in 0..bank.u32(cursor + 8)? {
+                let size = bank.u32(at + 1)? as usize;
+                assert!(at + 5 + size <= end);
+                assert!(
+                    objects
+                        .insert(
+                            bank.u32(at + 5)?,
+                            (bank.u8(at)?, bank.0[at + 5..at + 5 + size].to_vec())
+                        )
+                        .is_none()
+                );
+                at += 5 + size;
+            }
+            assert_eq!(at, end);
+        }
+        cursor = end;
+    }
+    assert_eq!(cursor, bank.0.len());
+    Ok(objects)
+}
+
 fn inherited_pose(directory: &Path, name: u32) -> Result<(u32, [u8; 64])> {
     let report: Value = serde_json::from_slice(&fs::read(directory.join("weapon.json"))?)?;
     let root = report["runtime"]["runtime_entity"]

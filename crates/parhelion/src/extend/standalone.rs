@@ -217,22 +217,38 @@ fn build_standalone_package_from(
     let block_encoder = PackageBlockEncoder::open_for_packages(package_directory)?;
     let tag_allocator = AppendedTagAllocator::new(package_id, 0);
     progress("Encoding Blocks");
+    // Blocks compress a batch at a time across the cores and are written in order.
+    const BATCH: usize = 128;
+    let mut batch = Vec::with_capacity(BATCH);
+    let mut written = 0;
+    let mut flush = |batch: &mut Vec<(Vec<u8>, bool)>, artifact: &mut Vec<u8>| {
+        for encoded in block_encoder.encode_all(package_id, batch)? {
+            let payload_offset = append_aligned(artifact, &encoded.stored);
+            let block_row = layout.block_table_offset + written * BLOCK_HEADER_SIZE;
+            write_block_header(artifact, block_row, payload_offset, &encoded, 0)?;
+            written += 1;
+        }
+        batch.clear();
+        AuthoringResult::Ok(())
+    };
     let written_blocks = packed::visit_blocks(
         new_tags
             .iter()
             .zip(&metadata)
             .map(|(tag, entry)| (tag.payload.as_slice(), entry.alignment())),
         |index, chunk| {
-            let encoded = if raw_blocks[index] {
-                EncodedPackageBlock::raw(chunk)?
-            } else {
-                block_encoder.encode(package_id, chunk)?
-            };
-            let payload_offset = append_aligned(&mut artifact, &encoded.stored);
-            let block_row = layout.block_table_offset + index * BLOCK_HEADER_SIZE;
-            write_block_header(&mut artifact, block_row, payload_offset, &encoded, 0)
+            batch.push((chunk.to_vec(), raw_blocks[index]));
+            if batch.len() == BATCH {
+                flush(&mut batch, &mut artifact)?;
+            }
+            Ok(())
         },
     )?;
+    flush(&mut batch, &mut artifact)?;
+    drop(flush);
+    if written != written_blocks {
+        return Err(validation("Standalone package blocks were not all written"));
+    }
     if written_blocks != block_count {
         return Err(validation(
             "Standalone package block allocation did not converge",
@@ -338,6 +354,7 @@ fn build_standalone_package_from(
         }],
     };
     Ok(ExtendedOverlayArtifact {
+        reused: None,
         plan: ExtendedOverlayPlan {
             chain,
             output_file_name: output_file_name.to_owned(),

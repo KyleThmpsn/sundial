@@ -73,6 +73,15 @@ impl Program {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_inputs(1)
+    }
+
+    /// Validate the same four-lane stack contract for a caller's explicit input table.
+    /// Scalar perk callers retain one input through `validate`. Channel banks can bind more.
+    pub fn validate_inputs(&self, inputs: usize) -> Result<(), String> {
+        if inputs > 256 {
+            return Err("The value program exceeds its input operand range.".into());
+        }
         if self.constants.len() > 256 || self.instructions.len() > 4096 || self.fast_path > 1 {
             return Err("The value program exceeds its native limits.".into());
         }
@@ -124,8 +133,15 @@ impl Program {
                     ));
                 }
             };
-            if matches!(op, 60 | 62) && instruction.operand != Some(0) {
-                return Err("Perk value programs have one input and one output.".into());
+            if op == 60
+                && instruction
+                    .operand
+                    .is_none_or(|index| usize::from(index) >= inputs)
+            {
+                return Err("The value program exceeds its input table.".into());
+            }
+            if op == 62 && instruction.operand != Some(0) {
+                return Err("The value program has one output.".into());
             }
             if stack < required {
                 return Err("The value program would underflow its stack.".into());

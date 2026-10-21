@@ -4,11 +4,11 @@ mod expression;
 mod periodic;
 use crate::halo_reach::cache::Cache;
 use anyhow::{Context, Result, ensure};
-pub(super) use expression::Expr;
+pub(in crate::halo_reach) use expression::Expr;
 use serde::Serialize;
 
 #[derive(Clone, Serialize)]
-pub(super) struct Property {
+pub(in crate::halo_reach) struct Property {
     inputs: [u8; 4],
     function: Vec<u8>,
     compiled: Option<f32>,
@@ -21,6 +21,36 @@ enum Evaluation {
 }
 
 impl Property {
+    /// Material overlays carry the same mapping payload as effect properties,
+    /// but their caller supplies named inputs and does not carry a compiled scalar.
+    pub fn mapping(data: &[u8]) -> Result<Expr> {
+        ensure!(
+            (32..=4096).contains(&data.len()),
+            "Unsupported material mapping size"
+        );
+        let length = 32usize
+            .checked_add(u32::from_le_bytes(data[28..32].try_into()?) as usize)
+            .context("Material mapping body size overflow")?;
+        ensure!(
+            length <= data.len(),
+            "Material mapping body exceeds its payload"
+        );
+        let property = Self {
+            inputs: [0, 1, 0, u8::MAX],
+            function: data[..length].to_vec(),
+            compiled: None,
+        };
+        property.formula()
+    }
+
+    pub fn periodic_tables() -> &'static [u8] {
+        periodic::TABLES
+    }
+
+    pub fn transition_tables() -> &'static [u8] {
+        include_bytes!("property/periodic/transitions.bin")
+    }
+
     pub fn read(cache: &Cache, at: usize) -> Result<Self> {
         let size = usize::try_from(cache.i32(at + 4)?)?;
         ensure!(
@@ -128,6 +158,27 @@ impl Property {
         let result = match kind {
             0 => input,
             1 => Expr::scalar(0.),
+            2 if evaluation == Evaluation::Cpu => {
+                let transition = *self.function.get(*at).context("Transition selector")?;
+                ensure!(
+                    transition < 8,
+                    "Unsupported transition selector {transition}"
+                );
+                let low = self.scalar(*at + 4)?;
+                let high = self.scalar(*at + 8)?;
+                *at += 12;
+                Expr::scalar(low).lerp(
+                    Expr::scalar(high),
+                    Expr::Transition(transition, Box::new(input)),
+                )
+            }
+            9 if evaluation == Evaluation::Cpu => {
+                let low = self.scalar(*at)?;
+                let high = self.scalar(*at + 4)?;
+                let power = self.scalar(*at + 8)?;
+                *at += 12;
+                Expr::Exponent(Box::new(input), low, high, power)
+            }
             3 => {
                 // MCC 00174FB8 and 00174FF2 read one byte for each periodic
                 // branch. The following three bytes are padding, including

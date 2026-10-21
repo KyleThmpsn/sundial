@@ -15,6 +15,8 @@ use sundial::package_authoring::runtime::{
 
 fn build() -> BuildReport {
     BuildReport {
+        mods: Vec::new(),
+        import_conversions: Default::default(),
         weapons: vec![WeaponBuildReport {
             name: "Good Company".into(),
             kind: crate::ItemKind::Weapon,

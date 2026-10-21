@@ -11,6 +11,8 @@ use std::{
     path::Path,
 };
 
+mod initial;
+
 type Element = (&'static str, u32, u32, u8);
 
 // Shadowkeep render-global declarations, in stream order. The last two values are the
@@ -155,6 +157,27 @@ fn dye_scopes(mut bytes: Vec<u8>) -> Result<Option<Vec<u8>>> {
     }
     bytes[0x18..0x1C].copy_from_slice(&selected.to_le_bytes());
     Ok(Some(bytes))
+}
+
+fn bind_material(node: &Value, original: Vec<u8>, source: &Value) -> Result<Option<Vec<u8>>> {
+    let mut selected = original.clone();
+    if source == "d1_roi" {
+        for stage in [0x48, 0xE8, 0x188, 0x228, 0x2C8] {
+            if target(node, stage)?.is_some() && target(node, stage + 0x84)?.is_none() {
+                initial::bind(&mut selected, stage)
+                    .with_context(|| format!("material stage {stage:X}"))?;
+            }
+        }
+    }
+    if let Some(bytes) = dye_scopes(selected.clone())? {
+        selected = bytes;
+    }
+    if selected == original {
+        return Ok(None);
+    }
+    let length = selected.len() as u64;
+    selected[..8].copy_from_slice(&length.to_le_bytes());
+    Ok(Some(selected))
 }
 
 fn cloth_scope(name: &str, original: Vec<u8>) -> Result<Option<Vec<u8>>> {
@@ -364,7 +387,10 @@ pub fn bind(graph: &Value, directory: &Path) -> Result<BTreeMap<String, Vec<u8>>
         }
     }
     for name in materials.keys() {
-        if let Some(bytes) = dye_scopes(read(get(name)?)?)? {
+        let node = get(name)?;
+        if let Some(bytes) = bind_material(node, read(node)?, &graph["source"])
+            .with_context(|| format!("material {name}"))?
+        {
             bound.insert((*name).to_owned(), bytes);
         }
     }

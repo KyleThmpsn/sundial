@@ -187,6 +187,7 @@ fn layer(c: &Cache, widget: usize, parent: [f32; 6], globals: usize) -> Result<L
             transform: [1., 1., 0., 0.],
             frame,
             address: 0,
+            filter: 0,
             functions: Vec::new(),
         },
         uv,

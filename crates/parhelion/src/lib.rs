@@ -46,6 +46,8 @@ mod install;
 mod item;
 mod item_kind;
 mod manifest;
+mod mod_family;
+pub use mod_family::{ModReport, ModStatus};
 pub mod map;
 mod merge_data;
 mod package_profile;

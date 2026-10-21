@@ -14,19 +14,24 @@ fn owner(rig: &Value, class: &str) -> Result<Option<u32>> {
     Ok(owners.first().copied())
 }
 
-/// Check the native component and every marker before package allocation.
-pub fn validate(bytes: &[u8]) -> Result<()> {
-    let p = Payload(bytes.to_vec());
+fn component(p: &Payload) -> Result<()> {
     let instance = p.pointer(16)?;
     let resource = p.pointer(24)?;
     ensure!(
-        p.u64(0)? == bytes.len() as u64
+        p.u64(0)? == p.0.len() as u64
             && instance >= 4
             && resource >= 4
             && p.u32(instance - 4)? == format::NATIVE_COMPONENT
             && p.u32(resource - 4)? == 0x80808507,
         "runtime marker component layout differs"
     );
+    Ok(())
+}
+
+/// Check the native component and every marker before package allocation.
+pub fn validate(bytes: &[u8]) -> Result<()> {
+    let p = Payload(bytes.to_vec());
+    component(&p)?;
     for marker in format::read_native(&p)? {
         ensure!(
             marker.binding[0] == 0
@@ -53,7 +58,9 @@ pub(super) fn prepare(
         .context("source runtime markers need a native component carrier")?;
     let modern = sr.tag(from, Some(0x80809B06))?;
     let original = nr.tag(to, Some(0x80809C36))?;
-    validate(&original.0)?;
+    // The carrier's rows are replaced in full. Validate its envelope here, and apply
+    // supported binding checks to the emitted source rows below, not to discarded markers.
+    component(&original)?;
     let resource = modern.pointer(24)?;
     ensure!(
         resource >= 4 && modern.u32(resource - 4)? == 0x8080819D,

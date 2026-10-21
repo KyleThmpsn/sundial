@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) mod decoder;
+pub(super) mod staged;
 
 #[cfg(test)]
 pub(super) fn validate_request(request: &InstallRequest) -> Result<ValidatedRun, InstallError> {
@@ -38,14 +39,29 @@ pub(super) fn validate_request_with_progress(
         )));
     }
 
+    let reviewed = request
+        .confirmed_replacement
+        .as_ref()
+        .and_then(|review| review.validated());
     progress(InstallProgress::item(
         InstallPhase::Checking,
-        "Verifying Staged Packages and Recipes",
+        if reviewed.is_some() {
+            "Checking Staged Files for Changes"
+        } else {
+            "Verifying Staged Packages and Recipes"
+        },
         1,
         7,
     ));
-    let manifest =
-        validate_manifest_and_staged_files(&staged_run_directory, &target_packages_directory)?;
+    let manifest = if let Some(reviewed) = reviewed {
+        staged::verify(reviewed, &staged_run_directory, &target_packages_directory)?;
+        std::sync::Arc::clone(reviewed)
+    } else {
+        std::sync::Arc::new(validate_manifest_and_staged_files(
+            &staged_run_directory,
+            &target_packages_directory,
+        )?)
+    };
     progress(InstallProgress::item(
         InstallPhase::Checking,
         "Checking Installed Package Headers",
@@ -96,9 +112,14 @@ pub(super) fn validate_request_with_progress(
         &target_packages_directory,
         &staged_run_directory,
         &sunrise_build_cache.runtime,
+        &manifest,
         progress,
     )
     .map_err(InstallError::validation)?;
+    manifest
+        .inputs
+        .verify(&staged_run_directory, &target_packages_directory)?;
+    let manifest = std::sync::Arc::unwrap_or_clone(manifest);
     Ok(ValidatedRun {
         replacement_guard,
         staged_run_directory,
@@ -107,8 +128,11 @@ pub(super) fn validate_request_with_progress(
         source_artifacts: manifest.source_artifacts,
         artifacts: manifest.artifacts,
         merge_data: manifest.merge_data,
+        map_diagnostics: manifest.map_diagnostics,
+        mods: manifest.mods,
         obsolete_artifacts,
         selected_recipe_files: manifest.selected_recipe_files,
+        staged_inputs: manifest.inputs,
         authored_unlocks: manifest.authored_unlocks,
         authored_grants: manifest.authored_grants,
         package_backup_retention: request.package_backup_retention,
@@ -204,14 +228,14 @@ pub(super) fn validate_manifest_and_staged_files(
 ) -> Result<ValidatedManifest, InstallError> {
     let manifest_path = staged_run_directory.join(MANIFEST_FILE_NAME);
     reject_symlink(&manifest_path, "manifest")?;
-    let manifest_file = File::open(&manifest_path).map_err(|error| {
+    let manifest_bytes = fs::read(&manifest_path).map_err(|error| {
         InstallError::validation(format!(
             "Could not open staged manifest {}: {error}",
             manifest_path.display()
         ))
     })?;
     let manifest: ManifestDocument =
-        sundial::package_authoring::read_json(manifest_file).map_err(|error| {
+        sundial::package_authoring::read_json(Cursor::new(&manifest_bytes)).map_err(|error| {
             InstallError::validation(format!(
                 "Could not parse staged manifest {}: {error}",
                 manifest_path.display()
@@ -219,26 +243,81 @@ pub(super) fn validate_manifest_and_staged_files(
         })?;
     manifest.validate().map_err(InstallError::validation)?;
     validate_manifest_source(&manifest, target_packages_directory)?;
-    let plug_variants = validate_staged_recipe_snapshots(staged_run_directory, &manifest)?;
+    let recipes = validate_staged_recipe_snapshots(staged_run_directory, &manifest)?;
+    let mut files = recipes.files;
+    files.insert(0, staged::metadata(MANIFEST_FILE_NAME, &manifest_bytes));
+    let inputs = staged::Inputs::new(staged_run_directory, target_packages_directory, files)?;
     let authored_unlocks = validate_manifest_unlocks(&manifest.project)?;
     let authored_grants = manifest_grants(&manifest.project);
     let source_artifacts = validate_source_artifact_records(manifest.source_artifacts)?;
     let artifacts = validate_artifact_records(manifest.artifacts)?;
     check_layout(target_packages_directory, &artifacts)?;
     let selected_recipe_files = manifest.selected_recipe_files;
-    validate_direct_package_set(staged_run_directory, &artifacts)?;
-    verify_staged_artifacts(staged_run_directory, &artifacts)?;
-    validate_staged_packages(staged_run_directory, &artifacts, target_packages_directory)?;
-    let merge_data = validate_merge_data(staged_run_directory, &artifacts, manifest.merge_data)?;
+    if !manifest.mods.is_empty() && !uses_mod_loader(target_packages_directory) {
+        return Err(InstallError::validation(
+            "An importer mod family requires Sunrise 0.6 or later",
+        ));
+    }
+    let staged_artifacts = staged::packages(&artifacts, &manifest.mods);
+    validate_direct_package_set(staged_run_directory, &staged_artifacts)?;
+    validate_staged_packages(
+        staged_run_directory,
+        &artifacts,
+        target_packages_directory,
+        &manifest.mods,
+    )?;
+    let merge_data = validate_merge_data(
+        staged_run_directory,
+        &artifacts,
+        manifest.merge_data,
+        target_packages_directory,
+        &manifest.mods,
+    )?;
+    let map_diagnostics = validate_map_diagnostics(staged_run_directory, manifest.map_diagnostics)?;
     Ok(ValidatedManifest {
+        inputs,
         source_artifacts,
         artifacts,
         merge_data,
+        map_diagnostics,
+        mods: manifest.mods,
         selected_recipe_files,
         authored_unlocks,
         authored_grants,
-        plug_variants,
+        plug_variants: recipes.variants,
     })
+}
+
+fn validate_map_diagnostics(
+    directory: &Path,
+    metadata: Option<ArtifactMetadata>,
+) -> Result<Option<ArtifactMetadata>, InstallError> {
+    use sundial::package_authoring::mod_content::{self, map_diagnostics};
+    let Some(mut metadata) = metadata else {
+        return Ok(None);
+    };
+    let path = directory.join(map_diagnostics::FILE_NAME);
+    mod_content::checked_path(directory, &path).map_err(InstallError::validation)?;
+    let length = fs::metadata(&path)
+        .map_err(|error| InstallError::validation(error.to_string()))?
+        .len();
+    if length != metadata.byte_length || length > map_diagnostics::BYTE_LIMIT {
+        return Err(InstallError::validation(
+            "Map diagnostics size changed after staging",
+        ));
+    }
+    let bytes = fs::read(&path).map_err(|error| InstallError::validation(error.to_string()))?;
+    let digest = crate::artifact::digest_bytes(&bytes);
+    if !digest.sha256.eq_ignore_ascii_case(&metadata.sha256) {
+        return Err(InstallError::validation(
+            "Map diagnostics changed after staging",
+        ));
+    }
+    let catalog: map_diagnostics::Catalog = serde_json::from_slice(&bytes)
+        .map_err(|error| InstallError::validation(format!("Invalid map diagnostics: {error}")))?;
+    catalog.validate().map_err(InstallError::validation)?;
+    metadata.sha256 = digest.sha256;
+    Ok(Some(metadata))
 }
 
 /// Merge data matches its manifest digest and describes the package beside it, since Sunrise binds
@@ -247,6 +326,8 @@ fn validate_merge_data(
     directory: &Path,
     artifacts: &[ArtifactMetadata],
     merge_data: Vec<ArtifactMetadata>,
+    target: &Path,
+    mods: &[crate::mod_family::Member],
 ) -> Result<Vec<ArtifactMetadata>, InstallError> {
     use sundial::package_authoring::mod_content::{merge::sidecar::Sidecar, plaintext};
     let mut validated = Vec::with_capacity(merge_data.len());
@@ -261,7 +342,11 @@ fn validate_merge_data(
         data.sha256.make_ascii_uppercase();
         validated.push(data);
     }
-    verify_staged_artifacts(directory, &validated)?;
+    for data in &validated {
+        let path = crate::mod_family::source(mods, directory, target, &data.file_name)
+            .map_err(InstallError::validation)?;
+        loader::verify_file(&path, &TransactionDigest::from(data))?;
+    }
     for data in &validated {
         let package = data
             .file_name
@@ -274,9 +359,13 @@ fn validate_merge_data(
                     data.file_name
                 ))
             })?;
-        let records = plaintext::records(&directory.join(&package))
+        let package_path = crate::mod_family::source(mods, directory, target, &package)
+            .map_err(InstallError::validation)?;
+        let data_path = crate::mod_family::source(mods, directory, target, &data.file_name)
+            .map_err(InstallError::validation)?;
+        let records = plaintext::records(&package_path)
             .map_err(|reason| InstallError::validation(format!("{package} {}", reason.text())))?;
-        let bytes = fs::read(directory.join(&data.file_name)).map_err(|error| {
+        let bytes = fs::read(data_path).map_err(|error| {
             InstallError::validation(format!("Could not read {}: {error}", data.file_name))
         })?;
         Sidecar::parse(&bytes, records.package, records.patch, &records.digest).map_err(
@@ -398,12 +487,13 @@ pub(super) fn validate_manifest_source(
 
 /// Checks each staged recipe against the manifest and returns the private copies of stock plugs
 /// the recipes put in their items' sockets.
-pub(super) fn validate_staged_recipe_snapshots(
+fn validate_staged_recipe_snapshots(
     staged_run_directory: &Path,
     manifest: &ManifestDocument,
-) -> Result<Vec<replacement::StockPlugVariant>, InstallError> {
-    let mut recipes = Vec::with_capacity(manifest.selected_recipe_files.len());
+) -> Result<ValidatedRecipes, InstallError> {
+    let mut selection = SelectionFingerprint::default();
     let mut variants = Vec::new();
+    let mut files = Vec::new();
     for (index, relative_path) in manifest.selected_recipe_files.iter().enumerate() {
         let path = staged_run_directory.join(relative_path);
         reject_symlink(&path, "staged recipe")?;
@@ -419,12 +509,22 @@ pub(super) fn validate_staged_recipe_snapshots(
                 path.display()
             )));
         }
-        let recipe = WeaponRecipe::load_json(&resolved).map_err(|error| {
+        // A staged snapshot is its recipe's canonical encoding and a newline, so the selection
+        // is fingerprinted from the bytes read rather than by encoding each recipe again.
+        let encoded = fs::read_to_string(&resolved).map_err(|error| {
+            InstallError::validation(format!(
+                "Could not read staged recipe {}: {error}",
+                path.display()
+            ))
+        })?;
+        let recipe = WeaponRecipe::from_json_str(&encoded).map_err(|error| {
             InstallError::validation(format!(
                 "Could not validate staged recipe {}: {error}",
                 path.display()
             ))
         })?;
+        selection.add(encoded.strip_suffix('\n').unwrap_or(&encoded));
+        files.push(staged::metadata(relative_path, encoded.as_bytes()));
         let weapon = &manifest.project.weapons[index];
         let spec = recipe.to_spec().map_err(|error| {
             InstallError::validation(format!(
@@ -464,20 +564,51 @@ pub(super) fn validate_staged_recipe_snapshots(
             lane: usize::from(variant.socket_index),
             source: variant.source_plug_hash,
         }));
-        recipes.push(recipe);
     }
 
-    let fingerprint = recipe_selection_fingerprint(&recipes).map_err(|error| {
-        InstallError::validation(format!(
-            "Could not fingerprint staged recipe selection: {error}"
-        ))
-    })?;
-    if fingerprint != manifest.selection_fingerprint {
+    for relative_path in &manifest.selected_map_files {
+        let path = staged_run_directory.join(relative_path);
+        reject_symlink(&path, "staged map recipe")?;
+        let resolved = fs::canonicalize(&path).map_err(|error| {
+            InstallError::validation(format!(
+                "Could not resolve staged map {}: {error}",
+                path.display()
+            ))
+        })?;
+        if !path_is_within(&resolved, staged_run_directory) {
+            return Err(InstallError::validation(format!(
+                "Staged map resolves outside the staging run: {}",
+                path.display()
+            )));
+        }
+        let encoded = fs::read_to_string(&resolved).map_err(|error| {
+            InstallError::validation(format!(
+                "Could not read staged map {}: {error}",
+                path.display()
+            ))
+        })?;
+        let map: crate::map::MapRecipe = serde_json::from_str(&encoded).map_err(|error| {
+            InstallError::validation(format!(
+                "Could not parse staged map {}: {error}",
+                path.display()
+            ))
+        })?;
+        map.validate()
+            .map_err(|error| InstallError::validation(error.to_string()))?;
+        selection.add(encoded.strip_suffix('\n').unwrap_or(&encoded));
+        files.push(staged::metadata(relative_path, encoded.as_bytes()));
+    }
+    if selection.finish() != manifest.selection_fingerprint {
         return Err(InstallError::validation(
             "The staged recipe selection does not match the manifest fingerprint",
         ));
     }
-    Ok(variants)
+    Ok(ValidatedRecipes { variants, files })
+}
+
+struct ValidatedRecipes {
+    variants: Vec<replacement::StockPlugVariant>,
+    files: Vec<ArtifactMetadata>,
 }
 
 pub(super) fn validate_artifact_records(
@@ -626,29 +757,6 @@ pub(super) fn validate_direct_package_set(
     Ok(())
 }
 
-pub(super) fn verify_staged_artifacts(
-    staged_run_directory: &Path,
-    artifacts: &[ArtifactMetadata],
-) -> Result<(), InstallError> {
-    for artifact in artifacts {
-        let path = staged_run_directory.join(&artifact.file_name);
-        reject_symlink(&path, "staged artifact")?;
-        let digest = digest_file(&path).map_err(|error| {
-            InstallError::validation(format!(
-                "Could not verify staged artifact {}: {error}",
-                path.display()
-            ))
-        })?;
-        if digest.byte_length != artifact.byte_length || digest.sha256 != artifact.sha256 {
-            return Err(InstallError::validation(format!(
-                "Staged artifact {} does not match its manifest length and SHA-256",
-                artifact.file_name
-            )));
-        }
-    }
-    Ok(())
-}
-
 pub(super) fn verify_source_artifacts(
     target_packages_directory: &Path,
     artifacts: &[ArtifactMetadata],
@@ -743,24 +851,110 @@ pub(super) fn discover_target_source_artifact_names(
     Ok(names)
 }
 
+/// Checks each staged package against its manifest length and SHA-256 and validates its
+/// structure, from one read of the file. A build's packages run to gigabytes, so they are checked
+/// on several threads, a few files in memory at a time. The first failure in manifest order is
+/// returned.
 pub(super) fn validate_staged_packages(
     staged_run_directory: &Path,
     artifacts: &[ArtifactMetadata],
     target_packages_directory: &Path,
+    mods: &[crate::mod_family::Member],
 ) -> Result<(), InstallError> {
     let profiles = authored_packages_for_file_names(
         artifacts.iter().map(|artifact| artifact.file_name.as_str()),
     )
     .map_err(InstallError::validation)?;
-    for profile in profiles {
-        let path = staged_run_directory.join(profile.file_name);
-        validate_authored_package_file(&path, profile, target_packages_directory)?;
+    let jobs = profiles
+        .into_iter()
+        .map(|profile| {
+            artifacts
+                .iter()
+                .find(|artifact| artifact.file_name == profile.file_name)
+                .map(|artifact| (profile, artifact))
+                .ok_or_else(|| {
+                    InstallError::validation(format!(
+                        "Staged package {} has no manifest record",
+                        profile.file_name
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let check = |(profile, artifact): &(AuthoredPackage, &ArtifactMetadata)| {
+        let path = crate::mod_family::source(
+            mods,
+            staged_run_directory,
+            target_packages_directory,
+            profile.file_name,
+        )
+        .map_err(InstallError::validation)?;
+        reject_symlink(&path, "staged artifact")?;
+        let bytes = fs::read(&path).map_err(|error| {
+            InstallError::validation(format!(
+                "Could not verify staged artifact {}: {error}",
+                path.display()
+            ))
+        })?;
+        let digest = crate::artifact::digest_bytes(&bytes);
+        if digest.byte_length != artifact.byte_length || digest.sha256 != artifact.sha256 {
+            return Err(InstallError::validation(format!(
+                "Staged artifact {} does not match its manifest length and SHA-256",
+                artifact.file_name
+            )));
+        }
+        validate_authored_package_bytes(&path, bytes, *profile, target_packages_directory)
+    };
+    // Each worker holds one whole package, and an imported map's run to hundreds of megabytes.
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .clamp(1, 4)
+        .min(jobs.len());
+    if workers <= 1 {
+        return jobs.iter().try_for_each(check);
     }
-    Ok(())
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut results = std::thread::scope(|scope| {
+        let handles = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(job) = jobs.get(index) else {
+                            return done;
+                        };
+                        done.push((index, check(job)));
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().expect("a staged package check panicked"))
+            .collect::<Vec<_>>()
+    });
+    results.sort_by_key(|(index, _)| *index);
+    results.into_iter().try_for_each(|(_, result)| result)
 }
 
 pub(super) fn validate_authored_package_file(
     path: &Path,
+    profile: AuthoredPackage,
+    target_packages_directory: &Path,
+) -> Result<(), InstallError> {
+    let bytes = fs::read(path).map_err(|error| {
+        InstallError::validation(format!(
+            "Could not read authored package {} for structural validation: {error}",
+            path.display()
+        ))
+    })?;
+    validate_authored_package_bytes(path, bytes, profile, target_packages_directory)
+}
+
+/// Validates `bytes`, the contents of authored package `path`, against `profile`.
+pub(super) fn validate_authored_package_bytes(
+    path: &Path,
+    bytes: Vec<u8>,
     profile: AuthoredPackage,
     target_packages_directory: &Path,
 ) -> Result<(), InstallError> {
@@ -777,13 +971,6 @@ pub(super) fn validate_authored_package_file(
         profile.patch_id,
         Some(SUNDIAL_BUILD_SIGNATURE),
     )?;
-
-    let bytes = fs::read(path).map_err(|error| {
-        InstallError::validation(format!(
-            "Could not read authored package {} for structural validation: {error}",
-            path.display()
-        ))
-    })?;
     let layout = PackageLayout::parse(&bytes).map_err(|error| {
         InstallError::validation(format!(
             "Authored package {} failed structural validation: {error}",

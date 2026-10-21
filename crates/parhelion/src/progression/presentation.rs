@@ -192,6 +192,7 @@ pub(crate) fn append_presentation_node_child(
     parent_index: usize,
     donor_child_index: usize,
     authored_child_index: usize,
+    first: bool,
 ) -> AuthoringResult<()> {
     let (node_count, _, node_rows, _) = array_at(nodes, 8)?;
     if parent_index >= node_count || authored_child_index >= node_count {
@@ -242,14 +243,18 @@ pub(crate) fn append_presentation_node_child(
     )?;
     write_u64(&mut authored, 8, 0)?;
     write_u64(&mut authored, 16, 0)?;
+    // Before the stock children, or after them where Sunrise's merge can add another mod's too.
+    let stock_offset = usize::from(first);
     let mut authored_rows = Vec::with_capacity(source_rows.len() + 1);
-    authored_rows.push(authored);
-    authored_rows.extend(source_rows.iter().cloned());
-
-    while !nodes.len().is_multiple_of(16) {
-        nodes.push(0);
+    if first {
+        authored_rows.push(authored);
+        authored_rows.extend(source_rows.iter().cloned());
+    } else {
+        authored_rows.extend(source_rows.iter().cloned());
+        authored_rows.push(authored);
     }
-    let new_header = nodes.len();
+
+    let new_header = begin_array_block(nodes);
     nodes.extend_from_slice(&header_bytes);
     let new_rows = nodes.len();
     for row in &authored_rows {
@@ -261,7 +266,7 @@ pub(crate) fn append_presentation_node_child(
     nodes.extend_from_slice(&NESTED_ARRAY_TRAILER);
     write_u64(nodes, new_header, authored_rows.len() as u64)?;
     for (position, source_row) in source_rows.iter().enumerate() {
-        let authored_position = position + 1;
+        let authored_position = position + stock_offset;
         if read_u64(source_row, 8)? == 0 {
             write_u64(
                 nodes,
@@ -272,10 +277,7 @@ pub(crate) fn append_presentation_node_child(
         }
         let source_descriptor = child_rows + position * PRESENTATION_NODE_CHILD_NODE_ROW_SIZE + 8;
         let layout = numeric_program_layout(nodes, source_descriptor)?;
-        while !nodes.len().is_multiple_of(16) {
-            nodes.push(0);
-        }
-        let target = nodes.len();
+        let target = begin_array_block(nodes);
         let program = nodes
             .get(layout.header..layout.segment_end)
             .ok_or_else(|| invalid("Presentation child condition is truncated"))?
@@ -348,19 +350,17 @@ pub(crate) fn append_collectible_child_to_node(
         u16::try_from(authored_collectible_index)
             .map_err(|_| invalid("Authored collectible index does not fit 16 bits"))?,
     )?;
-    while !nodes.len().is_multiple_of(16) {
-        nodes.push(0);
-    }
-    let new_header = nodes.len();
+    let new_header = begin_array_block(nodes);
     nodes.extend_from_slice(&authored);
     write_u64(nodes, descriptor, (count + 1) as u64)?;
     write_relative_pointer(nodes, descriptor + 8, new_header)
 }
 
-pub(crate) fn prepend_collectible_children_to_node(
+pub(crate) fn add_collectible_children_to_node(
     nodes: &mut Vec<u8>,
     parent_index: usize,
     members: &[(usize, usize)],
+    first: bool,
 ) -> AuthoringResult<()> {
     if members.is_empty() {
         return Ok(());
@@ -392,17 +392,20 @@ pub(crate) fn prepend_collectible_children_to_node(
         .iter()
         .map(|&(donor, authored)| clone_collectible_child(nodes, rows, count, donor, authored))
         .collect::<AuthoringResult<Vec<_>>>()?;
+    // Before the stock entries, or after them where Sunrise's merge can add another mod's too.
     let mut authored = nodes[header..rows].to_vec();
+    if !first {
+        authored.extend_from_slice(&nodes[rows..child_end]);
+    }
     for row in added {
         authored.extend_from_slice(&row);
     }
-    authored.extend_from_slice(&nodes[rows..child_end]);
+    if first {
+        authored.extend_from_slice(&nodes[rows..child_end]);
+    }
     append_presentation_child_array_terminator(&mut authored)?;
     write_u64(&mut authored, 0, (count + members.len()) as u64)?;
-    while !nodes.len().is_multiple_of(16) {
-        nodes.push(0);
-    }
-    let new_header = nodes.len();
+    let new_header = begin_array_block(nodes);
     nodes.extend_from_slice(&authored);
     write_u64(nodes, descriptor, (count + members.len()) as u64)?;
     write_relative_pointer(nodes, descriptor + 8, new_header)
@@ -458,10 +461,7 @@ pub(crate) fn replace_with_single_collectible_child(
         .get(source_rows..source_rows + PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE)
         .ok_or_else(|| invalid("Badge collectible-child template is truncated"))?
         .to_vec();
-    while !nodes.len().is_multiple_of(16) {
-        nodes.push(0);
-    }
-    let header = nodes.len();
+    let header = begin_array_block(nodes);
     let header_bytes = nodes
         .get(source_header..source_rows)
         .ok_or_else(|| invalid("Badge collectible-child header is truncated"))?
@@ -569,7 +569,7 @@ mod trailer_tests {
     #[test]
     fn authored_collectibles_lead_stock_page_in_build_order() {
         let mut nodes = synthetic_weapon_page(&[(10, 0xA001), (11, 0xB002), (12, 0xC003)]);
-        prepend_collectible_children_to_node(&mut nodes, 0, &[(11, 100), (10, 101)]).unwrap();
+        add_collectible_children_to_node(&mut nodes, 0, &[(11, 100), (10, 101)], true).unwrap();
         let (_, _, node_rows, _) = array_at(&nodes, 8).unwrap();
         let (count, _, rows, class) =
             array_at(&nodes, node_rows + PRESENTATION_NODE_COLLECTIBLES_OFFSET).unwrap();

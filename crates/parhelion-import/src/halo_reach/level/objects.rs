@@ -13,14 +13,14 @@ use super::{
         material::Material,
         model::{self, Primitive},
         object::Object,
-        resource::Pages,
+        resource::{Absent, Pages},
         rig,
     },
-    METRES_PER_UNIT, ZONE_SET_BSPS, ZONE_SET_SIZE, ZONE_SETS,
+    METRES_PER_UNIT,
     variant::Variant,
 };
 use anyhow::{Context, Result, ensure};
-use std::collections::{BTreeMap, btree_map::Entry};
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 /// A scenario placement block: its rows, their size, its palette of one tag reference per row, and
 /// the palette's tag group.
@@ -102,10 +102,14 @@ pub struct Objects {
     /// Each placed object's path and the primitives it leaves out because their material never
     /// draws. An object left with none is not counted as placed.
     pub hidden: BTreeMap<String, usize>,
+    /// Loaded placements whose machine motion and collision lifecycle have no native binding.
+    pub motion: BTreeMap<String, usize>,
     /// The skies' render geometry about the origin, in meters and in the order Reach draws it,
     /// with materials among `materials`, and each vertex's color: the light Reach baked into
     /// the sky's vertex color stream. It is never stood on.
     pub sky: Vec<(Primitive, Vec<[f32; 3]>)>,
+    /// The objects left out because their render geometry holds no data in the cache.
+    pub absent: BTreeSet<String>,
 }
 
 /// Whether a surface drawn with `material` is solid: neither blended nor a decal, water or
@@ -178,7 +182,7 @@ fn vertex_colors(
     render: &Tag,
     model: &model::Model,
 ) -> Result<Vec<Vec<[f32; 3]>>> {
-    let geometry = model::Geometry::read(cache, render, render.address()? + MODEL_GEOMETRY, false)?;
+    let geometry = model::Geometry::read(cache, render, render.address()? + MODEL_GEOMETRY)?;
     let mut streams = BTreeMap::<usize, Option<Vec<[f32; 3]>>>::new();
     model
         .primitives
@@ -326,8 +330,8 @@ fn model_for<'a>(
 ) -> Result<Option<&'a Loaded>> {
     let key = (tag.path.clone(), name);
     if !models.contains_key(&key) {
-        let model = match model_of(cache, pages, tag, &key.1)? {
-            Some(model) => {
+        let model = match model_of(cache, pages, tag, &key.1) {
+            Ok(Some(model)) => {
                 let hidden = model
                     .materials
                     .iter()
@@ -337,7 +341,12 @@ fn model_for<'a>(
                 objects.materials.extend(model.materials.iter().cloned());
                 Some((model, base, hidden))
             }
-            None => None,
+            Ok(None) => None,
+            Err(error) if error.downcast_ref::<Absent>().is_some() => {
+                objects.absent.insert(tag.path.clone());
+                None
+            }
+            Err(error) => return Err(error),
         };
         models.insert(key.clone(), model);
     }
@@ -352,17 +361,48 @@ fn fixed_machine(cache: &Cache, row: usize) -> Result<bool> {
         && cache.i16(row + DEVICE_POSITION_GROUP)? < 0)
 }
 
-/// Reads the objects the scenario places, and with a map `variant` the variant's Forge objects in
-/// place of the scenario's own placements of every object the variant's palette offers.
-pub fn read(cache: &Cache, pages: &mut Pages, variant: Option<&Variant>) -> Result<Objects> {
+/// A placement's origin structure BSP, -1 for none, and the mask of the BSPs it may attach to.
+const PLACEMENT_ORIGIN_BSP: usize = 0x40;
+const PLACEMENT_ATTACH_BSPS: usize = 0x54;
+
+/// Whether the placement at `row` belongs to a structure BSP in `loaded`: its origin BSP when it
+/// names one, else any BSP its attach mask allows, every BSP when the mask is empty. A campaign
+/// scenario places each stretch's objects in that stretch's BSPs.
+fn in_loaded_bsp(cache: &Cache, row: usize, loaded: u32) -> Result<bool> {
+    if let Ok(origin) = u32::try_from(cache.i16(row + PLACEMENT_ORIGIN_BSP)?) {
+        return Ok(origin < 32 && (loaded >> origin) & 1 != 0);
+    }
+    let attach = u32::from(cache.u16(row + PLACEMENT_ATTACH_BSPS)?);
+    Ok(attach == 0 || attach & loaded != 0)
+}
+
+/// Whether the scenario creates the placement at `row` in the structure BSPs `loaded`: it is not
+/// marked never placed, and it belongs to one of them ([`in_loaded_bsp`]). Sound scenery shares the
+/// placement layout of the other objects.
+pub(super) fn placed_in(cache: &Cache, row: usize, loaded: u32) -> Result<bool> {
+    Ok(cache.u32(row + PLACEMENT_FLAGS)? & NEVER_PLACED == 0 && in_loaded_bsp(cache, row, loaded)?)
+}
+
+/// Reads the objects the scenario places in the structure BSPs its zone sets `zone_sets` load, and
+/// with a map `variant` the variant's Forge objects in place of the scenario's own placements of
+/// every object the variant's palette offers.
+pub fn read(
+    cache: &Cache,
+    pages: &mut Pages,
+    variant: Option<&Variant>,
+    zone_sets: &[usize],
+) -> Result<Objects> {
     let scenario = cache.only("scnr")?.address()?;
+    let loaded = super::loaded_bsps(cache, zone_sets)?;
     let mut objects = Objects {
         materials: Vec::new(),
         primitives: Vec::new(),
         faces: Vec::new(),
         placed: BTreeMap::new(),
         hidden: BTreeMap::new(),
+        motion: BTreeMap::new(),
         sky: Vec::new(),
+        absent: BTreeSet::new(),
     };
     let mut models = BTreeMap::new();
     for block in [&CRATES, &SCENERY, &CONTROLS, &MACHINES] {
@@ -376,7 +416,7 @@ pub fn read(cache: &Cache, pages: &mut Pages, variant: Option<&Variant>) -> Resu
             if index < 0 || cache.u32(row + PLACEMENT_FLAGS)? & NEVER_PLACED != 0 {
                 continue;
             }
-            if block.group == MACHINES.group && !fixed_machine(cache, row)? {
+            if !in_loaded_bsp(cache, row, loaded)? {
                 continue;
             }
             let Some(tag) = palette.get(usize::try_from(index)?).with_context(|| {
@@ -385,6 +425,10 @@ pub fn read(cache: &Cache, pages: &mut Pages, variant: Option<&Variant>) -> Resu
             else {
                 continue;
             };
+            if block.group == MACHINES.group && !fixed_machine(cache, row)? {
+                *objects.motion.entry(tag.path.clone()).or_default() += 1;
+                continue;
+            }
             if tag.path.starts_with(MARKERS) || variant.is_some_and(|variant| variant.replaces(tag))
             {
                 continue;
@@ -427,21 +471,26 @@ pub fn read(cache: &Cache, pages: &mut Pages, variant: Option<&Variant>) -> Resu
         let transform = transform(placement.position, placement.axes, 1.);
         objects.place(&tag.path, model, *base, &transform, true, hidden)?;
     }
-    // Each sky active on a structure BSP the scenario loads draws around the level from its
-    // origin. A sky active on none is active on all.
-    let loaded = match cache.block(scenario + ZONE_SETS, ZONE_SET_SIZE)?.first() {
-        Some(&zone_set) => cache.u32(zone_set + ZONE_SET_BSPS)?,
-        None => u32::MAX,
-    };
+    // Each sky assigned to a loaded structure BSP draws around the level from its origin.
+    // An empty mask assigns no BSP. Such rows can be alternate or cinematic sky entries,
+    // including another reference to the same sky, so treating zero as all duplicates layers.
     for row in cache.block(scenario + SKIES, SKY_SIZE)? {
         let active = u32::from(cache.u16(row + SKY_BSPS)?);
-        if active != 0 && active & loaded == 0 {
+        if active & loaded == 0 {
             continue;
         }
         let Some(tag) = cache.reference(row, Some("scen"))? else {
             continue;
         };
-        if let Some(model) = model_of(cache, pages, &tag, "")? {
+        let model = match model_of(cache, pages, &tag, "") {
+            Ok(model) => model,
+            Err(error) if error.downcast_ref::<Absent>().is_some() => {
+                objects.absent.insert(tag.path.clone());
+                None
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some(model) = model {
             let render = Object::read_appearance(cache, &tag)?
                 .world
                 .and_then(|branch| branch.model)

@@ -37,11 +37,7 @@ fn pack(
 }
 
 fn package_id(index: usize) -> Option<u16> {
-    let window = crate::package_profile::window();
-    window
-        .base
-        .checked_add(u16::try_from(index).ok()?)
-        .filter(|id| *id <= window.top)
+    crate::package_profile::window().nth(index)
 }
 
 /// Records where each tag of `group` moves under `plan`, after checking each is where its cached
@@ -636,15 +632,17 @@ impl Pending<'_> {
                         (reservation.base..end).contains(&reference.new_tag_ordinal)
                     })
                     .map(|reference| {
-                        (
+                        Some((
                             reference.new_tag_ordinal,
                             match reference.reference {
                                 crate::NewTagReference::Template => None,
                                 crate::NewTagReference::Appended(ordinal) => Some(ordinal),
+                                // Absolute references cannot be relocated by this cache format.
+                                crate::NewTagReference::Tag(_) => return None,
                             },
-                        )
+                        ))
                     })
-                    .collect(),
+                    .collect::<Option<Vec<_>>>()?,
             });
             positions[reservation.package_index] = end;
         }

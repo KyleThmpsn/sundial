@@ -27,12 +27,19 @@ pub(crate) struct ManifestDocument {
     pub(crate) ignored_authored_files: Vec<String>,
     pub(crate) selection_fingerprint: String,
     pub(crate) selected_recipe_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) selected_map_files: Vec<String>,
     pub(crate) project: ManifestProject,
     pub(crate) artifacts: Vec<ArtifactMetadata>,
     /// The merge data beside each package of a mod-folder build, which Sunrise reads to merge
     /// the rows Parhelion and other mods add to one table. Empty for other builds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) merge_data: Vec<ArtifactMetadata>,
+    /// Optional source provenance installed with this package generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) map_diagnostics: Option<ArtifactMetadata>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) mods: Vec<crate::mod_family::Member>,
 }
 
 impl ManifestDocument {
@@ -48,7 +55,14 @@ impl ManifestDocument {
         }
         validate_sha256("selection fingerprint", &self.selection_fingerprint)?;
         validate_ignored_authored_files(&self.ignored_authored_files)?;
-        validate_selected_recipe_files(&self.selected_recipe_files)?;
+        validate_selected_recipe_files(
+            &self
+                .selected_recipe_files
+                .iter()
+                .chain(&self.selected_map_files)
+                .cloned()
+                .collect::<Vec<_>>(),
+        )?;
         if self.selected_recipe_files.len() != self.project.weapons.len() {
             return Err(format!(
                 "The manifest lists {} selected recipe files for {} authored weapons",
@@ -60,6 +74,22 @@ impl ManifestDocument {
         validate_artifact_metadata("artifact", &self.artifacts)?;
         validate_artifact_metadata("merge data", &self.merge_data)?;
         validate_merge_data(&self.artifacts, &self.merge_data)?;
+        crate::mod_family::validate(
+            &self.mods,
+            &self.artifacts,
+            &self.merge_data,
+            self.map_diagnostics.as_ref(),
+        )?;
+        if let Some(artifact) = &self.map_diagnostics {
+            use sundial::package_authoring::mod_content::map_diagnostics;
+            if artifact.file_name != map_diagnostics::FILE_NAME
+                || artifact.byte_length == 0
+                || artifact.byte_length > map_diagnostics::BYTE_LIMIT
+            {
+                return Err("Invalid map diagnostics artifact".into());
+            }
+            validate_sha256("map diagnostics", &artifact.sha256)?;
+        }
         self.project.validate()
     }
 }
@@ -515,20 +545,67 @@ fn validate_package_tag(owner: &str, label: &str, tag: ManifestHash) -> Result<(
 }
 
 pub(crate) fn recipe_selection_fingerprint(recipes: &[WeaponRecipe]) -> Result<String, String> {
-    let mut digest = Sha256::new();
+    selection_fingerprint(recipes, &[])
+}
+
+pub(crate) fn selection_fingerprint(
+    recipes: &[WeaponRecipe],
+    maps: &[crate::map::MapRecipe],
+) -> Result<String, String> {
+    let mut selection = SelectionFingerprint::default();
     for recipe in recipes {
-        let encoded = recipe.to_json_pretty().map_err(|error| {
-            format!(
-                "Recipe: {:?} ({})\nItem: {}\nCould not normalize recipe: {error}",
-                recipe.name,
-                recipe.namespace,
-                recipe.identity.item_hash.as_str()
-            )
-        })?;
-        digest.update(encoded.len().to_le_bytes());
-        digest.update(encoded.as_bytes());
+        selection.add(&canonical_recipe(recipe)?);
     }
-    Ok(hex::encode_upper(digest.finalize()))
+    for map in maps {
+        selection.add(&canonical_map(map)?);
+    }
+    Ok(selection.finish())
+}
+
+pub(crate) fn canonical_map(map: &crate::map::MapRecipe) -> Result<String, String> {
+    map.validate().map_err(|error| error.to_string())?;
+    serde_json::to_string_pretty(map)
+        .map_err(|error| format!("Could not normalize map {}: {error}", map.name))
+}
+
+/// A recipe's canonical encoding, the bytes its fingerprint and its staged snapshot hold.
+pub(crate) fn canonical_recipe(recipe: &WeaponRecipe) -> Result<String, String> {
+    recipe.to_json_pretty().map_err(|error| {
+        format!(
+            "Recipe: {:?} ({})\nItem: {}\nCould not normalize recipe: {error}",
+            recipe.name,
+            recipe.namespace,
+            recipe.identity.item_hash.as_str()
+        )
+    })
+}
+
+/// The fingerprint of a recipe selection: SHA-256 over each recipe's canonical encoding in
+/// order, each after its length. A caller that already holds an encoding, as staging does when
+/// it writes the snapshot or installation does when it reads one, adds it without encoding the
+/// recipe again. An imported recipe's encoding packs its whole model, so encoding it is the
+/// expensive part.
+#[derive(Default)]
+pub(crate) struct SelectionFingerprint {
+    digest: Sha256,
+}
+
+impl SelectionFingerprint {
+    pub(crate) fn add(&mut self, encoded: &str) {
+        self.digest.update(encoded.len().to_le_bytes());
+        self.digest.update(encoded.as_bytes());
+    }
+
+    pub(crate) fn finish(self) -> String {
+        hex::encode_upper(self.digest.finalize())
+    }
+
+    /// The fingerprint of one recipe whose canonical encoding is `encoded`.
+    pub(crate) fn of(encoded: &str) -> String {
+        let mut one = Self::default();
+        one.add(encoded);
+        one.finish()
+    }
 }
 
 fn parse_canonical_hash(encoded: &str) -> Result<u32, String> {

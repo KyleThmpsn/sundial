@@ -271,11 +271,11 @@ impl Assembly<'_> {
                     }
                     put(&mut row, 24, &native_flags.to_le_bytes())?;
                     row[26] = dye;
-                    // Native 011873D0 accepts category 1 across both detailed LOD
-                    // ranges. Mapping it to 0 loses the second range. Category 8
-                    // covers the two coarser ranges in both qualified formats.
+                    // Source 007F7E20 and native 011873D0 have matching coverage
+                    // for categories 0 through 9. These are coverage sets, not
+                    // ranked detail levels, so preserve their identity.
                     row[27] = match source.u8(part + 0x1F)? {
-                        category @ (1 | 8) => category,
+                        category @ 0..=9 => category,
                         other => {
                             anyhow::bail!("Source draw LOD byte {other} has no native category")
                         }

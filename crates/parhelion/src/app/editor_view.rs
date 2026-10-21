@@ -1100,8 +1100,8 @@ impl PackageAuthoringApp {
             let reset = ui
                 .horizontal_wrapped(|ui| {
                     style::heading(ui, "Weapon Stats", !donor_exact).on_hover_text(
-                        "Each row reads its in-game value, such as RPM, then the raw value saved \
-                         to the weapon. Added stats need stat group support",
+                        "Each row includes the starting perks in its displayed value. The field \
+                         edits the weapon's own raw value. Hover a reading for its breakdown",
                     );
                     !donor_exact && style::reset_icon(ui, "Reset Weapon Stats")
                 })
@@ -1135,6 +1135,7 @@ impl PackageAuthoringApp {
                 .map_or_else(Vec::new, |(group, catalog)| {
                     catalog.stat_display_order(group)
                 });
+            let contributions = starting_plugs(self.catalog.as_ref(), &self.recipe, donor);
             draw_investment_stats(
                 ui,
                 &mut self.recipe.overrides.investment_stats,
@@ -1142,6 +1143,7 @@ impl PackageAuthoringApp {
                 donor,
                 (self.show_internal_stats, &order),
                 &warnings,
+                &contributions,
             );
         } else {
             ui.heading("Weapon Stats");

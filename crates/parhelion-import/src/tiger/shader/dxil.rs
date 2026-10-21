@@ -7,6 +7,8 @@ mod emit;
 mod instruction;
 mod parse;
 
+pub(crate) use instruction::call;
+
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -46,24 +48,22 @@ pub struct Options {
     pub output_values: BTreeMap<(u32, usize), BTreeMap<u32, u32>>,
 }
 
-/// Use an explicitly configured DXC or the compiler available on PATH. No
-/// package download or process-wide environment mutation occurs during import.
+/// Use the configured DXC or the compiler available on PATH. No package download or
+/// process-wide environment mutation occurs during import.
 pub fn disassemble(bytecode: &[u8]) -> Result<String> {
     ensure!(bytecode.starts_with(b"DXBC"), "Invalid DXIL container");
     let directory = tempfile::tempdir()?;
     let input = directory.path().join("source.dxil");
     std::fs::write(&input, bytecode)?;
-    let executable = std::env::var_os("PARHELION_DXC").unwrap_or_else(|| "dxc.exe".into());
-    let mut command = std::process::Command::new(executable);
+    let tool = crate::tools::Tool::Dxc;
+    let mut command = std::process::Command::new(crate::tools::executable(tool));
     command.arg("-dumpbin").arg(&input);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
-    let output = command.output().context(
-        "Marathon shader translation requires DXC. Put dxc.exe on PATH or set PARHELION_DXC",
-    )?;
+    let output = command.output().with_context(|| tool.missing())?;
     ensure!(
         output.status.success(),
         "DXC rejected the source shader: {}",
@@ -119,7 +119,7 @@ pub(crate) fn number(text: &str) -> Result<u32> {
         .last()
         .context("Missing DXIL number")?
         .parse()
-        .context("Expected a literal DXIL index")
+        .with_context(|| format!("Expected a literal DXIL index in {text:?}"))
 }
 
 pub(crate) fn id(text: &str) -> Result<u32> {

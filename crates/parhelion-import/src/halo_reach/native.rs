@@ -919,6 +919,7 @@ pub(super) fn build(
             lenses: &lenses,
             paint: &paint.surfaces,
             lightmap: None,
+            vertex_data: None,
         },
     )?;
     let instance_layout = g.seal_instances()?;

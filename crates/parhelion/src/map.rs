@@ -1,5 +1,6 @@
-//! Crucible maps authored as new activities. A map is listed by activity and display rows cloned
-//! from a donor map's pair, is offered in private matches by an entry cloned from the donor's, and
+//! Maps authored as new activities. A map is listed by activity and display rows cloned from a
+//! donor activity's pair, a Crucible map or a mission, is offered in private matches by an entry
+//! cloned from a Crucible donor's, and
 //! owns its packages as a stock map does: `w64_<name>_activities` holds its activity root and
 //! scenario, where named tags select them, and with geometry its slice set and object registry.
 //! `w64_<name>` holds its world, the map root chain and converted pieces. No stock map changes.
@@ -16,6 +17,7 @@ use crate::{AuthoringResult, error::invalid};
 mod activity;
 #[cfg(feature = "d2-model-importer")]
 mod chain;
+pub mod diagnostics;
 #[cfg(feature = "d2-model-importer")]
 mod geometry;
 #[cfg(feature = "d2-model-importer")]
@@ -66,36 +68,112 @@ pub struct MapRecipe {
     pub name: String,
     pub title: String,
     pub description: String,
-    /// The internal name of the stock Crucible map the new map is cloned from.
+    /// The internal name of the stock activity the new map is cloned from: a Crucible map for a
+    /// multiplayer level, a mission or strike for a stretch of a campaign mission.
     pub donor: String,
     /// Another game's level the map draws and collides with, placed in the donor's world.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<MapSource>,
+    #[serde(default, skip_serializing_if = "MapOptions::is_default")]
+    pub options: MapOptions,
+    /// Embedded artwork for the activity's private match portrait and landscape images.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<crate::presentation::Artwork>,
+    /// Stock private-match activity whose portrait and landscape artwork should be used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_donor: Option<String>,
 }
 
-/// A Halo: Reach multiplayer level.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MapOptions {
+    /// None allows mission_ activities and otherwise preserves the donor's policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vehicle_summoning: Option<bool>,
+    pub ambient_audio: bool,
+    pub death_boundaries: bool,
+}
+
+impl Default for MapOptions {
+    fn default() -> Self {
+        Self {
+            vehicle_summoning: None,
+            ambient_audio: true,
+            death_boundaries: true,
+        }
+    }
+}
+
+impl MapOptions {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+
+    #[cfg(feature = "d2-model-importer")]
+    pub(crate) fn vehicle_summoning(&self, name: &str) -> Option<bool> {
+        self.vehicle_summoning
+            .or_else(|| name.starts_with("mission_").then_some(true))
+    }
+}
+
+/// A Halo: Reach multiplayer level or stretch of a campaign mission.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MapSource {
     /// The folder of Reach `.map` caches.
     pub maps: PathBuf,
-    /// The cache whose first structure BSP becomes the map.
+    /// The cache whose level becomes the map.
     pub map: String,
+    /// The zone sets of the cache's scenario whose structure BSPs the map loads, together. A
+    /// multiplayer level has one, and a campaign mission one for each stretch of the mission, so
+    /// a map of several stretches lists each. Players start in the first.
+    #[serde(default = "first_zone_set", skip_serializing_if = "is_first_zone_set")]
+    pub zone_sets: Vec<usize>,
     /// A map variant (`.mvar`) of that cache, whose Forge objects and spawn points stand in for the
     /// scenario's own placements of everything its palette offers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant: Option<PathBuf>,
     /// The vgmstream command line decoder that reads the level's sounds from Reach's
-    /// `fmod/pc/sfx.fsb` beside the maps folder. Without it the map plays no ambience.
+    /// `fmod/pc/sfx.fsb` beside the maps folder. Without it the build uses the vgmstream the
+    /// importer finds, and with none the map plays no ambience.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_decoder: Option<PathBuf>,
+    /// Mission recording banks, with at most one dialogue language. An empty list uses MCC's
+    /// `sfx.fsb` and `english.fsb` beside the maps folder.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_banks: Vec<PathBuf>,
+    /// Selected HaloScript roots to compile into a Lua sidecar beside the converted map.
+    /// An empty list exports source analysis alone. Installing the controller is separate.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mission_scripts: Vec<String>,
+    /// JSON native mission bindings with explicit source names, target activity and SDK identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mission_bindings: Option<PathBuf>,
     /// Whole meters the level moves by.
     #[serde(default)]
     pub offset: [i32; 3],
 }
 
+fn first_zone_set() -> Vec<usize> {
+    vec![0]
+}
+
+fn is_first_zone_set(zone_sets: &[usize]) -> bool {
+    zone_sets == [0]
+}
+
 impl MapRecipe {
-    fn validate(&self) -> AuthoringResult<()> {
+    pub(crate) fn validate(&self) -> AuthoringResult<()> {
+        if self.image.is_some() && self.image_donor.is_some() {
+            return Err(invalid(
+                "Choose either uploaded artwork or an activity image donor",
+            ));
+        }
+        if (self.image.is_some() || self.image_donor.is_some()) && !self.donor.starts_with("pvp_") {
+            return Err(invalid(
+                "Activity artwork currently requires a private-match donor",
+            ));
+        }
         if self.schema != SCHEMA {
             return Err(invalid(format!(
                 "Map {} uses schema {}, expected {SCHEMA}",
@@ -120,6 +198,19 @@ impl MapRecipe {
                 self.name
             )));
         }
+        if self.source.is_none() && (!self.options.ambient_audio || !self.options.death_boundaries)
+        {
+            return Err(invalid(
+                "Ambient audio and death boundaries require a source level",
+            ));
+        }
+        if self
+            .source
+            .as_ref()
+            .is_some_and(|source| source.zone_sets.is_empty())
+        {
+            return Err(invalid(format!("Map {} loads no zone set", self.name)));
+        }
         Ok(())
     }
 }
@@ -128,6 +219,58 @@ impl MapRecipe {
 /// selection names.
 pub fn library_directory() -> Option<PathBuf> {
     sundial::package_authoring::parhelion_data_directory().map(|root| root.join("maps"))
+}
+
+/// Private-match activities with artwork, read from the same source tables the build uses.
+#[cfg(feature = "d2-model-importer")]
+pub(crate) struct ImageChoice {
+    pub name: String,
+    pub preview: Result<image::RgbaImage, String>,
+}
+
+#[cfg(feature = "d2-model-importer")]
+pub(crate) fn image_choices(directory: &Path) -> Result<Vec<ImageChoice>, String> {
+    use crate::tag_payload::{read_tag, read_u32};
+    use sundial::package_authoring::{open_shadowkeep_package_manager, resolve_live_named_tag};
+    use tiger_pkg::TagHash;
+    let manager = open_shadowkeep_package_manager(directory)?;
+    let load = || -> AuthoringResult<Vec<ImageChoice>> {
+        let tag = resolve_live_named_tag(&manager, "investment_globals", None).map_err(invalid)?;
+        let globals = read_tag(&manager, tag, "investment globals")?;
+        let root = read_tag(
+            &manager,
+            TagHash(read_u32(&globals, 0x10)?),
+            "investment root",
+        )?;
+        let activities = read_tag(
+            &manager,
+            TagHash(read_u32(&root, 8 + 4 * 16)?),
+            "activity table",
+        )?;
+        let table = read_tag(
+            &manager,
+            TagHash(read_u32(&root, 8 + 64 * 16)?),
+            "private match table",
+        )?;
+        let displays = read_tag(
+            &manager,
+            TagHash(read_u32(&globals, 0x10 + 43 * 16)?),
+            "private match displays",
+        )?;
+        let icons = read_tag(
+            &manager,
+            TagHash(read_u32(&globals, 0x10 + 75 * 16)?),
+            "item icon table",
+        )?;
+        Ok(private_match::image_rows(&activities, &table, &displays)?
+            .into_iter()
+            .map(|(name, row)| ImageChoice {
+                name,
+                preview: picture::preview(&manager, &icons, row).map_err(|error| error.to_string()),
+            })
+            .collect())
+    };
+    load().map_err(|error| error.to_string())
 }
 
 /// The map recipe at `path`, checked.

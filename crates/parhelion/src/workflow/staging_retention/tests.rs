@@ -195,12 +195,15 @@ fn staged_recipe_writes_match_normalized_saves_without_overwriting_or_temp_files
     let root = tempfile::tempdir().unwrap();
     let recipe = crate::recipe::WeaponRecipe::every_end();
     let path = root.path().join("weapon.parhelion.json");
-    super::super::write_staged_recipe(&recipe, &path).unwrap();
+    let encoded = crate::manifest::canonical_recipe(&recipe).unwrap();
+    super::super::write_staged_recipe(&encoded, &path).unwrap();
     assert_eq!(
         crate::recipe::WeaponRecipe::load_json(&path).unwrap(),
         recipe
     );
-    assert!(super::super::write_staged_recipe(&recipe, &path).is_err());
+    // The snapshot is the encoding and a newline, which installation fingerprints without it.
+    assert_eq!(fs::read_to_string(&path).unwrap(), format!("{encoded}\n"));
+    assert!(super::super::write_staged_recipe(&encoded, &path).is_err());
     assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
 }
 

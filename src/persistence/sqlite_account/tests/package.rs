@@ -87,9 +87,15 @@ fn native_cleanup_is_read_only_until_commit_and_recovers_exactly_with_wal() {
 
 #[test]
 fn socket_replacement_preserves_selected_lanes_and_handles_growth_and_shrink() {
+    for case in super::versions::CASES {
+        socket_replacement(case);
+    }
+}
+
+fn socket_replacement(case: &str) {
     let dir = TestDirectory::new("sqlite-socket-replacement");
     let path = dir.0.join("investment.sqlite3");
-    create_fixture(&path, 3);
+    super::versions::fixture(&path, case);
     for (previous, defaults, expected) in [
         (
             2,
@@ -112,6 +118,7 @@ fn socket_replacement_preserves_selected_lanes_and_handles_growth_and_shrink() {
         .unwrap();
         assert_eq!(proposal.resized_items[&200], 1);
         replace(&path, &proposal.original_bytes, &proposal.cleaned_bytes).unwrap();
+        super::versions::preserved(&Connection::open(&path).unwrap(), case);
         let doc = loaded(&path);
         let item = doc.characters().characters()[0].equipment[&EquipmentSlot::new("subclass")]
             .as_ref()
