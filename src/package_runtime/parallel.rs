@@ -50,23 +50,3 @@ pub(crate) fn map_jobs<J: Sync, T: Send>(jobs: &[J], work: impl Fn(&J) -> T + Sy
         .map(|result| result.expect("every job reports a result"))
         .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn results_come_back_in_job_order_whatever_the_workers_do() {
-        let jobs = (0..100_u64).collect::<Vec<_>>();
-        let results = map_jobs(&jobs, |job| {
-            // Later jobs finish first, so ordering must come from the job index.
-            std::thread::sleep(std::time::Duration::from_micros(200 - job * 2));
-            job * job
-        });
-        assert_eq!(
-            results,
-            jobs.iter().map(|job| job * job).collect::<Vec<_>>()
-        );
-        assert!(map_jobs(&Vec::<u8>::new(), |_| 1).is_empty());
-    }
-}

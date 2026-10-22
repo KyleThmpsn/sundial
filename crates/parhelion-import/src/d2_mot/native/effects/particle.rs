@@ -86,7 +86,7 @@ pub fn pixel(source: &str, bytecode: &[u8], refs: &Path) -> Result<Pixel> {
     let (mut hlsl, replaced) = lighting::adapt(&source)?;
     ensure!(replaced, "particle lighting family is unsupported");
     hlsl = inputs::pixel_with_plates(&hlsl, None)?;
-    let mut bindings = lighting::bindings(refs)?;
+    let mut bindings = lighting::bindings(refs, [27, 28, 29, 30, 31])?;
     for (slot, source_resource, native_resource, native_slot, dimension) in
         [(20, 9, 5, 16, "Texture2D"), (21, 10, 6, 17, "Texture3D")]
     {

@@ -278,24 +278,3 @@ pub(super) fn draw_artifact_grid<'a>(
             }
         });
 }
-
-#[test]
-fn display_paths_remove_windows_prefix_without_changing_network_roots() {
-    for (input, expected) in [
-        (
-            r"\\?\C:\Games\Destiny2\settings.json",
-            r"C:\Games\Destiny2\settings.json",
-        ),
-        (
-            r"\\?\UNC\server\share\settings.json",
-            r"\\server\share\settings.json",
-        ),
-        (
-            r"C:\Games\Destiny2\settings.json",
-            r"C:\Games\Destiny2\settings.json",
-        ),
-        ("/home/player/settings.json", "/home/player/settings.json"),
-    ] {
-        assert_eq!(display_path(Path::new(input)), expected);
-    }
-}

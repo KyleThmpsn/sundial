@@ -26,6 +26,7 @@ pub use backups::prune_package_backups;
 use backups::*;
 
 mod validation;
+use validation::package::Checked as CheckedPackage;
 use validation::*;
 mod progress;
 use progress::Observer;
@@ -43,7 +44,7 @@ pub use replacement::{ReplacementReview, preview_replacement, preview_replacemen
 pub fn installed_item_hashes(packages: &Path) -> Result<BTreeSet<u32>, String> {
     let packages =
         validation::canonical_packages_directory(packages).map_err(|error| error.to_string())?;
-    identities::installed_identities(&packages).map(|(hashes, _)| hashes)
+    identities::installed_item_hashes(&packages)
 }
 #[cfg(test)]
 pub(crate) use replacement::{test_review, test_review_with_slots};
@@ -330,6 +331,7 @@ struct ValidatedRun {
     obsolete_artifacts: Vec<ArtifactMetadata>,
     selected_recipe_files: Vec<String>,
     staged_inputs: validation::staged::Inputs,
+    packages: Vec<validation::package::Checked>,
     authored_unlocks: Vec<AuthoredCollectionUnlock>,
     authored_grants: Vec<identities::GrantedItem>,
     package_backup_retention: usize,
@@ -910,6 +912,7 @@ fn check_game_immediately_before_commit(request: &InstallRequest) -> Result<(), 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ValidatedManifest {
     inputs: validation::staged::Inputs,
+    packages: Vec<validation::package::Checked>,
     source_artifacts: Vec<ArtifactMetadata>,
     artifacts: Vec<ArtifactMetadata>,
     merge_data: Vec<ArtifactMetadata>,
@@ -1106,9 +1109,10 @@ fn commit_and_verify(
         report.backup_prune_warning = Some(error);
     }
     if context.validated.limit_package_backups {
-        match prune_package_backups(
+        match backups::prune_after_install(
             &context.validated.backup_root,
             context.validated.package_backup_retention,
+            context.backup_directory,
         ) {
             Ok(pruned) => report.pruned_backup_directories = pruned.removed_directories,
             Err(error) => report.backup_prune_warning = Some(error),

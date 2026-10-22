@@ -5,6 +5,8 @@ use super::{
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use std::{collections::BTreeMap, fs::File, path::Path};
+pub(super) mod array;
+pub(super) mod lookup;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Mapping {
@@ -80,13 +82,24 @@ impl Mapping {
 pub struct Property {
     pub template: Tag,
     pub constants: BTreeMap<String, [f32; 4]>,
+    /// Named bits from the MCC property Boolean mask, separate from real parameter rows.
+    pub booleans: BTreeMap<String, bool>,
     pub textures: Vec<Mapping>,
     pub functions: Vec<Function>,
     /// Constant row names and overlay indices selected by the compiled real-parameter routes.
     pub overlays: BTreeMap<String, Vec<usize>>,
 }
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Decal {
+    pub layer: u16,
+    /// The cached sprite offset followed by scale. Projection clipping uses the original UV.
+    pub sprite: [f32; 4],
+    pub render_pass: u32,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct Material {
+    pub decal: Option<Decal>,
     pub tag: Option<Tag>,
     pub options: BTreeMap<String, String>,
     pub properties: Vec<Property>,
@@ -94,6 +107,7 @@ pub struct Material {
 
 pub fn read(c: &Cache, tag: Option<Tag>) -> Result<Material> {
     let mut result = Material {
+        decal: None,
         tag: tag.clone(),
         options: BTreeMap::new(),
         properties: Vec::new(),
@@ -106,6 +120,7 @@ pub fn read(c: &Cache, tag: Option<Tag>) -> Result<Material> {
 
 pub(super) fn embedded(c: &Cache, owner: Tag, at: usize) -> Result<Material> {
     let mut result = Material {
+        decal: None,
         tag: Some(owner),
         options: BTreeMap::new(),
         properties: Vec::new(),
@@ -165,6 +180,17 @@ fn read_at(c: &Cache, result: &mut Material, at: usize) -> Result<()> {
             .cloned()
             .zip(values.iter().copied())
             .collect::<BTreeMap<_, _>>();
+        let boolean_names = c.block(template.address()? + 0x60, 4)?;
+        ensure!(
+            boolean_names.len() <= 32,
+            "Material Boolean names exceed mask width"
+        );
+        let boolean_mask = c.u32(row + 0x34)?;
+        let booleans = boolean_names
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| Ok((c.string_id(c.u32(name)?)?, boolean_mask & (1 << index) != 0)))
+            .collect::<Result<BTreeMap<_, _>>>()?;
         let mut textures = Vec::new();
         let functions = c
             .block(row + 0x5c, 36)?
@@ -248,6 +274,7 @@ fn read_at(c: &Cache, result: &mut Material, at: usize) -> Result<()> {
         result.properties.push(Property {
             template,
             constants,
+            booleans,
             textures,
             functions,
             overlays,
@@ -285,7 +312,14 @@ impl Material {
         self.tag.as_ref().is_some_and(|tag| tag.group == "decs")
     }
     pub fn alpha_mode(&self) -> &'static str {
-        if self.glass() || self.water() {
+        if self.glass()
+            || self.water()
+            || self.decal()
+                && self
+                    .options
+                    .get("blend_mode")
+                    .is_some_and(|mode| mode == "double_multiply")
+        {
             "BLEND"
         } else if self.options.get("alpha_test").is_some_and(|o| o != "none") {
             "MASK"
@@ -351,14 +385,181 @@ pub struct Image {
     pub rgba: Vec<u8>,
 }
 
+/// Checked bitmap metadata and source extent, before any pixels are decoded.
+pub(super) struct Bitmap {
+    tag: Tag,
+    image: usize,
+    pub width: usize,
+    pub height: usize,
+    pub format: i16,
+    pub curve: u8,
+    source_mips: u8,
+    normal: bool,
+    resource: super::resource::Resource,
+    top_bytes: usize,
+}
+
+impl Bitmap {
+    pub(super) fn read(c: &Cache, tag: &Tag, image: usize, normal: bool) -> Result<Self> {
+        let row = *c
+            .block(tag.address()? + 124, 56)?
+            .get(image)
+            .context("Bitmap image outside table")?;
+        let width = c.u16(row)? as usize;
+        let height = c.u16(row + 2)? as usize;
+        ensure!(
+            width > 0 && height > 0 && width <= 16384 && height <= 16384,
+            "Invalid bitmap dimensions"
+        );
+        ensure!(
+            c.u8(row + 5)? & 8 == 0,
+            "Swizzled MCC bitmap needs a layout translation"
+        );
+        ensure!(
+            c.u8(row + 6)? == 0 && c.u8(row + 4)? <= 1,
+            "Surface texture {} image {image} is not 2D: kind {}, depth {}",
+            tag.path,
+            c.u8(row + 6)?,
+            c.u8(row + 4)?
+        );
+        let format = c.i16(row + 8)?;
+        let resource = image_resource(c, tag, row, image)?;
+        let (unit, compressed) = texel_layout(format, tag)?;
+        let top_bytes = image_length(width, height, unit, compressed);
+        ensure!(
+            top_bytes <= 256 * 1024 * 1024 && width * height <= 64 * 1024 * 1024,
+            "Bitmap exceeds decode limit"
+        );
+        Ok(Self {
+            tag: tag.clone(),
+            image,
+            width,
+            height,
+            format,
+            curve: c.u8(row + 17)?,
+            source_mips: c.u8(row + 16)?,
+            normal,
+            resource,
+            top_bytes,
+        })
+    }
+
+    pub(super) fn decode(&self, c: &Cache, pages: &mut Pages) -> Result<Image> {
+        let raw = pages.bytes(c, &self.resource, 0, self.top_bytes)?;
+        Ok(Image {
+            tag: self.tag.clone(),
+            image: self.image,
+            width: self.width,
+            height: self.height,
+            format: self.format,
+            curve: self.curve,
+            source_mips: self.source_mips,
+            normal: self.normal,
+            rgba: decode(&raw, self.width, self.height, self.format, self.normal)?,
+        })
+    }
+
+    pub(super) fn name(&self) -> String {
+        image_name(&self.tag, self.image, self.normal)
+    }
+
+    /// Retain linear MCC block storage and its authored mips where native sampling has the same
+    /// channel contract. BC5 normals need reconstruction after sampling in the pixel program.
+    pub(super) fn blocks(&self, c: &Cache, pages: &mut Pages) -> Result<Option<Blocks>> {
+        let format = match self.format {
+            14 => 71,
+            15 => 74,
+            16 => 77,
+            38 if self.normal => 84,
+            44 if self.normal => 83,
+            _ => return Ok(None),
+        };
+        let levels = self
+            .source_mips
+            .checked_add(1)
+            .context("Bitmap mip count overflow")?;
+        ensure!(
+            u32::from(levels) <= self.width.max(self.height).ilog2() + 1,
+            "Bitmap mip count exceeds its dimensions"
+        );
+        let unit = if self.format == 14 { 8 } else { 16 };
+        let length = (0..levels)
+            .map(|level| {
+                image_length(
+                    (self.width >> level).max(1),
+                    (self.height >> level).max(1),
+                    unit,
+                    true,
+                )
+            })
+            .sum::<usize>();
+        ensure!(
+            length <= 256 * 1024 * 1024,
+            "Bitmap mip chain exceeds decode limit"
+        );
+        let row = c.block(self.tag.address()? + 124, 56)?[self.image];
+        let declared = c.u32(row + 24)? as usize;
+        ensure!(
+            declared == 0 || declared == length,
+            "Bitmap mip extent differs from its declared size"
+        );
+        let resource = &self.resource;
+        let available = resource.page_bytes - resource.page_offset;
+        let data = if !resource.secondary {
+            pages.bytes(c, resource, 0, length)?
+        } else {
+            let top = image_length(self.width, self.height, unit, true);
+            ensure!(
+                available == top,
+                "Bitmap {} image {} streamed page is not exactly its top mip",
+                self.tag.path,
+                self.image
+            );
+            let mut data = pages.bytes(c, resource, 0, top)?;
+            if length > top {
+                let primary = c.primary_resource(&self.tag, resource.handle)?;
+                ensure!(
+                    (
+                        primary.cache.as_str(),
+                        primary.file_offset,
+                        primary.page_offset
+                    ) != (
+                        resource.cache.as_str(),
+                        resource.file_offset,
+                        resource.page_offset
+                    ),
+                    "Bitmap {} image {} has no separate lower mip resource",
+                    self.tag.path,
+                    self.image
+                );
+                data.extend(pages.bytes(c, &primary, 0, length - top).with_context(|| {
+                    format!(
+                        "Bitmap {} image {} lower mip chain",
+                        self.tag.path, self.image
+                    )
+                })?);
+            }
+            data
+        };
+        Ok(Some(Blocks {
+            format,
+            levels,
+            data,
+        }))
+    }
+}
+
+fn image_name(tag: &Tag, image: usize, normal: bool) -> String {
+    format!(
+        "texture-{:08X}-{image}{}",
+        tag.datum,
+        if normal { "-normal" } else { "" }
+    )
+}
+
 impl Image {
     pub fn name(&self) -> String {
-        format!(
-            "texture-{:08X}-{}{}",
-            self.tag.datum,
-            self.image,
-            if self.normal { "-normal" } else { "" }
-        )
+        image_name(&self.tag, self.image, self.normal)
     }
     pub fn save(&self, root: &Path) -> Result<()> {
         let name = self.name();
@@ -377,46 +578,14 @@ impl Image {
     }
 }
 
+pub(super) struct Blocks {
+    pub format: u32,
+    pub levels: u8,
+    pub data: Vec<u8>,
+}
+
 pub fn image(c: &Cache, pages: &mut Pages, tag: &Tag, image: usize, normal: bool) -> Result<Image> {
-    let at = tag.address()?;
-    let row = *c
-        .block(at + 124, 56)?
-        .get(image)
-        .context("Bitmap image outside table")?;
-    let width = c.u16(row)? as usize;
-    let height = c.u16(row + 2)? as usize;
-    ensure!(
-        width > 0 && height > 0 && width <= 16384 && height <= 16384,
-        "Invalid bitmap dimensions"
-    );
-    ensure!(
-        c.u8(row + 5)? & 8 == 0,
-        "Swizzled MCC bitmap needs a layout translation"
-    );
-    ensure!(
-        c.u8(row + 6)? == 0 && c.u8(row + 4)? <= 1,
-        "Surface texture is not a 2D image"
-    );
-    let format = c.i16(row + 8)?;
-    let resource = image_resource(c, tag, row, image)?;
-    let (unit, compressed) = texel_layout(format, tag)?;
-    let length = image_length(width, height, unit, compressed);
-    ensure!(
-        length <= 256 * 1024 * 1024 && width * height <= 64 * 1024 * 1024,
-        "Bitmap exceeds decode limit"
-    );
-    let raw = pages.bytes(c, &resource, 0, length)?;
-    Ok(Image {
-        tag: tag.clone(),
-        image,
-        width,
-        height,
-        format,
-        curve: c.u8(row + 17)?,
-        source_mips: c.u8(row + 16)?,
-        normal,
-        rgba: decode(&raw, width, height, format, normal)?,
-    })
+    Bitmap::read(c, tag, image, normal)?.decode(c, pages)
 }
 
 /// MCC water's signed BC5 array, with each slice followed by its complete mip chain.

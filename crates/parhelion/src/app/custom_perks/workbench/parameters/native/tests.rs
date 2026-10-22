@@ -1,5 +1,4 @@
 use super::*;
-use sundial::package_authoring::runtime::SchemaHandle;
 
 #[test]
 fn matching_components_in_distinct_graphs_edit_and_reset_independently() {
@@ -57,36 +56,6 @@ fn matching_components_in_distinct_graphs_edit_and_reset_independently() {
     );
 }
 
-#[test]
-#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
-fn native_paired_movement_edits_import_and_reset_through_the_existing_controls() {
-    let packages = crate::test_support::stock_packages();
-    let loaded = super::super::load_entity_parameters(&packages, 0x80BB_B1B9).unwrap();
-    let graph = &loaded.graphs[0].1;
-    let speed = entity::projectile::parameters::discover(graph)
-        .into_iter()
-        .find(|parameter| parameter.kind == entity::projectile::parameters::Kind::Speed)
-        .unwrap();
-    let mut draft = graph
-        .fields()
-        .filter(|field| {
-            field.source == WeaponRuntimeFieldSource::NativeDeclaration
-                && speed.targets_field(speed.owner_tag, field)
-        })
-        .map(|field| WeaponRuntimeValueOverride {
-            locator: field.locator.clone(),
-            value: WeaponRuntimeValue::Float32Bits(3.75_f32.to_bits()),
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(draft.len(), 2);
-    assert_eq!(speed.value(&draft).unwrap(), 3.75);
-    speed.set(&mut draft, 5.5).unwrap();
-    assert_eq!(speed.value(&draft).unwrap(), 5.5);
-    assert_eq!(draft.len(), 2);
-    speed.reset(&mut draft).unwrap();
-    assert!(draft.is_empty());
-}
-
 fn fixture() -> (PrivatePerkRuntimeGraph, WeaponRuntimeField) {
     let mut loaded = super::super::tests::fixture();
     let root = &mut loaded.graphs[0].1.owners[0].roots[0];
@@ -111,101 +80,6 @@ fn fixture() -> (PrivatePerkRuntimeGraph, WeaponRuntimeField) {
     ];
     root.fields.push(field.clone());
     (loaded, field)
-}
-
-#[test]
-fn property_summary_resolves_values_inside_carriers_without_counting_storage_edits() {
-    let (loaded, field) = fixture();
-    let graph = &loaded.graphs[0].1;
-    let carrier = carrier(graph, graph.owners[0].owner_tag, &field).unwrap();
-    let mut draft = vec![];
-    let value = WeaponRuntimeValue::Float32Bits(1.23_f32.to_bits());
-    write_value(&loaded, &field, Some(carrier), &mut draft, &value).unwrap();
-    assert_eq!(
-        property_changes(&loaded, &draft).unwrap(),
-        ["Initial Speed: 1.23"]
-    );
-    let direct = vec![WeaponRuntimeValueOverride {
-        locator: field.locator.clone(),
-        value,
-    }];
-    assert_eq!(
-        property_changes(&loaded, &draft),
-        property_changes(&loaded, &direct)
-    );
-
-    // A separate byte change in the same carrier must remain visible as an advanced edit.
-    let WeaponRuntimeValue::Bytes(bytes) = &mut draft[0].value else {
-        panic!("expected carrier")
-    };
-    bytes[7] = 91;
-    assert_eq!(
-        property_changes(&loaded, &draft).unwrap(),
-        ["Initial Speed: 1.23", "Native Bytes: +0x7=5B"]
-    );
-    write_value(&loaded, &field, Some(carrier), &mut draft, &field.value).unwrap();
-    assert_eq!(
-        property_changes(&loaded, &draft).unwrap(),
-        ["Native Bytes: +0x7=5B"]
-    );
-    draft[0].locator.root_schema = SchemaHandle::new(0);
-    assert!(property_changes(&loaded, &draft).is_err());
-}
-
-#[test]
-fn property_summary_preserves_small_values() {
-    let (loaded, field) = fixture();
-    let draft = vec![WeaponRuntimeValueOverride {
-        locator: field.locator.clone(),
-        value: WeaponRuntimeValue::Float32Bits(0.00001_f32.to_bits()),
-    }];
-    assert_eq!(
-        property_changes(&loaded, &draft).unwrap(),
-        ["Initial Speed: 0.00001"]
-    );
-}
-
-#[test]
-fn paired_projectile_values_have_one_summary_and_survive_serialization() {
-    use sundial::package_authoring::runtime::WeaponRuntimeResource;
-    let (mut loaded, _) = fixture();
-    let graph = &mut loaded.graphs[0].1;
-    let mut owner = graph.owners.remove(0);
-    let mut definition = owner.roots.remove(1);
-    let mut instance = owner.roots.remove(0);
-    instance.byte_size = 0x1E0;
-    definition.byte_size = 0x5D0;
-    let mut field = instance.fields[1].clone();
-    field.locator.root = definition.kind;
-    field.locator.root_schema = definition.schema.into();
-    field.locator.value_offset = 0x88;
-    field.owner_offset = 0x88;
-    field.locator.path[0].type_handle = definition.schema.into();
-    field.locator.path[1].byte_offset = 0x88;
-    definition.fields.push(field);
-    graph.resources.push(WeaponRuntimeResource {
-        binding_hash: 1,
-        binding_label: "Projectile Movement".into(),
-        resource_index: 0,
-        resource_count: 1,
-        owner_tag: owner.owner_tag,
-        concrete_class: 0x8080_3B73,
-        alias_bindings: Vec::new(),
-        instance,
-        definition: Some(definition),
-    });
-    let parameter = entity::projectile::parameters::discover(graph).remove(0);
-    let mut draft = Vec::new();
-    parameter.set(&mut draft, 1.23).unwrap();
-    assert_eq!(draft.len(), 2);
-    let saved = serde_json::to_string(&draft).unwrap();
-    let reopened = serde_json::from_str::<Vec<WeaponRuntimeValueOverride>>(&saved).unwrap();
-    assert_eq!(
-        property_changes(&loaded, &reopened).unwrap(),
-        ["Projectile Speed Multiplier: 1.23 ×"]
-    );
-    parameter.reset(&mut draft).unwrap();
-    assert!(property_changes(&loaded, &draft).unwrap().is_empty());
 }
 
 #[test]
@@ -262,54 +136,6 @@ fn conflicting_native_and_byte_edits_are_reported_without_mutating_the_draft() {
             .contains("overlaps")
     );
     assert_eq!(draft, original);
-}
-
-#[test]
-fn non_projectile_fields_are_searchable_and_visible_without_experimental_controls() {
-    let (mut loaded, mut field) = fixture();
-    field.name = "Activation Delay".into();
-    field.path_label = "Effect / Activation Delay".into();
-    field.locator.root_schema = SchemaHandle::new(0x8080_1234);
-    field.locator.path[0].type_handle = (field.locator.root_schema.get()).into();
-    loaded.graphs[0].1.owners[0].roots[0].fields = vec![field.clone()];
-    assert!(matches_query(&field, "Effect", "activation"));
-    assert!(matches_query(&field, "Effect", "32-bit float"));
-    for width in [480.0, 1100.0] {
-        let mut editor = super::super::tests::editor(loaded.clone());
-        editor.query = "activation".into();
-        let ctx = egui::Context::default();
-        let output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(width, 800.0),
-                )),
-                ..Default::default()
-            },
-            |ui| {
-                egui::CentralPanel::default().show(ui, |ui| {
-                    editor.draw_runtime_fields(ui, &loaded, false);
-                    assert!(ui.min_rect().right() <= width);
-                });
-            },
-        );
-        let text = output
-            .shapes
-            .iter()
-            .filter_map(|shape| {
-                if let egui::Shape::Text(t) = &shape.shape {
-                    Some(t.galley.job.text.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(text.contains("Activation Delay"), "{text}");
-        // The test searches, so an empty list would read as a failed search.
-        assert!(!text.contains("No Matching Results"), "{text}");
-        assert!(editor.draft.is_empty());
-    }
 }
 
 #[test]

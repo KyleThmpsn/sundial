@@ -5,13 +5,14 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{fs, io::Cursor, path::Path};
-use sundial::ui::model_preview::icon::{self, Frame, Pose};
+use sundial::ui::model_preview::icon::{self, Frame, Lighting, Pose};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
     pub pose: Pose,
     pub frame: Frame,
+    pub lighting: Lighting,
 }
 
 impl Default for Settings {
@@ -26,11 +27,48 @@ impl Default for Settings {
                 zoom: 1.55,
                 offset: [0.0, 0.0],
             },
+            lighting: Lighting::default(),
         }
     }
 }
 
 impl Settings {
+    /// Marathon assemblies point along positive X. Kinetic imports face upper
+    /// left, while Energy and Power face upper right. Render each camera pose
+    /// directly so lettering and asymmetric details are not mirrored.
+    pub fn marathon(kinetic: bool) -> Self {
+        Self {
+            pose: Pose {
+                yaw: if kinetic {
+                    std::f32::consts::PI - 0.65
+                } else {
+                    0.65
+                },
+                pitch: 0.25,
+                roll: if kinetic { 0.35 } else { -0.35 },
+            },
+            frame: Frame {
+                zoom: 1.10,
+                offset: [0.0, 0.0],
+            },
+            lighting: Lighting {
+                key: 1.4,
+                fill: 0.08,
+                exposure: 1.5,
+                filmic: true,
+                normalize_exposure: false,
+            },
+        }
+    }
+
+    pub fn for_graph(graph: &Value, recipe: &Value) -> Self {
+        if graph["source"] == "marathon" {
+            Self::marathon(graph["inventory_slot"] == "kinetic")
+        } else {
+            Self::for_recipe(recipe)
+        }
+    }
+
     pub fn sword() -> Self {
         Self {
             pose: Pose {
@@ -42,6 +80,7 @@ impl Settings {
                 zoom: 1.5,
                 offset: [0.11, -0.075],
             },
+            lighting: Lighting::default(),
         }
     }
 
@@ -70,8 +109,22 @@ pub fn render_with_notices(
     settings: Settings,
 ) -> Result<(Vec<u8>, Vec<String>)> {
     let appearance = crate::preview::appearance(reference, "weapon");
-    let art = icon::local(packages, &appearance, settings.pose, settings.frame, 768)
-        .map_err(anyhow::Error::msg)?;
+    let graph: Value =
+        serde_json::from_slice(&fs::read(reference.directory.join("asset-graph.json"))?)?;
+    let render = if graph["source"] == "marathon" {
+        icon::local_programs
+    } else {
+        icon::local_with_lighting
+    };
+    let art = render(
+        packages,
+        &appearance,
+        settings.pose,
+        settings.frame,
+        settings.lighting,
+        768,
+    )
+    .map_err(anyhow::Error::msg)?;
     let source = image::RgbaImage::from_raw(art.size as u32, art.size as u32, art.rgba)
         .context("Invalid rendered inventory artwork")?;
     let image = image::imageops::resize(&source, 96, 96, image::imageops::FilterType::Lanczos3);
@@ -96,7 +149,7 @@ pub(crate) fn prepare(directory: &Path, packages: &Path, settings: Settings) -> 
     fs::write(directory.join(file), png)?;
     graph["source_icon_png"] = json!(file);
     // Record the renderer version so cached artwork can be refreshed after rendering changes.
-    graph["generated_icon"] = json!({"revision":3,"settings":settings,"size":96});
+    graph["generated_icon"] = json!({"revision":6,"settings":settings,"size":96});
     crate::io::write_json(&path, &graph)
 }
 

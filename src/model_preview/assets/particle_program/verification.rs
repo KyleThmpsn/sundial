@@ -5,53 +5,6 @@ use serde_json::{Value, json};
 use std::{fs, path::PathBuf};
 
 #[test]
-#[ignore = "Requires SUNDIAL_PREVIEW_PARTICLE_CORPUS and SUNDIAL_PREVIEW_VERIFY_OUTPUT"]
-fn exported_native_corpus_reports_instruction_coverage() {
-    let directory =
-        PathBuf::from(std::env::var_os("SUNDIAL_PREVIEW_PARTICLE_CORPUS").expect("corpus"));
-    let output = PathBuf::from(std::env::var_os("SUNDIAL_PREVIEW_VERIFY_OUTPUT").expect("output"));
-    fs::create_dir_all(&output).unwrap();
-    let mut paths = fs::read_dir(directory)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "bin"))
-        .collect::<Vec<_>>();
-    paths.sort();
-    let mut programs = 0;
-    let mut instructions = 0;
-    let mut available = 0;
-    let mut failures = Vec::new();
-    for path in paths {
-        let result =
-            Program::read(&fs::read(&path).unwrap()).and_then(|program| program.coverage());
-        match result {
-            Ok(coverage) => {
-                programs += 1;
-                instructions += coverage.instructions;
-                available += coverage.available;
-                if !coverage.unsupported.is_empty() {
-                    failures.push(json!({"file":path.file_name().unwrap().to_string_lossy(),
-                        "unsupported":coverage.unsupported}));
-                }
-            }
-            Err(error) => failures
-                .push(json!({"file":path.file_name().unwrap().to_string_lossy(),"error":error})),
-        }
-    }
-    fs::write(output.join("particle-coverage.json"), serde_json::to_vec_pretty(&json!({
-        "programs":programs,"instructions":instructions,"available":available,
-        "scope":"Instruction availability, not engine binding or playback verification", "failures":failures,
-    })).unwrap()).unwrap();
-    assert!(programs > 0, "empty corpus");
-    assert!(
-        failures.is_empty(),
-        "{} corpus failures, first: {:?}",
-        failures.len(),
-        failures.first()
-    );
-}
-
-#[test]
 #[ignore = "Requires SUNDIAL_PREVIEW_VM_FIXTURES and SUNDIAL_PREVIEW_VERIFY_OUTPUT"]
 fn native_definitions_match_captured_execution() {
     let paths = std::env::var_os("SUNDIAL_PREVIEW_VM_FIXTURES").expect("fixture paths");

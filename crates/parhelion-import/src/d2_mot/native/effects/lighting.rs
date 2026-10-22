@@ -83,6 +83,26 @@ fn replace_region(
         start < end && end <= lines.len(),
         "forward-lighting region extent differs"
     );
+    // Material branches outside this region remain valid. The replaced region must
+    // close its own blocks, and the native replacement must stay straight-line.
+    let mut depth = 0isize;
+    for line in &lines[start..end] {
+        depth -= line.matches('}').count() as isize;
+        ensure!(
+            depth >= 0,
+            "forward-lighting region leaves an enclosing block"
+        );
+        depth += line.matches('{').count() as isize;
+    }
+    ensure!(depth == 0, "forward-lighting region leaves an open block");
+    ensure!(
+        replacement.iter().all(|line| !line.contains(['{', '}'])
+            && !line.contains("if (")
+            && !line.contains("else")
+            && !line.contains("for (")
+            && !line.contains("while (")),
+        "forward-lighting replacement has additional control flow"
+    );
     let needed = live(&lines[end..]);
     let written = lines[start..end]
         .iter()
@@ -146,6 +166,45 @@ fn probes(lines: &mut Vec<String>) -> Result<()> {
     replace_region(lines, start, second + 3, replacement)
 }
 
+/// One local probe blends over the material's already evaluated hemisphere reflection.
+/// Its extra alpha default belongs to the source probe scope and leaves with that probe.
+fn single_probe(lines: &mut Vec<String>) -> Result<()> {
+    let start = unique(lines, "= cb8[11].w *")?;
+    let blend = unique(lines, "= cb8[14].wwww *")?;
+    ensure!(
+        start < blend && blend + 2 < lines.len(),
+        "single probe extent differs"
+    );
+    let (probe, _) = assignment(&lines[blend]).context("single probe output")?;
+    let register = probe
+        .strip_suffix(".xyzw")
+        .context("single probe channels")?;
+    let (difference, subtraction) =
+        assignment(&lines[blend + 1]).context("reflection difference")?;
+    let (destination, expression) = assignment(&lines[blend + 2]).context("reflection blend")?;
+    let (weight, hemisphere) = expression
+        .split_once(" + ")
+        .context("hemisphere reflection")?;
+    ensure!(
+        difference == destination
+            && subtraction.ends_with(&format!(" + {register}.xyz"))
+            && weight == format!("{register}.www * {difference}")
+            && references(hemisphere).len() == 3,
+        "single probe does not blend over a hemisphere reflection"
+    );
+    let replacement = vec![format!("  {destination} = {hemisphere};")];
+    replace_region(lines, start, blend + 3, replacement)
+}
+
+/// Keep the material's fixed cubemap and hemisphere textures at 27 and 28 when present.
+pub(super) fn texture_slots(text: &str) -> Result<[u8; 5]> {
+    Ok(if inputs::cb_count(text, 8)? == Some(37) {
+        [24, 25, 29, 30, 31]
+    } else {
+        [27, 28, 29, 30, 31]
+    })
+}
+
 /// Whether five lines evaluate the clipmap coefficients for one normal: the normal's w set to
 /// one, its dot product with each coefficient, then the clamp. Lines that start otherwise are
 /// not an evaluation. Lines that start as one must finish as one.
@@ -181,7 +240,7 @@ fn evaluation(lines: &[String], coefficients: &[String]) -> Result<bool> {
     Ok(true)
 }
 
-fn irradiance(lines: &mut Vec<String>) -> Result<()> {
+fn irradiance(lines: &mut Vec<String>, slots: [u8; 5], directional: bool) -> Result<()> {
     let start = unique(lines, "= -cb3[0].xyz +")?;
     let samples = [16, 17, 18].map(|slot| {
         lines
@@ -200,7 +259,7 @@ fn irradiance(lines: &mut Vec<String>) -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
     let shadow = unique(lines, "= t19.SampleLevel(")?;
     if samples.iter().all(|&at| lines[at].trim().ends_with(").w;")) {
-        return ambient::replace(lines, start, &samples, shadow);
+        return ambient::replace(lines, start, &samples, shadow, slots);
     }
     let dot = lines
         .iter()
@@ -236,68 +295,56 @@ fn irradiance(lines: &mut Vec<String>) -> Result<()> {
         let read =
             assignment(line).map_or_else(|| references(line), |(_, right)| references(right));
         ensure!(
-            read.iter().all(|(name, _)| !reserved.contains(name)),
+            directional || read.iter().all(|(name, _)| !reserved.contains(name)),
             "material math after the irradiance evaluation reads clipmap coefficients"
         );
     }
-    let mut replacement = coefficients.iter().enumerate().map(|(i, name)| format!("  {name} = t{}.SampleLevel(s5_s, cb8[4].zw * float2(1,0.5) + float2(0,0.5), 0).xyzw;",28+i)).collect::<Vec<_>>();
+    let mut replacement = coefficients.iter().enumerate().map(|(i, name)| format!("  {name} = t{}.SampleLevel(s5_s, cb8[4].zw * float2(1,0.5) + float2(0,0.5), 0).xyzw;",slots[i+1])).collect::<Vec<_>>();
     // Preserve the source normal and RGB spherical-harmonic evaluation.
     replacement.extend_from_slice(&lines[dot - 1..shadow]);
     replacement.push(format!(
-        "  {shadow_result} = t31.SampleLevel(s4_s, cb8[4].zw, 0).x;"
+        "  {shadow_result} = t{}.SampleLevel(s4_s, cb8[4].zw, 0).x;",
+        slots[4]
     ));
     replace_region(lines, start, shadow + 3, replacement)
 }
 
 pub(super) fn adapt(text: &str) -> Result<(String, bool)> {
     let count = inputs::cb_count(text, 8)?;
-    if inputs::cb_count(text, 3)? != Some(16) || !matches!(count, Some(8 | 36)) {
+    if inputs::cb_count(text, 3)? != Some(16) || !matches!(count, Some(8 | 36 | 37)) {
         return Ok((text.to_owned(), false));
     }
+    let slots = texture_slots(text)?;
     ensure!(
-        (27..=31).all(|slot| !text.contains(&format!("register(t{slot})"))),
+        slots.iter().all(|slot| (*slot == 24 && count == Some(37))
+            || !text.contains(&format!("register(t{slot})"))),
         "native irradiance lookup slots are occupied"
     );
     let fog_is_colored = inputs::slots(text, 't')?.contains(&11) && ambient::colors_fog(text)?;
     let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
     if count == Some(36) {
         probes(&mut lines)?;
+    } else if count == Some(37) {
+        single_probe(&mut lines)?;
     }
-    irradiance(&mut lines)?;
+    irradiance(&mut lines, slots, count == Some(37))?;
     let mut result = lines.join("\n");
-    // The replacement must be straight-line. Material branches after the
-    // replacement are valid, with conditional writes handled by live().
-    let body = result
-        .split_once("void main(")
-        .context("lighting shader entry")?
-        .1;
-    let lighting_end = body
-        .lines()
-        .position(|line| line.contains("t31.SampleLevel("))
-        .context("native lighting replacement")?;
-    ensure!(
-        !body
-            .lines()
-            .take(lighting_end + 1)
-            .any(|l| l.contains("if (") && !l.contains("discard;"))
-            && !body
-                .lines()
-                .take(lighting_end + 1)
-                .any(|l| { l.contains("else") || l.contains("for (") || l.contains("while (") }),
-        "forward-lighting replacement has additional control flow"
-    );
     ensure!(
         inputs::reads(&result, 3).is_some_and(|r| r.is_empty())
             && inputs::reads(&result, 8).is_some_and(|r| r.iter().all(|i| *i < 8)),
         "forward-lighting shader retains modern scope inputs"
     );
     result = replace_once(&result, &inputs::cb_decl(3, 16), "")?;
-    if count == Some(36) {
-        result = replace_once(&result, &inputs::cb_decl(8, 36), &inputs::cb_decl(8, 8))?;
+    if matches!(count, Some(36 | 37)) {
+        result = replace_once(
+            &result,
+            &inputs::cb_decl(8, count.unwrap()),
+            &inputs::cb_decl(8, 8),
+        )?;
     }
     for slot in [16, 17, 18, 19, 24, 25]
         .into_iter()
-        .filter(|slot| *slot < 24 || count == Some(36))
+        .filter(|slot| *slot < 24 || count == Some(36) || (*slot == 24 && count == Some(37)))
     {
         ensure!(
             !result.contains(&format!("t{slot}.")),
@@ -316,7 +363,7 @@ pub(super) fn adapt(text: &str) -> Result<(String, bool)> {
             "",
         )?;
     }
-    for slot in 28..=31 {
+    for slot in &slots[1..] {
         result = format!("Texture2D<float4> t{slot} : register(t{slot});\n{result}");
     }
     if inputs::slots(&result, 't')?.contains(&11) {
@@ -336,18 +383,23 @@ pub(super) fn adapt(text: &str) -> Result<(String, bool)> {
             )?;
             result = result.replace(&format!("t{slot}.Sample("), "native_fog(");
         }
-        result = format!("Texture2D<float4> t27 : register(t27);\n{result}");
+        let fog = slots[0];
+        result = format!("Texture2D<float4> t{fog} : register(t{fog});\n{result}");
         let helper = if fog_is_colored {
-            "float4 native_fog(SamplerState fog_sampler, float2 uv) { return t27.Sample(fog_sampler, uv); }\nvoid main(\n"
+            format!(
+                "float4 native_fog(SamplerState fog_sampler, float2 uv) {{ return t{fog}.Sample(fog_sampler, uv); }}\nvoid main(\n"
+            )
         } else {
-            "float4 native_fog(SamplerState fog_sampler, float2 uv) { float4 fog = t27.Sample(fog_sampler, uv); return float4(cb8[5].xyz * fog.xyz + cb8[6].xyz * fog.w, 0); }\nvoid main(\n"
+            format!(
+                "float4 native_fog(SamplerState fog_sampler, float2 uv) {{ float4 fog = t{fog}.Sample(fog_sampler, uv); return float4(cb8[5].xyz * fog.xyz + cb8[6].xyz * fog.w, 0); }}\nvoid main(\n"
+            )
         };
-        result = replace_once(&result, "void main(\n", helper)?;
+        result = replace_once(&result, "void main(\n", &helper)?;
     }
     Ok((result, true))
 }
 
-pub(super) fn bindings(refs: &Path) -> Result<Vec<u8>> {
+pub(super) fn bindings(refs: &Path, slots: [u8; 5]) -> Result<Vec<u8>> {
     let context = load(&refs.join("tfx-native/context.json"))?;
     let scope = context["scopes"]
         .as_array()
@@ -361,13 +413,8 @@ pub(super) fn bindings(refs: &Path) -> Result<Vec<u8>> {
     )))?);
     let code = array_bytes(&scope, 0x58, 1)?;
     let mut result = Vec::new();
-    for (resource, native_slot, target_slot) in [
-        (0, 11, 27),
-        (1, 12, 28),
-        (2, 13, 29),
-        (3, 14, 30),
-        (4, 15, 31),
-    ] {
+    for (resource, target_slot) in (0u8..5).zip(slots) {
+        let native_slot = 11 + resource;
         let contract = [0x3F, 0x27, resource, 0x47, 0x20 | native_slot];
         ensure!(
             code.windows(5).filter(|w| *w == contract).count() == 1,

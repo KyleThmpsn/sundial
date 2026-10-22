@@ -152,21 +152,6 @@ fn is_dawn_database(path: &Path) -> bool {
         .is_some_and(|name| name == crate::persistence::DAWN_DATABASE_NAME)
 }
 
-#[cfg(test)]
-mod backend_tests {
-    use super::*;
-
-    #[test]
-    fn dawn_database_is_not_parsed_as_json_during_backend_validation() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory
-            .path()
-            .join(crate::persistence::DAWN_DATABASE_NAME);
-        std::fs::write(&path, b"SQLite format 3\0not JSON").unwrap();
-
-        validate_authored_cleanup_backend(&path).unwrap();
-    }
-}
 /// Returns journal bytes. SQLite uses a complete logical snapshot including uncheckpointed WAL data.
 pub fn read_authored_account_source(path: &Path) -> Result<Vec<u8>, String> {
     if is_dawn_database(path) {

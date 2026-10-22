@@ -29,5 +29,13 @@ tempfile = "3"
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2"] }
 
+[build-dependencies]
+cc = "1.6.0"
+sha2 = "0.11.0"
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_LibraryLoader"] }
+
 [lints]
 workspace = true

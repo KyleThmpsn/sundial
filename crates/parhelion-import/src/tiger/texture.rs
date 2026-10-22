@@ -45,8 +45,9 @@ pub(crate) fn resident(header: &mut [u8], bytes: usize) -> Result<()> {
             && p.u32(0)? as usize == bytes
             && p.u16(14)? > 0
             && p.u16(16)? > 0
-            && p.u16(18)? == 1
+            && p.u16(18)? > 0
             && matches!(p.u16(20)?, 1 | 6)
+            && (p.u16(18)? == 1 || p.u16(20)? == 1)
             && (1..=15).contains(&p.u8(23)?)
             && matches!(p.u32(36)?, 0 | u32::MAX | 0x811C9DC5),
         "resident texture requires a complete unsplit payload"
@@ -56,6 +57,7 @@ pub(crate) fn resident(header: &mut [u8], bytes: usize) -> Result<()> {
     match p.u32(4)? {
         10 => header[22] = 64,
         28 | 29 => header[22] = 32,
+        61 => header[22] = 8,
         71 | 72 | 80 | 81 => header[22] = 4,
         77 | 78 | 83 | 84 | 98 | 99 => header[22] = 8,
         _ => {}

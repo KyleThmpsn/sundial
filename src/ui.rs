@@ -5,6 +5,8 @@ pub mod catalog;
 pub(crate) mod help;
 pub mod model_preview;
 
+pub use help::{info, info_link};
+
 /// The icon data for Sundial's native windows, including hosted tools.
 ///
 /// On Windows, empty data leaves the window's icon unset so it uses the class icons installed

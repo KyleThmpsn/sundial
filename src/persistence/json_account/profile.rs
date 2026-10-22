@@ -119,11 +119,6 @@ impl JsonProfileAdapter {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) const fn capabilities(&self) -> ProfileCapabilities {
-        self.capabilities
-    }
-
     pub(crate) const fn state(&self) -> &ProfileState {
         &self.state
     }

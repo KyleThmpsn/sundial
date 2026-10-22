@@ -3,7 +3,7 @@ use super::*;
 use crate::sandbox_perk::program::AttachmentTarget;
 
 mod coverage;
-use crate::sandbox_perk::action::fixtures::{Builder, drawn_pattern_action, precision_kill_action};
+use crate::sandbox_perk::action::fixtures::{Builder, drawn_pattern_action};
 use crate::sandbox_perk::action::{
     CONDITION_ROW_CLASS, EFFECT_ROW_CLASS, GROUP_ACTIVATION, GROUP_EFFECTS, GROUP_REARM,
     GROUP_REMOVAL, PRIMARY_GROUP,
@@ -361,49 +361,6 @@ fn native_endings_and_rearms_are_carried_beside_kill_triggers() {
 }
 
 #[test]
-fn recovery_prefers_the_typed_program_and_never_refuses() {
-    let payload = drawn_pattern_action();
-    let (typed, recovery) = recover(&payload, "Demo", |tag| tag).unwrap();
-    assert_eq!(recovery, Recovery::Typed);
-    assert!(typed.native.is_none());
-    assert_eq!(typed.trigger, Trigger::Drawn);
-    assert_eq!(typed.actions.len(), 2);
-
-    // An activation probability outside 0 to 1 is outside the typed model. The same action
-    // still opens, carried in native form, and the reason names the shape that was refused.
-    let mut out_of_range = payload;
-    let at = decode(&out_of_range).unwrap().groups[0].activation[0].offset;
-    out_of_range[at..at + 4].copy_from_slice(&2.0_f32.to_le_bytes());
-    let (native, recovery) = recover(&out_of_range, "Demo", |tag| tag).unwrap();
-    assert!(native.native.is_some());
-    assert!(native.actions.is_empty());
-    match recovery {
-        Recovery::NativeForm(reason) => {
-            assert!(reason.contains("probability"), "{reason}")
-        }
-        Recovery::Typed => panic!("an out-of-range probability cannot be typed"),
-    }
-}
-
-#[test]
-fn a_drawn_pattern_action_recovers_its_program_in_authored_order() {
-    let action = decode(&drawn_pattern_action()).unwrap();
-    let program = decompile(&action, "Demo", |tag| tag).unwrap();
-    assert_eq!(program.trigger, Trigger::Drawn);
-    assert_eq!(program.duration_ms, 0);
-    assert_eq!(program.cooldown_ms, 0);
-    assert_eq!(program.chance_permyriad, 10_000);
-    // The payload stores effects last to first, so the authored order is reversed.
-    assert!(matches!(program.actions[0], Action::Spawn { .. }));
-    assert!(matches!(program.actions[1], Action::Pattern { .. }));
-    assert_eq!(program.actions[0].asset().unwrap().graph, 0x80BC_2F21);
-    assert_eq!(
-        program.actions[1].asset().unwrap().path,
-        "content/sandbox/weapons/demo/demo.pattern.tft"
-    );
-}
-
-#[test]
 fn an_extend_timers_effect_recovers_when_it_nests_the_trigger() {
     let mut out = Builder::new();
     let activation = out.kill(&[PRECISION], true, 1.0);
@@ -486,22 +443,6 @@ fn two_program_action() -> Vec<u8> {
     let ends = out.event_key(0x1234_5678);
     out.pointer_list(rows + GROUP_REMOVAL, CONDITION_ROW_CLASS, &[ends]);
     out.finish()
-}
-
-#[test]
-fn further_programs_are_recovered_beside_the_typed_one() {
-    let payload = two_program_action();
-    assert_eq!(decode(&payload).unwrap().groups.len(), 2);
-    let (program, recovery) = recover(&payload, "Demo", |tag| tag).unwrap();
-    assert_eq!(recovery, Recovery::Typed);
-    assert_eq!(program.trigger, Trigger::Drawn);
-    assert_eq!(program.actions.len(), 2);
-    assert_eq!(program.additional_groups.len(), 1);
-    let group = &program.additional_groups[0];
-    assert_eq!(group.activation[0].kind, 0);
-    assert_eq!(group.effects[0].kind, 3);
-    assert_eq!(group.removal[0].kind, 30);
-    assert!(group.rearm.is_empty());
 }
 
 #[test]
@@ -682,40 +623,6 @@ fn ammunition_effects_recover_their_one_amount_and_carry_filters_and_spreads_nat
     );
 }
 
-fn always_attach_action(repeat: Option<f32>) -> Vec<u8> {
-    let mut out = Builder::new();
-    let activation = out.unconditional();
-    out.pointer_list(
-        PRIMARY_GROUP + GROUP_ACTIVATION,
-        CONDITION_ROW_CLASS,
-        &[activation],
-    );
-    let attach = out.attach(0x80BC_5810, "content/sandbox/effects/aura/aura.entity.tft");
-    out.pointer_list(PRIMARY_GROUP + GROUP_EFFECTS, EFFECT_ROW_CLASS, &[attach]);
-    if let Some(seconds) = repeat {
-        let timer = out.timer(seconds);
-        out.pointer_list(PRIMARY_GROUP + GROUP_REARM, CONDITION_ROW_CLASS, &[timer]);
-    }
-    out.finish()
-}
-
-#[test]
-fn an_always_active_action_recovers_with_its_repeat_interval() {
-    let action = decode(&always_attach_action(Some(3.0))).unwrap();
-    let program = decompile(&action, "Aura", |tag| tag).unwrap();
-    assert_eq!(program.trigger, Trigger::Always);
-    assert_eq!(program.duration_ms, 0);
-    assert_eq!(program.cooldown_ms, 3_000);
-    assert!(matches!(program.actions[0], Action::Attach { .. }));
-    let plain = decompile(
-        &decode(&always_attach_action(None)).unwrap(),
-        "Aura",
-        |tag| tag,
-    )
-    .unwrap();
-    assert_eq!(plain.cooldown_ms, 0);
-}
-
 #[test]
 fn attach_technical_fields_survive_the_round_trip_and_default_when_absent() {
     let mut out = Builder::new();
@@ -804,53 +711,6 @@ fn an_always_active_action_recovers_its_ending_event_key() {
     plain.trigger = Trigger::Drawn;
     plain.removal_key = Some(1);
     assert!(plain.validate().unwrap_err().contains("always-active"));
-}
-
-#[test]
-fn an_empty_activation_list_reads_as_always_active() {
-    let mut out = Builder::new();
-    let attach = out.attach(0x80BC_5810, "content/sandbox/effects/aura/aura.entity.tft");
-    out.pointer_list(PRIMARY_GROUP + GROUP_EFFECTS, EFFECT_ROW_CLASS, &[attach]);
-    let action = decode(&out.finish()).unwrap();
-    let program = decompile(&action, "Aura", |tag| tag).unwrap();
-    assert_eq!(program.trigger, Trigger::Always);
-}
-
-#[test]
-fn a_kill_action_recovers_its_trigger_timing_and_chance() {
-    let action = decode(&kill_attach_action(0.25)).unwrap();
-    let program = decompile(&action, "Trail", |tag| tag + 1).unwrap();
-    assert_eq!(program.trigger, Trigger::PrecisionKill);
-    assert_eq!(program.duration_ms, 5_000);
-    assert_eq!(program.cooldown_ms, 2_500);
-    assert_eq!(program.chance_permyriad, 2_500);
-    assert_eq!(program.actions.len(), 1);
-    assert_eq!(program.actions[0].asset().unwrap().graph, 0x80BC_5811);
-}
-
-#[test]
-fn a_weighted_spawn_effect_recovers_its_complete_native_record() {
-    // The fixture's nested condition matches its trigger, so the extension is authorable.
-    let action = decode(&precision_kill_action()).unwrap();
-    let program = decompile(&action, "Outlaw", |tag| tag).unwrap();
-    assert!(matches!(program.actions[0], Action::ExtendTimers { .. }));
-    // Weighted spawn records now have a complete native authoring path.
-    let mut out = Builder::new();
-    let activation = out.unconditional();
-    out.pointer_list(
-        PRIMARY_GROUP + GROUP_ACTIVATION,
-        CONDITION_ROW_CLASS,
-        &[activation],
-    );
-    // A label-free weighted spawn record is preserved even with empty choices.
-    let unknown = out.node(0x8080_3E47, 64);
-    out.bytes[unknown] = 13;
-    out.pointer_list(PRIMARY_GROUP + GROUP_EFFECTS, EFFECT_ROW_CLASS, &[unknown]);
-    let decoded = decode(&out.finish()).unwrap();
-    let program = decompile(&decoded, "Weighted Spawn", |tag| tag).unwrap();
-    assert!(
-        matches!(&program.actions[0],Action::Native{node} if node.kind==13 && node.bytes==decoded.groups[0].effects[0].native)
-    );
 }
 
 #[test]

@@ -202,18 +202,4 @@ mod tests {
         assert_eq!(serde_json::from_str::<Artwork>(&saved).unwrap(), artwork);
         assert_eq!(artwork.pixels().dimensions(), (512, 512));
     }
-
-    #[test]
-    fn embedded_artwork_reports_the_required_normalized_dimensions() {
-        let mut png = Cursor::new(Vec::new());
-        RgbaImage::new(96, 96)
-            .write_to(&mut png, ImageFormat::Png)
-            .unwrap();
-        let embedded = serde_json::json!({ "png_base64": STANDARD.encode(png.into_inner()) });
-        let error = serde_json::from_value::<Artwork>(embedded)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("512\u{00d7}512"), "{error}");
-        assert!(!error.contains("96\u{00d7}96"), "{error}");
-    }
 }

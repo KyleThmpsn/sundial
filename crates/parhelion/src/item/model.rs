@@ -813,6 +813,16 @@ impl WeaponCloneSpec {
 
     pub fn validate(&self) -> AuthoringResult<()> {
         validate_parhelion_namespace(&self.namespace).map_err(invalid)?;
+        #[cfg(feature = "d2-model-importer")]
+        if let Some(graph) = &self.overrides.imported_graph {
+            for reference in std::iter::once(graph).chain(graph.attachments.iter()) {
+                if let Some(inputs) = &reference.material_inputs {
+                    inputs
+                        .validate()
+                        .map_err(|error| invalid(error.to_string()))?;
+                }
+            }
+        }
         if let Some(sparrow) = &self.overrides.sparrow {
             if self.kind != ItemKind::Sparrow {
                 return Err(invalid(

@@ -14,7 +14,7 @@ mod native;
 mod ornament;
 mod package;
 mod shader;
-mod texture;
+pub mod texture;
 mod weapon;
 pub use armor::Armor;
 pub use icon::Icon;

@@ -29,14 +29,6 @@ pub(in crate::app) fn private_perk(
 }
 
 #[cfg(test)]
-pub(in crate::app) fn private_perk_runtime_values(
-    recipe: &WeaponRecipe,
-    key: PerkEditorKey,
-) -> Option<&Vec<WeaponRuntimeValueOverride>> {
-    private_perk(recipe, key).map(|perk| &perk.runtime_values)
-}
-
-#[cfg(test)]
 fn private_perk_mut(
     recipe: &mut WeaponRecipe,
     key: PerkEditorKey,

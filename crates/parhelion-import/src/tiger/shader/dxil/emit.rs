@@ -1,6 +1,27 @@
 use super::{instruction::Emitter, *};
 
 impl Program {
+    pub fn resources(&self) -> Result<BTreeMap<(u32, u32), (u32, u32)>> {
+        let options = Options::default();
+        let mut emitter = Emitter {
+            program: self,
+            options: &options,
+            declarations: BTreeMap::new(),
+            handles: BTreeMap::new(),
+            resources: BTreeMap::new(),
+        };
+        for block in &self.order {
+            for instruction in &self.blocks[block] {
+                if instruction.code.contains("@dx.op.createHandleFromBinding(")
+                    || instruction.code.contains("@dx.op.annotateHandle(")
+                {
+                    emitter.expression(instruction.id, &instruction.code)?;
+                }
+            }
+        }
+        Ok(emitter.resources)
+    }
+
     pub fn hlsl(&self, options: &Options) -> Result<String> {
         ensure!(
             options
@@ -39,8 +60,18 @@ impl Program {
         for (&(class, slot), &(kind, size)) in &emitter.resources {
             result.push(match class {
                 0 => format!(
-                    "Texture{}D<float4> t{slot}:register(t{slot});",
-                    if kind == 4 { 3 } else { 2 }
+                    "{}<float4> t{slot}:register(t{});",
+                    match options
+                        .samples
+                        .get(&slot)
+                        .map_or(kind, |sample| sample.target_kind)
+                    {
+                        2 => "Texture2D",
+                        4 => "Texture3D",
+                        5 => "TextureCube",
+                        _ => bail!("Unsupported DXIL texture kind"),
+                    },
+                    options.texture_registers.get(&slot).unwrap_or(&slot)
                 ),
                 2 => {
                     ensure!(
@@ -55,6 +86,16 @@ impl Program {
                 3 => format!("SamplerState s{slot}:register(s{slot});"),
                 _ => bail!("Unsupported DXIL resource declaration"),
             });
+        }
+        for (&slot, &rows) in &options.buffers {
+            ensure!(rows > 0 && rows <= 4096, "Renderer buffer extent differs");
+            ensure!(
+                !emitter.resources.contains_key(&(2, slot)),
+                "Renderer buffer conflicts with a source buffer"
+            );
+            result.push(format!(
+                "cbuffer C{slot}:register(b{slot}) {{ float4 cb{slot}[{rows}]; }};"
+            ));
         }
         let mut params = self
             .inputs

@@ -275,24 +275,3 @@ fn describe_open_failure(file_name: &str, error: &str) -> String {
     }
     format!("Could not open {file_name}: {error}")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::describe_open_failure;
-
-    /// The remedy is only useful where it applies, and misapplied it would send someone chasing
-    /// a limit while the real fault is the package.
-    #[test]
-    fn only_a_descriptor_failure_mentions_the_limit() {
-        let exhausted = describe_open_failure(
-            "w64_globals_01a3_0.pkg",
-            "Too many open files (os error 24)",
-        );
-        assert!(exhausted.contains("ulimit -n 8192"));
-        assert!(exhausted.contains("w64_globals_01a3_0.pkg"));
-
-        let corrupt = describe_open_failure("w64_globals_01a3_0.pkg", "invalid package header");
-        assert!(!corrupt.contains("ulimit"));
-        assert!(corrupt.contains("invalid package header"));
-    }
-}

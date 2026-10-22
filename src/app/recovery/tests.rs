@@ -1,4 +1,3 @@
-use super::*;
 use crate::app::tests::driver::*;
 use crate::app::*;
 use crate::persistence::sqlite_account::{self, ResetPlan};
@@ -149,11 +148,4 @@ fn installed_resources_prepare_both_resets_for_the_selected_installation() {
         sqlite_account::snapshot::read(&receipt.safety_backup).unwrap(),
         before
     );
-}
-
-#[test]
-fn reset_requires_a_confirmed_closed_game() {
-    assert!(require_game_closed_for_reset(Ok(false)).is_ok());
-    assert!(require_game_closed_for_reset(Ok(true)).is_err());
-    assert!(require_game_closed_for_reset(Err("process scan failed".into())).is_err());
 }

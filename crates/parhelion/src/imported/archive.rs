@@ -30,6 +30,8 @@ struct Reference {
     #[serde(default)]
     converter_revision: Option<u32>,
     #[serde(default)]
+    material_inputs: Option<parhelion_import::marathon::MaterialInputs>,
+    #[serde(default)]
     attachments: Vec<Value>,
     embedded_assets: Assets,
 }
@@ -258,6 +260,7 @@ fn expand_reference(
                 sha256: reference.sha256.clone(),
                 attachments: Vec::new(),
                 converter_revision: 0,
+                material_inputs: reference.material_inputs.clone(),
             }
             .validate_reusable(kind)
             .map_err(|e| format!("Embedded item assets are invalid: {e}"))?;
@@ -287,6 +290,7 @@ fn expand_reference(
         sha256: reference.sha256,
         attachments,
         converter_revision,
+        material_inputs: reference.material_inputs,
     };
     restored
         .validate_reusable(kind)

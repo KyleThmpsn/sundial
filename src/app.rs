@@ -1003,6 +1003,7 @@ impl SundialApp {
                 ..Default::default()
             },
         );
+        item_art::tooltip::set_show_source(ctx, self.preferences.show_tooltip_source);
         #[cfg(target_os = "linux")]
         {
             let title_bar_icon = self

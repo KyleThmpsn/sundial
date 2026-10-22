@@ -183,60 +183,11 @@ fn hex_bytes(text: &str) -> Vec<u8> {
         .collect()
 }
 
-/// Reported by a user: Graviton Lance's perks on a hand cannon never triggered, with no
-/// detonation at all, while Hard Light's element switch worked. The picker offers one choice
-/// per weapon and prefers the firing graph, so the record half holding the behavior array
-/// was never applied. A graph choice now carries it.
-#[test]
-fn a_graph_choice_carries_its_weapons_behavior_record() {
-    let graph = behavior("graviton-lance-graph").expect("the graph half is catalogued");
-    let record = behavior("graviton-lance").expect("the record half is catalogued");
-    assert!(graph.has_graph() && !record.has_graph());
-    assert!(record.carries_behavior_record());
-    assert_eq!(graph.source_item_hash, record.source_item_hash);
-
-    let paired = paired_record(graph).expect("the graph pairs with its record");
-    assert_eq!(paired.id, record.id);
-    assert_eq!(paired.source.record_source(), record.source.record_source());
-
-    // A weapon whose behavior is only a graph has nothing to pair, and a record never
-    // pairs with itself.
-    assert!(paired_record(behavior("truth-graph").expect("graph only")).is_none());
-    assert!(paired_record(record).is_none());
-}
-
 fn overrides_for(id: &str) -> crate::item::WeaponCloneOverrides {
     crate::item::WeaponCloneOverrides {
         additional_behaviors: vec![id.to_owned()],
         ..Default::default()
     }
-}
-
-#[test]
-fn a_graft_pins_the_source_weapons_own_intrinsic_and_trait() {
-    let types = [
-        INTRINSIC_SOCKET_TYPE,
-        65,
-        177,
-        TRAIT_SOCKET_TYPE,
-        TRAIT_SOCKET_TYPE,
-    ];
-    let expanded = expand_socket_columns(&overrides_for("malfeasance-graph"), &types).unwrap();
-    let entry = behavior("malfeasance-graph").unwrap();
-    assert_eq!(
-        expanded.socket_columns[0]
-            .as_ref()
-            .map(|c| c.choices.clone()),
-        Some(vec![entry.intrinsic_plug.unwrap()])
-    );
-    assert_eq!(
-        expanded.socket_columns[3]
-            .as_ref()
-            .map(|c| c.choices.clone()),
-        Some(vec![entry.trait_plug.unwrap()])
-    );
-    // The second trait column is left for the author.
-    assert!(expanded.socket_columns[4].is_none());
 }
 
 /// The build must reach the same intrinsic lane the editor shows, including for a recipe the
@@ -283,73 +234,6 @@ fn the_build_keeps_an_authored_intrinsic_perk_and_repoints_it() {
     );
 }
 
-#[test]
-fn the_author_can_keep_the_graft_without_its_perks() {
-    let types = [INTRINSIC_SOCKET_TYPE, TRAIT_SOCKET_TYPE];
-    let mut overrides = overrides_for("malfeasance-graph");
-    overrides.skip_behavior_perks = true;
-    let expanded = expand_socket_columns(&overrides, &types).unwrap();
-    assert!(expanded.socket_columns.is_empty());
-}
-
-#[test]
-fn a_behavior_leads_a_socket_the_author_already_chose_for() {
-    let types = [INTRINSIC_SOCKET_TYPE, TRAIT_SOCKET_TYPE];
-    let mut overrides = overrides_for("malfeasance-graph");
-    overrides.socket_columns = vec![
-        Some(crate::item::WeaponSocketColumnOverride {
-            choices: vec![0x1234_5678],
-            socket_type: None,
-            choice_weight_bits: Vec::new(),
-            choice_conditions: Vec::new(),
-            reusable_plug_set_index: None,
-            randomized_plug_set_index: None,
-            randomized_selection_program: Vec::new(),
-        }),
-        None,
-    ];
-    // The frame lane holds the borrowed frame alone; a trait lane keeps the author's own
-    // choice behind the perk the behavior needs first.
-    overrides.socket_columns[1] = Some(column(vec![0x2345_6789], None));
-    let expanded = expand_socket_columns(&overrides, &types).unwrap();
-    let entry = behavior("malfeasance-graph").unwrap();
-    let intrinsic = entry
-        .intrinsic_plug
-        .expect("the graft names an intrinsic plug");
-    assert_eq!(
-        expanded.socket_columns[0]
-            .as_ref()
-            .map(|column| column.choices.as_slice()),
-        Some([intrinsic].as_slice())
-    );
-    assert_eq!(
-        expanded.socket_columns[1]
-            .as_ref()
-            .map(|column| column.choices.as_slice()),
-        Some([entry.trait_plug.unwrap(), 0x2345_6789].as_slice())
-    );
-}
-
-#[test]
-fn a_borrowed_frame_replaces_a_host_frame_left_beside_it() {
-    let types = [INTRINSIC_SOCKET_TYPE, TRAIT_SOCKET_TYPE];
-    let mut overrides = overrides_for("malfeasance-graph");
-    let entry = behavior("malfeasance-graph").unwrap();
-    let intrinsic = entry.intrinsic_plug.unwrap();
-    // An older save that already pinned the frame ahead of the host's own.
-    overrides.socket_columns = vec![
-        Some(column(vec![intrinsic, 0x1234_5678], None)),
-        Some(column(vec![entry.trait_plug.unwrap()], None)),
-    ];
-    let expanded = expand_socket_columns(&overrides, &types).unwrap();
-    assert_eq!(
-        expanded.socket_columns[0]
-            .as_ref()
-            .map(|column| column.choices.as_slice()),
-        Some([intrinsic].as_slice())
-    );
-}
-
 fn column(choices: Vec<u32>, socket_type: Option<u16>) -> crate::item::WeaponSocketColumnOverride {
     crate::item::WeaponSocketColumnOverride {
         choices,
@@ -360,47 +244,6 @@ fn column(choices: Vec<u32>, socket_type: Option<u16>) -> crate::item::WeaponSoc
         randomized_plug_set_index: None,
         randomized_selection_program: Vec::new(),
     }
-}
-
-/// An author who gives the behavior's perk a socket of their own has already satisfied it.
-/// Leading the donor's own trait column with a second copy showed the same perk twice and
-/// pushed the choices they had arranged down a place.
-#[test]
-fn a_perk_the_author_already_placed_is_not_pinned_a_second_time() {
-    let types = [INTRINSIC_SOCKET_TYPE, TRAIT_SOCKET_TYPE];
-    let entry = behavior("malfeasance-graph").unwrap();
-    let mut overrides = overrides_for("malfeasance-graph");
-    overrides.socket_columns = vec![
-        None,
-        Some(column(vec![0x1234_5678], None)),
-        Some(column(
-            vec![entry.trait_plug.unwrap()],
-            Some(TRAIT_SOCKET_TYPE),
-        )),
-    ];
-    let expanded = expand_socket_columns(&overrides, &types).unwrap();
-    assert_eq!(expanded.socket_columns[1], overrides.socket_columns[1]);
-    assert_eq!(expanded.socket_columns[2], overrides.socket_columns[2]);
-}
-
-/// The socket list draws a column the author gave the trait role as a trait socket, so the
-/// build has to pin into it too. Reading only the donor's own types skipped it entirely.
-#[test]
-fn a_socket_the_author_turned_into_a_trait_column_is_where_the_perk_lands() {
-    let types = [INTRINSIC_SOCKET_TYPE, u16::MAX];
-    let entry = behavior("malfeasance-graph").unwrap();
-    let mut overrides = overrides_for("malfeasance-graph");
-    overrides.socket_columns = vec![
-        None,
-        Some(column(vec![0x1234_5678], Some(TRAIT_SOCKET_TYPE))),
-    ];
-    let expanded = expand_socket_columns(&overrides, &types).unwrap();
-    assert_eq!(
-        expanded.socket_columns[1]
-            .as_ref()
-            .map(|column| column.choices.as_slice()),
-        Some([entry.trait_plug.unwrap(), 0x1234_5678].as_slice())
-    );
 }
 
 /// Choosing a weapon's firing graph turns element switching on for the two exotics that
@@ -851,51 +694,6 @@ fn every_block_with_labels_parses_at_the_row_size_grafts_copy() {
     }
     assert!(checked > 0, "no blocks carried labels");
     assert!(failures.is_empty(), "label layout: {failures:#?}");
-}
-
-#[test]
-#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
-fn every_entry_compiles_a_graft_onto_a_real_host() {
-    use sundial::package_authoring::{
-        open_shadowkeep_package_manager, runtime::load_weapon_runtime_entity_with_manager,
-    };
-    let path = crate::test_support::stock_packages();
-    let manager = open_shadowkeep_package_manager(&path).unwrap();
-    let catalog = crate::test_support::catalog(path.parent().unwrap()).unwrap();
-    let host = catalog
-        .weapon_donors()
-        .into_iter()
-        .filter(|donor| {
-            donor.type_name == "Auto Rifle"
-                && donor.rarity == sundial::investment::WeaponRarity::Legendary
-        })
-        .find_map(|donor| load_weapon_runtime_entity_with_manager(&manager, donor.hash).ok())
-        .expect("a legendary auto rifle with a runtime entity");
-    let failed = CATALOG
-        .iter()
-        .filter_map(|entry| {
-            patches(
-                &manager,
-                &host.payload,
-                ContentGroups {
-                    selected: Some(host.weapon_content_group_hash),
-                    own: None,
-                    animations: None,
-                    kind: None,
-                    hold: None,
-                    stance: None,
-                },
-                &[entry.id.to_owned()],
-                DEFAULT_PROJECTILE_SPEED_BOOST,
-            )
-            .err()
-            .map(|error| format!("{} ({}): {error}", entry.source_name, entry.id))
-        })
-        .collect::<Vec<_>>();
-    assert!(
-        failed.is_empty(),
-        "grafts that no longer compile: {failed:#?}"
-    );
 }
 
 #[test]

@@ -210,7 +210,12 @@ impl Target {
 /// skeletons keep them, and zeroes the array's former place at `old`. Shadowkeep reads the words
 /// after the last procedural row as tags up to a zero word (`exe+0xA40300` in the 2.9.2 client):
 /// the stale second row a shrunk array left there faulted the client at boot.
-fn trail_procedural(out: &mut Vec<u8>, instance: usize, old: &[usize], rows: &[u8]) -> Result<()> {
+pub(super) fn trail_procedural(
+    out: &mut Vec<u8>,
+    instance: usize,
+    old: &[usize],
+    rows: &[u8],
+) -> Result<()> {
     if let (Some(&first), Some(&last)) = (old.first(), old.last()) {
         out.get_mut(first - 20..last + 8)
             .context("Procedural range array lies outside the instance")?
@@ -223,7 +228,13 @@ fn relative(bytes: &mut [u8], field: usize, target: usize) -> Result<()> {
     put(bytes, field, &(target as i64 - field as i64).to_le_bytes())
 }
 
-fn rebase(out: &mut [u8], original: &Payload, tag: u32, cut: usize, delta: usize) -> Result<()> {
+pub(super) fn rebase(
+    out: &mut [u8],
+    original: &Payload,
+    tag: u32,
+    cut: usize,
+    delta: usize,
+) -> Result<()> {
     let instance = original.pointer(16)?;
     for field in [24, 0x38] {
         let target = original.pointer(field)?;

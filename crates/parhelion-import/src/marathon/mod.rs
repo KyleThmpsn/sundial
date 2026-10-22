@@ -20,6 +20,8 @@ pub fn apply_recipe_text(recipe: &mut Value) -> Result<()> {
 }
 
 pub mod browse;
+pub mod inputs;
+pub use inputs::MaterialInputs;
 mod geometry;
 mod material;
 use crate::tiger::{
@@ -167,6 +169,22 @@ fn build(source: &mut Reader, native: &mut Reader, entry: &Value, root: &Path) -
     let result = json!({"item_hash":hash(entry,"target_item")?,"art_key":hash(entry,"art_key")?,"native_item":hash(entry,"native_item")?,"native_assignment":hash(parent,"assignment")?,"source_model":entry["models"][0]["model"],"source_models":entry["models"],"source_owner":owner_tag,"source_entity":entity_tag,"native_model":model_tag,"model_slot":model_slot,"plates_slot":plates_slot,"parent":"parent","companion":"parent-companion","nodes":g.nodes,"native_draw_parts":mesh.groups.len(),"vertices":mesh.positions.len(),"triangles":mesh.groups.iter().filter(|(key,_)|matches!(mesh.surfaces[key].stage,0|2|8)).map(|g|g.1.len()).sum::<usize>(),"appearance":"Translated Marathon pixel programs, authored material inputs and native render passes","materials":materials,"omitted_passes":mesh.omitted,"animation":"Static source assemblies attached to native weapon root. Native donor gameplay and whole-weapon animation.","installable":false});
     let mut result = result;
     result["source"] = json!("marathon");
+    result["material_inputs"] = json!(MaterialInputs::default());
+    let item = native.tag(hash(&template, "item_tag")?, Some(0x80807bea))?;
+    let slot =
+        match item.u8(sundial::package_authoring::investment_schema::ITEM_INVENTORY_SLOT_OFFSET)? {
+            0 => "kinetic",
+            1 => "energy",
+            2 => "power",
+            _ => anyhow::bail!("Native weapon has an unsupported inventory slot"),
+        };
+    result["inventory_slot"] = match entry["recipe"]["overrides"].get("inventory_slot") {
+        Some(Value::String(slot)) if matches!(slot.as_str(), "kinetic" | "energy" | "power") => {
+            json!(slot)
+        }
+        None | Some(Value::Null) => json!(slot),
+        _ => anyhow::bail!("Imported weapon has an unsupported inventory slot"),
+    };
     write_json(&root.join("asset-graph.json"), &result)?;
     // Portable review mesh produced from exactly the geometry written to the graph.
     let mut obj = String::new();
@@ -235,7 +253,7 @@ pub fn prepare(plan: &Path, packages: &Path, native_packages: &Path, out: &Path)
             .cloned()
             .map(serde_json::from_value)
             .transpose()?
-            .unwrap_or_default();
+            .unwrap_or_else(|| crate::artwork::Settings::for_graph(&report, &entry["recipe"]));
         crate::graph::record_converter_revision(&working.join(slug).join("graph"))?;
         crate::artwork::prepare(&working.join(slug).join("graph"), native_packages, settings)?;
         if let Some(recipe) = entry.get("recipe") {

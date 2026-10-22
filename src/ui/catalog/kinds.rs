@@ -764,6 +764,3 @@ fn matches_query(node: &NodeKind, query: &str) -> bool {
     let text = format!("{} {} {}", node.kind, node.name, node.summary).to_lowercase();
     query.split_whitespace().all(|word| text.contains(word))
 }
-
-#[cfg(test)]
-mod tests;

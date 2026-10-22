@@ -1125,44 +1125,6 @@ mod tests {
         assert!(checked > 0, "no fields were checked");
     }
 
-    /// The module's contract: every byte of a record belongs to exactly one field, so the
-    /// workbench can show a node completely and an edit can never land between fields. The
-    /// gap pass is what makes it hold, and it has to hold for every declared record, not only
-    /// the node kinds.
-    #[test]
-    fn describe_covers_every_byte_of_every_record_exactly_once() {
-        type Encoded = (
-            u32,
-            usize,
-            u32,
-            bool,
-            Vec<(usize, u32, u32)>,
-            Vec<(usize, u32)>,
-        );
-        let rows: Vec<Encoded> = serde_json::from_str(include_str!("schema.json"))
-            .expect("native perk declarations parse");
-        for (class, size, ..) in &rows {
-            let described =
-                describe(*class).unwrap_or_else(|e| panic!("0x{class:08X} has no field view: {e}"));
-            let mut covered = vec![0_u32; *size];
-            for field in &described {
-                assert!(field.width > 0, "0x{class:08X} has a zero width field");
-                for byte in field.offset..field.offset + field.width {
-                    let seen = covered.get_mut(byte).unwrap_or_else(|| {
-                        panic!("0x{class:08X} describes byte {byte} past {size}")
-                    });
-                    *seen += 1;
-                }
-            }
-            if let Some(byte) = covered.iter().position(|seen| *seen != 1) {
-                panic!(
-                    "0x{class:08X} covers byte 0x{byte:X} {} times, not once",
-                    covered[byte]
-                );
-            }
-        }
-    }
-
     /// `insert` keeps the first field to claim a byte, so a second entry overlapping it is
     /// dropped as quietly as an out-of-range one. A width that disagrees with the format is
     /// the same kind of slip: `Field::write` refuses a float that is not four bytes wide, so

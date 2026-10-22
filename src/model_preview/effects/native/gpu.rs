@@ -10,6 +10,7 @@ pub(in crate::model_preview) fn source(model: &Model, vertex: bool) -> String {
     }
     text.push_str(cube::GLSL);
     text.push_str(layered::GLSL);
+    text.push_str(include_str!("image/sample.glsl"));
     sampling_source(model, &mut text, vertex);
     for (index, material) in model.effects.iter().enumerate() {
         let Some(native) = &material.native else {
@@ -59,21 +60,65 @@ fn sample_source(model: &Model, text: &mut String, vertex: bool) {
             if binding.vertex != vertex {
                 continue;
             }
-            sample_binding(
-                text,
-                unit,
-                native.texture_unit(unit),
-                binding,
-                binding.sampler.and_then(|i| material.samplers.get(i)),
-            );
+            for (&register, &row) in &binding.sampler_rows {
+                writeln!(text, "if(samplerIndex=={register}){{").unwrap();
+                sample_binding(
+                    text,
+                    unit,
+                    native.texture_unit(unit),
+                    binding,
+                    material.samplers.get(row),
+                );
+                text.push_str("}\n");
+            }
         }
         text.push_str("}\n");
     }
     text.push_str("return uvec4(0u);}\n");
 }
 
-/// One binding's read in `nSample`: a scene constant, nothing for depth and masks, or the
-/// texture in texture unit `unit` with a neutral value when it is absent.
+/// A scene input's read in `nSample`: the sky, lighting, scene normal and colour, a scene
+/// constant, or nothing for depth and masks. Returns false for a material texture.
+fn scene_binding(text: &mut String, texture: usize, binding: &Binding) -> bool {
+    let slot = binding.slot;
+    match binding.role {
+        Role::Sky => {
+            writeln!(text, "if(resource=={slot}){{vec2 p=uv.xy*2.0-1.0;float r=min(dot(p,p),1.0);vec3 direction=vec3(p*2.0*sqrt(1.0-r),1.0-2.0*r);float light=max(0.0,uFill+uKey*0.25+dot(transpose(uRotate)*uKeyDir*(uKey*0.5),direction));return floatBitsToUint(vec4(vec3(light),1.0));}}").unwrap();
+        }
+        Role::Irradiance => {
+            writeln!(text, "if(resource=={slot})return floatBitsToUint(vec4(transpose(uRotate)*uKeyDir*(uKey*0.5),uFill+uKey*0.25));").unwrap();
+        }
+        Role::SunVisibility => {
+            writeln!(
+                text,
+                "if(resource=={slot})return floatBitsToUint(vec4(0.0));"
+            )
+            .unwrap();
+        }
+        Role::SceneNormal => {
+            let sampler = SAMPLERS[texture];
+            writeln!(text, "if(resource=={slot}){{vec2 p=vec2(uv.x,1.0-uv.y)+vec2(offset.x,-offset.y)/vec2(textureSize({sampler},0));return floatBitsToUint(textureLod({sampler},p,0.0));}}").unwrap();
+        }
+        Role::SceneColor => {
+            let sampler = SAMPLERS[texture];
+            writeln!(text, "if(resource=={slot}){{vec2 p=vec2(uv.x,1.0-uv.y)+vec2(offset.x,-offset.y)/vec2(textureSize({sampler},0));vec4 color=textureLod({sampler},p,0.0);return floatBitsToUint(vec4(color.rgb/max(uExposure,1e-8),1.0));}}").unwrap();
+        }
+        Role::Scene => {
+            let value = if slot == 16 { 1 } else { 0 };
+            writeln!(
+                text,
+                "if(resource=={slot})return floatBitsToUint(vec4({value}.0));"
+            )
+            .unwrap();
+        }
+        Role::Depth | Role::Mask => {}
+        _ => return false,
+    }
+    true
+}
+
+/// One binding's read in `nSample`: a scene input, or the texture in texture unit `unit` with a
+/// neutral value when it is absent.
 fn sample_binding(
     text: &mut String,
     unit: usize,
@@ -81,17 +126,7 @@ fn sample_binding(
     binding: &Binding,
     settings: Option<&texture::Sampler>,
 ) {
-    if matches!(binding.role, Role::Scene) {
-        writeln!(
-            text,
-            "if(resource=={})return floatBitsToUint(vec4({}.0));",
-            binding.slot,
-            if binding.slot == 16 { 1 } else { 0 }
-        )
-        .unwrap();
-        return;
-    }
-    if matches!(binding.role, Role::Depth | Role::Mask) {
+    if scene_binding(text, texture, binding) {
         return;
     }
     let sampler = SAMPLERS[texture];
@@ -196,7 +231,16 @@ fn sample_image(
     } else {
         ("floor(lod+0.5)", "floor(lod+0.5)", "0.0")
     };
-    writeln!(text,"float low={low},high={high},blend={blend};vec4 result=vec4(0.0);for(int tap=0;tap<16;tap++){{if(tap>=taps)break;vec2 p=uv.xy+direction*((float(tap)+0.5)/float(taps)-0.5);vec2 a=p+vec2(offset.xy)/vec2(textureSize({sampler},int(low)));vec2 b=p+vec2(offset.xy)/vec2(textureSize({sampler},int(high)));result+=mix(textureLod({sampler},a,low),textureLod({sampler},b,high),blend)/float(taps);}}return floatBitsToUint(result);}}").unwrap();
+    let address = |mode| match mode {
+        texture::AddressMode::Wrap => 1,
+        texture::AddressMode::Mirror => 2,
+        texture::AddressMode::Clamp => 3,
+        texture::AddressMode::Border => 4,
+        texture::AddressMode::MirrorOnce => 5,
+    };
+    let border = settings.border.map(|v| v / 255.0);
+    writeln!(text, "ivec2 modes=ivec2({},{});vec4 border=vec4({:.9},{:.9},{:.9},{:.9});bool linear=({}&(lod<=0.0?4:16))!=0;", address(settings.u), address(settings.v), border[0], border[1], border[2], border[3], settings.filter.unwrap()).unwrap();
+    writeln!(text,"float low={low},high={high},blend={blend};vec4 result=vec4(0.0);for(int tap=0;tap<16;tap++){{if(tap>=taps)break;vec2 p=uv.xy+direction*((float(tap)+0.5)/float(taps)-0.5);result+=mix(nImageLevel({sampler},int(low),p,offset.xy,modes,border,linear),nImageLevel({sampler},int(high),p,offset.xy,modes,border,linear),blend)/float(taps);}}return floatBitsToUint(result);}}").unwrap();
 }
 
 fn size_source(model: &Model, text: &mut String, vertex: bool) {
@@ -207,7 +251,12 @@ fn size_source(model: &Model, text: &mut String, vertex: bool) {
                 if binding.vertex != vertex {
                     continue;
                 }
-                if matches!(binding.role, Role::Scene) {
+                if matches!(
+                    binding.role,
+                    Role::Irradiance | Role::SunVisibility | Role::Sky
+                ) {
+                    writeln!(text, "if(uNativeIndex=={index}&&resource=={})return mip==0?uvec4(1u,1u,0u,1u):uvec4(0u,0u,0u,1u);", binding.slot).unwrap();
+                } else if matches!(binding.role, Role::Scene) {
                     writeln!(
                         text,
                         "if(uNativeIndex=={index}&&resource=={})return uvec4({}u);",
@@ -266,7 +315,21 @@ fn load_source(model: &Model, text: &mut String, vertex: bool) {
                 text.push_str("return nSceneLoad(resource,position,offset);}\n");
                 continue;
             }
-            if matches!(binding.role, Role::Scene) || binding.cube.is_some() {
+            if matches!(binding.role, Role::SceneNormal) {
+                let sampler = SAMPLERS[native.texture_unit(unit)];
+                writeln!(text, "ivec2 size=textureSize({sampler},0);ivec2 p=position.xy+offset.xy;if(position.w!=0||any(lessThan(p,ivec2(0)))||any(greaterThanEqual(p,size)))return uvec4(0u);return floatBitsToUint(texelFetch({sampler},ivec2(p.x,size.y-1-p.y),0));}}").unwrap();
+                continue;
+            }
+            if matches!(binding.role, Role::SceneColor) {
+                let sampler = SAMPLERS[native.texture_unit(unit)];
+                writeln!(text, "ivec2 size=textureSize({sampler},0);ivec2 p=position.xy+offset.xy;if(position.w!=0||any(lessThan(p,ivec2(0)))||any(greaterThanEqual(p,size)))return uvec4(0u);vec4 color=texelFetch({sampler},ivec2(p.x,size.y-1-p.y),0);return floatBitsToUint(vec4(color.rgb/max(uExposure,1e-8),1.0));}}").unwrap();
+                continue;
+            }
+            if matches!(
+                binding.role,
+                Role::Scene | Role::Irradiance | Role::SunVisibility | Role::Sky
+            ) || binding.cube.is_some()
+            {
                 text.push_str("return uvec4(0u);}\n");
                 continue;
             }
@@ -288,17 +351,23 @@ fn load_source(model: &Model, text: &mut String, vertex: bool) {
 }
 
 fn lod_source(model: &Model, text: &mut String, vertex: bool) {
-    text.push_str("vec4 nLod(int resource,vec4 direction){\n");
+    text.push_str("vec4 nLod(int resource,int samplerIndex,vec4 direction){\n");
     for (index, material) in model.effects.iter().enumerate() {
         let Some(native) = &material.native else {
             continue;
         };
-        for binding in &native.bindings {
+        for (unit, binding) in native.bindings.iter().enumerate() {
             if vertex || binding.vertex {
                 continue;
             }
             if let Some(cube) = binding.cube {
                 writeln!(text,"if(uNativeIndex=={index}&&resource=={})return nCubeLod(direction.xyz,dFdx(direction.xyz),-dFdy(direction.xyz),{},{});",binding.slot,cube.edge,cube.levels).unwrap();
+            } else if binding.layered.is_none() {
+                let texture = SAMPLERS[native.texture_unit(unit)];
+                for (&register, &row) in &binding.sampler_rows {
+                    let settings = &material.samplers[row];
+                    writeln!(text,"if(uNativeIndex=={index}&&resource=={}&&samplerIndex=={register}){{vec2 size=vec2(textureSize({texture},0));float raw=log2(max(max(length(dFdx(direction.xy)*size),length(dFdy(direction.xy)*size)),1e-20))+{:.9};return vec4(clamp(clamp(raw,{:.9},{:.9}),0.0,float(max(uNativePresent[{unit}]-1,0))),raw,0.0,0.0);}}",binding.slot,settings.mip_bias,settings.lod[0],settings.lod[1]).unwrap();
+                }
             }
         }
     }
@@ -355,6 +424,7 @@ fn vertex_source(model: &Model, text: &mut String) {
                 "NORMAL" => "vec4(normal,0.0)",
                 "TANGENT" => "aTangent",
                 "COLOR" => "aColor",
+                "SV_VERTEXID" => "uintBitsToFloat(uvec4(uint(aBasisData.y),0u,0u,0u))",
                 "BLENDWEIGHT" => "vec4(1.0,0.0,0.0,0.0)",
                 "BLENDINDICES" => {
                     if has_weights {
@@ -496,7 +566,12 @@ fn surface_source(model: &Model, text: &mut String) {
         pixel_inputs(text, &native.pixel);
         writeln!(text,"nProgram{index}(v,o);if(any(isnan(o[0]))||any(isinf(o[0]))||any(isnan(o[1]))||any(isinf(o[1]))||any(isnan(o[2]))||any(isinf(o[2])))return false;").unwrap();
         if native.decal {
-            text.push_str("coverage=clamp(1.0-o[0].w,0.0,1.0);if(coverage<=1e-8){coverage=0.0;return true;}o[0].rgb/=coverage;if(all(equal(o[1],vec4(0.0)))){o[1]=vec4(normalize(vNative[0].xyz)*0.375+vec3(0.5),0.0);}else{float alpha=clamp(1.0-o[1].w,0.0,1.0);if(alpha<=1e-8){coverage=0.0;return true;}o[1].rgb/=alpha;}o[2]=vec4(0.0,0.5,0.0,1.0);\n");
+            text.push_str("coverage=clamp(1.0-o[0].w,0.0,1.0);if(coverage<=1e-8){coverage=0.0;return true;}o[0].rgb/=coverage;if(all(equal(o[1],vec4(0.0)))){o[1]=vec4(normalize(vNative[0].xyz)*0.375+vec3(0.5),0.0);}else{float alpha=clamp(1.0-o[1].w,0.0,1.0);if(alpha<=1e-8){coverage=0.0;return true;}o[1].rgb/=alpha;}\n");
+            if native.full_decal {
+                text.push_str("float alpha=clamp(1.0-o[2].w,0.0,1.0);if(alpha<=1e-8){coverage=0.0;return true;}o[2].rgb/=alpha;o[2].w=1.0;\n");
+            } else {
+                text.push_str("o[2]=vec4(0.0,0.5,0.0,1.0);\n");
+            }
         }
         text.push_str("vec3 encoded=o[1].xyz-vec3(0.5);float radius=length(encoded);if(radius<1e-8)return false;albedo=max(o[0].rgb,vec3(0.0));normal=vec4(encoded/radius,1.0-clamp((radius-0.375)*8.0,0.0,1.0));metal=clamp(o[2].x,0.0,1.0);\n");
         if let Some(power) = native.ambient_power {
@@ -611,7 +686,9 @@ vec4 nConstant(int buffer,int index){
     if(buffer==0)return uEffectConstants[clamp(index,0,127)];
     if(buffer>=5&&buffer<=7)return uNativeDye[clamp(index,0,26)];
     if(buffer==2&&index==0)return vec4(0.0,1.0,0.0,0.0);
-    if(buffer==13&&index==1)return vec4(1.0);
+    if(buffer==8&&index==4)return vec4(0.0,0.0,0.5,0.5);
+    if(buffer==11&&index>=0&&index<4){vec4 row=vec4(0.0);row[index]=1.0;return row;}
+    if(buffer==13&&(index==0||index==1))return vec4(1.0);
     if(buffer==12){
         if(index==6)return vec4(uNativeDirection,0.0);
         if(index==7)return vec4(vNative[4].xyz+uNativeDirection*uNativeDistance,1.0);

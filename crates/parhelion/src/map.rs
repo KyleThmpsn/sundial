@@ -28,6 +28,8 @@ mod plan;
 mod private_match;
 #[cfg(feature = "d2-model-importer")]
 mod registry;
+#[cfg(feature = "d2-model-importer")]
+mod streaming;
 #[cfg(not(feature = "d2-model-importer"))]
 mod unsupported;
 #[cfg(feature = "d2-model-importer")]
@@ -124,9 +126,9 @@ pub struct MapSource {
     pub maps: PathBuf,
     /// The cache whose level becomes the map.
     pub map: String,
-    /// The zone sets of the cache's scenario whose structure BSPs the map loads, together. A
-    /// multiplayer level has one, and a campaign mission one for each stretch of the mission, so
-    /// a map of several stretches lists each. Players start in the first.
+    /// The selected zone sets in route order. Automatic source crossings partition a campaign
+    /// into connected native bubbles. Script-only variants stay with their preceding area.
+    /// A multiplayer level normally has one zone set. Players start in the first selected area.
     #[serde(default = "first_zone_set", skip_serializing_if = "is_first_zone_set")]
     pub zone_sets: Vec<usize>,
     /// A map variant (`.mvar`) of that cache, whose Forge objects and spawn points stand in for the

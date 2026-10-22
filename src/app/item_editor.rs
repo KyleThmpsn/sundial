@@ -23,8 +23,8 @@ mod tests;
 
 pub(crate) use super::components::{draw_lock_button, draw_trash_button, draw_unlock_button};
 pub(crate) use catalog_picker::{
-    catalog_item_tooltip, catalog_item_tooltip_available, catalog_item_tooltip_immediate,
-    draw_catalog_item_tooltip, draw_display_tooltip, draw_item_tooltip_with_icon,
+    AuthoredTooltip, authored_item_tooltip, catalog_item_tooltip, catalog_item_tooltip_available,
+    catalog_item_tooltip_immediate, draw_display_tooltip,
 };
 pub(crate) use definition_picker::{
     draw_definition_picker_with_open_request, draw_definition_picker_with_open_request_and_footer,
@@ -43,7 +43,7 @@ pub(crate) use model::{
     PickerHeight, PlugChoice, PlugPickerSnapshot,
 };
 #[cfg(test)]
-use numeric::{authored_item_level, effective_power_input_max, item_power_input_max};
+use numeric::authored_item_level;
 pub(crate) use numeric::{displayed_item_power, draw_level_and_quantity, new_inventory_item_level};
 pub(crate) use plug_picker::{
     SOCKET_PICKER_RESET_WIDTH, draw_plug_icon_picker, draw_plug_icon_picker_with_action,

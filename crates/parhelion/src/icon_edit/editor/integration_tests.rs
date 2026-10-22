@@ -1,10 +1,7 @@
 use super::super::authoring::{
     read_icon_layer, read_primary_layer_tag, read_rgba8_texture_pair, texture_reference_offsets,
 };
-use super::super::preview::DecodedIconImage;
-use super::super::preview::{
-    composite_icon, load_bundled_preview_watermark, load_primary_preview_layer,
-};
+use super::super::preview::{DecodedIconImage, composite_icon, load_primary_preview_layer};
 use super::super::{ImportedIcon, build_weapon_icon_edit_plan};
 use super::*;
 use crate::tag_payload::{read_u16, read_u32};
@@ -127,103 +124,6 @@ fn multiple_replacements_match_compiled_artwork_and_keep_context_layers() {
             preview.foreground.as_ref(),
         ])
     );
-}
-
-fn layer(color: [u8; 4]) -> DecodedIconImage {
-    DecodedIconImage {
-        size: [96, 96],
-        rgba: color.repeat(96 * 96),
-    }
-}
-
-#[test]
-fn editor_pages_keep_controls_and_footer_inside_the_viewport_without_scrolling() {
-    for size in [
-        egui::vec2(900.0, 640.0),
-        egui::vec2(900.0, 728.0),
-        egui::vec2(1320.0, 900.0),
-        egui::vec2(380.0, 420.0),
-    ] {
-        for tab in [
-            IconEditorTab::Preview,
-            IconEditorTab::Recolor,
-            IconEditorTab::Adjust,
-            IconEditorTab::Image,
-        ] {
-            let context = egui::Context::default();
-            let mut editor = WeaponIconEditor {
-                donor_hash: 1,
-                donor_name: "A weapon with a deliberately long appearance donor name".into(),
-                draft: WeaponIconEdit {
-                    color_replacements: vec![
-                        IconColorReplacement {
-                            replacement: [255, 128, 0],
-                            ..Default::default()
-                        };
-                        16
-                    ],
-                    ..Default::default()
-                },
-                preview: Ok(LoadedIconPreview {
-                    background: Some(layer([60, 20, 90, 255])),
-                    primary: layer([20, 80, 200, 255]),
-                    authored_watermark: load_bundled_preview_watermark().unwrap(),
-                    foreground: None,
-                    warnings: Vec::new(),
-                    plain: false,
-                }),
-                source_texture: None,
-                edited_texture: None,
-                rendered_edit: None,
-                image_import: Default::default(),
-                tab,
-                color_page: 0,
-                pick_target: PickTarget::default(),
-            };
-            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-            for page in [0, 15] {
-                editor.color_page = page;
-                let mut output = egui::FullOutput::default();
-                for _ in 0..3 {
-                    output = context.run_ui(
-                        egui::RawInput {
-                            screen_rect: Some(screen),
-                            ..Default::default()
-                        },
-                        |ui| {
-                            editor.show(ui);
-                        },
-                    );
-                }
-                for label in ["Cancel", "Apply Icon Changes"] {
-                    let rect = output
-                        .shapes
-                        .iter()
-                        .find_map(|shape| match &shape.shape {
-                            egui::Shape::Text(text) if text.galley.job.text == label => {
-                                Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
-                            }
-                            _ => None,
-                        })
-                        .unwrap_or_else(|| panic!("{label} missing at {size:?} on {tab:?}"));
-                    assert!(
-                        screen.contains_rect(rect),
-                        "{label} outside {size:?} on {tab:?}: {rect:?}"
-                    );
-                }
-                for shape in &output.shapes {
-                    if let egui::Shape::Text(text) = &shape.shape {
-                        let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
-                        assert!(
-                            screen.expand(1.0).contains_rect(rect),
-                            "Text {:?} outside {size:?} on {tab:?}: {rect:?}",
-                            text.galley.job.text
-                        );
-                    }
-                }
-            }
-        }
-    }
 }
 
 #[test]

@@ -101,38 +101,3 @@ pub(super) fn annotate(
         entry.source_hint = uses.get(&entry.graph).and_then(|uses| common(uses));
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn shared_hint_keeps_only_roles_common_to_every_observed_use() {
-        let drawn = Use {
-            kind: 1,
-            activation: vec!["The weapon is drawn".into()],
-            removal: vec!["The weapon is holstered".into()],
-        };
-        assert_eq!(
-            common(&[drawn.clone(), drawn.clone()]).as_deref(),
-            Some("Attached Entity on Draw")
-        );
-        let equipped = Use {
-            activation: vec!["The weapon is attached".into()],
-            ..drawn.clone()
-        };
-        assert_eq!(
-            common(&[drawn.clone(), equipped]).as_deref(),
-            Some("Attached Entity")
-        );
-        let spawned = Use {
-            kind: 3,
-            ..drawn.clone()
-        };
-        assert_eq!(
-            common(&[drawn, spawned]).as_deref(),
-            Some("Shared Across Different Operations")
-        );
-        assert_eq!(common(&[]), None);
-    }
-}

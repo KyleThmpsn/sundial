@@ -92,7 +92,11 @@ impl Settings {
             bytes: header.context("Init header missing")?,
             at: 0,
         };
-        ensure!(h.u32()? == version, "Init version mismatch");
+        let actual = h.u32()?;
+        ensure!(
+            actual == version,
+            "Wwise Init bank version is {actual}, expected {version}"
+        );
         ensure!(h.u32()? == hash("init"), "settings bank is not Init");
         let mut r = Read {
             bytes: body.context("Init settings missing")?,

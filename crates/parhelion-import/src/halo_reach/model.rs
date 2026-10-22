@@ -35,7 +35,13 @@ pub struct Primitive {
     pub part: usize,
     pub material: Option<usize>,
     pub flags: u16,
+    /// MCC structure subparts and instance colorings select analytical lights separately from
+    /// their baked VMF samples. Zero disables the analytical term. None has no source selection.
+    pub analytical_light: Option<u32>,
     pub instance: Option<String>,
+    /// In a level, the scenario's structure BSPs whose loading draws it, bit `n` for the `n`th.
+    /// Zero draws it wherever the level draws.
+    pub bsps: u32,
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
 }
@@ -935,7 +941,9 @@ pub(super) fn draw(
         part,
         material: (material >= 0).then_some(material as usize),
         flags: c.u16(row + 18)?,
+        analytical_light: None,
         instance: None,
+        bsps: 0,
         vertices: used
             .into_iter()
             .map(|v| vertices[v as usize].clone())

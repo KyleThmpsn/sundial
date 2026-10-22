@@ -55,10 +55,30 @@ impl Assembly<'_> {
         symbol: &str,
         texture: super::super::texture::Texture,
     ) -> Result<String> {
-        let subtype = if texture.layers == 6 { 2 } else { 1 };
+        let subtype = if texture.depth > 1 {
+            3
+        } else if texture.layers == 6 {
+            2
+        } else {
+            1
+        };
         let template = self.template(32, subtype)?;
         let data_template = self.template(40, subtype)?;
-        let mut header = vec![0; 40];
+        // Preserve a checked native volume descriptor's topology flags. These are not the
+        // cube flag used by 2D resources, and a subtype alone does not establish its shape.
+        let mut header = if texture.depth > 1 {
+            let native = self.native.tag(template, None)?;
+            ensure!(
+                native.0.len() == 40
+                    && native.u16(12)? == 0xCAFE
+                    && native.u16(18)? > 1
+                    && native.u16(20)? == 1,
+                "Native volume texture template differs"
+            );
+            native.0.clone()
+        } else {
+            vec![0; 40]
+        };
         put(
             &mut header,
             0,
@@ -69,17 +89,21 @@ impl Assembly<'_> {
         for (at, value) in [
             (14, texture.width),
             (16, texture.height),
-            (18, 1),
+            (18, texture.depth),
             (20, texture.layers),
         ] {
             put(&mut header, at, &value.to_le_bytes())?;
         }
+        // A 4x4 footprint includes one complete BC block and every uncompressed pixel.
+        header[22] = u8::try_from(super::super::texture::surface(texture.format, 4, 4)?.1 / 2)?;
         header[23] = texture.mips;
-        header[25] = 1;
-        header[31] = 1;
-        header[32] = if texture.layers == 6 { 2 } else { 0 };
-        header[33] = 3;
-        header[34] = 1;
+        if texture.depth == 1 {
+            header[25] = 1;
+            header[31] = 1;
+            header[32] = if texture.layers == 6 { 2 } else { 0 };
+            header[33] = 3;
+            header[34] = 1;
+        }
         put(&mut header, 36, &u32::MAX.to_le_bytes())?;
         crate::tiger::texture::resident(&mut header, texture.bytes.len())?;
         let data = format!("{symbol}-data");
@@ -133,6 +157,10 @@ impl Assembly<'_> {
         let source = self.source.read(tag)?;
         let range = source.array_range(8, 1, Some(0x80800009))?;
         let raw = source.0.get(range).context("Source GPU program")?;
+        if self.bone_map.is_some() && stage == Stage::Vertex {
+            super::super::shader::rigid_indices(raw)
+                .with_context(|| format!("Source mapped vertex program {tag:08X}"))?;
+        }
         let mut code = if stage == Stage::Vertex {
             super::super::shader::skinning(raw)
                 .with_context(|| format!("Source vertex program {tag:08X}"))?

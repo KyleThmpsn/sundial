@@ -2,6 +2,7 @@
 use super::*;
 use parhelion_import::d2_mot::arrays;
 use serde_json::Value;
+mod bounds;
 mod character;
 mod crosshair;
 mod dyes;
@@ -404,6 +405,7 @@ fn graph_node(
         .map_err(|e| invalid(e.to_string()))?
     };
     if model {
+        bounds::repair(manager, TagHash(template), &mut payload)?;
         parhelion_import::d2_mot::audit::draws::declare_model_draw_indices(&mut payload)
             .map_err(|e| invalid(format!("Imported model draw indices: {e}")))?;
     }
@@ -569,6 +571,12 @@ fn apply_one(
             let mut nodes = Vec::with_capacity(json_nodes.len());
             let mut bound = parhelion_import::tiger::material::bind(&graph, folder)
                 .map_err(|e| invalid(format!("Imported model bindings: {e:#}")))?;
+            let inputs = spec
+                .and_then(|spec| spec.overrides.imported_graph.as_ref())
+                .filter(|reference| reference.directory == folder)
+                .and_then(|reference| reference.material_inputs.as_ref());
+            parhelion_import::marathon::inputs::bind(&graph, folder, inputs, &mut bound)
+                .map_err(|e| invalid(format!("Imported material inputs: {e:#}")))?;
             let models =
                 parhelion_import::model_symbols(&graph).map_err(|e| invalid(e.to_string()))?;
             for n in json_nodes {

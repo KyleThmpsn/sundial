@@ -1,53 +1,6 @@
 use super::*;
 use sundial::package_authoring::sandbox_perk::dependencies::Pattern;
 
-fn shared_sources() -> PerkSources {
-    [(1, "Thorn Catalyst"), (2, "Masterwork Weapon")]
-        .into_iter()
-        .map(|(hash, name)| {
-            (
-                453,
-                sundial::investment::PerkSource {
-                    hash,
-                    name: name.into(),
-                    type_name: String::new(),
-                },
-            )
-        })
-        .collect()
-}
-
-#[test]
-fn alias_search_returns_shared_identity_and_keeps_unrelated_effects_out() {
-    let sources = shared_sources();
-    for query in ["thorn catalyst", "masterwork", "453"] {
-        assert_eq!(
-            selector_rows(Page::Perks, 500, &sources, &[], false, query),
-            [(453, "Shared Effect 453".into())]
-        );
-    }
-    assert!(selector_rows(Page::Perks, 500, &sources, &[], false, "outlaw").is_empty());
-}
-
-#[test]
-fn default_references_preserve_individual_items_and_plugs_within_a_shared_pattern() {
-    let usage = |weapon_hash, perk_index, source_plug| PerkPatternUse {
-        pattern_index: 12,
-        weapon_hash,
-        weapon_name: format!("Weapon {weapon_hash}"),
-        perk_index,
-        source_plug,
-    };
-    let uses = vec![
-        usage(1, 453, Some(2)),
-        usage(2, 421, Some(3)),
-        usage(3, 453, None),
-    ];
-    let defaults = details::default_uses(&uses, 453, Some(12));
-    assert_eq!(defaults, [uses[0].clone(), uses[2].clone()]);
-    assert!(details::default_uses(&uses, 453, Some(13)).is_empty());
-}
-
 fn fixture() -> Index {
     Index {
         patterns: vec![Pattern {

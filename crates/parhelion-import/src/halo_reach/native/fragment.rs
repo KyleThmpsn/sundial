@@ -72,6 +72,7 @@ pub(super) fn build(
             paint: &BTreeMap::new(),
             lightmap: None,
             vertex_data: None,
+            statics: false,
         },
     )?;
     Ok((

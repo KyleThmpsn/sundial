@@ -115,7 +115,12 @@ fn curve(
 
 pub(super) fn convert(source: &Payload, native: &mut [u8], frames: usize) -> Result<Vec<Value>> {
     let mut report = Vec::new();
-    for (from, to, width) in [(0x20, 0x20, 1), (0x28, 0x28, 4), (0x50, 0x58, 1)] {
+    for (from, to, width) in [
+        (0x20, 0x20, 1),
+        (0x28, 0x28, 4),
+        (0x38, 0x38, 1),
+        (0x50, 0x58, 1),
+    ] {
         if source.u64(from)? == 0 {
             continue;
         }

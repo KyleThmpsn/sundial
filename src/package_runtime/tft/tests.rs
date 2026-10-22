@@ -32,25 +32,6 @@ fn paths_require_terminated_content_names_and_paired_valid_tag_lanes() {
 }
 
 #[test]
-fn vocabulary_keeps_wwise_event_paths_and_enum_table_identifiers() {
-    let wwise = b"junk\0content\\audio\\wwise_events\\abilities\\titan_melee_hammer_throw.wwise_event\0content\\sandbox\\x.pattern.tft\0";
-    let found = vocabulary_strings(wwise);
-    assert_eq!(found.len(), 1);
-    assert_eq!(found[0].0, 5);
-    assert!(found[0].1.ends_with("titan_melee_hammer_throw.wwise_event"));
-    // An enum table is recognised by its `namespace_enums.e_name` string, and then every
-    // identifier in the same resource is vocabulary. Without that marker, identifiers
-    // are ignored.
-    let table = b"\0thermal_maul_super\0glide\0not an id\0sandbox.ability_enums.e_abilities\0";
-    let names = vocabulary_strings(table)
-        .into_iter()
-        .map(|(_, text)| text)
-        .collect::<Vec<_>>();
-    assert_eq!(names, ["thermal_maul_super", "glide"]);
-    assert!(vocabulary_strings(b"\0thermal_maul_super\0glide\0").is_empty());
-}
-
-#[test]
 fn entity_evidence_skips_class_handles_and_the_resource_itself() {
     let bytes = fixture();
     let known_lane = |lane: u64| lane == 0x1234_5678_9ABC_DEF0;

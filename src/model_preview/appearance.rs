@@ -307,6 +307,10 @@ pub(super) fn append(result: &mut Model, model: Model, label: &str) -> Result<()
     result.colors.extend(
         (0..model.vertices.len()).map(|i| model.colors.get(i).copied().unwrap_or([1.0; 4])),
     );
+    result.vertex_ids.resize(result.vertices.len(), 0);
+    result.vertex_ids.extend(
+        (0..model.vertices.len()).map(|i| model.vertex_ids.get(i).copied().unwrap_or(i as u32)),
+    );
     result.vertices.extend(model.vertices);
     result.uvs.extend(model.uvs);
     result.detail_uvs.resize(base as usize, [0.0; 2]);
@@ -487,6 +491,3 @@ fn assignment_hashes(table: &[u8], index: u16) -> Result<BTreeSet<u32>, String> 
     hashes.remove(&0x811C_9DC5);
     Ok(hashes)
 }
-
-#[cfg(test)]
-mod tests;

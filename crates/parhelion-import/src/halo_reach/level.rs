@@ -23,6 +23,7 @@ pub mod ambience;
 mod collision;
 mod decals;
 mod decorators;
+pub(crate) mod lighting;
 pub mod lightmap;
 pub mod mission;
 pub mod native;
@@ -30,6 +31,7 @@ pub mod objectives;
 mod objects;
 pub mod picture;
 pub mod spawn;
+pub mod streaming;
 pub mod variant;
 pub mod volumes;
 mod water;
@@ -525,20 +527,34 @@ pub fn read(cache: &Cache, pages: &mut Pages, tag: &Tag) -> Result<Level> {
     read_all(cache, pages, std::slice::from_ref(tag))
 }
 
-/// Reads structure BSPs `tags` as one level. A shader two BSPs share becomes one material, and
-/// one lightmap atlas holds every BSP's lightmap image and lighting probes.
+/// Reads structure BSPs `tags` as one level. Identical source material selections share an
+/// identity across BSPs, including a decal's layer and sprite. One lightmap atlas holds every
+/// BSP's lightmap image and lighting probes.
 pub fn read_all(cache: &Cache, pages: &mut Pages, tags: &[Tag]) -> Result<Level> {
+    read_areas(cache, pages, tags, &[(0..tags.len()).collect()])
+}
+
+/// Reads structure BSPs `tags` as one level whose `areas`, each the indices in `tags` of the BSPs
+/// that load together, budget their decorators apart (`decorators::place`). Each primitive
+/// names its own BSP, so an area draws only what its BSPs hold.
+pub fn read_areas(
+    cache: &Cache,
+    pages: &mut Pages,
+    tags: &[Tag],
+    areas: &[Vec<usize>],
+) -> Result<Level> {
     let lut = lightmap::direction_lut(cache, pages)?;
     let mut parts = Vec::with_capacity(tags.len());
     for (bsp, tag) in tags.iter().enumerate() {
         parts.push(read_bsp(cache, pages, tag, bsp, lut.as_deref())?);
     }
-    let structure = parts
-        .iter()
-        .flat_map(|part| &part.primitives)
-        .map(|primitive| primitive.indices.len() / 3)
-        .sum();
-    decorators::place(cache, pages, &mut parts, structure)?;
+    decorators::place(cache, pages, &mut parts, areas)?;
+    for (part, tag) in parts.iter_mut().zip(tags) {
+        let bsps = bsp_mask(cache, std::slice::from_ref(tag))?;
+        for primitive in &mut part.primitives {
+            primitive.bsps = bsps;
+        }
+    }
     let mut levels = [(0f64, 0usize); 3];
     for part in &parts {
         for (total, (sum, count)) in levels.iter_mut().zip(part.levels) {
@@ -572,10 +588,9 @@ pub fn read_all(cache: &Cache, pages: &mut Pages, tags: &[Tag]) -> Result<Level>
         let mut indices = Vec::with_capacity(part.materials.len());
         for material in part.materials {
             let shared = material.tag.as_ref().and_then(|tag| {
-                level
-                    .materials
-                    .iter()
-                    .position(|known| known.tag.as_ref() == Some(tag))
+                level.materials.iter().position(|known| {
+                    known.tag.as_ref() == Some(tag) && known.decal == material.decal
+                })
             });
             indices.push(shared.unwrap_or_else(|| {
                 level.materials.push(material);
@@ -763,10 +778,15 @@ fn read_bsp(
             (None, None) => colorings.get_mut(index).and_then(Option::take),
             _ => None,
         };
-        let coloring_probe = coloring.map(|texel| add_probe(&mut probes, &mut levels[2], texel));
+        let coloring_light = coloring.as_ref().map(|coloring| coloring.analytical_light);
+        let coloring_probe =
+            coloring.map(|coloring| add_probe(&mut probes, &mut levels[2], coloring.texel));
         for primitive in &meshes[instance.mesh] {
             let mut placed = primitive.clone();
             placed.instance = Some(format!("instance{index}"));
+            if let Some(identifier) = coloring_light {
+                placed.analytical_light = Some(identifier);
+            }
             if let Some(coordinates) = &coordinates {
                 apply(&mut placed, coordinates)?;
             }
@@ -846,6 +866,7 @@ fn read_mesh(
     materials: usize,
 ) -> Result<(Vec<Primitive>, Option<Bounds>)> {
     let Some(Section {
+        row,
         vertices,
         indices,
         restart,
@@ -858,24 +879,58 @@ fn read_mesh(
     };
     let mut primitives = Vec::new();
     let water = water::Coordinates::read(cache, pages, geometry, mesh, &parts)?;
+    let mut subparts = BTreeMap::<usize, Vec<usize>>::new();
+    for subpart in cache.block(row + 12, 16)? {
+        let parent = usize::try_from(cache.i16(subpart + 8)?)?;
+        ensure!(parent < parts.len(), "Subpart parent outside mesh");
+        subparts.entry(parent).or_default().push(subpart);
+    }
     for (index, &part) in parts.iter().enumerate() {
-        let mut primitive = model::draw(
-            cache,
-            mesh,
-            index,
-            part,
-            part + 4,
-            topology,
-            &indices,
-            restart,
-            &vertices,
-            materials,
-        )?;
-        if let Some(water) = &water {
-            water.apply(cache, part, topology, &indices, &mut primitive)?;
-        }
-        if !primitive.indices.is_empty() {
-            primitives.push(primitive);
+        let ranges = subparts.remove(&index).unwrap_or_default();
+        // A non-lightmapped section may have no subparts. Required subpart ranges must cover
+        // the parent exactly, since silently drawing the parent would erase light selection.
+        let ranges = if ranges.is_empty() {
+            vec![(part + 4, None)]
+        } else {
+            let first = cache.u32(part + 4)?;
+            let end = first
+                .checked_add(cache.u32(part + 8)?)
+                .context("Part range overflow")?;
+            let mut next = first;
+            let mut ranges = ranges
+                .into_iter()
+                .map(|row| {
+                    Ok((
+                        cache.u32(row)?,
+                        cache.u32(row + 4)?,
+                        row,
+                        cache.u32(row + 12)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            ranges.sort_unstable_by_key(|range| range.0);
+            for &(start, count, _, _) in &ranges {
+                ensure!(start == next, "Subpart ranges overlap or leave a gap");
+                next = start.checked_add(count).context("Subpart range overflow")?;
+                ensure!(next <= end, "Subpart exceeds parent part");
+            }
+            ensure!(next == end, "Subparts do not cover parent part");
+            ranges
+                .into_iter()
+                .map(|(_, _, row, id)| (row, Some(id)))
+                .collect()
+        };
+        for (range, analytical_light) in ranges {
+            let mut primitive = model::draw(
+                cache, mesh, index, part, range, topology, &indices, restart, &vertices, materials,
+            )?;
+            primitive.analytical_light = analytical_light;
+            if let Some(water) = &water {
+                water.apply(cache, part, range, topology, &indices, &mut primitive)?;
+            }
+            if !primitive.indices.is_empty() {
+                primitives.push(primitive);
+            }
         }
     }
     Ok((primitives, Some(vertex_bounds(&vertices))))
@@ -902,7 +957,7 @@ struct Sources {
     lightmap_streams: Vec<Option<usize>>,
     per_vertex: Vec<Option<lightmap::PerVertex>>,
     cluster_lighting: Vec<Option<lightmap::PerVertex>>,
-    colorings: Vec<Option<lightmap::Texel>>,
+    colorings: Vec<Option<lightmap::Coloring>>,
 }
 
 impl Sources {

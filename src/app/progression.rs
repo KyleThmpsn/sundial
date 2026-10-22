@@ -6,8 +6,6 @@ use std::{
 use eframe::egui;
 use serde_json::Value;
 
-#[cfg(test)]
-use crate::catalog::ProgressionContextKind;
 use crate::{
     catalog::{
         Catalog, ObjectiveDef, ProgressionContextDef, ProgressionDefinition, ProgressionScope,

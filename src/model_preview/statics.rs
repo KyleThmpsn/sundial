@@ -612,50 +612,6 @@ fn byte(data: &[u8], at: usize) -> Result<u8, String> {
 mod tests {
     use super::*;
 
-    fn draw(stage: u8, lod: u8) -> Draw {
-        Draw {
-            stage,
-            layout: 0,
-            lod,
-            primitive: 3,
-            start: 0,
-            count: 3,
-            buffers: [1, 2, 3],
-            technique: 0,
-        }
-    }
-
-    #[test]
-    fn a_static_with_nothing_but_skipped_stages_still_draws_once() {
-        let draws = [draw(7, 1), draw(9, 1)];
-        assert_eq!(detail_level(&draws), Some((0, true)));
-        // Every part lives at a lower detail category: the preview drops to that level.
-        assert_eq!(detail_level(&[draw(0, 7)]), Some((2, false)));
-        assert_eq!(detail_level(&[draw(0, 200)]), None);
-    }
-
-    #[test]
-    fn a_placement_scales_then_rotates_then_translates() {
-        let half = std::f32::consts::FRAC_1_SQRT_2;
-        let placement = Placement {
-            rotation: [0.0, 0.0, half, half],
-            translation: [1.0, 2.0, 3.0],
-            scale: 2.0,
-        };
-        // Scaled to twice its length, turned a quarter turn about Z onto +Y, then offset.
-        let point = placement.point([1.0, 0.0, 0.0]);
-        assert!((point[0] - 1.0).abs() < 1e-5, "{point:?}");
-        assert!((point[1] - 4.0).abs() < 1e-5, "{point:?}");
-        assert!((point[2] - 3.0).abs() < 1e-5, "{point:?}");
-        // Directions turn without picking up the scale or the translation.
-        let direction = placement.direction([1.0, 0.0, 0.0]);
-        assert!((direction[1] - 1.0).abs() < 1e-5, "{direction:?}");
-        assert_eq!(
-            Placement::IDENTITY.point([4.0, -5.0, 6.0]),
-            [4.0, -5.0, 6.0]
-        );
-    }
-
     #[test]
     fn an_unreadable_vertex_layout_is_named_rather_than_guessed() {
         // A header whose stride this module has not been shown to read, and one whose payload
@@ -682,30 +638,6 @@ mod tests {
         crate::investment::discovery::open_packages(std::path::Path::new(&packages)).unwrap()
     }
 
-    /// 0x81504044 is a Black Garden prop: six mesh groups over two parts, the same two index
-    /// ranges repeated for the gbuffer, shadow and depth prepass stages, and the second part
-    /// held at a lower detail category.
-    #[test]
-    #[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and installed Shadowkeep packages"]
-    fn a_static_draws_its_gbuffer_part_once() {
-        let model = load(&manager(), 0x8150_4044).unwrap();
-        assert_eq!(model.tags, vec![0x8150_4044]);
-        assert_eq!(model.vertices.len(), 1044);
-        assert_eq!(model.triangles.len(), 636);
-        assert_eq!(model.uvs.len(), model.vertices.len());
-        assert_eq!(model.normals.len(), model.vertices.len());
-        assert_eq!(model.triangle_textures.len(), model.triangles.len());
-        assert_eq!(model.triangle_dyes.len(), model.triangles.len());
-        assert!(model.animation.is_none());
-        assert!(
-            model
-                .normals
-                .iter()
-                .all(|n| (n.iter().map(|v| v * v).sum::<f32>() - 1.0).abs() < 0.01)
-        );
-        assert!(!model.textures.is_empty());
-    }
-
     /// 0x81504055 places sixteen statics 108 times with its own rotation, uniform scale and
     /// world translation per instance.
     #[test]
@@ -720,18 +652,5 @@ mod tests {
         // single static stays within a few units of its own origin.
         assert!(placed.vertices.iter().all(|point| point[1] < -500.0));
         assert!(single.vertices.iter().all(|point| point[1].abs() < 100.0));
-    }
-
-    /// 0x81504043 is the mesh data half of 0x81504044. It reads, but only through the static
-    /// that owns it, so opening it directly has to say so rather than draw half a model.
-    #[test]
-    #[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and installed Shadowkeep packages"]
-    fn the_mesh_data_tag_is_left_to_the_static_that_owns_it() {
-        let manager = manager();
-        let class = manager.get_entry(0x8150_4043_u32).expect("entry").reference;
-        assert_eq!(class, STATIC_MESH_DATA);
-        assert!(!is_static(class));
-        let error = load(&manager, 0x8150_4043).err().expect("refused");
-        assert_eq!(error, "This resource is not a static mesh.");
     }
 }

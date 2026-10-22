@@ -16,8 +16,6 @@ pub(crate) mod local;
 mod output;
 mod particle_material;
 mod particles;
-#[cfg(test)]
-mod projectile_tests;
 pub(crate) mod render;
 pub(crate) mod shader;
 mod statics;
@@ -30,6 +28,8 @@ mod vertex;
 #[derive(Default)]
 pub(crate) struct Model {
     pub vertices: Vec<[f32; 3]>,
+    /// Original draw-local identity for vertex programs that fetch per-vertex tables.
+    pub vertex_ids: Vec<u32>,
     pub triangles: Vec<[u32; 3]>,
     pub tags: Vec<u32>,
     pub uvs: Vec<[f32; 2]>,

@@ -12,7 +12,7 @@ use super::*;
 pub(super) const MULTILAYER_FUNCTIONS: &str = "float3 multilayerIllumination(Texture2D<float4> map,SamplerState s,float2 uv,float2 scale,float3 toCamera,float3 tangent,float3 bitangent,float depth,float aspect,float layers4,float darken,float contrast){float3 view=normalize(toCamera);float count=4*layers4;float2 step=float2(dot(tangent,view)*aspect,dot(bitangent,view))*scale*depth/count;float3 sum=0;float weight=1;[loop]for(int i=0;i<(int)count;i++){sum+=weight*map.Sample(s,uv).rgb;uv-=step;weight*=darken;}return pow(max(sum/count,0.000001),contrast);}";
 
 /// The texture, sampler and coordinates of a `Map{slot}.Sample(sampler,uv)` sample expression.
-fn sample_parts(sample: &str) -> Option<(&str, &str, &str)> {
+pub(super) fn sample_parts(sample: &str) -> Option<(&str, &str, &str)> {
     let (map, rest) = sample.split_once(".Sample(")?;
     let (sampler, uv) = rest.split_once(',')?;
     let uv = uv.strip_suffix(')')?;
@@ -52,6 +52,13 @@ impl<'a> Surface<'a> {
 
     pub fn constant(&self, name: &str) -> Option<[f32; 4]> {
         self.constants.get(name).copied()
+    }
+
+    pub fn boolean(&self, name: &str) -> Option<bool> {
+        self.material
+            .properties
+            .iter()
+            .find_map(|property| property.booleans.get(name).copied())
     }
 
     pub fn value(&self, name: &str, default: [f32; 4]) -> String {
@@ -232,13 +239,21 @@ impl<'a> Surface<'a> {
             };
         }
         if self.transparent() {
-            if self
+            if let Some(finish) = decal::multiplication(self.material) {
+                finish
+            } else if self
                 .material
                 .options
                 .get("blend_mode")
                 .is_some_and(|v| v == "additive")
             {
-                "o0=float4(emission,0);".into()
+                if self.material.decal() {
+                    "o0=float4(albedo.rgb,0);".into()
+                } else {
+                    "o0=float4(emission,0);".into()
+                }
+            } else if decal::premultiplied(self.material) {
+                "o0=float4(albedo.rgb+emission*saturate(albedo.a),saturate(albedo.a));".into()
             } else {
                 "o0=float4((albedo.rgb+emission)*saturate(albedo.a),saturate(albedo.a));".into()
             }

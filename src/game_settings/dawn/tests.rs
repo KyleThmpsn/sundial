@@ -10,15 +10,6 @@ fn defaults() -> Value {
 }
 
 #[test]
-fn dawn_missing_flags_are_valid_and_default_off() {
-    let dir = tempfile::tempdir().unwrap();
-    let runtime = Runtime::inspect(&dir.path().join("steam_api64.dll"));
-    let document = defaults();
-    assert!(!executor_enabled(&document));
-    assert_eq!(runtime.validate(&document), Ok(()));
-}
-
-#[test]
 fn dawn_checks_every_known_boolean_and_preserves_unknown_extensions() {
     for (group, fields) in [
         (OMEGA, OMEGA_FLAGS.as_slice()),

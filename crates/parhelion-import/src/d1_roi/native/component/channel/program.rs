@@ -11,7 +11,11 @@ pub(super) struct Program {
     pub(super) flags: u16,
 }
 
-fn validate(code: &[u8], constants: &[[u32; 4]], inputs: usize) -> Result<()> {
+pub(in crate::d1_roi::native::component) fn validate(
+    code: &[u8],
+    constants: &[[u32; 4]],
+    inputs: usize,
+) -> Result<()> {
     let mut instructions = Vec::new();
     let mut at = 0;
     while at < code.len() {

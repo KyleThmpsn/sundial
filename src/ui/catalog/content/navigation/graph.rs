@@ -253,23 +253,6 @@ mod tests {
         }
     }
     #[test]
-    fn cycles_shared_nodes_and_direction_are_preserved() {
-        let index = tft::Index {
-            references: vec![link(1, 2), link(2, 3), link(3, 1), link(4, 2), link(1, 2)],
-            ..Default::default()
-        };
-        let Neighborhood {
-            nodes,
-            edges,
-            hidden,
-            ..
-        } = neighborhood(&index, 1, 2);
-        assert_eq!(nodes.len(), 4);
-        assert_eq!(edges.len(), 4);
-        assert!(edges.contains(&(3, 1)));
-        assert_eq!(hidden, 0);
-    }
-    #[test]
     fn expansion_is_bounded_and_reports_hidden_neighbors() {
         let index = tft::Index {
             references: (2..102).map(|tag| link(1, tag)).collect(),

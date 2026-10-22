@@ -18,6 +18,7 @@ pub(crate) struct Program {
     /// The stage's sampler bindings: each pixel sampler register and the sampler table row
     /// it takes.
     samplers: Vec<(usize, usize)>,
+    textures: Vec<(usize, u8, u8)>,
 }
 #[derive(Clone)]
 enum Op {
@@ -44,6 +45,25 @@ enum Op {
 const FRAME: u8 = 1;
 
 impl Program {
+    /// Evaluate a closed numeric expression through the same native arithmetic as
+    /// material execution. Renderer inputs, clocks and initial-output reads are not constants.
+    pub(crate) fn constant(code: &[u8], constants: &[Vector]) -> Option<Vector> {
+        let mut stored = code.to_vec();
+        stored.extend([0x43, 0]);
+        let program = Self::decode(&stored, constants.to_vec(), &[], Ok(&[]), None, 1).ok()??;
+        if !program.samplers.is_empty()
+            || !program.textures.is_empty()
+            || program.ops[..program.ops.len().checked_sub(1)?]
+                .iter()
+                .any(|op| matches!(op, Op::Time | Op::Value(_) | Op::Output(_) | Op::Store(_)))
+        {
+            return None;
+        }
+        let mut output = [[0.0; 4]];
+        program.evaluate(&mut output, 0.0, true).ok()?;
+        Some(output[0])
+    }
+
     pub(crate) fn animated(&self) -> bool {
         self.ops.iter().any(|op| matches!(op, Op::Time))
     }
@@ -111,6 +131,7 @@ impl Program {
         let mut bytes = code.iter().copied();
         let mut ops = Vec::new();
         let mut samplers = Vec::new();
+        let mut textures = Vec::new();
         while let Some(code) = bytes.next() {
             let mut arg = || {
                 bytes
@@ -186,9 +207,13 @@ impl Program {
                         return Err("Invalid effect texture binding".into());
                     }
                     let slot = arg()?;
-                    if !matches!((source, element, slot), (3, 7, 0x25) | (3, 15, 0x23)) {
+                    if !matches!(
+                        (source, element, slot),
+                        (3, 7, 0x25) | (3, 15, 0x23) | (3, 19, 0x20..=0x3f) | (44, 1, 0x20..=0x3f)
+                    ) {
                         return Err("The effect needs an unsupported scene texture".into());
                     }
+                    textures.push((usize::from(slot - 0x20), source, element));
                     continue;
                 }
                 0x42 => Op::Output(arg()? as usize),
@@ -213,6 +238,7 @@ impl Program {
             constants,
             outputs,
             samplers,
+            textures,
         };
         // Validate structure without evaluating an arbitrary time. A well-formed animation
         // may be undefined at time zero but produce valid values on later frames.
@@ -230,13 +256,29 @@ impl Program {
             .map(|(_, row)| *row)
     }
 
+    pub(crate) fn scene_normal(&self, register: usize) -> bool {
+        self.textures
+            .iter()
+            .rev()
+            .find(|(slot, _, _)| *slot == register)
+            .is_some_and(|&(_, source, element)| (source, element) == (44, 1))
+    }
+
+    pub(crate) fn sky_hemisphere(&self, register: usize) -> bool {
+        self.textures
+            .iter()
+            .rev()
+            .find(|(slot, _, _)| *slot == register)
+            .is_some_and(|&(_, source, element)| (source, element) == (3, 19))
+    }
+
     fn validate(&self) -> Result<(), String> {
         let mut depth = 0_usize;
         let mut temp = [false; 16];
         for op in &self.ops {
             let (inputs, outputs) = match *op {
                 Op::Constant(index) => {
-                    self.constant(index)?;
+                    self.constant_at(index)?;
                     (0, 1)
                 }
                 Op::Time => (0, 1),
@@ -330,7 +372,7 @@ impl Program {
         let mut temp = [None; 16];
         for op in &self.ops {
             match *op {
-                Op::Constant(i) => stack.push(self.constant(i)?),
+                Op::Constant(i) => stack.push(self.constant_at(i)?),
                 Op::Time => stack.push([seconds; 4]),
                 Op::Unary(code) => {
                     let value = pop(&mut stack)?;
@@ -405,7 +447,7 @@ impl Program {
         Ok(())
     }
 
-    fn constant(&self, index: usize) -> Result<Vector, String> {
+    fn constant_at(&self, index: usize) -> Result<Vector, String> {
         self.constants
             .get(index)
             .copied()

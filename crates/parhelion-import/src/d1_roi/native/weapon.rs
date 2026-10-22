@@ -1,4 +1,4 @@
-//! Source weapon art on a native runtime with identical root and attachment rigs.
+//! Source weapon art on a native runtime that preserves every source bone binding.
 use super::*;
 use crate::GraphReference;
 mod perk;
@@ -16,7 +16,7 @@ fn key(text: &str) -> u32 {
 }
 
 impl Source {
-    /// Prepare a source weapon on the first native runtime in `bases` whose rigs match it.
+    /// Prepare a source weapon on the first native runtime with compatible bones and damage storage.
     /// The caller orders the bases, ordinary weapons of the source's type before exotics, so
     /// the base contributes firing and reloads rather than its own exotic behavior.
     pub fn prepare_weapon_on_base(
@@ -42,15 +42,35 @@ impl Source {
         progress("Reading source weapon".into());
         let export = self.export_weapon(hash, &output.join("source"))?;
         let source: Value = serde_json::from_slice(&fs::read(export)?)?;
+        let kinetic = perk::requires_kinetic(self, &source)?;
         let mut reader = Reader::discovery(native, &output.join("rig-checks"), false)?;
         let mut refused = Vec::new();
         for &base in bases {
             crate::cancellation::check()?;
-            if let Err(error) = rig::weapon(&source["runtime"], base, &mut reader) {
+            if kinetic {
+                let tag = crate::d2_mot::assets::item::find_native(&mut reader, base)?;
+                let item = reader.tag(tag, Some(0x80807BEA))?;
+                let sockets = item.array(item.pointer(0x68)?, 0x50, Some(0x808077C4))?;
+                if sockets.iter().any(|&at| item.u16(at).ok() == Some(68)) {
+                    let reason = format!(
+                        "{base:08X}: the native type-68 damage socket cannot carry Kinetic damage"
+                    );
+                    progress(format!("Skipping native runtime {reason}"));
+                    refused.push(reason);
+                    continue;
+                }
+            }
+            if let Err(error) = rig::weapon(self, &source["runtime"], base, &mut reader) {
                 refused.push(format!("{base:08X}: {error:#}"));
                 continue;
             }
             progress(format!("Using native runtime {base:08X}"));
+            fs::write(
+                output.join("native-base-selection.json"),
+                serde_json::to_vec_pretty(
+                    &json!({"selected":base,"requires_kinetic":kinetic,"rejected":refused}),
+                )?,
+            )?;
             reader.finish()?;
             drop(reader);
             return self
@@ -147,6 +167,15 @@ impl Source {
         let stats = stats::translate(&mut assembly, source)?;
         progress(format!("Converting {} runtime animation", weapon.name));
         let mut native_rig = assembly.evidence[0]["native_runtime"].clone();
+        if assembly.evidence[0]["source_owned"] == true {
+            rig::prepare_owned(
+                self,
+                &source["runtime"],
+                &mut assembly.native,
+                &mut native_rig,
+                &directory,
+            )?;
+        }
         progress(format!("Converting {} named audio", weapon.name));
         let named_audio = crate::d1_roi::audio::prepare_named(
             self,
@@ -168,19 +197,41 @@ impl Source {
         )
         .unwrap_or_else(|error| {
             json!({"status":"native","reason":format!("{error:#}"),"gameplay_verified":false})
-        });
+          });
+        let mut first_person_animation = super::animation::prepare_first_person(
+            self, &source["runtime"], &mut assembly.native, &native_rig, &directory,
+        ).unwrap_or_else(|error| json!({"first_person_status":"native","reason":format!("{error:#}"),"gameplay_verified":false}));
+        if assembly.evidence[0]["source_owned"] == true {
+            rig::finish_owned(
+                &mut assembly.native,
+                &native_rig,
+                &directory,
+                &mut runtime_animation,
+                &mut first_person_animation,
+            )?;
+        }
         let audio_assets = runtime_animation
             .as_object_mut()
             .and_then(|v| v.remove("audio_assets"));
-        let animation_limit = if runtime_animation["status"] == "linked" {
-            "Supported weapon clips use source motion and direct audio cues. First-person arm animation and firing effects use the selected native runtime. Event dispatch and playback require in-game acceptance."
-        } else {
-            "Firing, reload animation and audio use the selected native runtime."
+        let animation_limit = match (
+            runtime_animation["status"] == "linked",
+            first_person_animation["first_person_status"] == "linked",
+        ) {
+            (true, true) => {
+                "Supported weapon and named first-person actions use converted source motion. Other actions and firing effects retain the selected native runtime. Event dispatch and playback require in-game acceptance."
+            }
+            (true, false) => {
+                "Supported weapon clips use converted source motion. First-person actions retain the selected native runtime. Event dispatch and playback require in-game acceptance."
+            }
+            (false, true) => {
+                "Supported named first-person actions use converted source motion. Equipment clips and other actions retain the selected native runtime. Event dispatch and playback require in-game acceptance."
+            }
+            (false, false) => "Firing and reload animation use the selected native runtime.",
         };
         let mut limitations = [
             animation_limit,
             "Base stats are the source investment values. The native runtime's stat translation decides their gameplay effect, which requires in-game acceptance.",
-            "Matched named audio uses source banks and media with the native event's trigger and acoustic settings. Other audio and auxiliary sight effects use the selected native runtime.",
+            "Matched named audio uses source banks and media with the native event's trigger and acoustic settings. Other audio uses the selected native runtime. Supported sight lights retain source transforms and live parameters on native shaders. Other auxiliary sight effects require separate translation.",
             "Unsupported talent choices, scaled source stat adjustments and talent progression are not translated.",
             "Rendering, aiming, repeated firing and selection cleanup require in-game acceptance.",
         ]
@@ -193,7 +244,7 @@ impl Source {
             "nodes":assembly.nodes,"parent":parts[0]["parent"],"dyes":[],"dye_rows":[[],[],[]],
             "gear_art":{"selector_format":"shadowkeep","rows":rows,"parts":parts},
             "source_talents":source["talents"],"perk_translation":perks,"stat_translation":stats.report,
-            "rendering":assembly.evidence,"equipment_animation":runtime_animation,"audio":named_audio,
+            "rendering":assembly.evidence,"equipment_animation":runtime_animation,"animation":first_person_animation,"audio":named_audio,
             "collections_unconditional":true,"installable":true,"gameplay_verified":false,"limitations":limitations});
         if let Some(audio) = audio_assets {
             graph["audio_assets"] = audio;

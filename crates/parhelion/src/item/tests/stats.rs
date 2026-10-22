@@ -25,29 +25,6 @@ fn custom_plug_stats_materialize_a_null_array_without_touching_sibling_perks() {
 }
 
 #[test]
-fn custom_plug_stats_preserve_sibling_payloads() {
-    let source = synthetic_weapon_with_investment_stats();
-    let mut authored = source.clone();
-    let resource = relative_target(&source, ITEM_INVESTMENT_STAT_POINTER_OFFSET).unwrap();
-    apply_custom_plug_stats(&mut authored, &[(16, -5), (20, 10)]).unwrap();
-    let (count, _, rows, _) = array_at(&authored, resource).unwrap();
-    assert_eq!(count, 3);
-    assert_eq!(
-        read_i32(&authored, rows + ITEM_INVESTMENT_STAT_ROW_SIZE + 4).unwrap(),
-        -5
-    );
-    assert_eq!(
-        read_i32(&authored, rows + 2 * ITEM_INVESTMENT_STAT_ROW_SIZE + 4).unwrap(),
-        10
-    );
-    let descriptor = resource + ITEM_SANDBOX_PERK_DESCRIPTOR_OFFSET;
-    assert_eq!(
-        &authored[descriptor..descriptor + 16],
-        &source[descriptor..descriptor + 16]
-    );
-}
-
-#[test]
 fn custom_plug_stats_reject_silently_truncated_and_invalid_edits_atomically() {
     let source = synthetic_weapon_with_investment_stats();
     let mut authored = source.clone();

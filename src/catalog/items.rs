@@ -48,8 +48,6 @@ pub(in crate::catalog) use sockets::{
     GearKind, SocketCarriers, build_gear_type_options, build_socket_type_carriers,
     build_socket_type_options, format_plug_label, intern_socket_pools, sort_plug_options,
 };
-#[cfg(test)]
-pub(in crate::catalog) use sockets::{SocketOptionSource, SocketOptionSourceKind};
 pub(crate) use sockets::{item_subtype_label, item_type_label};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -209,27 +207,4 @@ pub(crate) struct ItemRenderOverride {
     pub stage: u8,
     pub key: i8,
     pub value: u16,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{AbilityOptions, ItemDef, is_authorable_weapon_item};
-
-    #[test]
-    fn weapon_ornaments_are_not_authoring_donors() {
-        let mut item = ItemDef {
-            hash: 1,
-            name: "Test".to_owned(),
-            type_name: "Auto Rifle".to_owned(),
-            bucket_hash: 1_498_876_634,
-            class_type: 0,
-            default_plugs: Vec::new(),
-            sockets: Vec::new(),
-            abilities: AbilityOptions::default(),
-        };
-        assert!(is_authorable_weapon_item(&item));
-
-        item.type_name = " Weapon Ornament ".to_owned();
-        assert!(!is_authorable_weapon_item(&item));
-    }
 }

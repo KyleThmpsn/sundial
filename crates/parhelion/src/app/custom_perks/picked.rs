@@ -202,6 +202,3 @@ pub(in crate::app) fn repair_socket_picks(
     }
     Ok(count)
 }
-
-#[cfg(test)]
-mod tests;

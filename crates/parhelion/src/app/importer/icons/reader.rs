@@ -34,14 +34,10 @@ impl Reader {
             }
             Self::Roi(reader, xg) => {
                 let strings = u32::try_from(index).map_err(|error| error.to_string())?;
-                let icon = reader
-                    .item_icon(strings, xg.as_deref())
-                    .map_err(|error| format!("{error:#}"))?
-                    .ok_or("No source inventory artwork")?;
-                (
-                    [usize::from(icon.width), usize::from(icon.height)],
-                    icon.rgba,
-                )
+                let layers = reader
+                    .item_icon_layers(strings, xg.as_deref())
+                    .map_err(|error| format!("{error:#}"))?;
+                composite(&layers)?
             }
         };
         image::RgbaImage::from_raw(size[0] as u32, size[1] as u32, rgba)

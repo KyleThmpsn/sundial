@@ -280,17 +280,24 @@ impl Program {
                     continue;
                 }
                 80 => format!("uvec4(greaterThanEqual({},{}))*0xFFFFFFFFu", b(1), b(2)),
+                85 => format!("({} >> ({} & uvec4(31u)))", b(1), b(2)),
                 86 => wrap(format!("vec4({})", b(1))),
                 108 => {
                     let swizzle: String = v[2].lanes.iter().map(|&i| b"xyzw"[i] as char).collect();
-                    wrap(format!("nLod({},{}).{swizzle}", index(&v[2], 0), f(1)))
+                    wrap(format!(
+                        "nLod({},{},{}).{swizzle}",
+                        index(&v[2], 0),
+                        index(&v[3], 0),
+                        f(1)
+                    ))
                 }
-                122 | 124 => wrap(format!(
+                122..=125 => wrap(format!(
                     "{}({})",
-                    if instruction.code == 122 {
-                        "dFdx"
-                    } else {
-                        "-dFdy"
+                    match instruction.code {
+                        122 => "dFdx",
+                        123 => "dFdxFine",
+                        124 => "-dFdy",
+                        _ => "-dFdyFine",
                     },
                     f(1)
                 )),

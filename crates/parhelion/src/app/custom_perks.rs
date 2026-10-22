@@ -10,13 +10,7 @@ pub(super) use picked::{
     attach_picked_perk, choice_conflicts, repair_socket_picks, resolve_picked_perk,
 };
 
-// Test-only compatibility helpers are also used by the workbench integration tests.
-#[cfg(test)]
-pub(super) use mutations::remove_private_perk_runtime_values;
-
 pub(super) use mutations::reconcile_socket_plug_variants;
-#[cfg(test)]
-pub(super) use mutations::upsert_private_perk_runtime_values;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) struct PerkEditorKey {

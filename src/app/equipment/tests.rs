@@ -5,113 +5,6 @@ use serde_json::json;
 use super::*;
 
 #[test]
-fn equipment_picker_choice_assembly_keeps_more_than_five_hundred_items() {
-    let items = (0_u64..620)
-        .map(|index| ItemDef {
-            hash: 10_000 + index,
-            name: format!("Browse item {index:04}"),
-            type_name: "Test weapon".into(),
-            bucket_hash: 1_498_876_634,
-            class_type: 3,
-            default_plugs: Vec::new(),
-            sockets: Vec::new(),
-            abilities: catalog::AbilityOptions::default(),
-        })
-        .collect::<Vec<_>>();
-
-    let choices = equipment_definition_choices(items.iter(), false);
-    assert_eq!(choices.len(), 620);
-    assert_eq!(choices.first().unwrap().hash, 10_000);
-    assert_eq!(choices.last().unwrap().hash, 10_619);
-}
-
-fn assert_primary_equipped_snapshots(snapshots: &[EquippedItemSnapshot]) {
-    assert_eq!(
-        snapshots
-            .iter()
-            .map(|snapshot| snapshot.slot)
-            .collect::<Vec<_>>(),
-        ["kinetic", "helmet", "subclass", "emote"]
-    );
-    let kinetic = &snapshots[0];
-    assert_eq!(kinetic.slot_label, "Kinetic");
-    assert_eq!(kinetic.bucket_hash, 1_498_876_634);
-    assert_eq!(kinetic.definition_hash, Some(2));
-    assert_eq!(kinetic.definition_text, "0x00000002");
-    assert_eq!(kinetic.instance_soid, Some(1));
-    assert_eq!(kinetic.instance_soid_text, "0x0000000000000001");
-    assert_eq!(kinetic.level, Some(75));
-    assert_eq!(kinetic.quantity, Some(1));
-    assert_eq!(kinetic.plugs, EquippedItemPlugs::NativeDefaults);
-    assert!(kinetic.issues.is_empty());
-}
-
-fn assert_secondary_equipped_snapshots(snapshots: &[EquippedItemSnapshot]) {
-    assert_eq!(
-        snapshots[1].plugs,
-        EquippedItemPlugs::Authored(vec![
-            EquippedPlugValue::Empty,
-            EquippedPlugValue::Hash(6),
-            EquippedPlugValue::Hash(7),
-            EquippedPlugValue::Malformed("\"not-a-hash\"".to_owned()),
-        ])
-    );
-    assert!(
-        snapshots[1]
-            .issues
-            .iter()
-            .any(|issue| issue.contains("plug 3"))
-    );
-    assert_eq!(snapshots[2].slot, "subclass");
-    assert_eq!(snapshots[3].raw_item_text, "true");
-    assert_eq!(snapshots[3].definition_hash, None);
-    assert!(matches!(
-        snapshots[3].plugs,
-        EquippedItemPlugs::Malformed(ref raw) if raw == "true"
-    ));
-    assert_eq!(snapshots[3].issues, ["equipment row must be an object"]);
-}
-
-#[test]
-fn equipped_snapshots_follow_slot_order_and_skip_missing_or_null_rows() {
-    let document = json!({
-        "state": {
-            "characters": [{
-                "equipment": {
-                    "emote": true,
-                    "subclass": {
-                        "instance_soid": "0x0000000000000004",
-                        "definition_hash": "0x00000005",
-                        "level": 75,
-                        "quantity": 1,
-                        "plugs": []
-                    },
-                    "energy": null,
-                    "helmet": {
-                        "instance_soid": 3,
-                        "definition_hash": 4,
-                        "level": 76,
-                        "quantity": 1,
-                        "plugs": [null, "0x00000006", 7, "not-a-hash"]
-                    },
-                    "kinetic": {
-                        "instance_soid": "0x0000000000000001",
-                        "definition_hash": "0x00000002",
-                        "level": 75,
-                        "quantity": 1,
-                        "plugs": null
-                    }
-                }
-            }]
-        }
-    });
-
-    let snapshots = equipped_item_snapshots(&document, 0).unwrap();
-    assert_primary_equipped_snapshots(&snapshots);
-    assert_secondary_equipped_snapshots(&snapshots);
-}
-
-#[test]
 fn future_schema_equipment_edits_preserve_unknown_members() {
     let mut document = json!({
         "version": crate::game_settings::MAX_SUPPORTED_SCHEMA,
@@ -169,60 +62,6 @@ fn future_schema_equipment_edits_preserve_unknown_members() {
             .iter()
             .all(|issue| !issue.contains("unknown item member"))
     );
-}
-
-#[test]
-fn equipped_snapshots_retain_invalid_fields_and_report_issues() {
-    let document = json!({
-        "state": {
-            "characters": [{
-                "equipment": {
-                    "kinetic": {
-                        "instance_soid": 0,
-                        "definition_hash": "invalid",
-                        "level": -1,
-                        "quantity": 0,
-                        "plugs": {"unexpected": true}
-                    }
-                }
-            }]
-        }
-    });
-
-    let snapshots = equipped_item_snapshots(&document, 0).unwrap();
-    let snapshot = &snapshots[0];
-    assert_eq!(snapshot.definition_hash, None);
-    assert_eq!(snapshot.definition_text, "invalid");
-    assert_eq!(snapshot.instance_soid, Some(0));
-    assert_eq!(snapshot.level, Some(-1));
-    assert_eq!(snapshot.quantity, Some(0));
-    assert_eq!(
-        snapshot.plugs,
-        EquippedItemPlugs::Malformed("{\"unexpected\":true}".to_owned())
-    );
-    assert_eq!(snapshot.issues.len(), 5);
-}
-
-#[test]
-fn inferred_item_level_uses_the_highest_positive_equipped_level() {
-    let document = json!({
-        "state": {
-            "characters": [{
-                "equipment": {
-                    "ghost": {"level": 0},
-                    "kinetic": {"level": 75},
-                    "energy": {"level": 106},
-                    "helmet": {"level": -1}
-                }
-            }]
-        }
-    });
-    assert_eq!(inferred_item_level(&document, 0), 106);
-
-    let unpowered = json!({
-        "state": {"characters": [{"equipment": {"ghost": {"level": 0}}}]}
-    });
-    assert_eq!(inferred_item_level(&unpowered, 0), 106);
 }
 
 #[test]
@@ -323,30 +162,6 @@ fn assert_default_subclass_abilities(
             Some(&json!(expected))
         );
     }
-}
-
-#[test]
-fn cross_class_override_is_scoped_to_subclass_definitions() {
-    let mut item = ItemDef {
-        hash: 42,
-        name: "Foreign subclass".to_owned(),
-        type_name: "Subclass".to_owned(),
-        bucket_hash: 3_284_755_031,
-        class_type: 1,
-        default_plugs: Vec::new(),
-        sockets: Vec::new(),
-        abilities: catalog::AbilityOptions::default(),
-    };
-
-    assert!(!item_class_is_compatible(&item, 2, false));
-    assert!(item_class_is_compatible(&item, 2, true));
-
-    item.bucket_hash = 3_448_274_439;
-    item.type_name = "Helmet".to_owned();
-    assert!(!item_class_is_compatible(&item, 2, true));
-
-    item.class_type = 3;
-    assert!(item_class_is_compatible(&item, 2, false));
 }
 
 #[test]

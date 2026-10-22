@@ -28,14 +28,14 @@ pub(super) use defaults::{
     default_subclass_name, item_class_is_compatible, selected_attunement_index,
     subclass_display_name,
 };
+#[cfg(test)]
+pub(super) use document::materialize_authored_plugs;
 pub(super) use document::{
     displayed_plugs, equip_definition, equip_inventory_item, equip_subclass_with_default_abilities,
     equipment_slot_label, equipped_item_snapshots, native_plug_default,
     restore_class_armor_from_character, set_equipment_item_flags, set_equipment_item_level,
     set_equipment_item_plug, set_weapon_slot_empty,
 };
-#[cfg(test)]
-pub(super) use document::{inferred_item_level, materialize_authored_plugs};
 pub(super) use model::{
     EquipmentSlotCard, EquippedItemPlugs, EquippedItemSnapshot, EquippedPlugValue,
 };

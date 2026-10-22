@@ -5,7 +5,7 @@ use reader::Reader;
 
 // Older thumbnails contain only the primary artwork. The package stamp cannot
 // invalidate those when our layer composition changes.
-const CACHE_VERSION: &str = "v2";
+const CACHE_VERSION: &str = "v3";
 
 #[cfg(test)]
 mod tests;
@@ -234,62 +234,11 @@ fn thumbnail(image: &image::RgbaImage) -> image::RgbaImage {
     crate::image_import::resize(image, width, height)
 }
 
-/// Blends the layers bottom-up at their native size, anchored top-left, on a canvas as large
-/// as the largest layer.
+/// Use the source-independent browser composition, while native exports remain primary-only.
 pub(super) fn composite(layers: &[icon::Layer]) -> Result<([usize; 2], Vec<u8>), String> {
-    let size = [
-        layers
-            .iter()
-            .map(|layer| usize::from(layer.width))
-            .max()
-            .unwrap_or(0),
-        layers
-            .iter()
-            .map(|layer| usize::from(layer.height))
-            .max()
-            .unwrap_or(0),
-    ];
-    if size[0] == 0 || size[1] == 0 {
-        return Err("No icon layers".into());
-    }
-    if size
-        .iter()
-        .any(|edge| *edge > crate::image_import::MAX_SOURCE_EDGE as usize)
-    {
-        return Err("Icon dimensions exceed the supported limit".into());
-    }
-    if !layers.iter().any(|layer| layer.slot == 0x14) {
-        return Err("The icon has no primary artwork".into());
-    }
-    let mut rgba = vec![0_u8; size[0] * size[1] * 4];
-    for layer in layers {
-        let (width, height) = (usize::from(layer.width), usize::from(layer.height));
-        let pixels = match decode(layer) {
-            Ok(pixels) => pixels,
-            Err(error) if layer.slot == 0x14 => {
-                return Err(format!("Could not decode primary icon artwork: {error}"));
-            }
-            Err(_) => continue,
-        };
-        for y in 0..height.min(size[1]) {
-            for x in 0..width.min(size[0]) {
-                let from = (y * width + x) * 4;
-                let to = (y * size[0] + x) * 4;
-                sundial::image_processing::blend_rgba_pixel(
-                    &mut rgba[to..to + 4],
-                    [
-                        pixels[from],
-                        pixels[from + 1],
-                        pixels[from + 2],
-                        pixels[from + 3],
-                    ],
-                );
-            }
-        }
-    }
-    Ok((size, rgba))
-}
-
-pub(super) fn decode(layer: &icon::Layer) -> Result<Vec<u8>, String> {
-    icon::decode(layer).map_err(|error| error.to_string())
+    let image = icon::composite(layers).map_err(|error| format!("{error:#}"))?;
+    Ok((
+        [usize::from(image.width), usize::from(image.height)],
+        image.rgba,
+    ))
 }

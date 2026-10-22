@@ -3,9 +3,11 @@ use super::*;
 pub(super) fn validate_packages(
     target: &Path,
     sources: &[(ArtifactMetadata, PathBuf)],
-) -> Result<(), InstallError> {
+    known: &[CheckedPackage],
+) -> Result<Vec<CheckedPackage>, InstallError> {
     authored_packages_for_file_names(sources.iter().map(|(a, _)| a.file_name.as_str()))
         .map_err(InstallError::validation)?;
+    let mut checked = Vec::with_capacity(sources.len());
     for (artifact, path) in sources {
         let profile = authored_package_for_file_name(&artifact.file_name)
             .ok_or_else(|| InstallError::validation("Unknown managed package"))?;
@@ -15,56 +17,28 @@ pub(super) fn validate_packages(
             path,
         )
         .map_err(InstallError::validation)?;
-        // One read serves the digest, the structure check and the block checks below. A mod
-        // folder's imported maps run to gigabytes.
         reject_symlink(path, "managed package")?;
-        let bytes = fs::read(path).map_err(failure)?;
-        if TransactionDigest::from(artifact) != crate::artifact::digest_bytes(&bytes) {
-            return Err(InstallError::validation(format!(
-                "File changed after review: {}",
-                path.display()
-            )));
-        }
-        validate_authored_package_bytes(path, bytes.clone(), profile, target)?;
-        let layout = PackageLayout::parse(&bytes).map_err(failure)?;
-        verify_block_sources(target, path, &layout, &bytes)?;
-        if let Some(stock) = canonical_package(profile.package_id) {
-            if profile.patch_id != stock.stock_patch_id + 1 {
-                return Err(InstallError::validation(
-                    "A loader patch must immediately follow its stock generation",
-                ));
-            }
-            let baseline = fs::read(target.join(stock.stock_file_name(stock.stock_patch_id)))
-                .map_err(failure)?;
-            let original = PackageLayout::parse(&baseline).map_err(failure)?;
-            // Sunrise merges mod patches entry by entry and refuses one whose entry table
-            // differs in length from its base.
-            if layout.entry_count != original.entry_count {
+        let package = if let Some(previous) = known.iter().find(|p| p.artifact == *artifact) {
+            // Digest equality permits immutable structure reuse, never a timestamp or size alone.
+            verify_file(path, &TransactionDigest::from(artifact))?;
+            previous.clone()
+        } else {
+            let bytes = fs::read(path).map_err(failure)?;
+            if TransactionDigest::from(artifact) != crate::artifact::digest_bytes(&bytes) {
                 return Err(InstallError::validation(format!(
-                    "{} has {} entries where its stock generation has {}. Sunrise refuses a patch that adds entries, so build again for this installation",
-                    artifact.file_name, layout.entry_count, original.entry_count
+                    "File changed after review: {}",
+                    path.display()
                 )));
             }
-            let size = original
-                .block_count
-                .checked_mul(crate::format::BLOCK_HEADER_SIZE)
-                .ok_or_else(|| InstallError::validation("Block table length overflow"))?;
-            if layout.block_count < original.block_count
-                || bytes.get(layout.block_table_offset..layout.block_table_offset + size)
-                    != baseline.get(original.block_table_offset..original.block_table_offset + size)
-            {
-                return Err(InstallError::validation(format!(
-                    "{} changes the inherited stock block table",
-                    artifact.file_name
-                )));
+            CheckedPackage {
+                artifact: artifact.clone(),
+                structure: validate_authored_package_bytes(path, bytes, profile, target)?,
             }
-        } else if layout.patch_id != 0 {
-            return Err(InstallError::validation(
-                "A new managed package must begin at generation zero",
-            ));
-        }
+        };
+        package.structure.verify_sources(target, path)?;
+        checked.push(package);
     }
-    Ok(())
+    Ok(checked)
 }
 
 /// Refuses packages Sunrise would not load beside what is installed. That is a new package whose
@@ -397,48 +371,6 @@ fn installed_generations(target: &Path) -> Result<BTreeMap<u16, Vec<(String, u8)
     Ok(installed)
 }
 
-fn verify_block_sources(
-    target: &Path,
-    authored: &Path,
-    layout: &PackageLayout,
-    bytes: &[u8],
-) -> Result<(), InstallError> {
-    let mut lengths = BTreeMap::new();
-    for index in 0..layout.block_count {
-        let row = layout.block_table_offset + index * crate::format::BLOCK_HEADER_SIZE;
-        let offset = u32::from_le_bytes(bytes[row..row + 4].try_into().unwrap());
-        let size = u32::from_le_bytes(bytes[row + 4..row + 8].try_into().unwrap());
-        let patch = u16::from_le_bytes(bytes[row + 8..row + 10].try_into().unwrap());
-        if size == 0 {
-            continue;
-        }
-        let length = match lengths.entry(patch) {
-            std::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                let path = if patch == layout.patch_id {
-                    authored.to_path_buf()
-                } else {
-                    let profile = canonical_package(layout.package_id).ok_or_else(|| {
-                        InstallError::validation(
-                            "Standalone package references an unavailable predecessor",
-                        )
-                    })?;
-                    target.join(profile.stock_file_name(patch))
-                };
-                reject_symlink(&path, "block source package")?;
-                *entry.insert(fs::metadata(&path).map_err(failure)?.len())
-            }
-        };
-        if u64::from(offset) + u64::from(size) > length {
-            return Err(InstallError::validation(format!(
-                "Package {:04X} block {index} extends beyond generation {patch}",
-                layout.package_id
-            )));
-        }
-    }
-    Ok(())
-}
-
 /// The mod folder's manifest and receipt, and at most 1,024 packages, each with its merge data.
 pub(super) const FOLDER_FILE_LIMIT: usize = 2 + 2 * 1024;
 
@@ -461,7 +393,10 @@ pub(super) fn package_path(artifact: &ArtifactMetadata) -> Result<String, Instal
     ))
 }
 
-pub(super) fn managed_family(target: &Path) -> Result<BTreeMap<String, Folder>, InstallError> {
+pub(super) fn managed_family_with_packages(
+    target: &Path,
+    known: &[CheckedPackage],
+) -> Result<(BTreeMap<String, Folder>, Vec<CheckedPackage>), InstallError> {
     let install = target
         .parent()
         .ok_or_else(|| InstallError::validation("Missing game root"))?;
@@ -489,10 +424,12 @@ pub(super) fn managed_family(target: &Path) -> Result<BTreeMap<String, Folder>, 
         }
         family.insert(id, snapshot_folder(&directory)?);
     }
-    if !sources.is_empty() {
-        validate_packages(target, &sources)?;
-    }
-    Ok(family)
+    let packages = if sources.is_empty() {
+        Vec::new()
+    } else {
+        validate_packages(target, &sources, known)?
+    };
+    Ok((family, packages))
 }
 
 pub(super) fn artifacts(folder: &Folder) -> Vec<ArtifactMetadata> {

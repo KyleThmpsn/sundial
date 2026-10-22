@@ -1,8 +1,9 @@
-//! Recover derivatives of affine varying expressions while retaining live uniform values.
+//! Recover bounded varying expressions while retaining live uniform values.
 use super::{
     evaluate::Context,
-    program::{Operand, Program},
+    program::{Instruction, Operand, Program},
 };
+mod nonlinear;
 
 #[derive(Clone, Debug)]
 enum Uniform {
@@ -78,14 +79,19 @@ impl Affine {
     }
 }
 
-fn nesting(program: &Program, before: usize) -> usize {
-    program.instructions[..before]
-        .iter()
-        .fold(0usize, |depth, i| match i.code {
-            31 => depth + 1,
-            21 => depth.saturating_sub(1),
-            _ => depth,
-        })
+fn branch_path(program: &Program, before: usize) -> Vec<(usize, bool)> {
+    let mut path = Vec::new();
+    for (at, instruction) in program.instructions[..before].iter().enumerate() {
+        match instruction.code {
+            31 => path.push((at, false)),
+            18 => path.last_mut().unwrap().1 = true,
+            21 => {
+                path.pop();
+            }
+            _ => {}
+        }
+    }
+    path
 }
 
 fn value(
@@ -147,6 +153,27 @@ fn written(
     before: usize,
     budget: &mut usize,
 ) -> Option<Affine> {
+    let (at, instruction) = writer(program, index, lane, before)?;
+    let read = |n, budget: &mut usize| value(program, &instruction.operands[n], lane, at, budget);
+    match instruction.code {
+        54 => read(1, budget),
+        0 => Some(read(1, budget)?.add(read(2, budget)?)),
+        56 => read(1, budget)?.multiply(read(2, budget)?),
+        50 => Some(
+            read(1, budget)?
+                .multiply(read(2, budget)?)?
+                .add(read(3, budget)?),
+        ),
+        _ => None,
+    }
+}
+
+fn writer(
+    program: &Program,
+    index: u32,
+    lane: usize,
+    before: usize,
+) -> Option<(usize, &Instruction)> {
     let (at, instruction) = program.instructions[..before]
         .iter()
         .enumerate()
@@ -162,33 +189,28 @@ fn written(
                 .take(destinations)
                 .any(|v| v.kind == 0 && v.indices[0].base == index && v.mask & (1 << lane) != 0)
         })?;
-    if instruction.saturate || nesting(program, at) != 0 {
+    // A producer must dominate this use. A write in another arm or a completed
+    // conditional cannot supply a derivative expression across the branch merge.
+    if instruction.saturate || !branch_path(program, before).starts_with(&branch_path(program, at))
+    {
         return None;
     }
-    let read = |n, budget: &mut usize| value(program, &instruction.operands[n], lane, at, budget);
-    match instruction.code {
-        54 => read(1, budget),
-        0 => Some(read(1, budget)?.add(read(2, budget)?)),
-        56 => read(1, budget)?.multiply(read(2, budget)?),
-        50 => Some(
-            read(1, budget)?
-                .multiply(read(2, budget)?)?
-                .add(read(3, budget)?),
-        ),
-        _ => None,
-    }
+    Some((at, instruction))
+}
+
+#[derive(Clone, Debug)]
+enum Lane {
+    Affine(Vec<Term>),
+    Nonlinear(nonlinear::Expression),
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct Derivative {
-    lanes: [Vec<Term>; 4],
+    lanes: [Lane; 4],
 }
 
 impl Derivative {
     pub fn read(program: &Program, at: usize) -> Option<Self> {
-        if nesting(program, at) != 0 {
-            return None;
-        }
         let input = &program.instructions[at].operands[1];
         let instruction = &program.instructions[at];
         let mask = if matches!(instruction.code, 69 | 108) {
@@ -205,25 +227,37 @@ impl Derivative {
         } else {
             instruction.operands[0].mask
         };
-        let mut lanes = std::array::from_fn(|_| Vec::new());
-        for (lane, terms) in lanes.iter_mut().enumerate() {
+        let mut lanes = std::array::from_fn(|_| Lane::Affine(Vec::new()));
+        for (lane, derivative) in lanes.iter_mut().enumerate() {
             if mask & (1 << lane) == 0 {
                 continue;
             }
-            *terms = value(program, input, lane, at, &mut 128)?.terms;
-            if terms.len() > 32 {
+            *derivative = if let Some(affine) = value(program, input, lane, at, &mut 128) {
+                if affine.terms.len() > 32 {
+                    return None;
+                }
+                Lane::Affine(affine.terms)
+            } else if matches!(instruction.code, 123 | 125) {
+                Lane::Nonlinear(nonlinear::Expression::read(
+                    program, input, lane, at, &mut 128,
+                )?)
+            } else {
                 return None;
-            }
+            };
         }
         Some(Self { lanes })
     }
 
     pub fn at(&self, context: &impl Context, y: bool) -> [f32; 4] {
-        self.lanes.each_ref().map(|terms| {
-            terms
+        self.lanes.each_ref().map(|lane| match lane {
+            Lane::Affine(terms) => terms
                 .iter()
                 .map(|term| context.derivative(&term.input, y)[0] * term.coefficient.at(context))
-                .sum()
+                .sum(),
+            Lane::Nonlinear(expression) => {
+                let offset = context.derivative_offset(y);
+                (expression.at(context, y, offset) - expression.at(context, y, 0.0)) * offset
+            }
         })
     }
 }

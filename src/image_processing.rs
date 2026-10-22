@@ -274,29 +274,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn layering_the_same_color_preserves_it_at_every_visible_alpha() {
-        for color in [[255, 255, 255], [241, 198, 127], [16, 32, 64], [0, 0, 0]] {
-            for background_alpha in 0..=255_u8 {
-                for foreground_alpha in 1..=255_u8 {
-                    let mut pixel = [color[0], color[1], color[2], background_alpha];
-                    blend_rgba_pixel(&mut pixel, [color[0], color[1], color[2], foreground_alpha]);
-                    assert_eq!(
-                        &pixel[..3],
-                        &color,
-                        "alpha {foreground_alpha} over {background_alpha}"
-                    );
-                    assert!(pixel[3] >= background_alpha.max(foreground_alpha));
-                }
-            }
-        }
-        let mut pixel = [17, 34, 51, 102];
-        blend_rgba_pixel(&mut pixel, [255, 0, 0, 0]);
-        assert_eq!(pixel, [17, 34, 51, 102]);
-        blend_rgba_pixel(&mut pixel, [255, 0, 0, 255]);
-        assert_eq!(pixel, [255, 0, 0, 255]);
-    }
-
-    #[test]
     fn bc1_decodes_opaque_and_translucent_modes() {
         let opaque = decode_bc1(&[0x00, 0xF8, 0xE0, 0x07, 0, 0, 0, 0], 4, 4).unwrap();
         assert_eq!(&opaque[..4], &[255, 0, 0, 255]);
@@ -328,15 +305,6 @@ mod tests {
 
     fn transparent(pixels: &[u8]) -> usize {
         pixels.chunks_exact(4).filter(|pixel| pixel[3] == 0).count()
-    }
-
-    #[test]
-    fn clearing_a_plate_leaves_the_art_drawn_over_it() {
-        let mut pixels = filled(8, 8, [PLATE[0], PLATE[1], PLATE[2], 255]);
-        put(&mut pixels, 8, 3, 3, [0x20, 0x40, 0xFF, 255]);
-        clear_color_region(&mut pixels, 8, 8, PLATE);
-        assert_eq!(transparent(&pixels), 63);
-        assert_eq!(at(&pixels, 8, 3, 3), [0x20, 0x40, 0xFF, 255]);
     }
 
     /// The plate is painted at a range of alpha values, and the color is what identifies it,

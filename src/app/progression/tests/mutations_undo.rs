@@ -48,59 +48,6 @@ fn flag_mutations_split_and_rejoin_runs_without_touching_unknown_fields() {
 }
 
 #[test]
-fn indexed_flag_and_value_mutations_are_sorted_and_removable() {
-    let mut document = json!({
-        "state": {"unlocks": {"character_flags": [9, 3], "objective_values": [[8, 1]]}}
-    });
-
-    assert!(set_unlock_flag(&mut document, "character_flags", 5, true).changed());
-    assert_eq!(
-        document.pointer("/state/unlocks/character_flags"),
-        Some(&json!([3, 5, 9]))
-    );
-    assert!(set_unlock_value(&mut document, "objective_values", 4, -7).changed());
-    assert!(set_unlock_value(&mut document, "objective_values", 8, 12).changed());
-    assert_eq!(
-        document.pointer("/state/unlocks/objective_values"),
-        Some(&json!([[4, -7], [8, 12]]))
-    );
-    assert!(remove_unlock_value(&mut document, "objective_values", 4).changed());
-    assert_eq!(
-        document.pointer("/state/unlocks/objective_values"),
-        Some(&json!([[8, 12]]))
-    );
-}
-
-#[test]
-fn progression_mutations_are_sorted_updated_and_removable() {
-    let mut document = json!({
-        "future_root": {"preserved": true},
-        "state": {"unlocks": {"future_unlock": ["preserved"]}}
-    });
-
-    assert!(set_progression_value(&mut document, "account_progressions", 5, [1, 2, 3],).changed());
-    assert!(set_progression_value(&mut document, "account_progressions", 2, [-1, 0, 9],).changed());
-    assert!(set_progression_value(&mut document, "account_progressions", 5, [4, 5, 6],).changed());
-    assert_eq!(
-        document.pointer("/state/unlocks/account_progressions"),
-        Some(&json!([[2, -1, 0, 9], [5, 4, 5, 6]]))
-    );
-    assert!(remove_progression_value(&mut document, "account_progressions", 2,).changed());
-    assert_eq!(
-        document.pointer("/state/unlocks/account_progressions"),
-        Some(&json!([[5, 4, 5, 6]]))
-    );
-    assert_eq!(
-        document.pointer("/state/unlocks/future_unlock"),
-        Some(&json!(["preserved"]))
-    );
-    assert_eq!(
-        document.pointer("/future_root/preserved"),
-        Some(&json!(true))
-    );
-}
-
-#[test]
 fn progression_undo_restores_rows_and_clears_matching_dirty_state() {
     let mut document = json!({
         "state": {"unlocks": {

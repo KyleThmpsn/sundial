@@ -15,6 +15,11 @@ pub(super) fn mark_backup_complete(transaction: &InstallTransactionRecord) -> Re
 }
 
 fn completed_backup_owner(path: &Path) -> Option<PathBuf> {
+    match fs::symlink_metadata(path.join("mod-recovery.json")) {
+        Ok(_) => return loader::completed_backup_owner(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return None,
+    }
     let marker = path.join(COMPLETED_BACKUP_RECORD);
     let metadata = fs::symlink_metadata(&marker).ok()?;
     if !metadata.is_file() || metadata.file_type().is_symlink() {
@@ -291,6 +296,23 @@ pub fn prune_package_backups(
     backup_root: &Path,
     retain: usize,
 ) -> Result<BackupPruneReport, String> {
+    prune(backup_root, retain, None)
+}
+
+/// Keeps the current install's backup ahead of older generations, regardless of timestamps.
+pub(super) fn prune_after_install(
+    backup_root: &Path,
+    retain: usize,
+    current: &Path,
+) -> Result<BackupPruneReport, String> {
+    prune(backup_root, retain, Some(current))
+}
+
+fn prune(
+    backup_root: &Path,
+    retain: usize,
+    current: Option<&Path>,
+) -> Result<BackupPruneReport, String> {
     if !(1..=MAX_PACKAGE_BACKUP_RETENTION).contains(&retain) {
         return Err(format!(
             "Package backup retention must be between 1 and {MAX_PACKAGE_BACKUP_RETENTION}"
@@ -298,7 +320,7 @@ pub fn prune_package_backups(
     }
     let root_metadata = match fs::symlink_metadata(backup_root) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+        Err(error) if error.kind() == io::ErrorKind::NotFound && current.is_none() => {
             return Ok(BackupPruneReport::default());
         }
         Err(error) => {
@@ -322,6 +344,34 @@ pub fn prune_package_backups(
     })?;
     let _lock = lock_directory(&canonical_root, ".parhelion-retention.lock")
         .map_err(|error| error.message)?;
+    let current = current
+        .map(|path| {
+            let metadata = fs::symlink_metadata(path).map_err(|error| {
+                format!(
+                    "Could not inspect current package backup {}: {error}",
+                    path.display()
+                )
+            })?;
+            let resolved = fs::canonicalize(path).map_err(|error| {
+                format!(
+                    "Could not resolve current package backup {}: {error}",
+                    path.display()
+                )
+            })?;
+            if metadata.file_type().is_symlink()
+                || !metadata.is_dir()
+                || resolved
+                    .parent()
+                    .is_none_or(|parent| !paths_equal(parent, &canonical_root))
+            {
+                return Err(format!(
+                    "Current package backup is not a regular directory in its configured root: {}",
+                    path.display()
+                ));
+            }
+            Ok(resolved)
+        })
+        .transpose()?;
     let mut automatic = Vec::new();
     for entry in fs::read_dir(&canonical_root).map_err(|error| {
         format!(
@@ -371,7 +421,17 @@ pub fn prune_package_backups(
         })?;
         automatic.push((modified, name, path));
     }
-    automatic.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+    let is_current = |path: &Path| {
+        current
+            .as_ref()
+            .is_some_and(|current| paths_equal(current, path))
+    };
+    automatic.sort_by(|left, right| {
+        is_current(&right.2)
+            .cmp(&is_current(&left.2))
+            .then_with(|| right.0.cmp(&left.0))
+            .then_with(|| right.1.cmp(&left.1))
+    });
 
     let mut report = BackupPruneReport::default();
     let mut owner_counts: Vec<(PathBuf, usize)> = Vec::new();
@@ -387,7 +447,7 @@ pub fn prune_package_backups(
             *count += 1;
             *count
         } else {
-            owner_counts.push((owner, 1));
+            owner_counts.push((owner.clone(), 1));
             1
         };
         if count <= retain {
@@ -403,7 +463,7 @@ pub fn prune_package_backups(
         if metadata.file_type().is_symlink()
             || !metadata.is_dir()
             || !is_automatic_backup_name(&name)
-            || completed_backup_owner(&path).is_none()
+            || completed_backup_owner(&path).is_none_or(|current| !paths_equal(&current, &owner))
             || path
                 .parent()
                 .is_none_or(|parent| !paths_equal(parent, &canonical_root))
@@ -428,7 +488,13 @@ pub(super) fn is_automatic_backup_name(name: &str) -> bool {
     let Some(suffix) = name.strip_prefix(AUTOMATIC_BACKUP_PREFIX) else {
         return false;
     };
-    if let Some((stamp, attempt)) = suffix.split_once("_UTC-packages-") {
+    if let Some((stamp, operation)) = suffix.split_once("_UTC-") {
+        let Some(attempt) = ["packages-", "before-install-", "before-removal-"]
+            .into_iter()
+            .find_map(|prefix| operation.strip_prefix(prefix))
+        else {
+            return false;
+        };
         return stamp.len() == 19
             && stamp.bytes().enumerate().all(|(index, byte)| match index {
                 4 | 7 | 13 | 16 => byte == b'-',

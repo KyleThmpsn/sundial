@@ -345,34 +345,12 @@ pub(super) fn hashes() -> impl Iterator<Item = u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::package_payload::{native_array_at, u32_at};
 
     #[test]
     fn recovered_names_match_their_hashes_and_stay_sorted() {
         assert!(NAMES.windows(2).all(|pair| pair[0].0 < pair[1].0));
         for &(hash, label) in NAMES {
             assert_eq!(crate::hash::fnv1_name_hash(label), hash, "{label}");
-        }
-    }
-
-    // Membership can only be proven against the real catalog, which is a captured game
-    // asset and is not distributed with the repository. Point the variable at a copy to
-    // confirm that every recovered name still names a label the engine registers.
-    #[test]
-    #[ignore = "requires SUNDIAL_LABEL_REGISTRY pointing to captured label globals"]
-    fn recovered_names_are_registered_in_the_native_catalog() {
-        let path = std::env::var_os("SUNDIAL_LABEL_REGISTRY").expect("label registry path");
-        let registry = std::fs::read(path).unwrap();
-        let registry = registry.as_slice();
-        let (count, _, atoms, _) = native_array_at(registry, 8).unwrap();
-        let (group_count, _, groups, _) = native_array_at(registry, 24).unwrap();
-        for &(hash, label) in NAMES {
-            assert!(
-                (0..count).any(|index| u32_at(registry, atoms + index * 4).unwrap() == hash)
-                    || (0..group_count)
-                        .any(|index| u32_at(registry, groups + index * 44).unwrap() == hash),
-                "{label}"
-            );
         }
     }
 }

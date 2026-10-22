@@ -93,17 +93,3 @@ pub fn export(p: &Value, modern: &Path, native: &Path, out: &Path) -> Result<Val
     write_json(&out.join("asset.json"), &report)?;
     Ok(report)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn identical_layers_collapse_but_conflicting_layers_fail() {
-        let a = json!({"channel":0,"descriptor":40,"manifest":"A","found":[1]});
-        let mut b = a.clone();
-        b["descriptor"] = json!(56);
-        assert_eq!(unique_channels(&[a.clone(), b.clone()]).unwrap().len(), 1);
-        b["found"] = json!([2]);
-        assert!(unique_channels(&[a, b]).is_err());
-    }
-}

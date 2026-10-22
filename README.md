@@ -16,13 +16,13 @@ Sundial edits accounts and settings for [Project Sunrise](https://github.com/sta
 ## Compatibility
 
 - Destiny 2 Shadowkeep build `86657.20.08.23`
-- Project Sunrise 0.5 or newer (settings schema v18 and SQLite schema v2)
+- Project Sunrise 0.6 (settings schema v18 and SQLite schema v3)
 - Dawn 0.1.3 or newer (`player-state.db` schema v5)
 - Windows 10 or Linux x86-64 (glibc 2.35 or later)
 
 Newer Sunrise schemas may be opened with a warning, but future compatibility is not guaranteed. On Sunrise 0.6 or later, Sundial also reads content from other Sunrise mods, leaving out any that Sunrise would refuse.
 
-Sunrise schema v18 stores most account data in `data/investment.sqlite3`, with identity and runtime configuration in `settings.json`. Dawn stores account data, preferences, and key bindings in `player-state.db`, with identity, language, and runtime configuration in `Dawn/settings.json`. Sundial selects the active format automatically and still supports legacy Sunrise JSON accounts.
+Sunrise schema v18 stores most account data in `data/investment.sqlite3`, with identity and runtime configuration in `settings.json`. Dawn stores account data, preferences, and key bindings in `player-state.db`, with identity, language, and runtime configuration in `Dawn/settings.json`. Sundial selects the active format automatically and still supports earlier Sunrise builds, with SQLite schema v2 or legacy JSON accounts.
 
 ## Getting started
 

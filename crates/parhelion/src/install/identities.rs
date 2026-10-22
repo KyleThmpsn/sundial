@@ -21,6 +21,26 @@ pub(super) fn installed_identities(
     generation_identities(target, target)
 }
 
+/// The installed authored item hashes. An installation whose packages carry no authored
+/// investment tables, such as one with only other mods or nothing installed, has none.
+pub(super) fn installed_item_hashes(target: &Path) -> Result<BTreeSet<u32>, String> {
+    with_generation(target, target, |generation| {
+        let globals = resolve_live_named_tag(&generation.manager, "investment_globals", None)?;
+        let profile = canonical_package(globals.pkg_id()).ok_or_else(|| {
+            format!("Ownership table {globals} is outside the recognized package chains")
+        })?;
+        if !generation
+            .directory
+            .join(profile.authored_file_name)
+            .try_exists()
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(BTreeSet::new());
+        }
+        read_identities(generation).map(|(hashes, _)| hashes)
+    })
+}
+
 /// Read an authored generation against the same installation's stock baseline.
 /// The staged set contains complete canonical overlays, not a second stock installation.
 pub(super) fn generation_identities(

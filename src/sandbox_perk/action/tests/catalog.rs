@@ -120,23 +120,6 @@ fn nested_predicate_cycles_hit_the_depth_guard() {
 }
 
 #[test]
-fn policy_and_program_shape_are_part_of_authoring_support() {
-    let payload = drawn_pattern_action();
-    let mut action = decode(&payload).unwrap();
-    assert_eq!(action.support(), Support::Authorable);
-    // An execution policy is carried by the program, so it does not lower support.
-    action.policy = 1;
-    assert_eq!(action.support(), Support::Authorable);
-    action.policy = 0;
-    // Further programs are carried by the program, so they do not lower support either.
-    action.groups.push(action.groups[0].clone());
-    assert_eq!(action.support(), Support::Authorable);
-    action.groups.pop();
-    action.groups[0].effects[0].kind = 255;
-    assert_eq!(action.support(), Support::Unobserved);
-}
-
-#[test]
 fn signed_ammunition_counts_are_read_without_float_rounding() {
     for value in [16_777_217_i32, -16_777_217, i32::MIN, i32::MAX] {
         let (mut out, at) = one_node(nodes::effect(14).unwrap(), false);

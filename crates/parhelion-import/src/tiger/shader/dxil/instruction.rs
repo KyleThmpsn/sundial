@@ -18,12 +18,25 @@ pub(crate) fn call(code: &str) -> Result<(&str, &str, Vec<&str>)> {
     let (name, rest) = rest.split_once('(').context("DXIL call arguments")?;
     let close = rest.rfind(')').context("Unterminated DXIL call")?;
     let tail = rest[close + 1..].trim();
+    let (attributes, metadata) = tail.split_once(',').unwrap_or((tail, ""));
     ensure!(
-        tail.is_empty()
-            || tail
+        attributes.trim().is_empty()
+            || attributes
+                .trim()
                 .strip_prefix('#')
                 .is_some_and(|s| s.parse::<u32>().is_ok()),
         "Unsupported DXIL call suffix"
+    );
+    // A precise input load still returns the stored input value. Admit its
+    // annotation without dropping precision metadata from arithmetic calls.
+    ensure!(
+        metadata.is_empty()
+            || name == "loadInput.f32"
+                && metadata
+                    .trim()
+                    .strip_prefix("!dx.precise !")
+                    .is_some_and(|s| s.parse::<u32>().is_ok()),
+        "Unsupported DXIL call metadata"
     );
     Ok((
         typ,
@@ -187,7 +200,11 @@ impl Emitter<'_> {
                 ensure!(a.len() == 3, "DXIL select arity");
                 (
                     scalar_type(a[1].split_whitespace().next().context("DXIL select type")?)?,
-                    format!("({} ? {} : {})", value(a[0])?, value(a[1])?, value(a[2])?),
+                    if self.perspective_depth(&a) {
+                        format!("(/* Native reciprocal depth */ {})", value(a[2])?)
+                    } else {
+                        format!("({} ? {} : {})", value(a[0])?, value(a[1])?, value(a[2])?)
+                    },
                 )
             }
             "uitofp" | "sitofp" | "fptosi" | "fptoui" | "bitcast" => {
@@ -265,7 +282,7 @@ impl Emitter<'_> {
                 let property = literals(a[2])?;
                 ensure!(
                     property.len() == 2
-                        && matches!((handle.0, property[0]), (0, 2 | 4) | (2, 13) | (3, 14)),
+                        && matches!((handle.0, property[0]), (0, 2 | 4 | 5) | (2, 13) | (3, 14)),
                     "Unsupported DXIL resource properties"
                 );
                 if let Some(old) = self.resources.insert(handle, (property[0], property[1])) {
@@ -354,17 +371,12 @@ impl Emitter<'_> {
                     "DXIL sample arity"
                 );
                 let slot = self.handle(a[1], 0)?;
-                let dimension = if self
+                let kind = self
                     .resources
                     .get(&(0, slot))
                     .context("DXIL sampled resource properties")?
-                    .0
-                    == 4
-                {
-                    3
-                } else {
-                    2
-                };
+                    .0;
+                let dimension = if matches!(kind, 4 | 5) { 3 } else { 2 };
                 ensure!(
                     a[3 + dimension..7].iter().all(|v| *v == "float undef"),
                     "Unexpected DXIL sample coordinate"
@@ -374,16 +386,48 @@ impl Emitter<'_> {
                     .map(|s| value(s))
                     .collect::<Result<Vec<_>>>()?
                     .join(",");
-                let offsets = a[7..7 + dimension]
-                    .iter()
-                    .map(|s| value(s))
-                    .collect::<Result<Vec<_>>>()?
-                    .join(",");
+                let offsets = if kind == 5 {
+                    ensure!(
+                        a[7..10].iter().all(|v| *v == "i32 undef"),
+                        "Cube sampling cannot use texel offsets"
+                    );
+                    String::new()
+                } else {
+                    let values = a[7..7 + dimension]
+                        .iter()
+                        .map(|s| value(s))
+                        .collect::<Result<Vec<_>>>()?
+                        .join(",");
+                    format!(",int{dimension}({values})")
+                };
                 ensure!(
                     a[7 + dimension..10].iter().all(|v| *v == "i32 undef"),
                     "Unexpected DXIL sample offset"
                 );
                 let sampler = self.handle(a[2], 3)?;
+                if let Some(adapter) = self.options.samples.get(&slot) {
+                    ensure!(
+                        kind == adapter.source_kind
+                            && name == "sampleLevel"
+                            && value(a[10])?.parse::<f32>().is_ok_and(|value| value == 0.0)
+                            && a[7..7 + dimension]
+                                .iter()
+                                .all(|operand| number(operand).is_ok_and(|value| value == 0)),
+                        "Renderer sampling adapter does not match the source instruction"
+                    );
+                    let sample =
+                        format!("t{slot}.SampleLevel(s{sampler},{},0)", adapter.coordinates);
+                    let sample = if let Some((lane, scale)) = adapter.scalar {
+                        ensure!(
+                            "xyzw".contains(lane) && scale.is_finite(),
+                            "Invalid renderer sample projection"
+                        );
+                        format!("float4(({sample}).{lane}*{scale:.9},0,0,0)")
+                    } else {
+                        sample
+                    };
+                    return Ok((Some("float4"), Some(sample)));
+                }
                 let (method, extra) = match name {
                     "sampleLevel" => ("SampleLevel", format!(",{}", value(a[10])?)),
                     "sampleBias" => {
@@ -398,14 +442,58 @@ impl Emitter<'_> {
                 (
                     "float4",
                     format!(
-                        "t{slot}.{method}(s{sampler},float{dimension}({coords}){extra},int{dimension}({offsets}))"
+                        "t{slot}.{method}(s{sampler},float{dimension}({coords}){extra}{offsets})"
                     ),
+                )
+            }
+            "calculateLOD" => {
+                ensure!(
+                    opcode == 81 && a.len() == 7,
+                    "DXIL level-of-detail query arity"
+                );
+                let slot = self.handle(a[1], 0)?;
+                ensure!(
+                    !self.options.samples.contains_key(&slot),
+                    "Renderer probe adapter cannot provide a source volume footprint"
+                );
+                let sampler = self.handle(a[2], 3)?;
+                let kind = self
+                    .resources
+                    .get(&(0, slot))
+                    .context("DXIL level-of-detail resource properties")?
+                    .0;
+                let dimension = match kind {
+                    2 => 2,
+                    4 | 5 => 3,
+                    _ => bail!("Unsupported DXIL level-of-detail resource"),
+                };
+                ensure!(
+                    a[3 + dimension..6].iter().all(|v| *v == "float undef"),
+                    "Unexpected DXIL level-of-detail coordinate"
+                );
+                let coords = a[3..3 + dimension]
+                    .iter()
+                    .map(|v| value(v))
+                    .collect::<Result<Vec<_>>>()?
+                    .join(",");
+                let method = match a[6] {
+                    "i1 true" => "CalculateLevelOfDetail",
+                    "i1 false" => "CalculateLevelOfDetailUnclamped",
+                    _ => bail!("Dynamic DXIL level-of-detail clamp is unsupported"),
+                };
+                (
+                    "float",
+                    format!("t{slot}.{method}(s{sampler},float{dimension}({coords}))"),
                 )
             }
             "textureLoad" => {
                 ensure!(
                     opcode == 66 && a.len() == 9 && a[5..].iter().all(|s| *s == "i32 undef"),
                     "Unsupported DXIL texture load"
+                );
+                ensure!(
+                    !self.options.samples.contains_key(&self.handle(a[1], 0)?),
+                    "Renderer probe adapter cannot provide a source volume load"
                 );
                 (
                     "float4",
@@ -429,6 +517,7 @@ impl Emitter<'_> {
                     7 => "saturate",
                     12 => "cos",
                     13 => "sin",
+                    15 => "acos",
                     21 => "exp2",
                     22 => "frac",
                     23 => "log2",
@@ -439,6 +528,8 @@ impl Emitter<'_> {
                     28 => "ceil",
                     83 => "ddx_coarse",
                     84 => "ddy_coarse",
+                    85 => "ddx_fine",
+                    86 => "ddy_fine",
                     _ => bail!("Unsupported DXIL unary opcode {opcode}"),
                 };
                 ("float", format!("{function}({})", value(a[1])?))

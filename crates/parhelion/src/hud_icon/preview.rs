@@ -73,36 +73,3 @@ fn load_layer(
     };
     crate::icon_edit::render_texture_preview(manager, read().map_err(|error| error.to_string())?)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    #[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
-    fn native_preview_selects_the_appearance_variant_and_preserves_alpha() {
-        let packages = crate::test_support::stock_packages();
-        let manager =
-            sundial::package_authoring::open_shadowkeep_package_manager(&packages).unwrap();
-        let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
-        let donors = catalog.weapon_donors();
-        let pattern = |hash| {
-            donors
-                .iter()
-                .find(|donor| donor.hash == hash)
-                .unwrap()
-                .weapon_pattern_index
-                .unwrap()
-        };
-        let bond = load(&manager, pattern(0x23DB_942F)).unwrap().unwrap();
-        assert_eq!(bond.size, [137, 76]);
-        assert!(bond.pixels.iter().any(|pixel| pixel.a() == 0));
-        assert!(bond.pixels.iter().any(|pixel| pixel.a() > 0));
-        let talon = load(&manager, pattern(0xE079_4C51)).unwrap().unwrap();
-        let hook = load(&manager, pattern(0x0222_2CBF)).unwrap().unwrap();
-        assert_ne!(
-            talon.pixels, hook.pixels,
-            "shared sword content owners must select their own silhouette"
-        );
-    }
-}

@@ -1,6 +1,7 @@
 //! Native rigid motion with checked source-local material varyings.
 use super::*;
 use crate::tiger::shader::dxil::{arguments, id, number};
+mod flow;
 
 fn call(code: &str) -> Result<(&str, Vec<&str>)> {
     let (_, name, args) = dxil::call(code)?;
@@ -25,9 +26,132 @@ struct Source<'a> {
     definitions: BTreeMap<u32, &'a str>,
     inputs: Vec<dxil::Field>,
     surface: &'a geometry::Surface,
+    constants: &'a [[u8; 16]],
+    dynamic: &'a BTreeSet<usize>,
+    flow: flow::Flow,
 }
 
 impl Source<'_> {
+    fn selected<'a>(&'a self, value: &'a str, depth: usize) -> Result<&'a str> {
+        ensure!(depth < 32, "Source varying phi exceeds budget");
+        if !value
+            .split_whitespace()
+            .last()
+            .is_some_and(|s| s.starts_with('%'))
+        {
+            return Ok(value);
+        }
+        let Some(rest) = self.definition(value)?.strip_prefix("phi float ") else {
+            return Ok(value);
+        };
+        let predecessor = self
+            .flow
+            .predecessor(id(value)?, |value| self.condition(value))?;
+        let mut selected = None;
+        for pair in arguments(rest)? {
+            let pair = pair
+                .trim()
+                .strip_prefix('[')
+                .and_then(|s| s.strip_suffix(']'))
+                .context("Source varying phi pair")?;
+            let parts = arguments(pair)?;
+            ensure!(parts.len() == 2, "Source varying phi arity");
+            if id(parts[1])? == predecessor {
+                ensure!(
+                    selected.is_none(),
+                    "Repeated source varying phi predecessor"
+                );
+                selected = Some(parts[0]);
+            }
+        }
+        self.selected(
+            selected.context("Source varying phi has no active predecessor")?,
+            depth + 1,
+        )
+    }
+
+    fn literal_output(
+        &self,
+        writes: &BTreeMap<(u32, u32), &str>,
+        ordinal: usize,
+        width: usize,
+    ) -> Result<Option<String>> {
+        let mut values = Vec::new();
+        for lane in 0..width {
+            let value = self.selected(
+                writes
+                    .get(&(ordinal as u32, lane as u32))
+                    .context("Source output lane")?,
+                0,
+            )?;
+            let token = value
+                .split_whitespace()
+                .last()
+                .context("Source output value")?;
+            if token.starts_with('%') {
+                return Ok(None);
+            }
+            values.push(float(literal(token)?));
+        }
+        Ok(Some(format!("float{width}({})", values.join(","))))
+    }
+
+    fn constant(&self, value: &str, depth: usize) -> Result<f32> {
+        ensure!(depth < 32, "Source vertex condition exceeds budget");
+        let token = value
+            .split_whitespace()
+            .last()
+            .context("Source condition operand")?;
+        if !token.starts_with('%') {
+            return literal(token);
+        }
+        let code = self.definition(value)?;
+        if let Some(rest) = code.strip_prefix("extractvalue ") {
+            let parts = arguments(rest)?;
+            ensure!(parts.len() == 2, "Source condition extraction arity");
+            let (name, load) = call(self.definition(parts[0])?)?;
+            ensure!(
+                name == "cbufferLoadLegacy" && self.binding(load[1])? == (2, 0),
+                "Source vertex condition requires an immutable material input"
+            );
+            let row = number(load[2])? as usize;
+            let lane = number(parts[1])? as usize;
+            ensure!(lane < 4, "Source condition lane");
+            ensure!(
+                !self.dynamic.contains(&row),
+                "Source vertex condition has a dynamic material producer"
+            );
+            let data = self
+                .constants
+                .get(row)
+                .context("Source vertex constant buffer is truncated")?;
+            let value = f32::from_le_bytes(data[lane * 4..lane * 4 + 4].try_into().unwrap());
+            ensure!(value.is_finite(), "Nonfinite source vertex condition");
+            return Ok(value);
+        }
+        anyhow::bail!("Unsupported source vertex condition value {code}")
+    }
+
+    fn condition(&self, value: &str) -> Result<bool> {
+        let code = self.definition(value)?;
+        let rest = code
+            .strip_prefix("fcmp ")
+            .context("Unsupported source vertex condition")?;
+        let (comparison, operands) = rest.split_once(' ').context("Source vertex comparison")?;
+        let operands = arguments(operands)?;
+        ensure!(operands.len() == 2, "Source comparison arity");
+        let a = self.constant(operands[0], 0)?;
+        let b = self.constant(operands[1], 0)?;
+        Ok(match comparison {
+            "olt" => a < b,
+            "ole" => a <= b,
+            "ogt" => a > b,
+            "oge" => a >= b,
+            "oeq" => a == b,
+            "one" => a != b,
+            _ => anyhow::bail!("Unsupported source vertex comparison {comparison}"),
+        })
+    }
     fn definition(&self, value: &str) -> Result<&str> {
         self.definitions
             .get(&id(value)?)
@@ -65,6 +189,14 @@ impl Source<'_> {
     }
     fn scalar(&self, value: &str, depth: usize) -> Result<String> {
         ensure!(depth < 32, "Source varying expression exceeds budget");
+        let value = self.selected(value, 0)?;
+        let token = value
+            .split_whitespace()
+            .last()
+            .context("Missing source varying value")?;
+        if !token.starts_with('%') {
+            return Ok(float(literal(token)?));
+        }
         let code = self.definition(value)?;
         if code.starts_with("call ") {
             let (name, args) = call(code)?;
@@ -136,10 +268,12 @@ impl Source<'_> {
                         let parts = arguments(extract)?;
                         ensure!(parts.len() == 2, "Source color bound extraction arity");
                         let (operation, load) = call(self.definition(parts[0])?)?;
+                        // The rigid model's decode-scale row stores the color
+                        // index bound in W as integer bits, alongside XYZ scale.
                         count = operation == "cbufferLoadLegacy"
-                            && number(parts[1])? == 2
+                            && number(parts[1])? == 3
                             && self.binding(load[1])? == (2, 1)
-                            && number(load[2])? == 11;
+                            && number(load[2])? == 4;
                     }
                 }
                 ensure!(vertex && count, "Source color count producer differs");
@@ -160,6 +294,19 @@ impl Source<'_> {
         }
         anyhow::bail!("Unsupported source varying expression {code}")
     }
+}
+
+fn literal(token: &str) -> Result<f32> {
+    let value = if let Some(bits) = token.strip_prefix("0x") {
+        ensure!(bits.len() == 16, "Unsupported source floating literal");
+        f64::from_bits(u64::from_str_radix(bits, 16)?) as f32
+    } else {
+        token
+            .parse::<f32>()
+            .context("Unsupported source varying literal")?
+    };
+    ensure!(value.is_finite(), "Nonfinite source varying literal");
+    Ok(value)
 }
 
 pub(super) fn float(value: f32) -> String {
@@ -191,6 +338,8 @@ pub(super) fn hlsl(
     listing: &str,
     pixel: &[u8],
     surface: &geometry::Surface,
+    constants: &[[u8; 16]],
+    dynamic: &BTreeSet<usize>,
 ) -> Result<(String, bool)> {
     let inputs = dxil::signature(listing, true)?;
     let outputs = dxil::signature(listing, false)?;
@@ -198,37 +347,11 @@ pub(super) fn hlsl(
         definitions: BTreeMap::new(),
         inputs,
         surface,
+        constants,
+        dynamic,
+        flow: flow::Flow::default(),
     };
-    let mut writes = BTreeMap::new();
-    // DXC also emits intrinsic declarations. Only the executable body owns
-    // SSA definitions and output writes, and each function has its own SSA IDs.
-    let mut functions = listing.split("define void @").skip(1);
-    let function = functions
-        .next()
-        .context("Missing source vertex entry point")?;
-    ensure!(
-        functions.next().is_none(),
-        "Multiple source vertex entry points"
-    );
-    let body = function
-        .split_once("() {")
-        .context("Unsupported source vertex entry point")?
-        .1
-        .split_once("\n}")
-        .context("Unterminated source vertex entry point")?
-        .0;
-    for line in body.lines().map(str::trim) {
-        let line = line.split(';').next().unwrap().trim();
-        if let Some((name, code)) = line.strip_prefix('%').and_then(|s| s.split_once(" = ")) {
-            if name.bytes().all(|b| b.is_ascii_digit()) {
-                source.definitions.insert(name.parse()?, code);
-            }
-        } else if line.starts_with("call void @dx.op.storeOutput.f32(") {
-            let (_, args) = call(line)?;
-            ensure!(number(args[2])? == 0, "Source vertex output row");
-            writes.insert((number(args[1])?, number(args[3])?), args[4]);
-        }
-    }
+    let writes = read_entry(listing, &mut source)?;
     // Read/write masks come from FXC's optimized input signature. Velocity
     // inputs removed with their render target need no native producer.
     let range =
@@ -239,6 +362,16 @@ pub(super) fn hlsl(
     let mut assignments = Vec::new();
     let mut colors = false;
     let mut position = false;
+    if let Some((ordinal, field)) = outputs
+        .iter()
+        .enumerate()
+        .find(|(_, f)| f.semantic.eq_ignore_ascii_case("SV_Position"))
+    {
+        ensure!(field.width == 4, "Source projected position width");
+        if let Some(value) = source.literal_output(&writes, ordinal, 4)? {
+            assignments.push(format!("projected={value};"));
+        }
+    }
     for (pixel_ordinal, (semantic, index, _, mask)) in pixel_fields.iter().enumerate() {
         if semantic.eq_ignore_ascii_case("SV_Position") {
             parameters.push("out float4 projected:SV_POSITION0".into());
@@ -267,6 +400,8 @@ pub(super) fn hlsl(
             .is_some_and(|v| *v != 0);
         let expression = if !active {
             "0".to_owned()
+        } else if let Some(value) = source.literal_output(&writes, ordinal, width)? {
+            value
         } else if matches!(surface.stage, 4 | 13) {
             ensure!(
                 *index == 0 && width == 2,
@@ -307,6 +442,44 @@ pub(super) fn hlsl(
         parameters.push("out float4 projected:SV_POSITION0".into());
     }
     Ok((program(surface, &parameters, &assignments, colors)?, colors))
+}
+
+fn read_entry<'a>(
+    listing: &'a str,
+    source: &mut Source<'a>,
+) -> Result<BTreeMap<(u32, u32), &'a str>> {
+    let mut writes = BTreeMap::new();
+    // DXC also emits intrinsic declarations. Only the executable body owns
+    // SSA definitions and output writes, and each function has its own SSA IDs.
+    let mut functions = listing.split("define void @").skip(1);
+    let function = functions
+        .next()
+        .context("Missing source vertex entry point")?;
+    ensure!(
+        functions.next().is_none(),
+        "Multiple source vertex entry points"
+    );
+    let body = function
+        .split_once("() {")
+        .context("Unsupported source vertex entry point")?
+        .1
+        .split_once("\n}")
+        .context("Unterminated source vertex entry point")?
+        .0;
+    for line in body.lines().map(str::trim) {
+        let line = line.split(';').next().unwrap().trim();
+        if let Some((name, code)) = line.strip_prefix('%').and_then(|s| s.split_once(" = ")) {
+            if name.bytes().all(|b| b.is_ascii_digit()) {
+                source.definitions.insert(name.parse()?, code);
+            }
+        } else if line.starts_with("call void @dx.op.storeOutput.f32(") {
+            let (_, args) = call(line)?;
+            ensure!(number(args[2])? == 0, "Source vertex output row");
+            writes.insert((number(args[1])?, number(args[3])?), args[4]);
+        }
+    }
+    source.flow = flow::Flow::read(body)?;
+    Ok(writes)
 }
 
 fn program(

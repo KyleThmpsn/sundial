@@ -109,9 +109,10 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedAn
     {
         clips.push((tag(clip, "native")?, payload(graph, &clip["file"])?));
     }
-    let states = if first_person["state_conversion"]["status"] == "source_states" {
+    let state_status = first_person["state_conversion"]["status"].as_str();
+    let states = if matches!(state_status, Some("source_states" | "native_states")) {
         let section = &first_person["state_conversion"];
-        Some(ImportedStates {
+        let states = ImportedStates {
             parameters: (
                 tag(section, "parameters")?,
                 payload(graph, &files["parameters_template"])?,
@@ -122,7 +123,14 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedAn
             ),
             converted_parameters: payload(graph, &files["parameters"])?,
             converted_states: payload(graph, &files["states"])?,
-        })
+        };
+        if state_status == Some("native_states")
+            && (states.parameters.1 != states.converted_parameters
+                || states.states.1 != states.converted_states)
+        {
+            return Err(invalid("Preserved native animation selectors changed"));
+        }
+        Some(states)
     } else {
         None
     };
@@ -336,10 +344,15 @@ fn validate_rigs(manager: &PackageManager, animation: &ImportedAnimation) -> Aut
                 rig.relocation,
             )
             .map_err(|error| invalid(format!("Imported rig extension: {error:#}")))?;
+        } else if rig.kind == RigKind::Skeleton {
+            parhelion_import::d2_mot::rig_convert::validate_source_relocation(
+                &rig.original.1,
+                &rig.converted,
+                rig.relocation,
+            )
+            .map_err(|error| invalid(format!("Imported source rig relocation: {error:#}")))?;
         } else if rig.relocation.is_some() {
-            return Err(invalid(
-                "Imported rig relocation requires an explicit extension",
-            ));
+            return Err(invalid("Imported rig relocation requires an FK skeleton"));
         }
         match rig.kind {
             RigKind::Controls => {
@@ -371,7 +384,7 @@ fn validate_rigs(manager: &PackageManager, animation: &ImportedAnimation) -> Aut
         }
         stock(manager, &rig.original, RESOURCE_OWNER_CLASS, "rig owner")?;
     }
-    if animation.rig_extension {
+    if animation.rig_extension || animation.rigs.iter().any(|rig| rig.relocation.is_some()) {
         use parhelion_import::tiger::{animation::rig::validate_weapon_pair, payload::Payload};
         let skeleton = |fp| {
             animation

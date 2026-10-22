@@ -11,7 +11,6 @@ pub enum Tool {
     Ffmpeg,
     Decompiler,
     Oodle,
-    Xg,
     Vgmstream,
     Dxc,
 }
@@ -19,7 +18,7 @@ pub enum Tool {
 /// Destiny 2: Monument of Triumph decodes Wwise Opus audio and decompiles source shaders.
 pub const MONUMENT: &[Tool] = &[Tool::Ffmpeg, Tool::Decompiler];
 /// Destiny 1: Rise of Iron decompresses Oodle 3 blocks and untiles Xbox One textures.
-pub const RISE_OF_IRON: &[Tool] = &[Tool::Oodle, Tool::Xg];
+pub const RISE_OF_IRON: &[Tool] = &[Tool::Oodle];
 /// Halo: Reach decodes FMOD banks only for map sounds.
 pub const REACH: &[Tool] = &[Tool::Vgmstream];
 /// Marathon disassembles DXIL shaders.
@@ -31,7 +30,6 @@ impl Tool {
             Tool::Ffmpeg => "ffmpeg",
             Tool::Decompiler => "3Dmigoto Decompiler",
             Tool::Oodle => "Oodle 3",
-            Tool::Xg => "Xbox XG Library",
             Tool::Vgmstream => "vgmstream",
             Tool::Dxc => "DXC",
         }
@@ -42,7 +40,6 @@ impl Tool {
             Tool::Ffmpeg => "Audio",
             Tool::Decompiler | Tool::Dxc => "Shaders",
             Tool::Oodle => "Packages",
-            Tool::Xg => "Textures",
             Tool::Vgmstream => "Map sounds",
         }
     }
@@ -55,7 +52,6 @@ impl Tool {
             Tool::Decompiler => "cmd_Decompiler-1.3.16.zip",
             Tool::Oodle if cfg!(windows) => "oo2core_3_win64.dll",
             Tool::Oodle => "liblinoodle3.so",
-            Tool::Xg => "xgpc.dll",
             Tool::Vgmstream if cfg!(windows) => "vgmstream-cli.exe",
             Tool::Vgmstream => "vgmstream-cli",
             Tool::Dxc if cfg!(windows) => "dxc.exe",
@@ -70,7 +66,7 @@ impl Tool {
             Tool::Decompiler => Some("https://github.com/bo3b/3Dmigoto/releases/tag/1.3.16"),
             Tool::Vgmstream => Some("https://github.com/vgmstream/vgmstream/releases"),
             Tool::Dxc => Some("https://github.com/microsoft/DirectXShaderCompiler/releases"),
-            Tool::Oodle | Tool::Xg => None,
+            Tool::Oodle => None,
         }
     }
 
@@ -78,7 +74,6 @@ impl Tool {
     pub fn origin(self) -> Option<&'static str> {
         match self {
             Tool::Oodle => Some("Found in the Shadowkeep install's bin/x64 folder."),
-            Tool::Xg => Some("Part of the Xbox One XDK."),
             _ => None,
         }
     }
@@ -91,14 +86,13 @@ impl Tool {
     fn variable(self) -> Option<&'static str> {
         match self {
             Tool::Oodle => Some("PARHELION_D1_OODLE"),
-            Tool::Xg => Some("PARHELION_D1_XG"),
             Tool::Dxc => Some("PARHELION_DXC"),
             Tool::Ffmpeg | Tool::Decompiler | Tool::Vgmstream => None,
         }
     }
 
     fn library(self) -> bool {
-        matches!(self, Tool::Oodle | Tool::Xg)
+        self == Tool::Oodle
     }
 
     /// The import error for a tool that could not be found or started.
@@ -116,7 +110,6 @@ impl Tool {
 pub struct Paths {
     pub ffmpeg: Option<PathBuf>,
     pub oodle: Option<PathBuf>,
-    pub xg: Option<PathBuf>,
     pub vgmstream: Option<PathBuf>,
     pub dxc: Option<PathBuf>,
     pub native_packages: Option<PathBuf>,
@@ -126,7 +119,6 @@ impl Paths {
     const NONE: Paths = Paths {
         ffmpeg: None,
         oodle: None,
-        xg: None,
         vgmstream: None,
         dxc: None,
         native_packages: None,
@@ -136,7 +128,6 @@ impl Paths {
         match tool {
             Tool::Ffmpeg => self.ffmpeg.as_ref(),
             Tool::Oodle => self.oodle.as_ref(),
-            Tool::Xg => self.xg.as_ref(),
             Tool::Vgmstream => self.vgmstream.as_ref(),
             Tool::Dxc => self.dxc.as_ref(),
             Tool::Decompiler => None,
@@ -196,14 +187,20 @@ fn candidates(tool: Tool) -> Vec<PathBuf> {
                 places.extend(std::env::split_paths(&path).map(|folder| folder.join(file)));
             }
         }
-        Tool::Xg | Tool::Decompiler => {}
+        Tool::Decompiler => {}
     }
     places
 }
 
-/// The program to start. A missing program yields its bare name, which fails to start with
-/// [`Tool::missing`].
+/// The program to start. Preserve an explicit selection even if it cannot be opened, so
+/// execution fails at that path instead of silently running a different program from PATH.
 pub fn executable(tool: Tool) -> PathBuf {
+    if let Some(path) = configured().chosen(tool) {
+        return path.clone();
+    }
+    if let Some(path) = tool.variable().and_then(std::env::var_os) {
+        return PathBuf::from(path);
+    }
     candidates(tool)
         .into_iter()
         .find(|path| path.is_file())
@@ -253,7 +250,6 @@ pub fn located(tool: Tool) -> Option<PathBuf> {
 fn loads(tool: Tool, path: &Path) -> bool {
     let symbol: &[u8] = match tool {
         Tool::Oodle => b"OodleLZDecoder_DecodeSome\0",
-        Tool::Xg if cfg!(windows) => b"XGCreateTexture2DComputer\0",
         _ => return false,
     };
     // SAFETY: Only the presence of an exported symbol is read. The library is unloaded when it

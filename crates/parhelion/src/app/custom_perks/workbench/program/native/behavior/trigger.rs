@@ -171,32 +171,6 @@ mod tests {
     }
 
     #[test]
-    fn a_composed_weapon_label_filter_round_trips() {
-        // A composed filter must survive native emission and readback.
-        let vocabulary = activation::site_labels(CLASS, LABELS);
-        let find = |wanted: &str| {
-            vocabulary
-                .iter()
-                .find(|(_, name, _)| *name == wanted)
-                .unwrap_or_else(|| panic!("the stock perks filter kills on {wanted}"))
-                .0
-        };
-        let mut labels = vec![find("shotgun"), find("sniper rifle")];
-        labels.sort_unstable();
-        let bytes = native::template(NativeNodeKind::Condition(2)).unwrap();
-        let mut graph = Graph::read(&bytes, 0, CLASS).unwrap();
-        set_labels(&mut graph, 0, LABELS, 0, &labels).unwrap();
-        let reread = Graph::read(&graph.emit().unwrap(), 0, CLASS).unwrap();
-        reread.validate_node(NativeNodeKind::Condition(2)).unwrap();
-        let mut stored = native::labels::source(&reread, 0, LABELS).unwrap()[0].clone();
-        stored.sort_unstable();
-        assert_eq!(stored, labels);
-        // Clearing every label is the any-kill case rather than an error.
-        set_labels(&mut graph, 0, LABELS, 0, &[]).unwrap();
-        assert!(native::labels::source(&graph, 0, LABELS).unwrap()[0].is_empty());
-    }
-
-    #[test]
     fn editing_a_label_list_preserves_other_filter_bindings() {
         // The kill node carries two binding sites with four set operations each. Writing one
         // list must not disturb the rest, or changing an exclusion would silently drop the

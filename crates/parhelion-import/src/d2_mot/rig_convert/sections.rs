@@ -36,6 +36,73 @@ pub(super) fn validate_instance(native: &Payload) -> Result<()> {
     Ok(())
 }
 
+pub(super) fn validate_relocation(
+    original: &Payload,
+    converted: &Payload,
+    relocation: Option<(usize, usize)>,
+) -> Result<()> {
+    validate_instance(converted)?;
+    let before = original.pointer(24)?;
+    let after = converted.pointer(24)?;
+    let instance = original.pointer(16)?;
+    ensure!(
+        original.u32(before - 4)? == 0x80808546
+            && converted.u32(after - 4)? == 0x80808546
+            && converted.pointer(16)? == instance,
+        "Private FK relocation changes the component envelope"
+    );
+    let Some((cut, delta)) = relocation else {
+        ensure!(before == after, "Private FK relocation is missing");
+        return Ok(());
+    };
+    ensure!(
+        cut.checked_add(8) == Some(before)
+            && delta > 0
+            && delta.is_multiple_of(32)
+            && before.checked_add(delta) == Some(after)
+            && original.u64(0x48)?.checked_add(delta as u64) == Some(converted.u64(0x48)?),
+        "Private FK relocation differs from the copied instance span"
+    );
+    let sections = original.array(instance + 0x30, 64, Some(0x80808544))?;
+    let schemas = original.array(before + 0xD8, 24, Some(0x80808549))?;
+    ensure!(
+        converted.array(instance + 0x30, 64, Some(0x80808544))? == sections
+            && converted.array(after + 0xD8, 24, Some(0x80808549))?
+                == schemas.iter().map(|row| row + delta).collect::<Vec<_>>()
+            && sections.len() == schemas.len(),
+        "Private FK relocation changes section identities"
+    );
+    for (row, schema) in sections.into_iter().zip(schemas) {
+        ensure!(
+            converted.u32(row + 4)? == 0x80808549
+                && converted.u64(row + 8)? == (schema + delta) as u64
+                && converted.pointer(row + 16)? == instance
+                && converted.u32(schema + delta + 4)? == 0x80808544
+                && converted.u64(schema + delta + 8)? == row as u64,
+            "Private FK relocation leaves a stale section connection"
+        );
+    }
+    for field in original.array(0x30, 16, Some(0x808091A4))? {
+        ensure!(
+            field >= cut && converted.pointer(field + delta)? == instance,
+            "Private FK relocation leaves a stale instance footer"
+        );
+    }
+    if let Some(&last) = converted
+        .array(instance + 0x40, 8, Some(0x80808A06))?
+        .last()
+    {
+        ensure!(
+            converted
+                .0
+                .get(last + 8..after - 4)
+                .is_some_and(|tail| tail.iter().all(|&byte| byte == 0)),
+            "Private FK relocation keeps data after its procedural ranges"
+        );
+    }
+    Ok(())
+}
+
 pub(super) fn convert(source: &Payload, native: &mut Payload) -> Result<usize> {
     let si = source.pointer(16)?;
     let ni = native.pointer(16)?;

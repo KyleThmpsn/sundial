@@ -767,7 +767,7 @@ mod tests {
         put(&mut data, output, &0xABCDEF01u32.to_le_bytes()).unwrap();
         append_indirect(&mut data, row + 16, 0x80800009, &[0x4A, 0, 0x4C, 0], 1).unwrap();
         append_array(&mut data, row + 56, 0x80800007, &1u32.to_le_bytes(), 4).unwrap();
-        append_array(&mut data, output + 80, 0x8080000B, &1u64.to_le_bytes(), 8).unwrap();
+        append_array(&mut data, output + 80, 0x8080000B, &1u32.to_le_bytes(), 4).unwrap();
         put(&mut data, 16, &0x170u64.to_le_bytes()).unwrap();
         append_array(&mut data, 0x1E0, 0x80800090, &[0; 16], 16).unwrap();
         let parameters = data.len() + 4;

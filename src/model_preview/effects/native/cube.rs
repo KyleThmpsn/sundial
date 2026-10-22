@@ -26,7 +26,7 @@ impl Cube {
                 .ok_or("Truncated reflection texture header")?,
         );
         if edge == 0
-            || edge > 512
+            || edge > 1024
             || u16_at(&header, 16)? as usize != edge
             || u16_at(&header, 18)? != 1
             || u16_at(&header, 20)? != 6

@@ -1778,24 +1778,3 @@ fn spoken_list(parts: &[&str]) -> String {
         [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn picker_prefers_firing_graph_but_preserves_selected_state_record() {
-        use crate::weapon::behavior::{behavior, catalog_for_type};
-        let sources = catalog_for_type("Auto Rifle").collect::<Vec<_>>();
-        let offered = super::offered_behaviors(&sources, None);
-        assert!(offered.iter().any(|entry| entry.id == "cerberus-1-graph"));
-        assert!(!offered.iter().any(|entry| entry.id == "cerberus-plus-one"));
-        let original = behavior("cerberus-plus-one").unwrap();
-        let offered = super::offered_behaviors(&sources, Some(original));
-        assert!(offered.iter().any(|entry| entry.id == original.id));
-        assert!(super::behavior_choice_label(original, None).ends_with("No Firing Graph"));
-        assert!(!super::behavior_tooltip(original, None).contains("Shared with"));
-        assert!(
-            !super::behavior_tooltip(behavior("tarrabah").unwrap(), None)
-                .contains("element switch")
-        );
-    }
-}

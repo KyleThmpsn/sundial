@@ -73,6 +73,7 @@ pub(super) fn bank(source: &mut Reader, entity: u32) -> Result<Bank> {
 pub(super) struct Globals {
     pub native: BTreeMap<u32, u8>,
     pub source: Vec<(u32, [u8; 16])>,
+    pub wetness: Option<u8>,
 }
 
 fn globals(reader: &mut Reader, source: bool) -> Result<Vec<(u32, [u8; 16])>> {
@@ -124,12 +125,51 @@ fn globals(reader: &mut Reader, source: bool) -> Result<Vec<(u32, [u8; 16])>> {
 
 impl Globals {
     pub fn read(source: &mut Reader, native: &mut Reader) -> Result<Self> {
+        let wetness = wetness(source)?;
         let source = globals(source, true)?;
         let native = globals(native, false)?
             .into_iter()
             .enumerate()
             .map(|(i, (name, _))| Ok((name, u8::try_from(i)?)))
             .collect::<Result<_>>()?;
-        Ok(Self { source, native })
+        Ok(Self {
+            source,
+            native,
+            wetness,
+        })
     }
+}
+
+fn wetness(reader: &mut Reader) -> Result<Option<u8>> {
+    let tags: BTreeSet<_> = reader
+        .manager
+        .lookup
+        .named_tags
+        .iter()
+        .filter(|t| t.name == "render_globals")
+        .map(|t| t.hash.0)
+        .collect();
+    let mut result = None;
+    for tag in tags {
+        let bootstrap = reader.tag(tag, None)?;
+        let globals = reader.tag(bootstrap.u32(0x48)?, None)?;
+        let inputs = reader.tag(globals.u32(0x38)?, Some(0x8080a002))?;
+        let mut names = BTreeMap::new();
+        for row in inputs.array(8, 8, Some(0x8080a004))? {
+            let name = inputs.u32(row)?;
+            let index = u8::try_from(inputs.u32(row + 4)?).context("Renderer input index")?;
+            ensure!(
+                names.insert(name, index).is_none(),
+                "Duplicate renderer input name"
+            );
+        }
+        // FNV-1 of wetness_amount, corroborated by the material's albedo,
+        // roughness and normal-blending consumers. Match the name, not ordinal 13.
+        let current = names.get(&0x324ad09d).copied();
+        if let Some(previous) = result {
+            ensure!(previous == current, "Ambiguous renderer wetness input");
+        }
+        result = Some(current);
+    }
+    result.context("Missing source renderer inputs")
 }

@@ -38,10 +38,16 @@ fn primitives(indices: &[u32], primitive: u16, restart: u32) -> Result<u32> {
 }
 
 impl Assembly<'_> {
-    fn buffer(&mut self, tag: u32, indices: bool) -> Result<(String, Payload, usize)> {
-        let symbol = format!("buffer-{tag:08X}");
+    fn buffer(
+        &mut self,
+        tag: u32,
+        indices: bool,
+        positions: bool,
+    ) -> Result<(String, Payload, usize)> {
+        let mapped = positions && self.bone_map.is_some();
+        let symbol = format!("buffer-{tag:08X}{}", if mapped { "-mapped" } else { "" });
         let source = self.source.read(tag)?;
-        let raw = self.source.read(self.source.reference(tag)?)?;
+        let mut raw = self.source.read(self.source.reference(tag)?)?;
         let subtype = if indices { 6 } else { 4 };
         let template = self.template(32, subtype)?;
         let data_template = self.template(40, subtype)?;
@@ -72,6 +78,20 @@ impl Assembly<'_> {
             stride > 0 && raw.0.len().is_multiple_of(stride),
             "Source buffer stride differs"
         );
+        if let Some(mapping) = self.bone_map.as_ref().filter(|_| positions) {
+            ensure!(
+                stride == 8,
+                "Mapped weapon positions require rigid Int16 records"
+            );
+            for vertex in raw.0.chunks_exact_mut(stride) {
+                let bone = usize::try_from(i16::from_le_bytes(vertex[6..8].try_into()?))
+                    .context("Negative source rigid bone index")?;
+                let native = *mapping
+                    .get(bone)
+                    .context("Source vertex exceeds the mapped palette")?;
+                vertex[6..8].copy_from_slice(&native.to_le_bytes());
+            }
+        }
         if !self.symbols.contains(&symbol) {
             let data = format!("{symbol}-data");
             self.node(&data, data_template, &raw.0, Some(&symbol), &[])?;
@@ -88,6 +108,7 @@ impl Assembly<'_> {
         symbol: &str,
         equipment: &Equipment,
         weapon: bool,
+        cloth: Option<(&Payload, usize)>,
     ) -> Result<Model> {
         let source = self.source.read(source_tag)?;
         let meshes = source.array(0x10, 0xA0, Some(0x80801BBF))?;
@@ -121,7 +142,19 @@ impl Assembly<'_> {
             bones > 0 && bones <= self.palette,
             "Source model exceeds the validated runtime palette"
         );
-        put(&mut out, 0x40, &bones.to_le_bytes())?;
+        let native_bones = if let Some(mapping) = &self.bone_map {
+            u32::from(
+                *mapping
+                    .get(..bones as usize)
+                    .context("Model palette exceeds bone map")?
+                    .iter()
+                    .max()
+                    .context("Empty model palette")?,
+            ) + 1
+        } else {
+            bones
+        };
+        put(&mut out, 0x40, &native_bones.to_le_bytes())?;
         put(&mut out, 0x50, &transform)?;
         let mut patches = Vec::new();
         let mut total_vertices = 0usize;
@@ -141,7 +174,7 @@ impl Assembly<'_> {
                 if matches!(tag, 0 | u32::MAX) {
                     continue;
                 }
-                let (symbol, data, size) = self.buffer(tag, false)?;
+                let (symbol, data, size) = self.buffer(tag, false, index == 0)?;
                 *stride = size;
                 let count = data.0.len() / size;
                 if let Some(previous) = vertices {
@@ -157,7 +190,8 @@ impl Assembly<'_> {
             total_vertices = total_vertices
                 .checked_add(vertices)
                 .context("Model vertex count overflow")?;
-            let (index_symbol, raw, index_size) = self.buffer(source.u32(mesh + 0x40)?, true)?;
+            let (index_symbol, raw, index_size) =
+                self.buffer(source.u32(mesh + 0x40)?, true, false)?;
             put(&mut out, to + 16, &u32::MAX.to_le_bytes())?;
             patches.push((to + 16, index_symbol));
             let indices = raw
@@ -182,6 +216,13 @@ impl Assembly<'_> {
                     .all(|index| *index == restart || (*index as usize) < vertices),
                 "Source indices exceed the retained vertex streams"
             );
+            let simulated_draws = cloth
+                .map(|(owner, resource)| {
+                    super::super::cloth::simulated_draws(
+                        owner, resource, &source, mesh, &indices, restart, vertices,
+                    )
+                })
+                .transpose()?;
             let parts = source.array(mesh + 0x48, 36, Some(0x80801AEF))?;
             let mut rows = Vec::new();
             let mut materials = Vec::new();
@@ -210,6 +251,18 @@ impl Assembly<'_> {
                     self.layouts
                         .matching(source.u8(mesh + 0x80 + stage)?, strides)?
                 };
+                if self.bone_map.is_some() && start != end {
+                    // These declarations store rigid POSITION0 as an Int16-normalized four-vector,
+                    // followed by ordinary attributes. The vertex-program guard separately
+                    // rejects weighted inputs and resource-backed deformation.
+                    ensure!(
+                        matches!(layout, 123 | 139)
+                            && strides[0] == 8
+                            && strides[2] == 0
+                            && strides[3] == 0,
+                        "Mapped weapon geometry requires a supported rigid declaration"
+                    );
+                }
                 put(&mut out, to + 0x58 + stage * 2, &layout.to_le_bytes())?;
                 for (index, &part) in parts.iter().enumerate().take(end).skip(start) {
                     let flags = source.u16(part + 0x1C)?;
@@ -217,7 +270,9 @@ impl Assembly<'_> {
                         flags & !0x777 == 0,
                         "Source draw flags need a native contract: {flags:04X}"
                     );
-                    let simulated = flags & 16 != 0;
+                    let simulated = simulated_draws
+                        .as_ref()
+                        .map_or(flags & 16 != 0, |draws| draws.contains(&index));
                     let material = source.u32(part)?;
                     ensure!(
                         !matches!(material, 0 | u32::MAX) && source.i16(part + 4)? == -1,
@@ -266,6 +321,11 @@ impl Assembly<'_> {
                     // ones, and mapped exclusions hid the Gjallarhorn's detail parts on the
                     // native inspect screen and in the world.
                     let mut native_flags = (flags & 7) | ((flags & !15) >> 1);
+                    if simulated_draws.is_some() {
+                        // Native cloth's float-output role must agree with the display
+                        // binding and material scope, independently of source flag variants.
+                        native_flags = (native_flags & !8) | if simulated { 8 } else { 0 };
+                    }
                     if weapon {
                         native_flags &= !0x180;
                     }

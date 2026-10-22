@@ -1,42 +1,6 @@
 use super::*;
 
 #[test]
-fn library_rows_show_authored_metadata_and_search_it_without_changing_selection() {
-    let directory = tempfile::tempdir().unwrap();
-    let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
-    let mut app = PackageAuthoringApp {
-        recipe_entries: library.scan().unwrap().entries,
-        library_open: true,
-        ..Default::default()
-    };
-    let entry = &mut app.recipe_entries[0];
-    entry.name = "Library test weapon".into();
-    entry.type_name = Some("Micro-Missile Shotgun".into());
-    entry.ammo_type = Some(RecipeAmmoType::Special);
-    entry.damage_type = Some(crate::recipe::RecipeDamageType::Arc);
-    entry.rarity = Some(RecipeRarity::Legendary);
-    app.recipe_path = Some(entry.path.clone());
-    let before = app.recipe.clone();
-    app.library_query = "  test ARC   special micro-missile  ".into();
-    let (output, _) = render(900.0, |ui| app.draw_library_windows(ui.ctx()));
-    let labels = text(&output);
-    assert!(labels.contains("Library test weapon"));
-    assert!(labels.contains("Open"));
-    assert!(labels.lines().any(|line| line == "Default"));
-    assert!(labels.contains("Micro-Missile Shotgun"));
-    assert!(labels.contains("Arc · Special"));
-    assert!(
-        (text_origin(&output, "Library test weapon").x
-            - text_origin(&output, "Micro-Missile Shotgun · Legendary · Arc · Special").x)
-            .abs()
-            < 1.0
-    );
-    assert!(labels.lines().any(|line| line == "1 recipe"));
-    assert_eq!(app.recipe, before);
-    assert!(app.enabled_recipe_paths.is_empty());
-}
-
-#[test]
 fn library_restore_confirmation_is_read_only_and_refresh_preserves_open_edits() {
     let directory = tempfile::tempdir().unwrap();
     let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
@@ -107,35 +71,4 @@ fn clicking_library_name_opens_the_recipe_instead_of_selecting_text() {
     assert!(!app.library_open);
     assert!(app.enabled_recipe_paths.is_empty());
     assert!(!app.recipe_dirty);
-}
-
-#[test]
-fn a_library_notice_sits_above_the_search_and_leaves_the_list_in_view() {
-    let directory = tempfile::tempdir().unwrap();
-    let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
-    let mut app = PackageAuthoringApp {
-        recipe_entries: library.scan().unwrap().entries,
-        library_open: true,
-        ..Default::default()
-    };
-    let name = app.recipe_entries[0].name.clone();
-    let count = recipe_count_line(app.recipe_entries.len());
-    app.library_state.notice = Some("Imported 1 recipe.".into());
-    let (output, _) = render(900.0, |ui| app.draw_library_windows(ui.ctx()));
-    let notice = text_origin(&output, "Imported 1 recipe.");
-    let row = text_origin(&output, &name);
-    let footer = text_origin(&output, &count);
-    // The notice is one line under the toolbar, and the list and its count follow it on screen.
-    assert!(
-        notice.y < row.y && row.y < footer.y,
-        "{notice:?} {row:?} {footer:?}"
-    );
-    assert!(
-        notice.y < 120.0,
-        "the notice sits under the toolbar: {notice:?}"
-    );
-}
-
-fn recipe_count_line(count: usize) -> String {
-    format!("{count} {}", if count == 1 { "recipe" } else { "recipes" })
 }

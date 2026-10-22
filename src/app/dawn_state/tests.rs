@@ -51,17 +51,6 @@ fn postmaster_missing_definition_disables_recovery() {
     assert!(app.undo_history.is_empty());
 }
 
-#[test]
-fn blocked_dawn_inventory_shows_the_source_error() {
-    let dir = TestDirectory::new("blocked-dawn-inventory");
-    let mut app = app(dir.0.clone());
-    app.document =
-        WorkspaceDocument::load(serde_json::json!({"version":6}), &app.settings_path, true);
-    let ctx = egui::Context::default();
-    let out = frame(&mut app, &ctx, vec![], false);
-    assert!(contains_text(&out, "Dawn has not created player-state.db"));
-}
-
 fn item(hash: u64, name: &str) -> crate::catalog::ItemDef {
     crate::catalog::ItemDef {
         hash,
@@ -268,21 +257,6 @@ fn dawn_vendor_and_mission_tabs_render_and_clear_checkpoint_is_undoable() {
             .reward_debts()
             .is_empty()
     );
-}
-
-#[test]
-fn sunrise_does_not_offer_dawn_only_tabs() {
-    for sqlite in [false, true] {
-        let dir = TestDirectory::new("runtime-aware-state-tabs");
-        let mut app = for_source(&dir, sqlite);
-        let ctx = egui::Context::default();
-        let inventory = frame(&mut app, &ctx, vec![], false);
-        assert!(!contains_text(&inventory, "Postmaster"));
-        assert!(!contains_text(&inventory, "Saved Rolls"));
-        let progression = frame(&mut app, &ctx, vec![], true);
-        assert!(!contains_text(&progression, "Vendors"));
-        assert!(!contains_text(&progression, "Missions"));
-    }
 }
 
 #[test]

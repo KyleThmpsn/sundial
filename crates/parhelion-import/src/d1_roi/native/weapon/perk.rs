@@ -289,6 +289,9 @@ fn program(source: &Source, tag: u32, name: &str) -> Result<(Program, usize)> {
     let actions = data
         .array(0x38, 8, None)?
         .into_iter()
+        // Both engines activate stored effects from last to first. Program actions
+        // are execution ordered, and the native compiler reverses them for storage.
+        .rev()
         .map(|at| effect(&data, data.pointer(at)?))
         .collect::<Result<Vec<_>>>()?;
     ensure!(
@@ -358,6 +361,51 @@ fn damage_type(programs: &[Program]) -> Option<&'static str> {
     }
 }
 
+/// Only an unambiguous, standalone source damage choice constrains automatic donor selection.
+/// Unsupported actions retain their normal per-choice translation report.
+pub(super) fn requires_kinetic(source: &Source, weapon: &Value) -> Result<bool> {
+    let mut kinds = BTreeSet::new();
+    for node in weapon["talents"]["nodes"]
+        .as_array()
+        .context("Source talent nodes")?
+    {
+        for step in node["steps"].as_array().context("Source talent steps")? {
+            let variants = step["variants"]
+                .as_array()
+                .context("Source talent variants")?;
+            let [variant] = variants.as_slice() else {
+                continue;
+            };
+            let record = Payload(hex::decode(
+                variant["record"].as_str().context("Source variant bytes")?,
+            )?);
+            let rows = variant["stat_adjustments"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            if record.u64(16)? != 0 || !rows.is_empty() {
+                continue;
+            }
+            let perks = variant["perks"].as_array().context("Source talent perks")?;
+            let [perk] = perks.as_slice() else {
+                continue;
+            };
+            let Some(tag) = perk["action"]
+                .as_u64()
+                .and_then(|tag| u32::try_from(tag).ok())
+            else {
+                continue;
+            };
+            if let Ok((program, _)) = program(source, tag, "Damage")
+                && let Some(kind) = damage_type(&[program])
+            {
+                kinds.insert(kind);
+            }
+        }
+    }
+    Ok(kinds.len() == 1 && kinds.contains("kinetic"))
+}
+
 /// A native perk socket: its index, socket type and perk plugs, the default first.
 struct PerkSocket<'a> {
     index: usize,
@@ -417,12 +465,44 @@ struct Choice {
     report: Value,
 }
 
+/// A donor choice supplies only a finished-perk layout. Empty sight and magazine plugs are
+/// valid choices, so search the remaining default and alternate choices before refusing it.
+fn template(assembly: &mut Assembly<'_>, sockets: &[Value]) -> Result<(u32, u16)> {
+    let mut visited = BTreeSet::new();
+    for default in [true, false] {
+        for choice in sockets
+            .iter()
+            .flat_map(|socket| socket["choices"].as_array().into_iter().flatten())
+        {
+            if choice["item_kind"].as_u64() != Some(PERK_ITEM_KIND)
+                || (choice["default"] == true) != default
+            {
+                continue;
+            }
+            let hash = u32::try_from(choice["hash"].as_u64().context("Native plug identity")?)?;
+            if !visited.insert(hash) {
+                continue;
+            }
+            let tag = crate::d2_mot::assets::item::find_native(&mut assembly.native, hash)?;
+            let item = assembly.native.tag(tag, Some(0x80807BEA))?;
+            let perks = sundial::package_authoring::native_weapon::base_sandbox_perks(&item.0)
+                .map_err(anyhow::Error::msg)?;
+            if let Some(&perk) = perks.first() {
+                return Ok((hash, perk));
+            }
+        }
+    }
+    anyhow::bail!("Native gameplay plug choices have no finished perk template")
+}
+
 /// Translate the source talent grid onto the base's perk sockets. Each source column becomes one
 /// socket: the first column takes the intrinsic socket and the rest take the remaining perk
 /// sockets in order. A column's choices keep their source row order, and each clones a plug from
 /// its native socket's pool as its layout template, distinct while the pool lasts. A choice whose
-/// only effect sets the damage type sets the recipe's damage type instead of taking a socket.
+/// only effect sets a fixed damage type sets the recipe's damage type. Alternative damage steps
+/// share a separate socket so their private effects follow the equipped choice.
 /// Unused perk sockets are disabled so the base's own perks do not stand in for the source's.
+#[allow(clippy::cognitive_complexity)]
 pub(super) fn translate(
     assembly: &mut Assembly<'_>,
     source: &Value,
@@ -431,26 +511,7 @@ pub(super) fn translate(
     let native = crate::d2_mot::ornaments::native(&mut assembly.native, donor)?;
     let definitions = crate::d2_mot::gameplay::stat_definitions(&mut assembly.native)?;
     let sockets = native["sockets"].as_array().context("Native sockets")?;
-    let (_, template) = sockets
-        .iter()
-        .find_map(|socket| {
-            socket["choices"]
-                .as_array()?
-                .iter()
-                .find(|c| c["item_kind"] == 15 && c["default"] == true)
-                .map(|choice| (socket, choice))
-        })
-        .context("Native weapon has no default gameplay plug template")?;
-    let template_hash = u32::try_from(template["hash"].as_u64().context("Native plug identity")?)?;
-    let template_tag =
-        crate::d2_mot::assets::item::find_native(&mut assembly.native, template_hash)?;
-    let template_data = assembly.native.tag(template_tag, Some(0x80807BEA))?;
-    let native_perks =
-        sundial::package_authoring::native_weapon::base_sandbox_perks(&template_data.0)
-            .map_err(anyhow::Error::msg)?;
-    let template_perk = *native_perks
-        .first()
-        .context("Native gameplay plug has no finished perk template")?;
+    let (template_hash, template_perk) = template(assembly, sockets)?;
     let perk_sockets = perk_sockets(sockets)?;
     let mut equivalents = BTreeMap::new();
     for (source, plug) in STOCK_EQUIVALENTS {
@@ -553,11 +614,7 @@ pub(super) fn translate(
             if let Some(kind) = damage_type(&lowered.raw)
                 .filter(|_| lowered.stats.is_empty() && lowered.stock.is_empty())
             {
-                ensure!(
-                    damage.is_none_or(|previous| previous == kind),
-                    "Source talent grid sets more than one damage type"
-                );
-                damage = Some(kind);
+                damage.get_or_insert(kind);
                 choices.push(Choice {
                     column: i64::MIN,
                     row,
@@ -584,6 +641,26 @@ pub(super) fn translate(
             });
         }
     }
+    let damage_kinds = choices
+        .iter()
+        .filter(|c| c.column == i64::MIN)
+        .filter_map(|c| damage_type(&c.lowered.raw))
+        .collect::<BTreeSet<_>>();
+    if damage_kinds.len() > 1 {
+        let damage_nodes = choices
+            .iter()
+            .filter(|c| c.column == i64::MIN)
+            .map(|c| c.report["node"].as_u64().context("Damage talent node"))
+            .collect::<Result<BTreeSet<_>>>()?;
+        ensure!(
+            damage_nodes.len() == 1,
+            "Damage alternatives belong to different source nodes"
+        );
+        for choice in choices.iter_mut().filter(|c| c.column == i64::MIN) {
+            choice.column = i64::MAX;
+            choice.report["damage_choice"] = json!(damage_type(&choice.lowered.raw));
+        }
+    }
     let mut source_columns = choices
         .iter()
         .map(|choice| choice.column)
@@ -604,12 +681,22 @@ pub(super) fn translate(
             .filter(|choice| choice.column == column)
             .collect::<Vec<_>>();
         members.sort_by_key(|choice| choice.row);
-        let Some(socket) = perk_sockets.get(ordinal) else {
-            for choice in members {
-                unsupported.push(json!({"name":choice.name,"column":column,
-                    "reason":"The native base has no further perk socket for this source column"}));
-            }
-            continue;
+        // The runtime base supplies socket layouts, not a limit on source talent columns.
+        // Additional columns use a normal perk layout and still receive private plug identities.
+        let extra;
+        let socket = if let Some(socket) = perk_sockets.get(ordinal) {
+            socket
+        } else {
+            let layout = perk_sockets
+                .last()
+                .context("Native base has no perk socket layout")?;
+            extra = PerkSocket {
+                index: columns.len(),
+                socket_type: layout.socket_type,
+                plugs: layout.plugs.clone(),
+            };
+            columns.push(Value::Null);
+            &extra
         };
         let mut plugs = Vec::new();
         for (choice_index, choice) in members.into_iter().enumerate() {
@@ -653,7 +740,8 @@ pub(super) fn translate(
         json!(columns),
         json!(variants),
         json!({"translated":translated,"unsupported":unsupported,"damage_type":damage,
-        "adaptation":"Each source talent column is one socket on the base's matching perk socket, the first on the intrinsic socket, with the source names, icons and choices in row order. Supported talents are available immediately, with plain stat adjustments as equipped stat contributions. A damage talent sets the weapon's damage type. Source progression, auxiliary status presentation and unsupported talents are not migrated.",
+        "finished_perk_template":{"plug":template_hash,"index":template_perk},
+        "adaptation":"Source talent columns become private socket choices in row order, with additional perk sockets when needed. Supported talents are available immediately, with plain stat adjustments as equipped stat contributions. A fixed damage talent sets the weapon's damage type. Alternative damage steps share a separate socket, with the first source step as the initial damage type. Source progression, auxiliary status presentation and unsupported talents are not migrated.",
         "gameplay_verified":false}),
         damage,
     ))

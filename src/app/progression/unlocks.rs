@@ -87,20 +87,6 @@ fn scope(definition: &UnlockDefinition, value: bool) -> &'static str {
     }
 }
 
-#[cfg(test)]
-fn entries(catalog: &Catalog, value: bool) -> Vec<Entry> {
-    let definitions = if value {
-        catalog.unlock_value_definitions()
-    } else {
-        catalog.unlock_flag_definitions()
-    };
-    definitions
-        .iter()
-        .enumerate()
-        .map(|(index, definition)| entry(catalog, index, value, definition))
-        .collect()
-}
-
 fn entry(catalog: &Catalog, index: usize, value: bool, definition: &UnlockDefinition) -> Entry {
     let label = labels::unlock(catalog, index, value);
     let named = label.named;

@@ -239,6 +239,128 @@ fn operation(row: &[u8]) -> Vec<u8> {
     signature
 }
 
+fn arm_count(rig: &Value) -> Result<usize> {
+    let skeletons = rig["skeletons"].as_array().context("rig skeletons")?;
+    let count = |first_person| -> Result<usize> {
+        let rows = skeletons
+            .iter()
+            .filter(|s| (s["entity"] != rig["runtime_entity"]) == first_person)
+            .collect::<Vec<_>>();
+        ensure!(rows.len() == 1, "rig skeleton is missing or ambiguous");
+        Ok(rows[0]["bones"].as_array().context("rig bones")?.len())
+    };
+    count(true)?
+        .checked_sub(count(false)?)
+        .context("shared arm prefix")
+}
+
+/// A shared clip bank can retain an older weapon size. In that case the controller's
+/// explicit bone lookup establishes the arm slots, while native operations establish the
+/// format of the private weapon controls. Group identities and shared arm poses stay exact.
+fn structural_shape(
+    rows: &[Vec<Vec<u8>>],
+    native: &[Vec<Vec<u8>>],
+    arms: usize,
+) -> Result<clips::slots::Shape> {
+    check(rows)?;
+    check(native)?;
+    ensure!(
+        arms <= rows[4].len()
+            && arms <= native[4].len()
+            && rows[0]
+                .iter()
+                .map(|r| word(r, 0))
+                .eq(native[0].iter().map(|r| word(r, 0))),
+        "private control group identities differ"
+    );
+    let operations = native[1]
+        .iter()
+        .map(|r| operation(r))
+        .collect::<BTreeSet<_>>();
+    let mut map = Vec::new();
+    let mut next = 0u16;
+    for (index, row) in rows[1].iter().enumerate() {
+        let bone = usize::from(short(row, 44));
+        let keep = if bone < arms {
+            let slot = short(&native[4][bone], 0);
+            if slot == u16::MAX {
+                false
+            } else {
+                ensure!(
+                    slot == next
+                        && native[1][usize::from(slot)] == *row
+                        && native[2][usize::from(slot)] == rows[2][index],
+                    "shared arm control or default pose differs"
+                );
+                true
+            }
+        } else {
+            true
+        };
+        if keep {
+            ensure!(
+                operations.contains(&operation(row)),
+                "private control operation lacks native evidence"
+            );
+        }
+        map.push(keep.then_some(next));
+        next += u16::from(keep);
+    }
+    let shape = clips::slots::Shape {
+        native_slots: next,
+        map,
+    };
+    let lowered = lower(rows, &shape)?;
+    ensure!(
+        lowered[0]
+            .iter()
+            .zip(&native[0])
+            .take(rows[0].len().saturating_sub(1))
+            .all(|(a, b)| a == b),
+        "shared control groups differ"
+    );
+    Ok(shape)
+}
+
+fn paired_shape(
+    rows: &[Vec<Vec<u8>>],
+    native: &[Vec<Vec<u8>>],
+    arms: usize,
+    first_person: bool,
+    slots: &clips::slots::Table,
+) -> Result<clips::slots::Shape> {
+    let identity = clips::slots::Shape {
+        native_slots: u16::try_from(rows[1].len())?,
+        map: (0..u16::try_from(rows[1].len())?).map(Some).collect(),
+    };
+    let candidate = if first_person {
+        slots.shapes().get(&u16::try_from(rows[4].len())?)
+    } else {
+        Some(&identity)
+    };
+    if let Some(shape) = candidate
+        && lower(rows, shape)? == native
+    {
+        return Ok(shape.clone());
+    }
+    let shape = structural_shape(rows, native, arms)?;
+    if first_person {
+        let prefix = rows[1]
+            .iter()
+            .take_while(|row| usize::from(short(row, 44)) < arms)
+            .count();
+        ensure!(
+            prefix > 0
+                && slots
+                    .shapes()
+                    .values()
+                    .any(|known| known.map.get(..prefix) == shape.map.get(..prefix)),
+            "controller arm slots lack paired clip evidence"
+        );
+    }
+    Ok(shape)
+}
+
 /// The private weapon section can change size. Shared arm controls retain the slots
 /// established by the carrier's paired clips. New weapon controls are emitted in their
 /// explicit serialized order, with every operation checked against that carrier.
@@ -257,15 +379,9 @@ pub(super) fn owned_slots(
     let known = read(&reference, true)?;
     check(&rows)?;
     check(&known)?;
-    let reference_bones = u16::try_from(known[4].len())?;
-    let shape = slots
-        .shapes()
-        .get(&reference_bones)
-        .context("carrier lacks calibrated control slots")?;
-    ensure!(
-        lower(&known, shape)? == read(&original, false)?,
-        "paired rig control format evidence differs"
-    );
+    let arms = arm_count(calibration)?;
+    ensure!(arms == arm_count(native)?, "calibration arm prefix differs");
+    let shape = paired_shape(&known, &read(&original, false)?, arms, true, slots)?;
     let pairs = super::super::super::owned::validate(source, calibration)?;
     let weapon = pairs
         .iter()
@@ -363,28 +479,16 @@ pub(super) fn prepare(
     validate(&original.0)?;
     let known = read(&reference, true)?;
     let native_rows = read(&original, false)?;
-    let reference_shape;
-    let known_shape = if first_person {
-        slots
-            .shapes()
-            .get(&u16::try_from(known[4].len())?)
-            .context("rig controls lack calibrated clip slots")?
+    let arms = if first_person {
+        arm_count(calibration)?
     } else {
-        ensure!(
-            known[1].len() == native_rows[1].len(),
-            "weapon control slot counts differ"
-        );
-        let count = u16::try_from(known[1].len())?;
-        reference_shape = clips::slots::Shape {
-            native_slots: count,
-            map: (0..count).map(Some).collect(),
-        };
-        &reference_shape
+        0
     };
     ensure!(
-        lower(&known, known_shape)? == native_rows,
-        "paired rig control format evidence differs"
+        !first_person || arms == arm_count(native)?,
+        "calibration arm prefix differs"
     );
+    paired_shape(&known, &native_rows, arms, first_person, slots)?;
     let rows = read(&modern, true)?;
     ensure!(
         rows[4].len() == bones,

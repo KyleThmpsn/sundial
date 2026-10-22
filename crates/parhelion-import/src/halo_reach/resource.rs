@@ -23,6 +23,7 @@ pub struct Resource {
     pub compressed_bytes: usize,
     pub page_bytes: usize,
     pub page_offset: usize,
+    pub secondary: bool,
     pub fixup_offset: usize,
     pub fixup_size: usize,
     pub fixups: Vec<usize>,
@@ -189,6 +190,16 @@ impl Cache {
     /// BSP's render geometry entry names none, and campaign caches leave some model resources'
     /// owners empty, as Lone Wolf's `space_alpha_halo` sky does.
     pub fn resource(&self, owner: &Tag, handle: u32) -> Result<Resource> {
+        self.resource_page(owner, handle, true)
+    }
+
+    /// The resident primary page. Streamed bitmap top mips occupy the secondary page while
+    /// their lower mip chain remains here. Geometry retains the ordinary page selection.
+    pub fn primary_resource(&self, owner: &Tag, handle: u32) -> Result<Resource> {
+        self.resource_page(owner, handle, false)
+    }
+
+    fn resource_page(&self, owner: &Tag, handle: u32, allow_secondary: bool) -> Result<Resource> {
         ensure!(handle != u32::MAX, "Null resource handle");
         let zone = self.only("zone")?.address()?;
         let play = self.only("play")?.offset.unwrap_or(zone + 28);
@@ -231,7 +242,7 @@ impl Cache {
         };
         // The primary is read only when the secondary gives way, so a usable secondary serves
         // even where the primary's index is out of the table.
-        let (page, secondary) = match page_at(2)? {
+        let (page, secondary) = match if allow_secondary { page_at(2)? } else { None } {
             Some(page) if usable(page)? => (page, true),
             _ => match page_at(0)? {
                 Some(page) if self.i32(page + 12)? != 0 => (page, false),
@@ -323,6 +334,7 @@ impl Cache {
             compressed_bytes,
             page_bytes,
             page_offset,
+            secondary,
             fixup_offset,
             fixup_size,
             fixups,

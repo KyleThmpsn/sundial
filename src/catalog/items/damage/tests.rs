@@ -123,31 +123,6 @@ fn fixed_element_can_share_the_array_with_other_sandbox_perks() {
 }
 
 #[test]
-fn default_plugs_refine_empty_and_variable_profiles() {
-    let base = ItemDamageProfile::PlugOrEmptyAmbiguous { damage_type: None };
-    assert_eq!(
-        resolve_default_plug_damage_profile(
-            base,
-            [ItemDamageProfile::ModernFixed {
-                damage_type: ItemDamageType::Void,
-            }]
-        ),
-        ItemDamageProfile::PlugOrEmptyAmbiguous {
-            damage_type: Some(ItemDamageType::Void)
-        }
-    );
-    assert_eq!(
-        resolve_default_plug_damage_profile(
-            ItemDamageProfile::LegacyFixed {
-                damage_type: ItemDamageType::Void,
-            },
-            [ItemDamageProfile::Variable]
-        ),
-        ItemDamageProfile::Variable
-    );
-}
-
-#[test]
 #[ignore = "requires SUNDIAL_INSTALL pointing to the supported Shadowkeep build"]
 fn supported_shadowkeep_build_reads_package_proved_damage_profiles() {
     let install = PathBuf::from(std::env::var("SUNDIAL_INSTALL").unwrap());

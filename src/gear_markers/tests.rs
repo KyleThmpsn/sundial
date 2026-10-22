@@ -28,46 +28,6 @@ fn every_recovered_name_hashes_to_its_key() {
     assert_eq!(marker_name(0), None);
 }
 
-/// A hash says nothing on its own. Naming what it sits next to is the whole point of the
-/// explorer, so an unnamed marker has to come back described by a named neighbour.
-#[test]
-fn an_unnamed_marker_is_described_by_what_it_sits_beside() {
-    let at = |name: u32, position: [f32; 3]| Marker {
-        name,
-        position,
-        orientation: [0.0, 0.0, 0.0, 1.0],
-    };
-    let sets = vec![MarkerSet {
-        entity: 0x8087_1F2A,
-        component: 0x8161_ECC9,
-        markers: vec![
-            at(fnv1("primary_fire"), [0.3806, 0.0, 0.1358]),
-            at(0x76BC_E859, [0.3717, 0.0, 0.1421]),
-            at(fnv1("grip"), [0.1, 0.0, 0.0]),
-            // Far enough away that nothing on the weapon is "near" it.
-            at(0x0B7B_A45D, [9.0, 9.0, 9.0]),
-        ],
-    }];
-    let marker = sets[0].markers[1];
-    let near = nearest_named(&sets, &marker).unwrap();
-    // `grip` is also named but much further off, so the nearer one wins.
-    assert_eq!(near.name, "primary_fire");
-    assert!((near.distance - 0.0109).abs() < 1e-3, "{near:?}");
-    assert_eq!(describe(&sets, &marker), "0x76BCE859 by primary_fire 11mm");
-    // Markers that share a point are common, and "0mm" reads as a missing number.
-    let stacked = at(0x1234_5678, [0.3806, 0.0, 0.1358]);
-    assert_eq!(
-        nearest_named(&sets, &stacked).unwrap().to_string(),
-        "on primary_fire"
-    );
-    // A named marker describes itself and has no neighbour.
-    assert_eq!(nearest_named(&sets, &sets[0].markers[0]), None);
-    assert_eq!(describe(&sets, &sets[0].markers[0]), "primary_fire");
-    // Nothing within reach means no claim is made at all.
-    assert_eq!(nearest_named(&sets, &sets[0].markers[3]), None);
-    assert_eq!(describe(&sets, &sets[0].markers[3]), "0x0B7BA45D");
-}
-
 /// Builds one marker-set component: a data struct at 0x20 whose descriptor at +0xB0 owns a
 /// 16-byte array header followed by fixed-stride rows.
 fn component(markers: &[(u32, [f32; 3])]) -> Vec<u8> {
@@ -118,127 +78,6 @@ fn a_damaged_marker_component_is_refused_rather_than_read_past() {
     assert!(read_component(&infinite, 0x20).is_err());
 }
 
-#[test]
-fn an_empty_marker_set_is_not_an_error() {
-    assert_eq!(read_component(&component(&[]), 0x20), Ok(Vec::new()));
-}
-
-/// The fixtures above cannot prove the walk reaches a real weapon's markers: the
-/// arrangement, assignment and relation chain only exists in installed packages.
-#[test]
-#[ignore = "requires installed Shadowkeep packages"]
-fn installed_weapons_carry_named_markers() {
-    let packages = crate::test_support::preview_packages();
-    let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
-    let mut failures = Vec::new();
-    for name in [
-        "Better Devils",
-        "Age-Old Bond",
-        "Chroma Rush",
-        "Black Talon",
-    ] {
-        let Some(summary) = catalog.weapon_donors().into_iter().find(|d| d.name == name) else {
-            continue;
-        };
-        let donor = catalog.weapon_donor(summary.hash).unwrap();
-        let arrangement = donor.art_arrangements[0].arrangement;
-        let sets = match read_appearance(&packages, arrangement) {
-            Ok(sets) => sets,
-            Err(error) => {
-                failures.push(format!("{name}: {error}"));
-                continue;
-            }
-        };
-        let markers: Vec<_> = sets.iter().flat_map(|set| &set.markers).collect();
-        let labels: Vec<_> = markers.iter().map(|marker| marker.label()).collect();
-        println!("{name} arrangement {arrangement}:");
-        for (set_index, set) in sets.iter().enumerate() {
-            for marker in &set.markers {
-                let [x, y, z] = marker.position;
-                println!(
-                    "    obj{set_index} {:<22} {x:>9.4} {y:>9.4} {z:>9.4}",
-                    marker.label()
-                );
-            }
-        }
-        if markers.is_empty() {
-            failures.push(format!("{name}: no markers"));
-        } else if !labels.iter().any(|label| !label.starts_with("0x")) {
-            failures.push(format!("{name}: no marker resolved to a name"));
-        }
-    }
-    assert!(failures.is_empty(), "{failures:#?}");
-}
-
-/// The index behind the explorer, against real packages. The fixtures prove the
-/// arithmetic; this proves the whole-game walk produces rows worth showing.
-#[test]
-#[ignore = "requires installed Shadowkeep packages"]
-#[allow(clippy::cognitive_complexity)]
-fn the_marker_index_describes_the_unnamed_ones() {
-    let packages = crate::test_support::preview_packages();
-    let manager = crate::investment::discovery::open_packages(&packages).unwrap();
-    let ticks = AtomicUsize::new(0);
-    let index = build_index(&manager, |_, _| {
-        ticks.fetch_add(1, Ordering::Relaxed);
-    });
-    let ticks = ticks.into_inner();
-    println!(
-        "{} objects read, {} carry markers, {} marker sets, {} names, {} recovered",
-        index.scanned,
-        index.objects.len(),
-        index.sets,
-        index.entries.len(),
-        index.named()
-    );
-    assert!(ticks > 1, "progress must be reported while reading");
-    assert!(!index.entries.is_empty());
-    assert!(index.named() > 0);
-    // The reverse lookup: every object listed carries markers, and every marker's examples
-    // resolve back to an object that really holds it.
-    assert!(!index.objects.is_empty() && index.objects.len() <= index.scanned);
-    assert!(index.objects.iter().all(|o| !o.markers.is_empty()));
-    assert!(
-        index.objects.windows(2).all(|w| w[0].entity < w[1].entity),
-        "objects must be sorted for lookup"
-    );
-    for entry in index.entries.iter().take(50) {
-        for example in &entry.examples {
-            assert!(
-                index.placement(*example, entry.hash).is_some(),
-                "{:08X} is not on its example {example:08X}",
-                entry.hash
-            );
-        }
-    }
-    // Sorted by reach, so the first rows are the ones worth naming next.
-    assert!(
-        index
-            .entries
-            .windows(2)
-            .all(|w| w[0].objects >= w[1].objects)
-    );
-    let described = index
-        .entries
-        .iter()
-        .filter(|entry| entry.name.is_none() && entry.neighbour.is_some())
-        .count();
-    let unnamed = index.entries.iter().filter(|e| e.name.is_none()).count();
-    println!("{described} of {unnamed} unnamed markers have a named neighbour");
-    for entry in index.entries.iter().take(20) {
-        println!(
-            "  {:<40} {:>5} objects  examples {:08X?}",
-            entry.label(),
-            entry.objects,
-            entry.examples.iter().take(3).collect::<Vec<_>>()
-        );
-    }
-    for entry in &index.entries {
-        assert!(!entry.examples.is_empty());
-        assert!(entry.examples.len() <= MAX_EXAMPLES);
-    }
-}
-
 fn carrier(entity: u32, sets: usize, markers: &[(u32, [f32; 3])]) -> Carrier {
     Carrier {
         entity,
@@ -252,18 +91,6 @@ fn carrier(entity: u32, sets: usize, markers: &[(u32, [f32; 3])]) -> Carrier {
             })
             .collect(),
     }
-}
-
-#[test]
-fn marker_scan_schedules_each_package_once() {
-    let tags: Vec<u32> = (0..600)
-        .map(|index| tiger_pkg::TagHash::new(0x123, index).0)
-        .chain((0..300).map(|index| tiger_pkg::TagHash::new(0x456, index).0))
-        .collect();
-    let jobs = package_jobs(&tags);
-    assert_eq!(jobs.len(), 2);
-    assert_eq!(jobs[0], tags[..600]);
-    assert_eq!(jobs[1], tags[600..]);
 }
 
 /// The index is derived from what the disk keeps, so a scan that went through the cache

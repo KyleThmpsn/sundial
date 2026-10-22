@@ -126,7 +126,7 @@ pub(super) fn draw_hash_item_matches(
             preview::draw(ui, &content, true, false);
         }
         match page {
-            ItemPage::Overview => draw_overview(ui, &content),
+            ItemPage::Overview => draw_overview_with_model(ui, &content),
             ItemPage::Preview => {}
             ItemPage::Sockets => draw_sockets_page(ui, &content),
             ItemPage::Runtime => draw_runtime_page(ui, &content, runtime),
@@ -154,6 +154,30 @@ pub(super) fn draw_hash_item_matches(
             draw_hash_inventory_bucket(ui, content.catalog, content.hash, &matches.bucket_items);
         }
     }
+}
+
+/// The narrowest the Overview's details get before the model gives up its column.
+const OVERVIEW_MIN_WIDTH: f32 = 380.0;
+
+/// The Overview with the item's model in a column beside it, when the window has room for both.
+fn draw_overview_with_model(ui: &mut egui::Ui, content: &ItemInspection<'_>) {
+    let width = ui.available_width();
+    let side = (width * 0.45).clamp(280.0, 560.0);
+    let gap = ui.spacing().item_spacing.x * 2.0;
+    if width - side - gap < OVERVIEW_MIN_WIDTH || !preview::available(content) {
+        draw_overview(ui, content);
+        return;
+    }
+    ui.horizontal_top(|ui| {
+        ui.vertical(|ui| {
+            ui.set_width(width - side - gap);
+            draw_overview(ui, content);
+        });
+        ui.add_space(gap - ui.spacing().item_spacing.x);
+        ui.vertical(|ui| {
+            preview::inline(ui, content, egui::vec2(side, side * 0.75));
+        });
+    });
 }
 
 pub(super) fn draw_preview_button(ui: &mut egui::Ui, content: ItemInspection<'_>) {

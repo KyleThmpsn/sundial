@@ -3,6 +3,8 @@ use super::*;
 #[derive(Clone, Copy)]
 pub(in crate::model_preview) struct Depth<'a> {
     pub values: &'a [f32],
+    pub color: Option<&'a texture::Texture>,
+    pub normal: Option<&'a texture::Texture>,
     pub size: [usize; 2],
     pub top: usize,
     pub scale: f32,
@@ -31,6 +33,7 @@ pub(in crate::model_preview) struct Pixel<'a> {
     pub front: bool,
     pub depth: Depth<'a>,
     pub exposure: f32,
+    pub irradiance: [f32; 4],
 }
 
 struct Context<'a, 'b> {
@@ -51,7 +54,14 @@ impl Context<'_, '_> {
             Role::Gear => self.gear.gearstack,
             Role::Detail => self.gear.detail,
             Role::DetailNormal => self.gear.detail_normal,
-            Role::Depth | Role::Mask | Role::Scene => None,
+            Role::SceneColor => self.pixel.depth.color,
+            Role::SceneNormal => self.pixel.depth.normal,
+            Role::Depth
+            | Role::Mask
+            | Role::Scene
+            | Role::Irradiance
+            | Role::SunVisibility
+            | Role::Sky => None,
         }
     }
 
@@ -99,6 +109,12 @@ impl evaluate::Context for Context<'_, '_> {
         if matches!(binding.role, Role::Scene) {
             return if binding.slot == 15 { [0; 4] } else { [1; 4] };
         }
+        if matches!(
+            binding.role,
+            Role::Irradiance | Role::SunVisibility | Role::Sky
+        ) {
+            return if mip == 0 { [1, 1, 0, 1] } else { [0, 0, 0, 1] };
+        }
         self.texture(binding.role).map_or([0; 4], |texture| {
             image::Image { texture, binding }.size(mip)
         })
@@ -126,7 +142,16 @@ impl evaluate::Context for Context<'_, '_> {
                 .copied()
                 .unwrap_or([0.0; 4]),
             (2, 0) => [0.0, 1.0, 0.0, 0.0],
+            (8, 4) => [0.0, 0.0, 0.5, 0.5],
+            (11, 0..=3) => {
+                let mut row = [0.0; 4];
+                row[index] = 1.0;
+                row
+            }
             (13, 1) => [1.0; 4],
+            // The studio supplies unit engine exposure. Viewer exposure is applied once
+            // after the material, independently of the game's auto-exposure state.
+            (13, 0) => [1.0; 4],
             (12, 6) => [p.direction[0], p.direction[1], p.direction[2], 0.0],
             (12, 7) => [
                 p.varyings[4][0] + p.direction[0] * p.distance,
@@ -165,16 +190,28 @@ impl evaluate::Context for Context<'_, '_> {
                 Role::Normal | Role::DetailNormal => [0.5f32, 0.5, 1.0, 1.0].map(f32::to_bits),
                 Role::Detail => [0.25f32; 4].map(f32::to_bits),
                 Role::Scene if binding.slot == 16 => [1.0f32; 4].map(f32::to_bits),
+                Role::Irradiance => self.pixel.irradiance.map(f32::to_bits),
+                Role::Sky => {
+                    let p = [uv[0] * 2.0 - 1.0, uv[1] * 2.0 - 1.0];
+                    let radius = (p[0] * p[0] + p[1] * p[1]).min(1.0);
+                    let scale = 2.0 * (1.0 - radius).sqrt();
+                    let direction = [p[0] * scale, p[1] * scale, 1.0 - 2.0 * radius];
+                    let light = self.pixel.irradiance;
+                    let value =
+                        (light[3] + (0..3).map(|i| light[i] * direction[i]).sum::<f32>()).max(0.0);
+                    [value, value, value, 1.0].map(f32::to_bits)
+                }
+                Role::SunVisibility => [0; 4],
                 _ => [0; 4],
             };
         };
-        // The binding resolved its sampler table row when the stage was planned. A load-only
-        // resource has none, and its register then names the row before it, the stock order.
+        // Resolve this instruction's sampler independently of other reads of the image.
         image::Image { texture, binding }.sample(
             uv,
             binding
-                .sampler
-                .or_else(|| sampler.checked_sub(1))
+                .sampler_rows
+                .get(&sampler)
+                .copied()
                 .and_then(|i| self.material.samplers.get(i)),
             sampling,
             offset,
@@ -206,13 +243,12 @@ impl evaluate::Context for Context<'_, '_> {
         }
     }
 
-    fn lod(&self, resource: usize, coordinates: [f32; 4]) -> [f32; 4] {
-        let Some(cube) = self
+    fn lod(&self, resource: usize, sampler: usize, coordinates: [f32; 4]) -> [f32; 4] {
+        let Some(binding) = self
             .native
             .bindings
             .iter()
             .find(|b| !b.vertex && b.slot == resource)
-            .and_then(|b| b.cube)
         else {
             return [0.0; 4];
         };
@@ -246,11 +282,40 @@ impl evaluate::Context for Context<'_, '_> {
                 .unwrap_or(coordinates);
             std::array::from_fn(|i| (value[i] - coordinates[i]) * offset)
         };
-        cube.lod(
-            [coordinates[0], coordinates[1], coordinates[2]],
-            neighbour(false),
-            neighbour(true),
-        )
+        if let Some(cube) = binding.cube {
+            return cube.lod(
+                [coordinates[0], coordinates[1], coordinates[2]],
+                neighbour(false),
+                neighbour(true),
+            );
+        }
+        let Some(texture) = self.texture(binding.role) else {
+            return [0.0; 4];
+        };
+        let settings = binding
+            .sampler_rows
+            .get(&sampler)
+            .and_then(|&row| self.material.samplers.get(row))
+            .copied()
+            .unwrap_or_default();
+        let radius = |delta: [f32; 3]| {
+            ((delta[0] * texture.size[0] as f32).powi(2)
+                + (delta[1] * texture.size[1] as f32).powi(2))
+            .sqrt()
+        };
+        let raw = radius(neighbour(false))
+            .max(radius(neighbour(true)))
+            .max(1e-20)
+            .log2()
+            + settings.mip_bias;
+        let levels = texture.mips.as_ref().map_or(0, Vec::len) as f32;
+        [
+            raw.clamp(settings.lod[0], settings.lod[1])
+                .clamp(0.0, levels),
+            raw,
+            0.0,
+            0.0,
+        ]
     }
     fn derivative(&self, input: &program::Operand, y: bool) -> [f32; 4] {
         let register = input.indices[0].base as usize;
@@ -268,6 +333,14 @@ impl evaluate::Context for Context<'_, '_> {
                 _ => value,
             }
         })
+    }
+
+    fn derivative_offset(&self, y: bool) -> f32 {
+        if self.pixel.screen[usize::from(y)].floor() as i32 & 1 == 0 {
+            1.0
+        } else {
+            -1.0
+        }
     }
 }
 

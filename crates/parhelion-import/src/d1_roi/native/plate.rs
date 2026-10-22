@@ -108,6 +108,7 @@ impl Assembly<'_> {
                 format,
                 width: edge as u16,
                 height: edge as u16,
+                depth: 1,
                 layers: 1,
                 mips: 5,
                 bytes,

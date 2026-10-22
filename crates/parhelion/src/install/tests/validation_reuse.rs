@@ -55,6 +55,10 @@ fn fixture() -> (Fixture, ManifestDocument) {
     assert!(!manifest.selected_recipe_files.is_empty());
     assert!(!manifest.artifacts.is_empty());
     assert!(manifest.mods.iter().all(|member| !member.kept));
+    assert!(
+        manifest.mods.len() > 1,
+        "The required corpus must contain importer members"
+    );
     let temporary = tempfile::tempdir_in(std::env::var_os(ROOT).unwrap()).unwrap();
     let target = temporary.path().join("packages");
     let staging = temporary.path().join("staging");
@@ -171,6 +175,30 @@ fn exercise(schema: u64) {
     let mut request = install_request(&fixture);
     request.confirmed_replacement = Some(reviewed);
     let mut failures = Vec::new();
+    let runtime_path = fixture
+        .target
+        .parent()
+        .unwrap()
+        .join("bin/x64/steam_api64.dll");
+    let runtime_bytes = fs::read(&runtime_path).unwrap();
+    let mut changed_runtime = runtime_bytes.clone();
+    changed_runtime.extend_from_slice(b"review identity changed");
+    fs::write(&runtime_path, changed_runtime).unwrap();
+    sundial::package_authoring::validate_package_authoring_runtime(&fixture.target).unwrap();
+    let mut expensive_work = false;
+    let error = install_staged_packages_with_progress(&request, |event| {
+        expensive_work |= event.phase == InstallPhase::ReviewingAccount
+            || (event.phase == InstallPhase::Checking && event.completed > 0);
+    })
+    .unwrap_err();
+    assert!(
+        !expensive_work,
+        "A changed runtime must fail before package processing"
+    );
+    assert!(error.message.to_ascii_lowercase().contains("runtime"));
+    assert_unpublished(&fixture);
+    failures.push(json!({"input":"supported runtime replaced","error":error.message,"failed_before_package_work":true}));
+    fs::write(&runtime_path, runtime_bytes).unwrap();
     let mut inputs = vec![
         MANIFEST_FILE_NAME.to_owned(),
         manifest.selected_recipe_files[0].clone(),
@@ -270,12 +298,232 @@ fn exercise(schema: u64) {
         progress.push(json!({"seconds":started.elapsed().as_secs_f64(),"phase":format!("{:?}",event.phase),"label":event.current_artifact,"completed":event.completed,"total":event.total}));
     }).unwrap();
     let install_seconds = started.elapsed().as_secs_f64();
+    let readback = read_packages(&fixture, &manifest.artifacts);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&fs::read(&settings).unwrap()).unwrap()["unknown"]
+            ["keep"],
+        true
+    );
+    if schema != 8 {
+        let version: u32 = rusqlite::Connection::open(&account)
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, if schema == 3 { 3 } else { 2 });
+    }
+    if schema == 8 {
+        let before = read_authored_account_source(&account).unwrap();
+        let direct = install_request(&fixture);
+        install_staged_packages(&direct).unwrap();
+        assert_eq!(read_authored_account_source(&account).unwrap(), before);
+    }
+    let kept = exercise_kept(&fixture, manifest.clone(), &account);
+    let output = crate::test_support::artifact_dir("validation-reuse");
+    fs::create_dir_all(&output).unwrap();
+    fs::copy(
+        fixture.staging.join(MANIFEST_FILE_NAME),
+        output.join(format!("manifest-{schema}.json")),
+    )
+    .unwrap();
+    fs::write(output.join(format!("schema-{schema}.json")), serde_json::to_vec_pretty(&json!({
+        "schema":schema,"review_seconds":review_seconds,"install_seconds":install_seconds,
+        "refusals":failures,"progress":progress,"readback":readback,"kept":kept,
+        "installed_artifacts":report.artifacts.len(),"account_schema_preserved":true,
+        "account_after":crate::artifact::digest_bytes(&read_authored_account_source(&account).unwrap()),
+    })).unwrap()).unwrap();
+    println!("validation reuse schema {schema}: passed");
+}
+
+fn snapshot(directory: &Path) -> BTreeMap<PathBuf, String> {
+    fn walk(root: &Path, directory: &Path, files: &mut BTreeMap<PathBuf, String>) {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(root, &path, files);
+            } else {
+                files.insert(
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    digest_file(&path).unwrap().sha256,
+                );
+            }
+        }
+    }
+    let mut files = BTreeMap::new();
+    walk(directory, directory, &mut files);
+    files
+}
+
+fn exercise_kept(
+    fixture: &Fixture,
+    mut manifest: ManifestDocument,
+    account: &Path,
+) -> serde_json::Value {
+    use sundial::package_authoring::mod_content;
+    let install = fixture.target.parent().unwrap();
+    let changed_inputs = keep_members(fixture, &mut manifest);
+    let mut request = install_request(fixture);
+    request.confirmed_replacement =
+        Some(preview_replacement(&fixture.target, &fixture.staging).unwrap());
+    let account_before = read_authored_account_source(account).unwrap();
+    let backups_before = snapshot(&fixture.backups);
+    let mut refusals = Vec::new();
+    for path in changed_inputs {
+        let original = fs::read(&path).unwrap();
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        let changed = changed_member(&path, &original);
+        replace_bytes(&path, &changed, modified);
+        let before = snapshot(&mod_content::runtime_directory(install).join("mods"));
+        let error = install_staged_packages(&request).unwrap_err();
+        assert_eq!(
+            snapshot(&mod_content::runtime_directory(install).join("mods")),
+            before
+        );
+        assert_eq!(snapshot(&fixture.backups), backups_before);
+        assert_eq!(
+            read_authored_account_source(account).unwrap(),
+            account_before
+        );
+        assert!(
+            !mod_content::runtime_directory(install)
+                .join(mod_content::JOURNAL)
+                .exists()
+        );
+        refusals.push(json!({"path":path.strip_prefix(install).unwrap(),"error":error.message}));
+        replace_bytes(&path, &original, modified);
+    }
+    // A valid outside edit after consent must not become the transaction's new baseline.
+    let main_manifest = mod_content::directory(install).join(mod_content::MANIFEST);
+    let original = fs::read(&main_manifest).unwrap();
+    let modified = fs::metadata(&main_manifest).unwrap().modified().unwrap();
+    let mut document: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    document["name"] = "Concurrently Edited Main Mod".into();
+    let changed = serde_json::to_vec(&document).unwrap();
+    let mods = mod_content::runtime_directory(install).join("mods");
+    let mut after_edit = None;
+    let error = install_staged_packages_with_progress(&request, |event| {
+        if event.current_artifact.as_deref() == Some("Account Review Complete") {
+            replace_bytes(&main_manifest, &changed, modified);
+            after_edit = Some(snapshot(&mods));
+        }
+    })
+    .unwrap_err();
+    assert_eq!(
+        snapshot(&mods),
+        after_edit.expect("account consent reached")
+    );
+    assert_eq!(snapshot(&fixture.backups), backups_before);
+    assert_eq!(
+        read_authored_account_source(account).unwrap(),
+        account_before
+    );
+    assert!(
+        !mod_content::runtime_directory(install)
+            .join(mod_content::JOURNAL)
+            .exists()
+    );
+    refusals.push(json!({
+        "path":main_manifest.strip_prefix(install).unwrap(),
+        "boundary":"after account consent", "error":error.message,
+        "preserved_sha256":digest_file(&main_manifest).unwrap().sha256
+    }));
+    replace_bytes(&main_manifest, &original, modified);
+    let kept_before = manifest
+        .mods
+        .iter()
+        .filter(|m| m.kept)
+        .map(|m| {
+            (
+                m.manifest.id.clone(),
+                snapshot(&mod_content::member_directory(install, &m.manifest.id)),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let report = install_staged_packages(&request).unwrap();
+    assert!(report.backup_prune_warning.is_none());
+    for member in manifest.mods.iter().filter(|m| m.kept) {
+        let directory = mod_content::member_directory(install, &member.manifest.id);
+        assert_eq!(snapshot(&directory), kept_before[&member.manifest.id]);
+    }
+    let readback = read_packages(fixture, &manifest.artifacts);
+    assert_eq!(
+        read_authored_account_source(account).unwrap(),
+        account_before
+    );
+    json!({"refusals":refusals,"readback":readback,"account_preserved":true})
+}
+
+fn changed_member(path: &Path, original: &[u8]) -> Vec<u8> {
+    use sundial::package_authoring::mod_content;
+    if path.ends_with(mod_content::RECEIPT) {
+        let mut document: serde_json::Value = serde_json::from_slice(original).unwrap();
+        document["content"]["state"]["concurrent"] = true.into();
+        serde_json::to_vec(&document).unwrap()
+    } else if path.ends_with(mod_content::MANIFEST) {
+        let mut document: serde_json::Value = serde_json::from_slice(original).unwrap();
+        document["name"] = "Concurrently Edited Importer".into();
+        serde_json::to_vec(&document).unwrap()
+    } else {
+        let mut bytes = original.to_vec();
+        bytes[0] ^= 1;
+        bytes
+    }
+}
+
+fn keep_members(fixture: &Fixture, manifest: &mut ManifestDocument) -> Vec<PathBuf> {
+    use sundial::package_authoring::mod_content;
+    let install = fixture.target.parent().unwrap();
+    let mut changed_inputs = Vec::new();
+    for member in manifest
+        .mods
+        .iter_mut()
+        .filter(|m| m.manifest.id != mod_content::ID)
+    {
+        member.kept = true;
+        let directory = mod_content::member_directory(install, &member.manifest.id);
+        if changed_inputs.is_empty() {
+            changed_inputs.push(directory.join(mod_content::MANIFEST));
+            changed_inputs.push(directory.join(mod_content::RECEIPT));
+            changed_inputs.push(
+                directory.join(
+                    &member
+                        .receipt
+                        .artifacts
+                        .iter()
+                        .find(|a| a.path.ends_with(".pkg"))
+                        .unwrap()
+                        .path,
+                ),
+            );
+            if let Some(sidecar) = member
+                .receipt
+                .artifacts
+                .iter()
+                .find(|a| a.path.ends_with(".merge"))
+            {
+                changed_inputs.push(directory.join(&sidecar.path));
+            }
+        }
+        for artifact in &member.receipt.artifacts {
+            let name = Path::new(&artifact.path).file_name().unwrap();
+            fs::remove_file(fixture.staging.join(name)).unwrap();
+        }
+    }
+    assert!(!changed_inputs.is_empty());
+    fs::write(
+        fixture.staging.join(MANIFEST_FILE_NAME),
+        serde_json::to_vec(manifest).unwrap(),
+    )
+    .unwrap();
+    changed_inputs
+}
+
+fn read_packages(fixture: &Fixture, artifacts: &[ArtifactMetadata]) -> Vec<serde_json::Value> {
     let files =
         sundial::package_authoring::mod_content::files(fixture.target.parent().unwrap()).unwrap();
     let manager =
         sundial::package_authoring::open_shadowkeep_package_manager(&fixture.target).unwrap();
     let mut readback = Vec::new();
-    for artifact in &manifest.artifacts {
+    for artifact in artifacts {
         let path = files
             .iter()
             .find(|path| path.ends_with(&artifact.file_name))
@@ -303,37 +551,5 @@ fn exercise(schema: u64) {
         }
         readback.push(json!({"file":artifact.file_name,"sha256":digest.sha256,"entries":entries}));
     }
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&fs::read(&settings).unwrap()).unwrap()["unknown"]
-            ["keep"],
-        true
-    );
-    if schema != 8 {
-        let version: u32 = rusqlite::Connection::open(&account)
-            .unwrap()
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(version, if schema == 3 { 3 } else { 2 });
-    }
-    if schema == 8 {
-        let before = read_authored_account_source(&account).unwrap();
-        drop(manager);
-        let direct = install_request(&fixture);
-        install_staged_packages(&direct).unwrap();
-        assert_eq!(read_authored_account_source(&account).unwrap(), before);
-    }
-    let output = crate::test_support::artifact_dir("validation-reuse");
-    fs::create_dir_all(&output).unwrap();
-    fs::copy(
-        fixture.staging.join(MANIFEST_FILE_NAME),
-        output.join(format!("manifest-{schema}.json")),
-    )
-    .unwrap();
-    fs::write(output.join(format!("schema-{schema}.json")), serde_json::to_vec_pretty(&json!({
-        "schema":schema,"review_seconds":review_seconds,"install_seconds":install_seconds,
-        "refusals":failures,"progress":progress,"readback":readback,
-        "installed_artifacts":report.artifacts.len(),"account_schema_preserved":true,
-        "account_after":crate::artifact::digest_bytes(&read_authored_account_source(&account).unwrap()),
-    })).unwrap()).unwrap();
-    println!("validation reuse schema {schema}: passed");
+    readback
 }

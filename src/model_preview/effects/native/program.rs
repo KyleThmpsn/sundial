@@ -213,9 +213,9 @@ pub(super) fn arity(code: u16) -> Option<usize> {
     Some(match code {
         0 | 1 | 14..=17 | 29 | 30 | 41 | 49 | 51 | 52 | 56 | 57 => 3,
         13 | 31 => 1,
-        32 | 60 | 61 | 80 => 3,
+        32 | 60 | 61 | 80 | 85 => 3,
         18 | 21 | 62 => 0,
-        25..=28 | 43 | 47 | 54 | 64..=68 | 75 | 86 | 122 | 124 => 2,
+        25..=28 | 43 | 47 | 54 | 64..=68 | 75 | 86 | 122..=125 => 2,
         35 | 38 | 50 | 55 | 78 | 108 => 4,
         45 | 77 => 3,
         69 | 72 => {
@@ -246,9 +246,10 @@ fn signature(bytes: &[u8]) -> Result<Vec<Semantic>, String> {
                 .position(|v| *v == 0)
                 .filter(|n| *n <= 64)
                 .ok_or("Invalid shader semantic name")?;
+            // Direct3D semantic names are case-insensitive across compiler spellings.
             let name = std::str::from_utf8(&name[..end])
                 .map_err(|_| "Invalid shader semantic encoding")?
-                .to_owned();
+                .to_ascii_uppercase();
             let register = word(bytes, at + 16)? as usize;
             if register >= 16 {
                 return Err("Shader signature register exceeds limits".into());
@@ -270,7 +271,7 @@ impl Program {
             .iter()
             .enumerate()
             .map(|(at, i)| {
-                matches!(i.code, 69 | 108 | 122 | 124)
+                matches!(i.code, 69 | 108 | 122..=125)
                     .then(|| super::derivative::Derivative::read(self, at))
                     .flatten()
             })

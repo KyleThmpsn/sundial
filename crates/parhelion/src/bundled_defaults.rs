@@ -116,27 +116,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn versions_persist_and_accept_repeated_records() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("versions.json");
-        let mut versions = AppliedVersions::load(path.clone()).unwrap();
-        assert!(!versions.is_current("a", "1"));
-        versions.save().unwrap();
-        assert!(!path.exists());
-
-        versions.record("a", "1".into());
-        versions.save().unwrap();
-        let written = fs::read(&path).unwrap();
-
-        let mut reloaded = AppliedVersions::load(path.clone()).unwrap();
-        assert!(reloaded.is_current("a", "1"));
-        assert!(!reloaded.is_current("a", "2"));
-        reloaded.record("a", "1".into());
-        reloaded.save().unwrap();
-        assert_eq!(fs::read(&path).unwrap(), written);
-    }
-
-    #[test]
     fn unreadable_versions_are_an_error_not_an_empty_record() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("versions.json");

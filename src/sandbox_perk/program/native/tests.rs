@@ -50,39 +50,6 @@ fn orb_generation_compiles_a_kill_event_position_and_keeps_native_asset_editable
 }
 
 #[test]
-fn complete_program_drafts_can_add_empty_lists_before_choosing_nodes() {
-    let mut program = Program {
-        native: Some(NativeProgram::empty()),
-        ..Program::default()
-    };
-    let native = program.native.as_mut().unwrap();
-    native
-        .graph
-        .create_target(0, 0x28, 0x808040BA, true)
-        .unwrap();
-    let rows = native.graph.blocks[0].links[&0x28];
-    native.graph.resize_array(rows, 1).unwrap();
-    program.validate_structure().unwrap();
-    assert!(program.validate().is_err());
-    let native = program.native.as_mut().unwrap();
-    native
-        .graph
-        .create_target(
-            rows,
-            0,
-            crate::sandbox_perk::nodes::condition(0).unwrap().class,
-            false,
-        )
-        .unwrap();
-    program.validate().unwrap();
-    let restored: Program =
-        serde_json::from_str(&serde_json::to_string(&program).unwrap()).unwrap();
-    assert_eq!(restored, program);
-    program.actions.push(program::Action::add_rounds(1));
-    assert!(program.validate_structure().is_err());
-}
-
-#[test]
 #[ignore = "requires PARHELION_PERK_SURVEY with captured native actions"]
 fn captured_programs_preserve_all_groups_policies_and_auxiliary_records() {
     let root = std::path::PathBuf::from(

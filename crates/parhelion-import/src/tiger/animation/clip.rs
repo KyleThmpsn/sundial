@@ -247,6 +247,73 @@ pub fn size(payload: &Payload) -> Result<u32> {
     Ok(payload.u32(0x128)?.max(payload.u32(0x12C)?))
 }
 
+/// Remap control slots after the caller verifies the controls and their default poses.
+/// Dynamic encoded samples stay intact. Native-only slots receive explicit constant poses.
+pub fn remap_controls(
+    original: &Payload,
+    map: &[u16],
+    bones: usize,
+    controls: &Payload,
+    defaults: &[[f32; 8]],
+) -> Result<Payload> {
+    use std::collections::BTreeSet;
+    let old = usize::from(original.u16(0x140)?);
+    let total = defaults.len();
+    ensure!(
+        old == map.len()
+            && old > 0
+            && total <= 256
+            && total <= bones
+            && map.iter().all(|&s| usize::from(s) < total)
+            && map.iter().collect::<BTreeSet<_>>().len() == old
+            && original.u8(0x181)? == 0,
+        "Control remapping requires an absolute clip and unique complete slot mapping"
+    );
+    let mut fixed = read(original, 0x10, 0xA8, old, 1)?;
+    for channel in &mut fixed {
+        for slot in &mut channel.slots {
+            *slot = map[usize::from(*slot)];
+        }
+    }
+    for (slot, pose) in defaults.iter().enumerate() {
+        if map.contains(&(slot as u16)) {
+            continue;
+        }
+        ensure!(
+            pose.iter().all(|v| v.is_finite()),
+            "Nonfinite default control pose"
+        );
+        for (kind, channel) in fixed.iter_mut().enumerate() {
+            channel.slots.push(u16::try_from(slot)?);
+            channel.values.extend_from_slice(match kind {
+                0 => &pose[7..8],
+                1 => &pose[..4],
+                _ => &pose[4..7],
+            });
+        }
+    }
+    let mut out = original.0.clone();
+    write(&mut out, 0x10, 0xA8, 1, &fixed)?;
+    for field in [0xD8, 0xE8, 0xF8] {
+        let rows = original.array(field, 2, Some(0x8080000A))?;
+        for row in rows {
+            let source = usize::from(original.u16(row)?);
+            let target = map
+                .get(source)
+                .ok_or_else(|| anyhow::anyhow!("Animated slot exceeds its control map"))?;
+            put(&mut out, row, &target.to_le_bytes())?;
+        }
+    }
+    put(&mut out, 0x13E, &u16::try_from(bones)?.to_le_bytes())?;
+    put(&mut out, 0x140, &u16::try_from(total)?.to_le_bytes())?;
+    put(&mut out, 0xA0, &0u32.to_le_bytes())?;
+    put(&mut out, 0xA4, &u32::try_from(total - 1)?.to_le_bytes())?;
+    groups(&mut out, controls, total)?;
+    let size = out.len() as u64;
+    put(&mut out, 0, &size.to_le_bytes())?;
+    Ok(Payload(out))
+}
+
 /// Decode one control pose, retaining the rig's defaults for absent channels.
 /// The header stores bone and control counts separately on first-person rigs.
 pub fn sample(original: &Payload, defaults: &[[f32; 8]], frame: usize) -> Result<Vec<[f32; 8]>> {

@@ -2,8 +2,8 @@
 //! atmosphere component (`80807086`), whose volume texture at `+0x90` feeds Destiny's sky lookups
 //! and colors its sun and sky light on players and other dynamic objects. The copy's texels come
 //! from [`CLEAR_VOLUME`] when it has the donor's shape, else from the donor's, and each keeps its
-//! luminance and alpha and takes the hue of the level's bright baked lobes
-//! ([`super::sky::baked_light_color`]). Its distance lookup at `+0x98` takes a black copy, since
+//! luminance and alpha and takes the hue of the scenario sky's analytical light.
+//! Its distance lookup at `+0x98` takes a black copy, since
 //! the level's surfaces draw the level's own fog ([`clear_lookup`]).
 use crate::{presentation::Graph, tiger::reader::Reader};
 use anyhow::{Context, Result, ensure};

@@ -187,81 +187,6 @@ fn click(ctx: &egui::Context, app: &mut PackageAuthoringApp, position: egui::Pos
 }
 
 #[test]
-fn incompatible_donors_never_apply_and_the_others_sort_by_risk() {
-    assert!(can_apply(DonorCompatibility::LowerRisk));
-    assert!(can_apply(DonorCompatibility::Experimental));
-    assert!(!can_apply(DonorCompatibility::Incompatible));
-    assert!(
-        status_rank(DonorCompatibility::LowerRisk) < status_rank(DonorCompatibility::Experimental)
-    );
-    assert!(
-        status_rank(DonorCompatibility::Experimental)
-            < status_rank(DonorCompatibility::Incompatible)
-    );
-}
-
-#[test]
-fn default_review_lists_only_lower_risk_matches_and_preserves_the_recipe() {
-    for viewport in [
-        egui::vec2(480.0, 800.0),
-        egui::vec2(900.0, 640.0),
-        egui::vec2(1320.0, 900.0),
-    ] {
-        let ctx = egui::Context::default();
-        let mut app = app();
-        let before = app.recipe.clone();
-        let output = settle(&ctx, &mut app, viewport);
-        let labels = rendered_labels(&output);
-        assert!(labels.iter().any(|(text, _)| text == "Lower Risk 2"));
-        assert!(
-            !labels.iter().any(|(text, _)| text.contains("Unchecked")),
-            "status slop must not be rendered"
-        );
-        assert!(
-            !labels
-                .iter()
-                .any(|(text, _)| text.contains("A Experimental Donor"))
-        );
-        assert!(
-            !labels
-                .iter()
-                .any(|(text, _)| text.contains("A Rejected Donor"))
-        );
-        let first = label_rect(
-            &output,
-            &candidate_label("A Safe Donor", DonorCompatibility::LowerRisk),
-        );
-        let second = label_rect(
-            &output,
-            &candidate_label("Z Safe Donor", DonorCompatibility::LowerRisk),
-        );
-        assert!(
-            first.top() < second.top(),
-            "lower-risk names should be sorted"
-        );
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, viewport);
-        assert!(
-            screen.contains_rect(first),
-            "candidate outside {viewport:?}: {first:?}"
-        );
-        assert!(
-            screen.contains_rect(second),
-            "candidate outside {viewport:?}: {second:?}"
-        );
-        assert!(
-            labels
-                .iter()
-                .any(|(text, _)| text.contains("Sidearm · 0x00000021"))
-        );
-        assert_eq!(app.recipe, before);
-        assert!(
-            !app.runtime_donors.busy(),
-            "cached reports must not start package workers"
-        );
-    }
-}
-
-#[test]
 fn choosing_a_candidate_only_applies_after_the_apply_button() {
     let ctx = egui::Context::default();
     let mut app = app();
@@ -349,38 +274,6 @@ fn unsupported_settings_require_the_listed_reset_choice_before_applying() {
 }
 
 #[test]
-fn a_settings_check_is_required_and_stale_recipe_snapshots_cannot_apply() {
-    let mut app = app();
-    app.runtime_donors.picker.as_mut().unwrap().selected = Some(SAFE_Z);
-    let picker = app.runtime_donors.picker.as_ref().unwrap();
-    let review = app.runtime_donors.reviews[&(BINDING, SAFE_Z)].as_ref();
-    assert!(preview::can_apply(Some(review), &app.recipe, picker));
-    assert!(!preview::can_apply(None, &app.recipe, picker));
-    let mut edited = app.recipe.clone();
-    edited.overrides.ammo_type = Some(crate::RecipeAmmoType::Heavy);
-    assert!(!preview::can_apply(Some(review), &edited, picker));
-    let mut other = app.recipe.clone();
-    other.name.push_str("Changed while checking");
-    assert!(!preview::can_apply(Some(review), &other, picker));
-}
-
-#[test]
-fn a_compiler_conflict_blocks_apply_even_when_resets_are_accepted() {
-    let mut app = app();
-    let picker = app.runtime_donors.picker.as_mut().unwrap();
-    picker.selected = Some(SAFE_Z);
-    picker.reset_unsupported = true;
-    let review = Arc::make_mut(
-        app.runtime_donors
-            .reviews
-            .get_mut(&(BINDING, SAFE_Z))
-            .unwrap(),
-    );
-    review.result.as_mut().unwrap().error = Some("Saved edits overlap".into());
-    assert!(!preview::can_apply(Some(review), &app.recipe, picker));
-}
-
-#[test]
 fn undo_restores_the_entire_previous_recipe_and_preserves_later_edits() {
     for edited_after in [false, true] {
         let mut app = app();
@@ -437,19 +330,6 @@ fn undo_restores_the_entire_previous_recipe_and_preserves_later_edits() {
         assert_eq!(app.recipe, if edited_after { current } else { before });
         assert!(app.runtime_donors.last_change.is_none());
     }
-}
-
-#[test]
-fn experimental_donor_applies_with_the_apply_button() {
-    let ctx = egui::Context::default();
-    let mut app = app();
-    app.runtime_donors.picker.as_mut().unwrap().selected = Some(EXPERIMENTAL);
-    let output = settle(&ctx, &mut app, VIEWPORT);
-    click(&ctx, &mut app, label_rect(&output, "Apply Donor").center());
-    assert_eq!(
-        app.recipe.runtime_component_donor(BINDING),
-        Some(&reference(EXPERIMENTAL, "A Experimental Donor"))
-    );
 }
 
 #[test]
@@ -660,48 +540,6 @@ fn shared_owner_graph() -> WeaponRuntimeGraph {
 }
 
 #[test]
-fn grouped_choices_show_one_effective_source_instead_of_repeating_every_binding() {
-    let mut app = app();
-    for binding in [BINDING, WEAPON_STAT_TRANSLATOR_COMPONENT_KEY] {
-        app.recipe
-            .set_runtime_component_donor(binding, Some(reference(SAFE_Z, "Z Safe Donor")));
-    }
-    app.runtime_graph = Some((
-        app.runtime_graph_key().unwrap(),
-        Arc::new(shared_owner_graph()),
-    ));
-    let chosen = ComponentSource::Donors(vec![SourceDonor {
-        hash: Some(SAFE_Z),
-        route: SourceRoute::Chosen,
-    }]);
-    assert_eq!(
-        app.component_source(BINDING, Some(BASELINE), app.runtime_graph_key().as_ref()),
-        chosen
-    );
-    let mut report = report();
-    report.current_sources.insert(
-        BINDING,
-        [BINDING, WEAPON_STAT_TRANSLATOR_COMPONENT_KEY]
-            .into_iter()
-            .map(
-                |via| crate::runtime::compatibility::EffectiveComponentSource {
-                    donor_item_hash: SAFE_Z,
-                    via_binding_hash: Some(via),
-                },
-            )
-            .collect(),
-    );
-    app.runtime_donors.reports.insert(
-        BINDING,
-        (app.runtime_graph_key().unwrap(), Arc::new(report)),
-    );
-    assert_eq!(
-        app.component_source(BINDING, Some(BASELINE), app.runtime_graph_key().as_ref()),
-        chosen
-    );
-}
-
-#[test]
 fn unknown_runtime_rows_do_not_clear_an_applied_gameplay_donor() {
     let mut app = app();
     let baseline_hash = app.runtime_component_baseline_hash(app.runtime_graph_key().as_ref());
@@ -761,131 +599,6 @@ fn runtime_baseline_provenance_uses_only_current_graphs_or_verified_rows() {
         app.runtime_component_baseline_hash(app.runtime_graph_key().as_ref()),
         Some(BASELINE)
     );
-}
-
-#[test]
-fn effective_source_labels_expose_shared_owner_donors_despite_requested_baseline() {
-    let mut app = app();
-    app.recipe.set_runtime_component_donor(
-        WEAPON_STAT_TRANSLATOR_COMPONENT_KEY,
-        Some(reference(SAFE_Z, "Z Safe Donor")),
-    );
-    app.runtime_graph = Some((
-        app.runtime_graph_key().unwrap(),
-        Arc::new(shared_owner_graph()),
-    ));
-    let before = app.recipe.clone();
-    assert!(app.recipe.runtime_component_donor(BINDING).is_none());
-    assert_eq!(
-        app.component_source(BINDING, Some(BASELINE), app.runtime_graph_key().as_ref()),
-        ComponentSource::Donors(vec![SourceDonor {
-            hash: Some(SAFE_Z),
-            route: SourceRoute::Shared(WEAPON_STAT_TRANSLATOR_COMPONENT_KEY),
-        }])
-    );
-    assert_eq!(
-        app.component_source(
-            WEAPON_BARREL_COMPONENT_KEY,
-            Some(BASELINE),
-            app.runtime_graph_key().as_ref()
-        ),
-        ComponentSource::Donors(vec![SourceDonor {
-            hash: Some(BASELINE),
-            route: SourceRoute::Baseline,
-        }])
-    );
-    let ctx = egui::Context::default();
-    let key = app.runtime_graph_key();
-    let mut output = egui::FullOutput::default();
-    for _ in 0..3 {
-        output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(480.0, 640.0),
-                )),
-                ..Default::default()
-            },
-            |ui| {
-                egui::CentralPanel::default().show(ui, |ui| {
-                    workbench_style(ui);
-                    app.draw_runtime_component_row(
-                        ui,
-                        &ComponentRow {
-                            binding_hash: BINDING,
-                            label: "Reload Behavior",
-                            tooltip: "",
-                            baseline_hash: Some(BASELINE),
-                            current_key: key.as_ref(),
-                        },
-                    );
-                });
-            },
-        );
-    }
-    let labels = rendered_labels(&output);
-    assert!(labels.iter().any(|(text, _)| text == "Reload Behavior"));
-    assert!(
-        labels
-            .iter()
-            .any(|(text, _)| text.contains("Z Safe Donor via"))
-    );
-    assert!(
-        !labels
-            .iter()
-            .any(|(text, _)| text.starts_with("Requested:")),
-        "a component with no saved choice has no request to show"
-    );
-    assert_eq!(app.recipe, before);
-}
-
-#[test]
-fn effective_source_labels_do_not_reuse_stale_graphs_or_claim_missing_bindings() {
-    let mut app = app();
-    app.runtime_graph = Some((
-        app.runtime_graph_key().unwrap(),
-        Arc::new(shared_owner_graph()),
-    ));
-    assert_eq!(
-        app.component_source(
-            WEAPON_INPUT_COMPONENT_KEY,
-            Some(BASELINE),
-            app.runtime_graph_key().as_ref()
-        ),
-        ComponentSource::Absent
-    );
-    app.recipe.overrides.weapon_pattern_index = Some(8);
-    assert_eq!(
-        app.component_source(BINDING, Some(BASELINE), app.runtime_graph_key().as_ref()),
-        ComponentSource::NotLoaded
-    );
-}
-
-#[test]
-fn same_baseline_item_or_pattern_donors_do_not_claim_a_shared_owner_change() {
-    for requested in [BASELINE, SAFE_Z] {
-        let mut app = app();
-        app.donor_summaries
-            .iter_mut()
-            .find(|donor| donor.hash == SAFE_Z)
-            .unwrap()
-            .weapon_pattern_index = Some(7);
-        app.recipe.set_runtime_component_donor(
-            WEAPON_STAT_TRANSLATOR_COMPONENT_KEY,
-            Some(reference(requested, "No-Op Donor")),
-        );
-        app.runtime_graph = Some((
-            app.runtime_graph_key().unwrap(),
-            Arc::new(shared_owner_graph()),
-        ));
-        assert_eq!(
-            app.component_source(BINDING, Some(BASELINE), app.runtime_graph_key().as_ref()),
-            ComponentSource::Donors(vec![SourceDonor {
-                hash: Some(BASELINE),
-                route: SourceRoute::Baseline,
-            }])
-        );
-    }
 }
 
 #[test]

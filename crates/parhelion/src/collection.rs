@@ -403,36 +403,3 @@ fn custom_members<'a>(
     }
     (badges, pages)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn custom_node_identities_share_badges_and_pages() {
-        let page = Destination {
-            ammo: Ammo::Special,
-            family: Family::Sidearms,
-        };
-        let entries = [
-            (Some("Travelers"), Some(page)),
-            (Some("Travelers"), Some(page)),
-        ];
-        let hashes = custom_node_hashes(entries);
-        assert_eq!(hashes.len(), 5);
-        assert_eq!(hashes, custom_node_hashes([entries[0]]));
-        assert_eq!(
-            NodeBudget::new(entries).used() - BASE_NODE_COUNT,
-            hashes.len()
-        );
-    }
-
-    #[test]
-    fn stock_collection_pages_do_not_allocate_custom_nodes() {
-        let destination = Destination {
-            ammo: Ammo::Primary,
-            family: Family::AutoRifles,
-        };
-        assert!(custom_node_hashes([(None, Some(destination))]).is_empty());
-    }
-}

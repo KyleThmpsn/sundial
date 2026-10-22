@@ -97,6 +97,8 @@ pub struct Objects {
     pub materials: Vec<Material>,
     pub primitives: Vec<Primitive>,
     pub faces: Vec<[[f32; 3]; 3]>,
+    /// The structure BSPs each of `faces` belongs to, as a primitive's [`Primitive::bsps`].
+    pub face_bsps: Vec<u32>,
     /// Each drawn object's path and placement count.
     pub placed: BTreeMap<String, usize>,
     /// Each placed object's path and the primitives it leaves out because their material never
@@ -257,6 +259,7 @@ impl Objects {
     /// Adds `model`'s primitives moved by `transform`, naming its materials from `base`, and
     /// its solid triangles as collision when `collides`. A primitive whose material `hidden`
     /// marks as never drawn is left out of both.
+    #[allow(clippy::too_many_arguments)]
     fn place(
         &mut self,
         path: &str,
@@ -265,6 +268,7 @@ impl Objects {
         transform: &[f32; 16],
         collides: bool,
         hidden: &[bool],
+        bsps: u32,
     ) -> Result<()> {
         let count = self.primitives.len();
         for source in &model.primitives {
@@ -278,6 +282,7 @@ impl Objects {
             let mut primitive = source.clone();
             primitive.material = source.material.map(|material| base + material);
             primitive.instance = Some(format!("{path}#{count}"));
+            primitive.bsps = bsps;
             for vertex in &mut primitive.vertices {
                 vertex.position = rig::point(transform, vertex.position, true);
                 if let Ok(normal) = rig::normalize(rig::point(transform, vertex.normal, false)) {
@@ -303,6 +308,7 @@ impl Objects {
                     let corner = |i: u32| primitive.vertices[i as usize].position;
                     self.faces
                         .push([corner(face[0]), corner(face[1]), corner(face[2])]);
+                    self.face_bsps.push(bsps);
                 }
             }
             self.primitives.push(primitive);
@@ -376,6 +382,17 @@ fn in_loaded_bsp(cache: &Cache, row: usize, loaded: u32) -> Result<bool> {
     Ok(attach == 0 || attach & loaded != 0)
 }
 
+/// The structure BSPs the placement at `row` belongs to ([`in_loaded_bsp`]), zero for any.
+pub(super) fn placement_bsps(cache: &Cache, row: usize) -> Result<u32> {
+    Ok(
+        match u32::try_from(cache.i16(row + PLACEMENT_ORIGIN_BSP)?) {
+            Ok(origin) if origin < 32 => 1 << origin,
+            Ok(_) => 0,
+            Err(_) => u32::from(cache.u16(row + PLACEMENT_ATTACH_BSPS)?),
+        },
+    )
+}
+
 /// Whether the scenario creates the placement at `row` in the structure BSPs `loaded`: it is not
 /// marked never placed, and it belongs to one of them ([`in_loaded_bsp`]). Sound scenery shares the
 /// placement layout of the other objects.
@@ -398,6 +415,7 @@ pub fn read(
         materials: Vec::new(),
         primitives: Vec::new(),
         faces: Vec::new(),
+        face_bsps: Vec::new(),
         placed: BTreeMap::new(),
         hidden: BTreeMap::new(),
         motion: BTreeMap::new(),
@@ -447,7 +465,8 @@ pub fn read(
                 .floats::<3>(row + PLACEMENT_POSITION)?
                 .map(|value| value * METRES_PER_UNIT);
             let transform = placement(position, cache.floats(row + PLACEMENT_ROTATION)?, scale);
-            objects.place(&tag.path, model, *base, &transform, true, hidden)?;
+            let bsps = placement_bsps(cache, row)?;
+            objects.place(&tag.path, model, *base, &transform, true, hidden, bsps)?;
         }
     }
     // A map variant's crates, scenery and controls, at its own positions and axes. Its machines
@@ -469,7 +488,7 @@ pub fn read(
             continue;
         };
         let transform = transform(placement.position, placement.axes, 1.);
-        objects.place(&tag.path, model, *base, &transform, true, hidden)?;
+        objects.place(&tag.path, model, *base, &transform, true, hidden, 0)?;
     }
     // Each sky assigned to a loaded structure BSP draws around the level from its origin.
     // An empty mask assigns no BSP. Such rows can be alternate or cinematic sky entries,
@@ -500,7 +519,7 @@ pub fn read(
             objects.materials.extend(model.materials.iter().cloned());
             let start = objects.primitives.len();
             // Every sky primitive stays, so each keeps its vertex colors.
-            objects.place(&tag.path, &model, base, &rig::IDENTITY, false, &[])?;
+            objects.place(&tag.path, &model, base, &rig::IDENTITY, false, &[], active)?;
             let sky = objects.primitives.split_off(start);
             objects.sky.extend(sky.into_iter().zip(colors));
         }

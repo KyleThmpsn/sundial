@@ -499,24 +499,6 @@ pub(super) fn binding_value_label(value: &Value) -> (String, bool) {
     }
 }
 
-#[cfg(test)]
-pub(super) fn set_named_binding_value(
-    value: &mut Value,
-    input: Option<&str>,
-) -> Result<bool, String> {
-    if let Some(input) = input
-        && !valid_named_input(input)
-    {
-        return Err(format!("Unsupported Sunrise key name: {input}"));
-    }
-    let replacement = input.map_or(Value::Null, |input| Value::String(input.into()));
-    if *value == replacement {
-        return Ok(false);
-    }
-    *value = replacement;
-    Ok(true)
-}
-
 pub(super) fn input_code(
     binding: &Map<String, Value>,
     label: &str,

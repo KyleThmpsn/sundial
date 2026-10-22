@@ -6,6 +6,7 @@ pub(super) fn replace(
     start: usize,
     samples: &[usize],
     shadow: usize,
+    slots: [u8; 5],
 ) -> Result<()> {
     ensure!(samples.len() == 3, "ambient coefficient count differs");
     let mut vector = None;
@@ -54,12 +55,13 @@ pub(super) fn replace(
         assigned.extend(references(left));
     }
     let mut replacement = ['x', 'y', 'z'].into_iter().enumerate().map(|(index, channel)| {
-        format!("  {color}.{channel} = t{}.SampleLevel(s5_s, cb8[4].zw * float2(1,0.5) + float2(0,0.5), 0).w;", 28 + index)
+        format!("  {color}.{channel} = t{}.SampleLevel(s5_s, cb8[4].zw * float2(1,0.5) + float2(0,0.5), 0).w;", slots[index + 1])
     }).collect::<Vec<_>>();
     replacement.push(format!("  {color}.xyz = max(float3(0,0,0), {color}.xyz);"));
     replacement.extend_from_slice(&lines[clamp + 1..shadow]);
     replacement.push(format!(
-        "  {shadow_result} = t31.SampleLevel(s4_s, cb8[4].zw, 0).x;"
+        "  {shadow_result} = t{}.SampleLevel(s4_s, cb8[4].zw, 0).x;",
+        slots[4]
     ));
     replace_region(lines, start, shadow + 3, replacement)
 }

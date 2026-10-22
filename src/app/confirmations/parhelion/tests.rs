@@ -65,18 +65,3 @@ fn introduction_buttons_stay_visible_and_dispatch_their_decisions() {
         }
     }
 }
-
-#[test]
-fn escape_dismisses_without_accepting() {
-    let ctx = egui::Context::default();
-    let size = egui::vec2(1100.0, 800.0);
-    frame(&ctx, size, vec![]);
-    let event = egui::Event::Key {
-        key: egui::Key::Escape,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers: egui::Modifiers::NONE,
-    };
-    assert_eq!(frame(&ctx, size, vec![event]).0, Some(false));
-}

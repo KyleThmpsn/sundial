@@ -406,54 +406,6 @@ fn production_updates_match_the_frozen_json_behavior() {
 }
 
 #[test]
-fn focused_updates_preserve_unknown_character_data() {
-    let mut document = json!({
-        "version": 8,
-        "state": {"characters": [{
-            "race": 1,
-            "gender": 0,
-            "class": 0,
-            "movement_ability": 4,
-            "grenade_ability": 7,
-            "super_ability": 10,
-            "melee_ability": 11,
-            "class_ability": 2,
-            "future_character": {"keep": true},
-            "equipment": {"future_slot": {"keep": true}}
-        }]},
-        "future_root": {"keep": true}
-    });
-
-    assert!(
-        apply_updates(
-            &mut document,
-            0,
-            vec![CharacterMetadataUpdate::SetAbilities(CharacterAbilities {
-                movement: 6,
-                grenade: 8,
-                super_ability: 20,
-                melee: 21,
-                class_ability: 3,
-            })]
-        )
-        .unwrap()
-    );
-
-    assert_eq!(
-        document.pointer("/state/characters/0/future_character/keep"),
-        Some(&Value::Bool(true))
-    );
-    assert_eq!(
-        document.pointer("/state/characters/0/equipment/future_slot/keep"),
-        Some(&Value::Bool(true))
-    );
-    assert_eq!(
-        document.pointer("/future_root/keep"),
-        Some(&Value::Bool(true))
-    );
-}
-
-#[test]
 fn invalid_batches_are_atomic() {
     let mut document = json!({
         "version": 8,

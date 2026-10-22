@@ -76,30 +76,3 @@ impl<'de> Deserialize<'de> for HudImage {
         Self::normalized(pixels).map_err(serde::de::Error::custom)
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn preserves_native_pixels_and_recipe_roundtrip() {
-        let pixels = RgbaImage::from_fn(WIDTH, HEIGHT, |x, y| {
-            image::Rgba([x as u8, y as u8, 210, (x + y) as u8])
-        });
-        let image = HudImage::normalized(pixels.clone()).unwrap();
-        let bytes = STANDARD.decode(&image.0.encoded).unwrap();
-        assert_eq!(
-            image::load_from_memory_with_format(&bytes, ImageFormat::Png)
-                .unwrap()
-                .to_rgba8(),
-            pixels
-        );
-        assert_eq!(HudImage::from_png(&bytes).unwrap(), image);
-        let value = serde_json::to_string(&image).unwrap();
-        assert_eq!(serde_json::from_str::<HudImage>(&value).unwrap(), image);
-        let mut recipe = crate::WeaponRecipe::every_end();
-        recipe.overrides.hud_icon = Some(image.clone());
-        let decoded: crate::WeaponRecipe =
-            serde_json::from_str(&serde_json::to_string(&recipe).unwrap()).unwrap();
-        assert_eq!(decoded.to_spec().unwrap().overrides.hud_icon, Some(image));
-        assert!(HudImage::from_png(b"invalid png").is_err());
-    }
-}

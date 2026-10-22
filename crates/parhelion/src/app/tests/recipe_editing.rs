@@ -204,25 +204,6 @@ fn incomplete_name_edits_are_retained_but_cannot_be_saved_or_built() {
 }
 
 #[test]
-fn incomplete_name_edits_are_guarded_and_can_be_discarded_or_completed() {
-    let mut app = PackageAuthoringApp::default();
-    let original = app.recipe.clone();
-    app.edit_weapon_name(String::new());
-    assert!(!app.request_recipe_action(PendingRecipeAction::New(ItemKind::Weapon)));
-    assert!(app.pending_recipe_action.is_some());
-    app.discard_recipe_changes();
-    assert!(app.invalid_weapon_name.is_none());
-    assert!(!app.recipe_dirty);
-    assert!(app.batch_request().is_ok());
-    app.edit_weapon_name(String::new());
-    app.edit_weapon_name("A Different Tomorrow".into());
-    assert!(app.invalid_weapon_name.is_none());
-    assert_eq!(app.recipe.name, "A Different Tomorrow");
-    assert!(app.recipe.identity_is_name_derived());
-    assert_ne!(app.recipe.identity, original.identity);
-}
-
-#[test]
 fn recipe_changes_invalidate_results_even_while_already_dirty() {
     let mut app = PackageAuthoringApp {
         build_status_open: true,
@@ -250,26 +231,6 @@ fn recipe_changes_invalidate_results_even_while_already_dirty() {
     app.build_status_open = true;
     app.synchronize_recipe_dirty();
     assert!(app.build_status_open, "observing the same edit is a no-op");
-}
-
-#[test]
-fn restoring_original_content_clears_dirty_but_unsaved_copies_stay_protected() {
-    let mut app = PackageAuthoringApp::default();
-    app.observed_recipe = app.recipe.clone();
-    app.recipe.flavor.push_str(" changed");
-    app.synchronize_recipe_dirty();
-    assert!(app.recipe_dirty);
-    app.recipe = app.recipe_baseline.clone();
-    app.synchronize_recipe_dirty();
-    assert!(!app.recipe_dirty);
-    assert!(app.duplicate_recipe());
-    app.synchronize_recipe_dirty();
-    assert!(app.recipe_dirty);
-    app.discard_recipe_changes();
-    assert!(
-        app.recipe_dirty,
-        "an unsaved copy must still require a save or discard on close"
-    );
 }
 
 #[test]

@@ -484,14 +484,6 @@ impl Catalog {
     }
 
     #[cfg(test)]
-    pub(crate) fn with_test_presentation_nodes(mut self, nodes: Vec<PresentationNode>) -> Self {
-        self.presentation_node_hashes = nodes.iter().map(|node| node.hash).collect();
-        self.presentation_nodes = nodes;
-        self.reset_lazy_indexes();
-        self
-    }
-
-    #[cfg(test)]
     pub(crate) fn with_test_seasonal(
         mut self,
         definition: crate::investment::seasonal::Definition,
@@ -508,32 +500,8 @@ impl Catalog {
     }
 
     #[cfg(test)]
-    pub(crate) fn with_test_stat_groups(mut self, groups: Vec<ItemStatGroup>) -> Self {
-        self.item_stat_groups = groups;
-        self.reset_lazy_indexes();
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_test_power_caps(mut self, caps: Vec<PowerCapDefinition>) -> Self {
-        self.power_cap_definitions = caps;
-        self
-    }
-
-    #[cfg(test)]
     pub(crate) fn with_test_character_stat_rows(mut self, rows: [u16; 6]) -> Self {
         self.character_stat_rows = Some(rows);
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_test_item_package_metadata(
-        mut self,
-        hash: u64,
-        metadata: ItemPackageMetadata,
-    ) -> Self {
-        self.item_package_metadata.insert(hash, metadata);
-        self.reset_lazy_indexes();
         self
     }
 
@@ -1138,6 +1106,25 @@ impl Catalog {
 
     pub(crate) fn ability_rows(&self) -> &[crate::investment::AbilityRowSummary] {
         &self.ability_rows
+    }
+
+    /// Whether an item is a display-only dummy: on the curated list, or a weapon or armor piece
+    /// with a dummy's structure, no quality block (no Power cap groups) or no sockets above Common.
+    /// The structure only flags gear, since other kinds can legitimately lack both.
+    pub(crate) fn is_dummy(&self, hash: u64) -> bool {
+        if dummy_items::contains(hash) {
+            return true;
+        }
+        let Some(item) = self.item(hash) else {
+            return false;
+        };
+        if !matches!(items::item_type_label(item), "Weapon" | "Armor") {
+            return false;
+        }
+        let metadata = self.item_package_metadata.get(&hash);
+        metadata.is_some_and(|metadata| {
+            metadata.definition_size.is_some() && metadata.power_cap_groups.is_empty()
+        }) || (self.item_rarity(hash) > ItemRarity::Common && item.sockets.is_empty())
     }
 
     pub(crate) fn item_package_name(&self, hash: u64) -> Option<&str> {

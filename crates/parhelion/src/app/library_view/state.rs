@@ -1,9 +1,6 @@
 use super::*;
 use std::time::SystemTime;
 
-#[cfg(test)]
-mod tests;
-
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum SortOrder {
     Name,

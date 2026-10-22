@@ -198,17 +198,17 @@ pub(super) unsafe fn begin(gl: &glow::Context, prepared: Prepared) -> Result<Upl
             glow::DYNAMIC_DRAW,
         );
         gl.enable_vertex_attrib_array(1);
-        gl.vertex_attrib_pointer_f32(1, 3, glow::FLOAT, false, 64, 0);
+        gl.vertex_attrib_pointer_f32(1, 3, glow::FLOAT, false, 68, 0);
         gl.enable_vertex_attrib_array(2);
-        gl.vertex_attrib_pointer_f32(2, 2, glow::FLOAT, false, 64, 12);
+        gl.vertex_attrib_pointer_f32(2, 2, glow::FLOAT, false, 68, 12);
         gl.enable_vertex_attrib_array(3);
-        gl.vertex_attrib_pointer_f32(3, 2, glow::FLOAT, false, 64, 20);
+        gl.vertex_attrib_pointer_f32(3, 2, glow::FLOAT, false, 68, 20);
         gl.enable_vertex_attrib_array(4);
-        gl.vertex_attrib_pointer_f32(4, 4, glow::FLOAT, false, 64, 28);
+        gl.vertex_attrib_pointer_f32(4, 4, glow::FLOAT, false, 68, 28);
         gl.enable_vertex_attrib_array(5);
-        gl.vertex_attrib_pointer_f32(5, 4, glow::FLOAT, false, 64, 44);
+        gl.vertex_attrib_pointer_f32(5, 4, glow::FLOAT, false, 68, 44);
         gl.enable_vertex_attrib_array(6);
-        gl.vertex_attrib_pointer_f32(6, 1, glow::FLOAT, false, 64, 60);
+        gl.vertex_attrib_pointer_f32(6, 2, glow::FLOAT, false, 68, 60);
         let source_buffer = gl.create_buffer().expect("source index buffer");
         gl.bind_buffer(glow::ARRAY_BUFFER, Some(source_buffer));
         let bytes = std::slice::from_raw_parts(

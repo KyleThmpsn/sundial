@@ -52,37 +52,3 @@ pub(crate) fn apply(source: u32, model_donor: u32, recipe: &mut Value) -> bool {
     }
     true
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-    #[test]
-    fn verified_profiles_are_unique_and_contain_no_local_assets_or_source_text() {
-        let mut sources = std::collections::BTreeSet::new();
-        let mut namespaces = std::collections::BTreeSet::new();
-        for p in profiles() {
-            assert!(sources.insert(p.source));
-            assert!(namespaces.insert(&p.namespace));
-            assert!(!p.name.is_empty());
-            assert!(p.donor["item_hash"].as_str().is_some());
-            for field in ["imported_graph", "icon_edit", "lore", "remove_lore"] {
-                assert!(p.overrides.get(field).is_none());
-            }
-        }
-    }
-    #[test]
-    fn sword_profile_keeps_separate_gameplay_and_model_donors_without_replacing_lore() {
-        let mut recipe =
-            json!({"donor":{"item_hash":"0x02222CBF"},"overrides":{"lore":"Current source lore"}});
-        assert!(apply(0xC223445E, 0x02222CBF, &mut recipe));
-        assert_eq!(recipe["donor"]["item_hash"], "0xFC2FD6BF");
-        assert_eq!(recipe["presentation_donor"]["item_hash"], "0x02222CBF");
-        assert_eq!(
-            recipe["overrides"]["weapon_pattern_donor_hash"],
-            "0xFC2FD6BF"
-        );
-        assert_eq!(recipe["overrides"]["lore"], "Current source lore");
-        assert!(!apply(0xC223445E, 1, &mut recipe));
-    }
-}

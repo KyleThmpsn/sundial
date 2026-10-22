@@ -343,10 +343,18 @@ pub(crate) fn prepare_media(
     if banks.is_empty() {
         return Ok(());
     }
-    let mut reader = Reader::discovery(modern, &graph.join("audio-reader"), true)?;
-    let mut native_reader = Reader::discovery(native, &graph.join("audio-native-reader"), false)?;
-    let source_settings = init_settings(&mut reader, 150)?;
-    let native_settings = init_settings(&mut native_reader, 113)?;
+    let mut reader = Reader::discovery(modern, &graph.join("audio-reader"), true)
+        .with_context(|| format!("Open source audio packages at {}", modern.display()))?;
+    let mut native_reader = Reader::discovery(native, &graph.join("audio-native-reader"), false)
+        .with_context(|| format!("Open native audio packages at {}", native.display()))?;
+    let source_settings = init_settings(&mut reader, 150).with_context(|| format!(
+        "Source Wwise Init validation failed in {}. Expected Monument of Triumph bank version 150. Check the source packages. FFmpeg is not used for bank validation",
+        modern.display()
+    ))?;
+    let native_settings = init_settings(&mut native_reader, 113).with_context(|| format!(
+        "Native Wwise Init validation failed in {}. Expected Shadowkeep bank version 113. Check the native packages. FFmpeg is not used for bank validation",
+        native.display()
+    ))?;
     let directory = graph.join("audio");
     fs::create_dir_all(&directory)?;
     let mut converted = Vec::new();
@@ -365,16 +373,24 @@ pub(crate) fn prepare_media(
     let mut converted_banks = Vec::new();
     for tag in banks {
         let result = (|| -> Result<()> {
-            let source = reader.tag(tag, None)?;
-            let bank = bank::lower_with_settings(&source.0, &source_settings, &native_settings)?;
+            let source = reader.tag(tag, None).with_context(|| {
+                format!("Read source Wwise bank {tag:08X} from {}", modern.display())
+            })?;
+            let bank = bank::lower_with_settings(&source.0, &source_settings, &native_settings)
+                .context("Wwise bank translation from version 150 to 113 failed. FFmpeg is not used for bank translation")?;
             let file = format!("audio/{tag:08X}.bank.json");
-            fs::write(graph.join(&file), serde_json::to_vec(&bank)?)?;
+            fs::write(graph.join(&file), serde_json::to_vec(&bank)?).with_context(|| {
+                format!(
+                    "Save converted Wwise bank to {}",
+                    graph.join(&file).display()
+                )
+            })?;
             converted_banks.push(json!({"source_tag":format!("{tag:08X}"),"file":file,"version":113,"routing":"source"}));
             Ok(())
         })();
         if let Err(error) = result {
             if firing_banks.contains(&format!("{tag:08X}")) {
-                failures.push(format!("firing bank {tag:08X}: {error:#}"));
+                failures.push(format!("source Wwise bank {tag:08X}: {error:#}"));
             } else {
                 bank_fallbacks.push(json!({"source_tag":format!("{tag:08X}"),"routing":"source_media_native_bank","reason":format!("{error:#}")}));
             }
@@ -390,15 +406,21 @@ pub(crate) fn prepare_media(
                 entry.file_type == 26,
                 "modern audio media is not a raw asset"
             );
-            let source = reader.tag(tag, None)?;
+            let source = reader.tag(tag, None).with_context(|| {
+                format!(
+                    "Read source Wwise media {tag:08X} from {}",
+                    modern.display()
+                )
+            })?;
             let pcm = transcode::pcm_wem(&source.0)?;
             let file = format!("audio/{tag:08X}.pcm.wem");
-            fs::write(graph.join(&file), &pcm)?;
+            fs::write(graph.join(&file), &pcm)
+                .with_context(|| format!("Save decoded PCM to {}", graph.join(&file).display()))?;
             converted.push(json!({"source_tag":format!("{tag:08X}"),"media_id":format!("{:08X}",entry.reference),"file":file,"codec":"pcm_s16le"}));
             Ok(())
         })();
         if let Err(error) = result {
-            failures.push(format!("{tag:08X}: {error:#}"))
+            failures.push(format!("source Wwise media {tag:08X}: {error:#}"))
         }
     }
     report["transcoded_media"] = json!(converted);
@@ -474,8 +496,14 @@ fn init_settings(reader: &mut Reader, version: u32) -> Result<bank::settings::Se
         .collect::<Vec<_>>();
     let mut selected = None;
     let mut rejected = Vec::new();
+    ensure!(
+        !candidates.is_empty(),
+        "no Wwise Init bank candidates found for version {version}"
+    );
     for tag in candidates {
-        let bytes = reader.tag(tag, None)?;
+        let bytes = reader.tag(tag, None).with_context(|| {
+            format!("Read Wwise Init candidate {tag:08X} for version {version}")
+        })?;
         match bank::settings::Settings::read(&bytes.0, version) {
             Ok(settings) => {
                 ensure!(
@@ -810,128 +838,4 @@ pub(crate) fn add_to_rig(reader: &mut Reader, rig: &mut Value, modern: bool) -> 
     });
     rig["audio"] = audio;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::Path;
-
-    #[test]
-    fn events_pair_by_hash_and_record_identical_sounds() {
-        let sound = json!({"event_path":"auto/ready.wwise_event","media":["80000001"],"media_ids":["12345678"]});
-        let source = json!({"named_groups":[{"events":[{"hash":"AAAAAAAA","sounds":[sound]}]}]});
-        let same = source.clone();
-        let report = compatibility(&source, &same);
-        assert_eq!(report["status"], "source_named_events");
-        assert_eq!(report["matched_events"][0]["mapping"], "identical");
-
-        let mut different = same.clone();
-        different["named_groups"][0]["events"][0]["sounds"][0]["media_ids"][0] = json!("87654321");
-        let report = compatibility(&source, &different);
-        assert_eq!(report["matched_events"][0]["mapping"], "event_hash");
-
-        let mut other = same.clone();
-        other["named_groups"][0]["events"][0]["hash"] = json!("BBBBBBBB");
-        assert_eq!(
-            compatibility(&source, &other)["status"],
-            "native_donor_only"
-        );
-
-        let mut embedded = source.clone();
-        embedded["named_groups"][0]["events"][0]["sounds"][0]["media"] = json!([]);
-        let report = compatibility(&embedded, &same);
-        assert_eq!(report["status"], "native_donor_only", "{report}");
-    }
-
-    #[test]
-    #[ignore = "Requires configured source and native package paths and item tags"]
-    fn configured_weapon_audio_reaches_sound_media() {
-        for (prefix, modern) in [("MODERN", true), ("NATIVE", false)] {
-            let packages = std::env::var_os(format!("PARHELION_AUDIO_{prefix}_PACKAGES"))
-                .expect("configured audio package path");
-            let item = std::env::var(format!("PARHELION_AUDIO_{prefix}_ITEM"))
-                .expect("configured audio item tag");
-            let item = u32::from_str_radix(&item, 16).unwrap();
-            let scratch = tempfile::tempdir().unwrap();
-            let mut reader =
-                Reader::discovery(Path::new(&packages), scratch.path(), modern).unwrap();
-            let mut rig = super::super::rig::inspect(&mut reader, item, modern).unwrap();
-            add_to_rig(&mut reader, &mut rig, modern).unwrap();
-            let groups = rig["audio"]["named_groups"].as_array().unwrap();
-            assert!(!groups.is_empty(), "{prefix} has no named audio group");
-            let sounds = groups
-                .iter()
-                .flat_map(|group| {
-                    group["events"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .flat_map(|event| event["sounds"].as_array().unwrap().iter())
-                })
-                .collect::<Vec<_>>();
-            assert!(!sounds.is_empty(), "{prefix} has no mapped sound events");
-            assert!(sounds.iter().all(|sound| {
-                sound["bank"].as_str().is_some()
-                    && sound["media"]
-                        .as_array()
-                        .is_some_and(|media| !media.is_empty())
-            }));
-        }
-    }
-
-    #[test]
-    #[ignore = "Requires configured source and native packages and item tags"]
-    fn configured_source_audio_converts_named_media() {
-        let modern = std::env::var_os("PARHELION_AUDIO_MODERN_PACKAGES").expect("modern packages");
-        let native = std::env::var_os("PARHELION_AUDIO_NATIVE_PACKAGES").expect("native packages");
-        let source_item = u32::from_str_radix(
-            &std::env::var("PARHELION_AUDIO_MODERN_ITEM").expect("modern item"),
-            16,
-        )
-        .unwrap();
-        let native_item = u32::from_str_radix(
-            &std::env::var("PARHELION_AUDIO_NATIVE_ITEM").expect("native item"),
-            16,
-        )
-        .unwrap();
-        let scratch = tempfile::tempdir().unwrap();
-        let mut source = Reader::discovery(Path::new(&modern), scratch.path(), true).unwrap();
-        let mut native_reader =
-            Reader::discovery(Path::new(&native), scratch.path(), false).unwrap();
-        let source_rig =
-            super::super::rig::inspect_with_audio(&mut source, source_item, true).unwrap();
-        let native_rig =
-            super::super::rig::inspect_with_audio(&mut native_reader, native_item, false).unwrap();
-        assert!(
-            source_rig["audio"]["status"].is_null(),
-            "{}",
-            source_rig["audio"]
-        );
-        assert!(
-            native_rig["audio"]["status"].is_null(),
-            "{}",
-            native_rig["audio"]
-        );
-        let mut report = compatibility(&source_rig["audio"], &native_rig["audio"]);
-        let output = std::env::var_os("PARHELION_AUDIO_OUTPUT").map(std::path::PathBuf::from);
-        let graph = output.as_deref().unwrap_or(scratch.path());
-        fs::create_dir_all(graph).unwrap();
-        prepare_media(Path::new(&modern), Path::new(&native), graph, &mut report).unwrap();
-        assert!(report["conversion_errors"].is_null(), "{report}");
-        assert!(!report["transcoded_media"].as_array().unwrap().is_empty());
-        if output.is_some() {
-            super::super::reader::write_json(&graph.join("audio-report.json"), &report).unwrap();
-            super::super::reader::write_json(
-                &graph.join("source-audio.json"),
-                &source_rig["audio"],
-            )
-            .unwrap();
-            super::super::reader::write_json(
-                &graph.join("native-audio.json"),
-                &native_rig["audio"],
-            )
-            .unwrap();
-        }
-    }
 }

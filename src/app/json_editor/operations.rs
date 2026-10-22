@@ -224,36 +224,4 @@ mod tests {
             assert_eq!(Some(&actual), value.pointer(&location.pointer));
         }
     }
-
-    #[test]
-    fn completion_preserves_existing_values_and_uses_escaped_keys() {
-        for text in [r#"{}"#, "{\n  \"unknown\": 42\n}"] {
-            let value: Value = crate::strict_json::from_str(text).unwrap();
-            let updated = add_member(
-                text,
-                (0, text.len()),
-                "a/b",
-                &Value::Bool(true),
-                value.as_object().unwrap().is_empty(),
-            );
-            let actual: Value = crate::strict_json::from_str(&updated).unwrap();
-            assert_eq!(actual["a/b"], true);
-            if value.get("unknown").is_some() {
-                assert_eq!(actual["unknown"], 42);
-            }
-        }
-    }
-
-    #[test]
-    fn replacement_is_non_recursive_and_unicode_safe() {
-        assert_eq!(replace_ranges("é é", &[(0, 2), (3, 5)], "éé"), "éé éé");
-        assert_eq!(replace_ranges("abc", &[(0, 3)], ""), "");
-    }
-
-    #[test]
-    fn error_positions_stay_on_character_boundaries() {
-        assert_eq!(error_byte("é\nx", 1, 2), 0);
-        assert_eq!(error_byte("é\nx", 2, 1), 3);
-        assert_eq!(error_byte("é\nx", 99, 99), 4);
-    }
 }

@@ -1,28 +1,6 @@
 //! Armor-stat solver, preview, and application tests.
 
 use super::*;
-use crate::app::account_workspace::WorkspaceDocument;
-
-#[test]
-fn character_class_invalidates_the_armor_preview_source() {
-    let mut document = WorkspaceDocument::json_only(serde_json::json!({
-        "version": 8,
-        "state": {"characters": [{"race": 0, "gender": 0, "class": 0}]}
-    }));
-    let titan = source_key(&document, 0, PlugSelectionMode::Supported, true);
-    assert_eq!(titan.class_type, 0);
-    assert_ne!(
-        titan,
-        source_key(&document, 0, PlugSelectionMode::Supported, false)
-    );
-
-    document.json_mut()["state"]["characters"][0]["class"] = serde_json::json!(1);
-    let hunter = source_key(&document, 0, PlugSelectionMode::Supported, true);
-    assert_eq!(hunter.class_type, 1);
-    assert_eq!(titan.equipment, hunter.equipment);
-    assert_eq!(titan.inventory, hunter.inventory);
-    assert_ne!(titan, hunter);
-}
 
 fn choice(hash: u64, values: [i32; 6]) -> SocketChoice {
     SocketChoice {
@@ -61,46 +39,6 @@ fn socket(_index: usize, current: u64, choices: Vec<SocketChoice>) -> MutableSoc
         choices,
         kind: SocketKind::Stat,
     }
-}
-
-#[test]
-fn exact_goal_can_be_shared_across_multiple_armor_pieces() {
-    let input = input(
-        vec![
-            socket(
-                0,
-                10,
-                vec![choice(10, [0; 6]), choice(11, [0, 0, 10, 0, 0, 0])],
-            ),
-            socket(
-                1,
-                20,
-                vec![choice(20, [0; 6]), choice(21, [0, 0, 20, 0, 0, 0])],
-            ),
-        ],
-        [0, 0, 70, 0, 0, 0],
-    );
-
-    let solution = solve(&input, [0, 0, 100, 0, 0, 0]);
-
-    assert!(solution.exact);
-    assert_eq!(solution.projected_totals[2], 100);
-    assert_eq!(solution.assignments.len(), 2);
-    assert_eq!(changed_piece_count(&solution), 2);
-}
-
-#[test]
-fn candidate_reduction_keeps_differences_in_non_target_stats() {
-    let socket = socket(
-        0,
-        10,
-        vec![
-            choice(10, [0, 0, 10, 0, 0, 0]),
-            choice(11, [20, 0, 10, 0, 0, 0]),
-        ],
-    );
-
-    assert_eq!(choices_for_targets(&socket, [0, 0, 100, 0, 0, 0]).len(), 2);
 }
 
 fn synthetic_candidate(

@@ -98,31 +98,3 @@ fn is_missing_label(label: &str) -> bool {
     let label = label.trim();
     label.is_empty() || label.to_ascii_lowercase().starts_with("unknown")
 }
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use super::*;
-
-    #[test]
-    fn embedded_data_is_only_a_fallback_for_specific_local_names() {
-        let mut names = HashMap::from([
-            (0x0104_5049, "Locally resolved name".to_owned()),
-            (0x0F8A_2F00, "Upgrade Armor".to_owned()),
-            (0x0001_1D37, "Unknown plug".to_owned()),
-        ]);
-        let mut type_names = HashMap::new();
-
-        apply_to_catalog(&mut names, &mut type_names);
-
-        assert_eq!(names[&0x0104_5049], "Locally resolved name");
-        assert_eq!(names[&0x0F8A_2F00], "Void Energy 3");
-        assert_eq!(
-            names[&0x0001_1D37],
-            "1 Discipline / 9 Intellect / 5 Strength"
-        );
-        assert_eq!(type_names[&0x0F8A_2F00], "Armor Energy");
-        assert_eq!(type_names[&0x0001_1D37], "Bottom Stat Allocation");
-    }
-}

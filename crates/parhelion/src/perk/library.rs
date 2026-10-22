@@ -375,7 +375,7 @@ impl Library {
             bytes,
             expected,
             &format!(
-                "{} changed outside the workbench. The existing file was preserved. Refresh Library to take it up, or save this perk as a new perk.",
+                "{} changed outside the workbench. The existing file was preserved. Save this perk as a new perk to keep your edits, or discard your changes and refresh the library to load the current file.",
                 path.display()
             ),
         )

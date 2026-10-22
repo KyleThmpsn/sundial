@@ -19,9 +19,11 @@ pub(super) struct StockPlugVariant {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplacementReview {
     validated: Option<Arc<ValidatedManifest>>,
+    packages: Vec<CheckedPackage>,
     mods: Vec<crate::ModReport>,
     members: Vec<crate::mod_family::Member>,
     installed: Vec<ArtifactMetadata>,
+    installed_family: Option<BTreeMap<String, loader::Folder>>,
     incoming: Vec<ArtifactMetadata>,
     removed_hashes: BTreeSet<u32>,
     incoming_definitions: Option<BTreeSet<u32>>,
@@ -36,6 +38,32 @@ pub struct ReplacementReview {
 impl ReplacementReview {
     pub(super) fn validated(&self) -> Option<&Arc<ValidatedManifest>> {
         self.validated.as_ref()
+    }
+    pub(super) fn packages(&self) -> &[CheckedPackage] {
+        &self.packages
+    }
+    pub(super) fn verify_family(
+        &self,
+        current: &BTreeMap<String, loader::Folder>,
+    ) -> Result<(), String> {
+        if self
+            .installed_family
+            .as_ref()
+            .is_some_and(|expected| expected != current)
+        {
+            return Err(
+                "The installed mod folders changed after review. Review installation again".into(),
+            );
+        }
+        Ok(())
+    }
+    pub(super) fn verify_runtime(&self, current: &RuntimeSnapshot) -> Result<(), String> {
+        if self.runtime != *current {
+            return Err(
+                "The installed runtime changed since review. Review installation again".into(),
+            );
+        }
+        Ok(())
     }
     pub fn mods(&self) -> &[crate::ModReport] {
         &self.mods
@@ -116,7 +144,7 @@ fn preview_for_runtime_with_progress(
     report(progress, "Verifying Staged Packages and Recipes", 1);
     let incoming =
         Arc::new(validate_manifest_and_staged_files(&staged, &target).map_err(|e| e.to_string())?);
-    preview_validated(&target, &staged, runtime, &incoming, progress)
+    preview_validated(&target, &staged, runtime, &incoming, &[], progress)
 }
 
 /// Installed packages, account data and settings remain live checks. The staged generation's
@@ -126,16 +154,32 @@ fn preview_validated(
     staged: &Path,
     runtime: &RuntimeSnapshot,
     incoming: &Arc<ValidatedManifest>,
+    known: &[CheckedPackage],
     progress: progress::Observer<'_>,
 ) -> Result<ReplacementReview, String> {
     let install = target.parent().ok_or("Missing game root")?;
     let variants = &incoming.plug_variants;
     report(progress, "Checking Installed Packages", 2);
-    let installed = preview_uninstall(target).map_err(|e| e.to_string())?;
+    let known = incoming
+        .packages
+        .iter()
+        .chain(known)
+        .cloned()
+        .collect::<Vec<_>>();
+    let (installed, packages) =
+        loader::preview_uninstall_with_packages(target, &known).map_err(|e| e.to_string())?;
+    let mut installed_family = installed.mod_family.clone();
+    if let Some(main) = &installed.mod_folder {
+        installed_family.insert(
+            sundial::package_authoring::mod_content::ID.into(),
+            main.clone(),
+        );
+    }
     report(progress, "Reading Client Settings", 3);
     let client_settings = preview_authored_client_settings_for_runtime(install, runtime)?;
     let mut review = ReplacementReview {
         validated: Some(Arc::clone(incoming)),
+        packages,
         mods: if runtime.uses_mod_loader()? {
             crate::mod_family::reports(&incoming.mods, install, &incoming.artifacts)?
         } else {
@@ -143,6 +187,7 @@ fn preview_validated(
         },
         members: incoming.mods.clone(),
         installed: installed.artifacts().to_vec(),
+        installed_family: Some(installed_family),
         incoming: incoming.artifacts.clone(),
         removed_hashes: BTreeSet::new(),
         incoming_definitions: None,
@@ -316,7 +361,11 @@ pub(super) fn review_request(
     if request.skip_replacement_review {
         return Ok(request.confirmed_replacement.clone());
     }
-    let current = preview_validated(target, staged, runtime, incoming, progress)?;
+    let known = request
+        .confirmed_replacement
+        .as_ref()
+        .map_or(&[][..], |review| review.packages());
+    let current = preview_validated(target, staged, runtime, incoming, known, progress)?;
     report(progress, "Confirming Reviewed Changes", 10);
     validate_consent(&current, request.confirmed_replacement.as_ref())?;
     report(progress, "Account Review Complete", REVIEW_OPERATIONS);
@@ -457,9 +506,11 @@ pub(crate) fn test_review_with_slots(
     let client_settings = preview_authored_client_settings_for_runtime(install, &runtime).unwrap();
     let mut review = ReplacementReview {
         validated: None,
+        packages: Vec::new(),
         mods: Vec::new(),
         members: Vec::new(),
         installed: vec![],
+        installed_family: None,
         incoming: vec![],
         removed_hashes: hashes,
         incoming_definitions: None,

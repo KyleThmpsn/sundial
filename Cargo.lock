@@ -2848,6 +2848,7 @@ dependencies = [
  "anyhow",
  "base64",
  "bcdec_rs",
+ "cc",
  "flate2",
  "fs2",
  "half",
@@ -2863,6 +2864,7 @@ dependencies = [
  "tempfile",
  "tiger-pkg",
  "ureq",
+ "windows",
  "zip",
 ]
 

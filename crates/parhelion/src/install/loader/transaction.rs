@@ -1,4 +1,6 @@
 use super::*;
+mod retention;
+pub(in crate::install) use retention::completed_backup_owner;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -265,15 +267,7 @@ pub(super) fn prepare(plan: Plan<'_>) -> Result<Transaction, InstallError> {
     fs::create_dir_all(&root).map_err(failure)?;
     let root = canonical_directory(&root, "mod backup root")?;
     let token = unique_token();
-    let backup = create_dated_backup_directory(
-        &root,
-        if incoming.is_some() {
-            "before-install"
-        } else {
-            "before-removal"
-        },
-    )
-    .map_err(failure)?;
+    let backup = create_backup_directory(&root).map_err(failure)?;
     let mut unjournaled = Unjournaled(vec![
         mods.join(format!(".parhelion-stage-{token}")),
         backup.clone(),
@@ -1134,5 +1128,12 @@ fn rename_absent(source: &Path, target: &Path) -> Result<(), InstallError> {
 
 fn write_json(path: &Path, value: &impl Serialize) -> Result<(), InstallError> {
     let bytes = serde_json::to_vec_pretty(value).map_err(failure)?;
+    let limit = mod_content::metadata_byte_limit(path);
+    if bytes.len() as u64 > limit {
+        return Err(InstallError::validation(format!(
+            "Mod metadata {} exceeds its {limit}-byte size limit",
+            path.display()
+        )));
+    }
     sundial::package_authoring::replace_authoring_file(path, &bytes).map_err(failure)
 }

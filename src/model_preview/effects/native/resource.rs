@@ -1,6 +1,31 @@
 //! Plan both shader stages' bindings before retaining their decoded images.
 use super::*;
 
+/// Resource tables may interleave textures and samplers. Keep the stored row
+/// identities while packing only decoded samplers into the renderer's array.
+pub(super) fn samplers(
+    manager: &PackageManager,
+    bytes: &[u8],
+    stage: usize,
+) -> Result<
+    (
+        Vec<texture::Sampler>,
+        std::collections::BTreeMap<usize, usize>,
+    ),
+    String,
+> {
+    let (count, rows) = super::super::vertex::table(bytes, stage + 0x40, 0x8080_73F3, 16, 256)?;
+    let mut values = Vec::new();
+    let mut indices = std::collections::BTreeMap::new();
+    for row in 0..count {
+        if let Some(value) = texture::sampler(manager, u32_at(bytes, rows + row * 16)?) {
+            indices.insert(row, values.len());
+            values.push(value);
+        }
+    }
+    Ok((values, indices))
+}
+
 pub(super) struct Plan<'a> {
     manager: &'a PackageManager,
     model: &'a mut Model,
@@ -29,7 +54,7 @@ impl<'a> Plan<'a> {
         bytes: &[u8],
         code: &program::Program,
         expression: Option<&Program>,
-        samplers: &[texture::Sampler],
+        samplers: &std::collections::BTreeMap<usize, usize>,
         vertex: bool,
         sampler_offset: usize,
     ) -> Result<(), String> {
@@ -40,8 +65,11 @@ impl<'a> Plan<'a> {
             .find(|(slot, _)| (5..=7).contains(slot))
             .map(|(slot, _)| *slot);
         for resource in &code.resources {
-            let sampler = sampling_for(code, expression, resource, samplers.len())?
-                .map(|i| i + sampler_offset);
+            let sampler_rows: std::collections::BTreeMap<_, _> =
+                sampling_for(code, expression, resource, samplers)?
+                    .into_iter()
+                    .map(|(register, row)| (register, row + sampler_offset))
+                    .collect();
             let mut binding = if let Some(&tag) = explicit.get(&resource.slot) {
                 self.image(tag, resource)?
             } else if vertex {
@@ -50,9 +78,10 @@ impl<'a> Plan<'a> {
                     resource.slot
                 ));
             } else {
-                implicit(code, resource, dye)?
+                implicit(code, resource, dye, expression)?
             };
-            binding.sampler = sampler;
+            binding.sampler = sampler_rows.values().next().copied();
+            binding.sampler_rows = sampler_rows;
             binding.vertex = vertex;
             self.bindings.push(binding);
         }
@@ -115,6 +144,7 @@ impl<'a> Plan<'a> {
             cube,
             layered,
             sampler: None,
+            sampler_rows: Default::default(),
             vertex: false,
         })
     }
@@ -143,12 +173,47 @@ fn implicit(
     code: &program::Program,
     resource: &program::Resource,
     dye: Option<usize>,
+    expression: Option<&Program>,
 ) -> Result<Binding, String> {
-    let role = if matches!((resource.slot, resource.dimension), (15 | 16, 3) | (17, 5))
-        && code.buffers.contains(&(12, 13))
-        && code.buffers.contains(&(13, 2))
+    let role = if resource.dimension == 3
+        && !resource.integer
+        && expression.is_some_and(|program| program.scene_normal(resource.slot))
     {
-        Role::Scene
+        Role::SceneNormal
+    } else if resource.dimension == 3
+        && !resource.integer
+        && expression.is_some_and(|program| program.sky_hemisphere(resource.slot))
+    {
+        Role::Sky
+    } else if (12..=15).contains(&resource.slot)
+        && resource.dimension == 3
+        && code
+            .buffers
+            .iter()
+            .any(|&(slot, count)| slot == 8 && (5..=8).contains(&count))
+    {
+        if resource.slot == 15 {
+            Role::SunVisibility
+        } else {
+            Role::Irradiance
+        }
+    } else if matches!(
+        (resource.slot, resource.dimension),
+        (15 | 16 | 18, 3) | (17, 5)
+    ) && code
+        .buffers
+        .iter()
+        .any(|&(slot, count)| slot == 12 && matches!(count, 13 | 14))
+        && code
+            .buffers
+            .iter()
+            .any(|&(slot, count)| slot == 13 && matches!(count, 1 | 2))
+    {
+        if resource.slot == 18 {
+            Role::SceneColor
+        } else {
+            Role::Scene
+        }
     } else {
         if resource.dimension != 3 {
             return Err("The effect texture has no explicit binding".into());
@@ -177,6 +242,7 @@ fn implicit(
         cube: None,
         layered: None,
         sampler: None,
+        sampler_rows: Default::default(),
         vertex: false,
     })
 }

@@ -208,14 +208,29 @@ pub(super) unsafe fn groups(
                         Role::Gear => group.key.gearstack,
                         Role::Detail => dye.and_then(|d| d.detail),
                         Role::DetailNormal => dye.and_then(|d| d.normal),
-                        Role::Depth | Role::Mask | Role::Scene => None,
+                        Role::Depth
+                        | Role::Mask
+                        | Role::Scene
+                        | Role::SceneColor
+                        | Role::SceneNormal
+                        | Role::Irradiance
+                        | Role::Sky
+                        | Role::SunVisibility => None,
                     };
-                    let levels = texture.map_or(0, |i| {
+                    let mut levels = texture.map_or(0, |i| {
                         1 + frame.model.textures[i].mips.as_ref().map_or(0, Vec::len)
                     }) as i32;
-                    let texture = texture
+                    let mut texture = texture
                         .and_then(|i| uploaded.textures.get(i))
                         .and_then(|roles| roles[usize::from(binding.color)]);
+                    if matches!(binding.role, Role::SceneColor) {
+                        texture = Some(target.resolve.color());
+                        levels = 1;
+                    }
+                    if matches!(binding.role, Role::SceneNormal) {
+                        texture = Some(target.resolve.normal());
+                        levels = 1;
+                    }
                     // A positive level count also marks this binding as present.
                     present[unit] = levels * i32::from(texture.is_some());
                     gl.active_texture(glow::TEXTURE0 + texture_unit as u32);
@@ -380,6 +395,7 @@ unsafe fn copy_effect_depth(gl: &glow::Context, target: &Target, copied_depth: &
     // SAFETY: called with the current draw context and its complete target.
     unsafe {
         if !*copied_depth {
+            target.resolve.capture(gl, target);
             gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(target.fbo));
             gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(target.scene_fbo));
             gl.blit_framebuffer(

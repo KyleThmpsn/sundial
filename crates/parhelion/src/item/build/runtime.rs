@@ -1024,7 +1024,12 @@ impl ImportedRuntime {
             let graph = &inputs;
             loaded = Self {
                 animation: animation::load(graph)?,
-                audio: audio::load(graph)?,
+                audio: audio::load(graph).map_err(|error| {
+                    error.context(format!(
+                        "Loading prepared audio from {}",
+                        reference.directory.display()
+                    ))
+                })?,
                 extensions: extensions::load(graph)?,
                 particles: particles::load(graph)?,
                 equipment: animation::equipment::load(graph)?,

@@ -27,6 +27,8 @@ use super::super::{
 };
 use anyhow::{Context, Result, ensure};
 
+mod compute;
+
 /// The lightmap BSP data's direction and intensity maps, and its per-instance lightmap texture
 /// coordinate streams: one vertex buffer index per placed instance, `-1` for none.
 const DIRECTION: usize = 0x1C;
@@ -313,10 +315,15 @@ pub(super) fn probe(
 }
 
 /// Each placed instance's coloring row as a lighting probe, in instance order, `None` for an
-/// instance without one or with an empty one. The constant-lit pixel shader takes the row's first
+/// instance without one. A present zero coloring remains black. The constant-lit pixel shader takes the row's first
 /// half4 as the lobe's direction and the sun's visibility, its second as the lobe's color and
 /// bandwidth, and a quarter of its fourth's color as the ambient color.
-pub(super) fn colorings(cache: &Cache, lightmap: &Tag) -> Result<Vec<Option<Texel>>> {
+pub(super) struct Coloring {
+    pub analytical_light: u32,
+    pub texel: Texel,
+}
+
+pub(super) fn colorings(cache: &Cache, lightmap: &Tag) -> Result<Vec<Option<Coloring>>> {
     let at = lightmap.address()?;
     let rows = cache.block(at + COLORINGS, COLORING_SIZE)?;
     cache
@@ -333,22 +340,27 @@ pub(super) fn colorings(cache: &Cache, lightmap: &Tag) -> Result<Vec<Option<Texe
             let h = std::array::from_fn::<f32, 16, _>(|k| {
                 half::f16::from_le_bytes([bytes[k * 2], bytes[k * 2 + 1]]).to_f32()
             });
-            if !h.iter().all(|v| v.is_finite()) || h.iter().all(|&v| v == 0.) {
-                return Ok(None);
-            }
+            let analytical_light = cache.u32(coloring + 0x20)?;
+            ensure!(
+                h.iter().all(|v| v.is_finite()),
+                "Nonfinite instance coloring"
+            );
             let direction = [h[0], h[1], h[2]];
             let length = direction.iter().map(|v| v * v).sum::<f32>().sqrt();
-            Ok(Some(Texel::new(
-                [h[4], h[5], h[6]].map(|v| v.max(0.) * COLORING_SCALE),
-                [h[12], h[13], h[14]].map(|v| 0.25 * v.max(0.) * COLORING_SCALE),
-                if length > 1e-5 {
-                    direction.map(|v| v / length)
-                } else {
-                    [0., 0., 1.]
-                },
-                h[7],
-                h[3],
-            )))
+            Ok(Some(Coloring {
+                analytical_light,
+                texel: Texel::new(
+                    [h[4], h[5], h[6]].map(|v| v.max(0.) * COLORING_SCALE),
+                    [h[12], h[13], h[14]].map(|v| 0.25 * v.max(0.) * COLORING_SCALE),
+                    if length > 1e-5 {
+                        direction.map(|v| v / length)
+                    } else {
+                        [0., 0., 1.]
+                    },
+                    h[7],
+                    h[3],
+                ),
+            }))
         })
         .collect()
 }
@@ -503,6 +515,10 @@ fn layers(
     let layers = usize::from(cache.u8(image + IMAGE_LAYERS)?).max(1);
     ensure!(
         cache.i16(image + IMAGE_FORMAT)? == format
+            && width > 0
+            && height > 0
+            && width <= 16_384
+            && height <= 16_384
             && width.is_multiple_of(4)
             && height.is_multiple_of(4)
             && count <= layers,
@@ -544,6 +560,26 @@ fn encode(value: f32, peak: f32) -> u8 {
     ((value / peak).clamp(0., 1.).sqrt() * 255. + 0.5) as u8
 }
 
+fn encode_texel(texel: &Texel, peak: f32) -> [u8; 12] {
+    let [r, g, b] = texel.lobe.map(|c| encode(c, peak));
+    let [ar, ag, ab] = texel.ambient.map(|c| encode(c, peak));
+    let [x, y, z] = texel.direction;
+    [
+        r,
+        g,
+        b,
+        texel.bandwidth,
+        ar,
+        ag,
+        ab,
+        texel.sun,
+        x,
+        y,
+        z,
+        255,
+    ]
+}
+
 /// A BSP's lightmap image, decoded: `width` by `height` texels, row by row.
 pub(super) struct Lighting {
     width: usize,
@@ -575,6 +611,20 @@ pub(super) fn decode(cache: &Cache, pages: &mut Pages, lightmap: &Tag) -> Result
         "Lightmap direction map {} is {map_width} by {map_height}, its intensity {width} by {height}",
         direction.path
     );
+    let brightness = cache.f32(at + BRIGHTNESS)?;
+    ensure!(brightness.is_finite(), "Lightmap brightness is not finite");
+    let constant = if brightness > 0. { brightness } else { 1. };
+    ensure!(
+        constant <= f32::MAX / 2.,
+        "Lightmap brightness overflows decoded lighting"
+    );
+    if let Some(texels) = compute::decode(width, height, &intensity_layers, &map[0], constant)? {
+        return Ok(Some(Lighting {
+            width,
+            height,
+            texels,
+        }));
+    }
     let mut intensities = vec![[[0u8; 4]; LAYERS]; width * height];
     for (layer, blocks) in intensity_layers.iter().enumerate() {
         texels(
@@ -606,8 +656,6 @@ pub(super) fn decode(cache: &Cache, pages: &mut Pages, lightmap: &Tag) -> Result
         },
         |index, xy| channels[index] = xy,
     );
-    let brightness = cache.f32(at + BRIGHTNESS)?;
-    let constant = if brightness > 0. { brightness } else { 1. };
     let texels = intensities
         .into_iter()
         .zip(channels)
@@ -688,13 +736,10 @@ pub(super) fn pack(
     let mut lobe = [0, 0, 0, 0].repeat(width * height);
     let mut ambient = [neutral, neutral, neutral, 255].repeat(width * height);
     let mut direction = [128, 128, 255, 255].repeat(width * height);
-    let mut write = |at: usize, texel: &Texel| {
-        let [r, g, b] = texel.lobe.map(|c| encode(c, peak));
-        lobe[at..at + 4].copy_from_slice(&[r, g, b, texel.bandwidth]);
-        let [r, g, b] = texel.ambient.map(|c| encode(c, peak));
-        ambient[at..at + 4].copy_from_slice(&[r, g, b, texel.sun]);
-        let [x, y, z] = texel.direction;
-        direction[at..at + 4].copy_from_slice(&[x, y, z, 255]);
+    let mut write = |at: usize, bytes: &[u8]| {
+        lobe[at..at + 4].copy_from_slice(&bytes[..4]);
+        ambient[at..at + 4].copy_from_slice(&bytes[4..8]);
+        direction[at..at + 4].copy_from_slice(&bytes[8..12]);
     };
     let mut placements = Vec::with_capacity(images.len());
     let mut row = 0;
@@ -703,10 +748,18 @@ pub(super) fn pack(
             placements.push(None);
             continue;
         };
+        let encoded = compute::encode(&image.texels, peak)?;
         for (index, texel) in image.texels.iter().enumerate() {
+            let cpu;
+            let bytes = if let Some(encoded) = &encoded {
+                &encoded[index * 12..index * 12 + 12]
+            } else {
+                cpu = encode_texel(texel, peak);
+                &cpu
+            };
             write(
                 ((row + index / image.width) * width + index % image.width) * 4,
-                texel,
+                bytes,
             );
         }
         placements.push(Some(Placement {
@@ -723,13 +776,14 @@ pub(super) fn pack(
     for bsp in &probes {
         let mut placed = Vec::with_capacity(bsp.len());
         for texel in bsp {
+            let encoded = encode_texel(texel, peak);
             let (x0, y0) = (
                 next % per_row * PROBE_BLOCK,
                 image_rows + next / per_row * PROBE_BLOCK,
             );
             for y in y0..y0 + PROBE_BLOCK {
                 for x in x0..x0 + PROBE_BLOCK {
-                    write((y * width + x) * 4, texel);
+                    write((y * width + x) * 4, &encoded);
                 }
             }
             let middle = PROBE_BLOCK as f32 / 2.;

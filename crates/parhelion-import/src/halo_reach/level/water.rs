@@ -60,6 +60,7 @@ impl Coordinates {
         &self,
         cache: &Cache,
         part: usize,
+        range: usize,
         topology: u8,
         indices: &[u32],
         primitive: &mut Primitive,
@@ -68,8 +69,16 @@ impl Coordinates {
             return Ok(());
         };
         ensure!(topology == 3, "Water coordinates require a triangle list");
-        let first = usize::try_from(cache.i32(part + 4)?)?;
-        let count = usize::try_from(cache.i32(part + 8)?)?;
+        let part_first = usize::try_from(cache.i32(part + 4)?)?;
+        let first = usize::try_from(cache.i32(range)?)?;
+        let count = usize::try_from(cache.i32(range + 4)?)?;
+        let start = start
+            .checked_add(
+                first
+                    .checked_sub(part_first)
+                    .context("Water subpart precedes part")?,
+            )
+            .context("Water coordinate start overflow")?;
         ensure!(
             count.is_multiple_of(3) && start.is_multiple_of(3),
             "Incomplete water triangle range"

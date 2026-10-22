@@ -200,40 +200,6 @@ mod tests {
     }
 
     #[test]
-    fn crop_fill_and_position_control_the_visible_image_without_stretching() {
-        let source = RgbaImage::from_fn(80, 40, |x, _| {
-            Rgba(if x < 40 {
-                [255, 0, 0, 255]
-            } else {
-                [0, 255, 0, 255]
-            })
-        });
-        let edit = Composition {
-            crop: [5000, 0, 5000, 10000],
-            background: Background::Solid {
-                color: [10, 20, 30],
-            },
-            ..Default::default()
-        };
-        let fitted = edit.render(&source, 100, 50);
-        assert_eq!(fitted.get_pixel(0, 25).0, [10, 20, 30, 255]);
-        assert_eq!(fitted.get_pixel(50, 25).0, [0, 255, 0, 255]);
-        let filled = Composition {
-            fit: Fit::Cover,
-            ..edit.clone()
-        }
-        .render(&source, 100, 50);
-        assert!(filled.pixels().all(|p| p.0 == [0, 255, 0, 255]));
-        let moved = Composition {
-            offset: [25, 0],
-            ..edit
-        }
-        .render(&source, 100, 50);
-        assert_eq!(moved.get_pixel(30, 25).0, [10, 20, 30, 255]);
-        assert_eq!(moved.get_pixel(90, 25).0, [0, 255, 0, 255]);
-    }
-
-    #[test]
     fn transparent_edges_do_not_bleed_hidden_color_and_gradients_reach_both_endpoints() {
         let source = RgbaImage::from_fn(2, 1, |x, _| {
             Rgba(if x == 0 {

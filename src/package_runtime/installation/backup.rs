@@ -10,6 +10,8 @@ use std::{
 pub(super) struct Receipt {
     pub install: PathBuf,
     pub kept: RuntimeLocation,
+    #[serde(default)]
+    pub archived_dawn: bool,
     pub state: String,
     pub paths: Vec<PathBuf>,
 }
@@ -40,10 +42,16 @@ pub(crate) fn archive_other_runtime(
         .into_iter()
         .find(|location| *location != keep)
         .unwrap();
+    let archived_dawn = inspected
+        .copies
+        .iter()
+        .find(|copy| copy.location == other)
+        .ok_or("The other runtime no longer exists")?
+        .dawn;
     let mut paths = Vec::new();
     for name in [
         "steam_api64.dll",
-        "Sunrise",
+        super::runtime_folder(archived_dawn),
         "steam_api64.pdb",
         "Lua_LICENSE.txt",
     ] {
@@ -67,6 +75,7 @@ pub(crate) fn archive_other_runtime(
     let mut receipt = Receipt {
         install: root.clone(),
         kept: keep,
+        archived_dawn,
         state: "planned".into(),
         paths,
     };

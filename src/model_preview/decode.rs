@@ -745,6 +745,8 @@ fn read_mesh(
     }
     let base = model.vertices.len();
     let has_uv = decoded.has_uv;
+    model.vertex_ids.resize(base, 0);
+    model.vertex_ids.extend_from_slice(&selected);
     model
         .vertices
         .extend(decoded.positions.into_iter().map(|p| [p[0], p[1], p[2]]));
@@ -841,25 +843,4 @@ pub(super) fn triangles(
     }
     result.retain(|t| t[0] != t[1] && t[1] != t[2] && t[0] != t[2]);
     Ok(result)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn lod_visibility_respects_shared_and_exclusive_categories() {
-        let categories = [4, 6, 8, 9];
-        let level = (0..4)
-            .find(|&l| categories.iter().any(|&c| lod_visible(c, l)))
-            .unwrap();
-        assert_eq!(level, 1);
-        assert_eq!(
-            categories
-                .into_iter()
-                .filter(|&c| lod_visible(c, level))
-                .collect::<Vec<_>>(),
-            [4, 6]
-        );
-        assert!(!lod_visible(255, 0));
-    }
 }

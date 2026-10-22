@@ -70,6 +70,85 @@ pub(super) fn native_bindings(
     Ok(report)
 }
 
+/// Resolve simulated draws from the owner's display bindings. Source draw flags also
+/// describe other render roles, so they cannot identify a cloth buffer by themselves.
+/// Each simulated draw must address vertices written by its own group's display buffers.
+pub(super) fn simulated_draws(
+    owner: &Payload,
+    resource: usize,
+    model: &Payload,
+    mesh: usize,
+    indices: &[u32],
+    restart: u32,
+    vertices: usize,
+) -> Result<std::collections::BTreeSet<usize>> {
+    let parts = model.array(mesh + 0x48, 36, Some(0x80801AEF))?;
+    let mut covered = std::collections::BTreeSet::new();
+    let mut simulated = std::collections::BTreeSet::new();
+    for group in 0..4 {
+        let from = resource + 0x3C0 + group * 0x140;
+        let bindings = owner.array(from, 12, Some(0x80801AE0))?;
+        let ranges = bindings
+            .iter()
+            .map(|&row| -> Result<std::ops::Range<usize>> {
+                let offset = owner.u32(row)? as usize;
+                let count = owner.u32(row + 8)? as usize;
+                let first = offset / 48;
+                let end = first
+                    .checked_add(count)
+                    .context("Source cloth vertex range overflow")?;
+                ensure!(
+                    offset.is_multiple_of(48) && count > 0 && end <= vertices,
+                    "Source cloth display binding exceeds the float stream"
+                );
+                Ok(first..end)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for stage in 0..19 {
+            let first = usize::from(model.u16(mesh + 0x58 + stage * 2)?);
+            let end = usize::from(model.u16(mesh + 0x5A + stage * 2)?);
+            let draws = parts
+                .get(first..end)
+                .context("Source cloth stage exceeds its draw array")?;
+            for row in owner.array(from + 16 + stage * 16, 4, Some(0x80800007))? {
+                let index = owner.u32(row)? as usize;
+                let draw = *draws
+                    .get(index)
+                    .context("Source cloth group exceeds its stage")?;
+                let ordinal = first + index;
+                ensure!(
+                    covered.insert(ordinal),
+                    "A source cloth draw belongs to multiple groups"
+                );
+                if ranges.is_empty() {
+                    continue;
+                }
+                let start = model.u32(draw + 8)? as usize;
+                let count = model.u32(draw + 12)? as usize;
+                let end = start
+                    .checked_add(count)
+                    .context("Source cloth draw range overflow")?;
+                let draw_indices = indices
+                    .get(start..end)
+                    .context("Source cloth draw exceeds the index stream")?;
+                ensure!(
+                    draw_indices.iter().all(|&vertex| vertex == restart
+                        || ranges
+                            .iter()
+                            .any(|range| range.contains(&(vertex as usize)))),
+                    "Source cloth draw addresses vertices outside its display buffers"
+                );
+                simulated.insert(ordinal);
+            }
+        }
+    }
+    ensure!(
+        covered.len() == parts.len(),
+        "Source cloth display groups do not cover every draw"
+    );
+    Ok(simulated)
+}
+
 /// Move the inline D1 state and display bindings into the native definition.
 /// Vertex order and stage-local draw order are retained by the model converter.
 pub(super) fn native_definition(
@@ -135,16 +214,12 @@ pub(super) fn native_definition(
             let mut indices = Vec::new();
             for row in owner.array(from + 16 + stage * 16, 4, Some(0x80800007))? {
                 let index = owner.u32(row)?;
-                let draw = *draws
+                draws
                     .get(index as usize)
                     .context("Source cloth group exceeds its stage")?;
                 ensure!(
                     selected.insert(index),
                     "A source cloth draw belongs to multiple groups"
-                );
-                ensure!(
-                    (model.u16(draw + 0x1C)? & 16 != 0) != bindings.is_empty(),
-                    "Source cloth simulation role and display buffer disagree"
                 );
                 indices.extend(index.to_le_bytes());
             }

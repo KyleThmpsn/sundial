@@ -1051,6 +1051,7 @@ fn build_material(
         .context("source material bindings")?
         .clone();
     let (source, null_glow) = null_glow::specialize(&source, &material, &binding)?;
+    let lighting_slots = lighting::texture_slots(&source)?;
     let (source, native_lighting) = lighting::adapt(&source)
         .with_context(|| format!("source shader {ps:08X} material {}", draw.material))
         .map_err(crate::d2_mot::source_limit)?;
@@ -1150,8 +1151,10 @@ fn build_material(
         );
     }
     if native_lighting {
-        pixel_program.code.extend(lighting::bindings(&c.refs)?);
-        for slot in 27..=31 {
+        pixel_program
+            .code
+            .extend(lighting::bindings(&c.refs, lighting_slots)?);
+        for slot in lighting_slots {
             pixel_program.textures.insert(0x20 | slot, 0);
         }
         c.graph.manifest["native_forward_lighting"] = json!({"irradiance":"Native RGB spherical-harmonic atlases and shadow factor","reflection":"Native environment hemisphere","modern_local_probe_volumes":false,"source_material_equations_retained":true,"gameplay_verified":false});
@@ -1334,8 +1337,12 @@ fn build_material(
             );
             pixel = pixel.replace(&format!("t{from}."), &format!("t{to}."));
         }
+        let frame_count = inputs::cb_count(&pixel, 13)?;
+        if frame_count == Some(5) {
+            inputs::validate_pixel_frame(&c.refs, &pixel)?;
+        }
         ensure!(
-            inputs::cb_count(&pixel, 13)?.is_none_or(|n| n == 2)
+            frame_count.is_none_or(|n| n == 2 || n == 5)
                 && inputs::cb_count(&pixel, 8)?.is_none_or(|n| n == 8 || (scene_scope && n == 4)),
             "source atmospheric constant contract differs"
         );

@@ -36,7 +36,6 @@ const STRING_PALETTE: usize = 0x58;
 /// The filter stock world collision meshes give every primitive: layer 7, the world.
 const WORLD_FILTER: u32 = 0x037F_FCC7;
 const SECTION_SIZE: usize = 0x60;
-const ROOT_SIZE: usize = 0x40;
 /// Quantization steps of the section codec on each axis.
 const STEPS_PER_AXIS: [f32; 3] = [2047., 2047., 1023.];
 
@@ -289,29 +288,6 @@ pub(super) fn vector(values: [f32; 3], w: f32) -> Vec<u8> {
         .chain([w])
         .flat_map(f32::to_le_bytes)
         .collect()
-}
-
-/// A packfile whose one body holds `triangles` in one compressed mesh shape. `template` must
-/// hold the root and `hkpBvCompressedMeshShape` classes, as a stock map object's collision does.
-pub(crate) fn compressed_mesh(template: &[u8], triangles: &[Triangle]) -> Result<Vec<u8>> {
-    let template = Template::read(template, "s_physics_component_havok_data")?;
-    let root = template.object("s_physics_component_havok_data", ROOT_SIZE)?;
-    let shape_bytes = template.object("hkpBvCompressedMeshShape", SHAPE_SIZE)?;
-    let mut w = Writer {
-        data: Vec::new(),
-        local: Vec::new(),
-        references: Vec::new(),
-        objects: Vec::new(),
-    };
-    w.object(&root, "s_physics_component_havok_data")?;
-    for field in [0, 16, 48] {
-        w.array(field, &[], 8)?;
-    }
-    let slots = w.array(32, &[0; 8], 8)?;
-    let (shape, _) = mesh_shape(&mut w, &shape_bytes, triangles)?;
-    w.references
-        .push((u32::try_from(slots)?, u32::try_from(shape)?));
-    w.finish(template)
 }
 
 /// A packfile whose root is one compressed mesh shape holding `triangles`, as each shape packfile

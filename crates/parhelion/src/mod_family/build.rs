@@ -252,6 +252,7 @@ pub(crate) fn begin(
                         "directory": graph.directory,
                         "sha256": graph.sha256,
                         "converter_revision": graph.converter_revision,
+                        "material_inputs": graph.material_inputs,
                     },
                     "markers": binding.map(|spec| &spec.overrides.marker_offsets),
                     "dyes": binding.map(|spec| &spec.overrides.dye_edits),
@@ -511,6 +512,13 @@ fn map_inputs(
             }
         }
     }
+    let info = paths
+        .iter()
+        .filter(|path| path.extension().is_some_and(|extension| extension == "fsb"))
+        .map(|path| path.with_extension("fsb.info"))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    paths.extend(info);
     paths.sort();
     paths.dedup();
     let files = paths
@@ -524,7 +532,26 @@ fn map_inputs(
     Ok(serde_json::json!({
         "map": map.name, "donor": map.donor, "source": source, "decoder": decoder, "files": files,
         "reach_revision": parhelion_import::halo_reach::REVISION,
+        // A campaign's areas share one conversion, so kept geometry from per-area builds differs.
+        "areas": "shared",
     }))
+}
+
+/// Reuse the build's checked file identities across its areas, whose zone sets and offsets differ.
+#[cfg(feature = "d2-model-importer")]
+pub(crate) fn map_source_identity(source: &crate::map::MapSource) -> Option<serde_json::Value> {
+    let guard = session();
+    guard.as_ref()?.maps.iter().find_map(|(map, input)| {
+        let original = map.source.as_ref()?;
+        (original.maps == source.maps
+            && original.map == source.map
+            && original.variant == source.variant
+            && (source.mission_bindings.is_none()
+                || original.mission_bindings == source.mission_bindings)
+            && original.audio_decoder == source.audio_decoder
+            && original.audio_banks == source.audio_banks)
+            .then(|| input["files"].clone())
+    })
 }
 
 pub(crate) fn verify_inputs() -> Result<(), String> {
@@ -568,12 +595,15 @@ pub(crate) fn remember_map(name: &str, mut value: serde_json::Value) -> Result<(
         .and_then(|s| s.imports.get_mut(&Importer::HaloReach))
         && !import.kept
     {
-        // Reused resources come from installed packages. Only their ordered symbols and
-        // placement metadata rebuild the native world chain. Conversion reports, fixups and
+        // Reused resources come from installed packages. Their ordered symbols, typed fixups and
+        // placement metadata rebuild the native world chain. Conversion reports and
         // source audio bytes would duplicate the cache and grow receipts with every map.
         if let Some(nodes) = value["nodes"].as_array_mut() {
             for node in nodes {
-                *node = serde_json::json!({"symbol": node["symbol"]});
+                *node = serde_json::json!({
+                    "symbol": node["symbol"], "patches": node["patches"],
+                    "reference": node["reference"], "texture_pair": node["texture_pair"],
+                });
             }
         }
         value["report"] = serde_json::Value::Null;

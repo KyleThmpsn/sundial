@@ -8,7 +8,10 @@
 use super::*;
 use crate::tiger::{animation::runtime, payload::write_array};
 mod channel;
+mod constraint;
+mod controls;
 mod event;
+mod first_person;
 
 const SOURCE_CLIP: u32 = 0x8080_05A1;
 const SOURCE_BANK: u32 = 0x8080_2C0E;
@@ -140,7 +143,10 @@ fn codec(
 }
 
 /// Convert one Rise of Iron clip to the native clip layout.
-pub(super) fn convert(source: &Payload) -> Result<(Payload, Value)> {
+fn convert_bound(
+    source: &Payload,
+    binding: Option<(&Payload, &[u16])>,
+) -> Result<(Payload, Value)> {
     let length = source.0.len();
     ensure!(
         length > SOURCE_HEADER && source.u64(0)? == length as u64,
@@ -149,12 +155,12 @@ pub(super) fn convert(source: &Payload) -> Result<(Payload, Value)> {
     ensure!(source.u64(8)? == 0, "Source clip has a stream extension");
     for at in (0x30..0x50).step_by(8) {
         ensure!(
-            source.u64(at)? == 0,
+            source.u64(at)? == 0 || (binding.is_some() && at != 0x48),
             "Source clip constraint or blend binding at {at:X} needs translation"
         );
     }
     ensure!(
-        source.u32(0x120)? == 0 && source.u32(0x124)? == 0,
+        (source.u32(0x120)? == 0 && source.u32(0x124)? == 0) || binding.is_some(),
         "Source clip constraint codec sizes need translation"
     );
     ensure!(
@@ -241,6 +247,19 @@ pub(super) fn convert(source: &Payload) -> Result<(Payload, Value)> {
     }
     ensure!(!streams.is_empty(), "Source clip contains no tracks");
     streams.extend(channel::convert(source, &mut native, usize::from(frames))?);
+    if source.u64(0x30)? != 0 {
+        let (template, bones) =
+            binding.context("Source constraints need a native binding witness")?;
+        streams.extend(constraint::convert(source, &mut native, template, bones)?);
+    } else {
+        ensure!(
+            source.u64(0x38)? == 0
+                && source.u64(0x40)? == 0
+                && source.u32(0x120)? == 0
+                && source.u32(0x124)? == 0,
+            "Source constraint streams have no bindings"
+        );
+    }
     if source.u64(0x58)? != 0 {
         let at = source.pointer(0x58)?;
         let counts = [
@@ -377,6 +396,7 @@ pub(super) fn prepare(
     native_rig: &Value,
     graph: &Path,
 ) -> Result<Value> {
+    let mapping = controls::Mapping::read(source, runtime, native, native_rig, false)?;
     let source_clips = runtime_bank(source, runtime)?;
     let native_clips = runtime::clips(native, native_rig)?;
     let pairs = pairs(&native_clips, &source_clips);
@@ -385,7 +405,12 @@ pub(super) fn prepare(
     let mut rejected = Vec::new();
     for (native_tag, source_tag, name) in pairs {
         let result = (|| {
-            let (payload, report) = convert(&source.read(source_tag)?)?;
+            let original = source.read(source_tag)?;
+            let template = native.tag(native_tag, Some(0x80808F49))?;
+            let (payload, mut report) =
+                convert_bound(&original, Some((&template, &mapping.bone_map)))?;
+            let (payload, slots) = mapping.apply(&original, &payload)?;
+            report["control_mapping"] = slots;
             for cue in report["audio"]["cues"]
                 .as_array()
                 .context("Clip audio cues")?
@@ -467,4 +492,14 @@ pub(super) fn prepare(
         result["audio_assets"] = audio;
     }
     Ok(result)
+}
+
+pub(super) fn prepare_first_person(
+    source: &Source,
+    runtime: &Value,
+    native: &mut Reader,
+    native_rig: &Value,
+    graph: &Path,
+) -> Result<Value> {
+    first_person::prepare(source, runtime, native, native_rig, graph)
 }

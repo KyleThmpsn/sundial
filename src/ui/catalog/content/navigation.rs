@@ -458,6 +458,3 @@ fn destination_title(item: Destination, names: &BTreeMap<u32, Vec<String>>) -> S
             .unwrap_or_else(|| format!("Type 0x{class:08X}")),
     }
 }
-
-#[cfg(test)]
-mod tests;

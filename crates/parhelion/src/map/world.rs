@@ -14,11 +14,14 @@ use crate::{
     error::invalid,
     format::NamedTag,
     shared_tag_dependency_index::{
-        enroll_dependencies,
+        enroll_dependencies, enroll_inherited_dependencies,
         native::{Companions, native_companion},
         remove_dependencies, replace_owner_dependency,
     },
-    tag_payload::{read_tag, read_u32, read_u64, synchronize_payload_size, write_u32, write_u64},
+    tag_payload::{
+        append_native_array, array_at, read_tag, read_u32, read_u64, synchronize_payload_size,
+        write_u32, write_u64,
+    },
 };
 
 const ACTIVITY_ROOT_CLASS: u32 = 0x8080_8AAE;
@@ -314,6 +317,9 @@ pub(super) struct World {
     slice_set: Option<SliceSet>,
     registry: Option<super::registry::Registry>,
     geometry: Option<super::geometry::Geometry>,
+    extra_geometry: Vec<super::geometry::Geometry>,
+    extra_registries: Vec<super::registry::Registry>,
+    streaming: Option<super::streaming::Layout>,
     vehicle_summoning: Option<bool>,
 }
 
@@ -356,10 +362,28 @@ impl World {
             Some(slice_set) => slice_set.world()?,
             None => donor.to_owned(),
         };
+        let streaming_plan = source
+            .map(|source| {
+                parhelion_import::halo_reach::level::streaming::read(
+                    &source.maps.join(&source.map),
+                    &source.zone_sets,
+                    source.offset.map(|v| v as f32),
+                )
+                .map_err(|e| invalid(format!("Map streaming: {e:#}")))
+            })
+            .transpose()?
+            .flatten();
+        // A campaign's connected areas convert together, each placing what its zone sets load.
+        let areas = streaming_plan.as_ref().map_or_else(Vec::new, |plan| {
+            plan.bubbles
+                .iter()
+                .map(|bubble| bubble.zone_sets.clone())
+                .collect()
+        });
         let mut geometry = source
             .map(|source| {
                 super::geometry::Geometry::load(
-                    directory, manager, companions, &world, name, source, report,
+                    directory, manager, companions, &world, name, source, &areas, true, report,
                 )
             })
             .transpose()?;
@@ -387,6 +411,63 @@ impl World {
             )?),
             _ => None,
         };
+        let mut extra_geometry = Vec::new();
+        let mut extra_registries = Vec::new();
+        let streaming = if let Some(plan) = streaming_plan {
+            let first = geometry
+                .as_mut()
+                .ok_or_else(|| invalid("Streaming geometry is missing"))?;
+            first.own_containers(directory, manager, companions)?;
+            let layout = super::streaming::Layout::new(
+                name,
+                plan,
+                first.visibility(manager)?,
+                first.layout(),
+                manager,
+            )?;
+            for index in 1..layout.plan.bubbles.len() {
+                report(&format!(
+                    "Preparing Connected Area {} of {}",
+                    index + 1,
+                    layout.names.len()
+                ));
+                let mut geometry = first.area(
+                    directory,
+                    manager,
+                    companions,
+                    &world,
+                    &layout.names[index],
+                    index,
+                )?;
+                geometry.own_containers(directory, manager, companions)?;
+                if !options.ambient_audio {
+                    geometry.disable_ambience();
+                }
+                let registry = super::registry::Registry::load(
+                    directory,
+                    manager,
+                    companions,
+                    &slice_set
+                        .as_ref()
+                        .ok_or_else(|| invalid("Streaming slice set is missing"))?
+                        .payload,
+                    SLICE_SET_REGISTRY,
+                    geometry.spawns(),
+                    geometry.objectives(),
+                    if options.death_boundaries {
+                        geometry.volumes()
+                    } else {
+                        &[]
+                    },
+                    BubbleName::new(&world, &layout.names[index]),
+                )?;
+                extra_geometry.push(geometry);
+                extra_registries.push(registry);
+            }
+            Some(layout)
+        } else {
+            None
+        };
         Ok(Self {
             name: name.to_owned(),
             root,
@@ -396,15 +477,26 @@ impl World {
             slice_set,
             registry,
             geometry,
+            extra_geometry,
+            extra_registries,
+            streaming,
             vehicle_summoning: options.vehicle_summoning(name),
         })
     }
 
     /// The entries the map's world package takes, none without geometry.
     pub(super) fn world_entries(&self) -> usize {
-        self.geometry
-            .as_ref()
-            .map_or(0, super::geometry::Geometry::entries)
+        self.geometries()
+            .map(super::geometry::Geometry::entries)
+            .sum::<usize>()
+            + self
+                .streaming
+                .as_ref()
+                .map_or(0, |s| s.names.len() * super::streaming::ENTRIES)
+    }
+
+    fn geometries(&self) -> impl Iterator<Item = &super::geometry::Geometry> {
+        self.geometry.iter().chain(&self.extra_geometry)
     }
     /// The scenario names its world and its activity in strings that end the payload, counted
     /// together. A Crucible donor's world takes its activity's name, so its scenario holds one
@@ -490,6 +582,13 @@ impl World {
         &self,
         first: TagHash,
     ) -> AuthoringResult<(Vec<NewTagSpec>, Vec<NamedTag>)> {
+        match &self.streaming {
+            Some(layout) => self.streaming_activity(first, layout),
+            None => self.single_activity(first),
+        }
+    }
+
+    fn single_activity(&self, first: TagHash) -> AuthoringResult<(Vec<NewTagSpec>, Vec<NamedTag>)> {
         let at = |offset: usize| {
             let index = first.entry_index() as usize + offset;
             if index >= crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
@@ -569,6 +668,11 @@ impl World {
         Vec<NamedTag>,
         Vec<crate::extend::NewTagReferenceOverride>,
     )> {
+        if self.streaming.is_some() {
+            return Err(invalid(
+                "Connected campaign areas require the managed standalone mod layout",
+            ));
+        }
         let Some(geometry) = &self.geometry else {
             return Ok(Default::default());
         };
@@ -582,9 +686,20 @@ impl World {
     }
 
     pub(super) fn split_counts(&self) -> Option<(usize, usize)> {
-        self.geometry
-            .as_ref()
-            .map(|geometry| (geometry.chain_entries(), geometry.resource_entries()))
+        self.geometry.as_ref().map(|_| {
+            (
+                self.geometries()
+                    .map(super::geometry::Geometry::chain_entries)
+                    .sum::<usize>()
+                    + self
+                        .streaming
+                        .as_ref()
+                        .map_or(0, |s| s.names.len() * super::streaming::ENTRIES),
+                self.geometries()
+                    .map(super::geometry::Geometry::resource_entries)
+                    .sum(),
+            )
+        })
     }
 
     #[allow(clippy::type_complexity)]
@@ -597,6 +712,9 @@ impl World {
         Vec<NamedTag>,
         Vec<crate::extend::NewTagReferenceOverride>,
     )> {
+        if let Some(layout) = &self.streaming {
+            return self.streaming_tags(native, resources, layout);
+        }
         let geometry = self
             .geometry
             .as_ref()
@@ -611,5 +729,226 @@ impl World {
             }],
             references,
         ))
+    }
+
+    fn streaming_activity(
+        &self,
+        first: TagHash,
+        layout: &super::streaming::Layout,
+    ) -> AuthoringResult<(Vec<NewTagSpec>, Vec<NamedTag>)> {
+        let (mut tags, names) = self.single_activity(first)?;
+        let at = |offset: usize| -> AuthoringResult<TagHash> {
+            let index = first.entry_index() as usize + offset;
+            if index >= crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
+                return Err(invalid("Streaming activity exceeds one package"));
+            }
+            Ok(TagHash::new(first.pkg_id(), index as u16))
+        };
+        let owned = self
+            .slice_set
+            .as_ref()
+            .ok_or_else(|| invalid("Streaming slice set is absent"))?;
+        let mut slices = vec![at(ENTRIES)?];
+        layout.patch_registry(&mut tags[ENTRIES + 1..], at(ENTRIES + 1)?, 0)?;
+        for (bubble, registry) in self
+            .extra_registries
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (i + 1, r))
+        {
+            let slice = at(tags.len())?;
+            let registry_first = at(tags.len() + 1)?;
+            let mut payload = owned.renamed(&self.world, &self.name)?;
+            // This stored field is the bubble ordinal. The runtime derives region = ordinal * 8.
+            write_u32(&mut payload, 0x10, bubble as u32)?;
+            write_u32(&mut payload, SLICE_SET_REGISTRY, registry_first.0)?;
+            tags.push(NewTagSpec {
+                template_tag: owned.tag,
+                payload,
+                storage: NewTagStorageMode::InheritTemplate,
+            });
+            let mut records = registry.tags(registry_first)?;
+            layout.patch_registry(&mut records, registry_first, bubble)?;
+            tags.extend(records);
+            slices.push(slice);
+        }
+        if tags.len() > crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
+            return Err(invalid("Streaming activity exceeds one package"));
+        }
+        let scenario = &mut tags[2].payload;
+        let (count, _, old_bubble, _) = array_at(scenario, 0x50)?;
+        if count != 1 {
+            return Err(invalid("Streaming donor must have one bubble"));
+        }
+        let (states, _, old_state, _) = array_at(scenario, old_bubble + 8)?;
+        if states != 1 {
+            return Err(invalid("Streaming donor must have one initial state"));
+        }
+        let template = scenario[old_state..old_state + 76].to_vec();
+        append_native_array(
+            scenario,
+            0x50,
+            0x8080_924D,
+            slices.len(),
+            &vec![0u8; slices.len() * 24],
+        )?;
+        let rows = array_at(scenario, 0x50)?.2;
+        for (bubble, slice) in slices.iter().enumerate() {
+            let row = rows + bubble * 24;
+            write_u32(scenario, row, layout.hash(bubble))?;
+            let mut state = template.clone();
+            if bubble != 0 {
+                write_u32(
+                    &mut state,
+                    4,
+                    sundial::package_authoring::fnv1_name_hash(&format!(
+                        "{}/default",
+                        layout.names[bubble]
+                    )),
+                )?;
+            }
+            write_u32(&mut state, 0x1C, bubble as u32)?;
+            state[0x20..0x40].fill(0);
+            write_u64(&mut state, 0x20, layout.mask(bubble))?;
+            write_u32(&mut state, 0x40, layout.hash(bubble))?;
+            write_u32(&mut state, 0x44, slice.0)?;
+            append_native_array(scenario, row + 8, 0x8080_924F, 1, &state)?;
+        }
+        *scenario = synchronize_payload_size(std::mem::take(scenario))?;
+        tags[3].payload = enroll_dependencies(&tags[3].payload, at(3)?, at(2)?, &slices)?;
+        Ok((tags, names))
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn streaming_tags(
+        &self,
+        native: u16,
+        resources: &[u16],
+        layout: &super::streaming::Layout,
+    ) -> AuthoringResult<(
+        Vec<NewTagSpec>,
+        Vec<NamedTag>,
+        Vec<crate::extend::NewTagReferenceOverride>,
+    )> {
+        let native_count = self
+            .split_counts()
+            .ok_or_else(|| invalid("Streaming geometry is absent"))?
+            .0;
+        if native_count > crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
+            return Err(invalid("Streaming world metadata exceeds one package"));
+        }
+        let mut native_tags = Vec::new();
+        let mut resource_tags = Vec::new();
+        let mut references = Vec::new();
+        let mut parents = Vec::new();
+        let mut previous_entry = None;
+        let mut textures = super::geometry::Textures::new();
+        for (bubble, geometry) in self.geometries().enumerate() {
+            let first = TagHash::new(native, native_tags.len() as u16);
+            parents.push(TagHash::new(native, first.entry_index() + 2));
+            // The first area writes the graph every area's chain names.
+            let resource_offset = 0;
+            // The tome's clusters come first, since the area's occlusion record assigns each a
+            // probe.
+            let cells = layout.cells(
+                bubble,
+                previous_entry,
+                geometry.occlusion(),
+                geometry.bounds()?,
+            )?;
+            let assignments = cells.assignments(geometry.occlusion());
+            let (mut tags, _, overrides) = geometry.split_tags_at(
+                first,
+                resources,
+                resource_offset,
+                &layout.names[bubble],
+                &mut textures,
+                Some(&assignments),
+            )?;
+            let content = tags.split_off(geometry.chain_entries());
+            layout.patch_chain(&mut tags, bubble)?;
+            let extra = TagHash::new(native, first.entry_index() + tags.len() as u16);
+            let spatial =
+                layout.spatial(&mut tags, first, extra, bubble, geometry.bounds()?, cells)?;
+            previous_entry = geometry.spawns().first().map(|spawn| spawn.position);
+            for mut reference in overrides {
+                reference.new_tag_ordinal = native_count
+                    + resource_offset
+                    + reference
+                        .new_tag_ordinal
+                        .checked_sub(geometry.chain_entries())
+                        .ok_or_else(|| invalid("Unexpected native chain entry reference"))?;
+                references.push(reference);
+            }
+            native_tags.extend(tags);
+            native_tags.extend(spatial);
+            resource_tags.extend(content);
+        }
+        let parent_rows = parents
+            .iter()
+            .flat_map(|tag| {
+                tag.0
+                    .to_le_bytes()
+                    .into_iter()
+                    .chain(1u32.to_le_bytes())
+                    .chain(0u64.to_le_bytes())
+            })
+            .collect::<Vec<_>>();
+        let class = array_at(&native_tags[0].payload, 0x10)?.3;
+        append_native_array(
+            &mut native_tags[0].payload,
+            0x10,
+            class,
+            parents.len(),
+            &parent_rows,
+        )?;
+        native_tags[0].payload =
+            synchronize_payload_size(std::mem::take(&mut native_tags[0].payload))?;
+        native_tags[9].payload = layout.graph(&native_tags[9].payload)?;
+        // Startup walks all root parents, including areas that have not been requested.
+        // Their companions contain only parent metadata and bounds, never bubble content.
+        let parent_sources = parents
+            .iter()
+            .map(|&parent| {
+                let companion = TagHash::new(native, parent.entry_index() + 1);
+                (
+                    native_tags[companion.entry_index() as usize]
+                        .payload
+                        .as_slice(),
+                    companion,
+                    parent,
+                )
+            })
+            .collect::<Vec<_>>();
+        native_tags[1].payload = enroll_inherited_dependencies(
+            &native_tags[1].payload,
+            TagHash::new(native, 1),
+            TagHash::new(native, 0),
+            &[],
+            &parent_sources,
+        )?;
+        if native_tags.len() != native_count {
+            return Err(invalid("Streaming native entry count changed"));
+        }
+        native_tags.extend(resource_tags);
+        let mut named = vec![NamedTag {
+            tag: TagHash::new(native, 0).0,
+            class: MAP_ROOT_CLASS,
+            name: format!("map:{}:root", self.name),
+        }];
+        // Native and host name dictionaries can resolve each additional bubble hash from its
+        // own parent name. The first already has the activity's published name.
+        named.extend(
+            parents
+                .iter()
+                .zip(&layout.names)
+                .skip(1)
+                .map(|(parent, name)| NamedTag {
+                    tag: parent.0,
+                    class: 0x8080_7DAE,
+                    name: name.clone(),
+                }),
+        );
+        Ok((native_tags, named, references))
     }
 }

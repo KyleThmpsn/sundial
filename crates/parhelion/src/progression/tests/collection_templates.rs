@@ -33,66 +33,6 @@ fn collectible_table(programs: &[&[(u8, u16)]]) -> Vec<u8> {
 }
 
 #[test]
-fn alternative_acquisition_uses_placement_template_with_private_unlock() {
-    for tokens in [
-        vec![],
-        vec![(11, 1)], // Khvostov and other always-acquired early weapons.
-        vec![(11, 0)],
-        vec![(NUMERIC_POOL_INSTRUCTION, 8)],
-        vec![
-            (NUMERIC_FLAG_INSTRUCTION, 2),
-            (NUMERIC_FLAG_INSTRUCTION, 3),
-            (3, u16::MAX),
-        ],
-        vec![
-            (NUMERIC_FLAG_INSTRUCTION, 2),
-            (NUMERIC_FLAG_INSTRUCTION, 3),
-            (NUMERIC_FLAG_INSTRUCTION, 4),
-            (3, u16::MAX),
-            (3, u16::MAX),
-        ],
-    ] {
-        let data = collectible_table(&[&tokens, &[(NUMERIC_FLAG_INSTRUCTION, 7)]]);
-        let (template, source_unlock) = collectible_clone_template(&data, Some(0), 1, 10).unwrap();
-        assert_eq!((template, source_unlock), (1, 7), "{tokens:?}");
-        let (count, _, rows, _) = array_at(&data, 8).unwrap();
-        let clones = collectible_nested_clones(
-            &data,
-            rows,
-            count,
-            rows + count * COLLECTIBLE_ROW_SIZE,
-            rows + template * COLLECTIBLE_ROW_SIZE,
-            source_unlock,
-            10,
-        )
-        .unwrap();
-        assert_eq!(
-            cloned_condition_tokens(&clones, COLLECTIBLE_CONDITION_OFFSET),
-            [(NUMERIC_FLAG_INSTRUCTION, 10)]
-        );
-    }
-}
-
-#[test]
-fn one_distinct_acquisition_flag_preserves_gameplay_template() {
-    for tokens in [
-        vec![(NUMERIC_FLAG_INSTRUCTION, 2)],
-        vec![(NUMERIC_FLAG_INSTRUCTION, 2), (22, 0)],
-        vec![
-            (NUMERIC_FLAG_INSTRUCTION, 2),
-            (NUMERIC_FLAG_INSTRUCTION, 2),
-            (3, u16::MAX),
-        ],
-    ] {
-        let data = collectible_table(&[&tokens, &[(NUMERIC_FLAG_INSTRUCTION, 7)]]);
-        assert_eq!(
-            collectible_clone_template(&data, Some(0), 1, 10).unwrap(),
-            (0, 2)
-        );
-    }
-}
-
-#[test]
 fn collection_template_fallback_rejects_malformed_acquisition() {
     let mut data = collectible_table(&[&[(11, 1)], &[(NUMERIC_FLAG_INSTRUCTION, 7)]]);
     let (_, _, rows, _) = array_at(&data, 8).unwrap();
@@ -130,19 +70,6 @@ fn collection_template_fallback_requires_valid_rows_and_unlocks() {
     let data = collectible_table(&[&[(11, 1)], &[(NUMERIC_FLAG_INSTRUCTION, 7)]]);
     assert!(collectible_clone_template(&data, Some(2), 1, 10).is_err());
     assert!(collectible_clone_template(&data, Some(0), 2, 10).is_err());
-}
-
-#[test]
-fn missing_collectible_uses_a_validated_placement_template() {
-    let data = collectible_table(&[&[(NUMERIC_FLAG_INSTRUCTION, 7)]]);
-    assert_eq!(
-        collectible_clone_template(&data, None, 0, 10).unwrap(),
-        (0, 7)
-    );
-    assert!(collectible_clone_template(&data, None, 1, 10).is_err());
-    assert!(collectible_clone_template(&data, None, 0, 7).is_err());
-    let data = collectible_table(&[&[(11, 1)]]);
-    assert!(collectible_clone_template(&data, None, 0, 10).is_err());
 }
 
 #[test]

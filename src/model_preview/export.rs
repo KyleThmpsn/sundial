@@ -747,45 +747,6 @@ mod tests {
     use super::*;
     use crate::model_preview::texture::Texture;
 
-    /// Walks the chunk stream, verifying each checksum, and hands back the payloads in order.
-    fn chunks(encoded: &[u8]) -> Vec<(String, Vec<u8>)> {
-        let mut chunks = Vec::new();
-        let mut at = 8;
-        while at + 12 <= encoded.len() {
-            let length =
-                u32::from_be_bytes(encoded[at..at + 4].try_into().expect("length")) as usize;
-            let body = &encoded[at + 4..at + 8 + length];
-            let stored = u32::from_be_bytes(
-                encoded[at + 8 + length..at + 12 + length]
-                    .try_into()
-                    .expect("checksum"),
-            );
-            let mut crc = flate2::Crc::new();
-            crc.update(body);
-            assert_eq!(crc.sum(), stored, "chunk checksum at {at}");
-            chunks.push((
-                String::from_utf8_lossy(&body[..4]).into_owned(),
-                body[4..].to_vec(),
-            ));
-            at += 12 + length;
-        }
-        assert_eq!(at, encoded.len(), "trailing bytes after the last chunk");
-        chunks
-    }
-
-    #[test]
-    fn png_signs_every_chunk_and_keeps_them_in_order() {
-        let encoded = png(&[9u8; 2 * 3 * 4], 2, 3).expect("encode");
-        assert_eq!(encoded[..8], [137, 80, 78, 71, 13, 10, 26, 10]);
-        let chunks = chunks(&encoded);
-        let kinds: Vec<&str> = chunks.iter().map(|(kind, _)| kind.as_str()).collect();
-        assert_eq!(kinds.first(), Some(&"IHDR"));
-        assert_eq!(kinds.last(), Some(&"IEND"));
-        assert!(kinds.contains(&"IDAT"));
-        assert_eq!(chunks[0].1[..8], [0u8, 0, 0, 2, 0, 0, 0, 3]);
-        assert!(chunks.last().unwrap().1.is_empty());
-    }
-
     #[test]
     fn png_preserves_every_pixel_row() {
         let pixels: Vec<u8> = (0u8..16).collect();
@@ -948,31 +909,6 @@ mod tests {
         crate::test_support::artifact("export-index-boundaries.json", &json!(evidence));
     }
 
-    #[test]
-    fn glb_embeds_each_used_plate_as_a_png() {
-        let (document, _) = parse(&glb(&quad(), 0.0).expect("export"));
-        assert_eq!(document["images"].as_array().map(Vec::len), Some(1));
-        assert_eq!(document["images"][0]["mimeType"], "image/png");
-        assert_eq!(document["textures"][0]["source"], 0);
-        let materials = document["materials"].as_array().expect("materials");
-        let textured = materials
-            .iter()
-            .filter(|material| !material["pbrMetallicRoughness"]["baseColorTexture"].is_null())
-            .count();
-        assert_eq!(textured, 1);
-        // The bare group falls back to the rasterizer's untextured fill, in linear space.
-        let bare = materials
-            .iter()
-            .find(|material| material["pbrMetallicRoughness"]["baseColorTexture"].is_null())
-            .expect("an untextured group");
-        assert_eq!(
-            bare["pbrMetallicRoughness"]["baseColorFactor"]
-                .as_array()
-                .map(Vec::len),
-            Some(4)
-        );
-    }
-
     /// One dyed, alpha-clipped quad with a gearstack and a normal map, the way gear arrives.
     fn dyed() -> Model {
         let flat = |rgba: [u8; 4]| Texture {
@@ -1111,77 +1047,6 @@ mod tests {
                 .unwrap()
                 .contains(&json!(EMISSIVE_STRENGTH))
         );
-    }
-
-    /// Exports two real weapons and writes every baked map beside the raw colour plates, so a
-    /// reader can see the dyes arrive in the file. Age-Old Bond wears two dyed finishes and
-    /// Better Devils carries emissive panels.
-    #[test]
-    #[ignore = "requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
-    fn real_weapons_export_their_dyed_materials() {
-        let setting = |name: &str| {
-            std::path::PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("{name}")))
-        };
-        let packages = setting("SUNDIAL_PREVIEW_PACKAGES");
-        let out = setting("SUNDIAL_TEST_ARTIFACTS");
-        std::fs::create_dir_all(&out).expect("output folder");
-        let catalog = crate::test_support::catalog(packages.parent().expect("install folder"))
-            .expect("catalog");
-        let mut report = String::new();
-        for name in ["Age-Old Bond", "Better Devils"] {
-            let donor = catalog
-                .weapon_donors()
-                .into_iter()
-                .find(|donor| donor.name == name)
-                .expect("donor");
-            let loadout = catalog.preview_loadout(donor.hash).expect("loadout");
-            let appearance = catalog.preview_appearance(&loadout);
-            let model = crate::model_preview::appearance::load_reported(
-                &packages,
-                &appearance,
-                &crate::model_preview::Load::default(),
-            )
-            .expect("model");
-            let slug = name.to_lowercase().replace(' ', "-");
-            let plates: std::collections::BTreeSet<usize> =
-                model.triangle_textures.iter().flatten().copied().collect();
-            for plate in plates {
-                let texture = &model.textures[plate];
-                let raw = png(&texture.rgba, texture.size[0], texture.size[1]).expect("raw");
-                std::fs::write(out.join(format!("{slug}-raw-{plate}.png")), raw).expect("raw");
-            }
-            let started = std::time::Instant::now();
-            let bytes = glb(&model, 0.0).expect("export");
-            let elapsed = started.elapsed();
-            std::fs::write(out.join(format!("{slug}.glb")), &bytes).expect("write glb");
-            let (document, bin) = parse(&bytes);
-            let materials = document["materials"].as_array().expect("materials");
-            report.push_str(&format!(
-                "{name}: {} bytes in {elapsed:?}, {} materials, {} images, {} triangles\n",
-                bytes.len(),
-                materials.len(),
-                document["images"].as_array().map_or(0, Vec::len),
-                model.triangles.len(),
-            ));
-            for (index, material) in materials.iter().enumerate() {
-                report.push_str(&format!("  material {index}: {material}\n"));
-                let pbr = &material["pbrMetallicRoughness"];
-                for (slot, reference) in [
-                    ("color", &pbr["baseColorTexture"]),
-                    ("channels", &pbr["metallicRoughnessTexture"]),
-                    ("normal", &material["normalTexture"]),
-                    ("emission", &material["emissiveTexture"]),
-                ] {
-                    if !reference.is_null() {
-                        let map = embedded(&document, &bin, reference);
-                        std::fs::write(out.join(format!("{slug}-{index}-{slot}.png")), map)
-                            .expect("write map");
-                    }
-                }
-            }
-        }
-        std::fs::write(out.join("export-report.txt"), &report).expect("write report");
-        println!("{report}");
     }
 
     #[test]

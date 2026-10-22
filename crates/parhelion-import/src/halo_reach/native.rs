@@ -427,6 +427,7 @@ fn assemble(
                 .and_then(|i| model.materials.get(i))
                 .cloned()
                 .unwrap_or(material::Material {
+                    decal: None,
                     tag: None,
                     options: BTreeMap::new(),
                     properties: Vec::new(),
@@ -920,6 +921,7 @@ pub(super) fn build(
             paint: &paint.surfaces,
             lightmap: None,
             vertex_data: None,
+            statics: false,
         },
     )?;
     let instance_layout = g.seal_instances()?;

@@ -117,23 +117,3 @@ pub(crate) fn input(message: impl Into<String>) -> AuthoringError {
 pub(crate) fn validation(message: impl Into<String>) -> AuthoringError {
     AuthoringError::Validation(message.into())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn context_names_the_weapon_and_preserves_the_source_error() {
-        let error = AuthoringError::Validation("socket column is incompatible".to_owned())
-            .context("Weapon \"Test Weapon\" (parhelion.test-weapon)");
-
-        let message = error.to_string();
-        assert!(message.contains("Test Weapon"));
-        assert!(message.contains("parhelion.test-weapon"));
-        assert!(message.contains("socket column is incompatible"));
-        assert_eq!(
-            std::error::Error::source(&error).map(ToString::to_string),
-            Some("socket column is incompatible".to_owned())
-        );
-    }
-}

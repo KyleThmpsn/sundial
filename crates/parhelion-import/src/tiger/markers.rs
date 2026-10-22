@@ -78,10 +78,11 @@ pub fn read(payload: &Payload, descriptor: usize, layout: Layout) -> Result<Vec<
             for (index, value) in position.iter_mut().enumerate() {
                 *value = payload.f32(row + layout.position + index * 4)?;
             }
-            // Every marker row observed carries a point, never a direction.
+            // D1 marker rows carry positive nonunit fourth lanes. Preserve them verbatim,
+            // while keeping zero or negative lanes outside the supported contract.
             ensure!(
-                (position[3] - 1.0).abs() < 1e-3,
-                "marker row at {row:X} is not a position"
+                position[3] > 0.0,
+                "marker row at {row:X} has an unsupported fourth transform lane"
             );
             let mut orientation = [0.0; 4];
             for (index, value) in orientation.iter_mut().enumerate() {
@@ -276,8 +277,10 @@ pub fn append_skeletal(payload: &Payload, source: &[Marker], bones: usize) -> Re
 }
 
 fn write_binding(row: &mut [u8], binding: [u32; 2]) -> Result<()> {
+    // Root pairs through (0, 2) occur in paired modern and Shadowkeep weapon
+    // marker sets. Preserve the pair without treating its second word as a bone.
     ensure!(
-        binding[0] == 0 && binding[1] <= 1,
+        binding[0] == 0 && binding[1] <= 2,
         "source marker has an unsupported root binding"
     );
     ensure!(
@@ -650,10 +653,9 @@ mod tests {
         );
     }
 
-    /// A row whose fourth component is not one is a direction or something else again, and
-    /// carrying a position onto it would be meaningless.
+    /// Zero in the fourth transform lane is outside the supported marker contract.
     #[test]
-    fn a_row_that_is_not_a_position_is_refused() {
+    fn a_zero_fourth_transform_lane_is_refused() {
         let mut payload = native(&[(GRIP, [0.0, 0.0, 0.0], FORWARD)]);
         let row = read_native(&payload).unwrap()[0].row;
         let at = row + NATIVE.position + 12;

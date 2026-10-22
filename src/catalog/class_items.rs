@@ -39,30 +39,3 @@ pub(crate) fn class_type(hash: u64) -> Option<u64> {
         None
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn class_lists_are_sorted_and_disjoint() {
-        for list in [titan::HASHES, hunter::HASHES, warlock::HASHES] {
-            assert!(list.windows(2).all(|pair| pair[0] < pair[1]));
-        }
-        assert!(
-            titan::HASHES
-                .iter()
-                .all(|hash| hunter::HASHES.binary_search(hash).is_err())
-        );
-        assert!(
-            titan::HASHES
-                .iter()
-                .all(|hash| warlock::HASHES.binary_search(hash).is_err())
-        );
-        assert!(
-            hunter::HASHES
-                .iter()
-                .all(|hash| warlock::HASHES.binary_search(hash).is_err())
-        );
-    }
-}

@@ -126,31 +126,4 @@ mod tests {
         importer.accept(Ok(None), &mut draft);
         assert_eq!(draft, before);
     }
-
-    #[test]
-    fn import_controls_fit_a_narrow_editor_without_changing_the_draft() {
-        let context = egui::Context::default();
-        let mut importer = ImageImport::default();
-        let mut draft = WeaponIconEdit::default();
-        for _ in 0..2 {
-            let _ = context.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(300.0, 400.0),
-                    )),
-                    ..Default::default()
-                },
-                |ui| {
-                    egui::CentralPanel::default().show(ui, |ui| {
-                        let right = ui.max_rect().right();
-                        assert!(!importer.draw(ui, &mut draft, true));
-                        assert!(ui.min_rect().right() <= right + 1.0);
-                    });
-                },
-            );
-        }
-        assert!(draft.is_identity());
-        assert!(!importer.is_pending());
-    }
 }

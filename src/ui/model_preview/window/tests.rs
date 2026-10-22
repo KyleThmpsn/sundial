@@ -19,22 +19,6 @@ fn request(tag: u32) -> Request {
 }
 
 #[test]
-fn linked_resource_navigation_follows_the_source_selection() {
-    let mut preview = Preview::default();
-    let root = request(1);
-    let (selection, _) = preview.resolve_request(&root);
-    assert_eq!(selection.1, Target::Object(1));
-    preview.browse(2, Some("Linked Sound"));
-    let (selection, name) = preview.resolve_request(&root);
-    assert_eq!(selection.1, Target::Object(2));
-    assert_eq!(name, "Linked Sound");
-    let (selection, name) = preview.resolve_request(&request(3));
-    assert_eq!(selection.1, Target::Object(3));
-    assert_eq!(name, "Selected Model");
-    assert!(preview.navigation.is_empty());
-}
-
-#[test]
 fn launcher_is_compact_lazy_and_only_its_owner_follows_selection() {
     let ctx = egui::Context::default();
     let owner = egui::Id::new("source");

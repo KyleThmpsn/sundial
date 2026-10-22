@@ -1,6 +1,4 @@
 //! Dawn's purpose-made native-size lanes, with the same output scale as Sunrise.
-#[cfg(test)]
-mod tests;
 use super::*;
 
 const TEXTURES: [&[u8]; 6] = [

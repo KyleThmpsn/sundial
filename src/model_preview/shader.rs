@@ -534,7 +534,7 @@ impl<'a> Bindings<'a> {
         geometric: [f32; 3],
         basis: Option<normal::Basis>,
         scene: super::render::Scene,
-    ) -> Option<[f32; 3]> {
+    ) -> Option<([f32; 3], [f32; 3])> {
         let Texel {
             mut surface,
             normal: map,
@@ -554,7 +554,7 @@ impl<'a> Bindings<'a> {
         }
         let iridescence = self.iridescence_at(uv, normal);
         let ambient = self.ambient_override.unwrap_or(surface.ao);
-        Some(light(surface, normal, scene, iridescence, ambient))
+        Some((light(surface, normal, scene, iridescence, ambient), normal))
     }
 
     /// The dye's iridescence as the native deferred pass applies it: the lookup row the dye
@@ -740,7 +740,10 @@ fn light(
         let specular_base = iridescence.map_or(mix(0.04, base, sample.metal), |iridescence| {
             saturate(iridescence.specular[i] + base * sample.metal)
         });
-        let specular = mix(specular_base, 1.0, fresnel);
+        // Grazing reflectance rises only as far as the surface is smooth, so rough paint and
+        // cloth stay dark at their edges rather than taking a pale sheen.
+        let grazing = (1.0 - roughness).max(specular_base);
+        let specular = specular_base + (grazing - specular_base) * fresnel;
         let diffuse = base
             * (1.0 - sample.metal)
             * (1.0 - specular)

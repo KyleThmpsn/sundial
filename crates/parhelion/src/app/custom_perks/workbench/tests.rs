@@ -4,8 +4,6 @@ pub(crate) use sundial::test_support::capture;
 mod cards;
 mod entry;
 mod gaps;
-mod guidance;
-mod identity;
 mod library_controls;
 mod library_issues;
 mod navigation;

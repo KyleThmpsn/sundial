@@ -48,7 +48,12 @@ impl RecipeLibrary {
 
     pub fn export(&self, recipe: &WeaponRecipe, path: &Path) -> Result<(), String> {
         self.validate_export_path(path)?;
-        recipe.save_json(path).map_err(|error| error.to_string())
+        let mut encoded = recipe.to_json_pretty().map_err(|error| error.to_string())?;
+        encoded.push('\n');
+        parse_import(&encoded)?;
+        WeaponRecipe::from_json_str(&encoded).map_err(|error| error.to_string())?;
+        sundial::package_authoring::replace_authoring_file(path, encoded.as_bytes())
+            .map_err(|error| error.to_string())
     }
 
     pub(crate) fn import_files(&self, sources: &[PathBuf]) -> ImportReport {
@@ -143,17 +148,17 @@ fn read_import(path: &Path) -> Result<Import, String> {
     file.take(MAX_IMPORT_BYTES + 1)
         .read_to_string(&mut encoded)
         .map_err(|error| error.to_string())?;
-    if encoded.len() as u64 > MAX_IMPORT_BYTES {
-        return Err(format!(
-            "This file is larger than the {} MiB an import reads",
-            MAX_IMPORT_BYTES >> 20
-        ));
-    }
     parse_import(&encoded)
 }
 
 /// A recipe or a bundle of them, checked as a whole before any recipe's pictures are decoded.
 fn parse_import(encoded: &str) -> Result<Import, String> {
+    if encoded.len() as u64 > MAX_IMPORT_BYTES {
+        return Err(format!(
+            "This file exceeds the {} MiB recipe sharing limit",
+            MAX_IMPORT_BYTES >> 20
+        ));
+    }
     // The bundle's own containers do not count against each recipe's nesting limit. Each recipe
     // is parsed again on its own with that limit when it is imported.
     let document: serde_json::Value = sundial::package_authoring::parse_json_envelope(

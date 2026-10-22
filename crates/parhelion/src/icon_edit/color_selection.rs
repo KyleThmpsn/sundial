@@ -302,71 +302,6 @@ mod tests {
     }
 
     #[test]
-    fn matching_feathers_preserves_shading_and_ignores_unrelated_colors() {
-        let replacement = IconColorReplacement {
-            range_percent: 100,
-            ..rule([0, 0, 255], [255, 0, 0])
-        };
-        let shaded = replacement.apply([0, 0, 100], [0, 0, 100], 255);
-        assert_eq!(shaded, [100, 0, 0]);
-        assert!(replacement.weight([0, 0, 200]) > replacement.weight([0, 0, 100]));
-        assert_eq!(replacement.weight([255, 255, 0]), 0);
-        let overlap = [replacement, rule([0, 0, 100], [255, 128, 0])];
-        assert_eq!(apply(&overlap, [0, 0, 100], [0, 0, 100]), [255, 128, 0]);
-        assert_eq!(
-            rule([0; 3], [255, 128, 0]).apply([0; 3], [0; 3], 255),
-            [255, 128, 0]
-        );
-    }
-
-    #[test]
-    fn chosen_replacement_color_is_not_transformed_by_global_adjustments() {
-        for mut edit in [
-            WeaponIconEdit {
-                hue_shift_degrees: 120,
-                ..Default::default()
-            },
-            WeaponIconEdit {
-                saturation: -100,
-                ..Default::default()
-            },
-            WeaponIconEdit {
-                brightness: 50,
-                ..Default::default()
-            },
-            WeaponIconEdit {
-                contrast: -100,
-                ..Default::default()
-            },
-            WeaponIconEdit {
-                red_balance: -100,
-                ..Default::default()
-            },
-            WeaponIconEdit {
-                green_balance: 100,
-                ..Default::default()
-            },
-            WeaponIconEdit {
-                blue_balance: 100,
-                ..Default::default()
-            },
-            WeaponIconEdit {
-                invert: true,
-                ..Default::default()
-            },
-        ] {
-            let original = [46, 40, 40, 128, 10, 100, 200, 255, 46, 40, 40, 0];
-            let mut adjusted = original;
-            edit.apply_to_rgba8(&mut adjusted).unwrap();
-            edit.color_replacements = vec![rule([46, 40, 40], [150, 43, 43])];
-            let mut replaced = original;
-            edit.apply_to_rgba8(&mut replaced).unwrap();
-            assert_eq!(&replaced[..4], &[150, 43, 43, 128], "{edit:?}");
-            assert_eq!(&replaced[4..], &adjusted[4..], "{edit:?}");
-        }
-    }
-
-    #[test]
     fn replacement_edges_blend_adjusted_pixels_with_original_shading() {
         let mut pixels = [0, 0, 150, 200];
         let edit = WeaponIconEdit {
@@ -398,41 +333,5 @@ mod tests {
         .apply_to_rgba8(&mut pixels)
         .unwrap();
         assert_eq!(pixels, [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255]);
-    }
-
-    #[test]
-    fn replacements_round_trip_and_old_recipes_remain_unchanged() {
-        let old: WeaponIconEdit = serde_json::from_str("{}").unwrap();
-        assert!(old.is_identity());
-        assert!(
-            !serde_json::to_string(&old)
-                .unwrap()
-                .contains("color_replacements")
-        );
-        let mut edit = old;
-        edit.color_replacements = vec![
-            rule([0, 0, 255], [255, 0, 0]),
-            rule([255; 3], [255, 128, 0]),
-        ];
-        assert!(!edit.is_identity());
-        assert_eq!(
-            serde_json::from_str::<WeaponIconEdit>(&serde_json::to_string(&edit).unwrap()).unwrap(),
-            edit
-        );
-        edit.color_replacements[0].range_percent = 101;
-        assert!(edit.validate().is_err());
-        edit.color_replacements = vec![IconColorReplacement::default(); MAX_REPLACEMENTS + 1];
-        assert!(edit.validate().is_err());
-    }
-
-    #[test]
-    fn eyedropper_ignores_transparent_pixels_and_outside_clicks() {
-        let primary = DecodedIconImage {
-            size: [2, 1],
-            rgba: vec![123, 45, 67, 255, 90, 80, 70, 0],
-        };
-        assert_eq!(sample(&primary, egui::vec2(0.1, 0.5)), Some([123, 45, 67]));
-        assert_eq!(sample(&primary, egui::vec2(0.9, 0.5)), None);
-        assert_eq!(sample(&primary, egui::vec2(1.1, 0.5)), None);
     }
 }

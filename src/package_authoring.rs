@@ -13,6 +13,13 @@ pub use crate::package_runtime::{RuntimeBrand, RuntimeSnapshot};
 use eframe::egui;
 
 pub mod ui;
+
+/// A closed native material expression, evaluated with the runtime's arithmetic.
+/// Dynamic inputs and expressions outside the bounded native interpreter return `None`.
+pub fn constant_material_expression(code: &[u8], constants: &[[f32; 4]]) -> Option<[f32; 4]> {
+    crate::dyes::material::program::Program::constant(code, constants)
+}
+
 use serde::de::DeserializeOwned;
 
 pub use crate::catalog::class_items::class_from_item_strings;

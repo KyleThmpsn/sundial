@@ -28,8 +28,6 @@ const LOW_WIDTH: u32 = 208;
 const LOW_HEIGHT: u32 = 126;
 const HIGH_WIDTH: u32 = 440;
 const HIGH_HEIGHT: u32 = 268;
-#[cfg(test)]
-const LOW_DATA_SIZE: usize = LOW_WIDTH as usize * LOW_HEIGHT as usize * 4;
 const HIGH_DATA_SIZE: usize = HIGH_WIDTH as usize * HIGH_HEIGHT as usize * 4;
 const LAYER_SIZE: usize = 180;
 const CARD_PURPLE_TOP: [u8; 3] = [32, 18, 49];

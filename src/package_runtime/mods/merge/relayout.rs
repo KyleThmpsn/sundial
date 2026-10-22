@@ -26,7 +26,7 @@ struct Grown {
     stock_count: usize,
     built_count: usize,
     stride: usize,
-    /// Where the inserted rows start in the built entry, and how many bytes they take.
+    /// Where added rows start, and the net inserted bytes after existing padding is consumed.
     inserted: usize,
     size: usize,
     /// Where the array's copy starts in the output.
@@ -68,7 +68,8 @@ impl Map<'_> {
         let mut removed = 0;
         for grown in self.grown {
             // The array's header and rows, stock and inserted, move to its copy.
-            if (grown.built_header..grown.inserted + grown.size).contains(&built) {
+            let end = grown.built_header + HEADER_SIZE + grown.built_count * grown.stride;
+            if (grown.built_header..end).contains(&built) {
                 return grown.copy_header + (built - grown.built_header);
             }
             if built >= grown.inserted + grown.size {
@@ -122,6 +123,15 @@ fn arrays(stock: &[u8], built: &[u8], recipe: &Recipe) -> Option<Vec<[usize; 5]>
         if built_count < stock_count || built_header < stock_header || !grows_at_end {
             return None;
         }
+        let stock_end = stock_header
+            .checked_add(HEADER_SIZE)?
+            .checked_add(stock_count.checked_mul(array.row.stride)?)?;
+        let built_end = built_header
+            .checked_add(HEADER_SIZE)?
+            .checked_add(built_count.checked_mul(array.row.stride)?)?;
+        if stock_end > stock.len() || built_end > built.len() {
+            return None;
+        }
         arrays.push([
             stock_header,
             stock_count,
@@ -153,7 +163,17 @@ fn inserted(stock: &[u8], built: &[u8], recipe: &Recipe) -> Option<Vec<Grown>> {
             None => rows,
         };
         let unchanged = built_count == stock_count;
-        if built_header - stock_header != total || size < rows || (unchanged && size != 0) {
+        if built_header - stock_header != total || (unchanged && size != 0) {
+            return None;
+        }
+        // Added rows can occupy old alignment padding without moving the following array.
+        // Their complete extent still has to end before that array's marker in both copies.
+        if let Some(&[next_stock, _, next_built, ..]) = arrays.get(index + 1)
+            && (stock_header + HEADER_SIZE + stock_count * stride
+                > next_stock.checked_sub(MARKER_BACK)?
+                || built_header + HEADER_SIZE + built_count * stride
+                    > next_built.checked_sub(MARKER_BACK)?)
+        {
             return None;
         }
         if unchanged {

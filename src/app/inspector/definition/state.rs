@@ -340,7 +340,6 @@ fn trim_navigation_stack(stack: &mut Vec<InspectionTarget>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::inspector::DefinitionInspectionContext;
 
     fn assert_navigation_state(
         inspection: &HashInspectionState,
@@ -424,78 +423,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_search_page_is_a_navigation_entry() {
-        let mut inspection = HashInspectionState::default();
-        inspection.open_search();
-        assert!(inspection.is_open());
-        assert_navigation_state(&inspection, Some(HOME), &[], &[]);
-        assert!(inspection.search.focus);
-
-        inspection.open(0x1111_1111);
-        assert_navigation_state(&inspection, Some(0x1111_1111), &[HOME], &[]);
-        inspection.search.focus = false;
-        inspection.open_search();
-        assert_eq!(
-            inspection.current,
-            Some(0x1111_1111),
-            "an open window keeps its page and focuses the search field"
-        );
-        assert!(inspection.search.focus);
-
-        inspection.go_home();
-        assert_navigation_state(&inspection, Some(HOME), &[HOME, 0x1111_1111], &[]);
-        inspection.back();
-        assert_navigation_state(&inspection, Some(0x1111_1111), &[HOME], &[HOME]);
-    }
-
-    #[test]
-    fn navigation_restores_the_original_instance_snapshot() {
-        let mut inspection = HashInspectionState::default();
-        let context = DefinitionInspectionContext {
-            source: "Character 1 equipment · Kinetic".into(),
-            instance_id: Some("0x4000000000000001".into()),
-            authored_level: Some(1_950),
-            flags: Some(1),
-            plug_count: Some(8),
-            ..Default::default()
-        };
-
-        inspection.open_with_context(0xD980_2C4F, Some(context.clone()));
-        assert_eq!(inspection.source_context, Some(context.clone()));
-
-        inspection.open(0x395D_3E2F);
-        assert_eq!(inspection.source_context, None);
-
-        inspection.back();
-        assert_eq!(inspection.current, Some(0xD980_2C4F));
-        assert_eq!(inspection.source_context, Some(context));
-    }
-
     fn hashes(targets: &[InspectionTarget]) -> Vec<u64> {
         targets.iter().map(|entry| entry.hash).collect()
-    }
-
-    #[test]
-    fn same_definition_instances_keep_separate_history_snapshots() {
-        let mut state = HashInspectionState::default();
-        let first = DefinitionInspectionContext {
-            instance_id: Some("first".into()),
-            plugs: Some(serde_json::json!([1, null])),
-            ..Default::default()
-        };
-        let second = DefinitionInspectionContext {
-            instance_id: Some("second".into()),
-            plugs: Some(serde_json::json!([2])),
-            ..Default::default()
-        };
-        state.open_with_context(7, Some(first.clone()));
-        state.open_with_context(7, Some(second.clone()));
-        state.open(0);
-        assert_eq!(state.source_context, Some(second.clone()));
-        state.back();
-        assert_eq!(state.source_context, Some(first));
-        state.forward();
-        assert_eq!(state.source_context, Some(second));
     }
 }

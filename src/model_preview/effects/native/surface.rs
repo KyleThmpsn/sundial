@@ -3,6 +3,7 @@
 use super::*;
 use program::{Instruction, Operand, Program as Code};
 mod decal;
+mod normal;
 
 fn literal(operand: &Operand, lane: usize, value: f32) -> bool {
     operand.kind == 4
@@ -53,23 +54,7 @@ fn normal_contract(code: &Code) -> bool {
 }
 
 fn normal_vector(code: &Code, at: usize, row: &Instruction) -> bool {
-    if row.code != 50
-        || !row.saturate
-        || row.operands[0].mask != 7
-        || !(0..3).all(|lane| literal(&row.operands[3], lane, 0.5))
-    {
-        return false;
-    }
-    let Some((radius_at, radius, lane)) = producer(code, &row.operands[2], 0, at) else {
-        return false;
-    };
-    (1..3).all(|axis| {
-        producer(code, &row.operands[2], axis, at)
-            .is_some_and(|(other_at, _, other_lane)| other_at == radius_at && other_lane == lane)
-    }) && radius.code == 50
-        && !radius.saturate
-        && literal(&radius.operands[2], lane, 0.125)
-        && literal(&radius.operands[3], lane, 0.375)
+    normal::packed(code, at, row)
 }
 
 fn visibility_contract(code: &Code) -> bool {
@@ -81,7 +66,12 @@ fn visibility_contract(code: &Code) -> bool {
     };
     z.code == 54
         && literal(&z.operands[1], 2, 0.0)
-        && ((y.code == 54 && literal(&y.operands[1], 1, 0.5))
+        && ((y.code == 54
+            && y.operands[1].kind == 4
+            && y.operands[1].modifier == 0
+            && (0.0..=0.5).contains(&f32::from_bits(
+                y.operands[1].literal[y.operands[1].lanes[1]],
+            )))
             || (y.code == 56
                 && !y.saturate
                 && (literal(&y.operands[1], 1, 0.5) || literal(&y.operands[2], 1, 0.5)))
@@ -95,14 +85,14 @@ fn supported(code: &Code, decal: bool) -> bool {
                 s.name == "SV_TARGET" && s.index == target && s.register == target as usize
             })
         })
-        && code.buffers.iter().all(|&(slot, _)| slot == 0)
-        && (1..=9).contains(&code.resources.len())
+        && code.buffers.iter().all(|&(slot, _)| matches!(slot, 0 | 12))
+        && code.resources.len() <= 9
         && code
             .resources
             .iter()
             .all(|r| r.dimension == 3 && !r.integer)
         && !code.instructions.iter().any(|i| {
-            (!decal && matches!(i.code, 13 | 18 | 21 | 22 | 31 | 48))
+            (!decal && matches!(i.code, 22 | 48))
                 || i.operands
                     .iter()
                     .any(|o| o.indices.iter().any(|i| i.relative.is_some()))
@@ -167,6 +157,26 @@ fn vertex_uv(
     Ok(uv.iter().all(|v| v.is_finite()).then_some(uv))
 }
 
+/// Rigid object programs have no bone palette beyond the three root transform rows.
+/// Execute their stored varyings, including local coordinates and vertex-table loads.
+fn rigid_vertex(manager: &PackageManager, bytes: &[u8]) -> Result<bool, String> {
+    let tag = u32_at(bytes, 0x48)?;
+    if matches!(tag, 0 | u32::MAX) {
+        return Ok(false);
+    }
+    let raw = super::super::read::shader_bytes(manager, tag, 1)?;
+    let Ok(code) = Code::read_stored(&raw) else {
+        return Ok(false);
+    };
+    Ok(code.buffers.contains(&(11, 11))
+        && code.buffers.iter().all(|&(slot, count)| match slot {
+            0 => count <= 128,
+            11 => count == 11,
+            12 => count <= 14,
+            _ => false,
+        }))
+}
+
 pub(in crate::model_preview) fn load(
     manager: &PackageManager,
     tag: u32,
@@ -184,23 +194,42 @@ pub(in crate::model_preview) fn load(
         return Ok(None);
     }
     let raw = super::super::read::shader_bytes(manager, pixel, 0)?;
-    let Ok(code) = Code::read(&raw, 0) else {
-        return Ok(None);
+    let code = match Code::read(&raw, 0) {
+        Ok(code) => code,
+        Err(error) => {
+            if std::env::var_os("SUNDIAL_PREVIEW_TRACE").is_some() {
+                model.notices.push(format!("Surface 0x{tag:08X}: {error}"));
+            }
+            return Ok(None);
+        }
     };
-    let decal = matches!(bytes[0x20], 0x96 | 0x97) && decal::supported(&code);
+    let full_decal = bytes[0x20] == 0x9a && decal::full(&code);
+    let decal = full_decal || matches!(bytes[0x20], 0x96 | 0x97) && decal::supported(&code);
     if !supported(&code, decal) {
+        if std::env::var_os("SUNDIAL_PREVIEW_TRACE").is_some() {
+            model.notices.push(format!(
+                "Surface 0x{tag:08X}: unsupported deferred contract, normal {}, visibility {}, buffers {:?}",
+                normal_contract(&code), visibility_contract(&code), code.buffers
+            ));
+        }
         return Ok(None);
     }
     let explicit = resource::explicit(&bytes, 0x2D0)?;
     if code
         .resources
         .iter()
-        .any(|r| !explicit.contains_key(&r.slot))
+        .any(|r| !explicit.contains_key(&r.slot) && !full_decal)
     {
         return Ok(None);
     }
-    let Some(uv) = vertex_uv(manager, &bytes, uv)? else {
-        return Ok(None);
+    let rigid = rigid_vertex(manager, &bytes)?;
+    let uv = if rigid {
+        None
+    } else {
+        let Some(uv) = vertex_uv(manager, &bytes, uv)? else {
+            return Ok(None);
+        };
+        Some(uv)
     };
     let intensity = opaque::intensity::recover_surface(&code);
     let mut material = load_program(
@@ -210,12 +239,25 @@ pub(in crate::model_preview) fn load(
         objects,
         dye,
         model,
-        (code, true, true),
+        (code, !rigid, true),
     )?;
     let native = material.native.as_mut().unwrap();
-    native.opaque_uv = Some(uv);
+    native.opaque_uv = uv;
     native.intensity = intensity;
     native.decal = decal;
+    native.full_decal = full_decal;
+    if full_decal
+        && (!native
+            .bindings
+            .iter()
+            .any(|b| matches!(b.role, Role::SceneNormal))
+            || native
+                .bindings
+                .iter()
+                .any(|b| !explicit.contains_key(&b.slot) && !matches!(b.role, Role::SceneNormal)))
+    {
+        return Err("The deferred decal has no bound receiver normal".into());
+    }
     native.ambient_power = opaque::intensity::ambient_power(manager);
     if std::env::var_os("SUNDIAL_PREVIEW_TRACE").is_some() {
         trace(tag, &material, model);
@@ -259,6 +301,7 @@ fn trace(tag: u32, material: &Material, model: &mut Model) {
     // The program's three targets at the centre of the map, facing the viewer.
     let probe = material.frame(0.0).and_then(|frame| {
         let input = vertex::Input {
+            vertex_id: 0,
             position: [0.0; 3],
             normal: [0.0, 0.0, -1.0],
             tangent: [1.0, 0.0, 0.0, 1.0],
@@ -281,11 +324,14 @@ fn trace(tag: u32, material: &Material, model: &mut Model) {
             front: true,
             depth: Depth {
                 values: &[],
+                color: None,
+                normal: None,
                 size: [1, 1],
                 top: 0,
                 scale: 1.0,
             },
             exposure: 1.0,
+            irradiance: [0.0, 0.0, 0.0, 1.0],
         };
         shade::outputs(model, material, &frame, &shader::Bindings::default(), pixel)
     });
@@ -320,7 +366,7 @@ pub(in crate::model_preview) fn sample(
         if coverage <= 1e-8 {
             return Some(decal::empty());
         }
-        decal::unpack(&mut targets, pixel, coverage)?;
+        decal::unpack(&mut targets, pixel, coverage, native.full_decal)?;
         coverage
     } else {
         1.0

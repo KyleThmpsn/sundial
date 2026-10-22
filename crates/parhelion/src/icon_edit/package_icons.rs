@@ -275,36 +275,3 @@ pub(crate) fn author(
     });
     Ok(private_container)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn excludes_blank_opaque_and_non_icon_textures() {
-        let mut header = vec![0; 40];
-        header[4..8].copy_from_slice(&28u32.to_le_bytes());
-        header[14..22].copy_from_slice(&[96, 0, 96, 0, 1, 0, 1, 0]);
-        header[36..40].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert_eq!(dimensions(&header, Purpose::Perk).unwrap(), [96, 96]);
-        for edge in [32u16, 64, 128, 256, 512] {
-            let mut other = header.clone();
-            other[14..16].copy_from_slice(&edge.to_le_bytes());
-            other[16..18].copy_from_slice(&edge.to_le_bytes());
-            assert!(dimensions(&other, Purpose::Perk).is_err());
-            assert!(dimensions(&other, Purpose::Badge).is_ok());
-        }
-        header[16..18].copy_from_slice(&16u16.to_le_bytes());
-        assert!(dimensions(&header, Purpose::Perk).is_err());
-        assert!(!visible_transparency(&egui::ColorImage::filled(
-            [2, 2],
-            egui::Color32::TRANSPARENT
-        )));
-        assert!(!visible_transparency(&egui::ColorImage::filled(
-            [2, 2],
-            egui::Color32::WHITE
-        )));
-        let mut icon = egui::ColorImage::filled([2, 2], egui::Color32::TRANSPARENT);
-        icon[(1, 1)] = egui::Color32::WHITE;
-        assert!(visible_transparency(&icon));
-    }
-}

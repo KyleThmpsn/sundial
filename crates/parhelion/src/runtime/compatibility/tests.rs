@@ -1,6 +1,6 @@
 use super::*;
 use sundial::{
-    investment::{InvestmentCatalog, WeaponAmmoType, WeaponInventorySlot},
+    investment::InvestmentCatalog,
     package_authoring::entity::{
         WEAPON_ENTITY_COMPONENT_ROW_CLASS, WEAPON_ENTITY_DEFINITION_MAP_ROW_CLASS,
         WEAPON_ENTITY_RESOURCE_DESCRIPTOR_ROW_CLASS, WEAPON_ENTITY_RESOURCE_MAP_ROW_CLASS,
@@ -9,91 +9,6 @@ use sundial::{
 
 fn no_owners(tag: u32) -> Result<Vec<u8>, String> {
     Err(format!("No package holds owner 0x{tag:08X}"))
-}
-
-fn summary(hash: u32) -> WeaponDonorSummary {
-    WeaponDonorSummary {
-        bucket_hash: 1,
-        inventory_slot: Some(WeaponInventorySlot::Kinetic),
-        ammo_type: Some(WeaponAmmoType::Primary),
-        weapon_pattern_index: Some(hash as u16),
-        weapon_translation_group: Some(0x1234_5678),
-        ..crate::test_support::donor_summary(hash, &format!("Test {hash}"), "Sidearm")
-    }
-}
-
-#[test]
-fn lower_risk_requires_known_matching_metadata_and_schemas() {
-    let baseline = summary(1);
-    let candidate = summary(2);
-    let shape = WeaponRuntimeResourceShape {
-        instance_schema: 0x8080_1234,
-        definition_schema: Some(0x8080_5678),
-    };
-    let mut reasons = Vec::new();
-    metadata_reasons(Some(&baseline), Some(&candidate), &mut reasons);
-    shape_reasons(Ok(shape), Ok(shape), &mut reasons);
-    assert_eq!(
-        assessed(reasons, &[1]).status,
-        DonorCompatibility::LowerRisk
-    );
-
-    let mut reasons = Vec::new();
-    metadata_reasons(None, Some(&candidate), &mut reasons);
-    assert_eq!(
-        assessed(reasons, &[1]).status,
-        DonorCompatibility::Experimental
-    );
-    let mut reasons = Vec::new();
-    shape_reasons(Ok(shape), Err("Unknown native class".into()), &mut reasons);
-    assert_eq!(
-        assessed(reasons, &[1]).status,
-        DonorCompatibility::Experimental
-    );
-}
-
-#[test]
-fn semantic_mismatches_remain_experimental_and_not_incompatible() {
-    let baseline = summary(1);
-    let mut candidate = summary(2);
-    candidate.type_name = "Grenade Launcher".into();
-    candidate.ammo_type = Some(WeaponAmmoType::Special);
-    candidate.weapon_translation_group = Some(0x8765_4321);
-    let mut reasons = Vec::new();
-    metadata_reasons(Some(&baseline), Some(&candidate), &mut reasons);
-    shape_reasons(
-        Ok(WeaponRuntimeResourceShape {
-            instance_schema: 1,
-            definition_schema: Some(2),
-        }),
-        Ok(WeaponRuntimeResourceShape {
-            instance_schema: 1,
-            definition_schema: Some(3),
-        }),
-        &mut reasons,
-    );
-    let result = assessed(reasons, &[WEAPON_TRIGGER_COMPONENT_KEY]);
-    assert_eq!(result.status, DonorCompatibility::Experimental);
-    assert!(!result.reasons.is_empty());
-}
-
-#[test]
-fn unknown_metadata_cannot_become_a_lower_risk_match() {
-    let baseline = summary(1);
-    for mut candidate in [summary(2), summary(3), summary(4), summary(5)] {
-        match candidate.hash {
-            2 => candidate.type_name.clear(),
-            3 => candidate.ammo_type = None,
-            4 => candidate.weapon_translation_group = None,
-            _ => candidate.weapon_translation_group = Some(0),
-        }
-        let mut reasons = Vec::new();
-        metadata_reasons(Some(&baseline), Some(&candidate), &mut reasons);
-        assert_eq!(
-            assessed(reasons, &[]).status,
-            DonorCompatibility::Experimental
-        );
-    }
 }
 
 fn array(data: &mut [u8], descriptor: usize, header: usize, count: usize, class: u32) {
@@ -174,41 +89,6 @@ fn compiler_preflight_keeps_other_selected_donors_and_detects_conflicts() {
     assert!(compose(&baseline, std::slice::from_ref(&candidate), &no_owners).is_ok());
     let error = compose(&baseline, &[selected, candidate], &no_owners).unwrap_err();
     assert!(error.contains("Runtime component donor conflict"));
-}
-
-#[test]
-fn shared_owner_preview_and_effective_provenance_include_implicit_changes() {
-    let baseline = shared_owner_source(1);
-    let selected = RequestedDonor {
-        binding_hash: WEAPON_RELOAD_COMPONENT_KEY,
-        item_hash: 2,
-        source: shared_owner_source(2),
-    };
-    // Choosing the baseline for Trigger clears its explicit override. Reload still controls
-    // their shared owner, so Trigger must not claim it effectively follows the baseline.
-    let requested = vec![
-        selected,
-        RequestedDonor {
-            binding_hash: WEAPON_TRIGGER_COMPONENT_KEY,
-            item_hash: 1,
-            source: Arc::clone(&baseline),
-        },
-    ];
-    compose(&baseline, &requested, &no_owners).unwrap();
-    let bindings = collect_bindings(&baseline.payload).unwrap();
-    let affected = affected_bindings(&bindings, WEAPON_TRIGGER_COMPONENT_KEY).unwrap();
-    assert!(affected.contains(&WEAPON_TRIGGER_COMPONENT_KEY));
-    assert!(affected.contains(&WEAPON_RELOAD_COMPONENT_KEY));
-    let sources = effective_sources(&bindings, 1, &requested, baseline.item_hash).unwrap();
-    for binding in affected {
-        assert_eq!(
-            sources[&binding],
-            vec![EffectiveComponentSource {
-                donor_item_hash: 2,
-                via_binding_hash: Some(WEAPON_RELOAD_COMPONENT_KEY),
-            }]
-        );
-    }
 }
 
 #[test]

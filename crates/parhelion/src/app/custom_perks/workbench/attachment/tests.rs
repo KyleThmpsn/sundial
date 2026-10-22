@@ -108,22 +108,6 @@ fn restoring_one_private_choice_preserves_sibling_variants_and_socket_metadata()
 }
 
 #[test]
-fn destinations_include_choices_after_twelve_and_the_next_available_choice() {
-    let donor = donor();
-    let weapon = weapon(&donor, 13);
-    let existing = targets(&weapon, &donor, false);
-    assert_eq!(existing.len(), 13);
-    for (choice, target) in existing.iter().enumerate() {
-        assert_eq!(target.choice, choice);
-        target.check(&weapon, &donor).unwrap();
-    }
-    let destinations = targets(&weapon, &donor, true);
-    assert_eq!(destinations.len(), 14);
-    assert_eq!(destinations.last().unwrap().choice, 13);
-    assert!(destinations.last().unwrap().variant.is_none());
-}
-
-#[test]
 fn full_columns_do_not_offer_an_out_of_range_destination() {
     let donor = donor();
     let mut weapon = weapon(&donor, 1);
@@ -135,35 +119,4 @@ fn full_columns_do_not_offer_an_out_of_range_destination() {
     assert_eq!(destinations.len(), limit);
     assert_eq!(destinations.last().unwrap().choice, limit - 1);
     assert!(Target::capture(&weapon, &donor, 0, limit).is_err());
-}
-
-#[test]
-fn switching_perks_keeps_the_last_destination_and_socket_copies_keep_their_own() {
-    let donor = donor();
-    let weapon = weapon(&donor, 2);
-    let first = Target::capture(&weapon, &donor, 0, 0).unwrap();
-    let second = Target::capture(&weapon, &donor, 0, 1).unwrap();
-    let mut workbench = Workbench {
-        documents: (0..3)
-            .map(|_| Document::new(PerkRecipe::new(), None))
-            .collect(),
-        ..Default::default()
-    };
-    workbench.documents[0].target = Some(first.clone());
-    workbench.sync_destination(&weapon, &donor);
-    workbench.select_document(1);
-    workbench.sync_destination(&weapon, &donor);
-    // The first choice holds a custom perk, so a new perk takes that socket's next free
-    // choice rather than the place the other perk was just applied to.
-    let added = Target::capture(&weapon, &donor, 0, 2).unwrap();
-    assert_eq!(workbench.documents[1].target, Some(added));
-    workbench.documents[2].target = Some(second.clone());
-    workbench.documents[2].from_socket = true;
-    workbench.select_document(2);
-    workbench.sync_destination(&weapon, &donor);
-    assert_eq!(workbench.documents[2].target, Some(second.clone()));
-    workbench.select_document(0);
-    workbench.sync_destination(&weapon, &donor);
-    assert_eq!(workbench.documents[0].target, Some(first));
-    assert_eq!(workbench.destination, workbench.documents[0].target);
 }

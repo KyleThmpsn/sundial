@@ -65,21 +65,6 @@ pub(in crate::app) struct InventoryItemUiId {
     pub(super) duplicate_ordinal: Option<usize>,
 }
 
-#[cfg(test)]
-impl InventoryItemUiId {
-    pub(in crate::app) const fn new(
-        character_index: usize,
-        instance_soid: u64,
-        duplicate_ordinal: Option<usize>,
-    ) -> Self {
-        Self {
-            character_index,
-            instance_soid,
-            duplicate_ordinal,
-        }
-    }
-}
-
 pub(in crate::app) struct CharacterInventoryEditorContext {
     pub(super) editable: bool,
     pub(super) class_type: u64,

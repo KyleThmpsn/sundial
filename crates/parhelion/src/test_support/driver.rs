@@ -104,28 +104,3 @@ pub(crate) fn control(output: &egui::FullOutput, name: &str) -> Option<egui::Rec
             ))
         })
 }
-
-/// Where the accessibility tree places the first node whose label starts with `prefix`, for a
-/// control whose value depends on the data, such as "Animations: …".
-pub(crate) fn accessible_starting(output: &egui::FullOutput, prefix: &str) -> Option<egui::Rect> {
-    output
-        .platform_output
-        .accesskit_update
-        .as_ref()?
-        .nodes
-        .iter()
-        .find_map(|(_, node)| {
-            if !node
-                .label()
-                .or_else(|| node.value())
-                .is_some_and(|label| label.starts_with(prefix))
-            {
-                return None;
-            }
-            let bounds = node.bounds()?;
-            Some(egui::Rect::from_min_max(
-                egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
-                egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
-            ))
-        })
-}

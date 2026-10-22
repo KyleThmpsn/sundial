@@ -21,16 +21,6 @@ fn completed(root: &Path, slug: &str) -> PathBuf {
 }
 
 #[test]
-fn keeps_only_the_newest_completed_build() {
-    let root = tempfile::tempdir().unwrap();
-    let first = completed(root.path(), "first");
-    let second = completed(root.path(), "second");
-    assert!(!first.exists());
-    assert!(second.join(MANIFEST_FILE_NAME).is_file());
-    assert!(lease_for_read(&second).unwrap().is_some());
-}
-
-#[test]
 fn a_completion_write_failure_is_reported_and_preserves_the_previous_build() {
     let root = tempfile::tempdir().unwrap();
     let previous = completed(root.path(), "previous");

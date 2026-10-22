@@ -1,8 +1,9 @@
-//! A level as native map pieces and world collision. Each piece is an entity copied from a stock
-//! map prop that has a render model component and a physical body component. Its render owner
-//! draws part of the level's render geometry with a native entity model, and its body holds only
-//! a minute stand-in, since the level's collision is the world's: one compressed mesh per part,
-//! each placed at its own center by a static compound, as a stock world collision is. Render and
+//! A level as native map pieces and world collision. Each piece is a native static mesh, and one
+//! static instance group per area places its pieces as a stock bubble places its static geometry
+//! (`statics`), so a piece takes no world object of its own. The level's collision is the
+//! world's: one compressed mesh per part, each placed at its own center by a static compound, as
+//! a stock world collision is. Objects that move or carry gameplay state stay entities, as native
+//! maps keep them, and none of the level's own is translated as one yet. Render and
 //! collision geometry inside the play area (the spawn points' bounds and `PLAY_MARGIN`) and
 //! outside it are each split by halving space at the median until each part fits one model or
 //! one mesh, so no piece or instance mixes the arena with distant scenery. Every collision
@@ -11,7 +12,7 @@
 //! spawn points come along, moved like the pieces. Its sky becomes the map's sky objects
 //! ([`sky`]), apart from the pieces.
 use super::{
-    bsps, collision, objects, read_all,
+    bsps, collision, objects,
     spawn::{self, Spawn},
     variant,
 };
@@ -24,7 +25,7 @@ use crate::{
     },
     tiger::{
         payload::Payload,
-        physics::{Instance, bare_mesh, compressed_mesh, static_compound},
+        physics::{Instance, bare_mesh, static_compound},
         reader::Reader,
     },
 };
@@ -42,35 +43,12 @@ mod fog;
 mod junctions;
 mod occlusion;
 pub mod sky;
+mod statics;
 pub use cubemaps::CubemapVolume;
+pub use statics::Templates as StaticTemplates;
 
 const MODEL_CLASS: u32 = 0x8080_73A5;
 const MESH_CLASS: u32 = 0x8080_7378;
-const ENTITY_CLASS: u32 = 0x8080_9C0F;
-const OWNER_CLASS: u32 = 0x8080_9C36;
-const RENDER_CLASS: u32 = 0x8080_72BD;
-const BODY_CLASS: u32 = 0x8080_8A0C;
-/// An entity's components, 12-byte rows that each name an owner.
-const ENTITY_COMPONENTS: usize = 0x10;
-const COMPONENT_SIZE: usize = 12;
-/// An owner's self-relative pointer to its component resource.
-const OWNER_RESOURCE: usize = 0x18;
-/// The render model in a render resource, and the packfile and body rows in a body resource.
-const RENDER_MODEL: usize = 0x1DC;
-/// A render resource's culling sphere, center then radius, in the entity's space. A piece keeping
-/// the template prop's sphere drew only while that sphere near the origin was in view.
-const RENDER_SPHERE: usize = 0xA0;
-const BODY_COLLISION: usize = 0x380;
-const BODY_ROWS: usize = 0x388;
-/// A body row: its saved collision filter and its Havok motion type.
-const BODY_ROW_SIZE: usize = 0x90;
-const BODY_ROW_CLASS: u32 = 0x8080_8C07;
-const BODY_FILTER: usize = 0x18;
-const BODY_MOTION: usize = 0x80;
-/// The saved filter of fixed stock map props, layer 7, the layer of world collision instances.
-const WORLD_FILTER: u32 = 0x000D_0307;
-/// Havok's fixed motion type.
-const FIXED_MOTION: u32 = 5;
 /// Vertices one piece's model holds.
 const MAX_VERTICES: usize = 60_000;
 /// The widest range of texture coordinates one piece's model holds on either axis, in units or in
@@ -116,31 +94,19 @@ const PLAY_MARGIN: [f32; 3] = [256., 256., 512.];
 /// An entity model's bounding radius, and the two further floats a stock prop sets to it.
 const MODEL_RADIUS: usize = 0x8C;
 const MODEL_EXTENTS: [usize; 2] = [0x28, 0x2C];
-/// A draw record's detail category (`8080737E +0x1B`), the distance bands it draws in. Stock
-/// models chain categories by band, such as 0, 4, 7 and 9 or 1 and 7, and a model with one set of
-/// records takes 2, which draws in every band: 92 of 600 sampled stock entity models, most of them
-/// environment and sandbox props.
-const DRAW_DETAIL: usize = 0x1B;
-const EVERY_BAND: u8 = 2;
-/// Size of the stand-in triangles, in meters.
-const STAND_IN: f32 = 0.002;
 /// The attribute stream's stride, and its half-float detail coordinates, which carry lightmap
 /// coordinates for the level's materials.
 const ATTRIBUTE_STRIDE: usize = 24;
 const DETAIL_COORDINATES: usize = 20;
 
-/// Native tags the pieces copy: a stock map prop's entity, its render and physical body owners,
-/// its model, whose first mesh carries the pieces' geometry, and its Havok packfile, which holds
-/// the root and compressed mesh classes. The world collision copies a stock world collision's
-/// main packfile, a static compound, and the first of its mesh packfiles, `world_meshes`, that is
-/// a bare compressed mesh. The Dead Cliffs' and Distant Shore's first one is, and the first of
-/// `pvp_manhattan`'s is not.
+/// Native tags the pieces copy: a stock entity model, whose first mesh's buffer headers the
+/// pieces' buffers copy, and the donor's static instance group records ([`statics::Templates`]).
+/// The world collision copies a stock world collision's main packfile, a static compound, and the
+/// first of its mesh packfiles, `world_meshes`, that is a bare compressed mesh. The Dead Cliffs'
+/// and Distant Shore's first one is, and the first of `pvp_manhattan`'s is not.
+#[derive(serde::Serialize)]
 pub struct Templates {
-    pub entity: u32,
-    pub render: u32,
-    pub body: u32,
     pub model: u32,
-    pub collision: u32,
     pub world_compound: u32,
     pub world_meshes: Vec<u32>,
     /// The donor sky's tags, which the level's sky objects copy, when the donor places a sky.
@@ -161,131 +127,49 @@ pub struct Templates {
     pub occlusion_probes: Option<usize>,
     /// Whether the donor places cubemap volumes, which the map's own stand in for.
     pub cubemaps: bool,
-}
-
-/// Whether a stock prop's Havok packfile `bytes` can serve as the pieces' body template: a physics
-/// component packfile holding a compressed mesh shape, which each piece's stand-in copies.
-/// Distant Shore's first prop's does. Midtown's (`pvp_sabre`) first prop's holds only convex
-/// shapes.
-pub fn usable_prop_collision(bytes: &[u8]) -> bool {
-    crate::tiger::physics::holds(
-        bytes,
-        "s_physics_component_havok_data",
-        "hkpBvCompressedMeshShape",
-    )
+    /// The donor's static instance group records, which the level's statics copy.
+    pub statics: statics::Templates,
 }
 
 /// A user data of a world collision instance whose shape is the packfile at that index of its
 /// record's packfile list. Lower values name the record's mesh records instead.
 const PACKFILE_SHAPE: u64 = 0x1_0000;
 
-/// One placed piece, by graph symbol, with its world bounds in meters.
+/// One piece, its static mesh by graph symbol, with its world bounds in meters.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Piece {
-    pub entity: String,
+    pub mesh: String,
     pub minimum: [f32; 3],
     pub maximum: [f32; 3],
-    /// Where the piece's entity sits, the middle of the spawn points' bounds, the same for every
-    /// piece. Its model's geometry and culling sphere are relative to it.
+    /// Where the piece's instance sits, the middle of the first area's spawn points' bounds, the
+    /// same for every piece. Its static mesh's geometry is relative to it.
     pub position: [f32; 3],
-}
-
-/// `payload` with every word naming `tag` patched to `symbol`.
-fn retarget(payload: &mut [u8], patches: &mut Vec<Value>, tag: u32, symbol: &str) -> Result<usize> {
-    let mut count = 0;
-    for at in (0..payload.len().saturating_sub(3)).step_by(4) {
-        if u32::from_le_bytes(payload[at..at + 4].try_into()?) == tag {
-            put(payload, at, &u32::MAX.to_le_bytes())?;
-            patches.push(json!({"offset": at, "symbol": symbol}));
-            count += 1;
-        }
-    }
-    Ok(count)
-}
-
-/// Adds piece `name`'s owners and entity. Every owner the template entity's components name is
-/// copied, so the entity names only the piece's own owners and records the client registers at
-/// boot. The render owner names `model` and culls by `sphere`, the physical body owner names
-/// `collision`, and the entity names each copy wherever the template named its source.
-fn add_entity(
-    native: &mut Reader,
-    graph: &mut Graph,
-    templates: &Templates,
-    name: &str,
-    model: &str,
-    sphere: [f32; 4],
-    collision: &str,
-) -> Result<String> {
-    let entity = native.tag(templates.entity, Some(ENTITY_CLASS))?;
-    let owners = entity
-        .array(ENTITY_COMPONENTS, COMPONENT_SIZE, None)?
-        .into_iter()
-        .map(|row| entity.u32(row))
-        .collect::<Result<Vec<_>>>()?;
-    ensure!(
-        owners.contains(&templates.render) && owners.contains(&templates.body),
-        "Template entity does not name its render and physical body owners"
-    );
-    let mut symbols = Vec::with_capacity(owners.len());
-    for (index, &tag) in owners.iter().enumerate() {
-        let owner = native.tag(tag, Some(OWNER_CLASS))?;
-        let resource = owner.pointer(OWNER_RESOURCE)?;
-        let mut payload = owner.0.clone();
-        let mut patches = Vec::new();
-        let symbol = format!("{name}-owner{index}");
-        retarget(&mut payload, &mut patches, tag, &symbol)?;
-        let slot = if tag == templates.render {
-            ensure!(
-                owner.u32(resource - 4)? == RENDER_CLASS,
-                "Template render owner {tag:08X} is not a render model"
-            );
-            for (k, value) in sphere.into_iter().enumerate() {
-                put(
-                    &mut payload,
-                    resource + RENDER_SPHERE + k * 4,
-                    &value.to_le_bytes(),
-                )?;
-            }
-            Some((RENDER_MODEL, model))
-        } else if tag == templates.body {
-            let rows = owner.array(resource + BODY_ROWS, BODY_ROW_SIZE, Some(BODY_ROW_CLASS))?;
-            ensure!(
-                owner.u32(resource - 4)? == BODY_CLASS && rows.len() == 1,
-                "Template body owner {tag:08X} must be a physical body with one body"
-            );
-            // Level geometry is a fixed body in the world's collision layer, whatever the
-            // template prop was.
-            for row in rows {
-                put(&mut payload, row + BODY_FILTER, &WORLD_FILTER.to_le_bytes())?;
-                put(&mut payload, row + BODY_MOTION, &FIXED_MOTION.to_le_bytes())?;
-            }
-            Some((BODY_COLLISION, collision))
-        } else {
-            None
-        };
-        if let Some((slot, target)) = slot {
-            put(&mut payload, resource + slot, &u32::MAX.to_le_bytes())?;
-            patches.push(json!({"offset": resource + slot, "symbol": target}));
-        }
-        graph.add(&symbol, tag, &payload, None, patches)?;
-        symbols.push(symbol);
-    }
-    let mut payload = entity.0.clone();
-    let mut patches = Vec::new();
-    for (&tag, symbol) in owners.iter().zip(&symbols) {
-        retarget(&mut payload, &mut patches, tag, symbol)?;
-    }
-    let symbol = format!("{name}-entity");
-    graph.add(&symbol, templates.entity, &payload, None, patches)?;
-    Ok(symbol)
 }
 
 /// The map's world collision by graph symbol: its static compound and, in user data order, the
 /// mesh packfiles its instances name.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct World {
     pub compound: String,
     pub meshes: Vec<String>,
+}
+
+/// One of a campaign map's connected areas: the zone sets that load together, converted once
+/// with the map's other areas. Its pieces are those of the BSPs and placed objects it loads,
+/// shared with every other area that loads them, and its world collision holds their meshes,
+/// with the faces of each seam between two BSPs it loads left out.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct Area {
+    pub zone_sets: Vec<usize>,
+    /// Indices in [`Converted::pieces`].
+    pub pieces: Vec<usize>,
+    pub world: World,
+    /// The preheader of its static instance group, which places its pieces.
+    pub statics: String,
+    /// Its player spawn points, from its first zone set.
+    pub spawns: Vec<Spawn>,
+    /// The sound point table that places the ambience of its structure BSPs, when they have any.
+    pub ambience: Option<String>,
 }
 
 /// The pieces' graph, written under the output folder.
@@ -295,12 +179,15 @@ pub struct Converted {
     pub pieces: Vec<Piece>,
     pub spawns: Vec<Spawn>,
     pub world: World,
+    /// The preheader of the static instance group that places the pieces, the first area's when
+    /// the level has connected areas.
+    pub statics: String,
     /// The level's sky objects, in draw order.
     pub sky: Vec<sky::Object>,
-    /// The direction the level's baked light mostly comes from, toward the light with z up,
-    /// when it has a lightmap.
+    /// The selected analytical sun direction, toward the light with z up.
     pub light: Option<[f32; 3]>,
-    /// The symbol of the sound point table that places the level's ambience, when it has any.
+    /// The symbol of the sound point table that places the level's ambience, the first area's
+    /// when the level has connected areas, when it has any.
     pub ambience: Option<String>,
     /// The symbol of the atmosphere volume the map's atmosphere names in place of the donor's,
     /// when the donor names one and the level has baked light.
@@ -313,6 +200,10 @@ pub struct Converted {
     pub occlusion: Vec<[f32; 4]>,
     /// The level's cubemap volumes, when the donor places volumes and the level has baked light.
     pub cubemaps: Vec<CubemapVolume>,
+    /// The connected areas, when converted as a campaign map's ([`convert_areas`]). The first's
+    /// spawns and world are `spawns` and `world`.
+    #[serde(default)]
+    pub areas: Vec<Area>,
     pub report: Value,
 }
 
@@ -342,16 +233,6 @@ fn scale(a: [f32; 3], s: f32) -> [f32; 3] {
 
 /// A collision triangle in meters.
 type Face = [[f32; 3]; 3];
-
-/// A minute triangle at `at`, all a piece's body holds, since the world collision carries the
-/// level's own.
-fn stand_in_face(at: [f32; 3]) -> Face {
-    [
-        at,
-        [at[0] + STAND_IN, at[1], at[2]],
-        [at[0], at[1] + STAND_IN, at[2]],
-    ]
-}
 
 fn unit(v: [f32; 3]) -> Option<[f32; 3]> {
     let size = length(v);
@@ -415,7 +296,8 @@ fn split<T>(
 fn uv_period(material: Option<&Material>) -> [f32; 2] {
     // Water combines independently transformed main, auxiliary and detail waves. A period
     // derived only from the texture constants does not preserve all three samples.
-    if material.is_some_and(Material::water) {
+    // Decals also need their unshifted projection coordinates for clipping and sprite selection.
+    if material.is_some_and(|material| material.water() || material.decal()) {
         return [0.; 2];
     }
     let Some(property) = material.and_then(|material| material.properties.first()) else {
@@ -623,7 +505,7 @@ const PLACED_LEAST: f32 = 1. / 16_384.;
 
 /// The lightmap coordinates each primitive without lightmap coordinates of its own takes: those of
 /// the lightmapped ground straight below its middle, where a downward ray from there first meets an
-/// upward-facing lightmapped face, as Halo lights an object from the lightmap beneath it. Placed
+/// upward-facing lightmapped face. This is a translation approximation, not Halo's probe lookup. Placed
 /// scenery such as crates otherwise took the atlas's neutral texel, the level's average ambient
 /// with no lobe, and on Breakneck, whose sun comes from its lobes, drew several times darker than
 /// the floor they stand on. Primitives with no ground within [`GROUND_DEPTH`] keep the neutral texel.
@@ -788,8 +670,8 @@ fn mesh(
                         tangent[2],
                         if vertex.tangent[3] < 0. { -1. } else { 1. },
                     ]);
-                    // Every vertex follows the rigid object's own transform.
-                    mesh.weights.push([255, 0, 0, 0, 0, 0, 0, 0]);
+                    // The rigid vertex and shadow programs use the entity transform directly.
+                    // Native layout 139 needs no bone bytes and supports 16-bit indices.
                     let mut coordinates =
                         lightmap_coordinates(vertex, triangle.primitive, ground, neutral, placed);
                     if let Some(value) = vertex_data
@@ -808,106 +690,6 @@ fn mesh(
     }
     mesh.groups = groups.into_iter().collect();
     Ok((mesh, lightmap))
-}
-
-/// Adds piece `name`'s model: its header and its three buffers, copied from the template's mesh
-/// row, with every symbol the encoder names prefixed by the piece. The materials `shadowless`
-/// names cast no shadow.
-#[allow(clippy::too_many_arguments)]
-fn add_model(
-    native: &mut Reader,
-    graph: &mut Graph,
-    templates: &Templates,
-    template: &Payload,
-    row: usize,
-    stages: &BTreeMap<u32, u8>,
-    shadowless: &BTreeSet<u32>,
-    mesh: &Mesh,
-    lightmap: &[[f32; 2]],
-    name: &str,
-) -> Result<String> {
-    let used = mesh
-        .groups
-        .iter()
-        .map(|(key, _)| (*key, stages.get(key).copied().unwrap_or(0)))
-        .collect();
-    let mut encoded =
-        geometry::encode_on_grid(mesh, template, row, &used, shadowless, POSITION_STEP)?;
-    // The template prop keeps its bounding radius in all four floats at +0x20, as stock props
-    // with its flags do. The encoder writes the first two, and the last two would keep the prop's.
-    let radius = Payload(encoded.header.clone()).f32(MODEL_RADIUS)?;
-    for offset in MODEL_EXTENTS {
-        put(&mut encoded.header, offset, &radius.to_le_bytes())?;
-    }
-    // The encoder's category 0 is the nearest band alone. Pieces past it did not draw, and the
-    // arena's upper structures, 300 m from the spawns, were missing.
-    let records = (encoded.header.len() - sky::DRAW_RECORDS) / sky::DRAW_RECORD_SIZE;
-    for record in 0..records {
-        put(
-            &mut encoded.header,
-            sky::DRAW_RECORDS + record * sky::DRAW_RECORD_SIZE + DRAW_DETAIL,
-            &[EVERY_BAND],
-        )?;
-    }
-    ensure!(
-        encoded.streams[1].len() == lightmap.len() * ATTRIBUTE_STRIDE,
-        "Piece {name} has {} attribute bytes for {} lightmap coordinates",
-        encoded.streams[1].len(),
-        lightmap.len()
-    );
-    for (record, uv) in encoded.streams[1]
-        .chunks_exact_mut(ATTRIBUTE_STRIDE)
-        .zip(lightmap)
-    {
-        for (k, value) in uv.iter().enumerate() {
-            let at = DETAIL_COORDINATES + k * 2;
-            record[at..at + 2].copy_from_slice(&half::f16::from_f32(*value).to_le_bytes());
-        }
-    }
-    let mut patches = encoded.patches.clone();
-    for (index, kind) in ["positions", "attributes", "indices"]
-        .into_iter()
-        .enumerate()
-    {
-        let tag = template.u32(row + [0, 4, 16][index])?;
-        let mut header = native.tag(tag, None)?.0.clone();
-        put(
-            &mut header,
-            if index == 2 { 8 } else { 0 },
-            &u32::try_from(encoded.streams[index].len())?.to_le_bytes(),
-        )?;
-        if index == 2 {
-            // Weighted meshes index with 32 bits.
-            header[1] = 1;
-        } else {
-            put(
-                &mut header,
-                4,
-                &(if index == 0 { 16u16 } else { 24u16 }).to_le_bytes(),
-            )?;
-        }
-        let symbol = format!("{name}-{kind}-header");
-        let data = format!("{name}-{kind}-data");
-        graph.add(&symbol, tag, &header, Some(&data), vec![])?;
-        graph.add(
-            &data,
-            native.reference(tag)?,
-            &encoded.streams[index],
-            Some(&symbol),
-            vec![],
-        )?;
-        for patch in &mut patches {
-            if patch["symbol"] == format!("{kind}-header") {
-                patch["symbol"] = json!(symbol);
-            }
-        }
-    }
-    let symbol = format!("{name}-model");
-    graph.add(&symbol, templates.model, &encoded.header, None, patches)?;
-    if let Some(node) = graph.nodes.iter_mut().find(|node| node["symbol"] == symbol) {
-        node["model"] = json!(true);
-    }
-    Ok(symbol)
 }
 
 fn bounds(points: impl Iterator<Item = [f32; 3]>) -> ([f32; 3], [f32; 3]) {
@@ -952,7 +734,7 @@ pub fn convert(
 }
 
 /// Converts a level while reporting real stages and completed-piece counts to its caller.
-#[allow(clippy::cognitive_complexity, clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub fn convert_with_progress(
     maps: &Path,
     map: &str,
@@ -964,7 +746,54 @@ pub fn convert_with_progress(
     templates: &Templates,
     report: &mut dyn FnMut(&str),
 ) -> Result<Converted> {
-    let &start_set = zone_sets.first().context("The map loads no zone set")?;
+    convert_areas(
+        maps,
+        map,
+        zone_sets,
+        &[],
+        variant,
+        packages,
+        output,
+        offset,
+        templates,
+        report,
+    )
+}
+
+/// Converts a level whose zone sets `zone_sets` load as the connected `areas`, each a list of
+/// them, or as one area when `areas` is empty. Every BSP and placed object converts once: each
+/// piece and collision mesh holds one BSP's or object's geometry and lists the areas that load it
+/// ([`Area`]), and the decorators keep within each area's budget.
+#[allow(clippy::cognitive_complexity, clippy::too_many_arguments)]
+pub fn convert_areas(
+    maps: &Path,
+    map: &str,
+    zone_sets: &[usize],
+    areas: &[Vec<usize>],
+    variant: Option<&Path>,
+    packages: &Path,
+    output: &Path,
+    offset: [f32; 3],
+    templates: &Templates,
+    report: &mut dyn FnMut(&str),
+) -> Result<Converted> {
+    ensure!(!zone_sets.is_empty(), "The map loads no zone set");
+    ensure!(
+        areas
+            .iter()
+            .all(|area| !area.is_empty() && area.iter().all(|set| zone_sets.contains(set))),
+        "Each area loads some of the map's zone sets"
+    );
+    ensure!(areas.len() <= 64, "A map holds at most 64 connected areas");
+    let split_areas = !areas.is_empty();
+    let areas = if split_areas {
+        areas.to_vec()
+    } else {
+        vec![zone_sets.to_vec()]
+    };
+    let compute_before = crate::compute::snapshot();
+    let shaders_before = crate::tiger::shader::cache_snapshot();
+    let started = std::time::Instant::now();
     ensure!(
         !output.join("controller.lua").exists() && !output.join("execution.json").exists(),
         "Use a fresh map output when an earlier mission controller is present"
@@ -992,11 +821,37 @@ pub fn convert_with_progress(
         .into_iter()
         .map(|bsp| bsp.tag)
         .collect::<Vec<_>>();
+    // Each area's BSPs, by scenario mask and by index in `tags`.
+    let loaded = areas
+        .iter()
+        .map(|sets| super::loaded_bsps(&cache, sets))
+        .collect::<Result<Vec<_>>>()?;
+    let bits = tags
+        .iter()
+        .map(|tag| super::bsp_mask(&cache, std::slice::from_ref(tag)))
+        .collect::<Result<Vec<_>>>()?;
+    let groups = loaded
+        .iter()
+        .map(|&loaded| {
+            (0..tags.len())
+                .filter(|&bsp| bits[bsp] & loaded != 0)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    // The areas that load what the structure BSPs `bsps` hold (a primitive's `bsps`), bit `n` for
+    // the `n`th area.
+    let membership = |bsps: u32| -> u64 {
+        loaded
+            .iter()
+            .enumerate()
+            .filter(|&(_, &loaded)| bsps == 0 || bsps & loaded != 0)
+            .fold(0, |mask, (area, _)| mask | 1 << area)
+    };
     report(&format!(
         "Reading Geometry and Lightmaps / {} BSPs",
         tags.len()
     ));
-    let mut level = read_all(&cache, &mut pages, &tags)?;
+    let mut level = super::read_areas(&cache, &mut pages, &tags, &groups)?;
     // A surface whose alpha test discards every pixel draws nothing and casts no shadow. The
     // structure's own collision still holds any such surface's wall.
     let hidden = level
@@ -1018,11 +873,22 @@ pub fn convert_with_progress(
         .filter(|&(_, &never)| never)
         .filter_map(|(material, _)| material.tag.as_ref().map(|tag| tag.path.clone()))
         .collect::<Vec<_>>();
-    // Each BSP's collision places that BSP's instances.
+    // Each BSP's collision places that BSP's instances, and each polygon lists the areas whose
+    // collision holds it. A seam joining two BSPs an area loads is open in that area
+    // ([`collision`]).
     let mut polygons = Vec::new();
+    let mut polygon_areas = Vec::new();
     let mut structure_polygons = 0;
-    // A seam joining two loaded BSPs is open ([`collision`]).
-    let open_seams = collision::shared_seams(&cache, &tags)?;
+    let open_seams = groups
+        .iter()
+        .map(|group| {
+            let loaded = group
+                .iter()
+                .map(|&bsp| tags[bsp].clone())
+                .collect::<Vec<_>>();
+            collision::shared_seams(&cache, &loaded)
+        })
+        .collect::<Result<Vec<_>>>()?;
     let mut open_seam_surfaces = 0;
     for (index, tag) in tags.iter().enumerate() {
         report(&format!(
@@ -1031,17 +897,35 @@ pub fn convert_with_progress(
             tags.len(),
             tag.path
         ));
-        let collision = collision::read(&cache, &mut pages, tag, &open_seams)?;
-        open_seam_surfaces += collision.open_seam_surfaces;
+        let collision = collision::read(&cache, &mut pages, tag, &BTreeSet::new())?;
+        let areas = membership(bits[index]);
         let instanced = level
             .instances
             .iter()
             .filter(|instance| instance.bsp == index)
             .map(|instance| collision.placed(instance))
             .collect::<Result<Vec<_>>>()?;
-        structure_polygons += collision.structure.len();
-        polygons.extend(collision.structure);
-        polygons.extend(instanced.into_iter().flatten());
+        for (polygon, seam) in collision.structure.into_iter().zip(collision.seams) {
+            let open = seam.map_or(0, |seam| {
+                open_seams
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, open)| open.contains(&seam))
+                    .fold(0u64, |mask, (area, _)| mask | 1 << area)
+            });
+            if areas & open != 0 {
+                open_seam_surfaces += 1;
+            }
+            if areas & !open != 0 {
+                structure_polygons += 1;
+                polygons.push(polygon);
+                polygon_areas.push(areas & !open);
+            }
+        }
+        for polygon in instanced.into_iter().flatten() {
+            polygons.push(polygon);
+            polygon_areas.push(areas);
+        }
     }
     let placed = objects::read(&cache, &mut pages, variant.as_ref(), zone_sets)?;
     // Placed objects' primitives follow the structure's, and the T-junction repair below only adds
@@ -1064,6 +948,12 @@ pub fn convert_with_progress(
     // surface remains as the backdrop it is left out: Forge World's `simple\white` surface sits
     // 8.5 km out, nearer than its 25 km blue dome, and drew a black patch over the dome. A sky with
     // no other opaque surface, as Sword Base's, keeps it as its backdrop.
+    // Whether the areas draw different skies, which the map's one set of sky objects cannot.
+    let sky_areas = placed
+        .sky
+        .iter()
+        .map(|(primitive, _)| membership(primitive.bsps))
+        .collect::<BTreeSet<_>>();
     let keyed = placed
         .sky
         .into_iter()
@@ -1145,20 +1035,28 @@ pub fn convert_with_progress(
         .into_iter()
         .map(|(_, _, primitive, colors)| (primitive, colors))
         .collect::<Vec<_>>();
-    let spawns = spawn::read(&cache, variant.as_ref(), start_set)?
-        .into_iter()
-        .map(|spawn| Spawn {
-            position: std::array::from_fn(|k| spawn.position[k] + offset[k]),
-            ..spawn
+    let area_spawns = areas
+        .iter()
+        .map(|sets| {
+            Ok(spawn::read(&cache, variant.as_ref(), sets[0])?
+                .into_iter()
+                .map(|spawn| Spawn {
+                    position: std::array::from_fn(|k| spawn.position[k] + offset[k]),
+                    ..spawn
+                })
+                .collect::<Vec<_>>())
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
+    let spawns = area_spawns[0].clone();
     let mut native = Reader::new(packages, &output.join("native"), false)?;
+    let analytical = super::lighting::materials(&cache, &mut level)?;
+    let sun =
+        Some(super::lighting::read(&cache, super::lighting::SKY)?).filter(|light| light.present());
     let template = native.tag(templates.model, Some(MODEL_CLASS))?;
     let row = *template
         .array(16, 136, Some(MESH_CLASS))?
         .first()
         .context("Template model has no mesh")?;
-    let havok = native.tag(templates.collision, None)?.0.clone();
     let world_compound = native.tag(templates.world_compound, None)?.0.clone();
     let mut world_mesh_template = None;
     for &tag in &templates.world_meshes {
@@ -1240,7 +1138,8 @@ pub fn convert_with_progress(
         .collect::<Vec<_>>();
     let mut band_report = Vec::new();
     let mut faces = Vec::<Face>::new();
-    for polygon in &polygons {
+    let mut face_areas = Vec::new();
+    for (polygon, &areas) in polygons.iter().zip(&polygon_areas) {
         let points = polygon
             .points
             .iter()
@@ -1248,25 +1147,34 @@ pub fn convert_with_progress(
             .collect::<Vec<[f32; 3]>>();
         for i in 1..points.len().saturating_sub(1) {
             faces.push([points[0], points[i], points[i + 1]]);
+            face_areas.push(areas);
         }
     }
-    faces.extend(
-        placed
-            .faces
-            .iter()
-            .map(|face| face.map(|point| std::array::from_fn(|k| point[k] + offset[k]))),
-    );
+    for (face, &bsps) in placed.faces.iter().zip(&placed.face_bsps) {
+        faces.push(face.map(|point| std::array::from_fn(|k| point[k] + offset[k])));
+        face_areas.push(membership(bsps));
+    }
     let triangle_center = |t: &Triangle| -> [f32; 3] {
         let primitive = &level.primitives[t.primitive as usize];
         let points = t.corners.map(|c| primitive.vertices[c as usize].position);
         std::array::from_fn(|k| (points[0][k] + points[1][k] + points[2][k]) / 3.)
     };
-    let (spawn_low, spawn_high) = bounds(spawns.iter().map(|spawn| spawn.position));
-    let arena: [f32; 3] = std::array::from_fn(|k| (spawn_low[k] + spawn_high[k]) / 2.);
+    // Every area's spawn bounds hold play, and the first's center is the pieces' origin.
+    let play_boxes = area_spawns
+        .iter()
+        .map(|spawns| bounds(spawns.iter().map(|spawn| spawn.position)))
+        .collect::<Vec<_>>();
+    let (spawn_low, spawn_high) = play_boxes[0];
+    // Area spawn bounds have different fractional centers. An unsnapped entity origin shifts
+    // every piece's quantization lattice, opening cracks where the same BSP spans two areas.
+    // Metre-aligned origins also align the coarser power-of-two steps used by distant pieces.
+    let arena: [f32; 3] = std::array::from_fn(|k| ((spawn_low[k] + spawn_high[k]) / 2.).round());
     // Points in the map's space, moved by `offset` as the spawn points are.
     let in_play = |point: [f32; 3]| {
-        (0..3).all(|k| {
-            point[k] >= spawn_low[k] - PLAY_MARGIN[k] && point[k] <= spawn_high[k] + PLAY_MARGIN[k]
+        play_boxes.iter().any(|(low, high)| {
+            (0..3).all(|k| {
+                point[k] >= low[k] - PLAY_MARGIN[k] && point[k] <= high[k] + PLAY_MARGIN[k]
+            })
         })
     };
     // Texture coordinates are 16-bit steps over a piece's range, so a triangle spanning a sliver
@@ -1302,6 +1210,8 @@ pub fn convert_with_progress(
         }
     };
     let mut renders = Vec::new();
+    // The areas that draw each of `renders`.
+    let mut render_areas = Vec::new();
     // The level's triangles are in Reach's space and the collision faces already moved. Taking the
     // triangles unmoved put Reflection's arena, moved 735 m down, wholly outside the play area, so
     // its pieces took the scenery's coarser positions and no extent cap.
@@ -1312,11 +1222,13 @@ pub fn convert_with_progress(
     // Triangles also group by how often their base maps repeat ([`tiling_class`]). A piece's range
     // counts as its most repeated base map gives, so a surface repeating once in 200 units beside
     // one repeating every unit would hold the other to its own range and split pieces they shared.
+    // They group first by the areas that draw them, so each piece serves the same areas.
     for (region, in_play) in [(play, true), (scenery, false)] {
-        let mut bands = BTreeMap::<(u32, u32, [u32; 2]), Vec<Triangle>>::new();
+        let mut bands = BTreeMap::<(u64, u32, u32, [u32; 2]), Vec<Triangle>>::new();
         for triangle in region {
             bands
                 .entry((
+                    membership(level.primitives[triangle.primitive as usize].bsps),
                     uv_band(triangle_span(&triangle)),
                     triangle.period,
                     triangle.tiling.map(tiling_class),
@@ -1324,7 +1236,7 @@ pub fn convert_with_progress(
                 .or_default()
                 .push(triangle);
         }
-        for ((band, period, class), group) in bands {
+        for ((areas, band, period, class), group) in bands {
             let limit = period_range(period, band);
             // Why groups failed to fit, for the report: too many vertices, too wide a texture
             // coordinate range, or too wide a play-area piece.
@@ -1347,7 +1259,9 @@ pub fn convert_with_progress(
             };
             let (before, triangles) = (renders.len(), group.len());
             split(group, &triangle_center, &fits, &mut renders);
+            render_areas.resize(renders.len(), areas);
             band_report.push(json!({
+                "areas": areas,
                 "play": in_play,
                 "band": band,
                 "period": period,
@@ -1361,15 +1275,26 @@ pub fn convert_with_progress(
     let face_center =
         |f: &Face| -> [f32; 3] { std::array::from_fn(|k| (f[0][k] + f[1][k] + f[2][k]) / 3.) };
     let mut shapes = Vec::new();
-    let (play, scenery): (Vec<_>, Vec<_>) =
-        faces.into_iter().partition(|f| in_play(face_center(f)));
-    for group in [play, scenery] {
-        split(
-            group,
-            &face_center,
-            &|group: &[Face]| group.len() <= MAX_COLLISION_TRIANGLES,
-            &mut shapes,
-        );
+    // The areas whose collision holds each of `shapes`.
+    let mut shape_areas = Vec::new();
+    let mut by_areas = BTreeMap::<u64, Vec<Face>>::new();
+    for (face, areas) in faces.into_iter().zip(face_areas) {
+        if areas != 0 {
+            by_areas.entry(areas).or_default().push(face);
+        }
+    }
+    for (areas, faces) in by_areas {
+        let (play, scenery): (Vec<_>, Vec<_>) =
+            faces.into_iter().partition(|f| in_play(face_center(f)));
+        for group in [play, scenery] {
+            split(
+                group,
+                &face_center,
+                &|group: &[Face]| group.len() <= MAX_COLLISION_TRIANGLES,
+                &mut shapes,
+            );
+            shape_areas.resize(shapes.len(), areas);
+        }
     }
 
     let mut used = BTreeMap::<u32, Material>::new();
@@ -1381,6 +1306,7 @@ pub fn convert_with_progress(
                 .and_then(|m| level.materials.get(m))
                 .cloned()
                 .unwrap_or(Material {
+                    decal: None,
                     tag: None,
                     options: BTreeMap::new(),
                     properties: Vec::new(),
@@ -1401,15 +1327,6 @@ pub fn convert_with_progress(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    // An alpha-tested surface casts no shadow, as the pieces' shared shadow material draws every
-    // triangle solid. Forge World's 113,424 ground cover cards then shadowed the grass they stand
-    // in, so sunlit slopes and shores drew in Destiny's shadow beside Reach's lighter baked tree
-    // shadows. Reach's lightmaps already hold its foliage's shadows on the structure.
-    let shadowless = used
-        .iter()
-        .filter(|(_, material)| material.alpha_mode() == "MASK")
-        .map(|(&key, _)| key)
-        .collect::<BTreeSet<_>>();
     let mut graph = Graph {
         root: output.to_path_buf(),
         nodes: Vec::new(),
@@ -1423,10 +1340,10 @@ pub fn convert_with_progress(
     } else {
         HashMap::new()
     };
-    // Where the lightmap shows the level's sun, Destiny's sun lights the surfaces in its place.
-    let sun = level.lightmap.as_ref().and_then(sky::baked_sun);
     // The surfaces draw the level's own fog in place of Destiny's.
     let (fog, fog_report) = fog::read(&cache, &tags, offset[2])?;
+    let (radiance, camera_report) =
+        sky::radiance(&cache, level.lightmap.as_ref().map(|atlas| atlas.level))?;
     report("Converting Lightmap Textures");
     let lightmap = level
         .lightmap
@@ -1437,15 +1354,17 @@ pub fn convert_with_progress(
                 &mut graph,
                 atlas,
                 sky::veil(&cache)?,
-                sun.map(|sun| native_material::Sun {
-                    direction: sun.direction,
-                    level: sun.level,
-                    visibility: sun.visibility,
-                }),
+                sun,
                 fog,
             )
         })
         .transpose()?;
+    let lightmap = lightmap.map(|mut lightmap| {
+        lightmap.analytical = analytical;
+        lightmap.origin = offset;
+        lightmap.radiance = radiance;
+        lightmap
+    });
     let vertex_data = native_material::vertex_data::add(
         &mut native,
         &mut graph,
@@ -1475,6 +1394,8 @@ pub fn convert_with_progress(
             paint: &BTreeMap::new(),
             lightmap: lightmap.as_ref(),
             vertex_data: vertex_data.as_ref().map(|table| table.symbol.as_str()),
+            // Every level surface draws on the pieces' static meshes (`statics`).
+            statics: true,
         },
         report,
     )?;
@@ -1488,95 +1409,139 @@ pub fn convert_with_progress(
     let mut vertices = 0usize;
     let mut drawn = 0usize;
     let mut placed_faces = 0usize;
-    for (part, group) in renders.iter().enumerate() {
+    let solid = statics::solid(&used);
+    let render_started = std::time::Instant::now();
+    let workers = crate::cancellation::workers()?;
+    for (batch, groups) in renders.chunks(workers).enumerate() {
         report(&format!(
-            "Writing Render Geometry / Piece {}/{}",
-            part + 1,
+            "Preparing Render Geometry / Piece {}/{}",
+            batch * workers + 1,
             renders.len()
         ));
-        let name = format!("piece{part}");
-        let (mut mesh, coordinates) = mesh(
-            &level,
-            &group.iter().collect::<Vec<_>>(),
-            offset,
-            &ground,
-            neutral,
-            placed_from,
-            vertex_data.as_ref(),
-        )?;
-        let (low, high) = bounds(mesh.positions.iter().copied());
-        vertices += mesh.positions.len();
-        drawn += mesh.groups.iter().map(|(_, f)| f.len()).sum::<usize>();
-        // Every piece's entity sits at the arena's middle, and its geometry is relative to it, with
-        // a culling sphere around that point reaching its farthest vertex. Pieces placed at their
-        // own centers 250 to 370 m from the spawns did not draw, and pillars split between a near
-        // piece and a high one lost their tops at the split.
-        let radius = mesh
-            .positions
-            .iter()
-            .map(|&position| {
-                let d = sub(position, arena);
-                (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
-            })
-            .fold(0f32, f32::max);
-        for position in &mut mesh.positions {
-            *position = sub(*position, arena);
+        let prepared = crate::cancellation::parallel(groups, |group| {
+            let (mut mesh, coordinates) = mesh(
+                &level,
+                &group.iter().collect::<Vec<_>>(),
+                offset,
+                &ground,
+                neutral,
+                placed_from,
+                vertex_data.as_ref(),
+            )?;
+            let (minimum, maximum) = bounds(mesh.positions.iter().copied());
+            // Snap in shared world coordinates before subtracting the instances' origin. This
+            // also removes half-step rounding differences between individual statics.
+            for position in &mut mesh.positions {
+                *position = std::array::from_fn(|axis| {
+                    (position[axis] / POSITION_STEP).round() * POSITION_STEP - arena[axis]
+                });
+            }
+            let mut streams = geometry::encode_static(&mesh, POSITION_STEP)?;
+            ensure!(
+                streams.attributes.len() == coordinates.len() * ATTRIBUTE_STRIDE,
+                "Piece has {} attribute bytes for {} lightmap coordinates",
+                streams.attributes.len(),
+                coordinates.len()
+            );
+            for (record, uv) in streams
+                .attributes
+                .chunks_exact_mut(ATTRIBUTE_STRIDE)
+                .zip(&coordinates)
+            {
+                for (k, value) in uv.iter().enumerate() {
+                    let at = DETAIL_COORDINATES + k * 2;
+                    record[at..at + 2].copy_from_slice(&half::f16::from_f32(*value).to_le_bytes());
+                }
+            }
+            let draws = mesh
+                .groups
+                .iter()
+                .map(|(key, _)| statics::Draw {
+                    key: *key,
+                    stage: stages.get(key).copied().unwrap_or(0),
+                    solid: solid.contains(key),
+                })
+                .collect::<Vec<_>>();
+            Ok((
+                streams,
+                draws,
+                minimum,
+                maximum,
+                mesh.positions.len(),
+                mesh.groups
+                    .iter()
+                    .map(|(_, faces)| faces.len())
+                    .sum::<usize>(),
+            ))
+        })?;
+        for (local, (streams, draws, minimum, maximum, count, triangles)) in
+            prepared.into_iter().enumerate()
+        {
+            let part = batch * workers + local;
+            report(&format!(
+                "Writing Render Geometry / Piece {}/{}",
+                part + 1,
+                renders.len()
+            ));
+            let name = format!("piece{part}");
+            vertices += count;
+            drawn += triangles;
+            let mesh = statics::mesh(
+                &mut native,
+                &mut graph,
+                &templates.statics,
+                &template,
+                row,
+                &streams,
+                &draws,
+                &name,
+            )?;
+            pieces.push(Piece {
+                mesh,
+                minimum,
+                maximum,
+                position: arena,
+            });
         }
-        let model = add_model(
-            &mut native,
-            &mut graph,
-            templates,
-            &template,
-            row,
-            &stages,
-            &shadowless,
-            &mesh,
-            &coordinates,
-            &name,
-        )?;
-        let bytes = compressed_mesh(&havok, &[stand_in_face([0.; 3])])?;
-        let collision = format!("{name}-collision");
-        graph.add(&collision, templates.collision, &bytes, None, Vec::new())?;
-        let entity = add_entity(
-            &mut native,
-            &mut graph,
-            templates,
-            &name,
-            &model,
-            [0., 0., 0., radius],
-            &collision,
-        )?;
-        pieces.push(Piece {
-            entity,
-            minimum: low,
-            maximum: high,
-            position: arena,
-        });
     }
-    for (part, group) in shapes.iter().enumerate() {
+    let render_seconds = render_started.elapsed().as_secs_f64();
+    let collision_started = std::time::Instant::now();
+    for (batch, groups) in shapes.chunks(workers).enumerate() {
         report(&format!(
-            "Writing Collision / Mesh {}/{}",
-            part + 1,
+            "Preparing Collision / Mesh {}/{}",
+            batch * workers + 1,
             shapes.len()
         ));
-        let (low, high) = bounds(group.iter().flatten().copied());
-        let center: [f32; 3] = std::array::from_fn(|k| (low[k] + high[k]) / 2.);
-        let faces = group
-            .iter()
-            .map(|face| face.map(|point| sub(point, center)))
-            .collect::<Vec<Face>>();
-        placed_faces += faces.len();
-        let (bytes, _) = bare_mesh(&world_mesh, &faces)?;
-        let symbol = format!("collision{part}");
-        graph.add(&symbol, world_mesh_tag, &bytes, None, Vec::new())?;
-        instances.push(Instance {
-            translation: center,
-            bounds: (low, high),
-            user_data: PACKFILE_SHAPE | u64::try_from(part)?,
-            triangles: faces,
-        });
-        world.meshes.push(symbol);
+        let prepared = crate::cancellation::parallel(groups, |group| {
+            let (low, high) = bounds(group.iter().flatten().copied());
+            let center: [f32; 3] = std::array::from_fn(|k| (low[k] + high[k]) / 2.);
+            let faces = group
+                .iter()
+                .map(|face| face.map(|point| sub(point, center)))
+                .collect::<Vec<Face>>();
+            let (bytes, _) = bare_mesh(&world_mesh, &faces)?;
+            Ok((bytes, low, high, center, faces))
+        })?;
+        for (local, (bytes, low, high, center, faces)) in prepared.into_iter().enumerate() {
+            let part = batch * workers + local;
+            report(&format!(
+                "Writing Collision / Mesh {}/{}",
+                part + 1,
+                shapes.len()
+            ));
+            placed_faces += faces.len();
+            let symbol = format!("collision{part}");
+            graph.add(&symbol, world_mesh_tag, &bytes, None, Vec::new())?;
+            instances.push(Instance {
+                translation: center,
+                bounds: (low, high),
+                user_data: PACKFILE_SHAPE | u64::try_from(part)?,
+                triangles: faces,
+            });
+            world.meshes.push(symbol);
+        }
     }
+    let collision_seconds = collision_started.elapsed().as_secs_f64();
     report("Converting Sky Geometry");
     let (sky, sky_report) = match &templates.sky {
         Some(sky_templates) => sky::add(
@@ -1595,11 +1560,9 @@ pub fn convert_with_progress(
             json!({"objects": 0, "primitives": sky_primitives.len(), "reason": "The donor places no sky objects to copy"}),
         ),
     };
-    // Destiny's sun shines from the baked sun the surfaces leave to it, else from the baked key
-    // light.
-    let light = sun
-        .map(|sun| sun.direction)
-        .or_else(|| level.lightmap.as_ref().and_then(sky::baked_light_direction));
+    // Native sun direction comes from the scenario sky's analytical light. Baked VMF lobes
+    // describe a separate lighting term and do not establish the sun's direction.
+    let light = sun.map(|sun| sun.vector);
     report("Decoding and Converting Ambient Audio");
     let (ambience, ambience_report) = match &templates.ambience {
         Some(ambience_templates) => super::ambience::add(
@@ -1612,9 +1575,10 @@ pub fn convert_with_progress(
             &mut graph,
             ambience_templates,
             offset,
+            &loaded,
         )?,
         None => (
-            None,
+            vec![None; areas.len()],
             json!({"points": 0, "reason": "No sound point table or no audio decoder"}),
         ),
     };
@@ -1627,9 +1591,10 @@ pub fn convert_with_progress(
             "playback":"unsupported"}),
     };
     // The atmosphere takes the sun's color where Destiny's sun lights the surfaces in its place.
-    let light_color = sun
-        .map(|sun| sun.color)
-        .or_else(|| level.lightmap.as_ref().and_then(sky::baked_light_color));
+    let light_color = sun.map(|sun| {
+        let peak = sun.intensity.into_iter().fold(0f32, f32::max);
+        sun.intensity.map(|v| v / peak)
+    });
     let (atmosphere, atmosphere_report) = match (templates.atmosphere, light_color) {
         (Some(volume), Some(color)) => {
             let (symbol, report) = atmosphere::add(&mut native, &mut graph, volume, color)?;
@@ -1659,8 +1624,9 @@ pub fn convert_with_progress(
     let (occlusion, occlusion_report) = match templates.occlusion_probes {
         Some(count) => occlusion::probes(
             &level,
-            &spawns
+            &area_spawns
                 .iter()
+                .flatten()
                 .map(|spawn| sub(spawn.position, offset))
                 .collect::<Vec<_>>(),
             count,
@@ -1681,6 +1647,7 @@ pub fn convert_with_progress(
             &level,
             super::loaded_bsps(&cache, zone_sets)?,
             offset,
+            radiance,
         )?
     } else {
         (
@@ -1702,16 +1669,90 @@ pub fn convert_with_progress(
         )?;
     }
     ensure!(!pieces.is_empty(), "The level converted to no pieces");
-    let compound = static_compound(&world_compound, &world_mesh, &instances)?;
-    graph.add(
-        &world.compound,
-        templates.world_compound,
-        &compound,
-        None,
-        Vec::new(),
-    )?;
+    // Each area's static compound places its own meshes, numbered in its own order.
+    let mut area_rows = Vec::with_capacity(areas.len());
+    let mut area_report = Vec::with_capacity(areas.len());
+    for (area, zone_sets) in areas.iter().enumerate() {
+        let bit = 1u64 << area;
+        let shapes = (0..instances.len())
+            .filter(|&shape| shape_areas[shape] & bit != 0)
+            .collect::<Vec<_>>();
+        let area_pieces = (0..pieces.len())
+            .filter(|&piece| render_areas[piece] & bit != 0)
+            .collect::<Vec<_>>();
+        ensure!(
+            !shapes.is_empty() && !area_pieces.is_empty(),
+            "Area {area} converted to no pieces or no collision"
+        );
+        let placed = shapes
+            .iter()
+            .enumerate()
+            .map(|(local, &shape)| {
+                let instance = &instances[shape];
+                Ok(Instance {
+                    translation: instance.translation,
+                    bounds: instance.bounds,
+                    user_data: PACKFILE_SHAPE | u64::try_from(local)?,
+                    triangles: instance.triangles.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let symbol = if area == 0 {
+            world.compound.clone()
+        } else {
+            format!("{}-{area}", world.compound)
+        };
+        let compound = static_compound(&world_compound, &world_mesh, &placed)?;
+        graph.add(
+            &symbol,
+            templates.world_compound,
+            &compound,
+            None,
+            Vec::new(),
+        )?;
+        let placed = area_pieces
+            .iter()
+            .map(|&piece| statics::Instance {
+                mesh: &pieces[piece].mesh,
+                position: pieces[piece].position,
+                minimum: pieces[piece].minimum,
+                maximum: pieces[piece].maximum,
+            })
+            .collect::<Vec<_>>();
+        let group = if area == 0 {
+            "statics".to_owned()
+        } else {
+            format!("statics-{area}")
+        };
+        let statics = statics::group(&mut native, &mut graph, &templates.statics, &placed, &group)?;
+        area_report.push(json!({
+            "zone_sets": zone_sets,
+            "bsps": groups[area].iter().map(|&bsp| tags[bsp].path.as_str()).collect::<Vec<_>>(),
+            "pieces": area_pieces.len(),
+            "collision_meshes": shapes.len(),
+            "spawns": area_spawns[area].len(),
+            "open_seams": open_seams[area],
+        }));
+        area_rows.push(Area {
+            zone_sets: zone_sets.clone(),
+            pieces: area_pieces,
+            world: World {
+                compound: symbol,
+                meshes: shapes
+                    .iter()
+                    .map(|&shape| world.meshes[shape].clone())
+                    .collect(),
+            },
+            statics,
+            spawns: area_spawns[area].clone(),
+            ambience: ambience[area].clone(),
+        });
+    }
+    let world = area_rows[0].world.clone();
+    let statics = area_rows[0].statics.clone();
     report("Verifying Source Files and Writing Map Reports");
     pages.verify_inputs()?;
+    native.finish()?;
     let mission_bytes = serde_json::to_vec_pretty(&mission)?;
     fs::write(output.join("mission.json"), &mission_bytes)?;
     let mission_execution = match controller {
@@ -1726,6 +1767,10 @@ pub fn convert_with_progress(
         None => json!({"execution":"not_selected"}),
     };
     let mut report = json!({
+        "compute": crate::compute::snapshot().since(&compute_before),
+        "shaders": crate::tiger::shader::cache_snapshot().since(&shaders_before),
+        "timing": { "conversion_seconds": started.elapsed().as_secs_f64(),
+            "render_seconds": render_seconds, "collision_seconds": collision_seconds, "workers": workers },
         "source_build": cache.build,
         "source_inputs": pages.inputs,
         "source_resources": pages.resources,
@@ -1788,7 +1833,8 @@ pub fn convert_with_progress(
         "decorators": level.decorators,
         "spawns": spawns.len(),
         "offset": offset,
-        "sky": sky_report,
+        "camera": camera_report,
+            "sky": sky_report,
         "sky_order": sky_order,
         "sky_blackened": blackened,
         "ambience": ambience_report,
@@ -1797,12 +1843,17 @@ pub fn convert_with_progress(
         "fog": fog_report,
         "occlusion": occlusion_report,
         "cubemaps": cubemaps_report,
-        "baked_light_direction": light,
-        "baked_light_color": light_color,
-        "baked_sun": sun,
+        "analytical_light_direction": light,
+        "analytical_light_color": light_color,
+        "analytical_sun": sun,
+        "analytical_materials": lightmap.as_ref().map(|map| &map.analytical),
     });
-    report["open_seams"] = json!(open_seams);
+    report["open_seams"] = json!(open_seams[0]);
     report["open_seam_surfaces"] = json!(open_seam_surfaces);
+    report["sky_areas"] = json!(sky_areas);
+    if split_areas {
+        report["areas"] = json!(area_report);
+    }
     fs::write(
         output.join("map-pieces.json"),
         serde_json::to_vec_pretty(&report)?,
@@ -1812,13 +1863,15 @@ pub fn convert_with_progress(
         pieces,
         spawns,
         world,
+        statics,
         sky,
         light,
-        ambience,
+        ambience: area_rows[0].ambience.clone(),
         atmosphere,
         atmosphere_lookup,
         occlusion,
         cubemaps,
+        areas: if split_areas { area_rows } else { Vec::new() },
         report,
     })
 }

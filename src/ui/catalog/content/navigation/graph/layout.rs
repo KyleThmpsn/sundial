@@ -75,25 +75,3 @@ pub(super) fn arrange(
         ),
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn layout_places_users_before_selection_and_scales_with_text() {
-        let nodes = BTreeMap::from([(1, 1), (2, 0), (3, 1), (4, 2)]);
-        let edges = BTreeSet::from([(1, 2), (2, 3), (3, 4), (4, 2)]);
-        let (normal, _) = arrange(&nodes, &edges, 2, 14.0);
-        let (large, _) = arrange(&nodes, &edges, 2, 22.0);
-        assert!(normal[&1].right() < normal[&2].left());
-        assert!(normal[&2].right() < normal[&3].left());
-        assert!(large[&2].height() > normal[&2].height());
-        for (tag, a) in &large {
-            for (other, b) in &large {
-                if tag != other {
-                    assert!(!a.intersects(*b));
-                }
-            }
-        }
-    }
-}

@@ -156,13 +156,6 @@ pub(super) fn write(
             definition,
         ));
     }
-    array(
-        &mut p.0,
-        instance + 0x60,
-        0x80800090,
-        &vec![0; usize::try_from(source.u64(source.pointer(16)? + 0x60)?)? * 16],
-        16,
-    )?;
     let mut lookup = inputs
         .iter()
         .map(|input| (0x811C9DC5, input.name, input.ordinal))
@@ -182,7 +175,6 @@ pub(super) fn allocate(
     allocation: &mut Payload,
     input_template: &Payload,
     count: usize,
-    cache_count: usize,
 ) -> Result<()> {
     let existing = allocation.array(0x20, 40, Some(0x80808852))?;
     let mut rows = Vec::new();
@@ -207,6 +199,27 @@ pub(super) fn allocate(
     let mut row = input_template.bytes::<40>(input)?;
     put(&mut row, 20, &u32::try_from(count)?.to_le_bytes())?;
     rows.extend(row);
+    array(&mut allocation.0, 0x20, 0x80808852, &rows, 40)?;
+    Ok(())
+}
+
+pub(super) fn allocate_history(allocation: &mut Payload, count: usize) -> Result<()> {
+    let mut rows = Vec::new();
+    for at in allocation.array(0x20, 40, Some(0x80808852))? {
+        ensure!(
+            allocation.u64(at + 8)? == 0 && allocation.u64(at + 24)? == 0,
+            "Channel allocation has indirect children"
+        );
+        // The local template has no history. Rebuild this member once after incoming inputs
+        // have been allocated, so callback state cannot alias an unrelated cached input.
+        if allocation.u32(at)? != 0xB6515162 {
+            rows.extend(allocation.bytes::<40>(at)?);
+        }
+    }
+    if count == 0 {
+        array(&mut allocation.0, 0x20, 0x80808852, &rows, 40)?;
+        return Ok(());
+    }
     let cache = allocation
         .array(0x20, 40, Some(0x80808852))?
         .into_iter()
@@ -218,7 +231,7 @@ pub(super) fn allocate(
     );
     let mut row = allocation.bytes::<40>(cache)?;
     put(&mut row, 0, &0xB6515162u32.to_le_bytes())?;
-    put(&mut row, 20, &u32::try_from(cache_count)?.to_le_bytes())?;
+    put(&mut row, 20, &u32::try_from(count)?.to_le_bytes())?;
     rows.extend(row);
     array(&mut allocation.0, 0x20, 0x80808852, &rows, 40)?;
     Ok(())

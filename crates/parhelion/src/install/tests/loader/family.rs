@@ -223,6 +223,43 @@ fn family_migration_keep_change_retire_and_remove_preserve_both_account_backends
         assert_eq!(handle, same_file::Handle::from_path(&kept_file).unwrap());
         assert_eq!(fs::read(&account).unwrap(), original_account);
         assert_eq!(compliance::inventory(&fixture.target), stock);
+        // Retention is exercised on the same persisted family, including its retirement backup.
+        let mut retention = request(&fixture);
+        retention.package_backup_retention = 1;
+        retention.limit_package_backups = false;
+        let first = install_staged_packages(&retention)
+            .unwrap()
+            .backup_directory;
+        let second = install_staged_packages(&retention)
+            .unwrap()
+            .backup_directory;
+        assert!(first.is_dir() && second.is_dir());
+        // Backup priority must not depend on old directories having accurate timestamps.
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(86_400);
+        for path in [&first, &second] {
+            let mut options = fs::OpenOptions::new();
+            options.read(true);
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                // Directory handle with FILE_WRITE_ATTRIBUTES for SetFileTime.
+                options.custom_flags(0x0200_0000).access_mode(0x0100);
+            }
+            options
+                .open(path)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(future))
+                .unwrap();
+        }
+        retention.limit_package_backups = true;
+        let retained = install_staged_packages(&retention).unwrap();
+        assert!(retained.backup_prune_warning.is_none());
+        assert!(!first.exists() && !second.exists());
+        assert!(retained.backup_directory.is_dir());
+        assert_eq!(
+            tree(&removed.backup_directory.join("mods").join(REACH)),
+            retiring
+        );
         let final_readback = entries(&fixture);
         // Windows keeps a file open for identity comparison. Release it before removal.
         drop(handle);
@@ -235,7 +272,9 @@ fn family_migration_keep_change_retire_and_remove_preserve_both_account_backends
         results.push(json!({
             "account_schema":schema,"initial":initial,"changed":changed,"retired":final_readback,
             "kept_file_identity":true,"kept_file_write_time":true,
-            "stock_unchanged":true,"account_unchanged":true
+            "stock_unchanged":true,"account_unchanged":true,
+            "retention_limit":1,"unlimited_preserved":true,"retirement_backup_preserved":true,
+            "current_backup_survives_future_timestamps":true
         }));
     }
     crate::test_support::artifact(
@@ -297,6 +336,9 @@ fn interrupted_family_publication_recovers_every_member_and_keeps_other_mods() {
         }));
         assert!(failure.is_err(), "boundary {boundary} was not reached");
         assert_eq!(seen, 1);
+        let backups = tree(&fixture.backups);
+        prune_package_backups(&fixture.backups, 1).unwrap();
+        assert_eq!(tree(&fixture.backups), backups);
         recover_interrupted_install(&recovery(&fixture)).unwrap();
         if boundary != "committed" {
             assert_eq!(

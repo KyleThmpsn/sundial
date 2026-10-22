@@ -3,8 +3,9 @@
 //! Here each node becomes an entry of the map package after the chain, its patches receive the
 //! entries they name, and a buffer header's entry names its data.
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use parhelion_import::d2_mot::{AudioNamespace, ConvertedAudioBank};
@@ -20,6 +21,11 @@ use crate::{
     tag_payload::{read_u32, write_u32},
 };
 
+mod cache;
+mod sharing;
+
+pub(super) use sharing::Textures;
+
 use super::{
     MapSource,
     chain::{self, Chain},
@@ -27,16 +33,42 @@ use super::{
 
 pub(super) struct Geometry {
     chain: Chain,
-    kept: bool,
-    folder: PathBuf,
-    nodes: Vec<Value>,
-    pieces: Vec<parhelion_import::halo_reach::level::native::Piece>,
+    /// The level's conversion, which every area of the map shares.
+    shared: Arc<Shared>,
+    /// Whether this is the map's first area, whose entries hold the shared graph that the other
+    /// areas' chains name.
+    first: bool,
+    pieces: Vec<Piece>,
     spawns: Vec<parhelion_import::halo_reach::level::spawn::Spawn>,
     objectives: Vec<parhelion_import::halo_reach::level::objectives::Objective>,
     volumes: Vec<parhelion_import::halo_reach::level::volumes::Volume>,
     world: parhelion_import::halo_reach::level::native::World,
-    sky: Vec<parhelion_import::halo_reach::level::native::sky::Object>,
+    /// The preheader of the static instance group that places this area's pieces.
+    statics: String,
     /// The symbol of the sound point table that places the level's ambience.
+    ambience: Option<String>,
+    /// The graph nodes, by index, that this area's chain loads, or all of them.
+    loads: Option<Vec<usize>>,
+    /// An exclusive lock on the map's cache folder, held until the stage has read its payloads.
+    /// The conversion clears the folder, so a second stage of the same map in another process
+    /// waits here rather than removing files the first is still reading.
+    _folder_lock: Option<std::fs::File>,
+    _generation: Option<parhelion_import::cache::Generation>,
+}
+
+/// One conversion of a map's level. A campaign map's areas each place the pieces and collision
+/// of what they load from it, and the first area's entries hold its graph once.
+struct Shared {
+    kept: bool,
+    folder: PathBuf,
+    nodes: Vec<Value>,
+    pieces: Vec<Piece>,
+    /// The connected areas, or none when the level is one area.
+    areas: Vec<parhelion_import::halo_reach::level::native::Area>,
+    spawns: Vec<parhelion_import::halo_reach::level::spawn::Spawn>,
+    world: parhelion_import::halo_reach::level::native::World,
+    statics: String,
+    sky: Vec<parhelion_import::halo_reach::level::native::sky::Object>,
     ambience: Option<String>,
     /// The symbol of the atmosphere volume the map's atmosphere names.
     atmosphere: Option<String>,
@@ -46,10 +78,80 @@ pub(super) struct Geometry {
     occlusion: Vec<[f32; 4]>,
     /// The level's cubemap volumes.
     cubemaps: Vec<parhelion_import::halo_reach::level::native::CubemapVolume>,
-    /// An exclusive lock on the map's cache folder, held until the stage has read its payloads.
-    /// The conversion clears the folder, so a second stage of the same map in another process
-    /// waits here rather than removing files the first is still reading.
-    _folder_lock: std::fs::File,
+    light: Option<[f32; 3]>,
+    /// The nodes no area's chain reaches, which every area loads.
+    everywhere: BTreeSet<usize>,
+    source: MapSource,
+}
+
+type Piece = parhelion_import::halo_reach::level::native::Piece;
+
+impl Shared {
+    /// The symbols area `area`'s chain names: its pieces' statics, its world collision and
+    /// ambience, and the sky, atmosphere and cubemaps every area places.
+    fn roots<'a>(
+        &'a self,
+        area: &'a parhelion_import::halo_reach::level::native::Area,
+    ) -> Vec<&'a str> {
+        area.pieces
+            .iter()
+            .map(|&piece| self.pieces[piece].mesh.as_str())
+            .chain([area.statics.as_str(), area.world.compound.as_str()])
+            .chain(area.world.meshes.iter().map(String::as_str))
+            .chain(self.sky.iter().map(|object| object.reference.as_str()))
+            .chain(area.ambience.as_deref())
+            .chain(self.atmosphere.as_deref())
+            .chain(self.atmosphere_lookup.as_deref())
+            .chain(self.cubemaps.iter().map(|volume| volume.texture.as_str()))
+            .collect()
+    }
+
+    /// The graph nodes `roots` reach through patches, buffer references and audio bindings.
+    fn reach<'a>(
+        &self,
+        roots: impl IntoIterator<Item = &'a str>,
+    ) -> AuthoringResult<BTreeSet<usize>> {
+        let index = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(at, node)| Some((node["symbol"].as_str()?, at)))
+            .collect::<BTreeMap<_, _>>();
+        let find = |symbol: &str| {
+            index
+                .get(symbol)
+                .copied()
+                .ok_or_else(|| invalid(format!("Map graph names missing symbol {symbol}")))
+        };
+        let mut pending = roots
+            .into_iter()
+            .map(find)
+            .collect::<AuthoringResult<Vec<_>>>()?;
+        let mut reached = BTreeSet::new();
+        while let Some(at) = pending.pop() {
+            if !reached.insert(at) {
+                continue;
+            }
+            let node = &self.nodes[at];
+            let named = node["patches"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|patch| &patch["symbol"])
+                .chain([&node["reference"], &node["audio_namespace"]])
+                .chain(
+                    node["audio_media"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|medium| &medium["symbol"]),
+                );
+            for symbol in named.filter_map(Value::as_str) {
+                pending.push(find(symbol)?);
+            }
+        }
+        Ok(reached)
+    }
 }
 
 fn fnv1a64(text: &str) -> u64 {
@@ -60,7 +162,9 @@ fn fnv1a64(text: &str) -> u64 {
 
 impl Geometry {
     /// Converts `source` for map `name`, placed by a copy of the map root chain of the donor's
-    /// world `world`.
+    /// world `world`. With connected `areas`, each a list of the zone sets that load together, the
+    /// level converts once for all of them and this is the first area ([`Geometry::area`]).
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn load(
         directory: &Path,
         manager: &PackageManager,
@@ -68,6 +172,8 @@ impl Geometry {
         world: &str,
         name: &str,
         source: &MapSource,
+        areas: &[Vec<usize>],
+        mission_recordings: bool,
         report: &mut dyn FnMut(&str),
     ) -> AuthoringResult<Self> {
         let mission_bindings = source
@@ -121,68 +227,106 @@ impl Geometry {
             .audio_decoder
             .clone()
             .or_else(|| parhelion_import::tools::located(parhelion_import::tools::Tool::Vgmstream));
-        let mission_audio = decoder.clone().map(|decoder| {
-            let banks = if source.audio_banks.is_empty() {
-                let root = source.maps.join("../fmod/pc");
-                vec![root.join("sfx.fsb"), root.join("english.fsb")]
-            } else {
-                source.audio_banks.clone()
-            };
-            parhelion_import::halo_reach::level::mission::AudioOptions { banks, decoder }
-        });
+        let mission_audio = decoder
+            .clone()
+            .filter(|_| mission_recordings)
+            .map(|decoder| {
+                let banks = if source.audio_banks.is_empty() {
+                    let root = source.maps.join("../fmod/pc");
+                    vec![root.join("sfx.fsb"), root.join("english.fsb")]
+                } else {
+                    source.audio_banks.clone()
+                };
+                parhelion_import::halo_reach::level::mission::AudioOptions { banks, decoder }
+            });
+        let templates = parhelion_import::halo_reach::level::native::Templates {
+            model: chain.prop().model,
+            statics: chain.static_templates(),
+            world_compound,
+            world_meshes,
+            sky,
+            // Without a decoder in the recipe, the one chosen in the importer's Tools.
+            ambience: chain.sound_points().zip(decoder).map(|(points, decoder)| {
+                parhelion_import::halo_reach::level::ambience::Templates { points, decoder }
+            }),
+            mission_audio,
+            mission_execution: (!source.mission_scripts.is_empty()).then(|| {
+                parhelion_import::halo_reach::level::mission::execution::Options {
+                    entrypoints: source.mission_scripts.clone(),
+                    namespace: name.to_owned(),
+                    native: mission_bindings,
+                }
+            }),
+            atmosphere,
+            atmosphere_lookup,
+            occlusion_probes,
+            cubemaps,
+        };
         let cached = crate::mod_family::build::map_state(name).map_err(invalid)?;
         let kept = cached.is_some();
+        let mut conversion_cache = if kept {
+            None
+        } else {
+            report("Checking Converted Area Cache");
+            match cache::Cache::open(
+                &maps.join("../map-conversions").join(name),
+                source,
+                &templates,
+                manager,
+            ) {
+                Ok(cache) => cache,
+                Err(error) if parhelion_import::cancellation::is_cancelled(&error) => {
+                    return Err(invalid(error.to_string()));
+                }
+                Err(_) => None,
+            }
+        };
+        let folder = conversion_cache
+            .as_ref()
+            .map_or(folder, |cache| cache.folder().to_owned());
         let converted: parhelion_import::halo_reach::level::native::Converted =
             if let Some(cached) = cached {
                 report("Reusing Verified Map Geometry");
                 serde_json::from_value(cached)
                     .map_err(|e| invalid(format!("Kept map metadata: {e}")))?
             } else {
-                if folder.exists() {
-                    std::fs::remove_dir_all(&folder).map_err(|error| {
-                        invalid(format!("Could not clear {}: {error}", folder.display()))
-                    })?;
-                }
-                let converted = parhelion_import::halo_reach::level::native::convert_with_progress(
-                    &source.maps,
-                    &source.map,
-                    &source.zone_sets,
-                    source.variant.as_deref(),
-                    directory,
-                    &folder,
-                    source.offset.map(|v| v as f32),
-                    &parhelion_import::halo_reach::level::native::Templates {
-                        entity: chain.prop().entity,
-                        render: chain.prop().render,
-                        body: chain.prop().body,
-                        model: chain.prop().model,
-                        collision: chain.prop().collision,
-                        world_compound,
-                        world_meshes,
-                        sky,
-                        // Without a decoder in the recipe, the one chosen in the importer's Tools.
-                        ambience: chain.sound_points().zip(decoder).map(|(points, decoder)| {
-                            parhelion_import::halo_reach::level::ambience::Templates {
-                                points,
-                                decoder,
+                let reused = conversion_cache
+                    .as_mut()
+                    .and_then(|cache| cache.converted.take());
+                let mut converted = if let Some(converted) = reused {
+                    report("Reusing Verified Area Conversion");
+                    converted
+                } else {
+                    if conversion_cache.is_none() && folder.exists() {
+                        std::fs::remove_dir_all(&folder).map_err(|error| {
+                            invalid(format!("Could not clear {}: {error}", folder.display()))
+                        })?;
+                    }
+                    let converted = parhelion_import::halo_reach::level::native::convert_areas(
+                        &source.maps,
+                        &source.map,
+                        &source.zone_sets,
+                        areas,
+                        source.variant.as_deref(),
+                        directory,
+                        &folder,
+                        source.offset.map(|v| v as f32),
+                        &templates,
+                        report,
+                    )
+                    .map_err(|error| invalid(format!("Map {name} geometry: {error:#}")))?;
+                    if let Some(cache) = &conversion_cache {
+                        report("Saving Verified Area Conversion");
+                        if let Err(error) = cache.publish(&converted, manager) {
+                            if parhelion_import::cancellation::is_cancelled(&error) {
+                                return Err(invalid(error.to_string()));
                             }
-                        }),
-                        mission_audio,
-                        mission_execution: (!source.mission_scripts.is_empty()).then(|| {
-                            parhelion_import::halo_reach::level::mission::execution::Options {
-                                entrypoints: source.mission_scripts.clone(),
-                                namespace: name.to_owned(),
-                                native: mission_bindings,
-                            }
-                        }),
-                        atmosphere,
-                        atmosphere_lookup,
-                        occlusion_probes,
-                        cubemaps,
-                    },
-                    report,
-                )
-                .map_err(|error| invalid(format!("Map {name} geometry: {error:#}")))?;
+                            report(&format!("Area Cache Unavailable / {error:#}"));
+                        }
+                    }
+                    converted
+                };
+                sharing::identify(&mut converted.nodes, &folder, manager)?;
                 crate::mod_family::build::remember_map(
                     name,
                     serde_json::to_value(&converted).map_err(|e| invalid(e.to_string()))?,
@@ -191,37 +335,137 @@ impl Geometry {
                 converted
             };
         chain.set_light(converted.light);
-        report("Reading Source Spawns, Objectives and Death Boundaries");
-        let activity = parhelion_import::halo_reach::level::activity::load(
-            &source.maps,
-            &source.map,
-            source.variant.as_deref(),
-            source.offset.map(|v| v as f32),
-            &converted.spawns,
-        )
-        .map_err(|error| invalid(format!("Map {name} activity: {error:#}")))?;
-        Ok(Self {
-            chain,
+        if converted.areas.len() != areas.len()
+            || converted
+                .areas
+                .iter()
+                .zip(areas)
+                .any(|(area, zone_sets)| &area.zone_sets != zone_sets)
+        {
+            return Err(invalid(format!(
+                "Map {name}'s converted areas differ from its connected zone sets"
+            )));
+        }
+        let mut shared = Shared {
             kept,
             folder,
             nodes: converted.nodes,
             pieces: converted.pieces,
+            areas: converted.areas,
             spawns: converted.spawns,
-            objectives: activity.objectives,
-            volumes: activity.volumes,
             world: converted.world,
+            statics: converted.statics,
             sky: converted.sky,
             ambience: converted.ambience,
             atmosphere: converted.atmosphere,
             atmosphere_lookup: converted.atmosphere_lookup,
             occlusion: converted.occlusion,
             cubemaps: converted.cubemaps,
+            light: converted.light,
+            everywhere: BTreeSet::new(),
+            source: source.clone(),
+        };
+        // Nodes only an implicit binding reaches, as kept audio banks, load with every area.
+        if !shared.areas.is_empty() {
+            let reached = shared.reach(shared.areas.iter().flat_map(|area| shared.roots(area)))?;
+            shared.everywhere = (0..shared.nodes.len())
+                .filter(|at| !reached.contains(at))
+                .collect();
+        }
+        report("Reading Source Spawns, Objectives and Death Boundaries");
+        Self::assemble(
+            chain,
+            Arc::new(shared),
+            0,
+            name,
+            Some(folder_lock),
+            conversion_cache.map(cache::Cache::lease),
+        )
+    }
+
+    /// Connected area `index` of the map whose first area is `self`, named `name` and placed by
+    /// its own copy of the map root chain of the donor's world `world`. It names the first area's
+    /// graph and writes none of its own.
+    pub(super) fn area(
+        &self,
+        directory: &Path,
+        manager: &PackageManager,
+        companions: &mut Companions,
+        world: &str,
+        name: &str,
+        index: usize,
+    ) -> AuthoringResult<Self> {
+        if !self.first || index == 0 || index >= self.shared.areas.len() {
+            return Err(invalid(format!("Map area {index} is not a connected area")));
+        }
+        let mut chain = Chain::load(directory, manager, companions, world, name)?;
+        chain.set_light(self.shared.light);
+        Self::assemble(chain, self.shared.clone(), index, name, None, None)
+    }
+
+    /// Area `index` of `shared`, or the whole level when it has no connected areas, with the
+    /// objectives and death boundaries its spawns place.
+    fn assemble(
+        chain: Chain,
+        shared: Arc<Shared>,
+        index: usize,
+        name: &str,
+        folder_lock: Option<std::fs::File>,
+        generation: Option<parhelion_import::cache::Generation>,
+    ) -> AuthoringResult<Self> {
+        let (pieces, spawns, world, statics, ambience, loads) = match shared.areas.get(index) {
+            Some(area) => {
+                let mut loads = shared.reach(shared.roots(area))?;
+                loads.extend(&shared.everywhere);
+                (
+                    area.pieces
+                        .iter()
+                        .map(|&piece| shared.pieces[piece].clone())
+                        .collect(),
+                    area.spawns.clone(),
+                    area.world.clone(),
+                    area.statics.clone(),
+                    area.ambience.clone(),
+                    Some(loads.into_iter().collect()),
+                )
+            }
+            None => (
+                shared.pieces.clone(),
+                shared.spawns.clone(),
+                shared.world.clone(),
+                shared.statics.clone(),
+                shared.ambience.clone(),
+                None,
+            ),
+        };
+        let source = &shared.source;
+        let activity = parhelion_import::halo_reach::level::activity::load(
+            &source.maps,
+            &source.map,
+            source.variant.as_deref(),
+            source.offset.map(|v| v as f32),
+            &spawns,
+        )
+        .map_err(|error| invalid(format!("Map {name} activity: {error:#}")))?;
+        Ok(Self {
+            chain,
+            first: index == 0,
+            pieces,
+            spawns,
+            objectives: activity.objectives,
+            volumes: activity.volumes,
+            world,
+            statics,
+            ambience,
+            loads,
+            shared,
             _folder_lock: folder_lock,
+            _generation: generation,
         })
     }
 
     pub(super) fn entries(&self) -> usize {
-        self.chain.entries() + self.nodes.len()
+        self.chain.entries() + self.resource_entries()
     }
 
     pub(super) fn disable_ambience(&mut self) {
@@ -251,16 +495,86 @@ impl Geometry {
         ids: &[u16],
         name: &str,
     ) -> AuthoringResult<(Vec<NewTagSpec>, TagHash, Vec<NewTagReferenceOverride>)> {
-        self.tags_with(super::plan::entry_tag(ids, 0)?, name, |index| {
-            super::plan::entry_tag(ids, self.chain.entries() + index)
-        })
+        self.tags_with(
+            super::plan::entry_tag(ids, 0)?,
+            name,
+            &mut Textures::new(),
+            None,
+            |index| super::plan::entry_tag(ids, self.chain.entries() + index),
+        )
     }
 
     pub(super) fn chain_entries(&self) -> usize {
         self.chain.entries()
     }
+    pub(super) fn own_containers(
+        &mut self,
+        directory: &Path,
+        manager: &PackageManager,
+        companions: &mut Companions,
+    ) -> AuthoringResult<()> {
+        self.chain.own_containers(directory, manager, companions)
+    }
+    /// The graph entries this area writes: the shared graph for the first area, none for the
+    /// others, which name the first's.
     pub(super) fn resource_entries(&self) -> usize {
-        self.nodes.len()
+        if self.first {
+            self.shared.nodes.len()
+        } else {
+            0
+        }
+    }
+
+    pub(super) fn layout(&self) -> &[u8] {
+        self.chain.layout()
+    }
+
+    pub(super) fn visibility(
+        &self,
+        manager: &PackageManager,
+    ) -> AuthoringResult<(TagHash, Vec<u8>)> {
+        self.chain.visibility(manager)
+    }
+
+    pub(super) fn bounds(
+        &self,
+    ) -> AuthoringResult<parhelion_import::halo_reach::level::streaming::Bounds> {
+        let mut minimum = [f32::INFINITY; 3];
+        let mut maximum = [f32::NEG_INFINITY; 3];
+        for piece in &self.pieces {
+            for k in 0..3 {
+                minimum[k] = minimum[k].min(piece.minimum[k]);
+                maximum[k] = maximum[k].max(piece.maximum[k]);
+            }
+        }
+        if (0..3)
+            .any(|k| !minimum[k].is_finite() || !maximum[k].is_finite() || minimum[k] >= maximum[k])
+        {
+            return Err(invalid("Streaming bubble has no finite geometry bounds"));
+        }
+        Ok(parhelion_import::halo_reach::level::streaming::Bounds { minimum, maximum })
+    }
+
+    /// The area's entries from `first`, its graph's entries from `resource_offset` across `ids`,
+    /// with its occlusion record assigning probe `clusters[c]` to its spatial tome's cluster `c`.
+    pub(super) fn split_tags_at(
+        &self,
+        first: TagHash,
+        ids: &[u16],
+        resource_offset: usize,
+        name: &str,
+        textures: &mut Textures,
+        clusters: Option<&[u16]>,
+    ) -> AuthoringResult<(Vec<NewTagSpec>, TagHash, Vec<NewTagReferenceOverride>)> {
+        self.tags_with(first, name, textures, clusters, |index| {
+            super::plan::entry_tag(ids, resource_offset + index)
+        })
+    }
+
+    /// The level's occlusion probes, each a position in the map's coordinates and a sky
+    /// visibility, which the area's occlusion record holds after its first.
+    pub(super) fn occlusion(&self) -> &[[f32; 4]] {
+        &self.shared.occlusion
     }
 
     pub(super) fn split_tags(
@@ -269,15 +583,21 @@ impl Geometry {
         ids: &[u16],
         name: &str,
     ) -> AuthoringResult<(Vec<NewTagSpec>, TagHash, Vec<NewTagReferenceOverride>)> {
-        self.tags_with(TagHash::new(native, 0), name, |index| {
-            super::plan::entry_tag(ids, index)
-        })
+        self.tags_with(
+            TagHash::new(native, 0),
+            name,
+            &mut Textures::new(),
+            None,
+            |index| super::plan::entry_tag(ids, index),
+        )
     }
 
     fn tags_with(
         &self,
         first: TagHash,
         name: &str,
+        textures: &mut Textures,
+        clusters: Option<&[u16]>,
         entry: impl Fn(usize) -> AuthoringResult<TagHash>,
     ) -> AuthoringResult<(Vec<NewTagSpec>, TagHash, Vec<NewTagReferenceOverride>)> {
         let base = self.chain.entries();
@@ -285,7 +605,8 @@ impl Geometry {
             return Err(invalid("The map root chain exceeds one package"));
         }
         let mut symbols = BTreeMap::new();
-        for (index, node) in self.nodes.iter().enumerate() {
+        let nodes = &self.shared.nodes;
+        for (index, node) in nodes.iter().enumerate() {
             let symbol = node["symbol"]
                 .as_str()
                 .ok_or_else(|| invalid("Map graph node has no symbol"))?;
@@ -293,17 +614,27 @@ impl Geometry {
                 return Err(invalid(format!("Map graph repeats symbol {symbol}")));
             }
         }
+        let aliases = sharing::resolve(nodes, &entry, textures)?;
+        let resolved = |index: usize| {
+            aliases
+                .get(&index)
+                .copied()
+                .map(Ok)
+                .unwrap_or_else(|| entry(index))
+        };
         let tag = |symbol: &str| {
             symbols
                 .get(symbol)
                 .ok_or_else(|| invalid(format!("Map graph names missing symbol {symbol}")))
-                .and_then(|&index| entry(index))
+                .and_then(|&index| resolved(index))
         };
-        let mut content = Vec::<NewTagSpec>::with_capacity(self.nodes.len());
+        // Only the first area writes the graph, and the others' chains name its entries.
+        let written: &[Value] = if self.first { nodes } else { &[] };
+        let mut content = Vec::<NewTagSpec>::with_capacity(written.len());
         let mut references = Vec::new();
         let mut restored = BTreeMap::new();
-        for (index, node) in self.nodes.iter().enumerate() {
-            if self.kept {
+        for (index, node) in written.iter().enumerate() {
+            if self.shared.kept {
                 let address = entry(index)?;
                 if let std::collections::btree_map::Entry::Vacant(slot) =
                     restored.entry(address.pkg_id())
@@ -317,7 +648,18 @@ impl Geometry {
                     .tags
                     .get(usize::from(address.entry_index()))
                     .ok_or_else(|| invalid("Kept map resource entry is missing"))?;
-                content.push(spec.clone());
+                let mut spec = spec.clone();
+                for patch in node["patches"].as_array().into_iter().flatten() {
+                    let offset = patch["offset"]
+                        .as_u64()
+                        .and_then(|offset| usize::try_from(offset).ok())
+                        .ok_or_else(|| invalid("Kept map patch has no offset"))?;
+                    let symbol = patch["symbol"]
+                        .as_str()
+                        .ok_or_else(|| invalid("Kept map patch has no symbol"))?;
+                    write_u32(&mut spec.payload, offset, tag(symbol)?.0)?;
+                }
+                content.push(spec);
                 for reference in package
                     .references
                     .iter()
@@ -325,11 +667,15 @@ impl Geometry {
                 {
                     references.push(NewTagReferenceOverride {
                         new_tag_ordinal: base + index,
-                        reference: match reference.reference {
-                            NewTagReference::Appended(at) => {
-                                NewTagReference::Tag(TagHash::new(address.pkg_id(), at as u16))
+                        reference: if let Some(symbol) = node["reference"].as_str() {
+                            NewTagReference::Tag(tag(symbol)?)
+                        } else {
+                            match reference.reference {
+                                NewTagReference::Appended(at) => {
+                                    NewTagReference::Tag(TagHash::new(address.pkg_id(), at as u16))
+                                }
+                                other => other,
                             }
-                            other => other,
                         },
                     });
                 }
@@ -338,7 +684,7 @@ impl Geometry {
             let file = node["file"]
                 .as_str()
                 .ok_or_else(|| invalid("Map graph node has no payload"))?;
-            let mut payload = std::fs::read(self.folder.join(file))
+            let mut payload = std::fs::read(self.shared.folder.join(file))
                 .map_err(|error| invalid(format!("Map graph payload {file}: {error}")))?;
             for patch in node["patches"].as_array().into_iter().flatten() {
                 let offset = patch["offset"]
@@ -356,12 +702,9 @@ impl Geometry {
                 write_u32(&mut payload, offset, tag(symbol)?.0)?;
             }
             if let Some(reference) = node["reference"].as_str() {
-                let target = *symbols.get(reference).ok_or_else(|| {
-                    invalid(format!("Map graph names missing symbol {reference}"))
-                })?;
                 references.push(NewTagReferenceOverride {
                     new_tag_ordinal: base + index,
-                    reference: NewTagReference::Tag(entry(target)?),
+                    reference: NewTagReference::Tag(tag(reference)?),
                 });
             }
             let template = node["template"]
@@ -391,26 +734,27 @@ impl Geometry {
                 storage,
             });
         }
-        if !self.kept {
-            bind_audio(&self.nodes, &mut content, &tag, name)?;
+        if self.first && !self.shared.kept {
+            bind_audio(nodes, &mut content, &tag, name)?;
         }
         let pieces = self
             .pieces
             .iter()
-            .enumerate()
-            .map(|(index, piece)| {
-                Ok(chain::Piece {
-                    entity: tag(&piece.entity)?,
-                    identity: fnv1a64(&format!("parhelion/map/{name}/piece/{index}")) | 1,
-                    position: piece.position,
-                    minimum: piece.minimum,
-                    maximum: piece.maximum,
-                })
+            .map(|piece| chain::Piece {
+                minimum: piece.minimum,
+                maximum: piece.maximum,
             })
-            .collect::<AuthoringResult<Vec<_>>>()?;
-        let loads = (0..self.nodes.len())
-            .map(&entry)
-            .collect::<AuthoringResult<Vec<_>>>()?;
+            .collect::<Vec<_>>();
+        let statics = tag(&self.statics)?;
+        let loads = self
+            .loads
+            .clone()
+            .unwrap_or_else(|| (0..nodes.len()).collect())
+            .into_iter()
+            .map(&resolved)
+            .collect::<AuthoringResult<std::collections::BTreeSet<_>>>()?
+            .into_iter()
+            .collect::<Vec<_>>();
         let meshes = self
             .world
             .meshes
@@ -422,6 +766,7 @@ impl Geometry {
             meshes: &meshes,
         };
         let sky = self
+            .shared
             .sky
             .iter()
             .map(|object| {
@@ -435,9 +780,15 @@ impl Geometry {
             })
             .collect::<AuthoringResult<Vec<_>>>()?;
         let sounds = self.ambience.as_deref().map(tag).transpose()?;
-        let atmosphere = self.atmosphere.as_deref().map(tag).transpose()?;
-        let lookup = self.atmosphere_lookup.as_deref().map(tag).transpose()?;
+        let atmosphere = self.shared.atmosphere.as_deref().map(tag).transpose()?;
+        let lookup = self
+            .shared
+            .atmosphere_lookup
+            .as_deref()
+            .map(tag)
+            .transpose()?;
         let cubemaps = self
+            .shared
             .cubemaps
             .iter()
             .enumerate()
@@ -454,6 +805,7 @@ impl Geometry {
             .collect::<AuthoringResult<Vec<_>>>()?;
         let (mut tags, root) = self.chain.tags(
             first,
+            statics,
             &pieces,
             &self.spawns,
             &world,
@@ -461,7 +813,8 @@ impl Geometry {
             sounds,
             atmosphere,
             lookup,
-            &self.occlusion,
+            &self.shared.occlusion,
+            clusters,
             &cubemaps,
             &loads,
         )?;

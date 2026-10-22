@@ -122,7 +122,7 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedAu
         .is_some_and(|errors| !errors.is_empty())
     {
         return Err(invalid(format!(
-            "Imported audio conversion failed: {}",
+            "This saved import contains audio conversion errors. FFmpeg is only run during import, so rebuilding cannot retry the conversion. Resolve the recorded cause and import this weapon again. Recorded errors: {}",
             audio["conversion_errors"]
                 .as_array()
                 .unwrap()
@@ -207,11 +207,16 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedAu
         {
             return Err(invalid("Converted bank escapes its graph"));
         }
-        let bytes = graph
-            .read(path)
-            .map_err(|error| invalid(format!("Converted bank {name}: {error}")))?;
-        let bank = serde_json::from_slice(&bytes)
-            .map_err(|error| invalid(format!("Converted bank {name}: {error}")))?;
+        let bytes = graph.read(path).map_err(|error| {
+            invalid(format!(
+                "Could not read prepared Wwise bank {name}: {error}"
+            ))
+        })?;
+        let bank = serde_json::from_slice(&bytes).map_err(|error| {
+            invalid(format!(
+                "Prepared Wwise bank {name} has invalid JSON. Import this weapon again: {error}"
+            ))
+        })?;
         let tag = row["source_tag"]
             .as_str()
             .ok_or_else(|| invalid("Converted bank source missing"))?;
@@ -274,11 +279,15 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedAu
         {
             return Err(invalid("Converted audio file escapes its graph"));
         }
-        let bytes = graph
-            .read(path)
-            .map_err(|error| invalid(format!("Converted audio {name}: {error}")))?;
+        let bytes = graph.read(path).map_err(|error| {
+            invalid(format!(
+                "Could not read prepared PCM media {tag} at {name}: {error}"
+            ))
+        })?;
         let bytes = parhelion_import::d2_mot::normalize_pcm_wem(&bytes)
-            .map_err(|error| invalid(format!("Converted audio {name}: {error:#}")))?;
+            .map_err(|error| invalid(format!(
+                "Prepared PCM media {tag} at {name} is invalid. This build reads saved audio without running FFmpeg. Import this weapon again: {error:#}"
+            )))?;
         if media.insert(tag.to_owned(), bytes).is_some() {
             return Err(invalid("Converted audio media tag repeats"));
         }
@@ -517,6 +526,25 @@ fn private_bank(
 
 #[allow(clippy::too_many_arguments)]
 fn private_sound(
+    manager: &PackageManager,
+    audio: &ImportedAudio,
+    source: &Value,
+    native: &Value,
+    name: &str,
+    allocator: AppendedTagAllocator,
+    tags: &mut Vec<NewTagSpec>,
+    remap: &mut BTreeMap<u32, u32>,
+) -> AuthoringResult<u32> {
+    emit_sound(manager, audio, source, native, name, allocator, tags, remap).map_err(|error| {
+        error.context(format!(
+            "Building private Wwise audio for item {:08X}, source bank {}, event {}, native cue {}. This step links prepared audio and does not run FFmpeg",
+            audio.item, source["bank"], source["event_id"], native["tag"]
+        ))
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_sound(
     manager: &PackageManager,
     audio: &ImportedAudio,
     source: &Value,

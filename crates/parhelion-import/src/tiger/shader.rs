@@ -78,7 +78,7 @@ fn disassemble(_code: &[u8]) -> Result<String> {
 }
 
 #[cfg(windows)]
-fn compile_uncached(text: &str, vertex: bool) -> Result<(Vec<u8>, String)> {
+fn compile_bytecode(text: &str, target: &std::ffi::CStr) -> Result<(Vec<u8>, String)> {
     let mut code = std::ptr::null_mut();
     let mut errors = std::ptr::null_mut();
     // SAFETY: Input pointers reference live buffers and nul-terminated strings.
@@ -91,8 +91,8 @@ fn compile_uncached(text: &str, vertex: bool) -> Result<(Vec<u8>, String)> {
             std::ptr::null(),
             std::ptr::null(),
             c"main".as_ptr().cast(),
-            if vertex { c"vs_5_0" } else { c"ps_5_0" }.as_ptr().cast(),
-            1 << 15,
+            target.as_ptr().cast(),
+            compiler_flags(target),
             0,
             &mut code,
             &mut errors,
@@ -113,6 +113,27 @@ fn compile_uncached(text: &str, vertex: bool) -> Result<(Vec<u8>, String)> {
         (hr, take_blob(stripped))
     };
     ensure!(hr >= 0, "shader reflection stripping failed: {hr:08X}");
+    Ok((bytes, messages))
+}
+
+#[cfg(windows)]
+fn compiler_flags(target: &std::ffi::CStr) -> u32 {
+    (1 << 15) | if target == c"cs_5_0" { 1 << 13 } else { 0 }
+}
+
+/// Shader work completed during conversion, including reuse across application launches.
+pub fn cache_snapshot() -> cache::Snapshot {
+    cache::snapshot()
+}
+
+/// Content identity of the loaded native shader compiler, when it can be inspected.
+pub fn compiler_identity() -> Option<String> {
+    cache::compiler_identity()
+}
+
+#[cfg(windows)]
+fn compile_uncached(text: &str, vertex: bool) -> Result<(Vec<u8>, String)> {
+    let (bytes, messages) = compile_bytecode(text, if vertex { c"vs_5_0" } else { c"ps_5_0" })?;
     // Native resources retain signatures and executable tokens, without compiler
     // reflection and statistics. D3DStripShader also updates the DXBC checksum.
     program::Program::new(
@@ -134,6 +155,11 @@ fn compile_uncached(_text: &str, _vertex: bool) -> Result<(Vec<u8>, String)> {
 /// Reuse identical translated shaders across materials and donor attempts.
 pub fn compile(text: &str, vertex: bool) -> Result<(Vec<u8>, String)> {
     cache::compile(text, vertex)
+}
+
+#[cfg(windows)]
+pub(crate) fn compute(text: &str) -> Result<Vec<u8>> {
+    cache::compute(text).map(|(bytes, _)| bytes)
 }
 
 pub fn replace_once(text: &str, old: &str, new: &str) -> Result<String> {

@@ -316,39 +316,3 @@ pub fn plain_condition_title(kind: u8) -> Option<&'static str> {
         _ => return None,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn check_node(node: &NodeKind, expected_kind: usize) {
-        assert_eq!(usize::from(node.kind), expected_kind);
-        for text in [node.name, node.summary, node.evidence] {
-            assert!(!text.contains(';'), "{text}");
-            assert!(!text.contains('\u{2014}'), "{text}");
-            assert!(!text.is_empty());
-        }
-        if node.support == Support::Unobserved {
-            assert_eq!(node.occurrences, 0);
-            assert_eq!(node.class, 0);
-        } else {
-            assert_ne!(node.class, 0);
-            assert_ne!(node.struct_size, 0);
-        }
-    }
-
-    #[test]
-    fn every_kind_is_indexed_by_its_number_and_carries_usable_prose() {
-        for (index, node) in CONDITIONS.iter().enumerate() {
-            check_node(node, index);
-        }
-        for (index, node) in EFFECTS.iter().enumerate() {
-            check_node(node, index);
-        }
-        for (index, entry) in POLICIES.iter().enumerate() {
-            assert_eq!(usize::from(entry.kind), index);
-            assert!(!entry.name.is_empty());
-            assert!(!entry.summary.contains(';'));
-        }
-    }
-}

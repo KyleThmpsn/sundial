@@ -40,6 +40,47 @@ pub struct Image {
     pub rgba: Vec<u8>,
 }
 
+/// Composite browser layers at their native size, anchored top-left. Recipe export uses
+/// the primary artwork API instead, since native rarity and foreground are separate layers.
+pub fn composite(layers: &[Layer]) -> Result<Image> {
+    let width = layers.iter().map(|layer| layer.width).max().unwrap_or(0);
+    let height = layers.iter().map(|layer| layer.height).max().unwrap_or(0);
+    ensure!(
+        width > 0 && height > 0 && width <= 4096 && height <= 4096,
+        "Icon dimensions exceed the supported limit"
+    );
+    let primary = layers
+        .iter()
+        .find(|layer| layer.slot == PRIMARY)
+        .context("The icon has no primary artwork")?;
+    let mut rgba = vec![0u8; usize::from(width) * usize::from(height) * 4];
+    for layer in layers {
+        let pixels = match decode(layer) {
+            Ok(pixels) => pixels,
+            Err(error) if layer.slot == PRIMARY => {
+                return Err(error.context("Could not decode primary icon artwork"));
+            }
+            Err(_) => continue,
+        };
+        for y in 0..usize::from(layer.height) {
+            for x in 0..usize::from(layer.width) {
+                let from = (y * usize::from(layer.width) + x) * 4;
+                let to = (y * usize::from(width) + x) * 4;
+                sundial::image_processing::blend_rgba_pixel(
+                    &mut rgba[to..to + 4],
+                    pixels[from..from + 4].try_into()?,
+                );
+            }
+        }
+    }
+    Ok(Image {
+        texture: primary.texture,
+        width,
+        height,
+        rgba,
+    })
+}
+
 /// One undecoded texture: `format` is the DXGI format number from the header.
 pub struct Layer {
     /// Container slot offset the layer came from.

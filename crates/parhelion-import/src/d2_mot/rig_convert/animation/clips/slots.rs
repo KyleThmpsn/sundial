@@ -8,9 +8,9 @@
 //! unchanged gave the weapon handle a finger's transform, which drops the barrel when aiming,
 //! and gave a bow's arrow the thumb's.
 //!
-//! No asset read so far stores the slot order, so it is derived per donor from the clips
-//! themselves. A name-paired modern and native clip agree on the constant pose of every slot
-//! they share. One order-preserving alignment that skips exactly as many modern slots as the
+//! Paired clips establish the cross-version slot alignment. Control definitions separately
+//! bind those slots to bones for private rigs. A name-paired modern and native clip agree on
+//! the constant pose of every slot they share. One order-preserving alignment that skips exactly as many modern slots as the
 //! native header lacks has to explain every constant track, or the donor keeps its native
 //! clips. The alignment is kept per clip shape, because one bank mixes rigs of different sizes.
 use crate::d2_mot::payload::Payload;
@@ -19,8 +19,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Constant rotation and translation per slot.
 type Pose = BTreeMap<u16, ([f32; 4], [f32; 3])>;
-/// Marker counts per slot for the modern and native clips.
-type Markers = Vec<(u16, Vec<(u32, u32)>, Vec<(u32, u32)>)>;
 
 /// The constant stream and the classes it carries in each era.
 const CONSTANT: usize = 0x10;
@@ -30,8 +28,8 @@ const CONSTANT_LISTS: [usize; 3] = [0xA8, 0xB8, 0xC8];
 /// Animated scale, rotation and translation slot lists, and one that is always empty.
 const ANIMATED_LISTS: [usize; 4] = [0xD8, 0xE8, 0xF8, 0x108];
 const SLOT_CLASS: u32 = 0x8080_000A;
-/// The marker rows, as (name hash, value).
-const MARKERS: usize = 0x170;
+/// Ordered control groups, as (name hash, control count).
+const GROUPS: usize = 0x170;
 /// Bone and slot counts. The modern header is four bytes longer before them.
 const MODERN_COUNTS: usize = 0x142;
 const NATIVE_COUNTS: usize = 0x13E;
@@ -253,11 +251,10 @@ fn check(scores: &BTreeMap<(u16, u16), u32>, shape: &Shape) -> Result<()> {
     Ok(())
 }
 
-/// A donor's slot alignment, one per rig size, plus the marker names whose values are slots.
+/// A calibrated slot alignment for each clip rig size and the private rig's control groups.
 #[derive(Debug, Default)]
 pub struct Table {
     shapes: BTreeMap<u16, Shape>,
-    slot_markers: BTreeSet<u32>,
     owned: Option<Owned>,
 }
 
@@ -277,7 +274,6 @@ impl Table {
             animated: BTreeSet<u16>,
         }
         let mut shapes: BTreeMap<u16, Evidence> = BTreeMap::new();
-        let mut markers: Markers = Vec::new();
         for (modern, native) in pairs {
             let (bones, modern_slots) = counts(modern, MODERN_COUNTS)?;
             let (native_bones, native_slots) = counts(native, NATIVE_COUNTS)?;
@@ -312,17 +308,6 @@ impl Table {
                     }
                 }
             }
-            let rows = |clip: &Payload, class: u32| -> Result<Vec<(u32, u32)>> {
-                clip.array(MARKERS, 8, Some(class))?
-                    .into_iter()
-                    .map(|at| -> Result<(u32, u32)> { Ok((clip.u32(at)?, clip.u32(at + 4)?)) })
-                    .collect()
-            };
-            markers.push((
-                bones,
-                rows(modern, 0x8080_8C5F)?,
-                rows(native, 0x8080_907F)?,
-            ));
         }
         let mut table = Self::default();
         for (bones, evidence) in shapes {
@@ -338,30 +323,6 @@ impl Table {
             }
             table.shapes.insert(bones, shape);
         }
-        // A marker holds a slot when, in every pair, the native value is the aligned modern
-        // value and at least once that differs from the modern value. Frame markers fail this.
-        let mut verdicts: BTreeMap<u32, (usize, usize, usize)> = BTreeMap::new();
-        for (bones, modern, native) in &markers {
-            let shape = &table.shapes[bones];
-            let native: BTreeMap<u32, u32> = native.iter().copied().collect();
-            for (hash, value) in modern {
-                let Some(target) = native.get(hash) else {
-                    continue;
-                };
-                let aligned = usize::try_from(*value)
-                    .ok()
-                    .and_then(|slot| shape.map.get(slot).copied().flatten());
-                let entry = verdicts.entry(*hash).or_default();
-                entry.0 += 1;
-                entry.1 += usize::from(aligned.map(u32::from) == Some(*target));
-                entry.2 += usize::from(value != target);
-            }
-        }
-        table.slot_markers = verdicts
-            .into_iter()
-            .filter(|(_, (pairs, aligned, differ))| aligned == pairs && *differ > 0)
-            .map(|(hash, _)| hash)
-            .collect();
         Ok(table)
     }
 
@@ -390,10 +351,6 @@ impl Table {
             self.shapes.insert(bones, shape);
         }
         Ok(())
-    }
-
-    pub fn slot_markers(&self) -> &BTreeSet<u32> {
-        &self.slot_markers
     }
 
     pub(crate) fn owned_groups(&mut self, groups: Vec<(u32, u32)>, bones: Vec<u16>, shape: Shape) {
@@ -426,7 +383,7 @@ impl Table {
     /// Group identity and count establish the shared slots, never total rig size.
     fn apply_groups(&self, clip: &mut Payload, declared: u16) -> Result<usize> {
         let owned = self.owned.as_ref().context("private control groups")?;
-        let rows = clip.array(MARKERS, 8, Some(0x8080_907F))?;
+        let rows = clip.array(GROUPS, 8, Some(0x8080_907F))?;
         let groups = rows
             .iter()
             .map(|at| Ok((clip.u32(*at)?, clip.u32(*at + 4)?)))
@@ -475,27 +432,13 @@ impl Table {
         let changed = self.apply_shape(clip, declared, &Shape { native_slots, map })?;
         clip.0[NATIVE_COUNTS..NATIVE_COUNTS + 2]
             .copy_from_slice(&u16::try_from(retained)?.to_le_bytes());
-        let mut start = 0;
-        for (index, at) in rows.iter().enumerate() {
-            if index < common {
-                let end = start + groups[index].1 as usize;
-                let count = u32::try_from(prefix[start..end].iter().flatten().count())?;
-                clip.0[*at + 4..*at + 8].copy_from_slice(&count.to_le_bytes());
-                start = end;
-            } else {
-                clip.0[*at..*at + 8].fill(0);
-            }
-        }
-        let header = clip.pointer(MARKERS + 8)?;
-        let count = u64::try_from(common)?.to_le_bytes();
-        clip.0[MARKERS..MARKERS + 8].copy_from_slice(&count);
-        clip.0[header..header + 8].copy_from_slice(&count);
         Ok(changed)
     }
 
     /// Project onto a calibrated prefix rig. Only constant trailing tracks can
     /// leave the clip, and both independently derived slot maps must agree on
-    /// every retained slot. Animated tracks or markers outside it are errors.
+    /// every retained slot. Animated tracks outside it are errors. Each control
+    /// group's count follows the retained slots in that group.
     pub fn apply_prefix(&self, clip: &mut Payload, target_bones: u16) -> Result<usize> {
         let (bones, declared) = counts(clip, NATIVE_COUNTS)?;
         if bones == target_bones {
@@ -536,6 +479,7 @@ impl Table {
             "clip declares {declared} slots where its rig's modern clips declare {}",
             shape.map.len()
         );
+        let groups = lower_groups(clip, shape)?;
         let target = |slot: u16| -> Result<u16> {
             shape
                 .map
@@ -584,19 +528,73 @@ impl Table {
         }
         clip.0[NATIVE_COUNTS + 2..NATIVE_COUNTS + 4]
             .copy_from_slice(&shape.native_slots.to_le_bytes());
-        for at in clip.array(MARKERS, 8, Some(0x8080_907F))? {
-            if self.slot_markers.contains(&clip.u32(at)?) {
-                let slot = u16::try_from(clip.u32(at + 4)?)?;
-                let native = u32::from(target(slot)?);
-                clip.0[at + 4..at + 8].copy_from_slice(&native.to_le_bytes());
-            }
-        }
+        write_groups(clip, &groups)?;
         // The constant stream must read back with the counts it now declares.
         if Constant::read(clip)?.is_some_and(|c| c.values.len() != c.offset(2, c.counts[2])) {
             anyhow::bail!("rewritten constant stream does not read back");
         }
         Ok(renumbered)
     }
+}
+
+/// The group value is a length, not a slot index. Count the retained controls in
+/// each original range, including a shortened trailing group in a prefix clip.
+fn lower_groups(clip: &Payload, shape: &Shape) -> Result<Vec<(usize, u32)>> {
+    let rows = clip.array(GROUPS, 8, Some(0x8080_907F))?;
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut start = 0usize;
+    let mut groups = Vec::with_capacity(rows.len());
+    for at in rows {
+        let end = start
+            .checked_add(usize::try_from(clip.u32(at + 4)?)?)
+            .context("clip control group extent")?;
+        let group = shape
+            .map
+            .get(start..end)
+            .context("clip control group exceeds slots")?;
+        groups.push((at, u32::try_from(group.iter().flatten().count())?));
+        start = end;
+    }
+    ensure!(
+        start == shape.map.len(),
+        "clip control groups do not cover its slots"
+    );
+    while groups.last().is_some_and(|(_, count)| *count == 0) {
+        groups.pop();
+    }
+    ensure!(
+        groups.iter().all(|(_, count)| *count > 0)
+            && groups
+                .iter()
+                .map(|(_, count)| u64::from(*count))
+                .sum::<u64>()
+                == u64::from(shape.native_slots),
+        "lowered control groups do not cover a contiguous rig"
+    );
+    Ok(groups)
+}
+
+fn write_groups(clip: &mut Payload, groups: &[(usize, u32)]) -> Result<()> {
+    let rows = clip.array(GROUPS, 8, Some(0x8080_907F))?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    for (at, count) in groups {
+        clip.0[*at + 4..*at + 8].copy_from_slice(&count.to_le_bytes());
+    }
+    for at in rows.iter().skip(groups.len()) {
+        clip.0[*at..*at + 8].fill(0);
+    }
+    let header = clip.pointer(GROUPS + 8)?;
+    let count = u64::try_from(groups.len())?.to_le_bytes();
+    clip.0[GROUPS..GROUPS + 8].copy_from_slice(&count);
+    clip.0[header..header + 8].copy_from_slice(&count);
+    if groups.is_empty() {
+        clip.0[GROUPS + 8..GROUPS + 16].fill(0);
+    }
+    Ok(())
 }
 
 /// Overwrite a u16 array in place with no more elements than it had. The descriptor and the
@@ -630,20 +628,6 @@ mod tests {
 
     fn scores(pairs: &[(u16, u16, u32)]) -> BTreeMap<(u16, u16), u32> {
         pairs.iter().map(|(n, m, v)| ((*n, *m), *v)).collect()
-    }
-
-    #[test]
-    fn the_skipped_modern_slots_are_the_ones_no_native_slot_matches() {
-        // Six modern slots, four native: modern 2 and 3 have no native counterpart, the way the
-        // forearms do, and everything after them sits two higher in modern.
-        let evidence = scores(&[(0, 0, 9), (1, 1, 9), (2, 4, 9), (3, 5, 9), (2, 2, 1)]);
-        let shape = align(&evidence, 6, 4).unwrap();
-        assert_eq!(
-            shape.map,
-            vec![Some(0), Some(1), None, None, Some(2), Some(3)]
-        );
-        assert_eq!(shape.skipped(), vec![2, 3]);
-        check(&evidence, &shape).unwrap();
     }
 
     #[test]

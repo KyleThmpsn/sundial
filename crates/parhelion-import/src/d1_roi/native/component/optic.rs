@@ -100,20 +100,31 @@ impl Assembly<'_> {
                 .map(|at| p.u8(at))
                 .collect()
         };
+        let zoom = code(source, s + 0xB8)?;
         ensure!(
-            code(source, s + 0xB8)? == code(&component.payload, n + 0xA0)?
-                && source.bytes::<16>(s + 0xD8)? == component.payload.bytes::<16>(n + 0xC0)?,
-            "Source optic zoom procedure requires translation"
+            source.bytes::<16>(s + 0xD8)? == component.payload.bytes::<16>(n + 0xC0)?,
+            "Source optic zoom parameters differ"
         );
         let constants = source.array(s + 0xC8, 16, Some(0x80800090))?;
-        let values = component.payload.array(n + 0xB0, 16, Some(0x80800090))?;
-        ensure!(
-            constants.len() == values.len(),
-            "Source optic zoom constant count differs"
-        );
-        for (from, to) in constants.into_iter().zip(values) {
-            put(&mut component.payload.0, to, &source.bytes::<16>(from)?)?;
+        let mut values = Vec::new();
+        let mut lanes = Vec::new();
+        for from in constants {
+            let mut vector = [0; 4];
+            for (lane, bits) in vector.iter_mut().enumerate() {
+                *bits = source.u32(from + lane * 4)?;
+                ensure!(
+                    f32::from_bits(*bits).is_finite(),
+                    "Nonfinite optic zoom constant"
+                );
+            }
+            lanes.push(vector);
+            values.extend(source.bytes::<16>(from)?);
         }
+        // Optic procedures use the channel dialect. Preserve the source curve instead of
+        // requiring the stock optic template to contain the same expression and vector count.
+        channel::program::validate(&zoom, &lanes, source.u64(s + 0xD8)? as usize)?;
+        array(&mut component.payload.0, n + 0xA0, 0x80800009, &zoom, 1)?;
+        array(&mut component.payload.0, n + 0xB0, 0x80800090, &values, 16)?;
         put(
             &mut component.payload.0,
             n + 0xE0,
@@ -258,7 +269,7 @@ impl Assembly<'_> {
         component.seal()?;
         self.evidence
             .push(json!({"source_optic":source_tag,"native_template":OPTIC,
-            "aim":"Source defaults, movement providers, camera offset and matching zoom procedure",
+            "aim":"Source defaults, movement providers, camera offset and validated source zoom procedure",
             "gameplay_verified":false}));
         Ok(component)
     }

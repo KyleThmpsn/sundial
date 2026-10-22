@@ -229,28 +229,30 @@ impl Workbench {
         self.adopt_library_changes();
     }
 
-    /// Brings open documents up to date with their files after a rescan. A document with no
-    /// edits takes the file as it is now. One with edits keeps them and measures them
-    /// against the file as it is now, so it can be saved in place or discarded to it.
+    /// Clean documents adopt the current file. Drafts keep their original save baseline so
+    /// another window's changes remain a conflict, including while parameter edits are open.
     fn adopt_library_changes(&mut self) {
         let on_disk = self
             .entries
             .iter()
             .map(|entry| (entry.recipe.id.as_str(), entry))
             .collect::<std::collections::BTreeMap<_, _>>();
-        for document in &mut self.documents {
+        for (index, document) in self.documents.iter_mut().enumerate() {
             let Some(entry) = on_disk.get(document.recipe.id.as_str()) else {
                 continue;
             };
             if document.baseline.as_deref() == Some(entry.baseline.as_slice()) {
                 continue;
             }
-            if document.unchanged() {
+            if document.unchanged()
+                && document.pending_effect.is_none()
+                && !(index == self.selected && self.editor.is_some())
+            {
                 document.recipe = entry.recipe.clone();
                 document.origin = Some(entry.recipe.clone());
                 document.modified = entry.modified;
+                document.set_baseline(Some(entry.baseline.clone()));
             }
-            document.set_baseline(Some(entry.baseline.clone()));
         }
     }
 

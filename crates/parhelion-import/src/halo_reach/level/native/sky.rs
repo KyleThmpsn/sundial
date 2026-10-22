@@ -37,7 +37,7 @@ use std::{
 /// first object, the entity model that reference names, whose first mesh carries each sky model's
 /// geometry, and that model's transparent and light-shaft materials, whose envelopes the sky
 /// surfaces copy.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct Templates {
     pub reference: u32,
     pub model: u32,
@@ -104,30 +104,6 @@ const CAMERA_FX_USE_DEFAULT: u16 = 1;
 const SCENE_AVERAGE: f32 = 0.18;
 /// Reach's screen brightness, in stops, where a scenario names no camera effects.
 const DEFAULT_BRIGHTNESS: f32 = -3.3;
-/// Lightmap lobes that may name a key light: the brightest tenth of lit texels, with a bandwidth
-/// byte of at least 191 (0.75).
-const KEY_QUANTILE: f64 = 0.9;
-const KEY_BANDWIDTH: u8 = 191;
-/// Degrees of azimuth and of elevation in a cell of the lobe direction histogram, and the half
-/// angle of the cone that gathers one light's lobes.
-const KEY_CELL: f64 = 3.;
-const KEY_CONE: f64 = 15.;
-/// A key light dominates when no cone three cones or more away gathers this share of its own. A
-/// low sun taken from a light that does not dominate casts long shadows the baked light lacks.
-const KEY_RIVAL: f64 = 0.3;
-/// Texels the lightmapper counts as in the sun: a sun visibility byte (the ambient image's alpha)
-/// of at least 204 (0.8) and a lobe bandwidth byte of at least 153 (0.6).
-const SUN_VISIBLE: u8 = 204;
-const SUN_BANDWIDTH: u8 = 153;
-/// The sunlit texels name the level's sun when they are at least this share of the texels with a
-/// lobe and their lobes agree on a direction, the length of their luminance-weighted mean direction
-/// over their total luminance reaching `SUN_COHERENCE`. Forge World's 1.2 million such texels reach
-/// 0.96 at 75 degrees up, Breakneck's 97,000 reach 0.78 and Sword Base's 88,000 only 0.54.
-const SUN_SHARE: f64 = 0.01;
-const SUN_COHERENCE: f64 = 0.7;
-/// A fully sunlit texel: visibility byte 230 (0.9) or more, with its lobe within `KEY_CONE` of the
-/// sun. The median luminance of their lobes is the sun's baked level.
-const SUN_FULL: u8 = 230;
 
 /// One sky model's share of the sky: the primitives' triangles it draws, in order.
 struct Chunk {
@@ -270,6 +246,31 @@ fn exposure(cache: &Cache) -> Result<(f32, f32, Value)> {
     ))
 }
 
+/// Carry the authored camera target through the calibrated native radiance scale. Automatic
+/// exposure still belongs to Shadowkeep. This preserves relative source targets, rather than
+/// claiming to reproduce Reach's view-dependent luminance reduction and adaptation history.
+pub(super) fn radiance(cache: &Cache, level: Option<f32>) -> Result<(f32, Value)> {
+    let (shown, brightness, mut report) = exposure(cache)?;
+    // The existing native calibration used a source automatic target of 0.09 linear light.
+    const REFERENCE_BRIGHTNESS: f32 = 0.09;
+    let target = if report["automatic"].as_bool() == Some(false) {
+        level.unwrap_or(brightness / shown) * shown
+    } else {
+        brightness
+    };
+    let radiance = SKY_RADIANCE * target / REFERENCE_BRIGHTNESS;
+    ensure!(
+        radiance.is_finite() && radiance > 0.,
+        "Invalid translated camera radiance"
+    );
+    report["native_radiance"] = json!(radiance);
+    report["reference_brightness"] = json!(REFERENCE_BRIGHTNESS);
+    report["method"] = json!(
+        "Source camera target relative to the native calibration. Native exposure adaptation remains active."
+    );
+    Ok((radiance, report))
+}
+
 /// Adds the level's sky to `graph`: one native model and model reference for each chunk of the
 /// sky's triangles, each drawing its surfaces in the transparent and light-shaft stages with the
 /// materials `templates` lends their envelopes. `primitives` are the sky's, about the level's
@@ -304,7 +305,8 @@ pub(super) fn add(
         .flat_map(|(_, colors)| colors.iter().flatten())
         .fold(0f32, |largest, &value| largest.max(value));
     let vertex_color = largest.max(1e-6);
-    let (shown, brightness, exposure_report) = exposure(cache)?;
+    let (shown, brightness, _) = exposure(cache)?;
+    let (radiance, exposure_report) = radiance(cache, level)?;
     // The sky takes its Reach radiance over the average lit level, as the level surfaces do, at its
     // own scale. Without a lightmap, the average lit level is taken where Reach's automatic
     // exposure aims its average lit surface: the screen brightness over the exposure.
@@ -313,10 +315,11 @@ pub(super) fn add(
         .unwrap_or(brightness / shown);
     let scale = SkyScale {
         vertex_color,
-        radiance: SKY_RADIANCE / level,
+        radiance: radiance / level,
         white: 1. / shown,
     };
     let placeholder = Material {
+        decal: None,
         tag: None,
         options: BTreeMap::new(),
         properties: Vec::new(),
@@ -445,7 +448,7 @@ pub(super) fn add(
             "vertex_color_scale": vertex_color,
             "radiance_scale": scale.radiance,
             "white": scale.white,
-            "sky_radiance": SKY_RADIANCE,
+            "sky_radiance": radiance,
             "lit_level": level,
             "templates": {
                 "reference": format!("{:08X}", templates.reference),
@@ -766,303 +769,6 @@ fn sky_model(cache: &Cache, pages: &mut Pages, tag: &Tag) -> Result<Value> {
         "sections": sections,
         "materials": model.materials,
     }))
-}
-
-/// The color of the level's bright, sharp baked lobes, the lobes that may name its key light (the
-/// brightest tenth of lit texels with a bandwidth of at least 0.75), weighted by luminance and
-/// normalized to its brightest channel. Hang 'Em High's is about (0.96, 0.92, 1), a pale lavender.
-/// `None` without lit texels.
-pub fn baked_light_color(atlas: &super::super::lightmap::Atlas) -> Option<[f32; 3]> {
-    // Lobe colors are stored as square roots of their share of the atlas' peak.
-    let share = |byte: u8| (f64::from(byte) / 255.).powi(2);
-    let lit = atlas
-        .lobe
-        .chunks_exact(4)
-        .map(|lobe| {
-            let color = [share(lobe[0]), share(lobe[1]), share(lobe[2])];
-            let luminance = 0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2];
-            (luminance, lobe[3], color)
-        })
-        .filter(|(luminance, ..)| *luminance > 0.)
-        .collect::<Vec<_>>();
-    let mut levels = lit
-        .iter()
-        .map(|(luminance, ..)| *luminance)
-        .collect::<Vec<_>>();
-    let rank = ((levels.len().checked_sub(1)?) as f64 * KEY_QUANTILE) as usize;
-    let cut = *levels.select_nth_unstable_by(rank, f64::total_cmp).1;
-    let mut sum = [0f64; 3];
-    for (luminance, bandwidth, color) in &lit {
-        if *luminance >= cut && *bandwidth >= KEY_BANDWIDTH {
-            for (total, value) in sum.iter_mut().zip(color) {
-                *total += value * luminance;
-            }
-        }
-    }
-    let peak = sum.iter().copied().fold(0f64, f64::max);
-    (peak > 0.).then(|| sum.map(|value| (value / peak) as f32))
-}
-
-/// The direction the level's baked light comes from, toward the light with z up. Reach bakes
-/// these levels' sun into the lightmap with every other light. The bright, sharp lobes are binned
-/// by direction, and the direction whose cone gathers the most of their luminance, refined to the
-/// cone's mean, is the key light. It stands when no cone three cones or more away gathers more than
-/// `KEY_RIVAL` of its luminance. Otherwise the light has no dominant direction, and the mean of
-/// every lit lobe, weighted by its luminance, stands. Breakneck's key light (22 degrees up, toward
-/// -y) is the two warm spot lights it places 190 and 780 world units away as a sun, and its rivals
-/// reach 0.08 to 0.14 of it. Sword Base's reach 0.41 to 0.71 and Hang 'Em High's 0.82 to 0.87,
-/// over three revisions of the atlas. Neutral texels have no lobe and weigh nothing. `None`
-/// without lit texels.
-pub fn baked_light_direction(atlas: &super::super::lightmap::Atlas) -> Option<[f32; 3]> {
-    let light = key_light(atlas)?;
-    let chosen = if light.dominant {
-        light.key
-    } else {
-        light.broad
-    };
-    Some(chosen.map(|v| v as f32))
-}
-
-/// The sun Destiny's own sun stands in for on a level's surfaces, in the level's space with z up.
-#[derive(Clone, Copy, Debug, serde::Serialize)]
-pub struct BakedSun {
-    /// Toward the sun.
-    pub direction: [f32; 3],
-    /// The median luminance of a fully sunlit texel's lobe, as a share of the atlas' peak.
-    pub level: f32,
-    /// The mean color of the fully sunlit lobes, normalized to its brightest channel.
-    pub color: [f32; 3],
-    /// Whether each texel's baked sun visibility says how much of the sun reaches it. Otherwise a
-    /// texel's sun is the share of its sharp lobe that points at the key light.
-    pub visibility: bool,
-    /// How well the sunlit lobes agree on the direction, from 0 to 1.
-    pub coherence: f32,
-    /// The texels the direction was taken from.
-    pub texels: usize,
-}
-
-/// The level's baked sun, when its lightmap shows one. Reach bakes these levels' sun into the
-/// lobes with every other light, and the lightmapper still records each texel's sun visibility in
-/// the direction map's second channel. Where the texels it counts as sunlit
-/// (`SUN_VISIBLE`, with sharp lobes) agree on a direction, that direction is the sun's and
-/// their visibility says where it reaches. Forge World's sunlit lobes grow from 0.09 to 0.46 of
-/// the peak as visibility rises from zero to one, all about 75 degrees up. Otherwise a dominant key
-/// light ([`baked_light_direction`]) is the sun. `None` when the level shows neither, as Sword
-/// Base, whose sunlit texels point every way and whose key light has rivals of 0.41 to 0.71.
-pub fn baked_sun(atlas: &super::super::lightmap::Atlas) -> Option<BakedSun> {
-    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    let share = |byte: u8| (f64::from(byte) / 255.).powi(2);
-    let texels = atlas
-        .lobe
-        .chunks_exact(4)
-        .zip(atlas.ambient.chunks_exact(4))
-        .zip(atlas.direction.chunks_exact(4))
-        .filter_map(|((lobe, ambient), direction)| {
-            let luminance =
-                0.2126 * share(lobe[0]) + 0.7152 * share(lobe[1]) + 0.0722 * share(lobe[2]);
-            let axis = normalized(std::array::from_fn(|k| {
-                f64::from(direction[k]) / 255. * 2. - 1.
-            }))?;
-            let color = [share(lobe[0]), share(lobe[1]), share(lobe[2])];
-            (luminance > 0.).then_some((luminance, lobe[3], ambient[3], axis, color))
-        })
-        .collect::<Vec<_>>();
-    // The median luminance of the lobes within a cone of `direction` that `full` keeps, and their
-    // mean color normalized to its brightest channel.
-    let level = |direction: [f64; 3], full: &dyn Fn(u8, u8) -> bool| {
-        let cone = KEY_CONE.to_radians().cos();
-        let kept = texels
-            .iter()
-            .filter(|(_, bandwidth, visible, axis, _)| {
-                full(*bandwidth, *visible) && dot(*axis, direction) >= cone
-            })
-            .collect::<Vec<_>>();
-        let mut levels = kept
-            .iter()
-            .map(|(luminance, ..)| *luminance)
-            .collect::<Vec<_>>();
-        let middle = levels.len().checked_sub(1)? / 2;
-        let median = *levels.select_nth_unstable_by(middle, f64::total_cmp).1;
-        let mut color = [0f64; 3];
-        for (.., lobe) in &kept {
-            for (total, value) in color.iter_mut().zip(lobe) {
-                *total += value;
-            }
-        }
-        let peak = color.iter().copied().fold(0f64, f64::max);
-        (peak > 0.).then(|| (median, color.map(|value| (value / peak) as f32)))
-    };
-    let mut sum = [0f64; 3];
-    let mut weight = 0.;
-    let mut count = 0usize;
-    for (luminance, bandwidth, visible, axis, _) in &texels {
-        if *visible >= SUN_VISIBLE && *bandwidth >= SUN_BANDWIDTH {
-            for (total, value) in sum.iter_mut().zip(axis) {
-                *total += value * luminance;
-            }
-            weight += luminance;
-            count += 1;
-        }
-    }
-    if count > 0 && count as f64 >= SUN_SHARE * texels.len() as f64 {
-        let coherence = sum.iter().map(|v| v * v).sum::<f64>().sqrt() / weight;
-        if let Some(direction) =
-            normalized(sum).filter(|d| coherence >= SUN_COHERENCE && d[2] > 0.05)
-            && let Some((level, color)) = level(direction, &|bandwidth, visible| {
-                visible >= SUN_FULL && bandwidth >= SUN_BANDWIDTH
-            })
-        {
-            return Some(BakedSun {
-                direction: direction.map(|v| v as f32),
-                level: level as f32,
-                color,
-                visibility: true,
-                coherence: coherence as f32,
-                texels: count,
-            });
-        }
-    }
-    let light = key_light(atlas)?;
-    if !light.dominant || light.key[2] <= 0.05 {
-        return None;
-    }
-    let (level, color) = level(light.key, &|bandwidth, _| bandwidth >= KEY_BANDWIDTH)?;
-    Some(BakedSun {
-        direction: light.key.map(|v| v as f32),
-        level: level as f32,
-        color,
-        visibility: false,
-        coherence: 1. - light.rival as f32,
-        texels: light.texels,
-    })
-}
-
-fn normalized(v: [f64; 3]) -> Option<[f64; 3]> {
-    let length = v.iter().map(|x| x * x).sum::<f64>().sqrt();
-    (length > 1e-9).then(|| v.map(|x| x / length))
-}
-
-/// The key light of a level's baked lobes, the luminance-weighted mean of every lit lobe, whether
-/// the key light dominates, its rival's share of its luminance and the bright, sharp lobes binned.
-struct KeyLight {
-    key: [f64; 3],
-    broad: [f64; 3],
-    dominant: bool,
-    rival: f64,
-    texels: usize,
-}
-
-fn key_light(atlas: &super::super::lightmap::Atlas) -> Option<KeyLight> {
-    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    // Lobe colors are stored as square roots of their share of the atlas' peak.
-    let share = |byte: u8| (f64::from(byte) / 255.).powi(2);
-    let mut lit = Vec::new();
-    let mut broad = [0f64; 3];
-    for (lobe, direction) in atlas
-        .lobe
-        .chunks_exact(4)
-        .zip(atlas.direction.chunks_exact(4))
-    {
-        let luminance = 0.2126 * share(lobe[0]) + 0.7152 * share(lobe[1]) + 0.0722 * share(lobe[2]);
-        let Some(axis) = normalized(std::array::from_fn(|k| {
-            f64::from(direction[k]) / 255. * 2. - 1.
-        })) else {
-            continue;
-        };
-        if luminance <= 0. {
-            continue;
-        }
-        for (total, value) in broad.iter_mut().zip(axis) {
-            *total += value * luminance;
-        }
-        lit.push((luminance, lobe[3], axis));
-    }
-    let broad = normalized(broad)?;
-    let mut levels = lit
-        .iter()
-        .map(|(luminance, ..)| *luminance)
-        .collect::<Vec<_>>();
-    let rank = ((levels.len() - 1) as f64 * KEY_QUANTILE) as usize;
-    let cut = *levels.select_nth_unstable_by(rank, f64::total_cmp).1;
-    let rows = (180. / KEY_CELL) as usize;
-    let columns = (360. / KEY_CELL) as usize;
-    let mut cells = vec![(0f64, [0f64; 3]); rows * columns];
-    for &(luminance, bandwidth, axis) in &lit {
-        if luminance < cut || bandwidth < KEY_BANDWIDTH {
-            continue;
-        }
-        let elevation = axis[2].clamp(-1., 1.).asin().to_degrees();
-        let azimuth = axis[1].atan2(axis[0]).to_degrees();
-        let row = (((elevation + 90.) / KEY_CELL) as usize).min(rows - 1);
-        let column = (((azimuth + 180.) / KEY_CELL) as usize).min(columns - 1);
-        let cell = &mut cells[row * columns + column];
-        cell.0 += luminance;
-        for (total, value) in cell.1.iter_mut().zip(axis) {
-            *total += value * luminance;
-        }
-    }
-    let cells = cells
-        .into_iter()
-        .filter(|(weight, _)| *weight > 0.)
-        .filter_map(|(weight, sum)| Some((weight, sum, normalized(sum)?)))
-        .collect::<Vec<_>>();
-    let cone = KEY_CONE.to_radians().cos();
-    let scores = cells
-        .iter()
-        .map(|(_, _, a)| {
-            cells
-                .iter()
-                .filter(|(_, _, b)| dot(*a, *b) >= cone)
-                .map(|(weight, ..)| weight)
-                .sum::<f64>()
-        })
-        .collect::<Vec<_>>();
-    let Some((best, best_score)) = scores
-        .iter()
-        .copied()
-        .enumerate()
-        .max_by(|a, b| a.1.total_cmp(&b.1))
-    else {
-        return Some(KeyLight {
-            key: broad,
-            broad,
-            dominant: false,
-            rival: 1.,
-            texels: 0,
-        });
-    };
-    let mut key = cells[best].2;
-    for _ in 0..3 {
-        let mut sum = [0f64; 3];
-        for (_, cell, axis) in &cells {
-            if dot(*axis, key) >= cone {
-                for (total, value) in sum.iter_mut().zip(cell) {
-                    *total += value;
-                }
-            }
-        }
-        key = normalized(sum).unwrap_or(key);
-    }
-    let apart = (3. * KEY_CONE).to_radians().cos();
-    let rival = cells
-        .iter()
-        .zip(&scores)
-        .filter(|((_, _, axis), _)| dot(*axis, key) < apart)
-        .map(|(_, score)| *score)
-        .fold(0f64, f64::max);
-    let texels = lit
-        .iter()
-        .filter(|(luminance, bandwidth, axis)| {
-            *luminance >= cut && *bandwidth >= KEY_BANDWIDTH && dot(*axis, key) >= cone
-        })
-        .count();
-    Some(KeyLight {
-        key,
-        broad,
-        dominant: rival <= KEY_RIVAL * best_score,
-        rival: rival / best_score,
-        texels,
-    })
 }
 
 /// A report of `map`'s skies, its structure BSPs' default skies and lighting, and the sky, fog and

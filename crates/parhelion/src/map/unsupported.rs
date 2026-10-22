@@ -63,6 +63,7 @@ impl Plan {
         &self,
         _ids: &[u16],
         _tags: &[crate::NewTagSpec],
+        _references: &[crate::NewTagReferenceOverride],
         _registered: &std::collections::BTreeSet<u16>,
         _manager: &PackageManager,
     ) -> AuthoringResult<Vec<TagHash>> {

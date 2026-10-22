@@ -148,6 +148,22 @@ pub fn draw_display_tooltip(ui: &mut egui::Ui, tooltip: DisplayTooltip<'_>) {
     authoring_bridge::draw_display_tooltip(ui, tooltip);
 }
 
+/// An authored item's presentation in the game's item tooltip. Unset fields keep the catalog's.
+#[derive(Clone, Copy, Default)]
+pub struct ItemTooltip<'a> {
+    pub name: Option<&'a str>,
+    pub type_name: Option<&'a str>,
+    /// `Some("")` clears the catalog description.
+    pub description: Option<&'a str>,
+    /// The tier as packages store it, 1 for Common through 5 for Exotic.
+    pub rarity: Option<u8>,
+    pub icon: Option<IconOverride>,
+    /// A closing line, such as what clicking does.
+    pub note: Option<&'a str>,
+    /// The hash names what the item was made from, whose stats and perks are not its own.
+    pub template: bool,
+}
+
 /// A private recipe's icon must never fall back to a different donor while it loads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IconOverride {
@@ -264,6 +280,27 @@ impl InvestmentCatalog {
     ) -> Option<egui::TextureHandle> {
         self.catalog
             .secondary_icon_texture(ctx, u64::from(emblem_hash), layer_offset)
+    }
+
+    /// Shows the game's item tooltip for `hash`, with an authored item's presentation, while
+    /// `response` is hovered.
+    pub fn item_tooltip(
+        &self,
+        response: egui::Response,
+        hash: u32,
+        tooltip: ItemTooltip<'_>,
+    ) -> egui::Response {
+        authoring_bridge::item_tooltip(response, &self.catalog, hash, tooltip)
+    }
+
+    /// Shows a [`DisplayTooltip`] in the game's item tooltip, at a perk's size, while `response`
+    /// is hovered.
+    pub fn display_tooltip(
+        &self,
+        response: egui::Response,
+        tooltip: DisplayTooltip<'_>,
+    ) -> egui::Response {
+        authoring_bridge::display_tooltip(response, &self.catalog, tooltip)
     }
 
     /// A perk in a list of perks: its icon, its name, and its description's first line under it.

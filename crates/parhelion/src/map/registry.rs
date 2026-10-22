@@ -67,10 +67,9 @@ const DESCRIPTOR_SIZE: usize = 0x80;
 const POINT_ROTATION: usize = 0x60;
 const POINT_POSITION: usize = 0x70;
 const POINT_SCALE: usize = 0x7C;
-/// An object list, a placement table, whose rows are at `+0x08`, 144 bytes each.
+/// An object list, a placement table, whose rows are at `+0x08`.
 const LIST_CLASS: u32 = 0x8080_99D6;
 const TABLE_ROWS: usize = 0x08;
-const LIST_ROW_SIZE: usize = 0x90;
 /// Component classes: a respawn point, a named point, a trigger volume and an objective.
 const RESPAWN_POINT: u32 = 0x8080_94D1;
 const NAMED_POINT: u32 = 0x8080_94D5;
@@ -80,6 +79,10 @@ const OBJECTIVE: u32 = 0x8080_9927;
 /// the donor's score. A map plays its own level's ambience, so its copy leaves the sensor out:
 /// Lone Wolf and Tip of the Spear played The Other Side's music over Reach's sound.
 const MUSIC_SENSOR: u32 = 0x8080_4E8E;
+/// The component class of an AI spawner, which spawns the donor's combatants as its encounter
+/// script asks. The Other Side's registry places 112, which no map's own level drives, and
+/// every one is an object the client creates, so the copy leaves them out.
+const AI_SPAWNER: u32 = 0x8080_9A3B;
 /// An objective record embeds one placement row, the row class of an object list, behind an
 /// array marker and a 16-byte header.
 const ARRAY_MARKER: u32 = 0x8080_9FBD;
@@ -193,8 +196,9 @@ enum Handle {
         place: Option<Spawn>,
     },
     /// A handle whose object list `list` keeps donor leftovers. The copy names a copy of the list,
-    /// `list_payload`, with their rows moved far below the map, and each row at an offset in
-    /// `kept` moved onto the map spawn at the same index of `spawns`, chosen later.
+    /// `list_payload`, with their rows moved far below the map, or with no rows when none stays,
+    /// and each row at an offset in `kept` moved onto the map spawn at the same index of
+    /// `spawns`, chosen later.
     Listed {
         handle: TagHash,
         payload: Vec<u8>,
@@ -300,7 +304,7 @@ fn handle(manager: &PackageManager, handle: u32, key: u32) -> AuthoringResult<Ha
         return Ok(Handle::Kept(handle));
     };
     let component = read_u32(&record_payload, first + DESCRIPTOR_CLASS)?;
-    if component == MUSIC_SENSOR {
+    if component == MUSIC_SENSOR || component == AI_SPAWNER {
         return Ok(Handle::Dropped);
     }
     if component == VOLUME {
@@ -367,16 +371,15 @@ fn handle(manager: &PackageManager, handle: u32, key: u32) -> AuthoringResult<Ha
     })
 }
 
-/// Moves every row that stays of `handle`'s object list far below the map, making a handle that
-/// names a list with rows into a copy of it. A handle naming no list stays as it is.
-fn bury_list(manager: &PackageManager, handle: &mut Handle) -> AuthoringResult<()> {
+/// Leaves `handle`'s object list with no rows, making a handle that names a list with rows into a
+/// copy of it. A handle naming no list stays as it is. A buried row is still an object the client
+/// creates from its small lease of entity IDs, and each of a campaign map's areas lists them again.
+fn empty_list(manager: &PackageManager, handle: &mut Handle) -> AuthoringResult<()> {
     match handle {
         Handle::Listed {
             list_payload, kept, ..
         } => {
-            for &row in kept.iter() {
-                chain::bury(list_payload, row);
-            }
+            append_native_array(list_payload, TABLE_ROWS, LIST_CLASS, 0, &[])?;
             kept.clear();
         }
         Handle::Kept(tag) => {
@@ -404,10 +407,7 @@ fn bury_list(manager: &PackageManager, handle: &mut Handle) -> AuthoringResult<(
             if read_u64(&list_payload, TABLE_ROWS)? == 0 {
                 return Ok(());
             }
-            let (count, _, rows, _) = array_at(&list_payload, TABLE_ROWS)?;
-            for index in 0..count {
-                chain::bury(&mut list_payload, rows + index * LIST_ROW_SIZE);
-            }
+            append_native_array(&mut list_payload, TABLE_ROWS, LIST_CLASS, 0, &[])?;
             *handle = Handle::Listed {
                 handle: TagHash(tag),
                 payload,
@@ -424,8 +424,8 @@ fn bury_list(manager: &PackageManager, handle: &mut Handle) -> AuthoringResult<(
 
 /// What becomes of an objective record: a record that places its objective somewhere moves,
 /// when its name gives it a role, onto the level's objectives. One that places something somewhere
-/// without a role moves far below the map, whatever its entity holds: the placement belongs to the
-/// donor's own rooms. The Other Side's records place the Leviathan's door banks (`815B53C4`, whose
+/// without a role is left out, whatever its entity holds: the placement belongs to the donor's own
+/// rooms, and moved below the map it was still an object the client created. The Other Side's records place the Leviathan's door banks (`815B53C4`, whose
 /// components hold no render model, body or effect) and its hallway door at its trophy hall, which
 /// stood in Lone Wolf's valley and on Tip of the Spear's beach. A record at the origin, which its
 /// activity places elsewhere, stays. `tags` and `payloads` are the donor's handle, redirect and
@@ -462,21 +462,7 @@ fn objective(tags: [TagHash; 3], payloads: [Vec<u8>; 3]) -> AuthoringResult<Hand
         .filter(|_| placed.iter().any(|&value| value != 0.));
     let (role, name) = match (role, name) {
         (Some(role), Some(name)) => (role, name),
-        _ if placed.iter().any(|&value| value != 0.) => {
-            return Ok(Handle::Objective {
-                handle: tags[0],
-                redirect: tags[1],
-                record: tags[2],
-                payloads,
-                row,
-                role: Role::Center,
-                group: Vec::new(),
-                place: Some(Spawn {
-                    position: [placed[0], placed[1], chain::BURIED],
-                    yaw: 0.,
-                }),
-            });
-        }
+        _ if placed.iter().any(|&value| value != 0.) => return Ok(Handle::Dropped),
         _ => return Ok(Handle::Kept(tags[0].0)),
     };
     Ok(Handle::Objective {
@@ -597,7 +583,7 @@ impl Registry {
                 }
                 // An object that places no point is not a Crucible object, whose lists hold
                 // logical nodes the map's spawns take, but the donor activity's own: its lists
-                // place the donor's scripted scenery, which every row of moves below the map.
+                // place the donor's scripted scenery, which the copy leaves out ([`empty_list`]).
                 // The Other Side's place the Leviathan's doors and pots at its trophy hall, 91
                 // rows of whose entities hold no render, body or effect component, and moved onto
                 // the level's spawns they stood in Lone Wolf and Tip of the Spear.
@@ -607,7 +593,7 @@ impl Registry {
                     .any(|handle| matches!(handle, Handle::Moved { .. }))
                 {
                     for handle in bubbles.iter_mut().flatten() {
-                        bury_list(manager, handle)?;
+                        empty_list(manager, handle)?;
                     }
                 }
                 changed |= bubbles

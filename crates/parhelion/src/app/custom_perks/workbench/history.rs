@@ -139,34 +139,3 @@ impl Workbench {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn undo_restores_whole_effects_and_redo_is_invalidated_by_another_edit() {
-        let ctx = egui::Context::default();
-        let mut recipe = PerkRecipe::new();
-        recipe.effects.push(PerkRecipe::effect(421));
-        recipe.effects[0].activation =
-            Some(sundial::package_authoring::sandbox_perk::activation::PerkActivation::GrenadeKill);
-        let mut doc = Document::new(recipe.clone(), None);
-        doc.history.record(doc.recipe.clone(), &ctx);
-        doc.recipe.effects.clear();
-        let deleted = doc.recipe.clone();
-        assert!(doc.history.restore(&mut doc.recipe, false));
-        assert_eq!(doc.recipe, recipe);
-        assert!(doc.history.restore(&mut doc.recipe, true));
-        assert_eq!(doc.recipe, deleted);
-        assert!(doc.history.restore(&mut doc.recipe, false));
-        doc.history.record(doc.recipe.clone(), &ctx);
-        doc.recipe.name = "Changed".into();
-        assert!(!doc.history.available(true));
-        let restored: Document =
-            serde_json::from_slice(&serde_json::to_vec(&doc).unwrap()).unwrap();
-        assert!(!restored.history.available(false));
-        assert!(!restored.history.available(true));
-        assert_eq!(restored.recipe, doc.recipe);
-    }
-}

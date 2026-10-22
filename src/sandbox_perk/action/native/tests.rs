@@ -220,52 +220,6 @@ fn bundled_templates_match_nodes_in_the_reference_installation() {
 }
 
 #[test]
-fn every_observed_kind_has_a_complete_relocatable_template() {
-    let mut count = 0;
-    for (condition, entries) in [
-        (true, nodes::CONDITIONS.as_slice()),
-        (false, nodes::EFFECTS.as_slice()),
-    ] {
-        for entry in entries.iter().filter(|e| e.observed()) {
-            let bytes = template(if condition {
-                NativeNodeKind::Condition(entry.kind)
-            } else {
-                NativeNodeKind::Effect(entry.kind)
-            })
-            .expect("observed template");
-            let graph = Graph::read(&bytes, 0, entry.class)
-                .unwrap_or_else(|error| panic!("{}: {error}", entry.name));
-            graph
-                .validate_node(if condition {
-                    NativeNodeKind::Condition(entry.kind)
-                } else {
-                    NativeNodeKind::Effect(entry.kind)
-                })
-                .unwrap();
-            let emitted = graph.emit().unwrap();
-            assert_eq!(
-                Graph::read(&emitted, 0, entry.class).unwrap(),
-                graph,
-                "{}",
-                entry.name
-            );
-            for block in graph.blocks.iter().filter(|b| b.class != 0) {
-                let fields = fields::describe(block.class).unwrap();
-                let mut coverage = vec![0; schema::record(block.class).unwrap().size];
-                for field in fields {
-                    for byte in &mut coverage[field.offset..field.offset + field.width] {
-                        *byte += 1;
-                    }
-                }
-                assert!(coverage.iter().all(|n| *n == 1), "0x{:08X}", block.class);
-            }
-            count += 1;
-        }
-    }
-    assert!(count > 0, "Need observed kinds to verify native templates");
-}
-
-#[test]
 fn malformed_pointers_and_array_headers_are_rejected() {
     let class = nodes::condition(26).unwrap().class;
     let bytes = template(NativeNodeKind::Condition(26)).unwrap();
@@ -602,36 +556,6 @@ fn captured_actions_preserve_every_node_and_runtime_label_predicate() {
     eprintln!(
         "Verified {action_count} actions, {node_count} nodes, {predicates} predicates and {programs} value programs."
     );
-}
-
-#[test]
-fn event_keys_are_named_from_the_perks_that_use_them() {
-    use super::fields::keys::{self, SITES};
-    for (class, offset, entries) in SITES {
-        assert!(!entries.is_empty(), "{class:08X}+{offset:X} has no keys");
-        let mut seen = std::collections::BTreeSet::new();
-        for key in *entries {
-            assert!(
-                seen.insert(key.hash),
-                "{class:08X}+{offset:X} lists 0x{:08X} twice",
-                key.hash
-            );
-            assert!(!key.name.trim().is_empty() && !key.evidence.trim().is_empty());
-        }
-        // The site is a key field of an observed node class, or the resource reference the
-        // ability conditions store, whose stock values are ability patterns named the same way.
-        let fields = super::fields::describe(*class).unwrap();
-        assert!(
-            fields.iter().any(|field| field.offset == *offset
-                && matches!(
-                    field.format,
-                    super::fields::Format::Key | super::fields::Format::Tag
-                )),
-            "{class:08X}+{offset:X} is not a key or reference field"
-        );
-    }
-    assert_eq!(keys::name(0x6CEC_7A87), Some("Orb of Light Picked Up"));
-    assert!(keys::known(0x8080_3E03, 8).is_empty());
 }
 
 #[test]

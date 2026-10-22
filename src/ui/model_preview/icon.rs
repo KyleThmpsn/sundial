@@ -29,6 +29,30 @@ impl Default for Frame {
     }
 }
 
+/// Studio lighting for an inventory render, applied before the output curve.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Lighting {
+    pub key: f32,
+    pub fill: f32,
+    pub exposure: f32,
+    pub filmic: bool,
+    pub normalize_exposure: bool,
+}
+
+impl Default for Lighting {
+    fn default() -> Self {
+        let scene = render::Scene::default();
+        Self {
+            key: scene.key,
+            fill: scene.fill,
+            exposure: scene.exposure,
+            filmic: scene.filmic,
+            normalize_exposure: true,
+        }
+    }
+}
+
 pub struct Artwork {
     /// Straight-alpha sRGB, suitable for the primary layer of a native icon.
     pub rgba: Vec<u8>,
@@ -57,7 +81,7 @@ pub fn object_in_frame(
     validate(pose, frame, size)?;
     let model =
         model_preview::load_reported(packages, entity, &model_preview::Load::default(), None)?;
-    draw(&model, pose, frame, size)
+    draw(&model, pose, frame, Lighting::default(), size)
 }
 
 /// Render an unbuilt, pinned import through the same decoder as packaged objects.
@@ -68,9 +92,73 @@ pub fn local(
     frame: Frame,
     size: usize,
 ) -> Result<Artwork, String> {
+    local_with_lighting(packages, appearance, pose, frame, Lighting::default(), size)
+}
+
+pub fn local_with_lighting(
+    packages: &Path,
+    appearance: &LocalAppearance,
+    pose: Pose,
+    frame: Frame,
+    lighting: Lighting,
+    size: usize,
+) -> Result<Artwork, String> {
+    local_render(packages, appearance, pose, frame, lighting, size, false)
+}
+
+/// Render translated materials only when every visible triangle has its
+/// executable shader. Import artwork must not silently substitute flat colors.
+pub fn local_programs(
+    packages: &Path,
+    appearance: &LocalAppearance,
+    pose: Pose,
+    frame: Frame,
+    lighting: Lighting,
+    size: usize,
+) -> Result<Artwork, String> {
+    local_render(packages, appearance, pose, frame, lighting, size, true)
+}
+
+fn local_render(
+    packages: &Path,
+    appearance: &LocalAppearance,
+    pose: Pose,
+    frame: Frame,
+    lighting: Lighting,
+    size: usize,
+    programs: bool,
+) -> Result<Artwork, String> {
     validate(pose, frame, size)?;
+    if [lighting.key, lighting.fill, lighting.exposure]
+        .iter()
+        .any(|v| !v.is_finite() || !(0.0..=16.0).contains(v))
+        || lighting.exposure <= 0.0
+    {
+        return Err("Invalid icon lighting".into());
+    }
     let model = appearance.load(packages, &model_preview::Load::default(), None, None)?;
-    draw(&model, pose, frame, size)
+    if programs {
+        let missing = (0..model.triangles.len())
+            .filter(|&index| {
+                !model.triangle_emitter.get(index).copied().unwrap_or(false)
+                    && !model.triangle_light.get(index).copied().unwrap_or(false)
+                    && !model
+                        .triangle_effects
+                        .get(index)
+                        .copied()
+                        .flatten()
+                        .and_then(|effect| model.effects.get(effect))
+                        .is_some_and(|effect| effect.native.is_some())
+            })
+            .count();
+        if model.triangles.is_empty() || missing != 0 {
+            return Err(format!(
+                "Cannot render imported artwork: {missing} triangles lack an executable material. {}",
+                model.notices.join(" ")
+            ));
+        }
+    }
+    draw(&model, pose, frame, lighting, size)
 }
 
 fn validate(pose: Pose, frame: Frame, size: usize) -> Result<(), String> {
@@ -91,7 +179,13 @@ fn validate(pose: Pose, frame: Frame, size: usize) -> Result<(), String> {
     Ok(())
 }
 
-fn draw(model: &Model, pose: Pose, frame: Frame, size: usize) -> Result<Artwork, String> {
+fn draw(
+    model: &Model,
+    pose: Pose,
+    frame: Frame,
+    lighting: Lighting,
+    size: usize,
+) -> Result<Artwork, String> {
     let bounds = render::artwork_bounds(model);
     let working = size.max(768);
     let mut camera = render::Camera {
@@ -100,9 +194,22 @@ fn draw(model: &Model, pose: Pose, frame: Frame, size: usize) -> Result<Artwork,
         ..Default::default()
     };
     camera.zoom = render::fitted_zoom(model, bounds, camera, [working as f32; 2], 0.70);
-    let image = render::transparent_image(model, camera, working);
+    let image = render::transparent_image(
+        model,
+        camera,
+        render::Scene {
+            key: lighting.key,
+            fill: lighting.fill,
+            exposure: lighting.exposure,
+            filmic: lighting.filmic,
+            ..Default::default()
+        },
+        working,
+    );
     let mut rgba = fit(&image, pose.roll, frame, size)?;
-    normalize_exposure(&mut rgba);
+    if lighting.normalize_exposure {
+        normalize_exposure(&mut rgba);
+    }
     Ok(Artwork {
         rgba,
         size,

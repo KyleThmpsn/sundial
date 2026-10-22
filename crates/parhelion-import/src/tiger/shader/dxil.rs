@@ -3,6 +3,7 @@
 //! DXC supplies a validated LLVM listing. Resource bindings, SSA values and
 //! acyclic control flow are retained. Renderer scope and varying translation
 //! belong to the caller. Unsupported instructions fail closed.
+mod depth;
 mod emit;
 mod instruction;
 mod parse;
@@ -40,12 +41,30 @@ pub struct Program {
 #[derive(Default)]
 pub struct Options {
     pub targets: BTreeSet<u32>,
+    /// Admit only the checked depth-texture/linearization/projection-flag consumer.
+    /// The caller verifies native depth and coefficient scope producers.
+    pub perspective_depth: bool,
+    /// Renderer-owned texture slots whose consumer binding has been independently checked.
+    pub texture_registers: BTreeMap<u32, u32>,
+    /// Explicit renderer sampling adapters. The source instruction must be a
+    /// zero-offset, level-zero sample of the declared source dimension.
+    pub samples: BTreeMap<u32, Sample>,
+    /// Native renderer buffers used by an adapter rather than the source program.
+    pub buffers: BTreeMap<u32, usize>,
     /// Renderer adapters can replace a complete, statically indexed float4
     /// load. They must independently verify the producer and resulting reads.
     pub constants: BTreeMap<(u32, u32), String>,
     /// Checked enum encodings at an output lane. Only literal leaves and
     /// selections between those leaves may be remapped. Keys are float bits.
     pub output_values: BTreeMap<(u32, usize), BTreeMap<u32, u32>>,
+}
+
+pub struct Sample {
+    pub source_kind: u32,
+    pub target_kind: u32,
+    pub coordinates: String,
+    /// An optional component and scale applied to the fetched value.
+    pub scalar: Option<(char, f32)>,
 }
 
 /// Use the configured DXC or the compiler available on PATH. No package download or

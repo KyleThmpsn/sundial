@@ -599,11 +599,6 @@ fn inspect_snapshot(snapshot: &BatchBuildSnapshot) -> Result<SourceInspection, S
     })
 }
 
-#[cfg(test)]
-fn build_and_stage_snapshot(snapshot: &BatchBuildSnapshot) -> Result<BuildReport, String> {
-    build_and_stage_snapshot_with_progress(snapshot, |_| {})
-}
-
 pub fn build_and_stage_snapshot_with_progress(
     snapshot: &BatchBuildSnapshot,
     progress: impl FnMut(BuildProgress),
@@ -1078,12 +1073,14 @@ impl PackageSource {
         package_directory: &Path,
         ignored_authored_files: &[String],
     ) -> Result<Self, String> {
-        let managed = package_directory
+        // Readers of the install project every loaded mod over stock, Parhelion's own and other
+        // tools' alike. Builds read stock alone, so any mod content needs the isolated view.
+        let modded = package_directory
             .parent()
-            .map(sundial::package_authoring::mod_content::has_family)
+            .map(sundial::package_authoring::mod_content::content_files)
             .transpose()?
-            .unwrap_or(false);
-        if ignored_authored_files.is_empty() && !managed {
+            .is_some_and(|files| !files.is_empty());
+        if ignored_authored_files.is_empty() && !modded {
             return Ok(Self::Direct(package_directory.to_path_buf()));
         }
         FilteredPackageView::create(package_directory, ignored_authored_files).map(Self::Filtered)

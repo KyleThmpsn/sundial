@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 mod compound;
 mod mesh;
 pub(crate) use compound::{Instance, static_compound};
-pub(crate) use mesh::{bare_mesh, compressed_mesh};
+pub(crate) use mesh::bare_mesh;
 
 pub(crate) struct Hull {
     pub vertices: Vec<[f32; 3]>,
@@ -84,12 +84,6 @@ impl Hull {
 /// Whether `bytes` is a native Havok 2012.2 packfile whose first object is of class `root`.
 pub(crate) fn rooted(bytes: &[u8], root: &str) -> bool {
     Template::read(bytes, root).is_ok()
-}
-
-/// Whether `bytes` is a native Havok 2012.2 packfile rooted at `root` that holds an object of
-/// class `class`.
-pub(crate) fn holds(bytes: &[u8], root: &str, class: &str) -> bool {
-    Template::read(bytes, root).is_ok_and(|template| template.objects.contains_key(class))
 }
 
 struct Template {

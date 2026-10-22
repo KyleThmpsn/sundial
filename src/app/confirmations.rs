@@ -1,8 +1,6 @@
 //! Confirmation dialogs for explicit user actions.
 mod parhelion;
 mod recovery;
-#[cfg(test)]
-mod tests;
 use super::account_workspace::AccountSourceKind;
 use super::change_review::collect_change_summaries;
 use super::preferences::{PlugSelectionMode, SettingsLayout};

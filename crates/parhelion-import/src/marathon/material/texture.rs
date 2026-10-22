@@ -7,6 +7,7 @@ use anyhow::{Context, Result, ensure};
 
 fn mip_size(width: usize, height: usize, format: u32) -> Result<usize> {
     let bytes = match format {
+        61 => width.checked_mul(height),
         28 | 29 => width.checked_mul(height).and_then(|n| n.checked_mul(4)),
         71 | 72 | 80 => width
             .div_ceil(4)
@@ -26,12 +27,17 @@ fn storage(source: &mut Reader, tag: u32, header: &Payload) -> Result<Vec<u8>> {
         header.0.len() == 64
             && header.u16(32)? == 0xcafe
             && header.u16(38)? == 1
-            && header.u16(40)? == 1
+            && matches!(header.u16(40)?, 1 | 6)
             && header.u16(42)? > 0,
-        "Marathon material requires an ordinary 2D texture"
+        "Marathon material requires a 2D texture or six-face cube"
     );
     let width = usize::from(header.u16(34)?);
     let height = usize::from(header.u16(36)?);
+    let layers = usize::from(header.u16(40)?);
+    ensure!(
+        layers == 1 || width == height && header.u16(42)? == 1,
+        "Marathon cube must contain six square, untiled faces"
+    );
     let mips = header.u8(45)?;
     ensure!(
         (1..=16384).contains(&width)
@@ -45,11 +51,11 @@ fn storage(source: &mut Reader, tag: u32, header: &Payload) -> Result<Vec<u8>> {
     let mut total = 0usize;
     for mip in 0..mips {
         total = total
-            .checked_add(mip_size(
-                (width >> mip).max(1),
-                (height >> mip).max(1),
-                format,
-            )?)
+            .checked_add(
+                mip_size((width >> mip).max(1), (height >> mip).max(1), format)?
+                    .checked_mul(layers)
+                    .context("Marathon cube mip size overflow")?,
+            )
             .context("Marathon mip chain size overflow")?;
         boundaries.push(total);
     }
@@ -91,7 +97,9 @@ pub(super) fn build(
         .with_context(|| format!("Reading Marathon texture {tag:08X}"))?;
     let format = original.u32(4)?;
     // Fixed resources need the native detail-texture package metadata.
-    let template = if matches!(format, 29 | 72 | 99) {
+    let template = if original.u16(40)? == 6 {
+        cube_template(native)?
+    } else if matches!(format, 29 | 72 | 99) {
         0x80ec31b9
     } else {
         0x80ec31bc
@@ -113,4 +121,29 @@ pub(super) fn build(
     )?;
     graph.add(&name, template, &header, Some(&data), vec![])?;
     Ok(name)
+}
+
+fn cube_template(native: &mut Reader) -> Result<u32> {
+    // The native transparent material supplies a real cube resource and its
+    // package metadata. A six-layer resource must not borrow a 2D envelope.
+    let material = native.tag(0x80ec271f, Some(0x808071e8))?;
+    for row in material.array(0x2d0, 8, Some(0x80807211))? {
+        let tag = material.u32(row + 4)?;
+        let header = native.tag(tag, None)?;
+        if header.0.len() == 40 && header.u16(18)? == 1 && header.u16(20)? == 6 {
+            ensure!(
+                native
+                    .manager
+                    .get_entry(tag)
+                    .is_some_and(|entry| entry.file_type == 32)
+                    && native
+                        .manager
+                        .get_entry(native.reference(tag)?)
+                        .is_some_and(|entry| entry.file_type == 40),
+                "Native cube package metadata differs"
+            );
+            return Ok(tag);
+        }
+    }
+    anyhow::bail!("Native transparent material has no cube template")
 }

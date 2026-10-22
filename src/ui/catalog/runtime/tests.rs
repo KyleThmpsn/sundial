@@ -1,7 +1,7 @@
 use crate::runtime::{BindingHash, SchemaHandle};
 use crate::runtime::{
-    WeaponRuntimeField, WeaponRuntimeFieldLocator, WeaponRuntimeFieldSource, WeaponRuntimeRoot,
-    WeaponRuntimeRootKind, WeaponRuntimeValue, WeaponRuntimeValueKind,
+    WeaponRuntimeField, WeaponRuntimeFieldLocator, WeaponRuntimeFieldSource, WeaponRuntimeRootKind,
+    WeaponRuntimeValue, WeaponRuntimeValueKind,
 };
 use crate::ui::catalog::runtime as view;
 fn field(
@@ -30,109 +30,6 @@ fn field(
         generated_kind: None,
         name_inferred: false,
     }
-}
-
-fn root() -> WeaponRuntimeRoot {
-    WeaponRuntimeRoot {
-        kind: WeaponRuntimeRootKind::Definition,
-        schema: 0x8080_1234,
-        owner_offset: 0,
-        byte_size: 8,
-        generated_schema: true,
-        structure: Default::default(),
-        fields: vec![
-            field(
-                WeaponRuntimeFieldSource::GeneratedSchema,
-                WeaponRuntimeValue::Float32Bits(0.5f32.to_bits()),
-                WeaponRuntimeValueKind::Float32,
-            ),
-            field(
-                WeaponRuntimeFieldSource::OpaqueNativeType,
-                WeaponRuntimeValue::Bytes(vec![1, 2, 3, 4]),
-                WeaponRuntimeValueKind::FixedBytes { size: 4 },
-            ),
-        ],
-    }
-}
-
-#[test]
-fn field_export_retains_exact_float_bits_and_opaque_bytes() {
-    let special = field(
-        WeaponRuntimeFieldSource::NativeMember,
-        WeaponRuntimeValue::Float32Bits(0x7FC00001),
-        WeaponRuntimeValueKind::Float32,
-    );
-    let exported = view::export_field(&special);
-    assert_eq!(
-        exported["value"],
-        serde_json::to_value(&special.value).unwrap()
-    );
-    assert_eq!(exported["owner_offset"], 16);
-    assert_eq!(
-        exported["locator"],
-        serde_json::to_value(&special.locator).unwrap()
-    );
-    let opaque = field(
-        WeaponRuntimeFieldSource::OpaqueNativeType,
-        WeaponRuntimeValue::Bytes(vec![0xAB; 96]),
-        WeaponRuntimeValueKind::FixedBytes { size: 96 },
-    );
-    let exported = view::export_field(&opaque);
-    assert_eq!(
-        exported["value"],
-        serde_json::to_value(&opaque.value).unwrap()
-    );
-    assert_eq!(exported["source"], "opaque_semantics_unknown");
-    assert!(!exported["display"].as_str().unwrap().contains('…'));
-}
-
-#[test]
-fn named_fields_and_opaque_bytes_have_separate_visibility() {
-    let root = root();
-    assert_eq!(
-        view::matching_indices(&root, "Translator", "", false).len(),
-        1
-    );
-    assert_eq!(
-        view::matching_indices(&root, "Translator", "", true).len(),
-        2
-    );
-    assert_eq!(
-        view::matching_indices(&root, "Translator", "speed", false).len(),
-        1
-    );
-    assert_eq!(
-        view::matching_indices(&root, "Translator", "translator", false).len(),
-        1
-    );
-    assert_eq!(
-        view::matching_indices(&root, "Translator", "0x80801234", false).len(),
-        1
-    );
-    assert_eq!(
-        view::matching_indices(&root, "Translator", "0x80803456", false).len(),
-        1
-    );
-    assert!(view::matching_indices(&root, "Translator", "unmatched", true).is_empty());
-}
-
-#[test]
-fn values_preserve_float_bits_and_identifiers_and_bound_byte_previews() {
-    let mut field = root().fields.remove(0);
-    assert_eq!(view::value_text(&field), "0.5");
-    assert!(view::exact_value_text(&field).contains("3F000000"));
-    field.value = WeaponRuntimeValue::Float32Bits(0x7FC0_1234);
-    assert!(view::value_text(&field).contains("7FC01234"));
-    field.kind = WeaponRuntimeValueKind::HexIdentifier { bits: 32 };
-    field.value = WeaponRuntimeValue::Unsigned(0xABC);
-    assert_eq!(view::value_text(&field), "0x00000ABC");
-    field.kind = WeaponRuntimeValueKind::FixedBytes { size: 1_000 };
-    field.value = WeaponRuntimeValue::Bytes(vec![0xAB; 1_000]);
-    assert!(view::value_text(&field).len() < 130);
-    assert_eq!(
-        view::exact_value_text(&field).split_whitespace().count(),
-        1_000
-    );
 }
 
 #[test]

@@ -4,12 +4,20 @@ use crate::tiger::shader::{self, dxil, identity::Stage, inputs::Inspection};
 use std::collections::{BTreeMap, BTreeSet};
 mod channel;
 mod expression;
+mod lighting;
 mod resources;
 mod texture;
 mod vertex;
 use resources::{program, vectors};
 
-fn pixel(listing: Option<&str>, surface: &geometry::Surface, model: &Payload) -> Result<String> {
+fn pixel(
+    listing: Option<&str>,
+    surface: &geometry::Surface,
+    model: &Payload,
+    values: &[[u8; 16]],
+    written: &BTreeSet<usize>,
+    viewports: &BTreeSet<u32>,
+) -> Result<String> {
     let Some(listing) = listing else {
         ensure!(
             matches!(surface.stage, 4 | 13),
@@ -19,6 +27,7 @@ fn pixel(listing: Option<&str>, surface: &geometry::Surface, model: &Payload) ->
     };
     let parsed = dxil::Program::parse(listing)?;
     let mut options = dxil::Options {
+        perspective_depth: surface.stage == 8,
         targets: parsed
             .outputs
             .iter()
@@ -76,12 +85,39 @@ fn pixel(listing: Option<&str>, surface: &geometry::Surface, model: &Payload) ->
             .insert((0, 0), "float4(cb12[12].xy,0,0)".into());
     }
     if surface.stage == 8 {
+        for &row in viewports {
+            // Source depth coordinates are already normalized screen UVs.
+            // Native full-size depth therefore needs dimensions, not unit scale.
+            options
+                .constants
+                .insert((0, row), "float4(cb12[12].xy,0,0)".into());
+        }
         // Retain the source shader's unfogged surface branch and apply native
         // inverse exposure. Source atmospheric volumes and velocity are absent.
         options.constants.insert((2, 7), "float4(1,1,1,1)".into());
+        options.texture_registers.insert(23, 18);
         options
             .constants
             .insert((13, 1), "float4(cb13[0].y,0,0,1)".into());
+        let bindings = parsed.resources()?;
+        if (16..=18).all(|slot| bindings.get(&(0, slot)).is_some_and(|&(kind, _)| kind == 4)) {
+            lighting::adapt(&mut options, surface);
+        }
+    }
+    for (row, value) in values.iter().enumerate() {
+        if !written.contains(&row) {
+            let lanes = value
+                .chunks_exact(4)
+                .map(|lane| format!("{}u", u32::from_le_bytes(lane.try_into().unwrap())))
+                .collect::<Vec<_>>()
+                .join(",");
+            // Preserve exact source bits. Only the stage expression can mutate
+            // material rows, and explicit renderer adapters own their overrides.
+            options
+                .constants
+                .entry((0, row as u32))
+                .or_insert_with(|| format!("asfloat(uint4({lanes}))"));
+        }
     }
     parsed.hlsl(&options)
 }
@@ -99,8 +135,16 @@ fn inspect(code: &[u8], stage: u8) -> Result<shader::inputs::Inputs> {
         );
         match slot {
             0 => {}
+            2 => ensure!(
+                stage == 8
+                    && reads.iter().all(|r| r.index == Some(0)
+                        && r.lanes.bytes().all(|lane| matches!(lane, b'x' | b'y'))),
+                "Unmapped Marathon depth constants"
+            ),
             12 => ensure!(
-                reads.iter().all(|r| matches!(r.index, Some(7 | 12 | 13))),
+                reads
+                    .iter()
+                    .all(|r| matches!(r.index, Some(6 | 7 | 12 | 13))),
                 "Unmapped Marathon view constant"
             ),
             13 => ensure!(
@@ -110,12 +154,23 @@ fn inspect(code: &[u8], stage: u8) -> Result<shader::inputs::Inputs> {
                         && r.lanes.bytes().all(|lane| lane == b'y')),
                 "Unmapped Marathon frame constant"
             ),
-            _ => anyhow::bail!("Unmapped Marathon constant buffer {slot}"),
+            8 => ensure!(
+                stage == 8
+                    && reads.iter().all(|r| r.index == Some(4)
+                        && r.lanes.bytes().all(|lane| matches!(lane, b'z' | b'w'))),
+                "Unmapped Marathon lighting constant"
+            ),
+            11 => ensure!(
+                stage == 8 && reads.iter().all(|r| matches!(r.index, Some(0..=2))),
+                "Unmapped Marathon rigid constant"
+            ),
+            _ => anyhow::bail!("Unmapped Marathon constant buffer {slot}: {reads:?}"),
         }
     }
     Ok(inspection)
 }
 
+#[allow(clippy::cognitive_complexity)]
 pub(super) fn build(
     source: &mut Reader,
     native: &mut Reader,
@@ -160,10 +215,42 @@ pub(super) fn build(
             _ => 0x80ec270d,
         };
         let shell = native.tag(template, Some(0x808071e8))?;
+        let values = resources::values(source, &material, 0x278)?;
+        let code = material
+            .array(0x298, 1, None)?
+            .into_iter()
+            .map(|row| material.u8(row))
+            .collect::<Result<Vec<_>>>()?;
+        let mut written = expression::written(&code)?;
+        let (metadata, samplers) = resources::inputs(source, &material)?;
+        if let std::collections::btree_map::Entry::Vacant(entry) = banks.entry(surface.entity) {
+            entry.insert(channel::bank(source, surface.entity)?);
+        }
+        let mut context = expression::Context {
+            constants: vectors(&material, 0x2a8)?,
+            local: &banks[&surface.entity],
+            parent: &parent,
+            objects: &objects,
+            globals: &globals,
+            metadata,
+            samplers,
+            authored: BTreeMap::new(),
+            full_viewport: surface.stage == 8,
+        };
+        let all_outputs = written.iter().map(|&row| row as u32).collect();
+        let planned = context.clone().lower(&code, &values, &all_outputs, false)?;
+        let mut specialized = values.clone();
+        for (&row, &value) in &planned.constants {
+            specialized[row] = value;
+            written.remove(&row);
+        }
         let pixel_text = pixel(
             shader_tags[1].map(|tag| listings[&tag].as_str()),
             surface,
             &model,
+            &specialized,
+            &written,
+            &planned.viewports,
         )
         .with_context(|| {
             format!(
@@ -185,10 +272,68 @@ pub(super) fn build(
             &pixel_text,
             false,
         )?;
-        let inspection = inspect(&pixel_code, surface.stage)?;
+        let inspection = inspect(&pixel_code, surface.stage).with_context(|| {
+            format!(
+                "Marathon material {:08X}, model {:08X}, stage {}: inspecting translated pixel shader {}",
+                surface.material, surface.model, surface.stage,
+                shader_tags[1].map(|tag| format!("{tag:08X}")).unwrap_or_else(|| "absent".into())
+            )
+        })?;
+        let scene_depth = surface.stage == 8 && inspection.resources.contains_key(&10);
+        if scene_depth {
+            ensure!(
+                pixel_text.contains("/* Native reciprocal depth */")
+                    && inspection.resources[&10]
+                        == "dcl_resource_texture2d (float,float,float,float) @"
+                    && inspection.constant_reads.get(&12).is_none_or(|reads| reads
+                        .iter()
+                        .all(|r| r.index != Some(13) || !r.lanes.contains('y'))),
+                "Source depth projection differs from the native reciprocal-depth contract"
+            );
+            ensure!(
+                material
+                    .array(0x280, 24, None)?
+                    .into_iter()
+                    .all(|row| material.u32(row).is_ok_and(|slot| slot != 10)),
+                "Scene depth conflicts with a fixed texture"
+            );
+            resources::scene_depth(source, native)?;
+        }
+        let scene_color = surface.stage == 8 && inspection.resources.contains_key(&18);
+        let forward_lighting = surface.stage == 8
+            && inspection
+                .resources
+                .keys()
+                .any(|slot| (12..=15).contains(slot));
+        if forward_lighting {
+            lighting::validate(source, native, &material, &inspection)?;
+        }
+        if scene_color {
+            ensure!(
+                pixel_text.contains("t23:register(t18)")
+                    && inspection.resources[&18]
+                        == "dcl_resource_texture2d (float,float,float,float) @",
+                "Source scene-color texture type differs"
+            );
+            ensure!(
+                material
+                    .array(0x280, 24, None)?
+                    .into_iter()
+                    .all(|row| { material.u32(row).is_ok_and(|slot| !matches!(slot, 18 | 23)) }),
+                "Source scene color conflicts with a fixed texture"
+            );
+            resources::scene_color(source, native)?;
+        }
         let vertex_tag = shader_tags[0].context("Missing source vertex program")?;
         let source_vertex = &listings[&vertex_tag];
-        let (vertex_text, uses_colors) = vertex::hlsl(source_vertex, &pixel_code, surface)
+        let vertex_values = resources::values(source, &material, 0x58)?;
+        let vertex_expression = material
+            .array(0x78, 1, None)?
+            .into_iter()
+            .map(|at| material.u8(at))
+            .collect::<Result<Vec<_>>>()?;
+        let vertex_written = expression::written(&vertex_expression)?;
+        let (vertex_text, uses_colors) = vertex::hlsl(source_vertex, &pixel_code, surface, &vertex_values, &vertex_written)
             .with_context(|| {
                 format!(
                     "Marathon material {:08X}, model {:08X}, stage {}: translating vertex shader {:08X}",
@@ -220,19 +365,6 @@ pub(super) fn build(
         }
         let bindings = resources::bindings(source, native, graph, &material, &inspection)?;
         bindings.append(native, &mut bytes, &mut patches)?;
-        if let std::collections::btree_map::Entry::Vacant(entry) = banks.entry(surface.entity) {
-            entry.insert(channel::bank(source, surface.entity)?);
-        }
-        let values = vectors(&material, 0x2c8)?;
-        let mut context = expression::Context {
-            constants: vectors(&material, 0x2a8)?,
-            local: &banks[&surface.entity],
-            parent: &parent,
-            objects: &objects,
-            globals: &globals,
-            metadata: bindings.metadata,
-            samplers: bindings.sampler_indices,
-        };
         let live = inspection
             .constant_reads
             .get(&0)
@@ -244,17 +376,33 @@ pub(super) fn build(
             live.iter().all(|i| (*i as usize) < values.len()),
             "Source material constant buffer is truncated"
         );
-        let code = material
-            .array(0x298, 1, None)?
-            .into_iter()
-            .map(|row| material.u8(row))
-            .collect::<Result<Vec<_>>>()?;
-        let lowered = context.lower(&code, &values, &live)?;
+        let lowered = context.lower(&code, &values, &live, true)?;
+        for slot in &lowered.resources {
+            ensure!(
+                inspection.resources.get(slot).is_none_or(|kind|
+                    kind == "dcl_resource_texture2d (float,float,float,float) @"),
+                "Translated scene texture has an incompatible resource type"
+            );
+        }
+        let unbound: Vec<_> = inspection
+            .resources
+            .keys()
+            .filter(|&&slot| {
+                !bindings.textures.contains_key(&slot)
+                    && !lowered.resources.contains(&slot)
+                    && !(scene_color && slot == 18)
+                    && !(scene_depth && slot == 10)
+                    && !(forward_lighting && (12..=15).contains(&slot))
+            })
+            .copied()
+            .collect();
         ensure!(
-            inspection.resources.keys().all(
-                |slot| bindings.textures.contains_key(slot) || lowered.resources.contains(slot)
-            ),
-            "Translated shader has an unbound texture"
+            unbound.is_empty(),
+            "Marathon material {:08X}, model {:08X}, stage {} requires source renderer texture registers {:?} with no validated native binding",
+            surface.material,
+            surface.model,
+            surface.stage,
+            unbound
         );
         ensure!(
             inspection
@@ -264,6 +412,11 @@ pub(super) fn build(
             "Translated shader has an unbound sampler"
         );
         append(&mut bytes, 0x2e8, 0x80800009, &lowered.code, 1)?;
+        let authored: Vec<_> = context
+            .authored
+            .iter()
+            .map(|(&input, &constant)| super::inputs::Binding { constant, input })
+            .collect();
         append(
             &mut bytes,
             0x2f8,
@@ -271,6 +424,7 @@ pub(super) fn build(
             &context.constants.into_iter().flatten().collect::<Vec<_>>(),
             16,
         )?;
+        let has_values = !values.is_empty();
         append(
             &mut bytes,
             0x318,
@@ -283,8 +437,14 @@ pub(super) fn build(
             0x338,
             &u32::try_from(objects.len())?.to_le_bytes(),
         )?;
-        bytes[0x33c] = 0x10;
-        put(&mut bytes, 0x348, &0u32.to_le_bytes())?;
+        // Native writable storage requires a nonempty initial output table.
+        // The compiled reads were checked against this table before emission.
+        bytes[0x33c] = if has_values { 0x10 } else { 0 };
+        put(
+            &mut bytes,
+            0x348,
+            &(if has_values { 0u32 } else { u32::MAX }).to_le_bytes(),
+        )?;
         graph.add(
             &format!("material-{key:08X}"),
             template,
@@ -292,7 +452,11 @@ pub(super) fn build(
             None,
             patches,
         )?;
-        reports.push(json!({"material":format!("{:08X}",surface.material),"model":format!("{:08X}",surface.model),"source_stage":surface.stage,"native_stage":surface.native_stage(),"pixel":shader_tags[1].map(|t|format!("{t:08X}")),"textures":bindings.textures,"vertex_colors":uses_colors,"inputs":lowered.evidence,"pixel_bindings":inspection,"surface_flags":if surface.stage==0{json!("Source standard surface flags adapted to native 0/0.33 encoding")}else{Value::Null},"atmosphere":if surface.stage==8{json!("Source unfogged surface with native exposure")}else{Value::Null}}));
+        if !authored.is_empty() {
+            graph.nodes.last_mut().context("Authored material node")?["material_inputs"] =
+                json!(authored);
+        }
+        reports.push(json!({"material":format!("{:08X}",surface.material),"model":format!("{:08X}",surface.model),"source_stage":surface.stage,"native_stage":surface.native_stage(),"pixel":shader_tags[1].map(|t|format!("{t:08X}")),"textures":bindings.textures,"vertex_colors":uses_colors,"inputs":lowered.evidence,"specialized_inputs":planned.evidence.iter().filter(|row| row["output"].as_u64().is_some_and(|i| planned.constants.contains_key(&(i as usize)))).collect::<Vec<_>>(),"pixel_bindings":inspection,"surface_flags":if surface.stage==0{json!("Source standard surface flags adapted to native 0/0.33 encoding")}else{Value::Null},"atmosphere":if surface.stage==8{json!("Source unfogged surface with native exposure")}else{Value::Null}}));
     }
     write_json(&graph.root.join("material-report.json"), &json!(reports))?;
     Ok(reports)

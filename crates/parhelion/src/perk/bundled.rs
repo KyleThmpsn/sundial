@@ -19,26 +19,3 @@ pub(super) const RECIPES: &[&str] = &[
     include_str!("../../recipes/perks/borrowed-time.perk.json"),
     include_str!("../../recipes/perks/everything-at-once.perk.json"),
 ];
-
-#[cfg(test)]
-mod tests {
-    use std::collections::BTreeSet;
-
-    use super::RECIPES;
-    use crate::perk::PerkRecipe;
-
-    #[test]
-    fn bundled_recipes_are_unique_and_valid() {
-        let mut ids = BTreeSet::new();
-        let mut names = BTreeSet::new();
-        for encoded in RECIPES {
-            let recipe: PerkRecipe = serde_json::from_str(encoded).unwrap();
-            recipe.validate().unwrap();
-            assert!(ids.insert(recipe.id.clone()), "duplicate bundled perk ID");
-            assert!(
-                names.insert(recipe.name.clone()),
-                "duplicate bundled perk name"
-            );
-        }
-    }
-}

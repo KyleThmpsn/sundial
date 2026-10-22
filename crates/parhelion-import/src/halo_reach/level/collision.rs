@@ -92,9 +92,9 @@ pub struct Polygon {
 /// definition's polygons in its own space.
 pub struct Collision {
     pub structure: Vec<Polygon>,
+    /// The seam each of `structure` is a face of, if any.
+    pub seams: Vec<Option<i16>>,
     pub definitions: Vec<Vec<Polygon>>,
-    /// The structure's surfaces left out as faces of a seam to another loaded BSP.
-    pub open_seam_surfaces: usize,
 }
 
 impl Collision {
@@ -123,7 +123,7 @@ impl Collision {
 }
 
 /// The polygons of the collision BSP at `bsp` in `definition`, laid out as `layout`, without the
-/// surfaces whose collision material index `open` holds, and how many it left out.
+/// surfaces whose collision material index `open` holds, each with its collision material index.
 fn polygons(
     definition: &Definition,
     cache: &Cache,
@@ -131,11 +131,11 @@ fn polygons(
     bsp: usize,
     layout: &Layout,
     open: &BTreeSet<usize>,
-) -> Result<(Vec<Polygon>, usize)> {
+) -> Result<Vec<(Polygon, i16)>> {
     let (surfaces, surface_rows) =
         definition.data(cache, pages, bsp + layout.surfaces, layout.surface_size)?;
     if surfaces == 0 {
-        return Ok((Vec::new(), 0));
+        return Ok(Vec::new());
     }
     let (edges, edge_rows) = definition.data(cache, pages, bsp + layout.edges, layout.edge_size)?;
     let (vertices, vertex_rows) =
@@ -160,12 +160,10 @@ fn polygons(
         }))
     };
     let mut out = Vec::with_capacity(surfaces);
-    let mut left_out = 0;
     for surface in 0..surfaces {
         let at = surface * layout.surface_size + layout.surface_material;
         let material = i16::from_le_bytes([surface_rows[at], surface_rows[at + 1]]);
         if usize::try_from(material).is_ok_and(|material| open.contains(&material)) {
-            left_out += 1;
             continue;
         }
         let first = index_at(
@@ -196,9 +194,9 @@ fn polygons(
             }
             ensure!(points.len() < MAX_EDGES, "Collision surface does not close");
         }
-        out.push(Polygon { points });
+        out.push((Polygon { points }, material));
     }
-    Ok((out, left_out))
+    Ok(out)
 }
 
 /// Each collision material of structure BSP `tag` with the seam it marks, if any.
@@ -239,14 +237,16 @@ pub fn read(
     open: &BTreeSet<i16>,
 ) -> Result<Collision> {
     let definition = Definition::load(cache, tag, COLLISION_RESOURCE)?;
-    let open_materials = material_seams(cache, tag)?
-        .into_iter()
+    let material_seams = material_seams(cache, tag)?;
+    let open_materials = material_seams
+        .iter()
+        .copied()
         .enumerate()
         .filter(|(_, seam)| seam.is_some_and(|seam| open.contains(&seam)))
         .map(|(material, _)| material)
         .collect::<BTreeSet<_>>();
     let mut structure = Vec::new();
-    let mut open_seam_surfaces = 0;
+    let mut seams = Vec::new();
     for (root, size, layout) in [
         (ROOT_STRUCTURE, STRUCTURE_SIZE, &SMALL),
         (ROOT_LARGE_STRUCTURE, LARGE_STRUCTURE_SIZE, &LARGE),
@@ -257,10 +257,16 @@ pub fn read(
             "The structure's collision BSP block at {root:#x} holds {count} rows"
         );
         if count == 1 {
-            let (polygons, left_out) =
-                polygons(&definition, cache, pages, start, layout, &open_materials)?;
-            structure.extend(polygons);
-            open_seam_surfaces += left_out;
+            for (polygon, material) in
+                polygons(&definition, cache, pages, start, layout, &open_materials)?
+            {
+                seams.push(
+                    usize::try_from(material)
+                        .ok()
+                        .and_then(|material| material_seams.get(material).copied().flatten()),
+                );
+                structure.push(polygon);
+            }
         }
     }
     let (count, space, start) =
@@ -279,13 +285,13 @@ pub fn read(
                 &SMALL,
                 &BTreeSet::new(),
             )
-            .map(|(polygons, _)| polygons)
+            .map(|polygons| polygons.into_iter().map(|(polygon, _)| polygon).collect())
             .with_context(|| format!("Instanced geometry definition {index}"))
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(Collision {
         structure,
+        seams,
         definitions,
-        open_seam_surfaces,
     })
 }

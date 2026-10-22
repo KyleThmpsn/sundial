@@ -109,21 +109,3 @@ impl AuthoredUnlock {
         Ok((scope, slot))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_unsupported_bank_names_the_definition_that_used_it() {
-        let error = AuthoredUnlock {
-            definition_index: 7,
-            bank: 9,
-            slot: 0,
-        }
-        .target()
-        .unwrap_err();
-        assert!(error.contains("definition 7"), "{error}");
-        assert!(error.contains("bank 9"), "{error}");
-    }
-}

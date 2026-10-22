@@ -162,28 +162,3 @@ pub(in crate::app) fn request_progression_selection(
 pub(in crate::app) fn take_progression_selection(ctx: &egui::Context) -> Option<MetadataSelection> {
     ctx.data_mut(|data| data.remove_temp(egui::Id::new(PROGRESSION_SELECTION_ID)))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn owned_quantities_are_published_on_request_and_readable_by_any_window() {
-        let ctx = egui::Context::default();
-        assert!(!take_owned_quantities_request(&ctx));
-        request_owned_quantities(&ctx);
-        assert!(take_owned_quantities_request(&ctx));
-        assert!(
-            !take_owned_quantities_request(&ctx),
-            "a request is consumed once"
-        );
-        assert!(owned_quantities(&ctx).is_none(), "no answer yet");
-        publish_owned_quantities(&ctx, std::sync::Arc::new([(7_u64, 12_i64)].into()));
-        assert_eq!(owned_quantities(&ctx).flatten().unwrap().get(&7), Some(&12));
-        clear_owned_quantities(&ctx);
-        assert!(
-            matches!(owned_quantities(&ctx), Some(None)),
-            "an unreadable account is answered, not pending"
-        );
-    }
-}

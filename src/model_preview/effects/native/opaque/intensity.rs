@@ -155,12 +155,18 @@ pub(super) fn recover(code: &Code) -> bool {
         || (encoder(code, b).is_some() && visibility(code, a))
 }
 
-/// Native vehicle lights select packed emission only when its source exceeds the
-/// authored threshold. The other branch retains fully visible, nonemitting material.
+/// Recognize the native conditional intensity writer or its fully folded literal.
+/// The conditional false branch retains fully visible, nonemitting material.
 pub(in crate::model_preview::effects::native) fn recover_surface(code: &Code) -> bool {
     let Some((at, row)) = writer(code) else {
         return false;
     };
+    if row.code == 54 && row.operands[1].kind == 4 && row.operands[1].modifier == 0 {
+        let packed = f32::from_bits(row.operands[1].literal[row.operands[1].lanes[1]]);
+        // Closed material expressions can fold the complete logarithmic writer.
+        // Its upper endpoint is (1 + 1 + 2/255) / 2, before the UNORM target clamps it.
+        return packed.is_finite() && packed > 0.5 && packed <= 1.0 + 1.0 / 255.0;
+    }
     if row.code != 55 || row.saturate || !value(row, at, 1, 3).number(0.5) {
         return false;
     }

@@ -39,6 +39,7 @@ pub(super) fn class_groups(
 /// Returns the choice clicked.
 fn draw_choices<K: Copy>(
     ui: &mut egui::Ui,
+    catalog: Option<&InvestmentCatalog>,
     groups: &[(u8, Vec<&SubclassSummary>)],
     search: &str,
     choices: impl Fn(&SubclassSummary) -> Vec<Choice<K>>,
@@ -97,17 +98,16 @@ fn draw_choices<K: Copy>(
                         let response = if choice.taken {
                             response.on_disabled_hover_text("Already Chosen")
                         } else {
-                            response.on_hover_ui(|ui| {
-                                draw_display_tooltip(
-                                    ui,
-                                    DisplayTooltip {
-                                        icon: choice.icon.as_ref(),
-                                        name: &choice.label,
-                                        subtitle: Some(&choice.subtitle),
-                                        description: choice.description.as_deref(),
-                                    },
-                                );
-                            })
+                            display_tooltip(
+                                response,
+                                catalog,
+                                DisplayTooltip {
+                                    icon: choice.icon.as_ref(),
+                                    name: &choice.label,
+                                    subtitle: Some(&choice.subtitle),
+                                    description: choice.description.as_deref(),
+                                },
+                            )
                         };
                         if response.clicked() && !choice.current {
                             picked = Some(choice.key);
@@ -155,6 +155,7 @@ impl PackageAuthoringApp {
         let ctx = ui.ctx().clone();
         draw_choices(
             ui,
+            self.catalog.as_ref(),
             &class_groups(&self.subclasses, base.class_type),
             search,
             |option| {
@@ -199,6 +200,7 @@ impl PackageAuthoringApp {
         let ctx = ui.ctx().clone();
         draw_choices(
             ui,
+            self.catalog.as_ref(),
             &class_groups(&self.subclasses, base.class_type),
             search,
             |option| {
@@ -254,6 +256,7 @@ impl PackageAuthoringApp {
             .collect::<Vec<_>>();
         draw_choices(
             ui,
+            self.catalog.as_ref(),
             &class_groups(&self.subclasses, base.class_type),
             search,
             |option| {

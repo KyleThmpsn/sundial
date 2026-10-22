@@ -57,6 +57,68 @@ pub(super) fn supported(code: &Code) -> bool {
         })
 }
 
+// Blend state 26 writes premultiplied targets with inverse coverage in W.
+// Follow the common coverage operand, including the fused target-two Y/W writer.
+// The normal radius itself can depend on material branches, so finite packed values
+// are checked when the original program executes.
+pub(super) fn full(code: &Code) -> bool {
+    let Some((at, rgb)) = output(code, 1, 0) else {
+        return false;
+    };
+    let Some((_, alpha)) = output(code, 1, 3) else {
+        return false;
+    };
+    let Some((_, surface)) = output(code, 2, 1) else {
+        return false;
+    };
+    let Some((_, metal)) = output(code, 2, 0) else {
+        return false;
+    };
+    if rgb.code != 56
+        || rgb.saturate
+        || rgb.operands[0].mask != 7
+        || alpha.code != 0
+        || alpha.saturate
+        || !literal(&alpha.operands[2], 3, 1.0)
+        || surface.code != 50
+        || surface.saturate
+        || surface.operands[0].mask != 10
+        || !literal(&surface.operands[2], 1, 0.5)
+        || !literal(&surface.operands[2], 3, -1.0)
+        || !literal(&surface.operands[3], 1, 0.0)
+        || !literal(&surface.operands[3], 3, 1.0)
+        || metal.code != 54
+        || !literal(&metal.operands[1], 0, 0.0)
+    {
+        return false;
+    }
+    let same = |a: &Operand, lane: usize, b: &Operand, other: usize| {
+        a.kind == 0
+            && b.kind == 0
+            && a.indices.len() == 1
+            && b.indices.len() == 1
+            && a.indices[0].relative.is_none()
+            && b.indices[0].relative.is_none()
+            && a.indices[0].base == b.indices[0].base
+            && a.lanes[lane] == b.lanes[other]
+    };
+    (1..=2).any(|coverage| {
+        let factor = &rgb.operands[coverage];
+        factor.modifier == 0
+            && (0..3).all(|lane| same(factor, lane, &surface.operands[1], 1))
+            && surface.operands[1].modifier == 0
+            && same(factor, 0, &surface.operands[1], 3)
+            && alpha.operands[1].modifier == 1
+            && same(factor, 0, &alpha.operands[1], 3)
+            && producer(code, &rgb.operands[3 - coverage], 0, at).is_some_and(|(_, packed, _)| {
+                packed.code == 50
+                    && packed.saturate
+                    && packed.operands[0].mask == 7
+                    && (0..3).all(|lane| literal(&packed.operands[3], lane, 0.5))
+            })
+    })
+}
+
 pub(super) fn empty() -> Sample {
     Sample {
         surface: shader::Sample {
@@ -72,7 +134,12 @@ pub(super) fn empty() -> Sample {
     }
 }
 
-pub(super) fn unpack(targets: &mut [[f32; 4]; 16], pixel: Pixel<'_>, coverage: f32) -> Option<()> {
+pub(super) fn unpack(
+    targets: &mut [[f32; 4]; 16],
+    pixel: Pixel<'_>,
+    coverage: f32,
+    full: bool,
+) -> Option<()> {
     for value in &mut targets[0][..3] {
         *value /= coverage;
     }
@@ -99,6 +166,17 @@ pub(super) fn unpack(targets: &mut [[f32; 4]; 16], pixel: Pixel<'_>, coverage: f
             *value /= normal_coverage;
         }
     }
-    targets[2] = [0.0, 0.5, 0.0, 1.0];
+    if full {
+        let alpha = (1.0 - targets[2][3]).clamp(0.0, 1.0);
+        if alpha <= 1e-8 {
+            return None;
+        }
+        for value in &mut targets[2][..3] {
+            *value /= alpha;
+        }
+        targets[2][3] = 1.0;
+    } else {
+        targets[2] = [0.0, 0.5, 0.0, 1.0];
+    }
     Some(())
 }

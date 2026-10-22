@@ -86,6 +86,7 @@ impl PackageAuthoringApp {
                         .add_enabled_ui(!busy, |ui| {
                             draw_library_row(
                                 ui,
+                                self.catalog.as_ref(),
                                 &mut self.library_icons,
                                 entry,
                                 details,

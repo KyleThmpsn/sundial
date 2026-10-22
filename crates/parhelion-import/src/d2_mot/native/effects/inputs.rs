@@ -77,6 +77,35 @@ pub(super) fn validate_pixel_view(root: &Path) -> Result<()> {
     pixel_view_programs(&scopes[0], &scopes[1]).map_err(crate::d2_mot::source_limit)
 }
 
+/// Native and modern materials use frame row 4 X/Y for the same backscatter scale and
+/// exponent equations. The renderer owns this buffer, not the transparent atmosphere scope.
+pub(super) fn validate_pixel_frame(root: &Path, text: &str) -> Result<()> {
+    ensure!(
+        reads(text, 13).is_some_and(|rows| rows.iter().all(|r| *r <= 1 || *r == 4)),
+        "unmapped pixel frame field"
+    );
+    for (era, array, slot, count) in [("modern", 0x90, 0xB0, 14), ("native", 0x88, 0xB8, 13)] {
+        let folder = root.join(format!("tfx-{era}"));
+        let context = load(&folder.join("context.json"))?;
+        let frames = context["scopes"]
+            .as_array()
+            .context("renderer scopes")?
+            .iter()
+            .filter(|s| s["name"] == "frame")
+            .collect::<Vec<_>>();
+        ensure!(frames.len() == 1, "missing or ambiguous frame scope");
+        let p = Payload(fs::read(folder.join(format!(
+            "raw/{}.bin",
+            frames[0]["tag"].as_str().context("frame tag")?
+        )))?);
+        ensure!(
+            p.u32(slot)? == 13 && p.array(array, 16, Some(0x80800090))?.len() == count,
+            "pixel frame binding differs"
+        );
+    }
+    Ok(())
+}
+
 /// Resolve split and combined dye banks from the source material's enabled scopes.
 pub(super) fn dye_inputs(
     text: &str,

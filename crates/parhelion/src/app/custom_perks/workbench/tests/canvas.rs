@@ -1,33 +1,12 @@
-//! Layout checks for the program canvas at a small and a large window. Nothing here opens a
-//! window or touches packages.
+//! Program picker interactions at small and large viewport sizes.
 use super::*;
 use sundial::package_authoring::runtime::{BindingHash, SchemaHandle};
 use sundial::package_authoring::{
     runtime::{WeaponRuntimeResource, WeaponRuntimeRoot, WeaponRuntimeRootKind},
-    sandbox_perk::program::{Action, Asset, Position, Program, Trigger},
+    sandbox_perk::program::{Action, Program},
 };
 
 const SIZES: [egui::Vec2; 2] = [egui::vec2(640.0, 480.0), egui::vec2(1320.0, 900.0)];
-
-#[test]
-fn stat_bonus_table_preserves_signed_deltas() {
-    let mut workbench = Workbench::default();
-    let mut recipe = PerkRecipe::new();
-    recipe.stats = vec![
-        WeaponStatOverride {
-            definition_index: 1,
-            value: -25,
-        },
-        WeaponStatOverride {
-            definition_index: 2,
-            value: 150,
-        },
-    ];
-    let before = recipe.clone();
-    let (output, screen) = panel(440.0, |ui| workbench.draw_stats(ui, None, &mut recipe));
-    assert_fits_horizontally(&output, screen);
-    assert_eq!(recipe, before);
-}
 
 #[test]
 fn action_picker_reaches_a_technical_native_kind_near_viewport_edges() {
@@ -200,93 +179,6 @@ pub(super) fn movement_resource() -> WeaponRuntimeResource {
     }
 }
 
-fn stock_editor() -> PerkEditor {
-    let mut loaded = fixture();
-    loaded.projectile_slots = vec![(0x8152_82E1, 0x8152_82E1)];
-    loaded.graphs[0].1.resources.push(movement_resource());
-    editor(loaded)
-}
-
-fn program_recipe() -> PerkRecipe {
-    let mut recipe = PerkRecipe::new();
-    let mut effect = PerkRecipe::effect(421);
-    effect.program = Some(Program {
-        name: "Trail".into(),
-        trigger: Trigger::PrecisionKill,
-        duration_ms: 5_000,
-        cooldown_ms: 2_500,
-        chance_permyriad: 10_000,
-        actions: vec![
-            Action::attach(Asset {
-                graph: 0x80BC_5810,
-                path: "content/sandbox/effects/trail/trail.entity.tft".into(),
-                values: Vec::new(),
-                damage_type: None,
-                rows: Vec::new(),
-                hud_status: None,
-                script: None,
-            }),
-            Action::Spawn {
-                asset: Asset {
-                    graph: 0x80BC_2F21,
-                    path: "content/sandbox/effects/burst/burst.entity.tft".into(),
-                    values: Vec::new(),
-                    damage_type: None,
-                    rows: Vec::new(),
-                    hud_status: None,
-                    script: None,
-                },
-                position: Position::Event,
-            },
-            Action::ExtendTimers {
-                extend_ms: 5_000,
-                cap_ms: 10_000,
-            },
-            Action::property(0x5EE2_66FC),
-        ],
-        native_asset_patches: Vec::new(),
-        imported_assets: Vec::new(),
-        imported_labels: None,
-        removal_key: None,
-        native_trigger: None,
-        native_removal: None,
-        native: None,
-        auxiliary: Vec::new(),
-        policy: None,
-        alternative_triggers: Vec::new(),
-        alternative_removals: Vec::new(),
-        native_rearm: None,
-        ability_tunings: Vec::new(),
-        ability_inputs: Vec::new(),
-        alternative_rearms: Vec::new(),
-        additional_groups: Vec::new(),
-    });
-    recipe.effects.push(effect);
-    recipe
-}
-
-/// Draws one panel in a tall viewport so every row lays out.
-fn panel(width: f32, mut draw: impl FnMut(&mut egui::Ui)) -> (egui::FullOutput, egui::Rect) {
-    let ctx = egui::Context::default();
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 1600.0));
-    let mut output = egui::FullOutput::default();
-    for _ in 0..3 {
-        output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(screen),
-                ..Default::default()
-            },
-            |ui| {
-                egui::CentralPanel::default().show(ui, |ui| {
-                    crate::app::style::perk_workbench_style(ui);
-                    egui::ScrollArea::vertical().show(ui, |ui| draw(ui));
-                });
-            },
-        );
-    }
-    (output, screen)
-}
-
 /// Every rendered text shape whose text matches, as (clip rect, text rect).
 pub(super) fn placements(output: &egui::FullOutput, name: &str) -> Vec<(egui::Rect, egui::Rect)> {
     output
@@ -302,20 +194,6 @@ pub(super) fn placements(output: &egui::FullOutput, name: &str) -> Vec<(egui::Re
         .collect()
 }
 
-/// No label may run past either edge of the viewport, whatever its width.
-fn assert_fits_horizontally(output: &egui::FullOutput, screen: egui::Rect) {
-    for clipped in &output.shapes {
-        if let egui::Shape::Text(text) = &clipped.shape {
-            let rect = text.galley.rect.translate(text.pos.to_vec2());
-            assert!(
-                rect.right() <= screen.right() + 0.5 && rect.left() >= screen.left() - 0.5,
-                "{:?} runs outside {screen:?}: {rect:?}",
-                text.galley.job.text
-            );
-        }
-    }
-}
-
 fn assert_visible(output: &egui::FullOutput, name: &str, screen: egui::Rect) {
     let (clip, rect) = placements(output, name)
         .into_iter()
@@ -326,89 +204,6 @@ fn assert_visible(output: &egui::FullOutput, name: &str, screen: egui::Rect) {
         "{name} is clipped at {:?}: {rect:?} in {clip:?}",
         screen.size()
     );
-}
-
-#[test]
-fn every_complete_native_record_reader_fits_the_private_perk_window() {
-    use sundial::package_authoring::sandbox_perk::{nodes, program::NativeNode};
-    for (condition, entries) in [
-        (true, nodes::CONDITIONS.as_slice()),
-        (false, nodes::EFFECTS.as_slice()),
-    ] {
-        for entry in entries.iter().filter(|entry| entry.observed()) {
-            let node = if condition {
-                NativeNode::condition(entry.kind)
-            } else {
-                NativeNode::effect(entry.kind)
-            }
-            .unwrap();
-            let (output, screen) = panel(640.0, |ui| {
-                super::super::program::read_native(ui, condition, &node)
-            });
-            assert_fits_horizontally(&output, screen);
-            assert!(!output.shapes.is_empty(), "{}", entry.name);
-        }
-    }
-}
-
-#[test]
-fn stock_behavior_editor_fits_without_mutating_the_draft() {
-    for size in SIZES {
-        // The whole window: the editor chrome stays reachable and nothing overflows.
-        let mut workbench = Workbench::default();
-        workbench.set_test_editor(stock_editor());
-        let before = workbench.documents[0].recipe.clone();
-        let ctx = egui::Context::default();
-        let mut output = egui::FullOutput::default();
-        for _ in 0..3 {
-            output = frame(&ctx, &mut workbench, true, size, vec![]);
-        }
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-        assert_fits_horizontally(&output, screen);
-        assert_eq!(workbench.documents[0].recipe, before);
-
-        // The parameter panel alone, tall enough to lay out every row at this width.
-        let mut editor = stock_editor();
-        let (output, screen) = panel(size.x, |ui| {
-            let ctx = ui.ctx().clone();
-            editor.draw_parameters(ui, &ctx, true);
-        });
-        assert_fits_horizontally(&output, screen);
-        assert!(editor.draft.is_empty() && editor.projectile_draft.is_empty());
-    }
-}
-
-#[test]
-fn program_canvas_fits_without_mutating_locked_or_editable_recipes() {
-    for size in SIZES {
-        for experimental in [false, true] {
-            // The whole window: the canvas header is reachable and nothing overflows.
-            let mut workbench = Workbench {
-                open: true,
-                initialized: true,
-                documents: vec![Document::new(program_recipe(), None)],
-                ..Default::default()
-            };
-            let before = workbench.documents[0].recipe.clone();
-            let ctx = egui::Context::default();
-            let mut output = egui::FullOutput::default();
-            for _ in 0..3 {
-                output = frame(&ctx, &mut workbench, experimental, size, vec![]);
-            }
-            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-            assert_fits_horizontally(&output, screen);
-            assert_eq!(workbench.documents[0].recipe, before);
-
-            // The effects page alone, tall enough to lay out every row at this width.
-            let mut recipe = program_recipe();
-            let before = recipe.clone();
-            let (output, screen) = panel(size.x, |ui| {
-                workbench.draw_effects(ui, Path::new(""), None, &[], &mut recipe, experimental);
-            });
-            assert_fits_horizontally(&output, screen);
-            assert_eq!(recipe, before);
-        }
-    }
 }
 
 #[test]

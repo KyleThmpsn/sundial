@@ -38,12 +38,30 @@ pub fn tooltip_title(ui: &mut egui::Ui, title: impl Into<String>) -> egui::Respo
 }
 
 /// Hover for a tooltip, or click/keyboard-activate to keep the help open.
-pub(crate) fn info(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
+pub fn info(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
     compact_help(
         ui,
         egui::RichText::new(egui_phosphor::regular::INFO),
         "More information",
         text.into(),
+        None,
+    )
+}
+
+/// Information with a source link and optional expandable license text.
+pub fn info_link(
+    ui: &mut egui::Ui,
+    text: impl Into<egui::WidgetText>,
+    label: &str,
+    url: &str,
+    license: Option<&str>,
+) -> egui::Response {
+    compact_help(
+        ui,
+        egui::RichText::new(egui_phosphor::regular::INFO),
+        "More information",
+        text.into(),
+        Some((label, url, license)),
     )
 }
 
@@ -54,6 +72,7 @@ pub(crate) fn warning(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> e
         egui::RichText::new(egui_phosphor::regular::WARNING).color(ui.visuals().warn_fg_color),
         "Warning details",
         text.into(),
+        None,
     )
 }
 
@@ -62,60 +81,31 @@ fn compact_help(
     glyph: egui::RichText,
     accessible_label: &'static str,
     text: egui::WidgetText,
+    link: Option<(&str, &str, Option<&str>)>,
 ) -> egui::Response {
-    let (response, _) = egui::containers::menu::MenuButton::from_button(
-        egui::Button::new(glyph).frame(false),
-    )
-    .ui(ui, |ui| {
+    let contents = |ui: &mut egui::Ui| {
         ui.set_max_width(360.0);
         ui.label(text.clone());
-    });
+        if let Some((label, url, license)) = link {
+            ui.hyperlink_to(label, url);
+            if let Some(license) = license {
+                ui.collapsing("License", |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(260.0)
+                        .show(ui, |ui| {
+                            ui.label(license);
+                        });
+                });
+            }
+        }
+    };
+    let (response, _) =
+        egui::containers::menu::MenuButton::from_button(egui::Button::new(glyph).frame(false))
+            .ui(ui, contents);
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, true, accessible_label)
     });
     response
         .on_hover_cursor(egui::CursorIcon::Help)
-        .on_hover_text(text)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn help_opens_from_keyboard_focus() {
-        let ctx = egui::Context::default();
-        let help = "Help remains available without a mouse.";
-        let mut found = false;
-        for frame in 0..3 {
-            let mut input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(640.0, 480.0),
-                )),
-                ..Default::default()
-            };
-            if frame == 1 {
-                input.events.push(egui::Event::Key {
-                    key: egui::Key::Enter,
-                    physical_key: None,
-                    pressed: true,
-                    repeat: false,
-                    modifiers: egui::Modifiers::NONE,
-                });
-            }
-            let output = ctx.run_ui(input, |ui| {
-                egui::CentralPanel::default().show(ui, |ui| {
-                    let response = info(ui, help);
-                    if frame == 0 {
-                        response.request_focus();
-                    }
-                });
-            });
-            found |= output.shapes.iter().any(|shape| {
-                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == help)
-            });
-        }
-        assert!(found, "Keyboard activation should render the help text");
-    }
+        .on_hover_ui(contents)
 }

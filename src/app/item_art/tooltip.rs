@@ -20,6 +20,11 @@ use crate::app::ui::GameFace;
 /// The tooltip is a fixed column, as the game's is, so stats and perks line up down it. It runs
 /// a little wider than Dawn's 330, so fewer names wrap.
 const WIDTH: f32 = 360.0;
+/// A plug or perk's tooltip is narrower, and its band shorter by this share.
+const PLUG_WIDTH: f32 = 250.0;
+const PLUG_BAND: f32 = 0.76;
+/// The stat the game leaves out when a weapon's magazine holds no shot.
+const MAGAZINE_STAT_HASH: u64 = 0xE6BE_4C5A;
 /// Padding inside the body. The band ignores it, so the icon sits flush in the frame.
 const PADDING: f32 = 8.0;
 /// Height of the rarity band, which is also the edge of the square icon struck into it.
@@ -67,7 +72,7 @@ const STAT_ROW_GAP: f32 = -2.0;
 const STAT_BLOCK_PADDING_SCALE: f32 = 0.7;
 const DEFAULT_STAT_CEILING: i32 = 100;
 const TOTAL_LABEL: &str = "Total";
-/// Perk rows: a round badge holding the icon, then the name, with a rule between rows.
+/// Perk rows: the icon in a padded column, then the name, with a rule between rows.
 const PERK_ICON: f32 = 22.0;
 const PERK_BADGE_PADDING: f32 = 3.0;
 const PERK_ROW_HEIGHT: f32 = 30.0;
@@ -104,21 +109,65 @@ const fn element_mark(element: ItemDamageType) -> Option<(char, egui::Color32)> 
     }
 }
 
+fn source_id() -> egui::Id {
+    egui::Id::new("item_art_tooltip_source")
+}
+
+/// Whether tooltips name the package and hash under their band, from Sundial's preferences.
+pub(in crate::app) fn set_show_source(ctx: &egui::Context, show: bool) {
+    ctx.data_mut(|data| data.insert_temp(source_id(), show));
+}
+
+fn show_source(ctx: &egui::Context) -> bool {
+    ctx.data(|data| data.get_temp::<bool>(source_id()))
+        .unwrap_or(false)
+}
+
+/// What an authored item, perk or plug shows in place of its catalog presentation, and a closing
+/// note, such as what clicking does.
+#[derive(Clone, Copy, Default)]
+pub(in crate::app) struct Authored<'a> {
+    pub name: Option<&'a str>,
+    /// `Some("")` clears the catalog description.
+    pub description: Option<&'a str>,
+    /// The definition whose type line it shows.
+    pub classification: Option<u64>,
+    /// A type line of its own, which takes precedence over the classification's.
+    pub type_name: Option<&'a str>,
+    pub rarity: Option<ItemRarity>,
+    pub icon: Option<crate::investment::IconOverride>,
+    pub note: Option<&'a str>,
+    /// The hash names a template the item was made from, whose stats and perks are not its own.
+    pub template: bool,
+    /// Drawn at a plug's size, as perks and abilities are.
+    pub compact: bool,
+}
+
 /// Shows the tooltip beside the pointer while `response` is hovered.
 pub(in crate::app) fn on_hover(
     response: egui::Response,
     catalog: &Catalog,
     hash: u64,
 ) -> egui::Response {
+    on_hover_authored(response, catalog, hash, Authored::default())
+}
+
+/// [`on_hover`] with authored text, icon or a note in place of the catalog's.
+pub(in crate::app) fn on_hover_authored(
+    response: egui::Response,
+    catalog: &Catalog,
+    hash: u64,
+    authored: Authored<'_>,
+) -> egui::Response {
     let menu_open = response.context_menu_opened() || egui::Popup::is_any_open(&response.ctx);
     if response.hovered() && !response.is_pointer_button_down_on() && !menu_open {
-        show(&response.ctx, catalog, hash);
+        show(&response.ctx, catalog, hash, authored);
     }
     response
 }
 
 /// Places the tooltip right of and below the pointer, or on the side with room for it.
-fn show(ctx: &egui::Context, catalog: &Catalog, hash: u64) {
+fn show(ctx: &egui::Context, catalog: &Catalog, hash: u64, authored: Authored<'_>) {
     let Some(pointer) = ctx.pointer_hover_pos() else {
         return;
     };
@@ -144,8 +193,13 @@ fn show(ctx: &egui::Context, catalog: &Catalog, hash: u64) {
                 .fill(BODY)
                 .stroke(egui::Stroke::new(1.0, border()))
                 .corner_radius(ROUNDING)
-                .inner_margin(egui::Margin::same(scale.px(PADDING).round() as i8))
-                .show(ui, |ui| draw(ui, catalog, hash, scale));
+                // No padding at the bottom: the last stat row or perk row ends the tooltip, and
+                // text adds its own.
+                .inner_margin(egui::Margin {
+                    bottom: 0,
+                    ..egui::Margin::same(scale.px(PADDING).round() as i8)
+                })
+                .show(ui, |ui| draw(ui, catalog, hash, authored, scale));
         });
 }
 
@@ -158,24 +212,46 @@ struct Span {
 }
 
 /// The tooltip's body inside its frame.
-fn draw(ui: &mut egui::Ui, catalog: &Catalog, hash: u64, scale: Scale) {
-    let width = scale.px(WIDTH);
+fn draw(ui: &mut egui::Ui, catalog: &Catalog, hash: u64, authored: Authored<'_>, scale: Scale) {
+    let mut item = Item::read(catalog, hash);
+    item.author(catalog, authored);
+    // Something that is not an item, such as an ability, has no package or hash to name.
+    let source = (show_source(ui.ctx()) && item.hash != 0).then(|| source_line(&item));
+    let padding = scale.px(PADDING).round();
+    let mut width = scale.px(if item.plug { PLUG_WIDTH } else { WIDTH });
+    // Wide enough for the package name and hash on one line.
+    if let Some((package, hash)) = &source {
+        let font = body_font(ui, scale);
+        let text = |text: &str| {
+            ui.fonts_mut(|fonts| fonts.layout_no_wrap(text.to_owned(), font.clone(), muted()))
+                .size()
+                .x
+        };
+        width = width.max(text(package) + text(hash) + padding * 2.0);
+    }
     ui.set_width(width);
     ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-    let padding = scale.px(PADDING).round();
     let content = ui.max_rect();
     let span = Span {
         left: content.left() - padding + 1.0,
         right: content.left() + width + padding - 1.0,
         top: content.top() - padding + 1.0,
     };
-    let item = Item::read(catalog, hash);
-    draw_band(ui, catalog, &item, span, scale);
+    let size = if item.plug { PLUG_BAND } else { 1.0 };
+    draw_band(ui, catalog, &item, span, size, scale);
+    if let Some((package, hash)) = &source {
+        draw_source(ui, package, hash, span, scale, width);
+    }
     let continues = !item.perks.is_empty();
     let shows_stats = item
         .title
         .consumed
         .map_or(!item.stats.is_empty(), |_| item.stats.len() > 1);
+    let note = authored.note.filter(|note| !note.trim().is_empty());
+    // Text and the figure keep a padding under them. Stat and perk rows and the source strip end
+    // the tooltip flush, as the band starts it.
+    let ends_in_text = note.is_some()
+        || (!continues && !shows_stats && (item.title.shown || item.description.is_some()));
     if let Some(description) = &item.description {
         gap(ui, scale);
         let galley = wrapped(ui, description, body_font(ui, scale), muted(), width);
@@ -199,6 +275,16 @@ fn draw(ui: &mut egui::Ui, catalog: &Catalog, hash: u64, scale: Scale) {
         }
         draw_perk(ui, catalog, perk, span, scale, width);
     }
+    if let Some(note) = note {
+        gap(ui, scale);
+        rule(ui, span);
+        gap(ui, scale);
+        let galley = wrapped(ui, note, body_font(ui, scale), muted(), width);
+        paint_block(ui, galley, width);
+    }
+    if ends_in_text {
+        ui.add_space(padding);
+    }
 }
 
 /// What the tooltip shows of one item.
@@ -213,7 +299,13 @@ struct Item {
     /// The value a full bar stands for.
     ceiling: i32,
     armor: bool,
+    /// A plug or perk, drawn narrower, whose stats are what it changes.
+    plug: bool,
+    /// The package holding the item's definition.
+    package: Option<String>,
     perks: Vec<Perk>,
+    /// An authored icon in place of the catalog's.
+    icon: Option<crate::investment::IconOverride>,
 }
 
 /// The figure a tooltip leads with, and the word beside it.
@@ -260,12 +352,31 @@ impl Item {
             .collect::<Vec<_>>();
         let armor = definition.is_some_and(|item| item_type_label(item) == "Armor");
         let gear = armor || definition.is_some_and(|item| item_type_label(item) == "Weapon");
-        let stats = stat_rows(catalog, hash, &plugs, armor);
+        let metadata = catalog.item_package_metadata(hash);
+        let plug = !gear && catalog.is_plug(hash);
+        let stats = if plug {
+            plug_stat_rows(catalog, hash)
+        } else {
+            stat_rows(catalog, hash, &plugs, armor)
+        };
+        // Only an item whose strings carry a stat display block leads with a stat. Plugs have
+        // none, so their stats are all changes.
+        let displays_stats = metadata.is_some_and(|metadata| metadata.stat_group_index.is_some());
         let title = if gear {
             power_title(catalog, hash, &plugs, armor)
-        } else {
+        } else if displays_stats {
             title_of(catalog, hash, &stats)
+        } else {
+            Title::default()
         };
+        let own_description = catalog
+            .description(hash)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned);
+        // A plug often leaves its own description blank and lets its perks describe it.
+        let description =
+            own_description.or_else(|| plug.then(|| perk_descriptions(catalog, hash)).flatten());
         Self {
             name: catalog.display_name(hash).unwrap_or_default().to_owned(),
             type_name: definition
@@ -276,11 +387,7 @@ impl Item {
                 .to_owned(),
             rarity: catalog.item_rarity(hash),
             hash,
-            description: catalog
-                .description(hash)
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-                .map(str::to_owned),
+            description,
             title,
             stats,
             ceiling: catalog
@@ -289,12 +396,119 @@ impl Item {
                 .filter(|maximum| *maximum > 0)
                 .unwrap_or(DEFAULT_STAT_CEILING),
             armor,
-            perks: plugs
-                .iter()
-                .filter_map(|plug| listed_perk(catalog, *plug))
-                .collect(),
+            plug,
+            package: catalog.item_package_name(hash).map(str::to_owned),
+            perks: if plug {
+                Vec::new()
+            } else {
+                plugs
+                    .iter()
+                    .filter_map(|plug| listed_perk(catalog, *plug))
+                    .collect()
+            },
+            icon: None,
         }
     }
+
+    /// Puts an authored item's own text and icon in place of the catalog's.
+    fn author(&mut self, catalog: &Catalog, authored: Authored<'_>) {
+        if let Some(name) = authored.name {
+            name.clone_into(&mut self.name);
+        }
+        if let Some(description) = authored.description {
+            let description = description.trim();
+            self.description = (!description.is_empty()).then(|| description.to_owned());
+        }
+        if let Some(type_name) = authored
+            .type_name
+            .or_else(|| {
+                authored
+                    .classification
+                    .and_then(|hash| catalog.plug_type_name(hash))
+            })
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            type_name.clone_into(&mut self.type_name);
+        }
+        if let Some(rarity) = authored.rarity {
+            self.rarity = rarity;
+        }
+        self.icon = authored.icon;
+        self.plug |= authored.compact;
+        if authored.template {
+            self.title = Title::default();
+            self.stats.clear();
+            self.perks.clear();
+        }
+    }
+}
+
+/// A plug's perks' descriptions in order, each once, for a plug without one of its own.
+fn perk_descriptions(catalog: &Catalog, hash: u64) -> Option<String> {
+    let mut seen = Vec::<&str>::new();
+    for perk in catalog
+        .item_package_metadata(hash)
+        .into_iter()
+        .flat_map(|metadata| &metadata.sandbox_perks)
+    {
+        if let Some(text) = catalog
+            .perk_description(perk.perk_index)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            && !seen.contains(&text)
+        {
+            seen.push(text);
+        }
+    }
+    (!seen.is_empty()).then(|| seen.join("\n\n"))
+}
+
+/// What a plug changes: each named stat it adds to or takes from, with its sign.
+fn plug_stat_rows(catalog: &Catalog, hash: u64) -> Vec<StatRow> {
+    catalog
+        .item_package_metadata(hash)
+        .into_iter()
+        .flat_map(|metadata| &metadata.investment_stats)
+        .filter(|stat| stat.value != 0)
+        .filter_map(|stat| {
+            let name = catalog
+                .item_stat_definition(stat.definition_index)?
+                .name
+                .trim();
+            (!name.is_empty()).then(|| StatRow {
+                name: name.to_owned(),
+                value: stat.value,
+                numeric: true,
+            })
+        })
+        .collect()
+}
+
+/// The package and the hash, as the source line under the band shows them.
+fn source_line(item: &Item) -> (String, String) {
+    (
+        item.package.clone().unwrap_or_default(),
+        format!("{:08X}", item.hash),
+    )
+}
+
+/// The package and the hash on a shaded strip under the band, as the intrinsic perk is set, the
+/// hash at its far end.
+fn draw_source(ui: &mut egui::Ui, package: &str, hash: &str, span: Span, scale: Scale, width: f32) {
+    let font = body_font(ui, scale);
+    let padding = scale.px(PADDING);
+    let height = super::line_height(ui, &font) + padding;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    let strip = egui::Rect::from_x_y_ranges(span.left..=span.right, rect.y_range());
+    ui.painter().rect_filled(strip, 0.0, white(0.07));
+    let top = rect.top() + padding * 0.5;
+    let hash = ui.fonts_mut(|fonts| fonts.layout_no_wrap(hash.to_owned(), font.clone(), muted()));
+    let package_width = (width - hash.size().x - padding).max(0.0);
+    let package = single_line(ui, package, font, muted(), package_width);
+    let painter = ui.painter();
+    painter.galley(egui::pos2(rect.left(), top), package, muted());
+    painter.galley(egui::pos2(rect.right() - hash.size().x, top), hash, muted());
 }
 
 /// Every stat the item shows, in the order the game shows them: the stats its group scales, the
@@ -339,14 +553,22 @@ fn stat_rows(catalog: &Catalog, hash: u64, plugs: &[u64], armor: bool) -> Vec<St
         .iter()
         .filter_map(|scaled| {
             let value = *totals.get(&scaled.definition_index)?;
+            let shown = interpolate_investment_stat_display(
+                &scaled.display_interpolation,
+                scaled.is_linear,
+                value,
+            )
+            .unwrap_or(value);
+            // The game leaves out a magazine that holds no shot.
+            let magazine = catalog
+                .item_stat_definition(scaled.definition_index)
+                .is_some_and(|definition| definition.hash == MAGAZINE_STAT_HASH);
+            if magazine && shown <= 0 {
+                return None;
+            }
             Some(StatRow {
                 name: name(scaled.definition_index)?.to_owned(),
-                value: interpolate_investment_stat_display(
-                    &scaled.display_interpolation,
-                    scaled.is_linear,
-                    value,
-                )
-                .unwrap_or(value),
+                value: shown,
                 numeric: scaled.display_as_numeric,
             })
         })
@@ -519,12 +741,20 @@ fn name_lines(
 /// The rarity band: the icon flush in the corner, the name in capitals beside it, the type
 /// under the name and the tier at the far right of that line. A name too long for its line wraps,
 /// and the band grows under it while the icon keeps its size in the corner.
-fn draw_band(ui: &mut egui::Ui, catalog: &Catalog, item: &Item, span: Span, scale: Scale) {
-    let height = scale.px(BAND_HEIGHT);
+fn draw_band(
+    ui: &mut egui::Ui,
+    catalog: &Catalog,
+    item: &Item,
+    span: Span,
+    size: f32,
+    scale: Scale,
+) {
     let padding = scale.px(PADDING);
+    // Whole pixels, so the icon's edge never falls inside one.
+    let height = (scale.px(BAND_HEIGHT) * size).round();
     let origin = egui::pos2(span.left, span.top);
     let text_left = origin.x + height + padding;
-    let name_font = super::title_font(ui, scale.body * NAME_SCALE);
+    let name_font = super::title_font(ui, scale.body * NAME_SCALE * size);
     let name_color = band_text(item.rarity, false);
     let names = name_lines(
         ui,
@@ -535,7 +765,7 @@ fn draw_band(ui: &mut egui::Ui, catalog: &Catalog, item: &Item, span: Span, scal
     );
     let (name_cap_top, name_cap) = cap_band(ui, name_font);
     // A wrapped name's lines are parted by the gap that parts the name from the type.
-    let type_gap = scale.px(BAND_TYPE_GAP);
+    let type_gap = scale.px(BAND_TYPE_GAP) * size;
     let leading = name_cap + type_gap;
     let grown = leading * names.len().saturating_sub(1) as f32;
     let band = egui::Rect::from_min_max(origin, egui::pos2(span.right, span.top + height + grown));
@@ -550,9 +780,19 @@ fn draw_band(ui: &mut egui::Ui, catalog: &Catalog, item: &Item, span: Span, scal
         band_color(item.rarity),
     );
     let icon = egui::Rect::from_min_size(origin, egui::Vec2::splat(height));
-    super::icon(ui, catalog, item.hash, item.rarity, icon);
+    match item.icon {
+        Some(authored) => {
+            ui.painter()
+                .rect_filled(icon, 0.0, super::backdrop(band_color(item.rarity)));
+            // A pending authored icon stays empty rather than showing the donor's.
+            if let Some(texture) = authored.texture() {
+                egui::Image::new((texture, icon.size())).paint_at(ui, icon);
+            }
+        }
+        None => super::icon(ui, catalog, item.hash, item.rarity, icon),
+    }
 
-    let type_font = super::text_font(ui, scale.body * TYPE_SCALE);
+    let type_font = super::text_font(ui, scale.body * TYPE_SCALE * size);
     let (type_cap_top, type_cap) = cap_band(ui, type_font.clone());
     let tier = (item.rarity != ItemRarity::Unknown).then(|| item.rarity.label());
     let muted = band_text(item.rarity, true);
@@ -573,7 +813,7 @@ fn draw_band(ui: &mut egui::Ui, catalog: &Catalog, item: &Item, span: Span, scal
     let name_top = ink_top - name_cap_top;
     let type_top = ink_top + grown + name_cap + type_gap - type_cap_top;
 
-    let weight = super::strike(ui, GameFace::Title, scale.px(NAME_WEIGHT));
+    let weight = super::strike(ui, GameFace::Title, scale.px(NAME_WEIGHT) * size);
     let painter = ui.painter();
     for (index, line) in names.iter().enumerate() {
         bold(
@@ -804,7 +1044,8 @@ fn draw_stats(ui: &mut egui::Ui, item: &Item, scale: Scale, width: f32) {
             );
             sum += row.value;
         }
-        let value = if item.armor && row.value > 0 {
+        // Armor signs its values, and a plug's are what it changes.
+        let value = if (item.armor || item.plug) && row.value > 0 {
             format!("+{}", row.value)
         } else {
             row.value.to_string()
@@ -833,8 +1074,7 @@ fn draw_stats(ui: &mut egui::Ui, item: &Item, scale: Scale, width: f32) {
     );
 }
 
-/// One perk row: the round badge holding the icon, then the name. The intrinsic frame sits on a
-/// panel of its own.
+/// One perk row: the icon, then the name. The intrinsic frame sits on a panel of its own.
 fn draw_perk(
     ui: &mut egui::Ui,
     catalog: &Catalog,
@@ -856,14 +1096,6 @@ fn draw_perk(
         );
     }
     let centre = egui::pos2(rect.left() + badge * 0.5, rect.center().y);
-    // A mod, a shader, an ornament and an intrinsic ship framed art of their own, so only a trait
-    // gets the round badge behind it.
-    if !["intrinsic", "mod", "shader", "ornament"]
-        .iter()
-        .any(|kind| type_name.contains(kind))
-    {
-        painter.circle_filled(centre, badge * 0.5, white(0.12));
-    }
     if let Some(texture) = catalog.icon_texture(ui.ctx(), perk.hash) {
         let icon = badge * PERK_ICON / (PERK_ICON + PERK_BADGE_PADDING * 2.0);
         egui::Image::new(&texture).paint_at(

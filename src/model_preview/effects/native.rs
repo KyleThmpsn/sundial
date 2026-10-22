@@ -127,6 +127,7 @@ pub(crate) struct Native {
     pub(in crate::model_preview) intensity: bool,
     pub(in crate::model_preview) deferred: bool,
     pub(in crate::model_preview) decal: bool,
+    pub(in crate::model_preview) full_decal: bool,
     pub(in crate::model_preview) ambient_power: Option<f32>,
     base_gain: Option<opaque::Gain>,
     paint: Option<opaque::Paint>,
@@ -140,12 +141,21 @@ struct Vertex {
     quaternion: bool,
     stored_uv: Option<[f32; 4]>,
     samplers: Vec<texture::Sampler>,
+    sampler_rows: std::collections::BTreeMap<usize, usize>,
     /// Where this stage's rows start in the material's combined sampler table.
     sampler_offset: usize,
 }
 
 #[derive(Clone, Copy)]
 pub(in crate::model_preview) enum Role {
+    /// First-order irradiance coefficients of the current studio environment.
+    Irradiance,
+    /// The studio has no additional engine sun beyond its environment lights.
+    SunVisibility,
+    /// Reflection of the diagnostic studio in native hemisphere coordinates.
+    Sky,
+    SceneColor,
+    SceneNormal,
     Texture(usize),
     Albedo,
     Normal,
@@ -167,6 +177,8 @@ pub(in crate::model_preview) struct Binding {
     pub layered: Option<layered::Layered>,
     /// Native sampler registers start at one. Load-only resources have no sampler.
     pub sampler: Option<usize>,
+    /// Each instruction selects a sampler register independently of the image.
+    pub sampler_rows: std::collections::BTreeMap<usize, usize>,
 }
 
 impl Native {
@@ -255,13 +267,15 @@ fn load_vertex(
     // Native matrix palettes multiply indices by three. Dual-quaternion palettes
     // shift by one and consume quaternion pairs, including the single-bone form.
     let quaternion = code.instructions.iter().any(|i| i.code == 41);
+    let (samplers, sampler_rows) = resource::samplers(manager, bytes, 0x48)?;
     Ok(Some(Vertex {
         code,
         constants,
         expression,
         quaternion,
         stored_uv,
-        samplers: texture::stage_samplers(manager, bytes, 0x48),
+        samplers,
+        sampler_rows,
         sampler_offset: 0,
     }))
 }
@@ -308,12 +322,12 @@ fn load_program(
     } else {
         load_vertex(manager, bytes, &globals, objects, surface)?
     };
-    let mut samplers = texture::stage_samplers(manager, bytes, 0x2C8);
+    let (mut samplers, sampler_rows) = resource::samplers(manager, bytes, 0x2C8)?;
     if let Some(vertex) = &mut vertex {
         vertex.sampler_offset = samplers.len();
     }
     let mut plan = resource::Plan::new(manager, model);
-    plan.stage(bytes, &pixel, expression.as_ref(), &samplers, false, 0)?;
+    plan.stage(bytes, &pixel, expression.as_ref(), &sampler_rows, false, 0)?;
     if let Some(vertex) = &vertex
         && vertex.stored_uv.is_none()
     {
@@ -321,7 +335,7 @@ fn load_program(
             bytes,
             &vertex.code,
             vertex.expression.as_ref(),
-            &vertex.samplers,
+            &vertex.sampler_rows,
             true,
             samplers.len(),
         )?;
@@ -344,6 +358,7 @@ fn load_program(
             intensity: false,
             deferred,
             decal: false,
+            full_decal: false,
             base_gain: None,
             paint: None,
             bindings,
@@ -404,7 +419,9 @@ fn contract(program: &program::Program, vertex: bool, deferred: bool) -> Result<
             (false, 2) => 1,
             (false, 5..=7) => 27,
             (false, 8) => 8,
-            (false, 12) => 13,
+            (false, 11) => 4,
+            // Row 13 carries the frame's pixel phase. The static studio uses phase zero.
+            (false, 12) => 14,
             (false, 13) => 2,
             _ => return Err(format!("The effect constant scope {slot} is unavailable")),
         };
@@ -418,7 +435,7 @@ fn contract(program: &program::Program, vertex: bool, deferred: bool) -> Result<
         && program
             .instructions
             .iter()
-            .any(|i| matches!(i.code, 69 | 108 | 122 | 124))
+            .any(|i| matches!(i.code, 69 | 108 | 122..=125))
     {
         return Err("The vertex effect requires pixel derivatives".into());
     }
@@ -443,6 +460,7 @@ fn contract(program: &program::Program, vertex: bool, deferred: bool) -> Result<
                 "POSITION" | "NORMAL" | "TANGENT" | "COLOR" | "BLENDINDICES" | "BLENDWEIGHT" => {
                     semantic.index == 0
                 }
+                "SV_VERTEXID" => semantic.index == 0 && semantic.system == 6,
                 "TEXCOORD" => matches!(semantic.index, 0 | 2),
                 _ => false,
             }
@@ -471,7 +489,7 @@ fn contract(program: &program::Program, vertex: bool, deferred: bool) -> Result<
                 .resources
                 .iter()
                 .find(|r| r.slot == slot)
-                .is_none_or(|r| r.dimension != 6)
+                .is_none_or(|r| !matches!(r.dimension, 3 | 6))
             {
                 return Err("The effect requires an unavailable texture footprint".into());
             }
@@ -479,7 +497,7 @@ fn contract(program: &program::Program, vertex: bool, deferred: bool) -> Result<
         if i.code == 38 && i.operands[0].kind != 13 {
             return Err("The effect requires a high integer product".into());
         }
-        if matches!(i.code, 122 | 124)
+        if matches!(i.code, 122..=125)
             && (vertex || i.operands[1].kind != 1 && program.derivatives[at].is_none())
         {
             return Err("The effect requires an unavailable derivative".into());
@@ -498,9 +516,9 @@ fn sampling_for(
     pixel: &program::Program,
     expression: Option<&Program>,
     resource: &program::Resource,
-    sampler_count: usize,
-) -> Result<Option<usize>, String> {
-    let mut sampling = None;
+    samplers: &std::collections::BTreeMap<usize, usize>,
+) -> Result<std::collections::BTreeMap<usize, usize>, String> {
+    let mut sampling = std::collections::BTreeMap::new();
     for instruction in &pixel.instructions {
         if matches!(instruction.code, 69 | 72 | 73 | 108)
             && instruction.operands[2].indices[0].base as usize == resource.slot
@@ -513,14 +531,12 @@ fn sampling_for(
                 }
                 None => register - 1,
             };
-            if row >= sampler_count {
-                return Err(format!(
-                    "The effect sampler is missing (register {register} takes row {row} of {sampler_count})"
-                ));
-            }
-            if sampling.replace(row).is_some_and(|old| old != row) {
-                return Err("The effect samples one image with conflicting samplers".into());
-            }
+            let index = samplers.get(&row).copied().ok_or_else(|| {
+                format!(
+                    "The effect sampler is missing (register {register} takes resource row {row})"
+                )
+            })?;
+            sampling.insert(register, index);
         }
     }
     Ok(sampling)

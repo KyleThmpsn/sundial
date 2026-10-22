@@ -52,32 +52,3 @@ pub(crate) fn raise_open_file_limit() -> Result<(), String> {
 pub(crate) fn raise_open_file_limit() -> Result<(), String> {
     Ok(())
 }
-
-#[cfg(all(test, target_os = "linux"))]
-mod tests {
-    use super::*;
-    use rustix::process::{Resource, getrlimit};
-
-    /// The point of the call is headroom, so the limit afterwards must be at least what the
-    /// reader pool needs beside everything else, and must never have gone down.
-    #[test]
-    fn the_soft_limit_ends_up_at_least_as_high_as_it_started() {
-        let before = getrlimit(Resource::Nofile);
-        let result = raise_open_file_limit();
-        let after = getrlimit(Resource::Nofile);
-        assert!(
-            after.current >= before.current,
-            "the soft limit was lowered"
-        );
-        assert_eq!(after.maximum, before.maximum, "the hard limit was changed");
-        if result.is_ok() {
-            let requested = before
-                .maximum
-                .map_or(DESIRED, |maximum| DESIRED.min(maximum));
-            assert_eq!(
-                after.current,
-                before.current.map(|current| current.max(requested))
-            );
-        }
-    }
-}

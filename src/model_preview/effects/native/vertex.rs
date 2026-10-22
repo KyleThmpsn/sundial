@@ -3,6 +3,7 @@ use super::*;
 pub(in crate::model_preview) type Varyings = [[f32; 4]; 9];
 
 pub(in crate::model_preview) struct Input {
+    pub vertex_id: u32,
     pub position: [f32; 3],
     pub normal: [f32; 3],
     pub tangent: [f32; 4],
@@ -59,6 +60,10 @@ impl Native {
         let mut values = [[0; 4]; 16];
         for semantic in &vertex.code.inputs {
             let value = match semantic.name.as_str() {
+                "SV_VERTEXID" => {
+                    values[semantic.register] = [input.vertex_id, 0, 0, 0];
+                    continue;
+                }
                 "POSITION" => [input.position[0], input.position[1], input.position[2], 0.0],
                 "NORMAL" => [input.normal[0], input.normal[1], input.normal[2], 0.0],
                 "TANGENT" => input.tangent,
@@ -226,9 +231,10 @@ impl evaluate::Context for Context<'_> {
                 uv,
                 image
                     .binding
-                    .sampler
+                    .sampler_rows
+                    .get(&sampler)
+                    .copied()
                     .and_then(|row| row.checked_sub(images.offset))
-                    .or_else(|| sampler.checked_sub(1))
                     .and_then(|i| images.samplers.get(i)),
                 sampling,
                 offset,
@@ -241,7 +247,7 @@ impl evaluate::Context for Context<'_> {
             .and_then(|images| images.at(resource))
             .map_or([0; 4], |image| image.load(position, offset))
     }
-    fn lod(&self, _: usize, _: [f32; 4]) -> [f32; 4] {
+    fn lod(&self, _: usize, _: usize, _: [f32; 4]) -> [f32; 4] {
         [0.0; 4]
     }
     fn derivative(&self, _: &program::Operand, _: bool) -> [f32; 4] {

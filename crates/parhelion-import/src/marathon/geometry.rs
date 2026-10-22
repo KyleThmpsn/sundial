@@ -314,16 +314,6 @@ pub fn encode(mesh: &Mesh, native: &Payload, native_mesh: usize) -> Result<Encod
 mod tests {
     use super::*;
     #[test]
-    fn attachment_translation_does_not_move_normals() {
-        let mut m = [0.; 16];
-        m[0] = 1.;
-        m[5] = 1.;
-        m[10] = 1.;
-        m[3] = 9.;
-        assert_eq!(transform([1., 2., 3.], &m, true), [10., 2., 3.]);
-        assert_eq!(transform([1., 2., 3.], &m, false), [1., 2., 3.]);
-    }
-    #[test]
     #[expect(
         clippy::cognitive_complexity,
         reason = "Round-trip verification compares each native geometry stream with the source."

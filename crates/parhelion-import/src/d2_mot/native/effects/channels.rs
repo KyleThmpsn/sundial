@@ -2,6 +2,7 @@
 use super::*;
 use std::collections::BTreeSet;
 mod defaults;
+mod dependency;
 mod scoped;
 pub(super) use defaults::{material_program, validate_material_fallbacks};
 
@@ -66,10 +67,6 @@ fn dependency_closure(
     Ok(channels)
 }
 
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "Preserve the audited converter while integrating the legacy rendering pipeline."
-)]
 fn declarations(
     p: &Payload,
     modern: bool,
@@ -168,16 +165,13 @@ fn declarations(
             p.0[initial..initial + 16].iter().all(|v| *v == 0),
             "channel initial vector is not zero"
         );
-        let deps = p.array(row + 80, 8, Some(0x8080000B))?;
-        if !(!modern || only.is_none() || (deps.len() == 1 && p.u64(deps[0])? == 1u64 << i)) {
+        let deps = dependency::read(p, row + 80, rows.len())?;
+        if !(!modern || only.is_none() || deps == [i]) {
             // This arm only inspects the source bank, so the verdict is the
             // same whichever native donor the conversion is using.
             return Err(crate::d2_mot::source_limit(anyhow::anyhow!(
-                "channel {:08X} at index {i} has procedural dependencies {:?}",
+                "channel {:08X} at index {i} depends on declaration indices {deps:?}, expected only itself",
                 p.u32(row)?,
-                deps.iter()
-                    .map(|at| p.u64(*at))
-                    .collect::<Result<Vec<_>>>()?
             )));
         }
         // Storage allocation and dependency pointers belong to the native bank.
@@ -186,20 +180,10 @@ fn declarations(
         // legitimately encode 0x0001_FFFF here (no input, procedure flag 1).
         declaration[72..74].fill(0);
         declaration[80..96].fill(0);
-        let mut dependencies = vec![];
-        ensure!(deps.len() <= 1, "channel dependency mask is too wide");
-        if let Some(at) = deps.first() {
-            let bits = p.u64(*at)?;
-            ensure!(
-                rows.len() <= 64 && (rows.len() == 64 || bits >> rows.len() == 0),
-                "channel dependency outside declaration table"
-            );
-            for (index, at) in rows.iter().enumerate() {
-                if bits & (1 << index) != 0 {
-                    dependencies.push(format!("{:08X}", p.u32(*at)?));
-                }
-            }
-        }
+        let dependencies = deps
+            .into_iter()
+            .map(|index| Ok(format!("{:08X}", p.u32(rows[index])?)))
+            .collect::<Result<Vec<_>>>()?;
         result.insert(
             format!("{:08X}", p.u32(row)?),
             Channel {
@@ -359,13 +343,7 @@ fn source_channels(
                 put(&mut resting.0, row + 8, &0u32.to_le_bytes())?;
                 resting.0[row + 16..row + 72].fill(0);
                 resting.0[row + 96..row + 104].fill(0);
-                append_array(
-                    &mut resting.0,
-                    row + 80,
-                    0x8080000B,
-                    &(1u64 << index).to_le_bytes(),
-                    8,
-                )?;
+                dependency::write(&mut resting, row + 80, rows.len(), &[index])?;
                 let mut channel = declarations(&resting, true, Some(&hash))?
                     .remove(&hash)
                     .context("resting procedure declaration")?;
@@ -392,7 +370,7 @@ fn source_channels(
             let mut bank = bank;
             let mut resting_procedure = None;
             if hash == "59E4FF8D" {
-                let deps = bank.array(row + 80, 8, Some(0x8080000B))?;
+                let deps = dependency::read(&bank, row + 80, rows.len())?;
                 let index = rows
                     .iter()
                     .position(|at| *at == row)
@@ -403,12 +381,12 @@ fn source_channels(
                     .filter(|(_, at)| bank.u32(**at).ok() == Some(0x774501CA))
                     .collect::<Vec<_>>();
                 ensure!(
-                    producers.len() == 1 && deps.len() == 1,
+                    producers.len() == 1 && deps.len() == 2,
                     "resting output producer differs"
                 );
                 let (producer_index, producer) = producers[0];
                 ensure!(
-                    bank.u64(deps[0])? == (1u64 << index) | (1u64 << producer_index),
+                    deps.contains(&index) && deps.contains(&producer_index),
                     "resting output dependencies differ"
                 );
                 let procedure = procedural::Declaration::read(&bank, *producer, &rows)?;
@@ -416,7 +394,7 @@ fn source_channels(
                     procedure.outputs == [hash.clone()],
                     "resting output declaration differs"
                 );
-                put(&mut bank.0, deps[0], &(1u64 << index).to_le_bytes())?;
+                dependency::write(&mut bank, row + 80, rows.len(), &[index])?;
                 resting_procedure = Some("774501CA".to_owned());
             }
             let mut channel = declarations(&bank, true, Some(&hash))?
@@ -738,7 +716,7 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
     );
     ensure!(
         bank_count <= 64,
-        "native channel dependency mask exceeds one word"
+        "native channel bank exceeds the supported 64 declarations"
     );
     let bank_tag = old_tag;
     let instance = old_bank.pointer(16)?;
@@ -807,24 +785,23 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
             )?;
         }
         row_data.extend(row);
-        let mut mask = 0u64;
-        for dependency in &channel.dependencies {
-            mask |= 1u64
-                << bank_order
-                    .iter()
-                    .position(|h| h == dependency)
-                    .context("missing channel dependency")?;
-        }
-        dependency_data.push(if channel.dependencies.is_empty() {
-            vec![]
-        } else {
-            mask.to_le_bytes().to_vec()
-        });
+        dependency_data.push(
+            channel
+                .dependencies
+                .iter()
+                .map(|dependency| {
+                    bank_order
+                        .iter()
+                        .position(|h| h == dependency)
+                        .context("missing channel dependency")
+                })
+                .collect::<Result<Vec<_>>>()?,
+        );
     }
     append_array(&mut bank.0, schema + 0xD8, 0x808097A1, &row_data, 112)?;
     let rows = bank.array(schema + 0xD8, 112, Some(0x808097A1))?;
     for (row, dependencies) in rows.iter().zip(dependency_data) {
-        append_array(&mut bank.0, row + 80, 0x8080000B, &dependencies, 8)?;
+        dependency::write(&mut bank, row + 80, bank_count, &dependencies)?;
     }
     for (i, row) in rows.iter().enumerate() {
         for &(field, target) in &channels[&bank_order[i]].preserved_pointers {
@@ -850,6 +827,12 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
     );
     cached.resize(bank_count * 16, 0);
     append_array(&mut bank.0, instance + 0x50, 0x80800090, &cached, 16)?;
+    let pending_words =
+        dependency::extend_pending(&mut bank, instance + 0x40, old_rows.len(), bank_count)?;
+    ensure!(
+        old_bank.u32(schema + 0x130)? as usize == old_rows.len().div_ceil(32),
+        "native channel dependency word count differs"
+    );
     let mut states = array_bytes(&old_bank, instance + 0x90, 16)?;
     ensure!(
         !states.is_empty() && states.iter().all(|v| *v == 0xFF),
@@ -858,6 +841,7 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
     states.resize(numeric_count * 16, 0xFF);
     append_array(&mut bank.0, instance + 0x90, 0x8080979C, &states, 16)?;
     for (at, value) in [
+        (schema + 0x130, bank_count.div_ceil(32)),
         (schema + 0x134, bank_count),
         (schema + 0x140, numeric_count),
     ] {
@@ -926,6 +910,7 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
     let allocation = metadata.array(0x20, 40, Some(0x80808852))?;
     for (name, class, before, after) in [
         (0xFC2F3D6F, 0x80800090, old_rows.len(), bank_count),
+        (0x4A423762, 0x8080000B, pending_words.0, pending_words.1),
         (
             0x3A55A801,
             0x8080979C,

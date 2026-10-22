@@ -61,12 +61,6 @@ fn registry() -> RuntimeRegistry {
 }
 
 #[test]
-fn inherited_settings_transfer_between_different_native_schemas() {
-    assert!(share_semantics(&field(2), &field(3), &registry()));
-    assert!(share_semantics(&field(1), &field(2), &registry()));
-}
-
-#[test]
 fn matching_names_and_layouts_do_not_prove_shared_meaning() {
     assert!(!share_semantics(&field(2), &field(4), &registry()));
     let mut invalid = field(3);

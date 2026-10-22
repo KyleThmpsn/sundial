@@ -76,7 +76,7 @@ You can also write flavor text and a custom **Lore** tab on **Weapon**. Leave bo
 
 ### Stats and Power
 
-**Weapon Stats** lists the values saved on your weapon in the game's order. Each row shows what the game displays, such as a stat bar or rounds per minute, and a bar marks the change from the base weapon in green or red. The number you edit under **Raw** is what gets written. A raw value of 30 on a rate of fire stat is not 30 rounds per minute. A stat you add only shows in game if the weapon's stat group supports it, so check its displayed value.
+**Weapon Stats** lists the values saved on your weapon in the game's order. Each row shows what the game displays, such as a stat bar or rounds per minute, and a bar marks the change from the base weapon in green or red, including starting perk bonuses. The number you edit is the weapon's own stat value, which the game may show differently through the stat's display curve. A value of 30 on a rate of fire stat is not 30 rounds per minute. A stat you add only shows in game if the weapon's stat group supports it, so check its displayed value.
 
 **Stat Options** holds the less common controls. **Show Internal Stats** reveals package-level rows such as Attack and Power along with unnamed ones. Hidden rows are kept either way, so turning it off doesn't discard anything. The reset button beside **Weapon Stats** puts every value back to the base weapon.
 
@@ -235,7 +235,7 @@ Extra pellets are confirmed working on Fusion Rifles, Shotguns, Pulse Rifles, Au
 
 **Collections** chooses where your weapon appears in the game's Collections. By default it uses the node matching your weapon's ammo type and weapon type, creating that node when the game has no stock one for the combination. Adding a page creates one shared page that uses the stock weapon-type name and icon. Exotic weapons always use the Exotics collection for their inventory slot.
 
-**Position** sets whether your weapon goes before or after the node's own entries. **Automatic** puts it first, so it is easier to find, unless another installed Sunrise mod changes Collections. Then it goes last, since Sunrise can only add one mod's entries after another's. The Sunrise badge and added pages follow the same rule. **First** and **Last** always place it there, and on Sunrise 0.6 or later **First** warns that it isn't compatible with Sunrise Studio mods that change Collections.
+**Position** sets whether your item goes before or after the node's own entries. **Automatic** puts it first, so it is easier to find, unless another installed Sunrise mod changes Collections. Then it goes last, since Sunrise can only add one mod's entries after another's. The Sunrise badge and added pages follow the same rule. **First** and **Last** always place it there, and on Sunrise 0.6 or later **First** warns that it isn't compatible with Sunrise Studio mods that change Collections.
 
 Enable **Custom Badge** to group weapons under your own badge, with a name, description, and artwork. Use the same badge settings for each member, or select an existing badge with **Choose from Library**. You can also choose whether the weapon appears in the default Sunrise or Dawn badge.
 
@@ -380,7 +380,7 @@ Parhelion installs beside other mods, including Sunrise Studio mods. Builds skip
 
 Installation stops and names the other mod when Sunrise can't combine the entry, when both mods set the same values differently, or when the other mod loads first and adds rows to a table Parhelion adds to, since Sunrise would then renumber Parhelion's rows. The message names each table, why Sunrise can't combine it, and what to change. Sunrise loads mods in order of their IDs, so a mod whose ID sorts before `dev.kylethmpsn.parhelion` loads first.
 
-Build with the other mods installed, so Parhelion can place its Collections entries where they combine. If a weapon set to **First** shares a Collections page with another mod, **Build & Stage** asks first and offers **Use Automatic Position**.
+Build with the other mods installed, so Parhelion can place its Collections entries where they combine. If an item set to **First** shares a Collections page with another mod, **Build & Stage** asks first and offers **Use Automatic Position**.
 
 Installation also stops where Sunrise would refuse a mod:
 
@@ -415,7 +415,7 @@ Generated only when your recipes need them. Ability property banks gain entries 
 
 | Package File | Purpose |
 | --- | --- |
-| `w64_parhelion_assets_0aa1_0.pkg` through `w64_parhelion_assets_0cff_0.pkg` | Holds authored assets, custom perks, and abilities that no longer fit in the packages above. Only the needed files are generated. |
+| `w64_parhelion_assets_0aa1_0.pkg` through `w64_parhelion_assets_0cff_0.pkg` | Holds authored assets, custom perks, and abilities that no longer fit in the packages above. Only the needed files are generated. On Sunrise 0.6 or later they count down from `w64_parhelion_assets_0cfd_0.pkg`, skipping ids other mods use. |
 | `w64_sandbox_01bb_7.pkg` | Adds the custom perk behavior that selected items use. |
 | `w64_sandbox_01c0_6.pkg` | Extends an ability property bank. |
 | `w64_sandbox_01d5_7.pkg` | Extends an ability property bank. |

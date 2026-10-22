@@ -135,12 +135,8 @@ impl SundialApp {
             Ok(result) => {
                 let size_note = settings_save_note(&result);
                 let (retention_note, retention_failed) = self.apply_backup_retention();
-                let dawn = self.dawn_account_runtime();
-                self.replace_loaded_document(account::WorkspaceDocument::load(
-                    default_document,
-                    &self.settings_path,
-                    dawn,
-                ));
+                let document = self.load_workspace_document(default_document);
+                self.replace_loaded_document(document);
                 self.set_status(
                     format!(
                         "Restored the defaults bundled with the installed Project Sunrise.{size_note} Original: {}. Backup: {}.{retention_note}",

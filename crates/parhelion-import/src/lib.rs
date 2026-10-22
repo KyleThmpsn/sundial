@@ -4,6 +4,7 @@
 pub mod artwork;
 pub mod cache;
 pub mod cancellation;
+pub mod compute;
 pub mod d1_roi;
 pub mod d2_mot;
 mod graph;

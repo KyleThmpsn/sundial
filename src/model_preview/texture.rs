@@ -514,7 +514,7 @@ pub(in crate::model_preview) fn stage_samplers(
         .collect()
 }
 
-fn sampler(manager: &PackageManager, tag: u32) -> Option<Sampler> {
+pub(in crate::model_preview) fn sampler(manager: &PackageManager, tag: u32) -> Option<Sampler> {
     let entry = manager.get_entry(tag)?;
     if entry.file_type != 34 || entry.file_subtype != 1 {
         return None;
@@ -607,12 +607,6 @@ impl Texture {
                 .as_ref()
                 .map_or(0, |levels| levels.iter().map(Self::memory).sum())
     }
-    #[cfg(test)]
-    pub(super) fn sample(&self, uv: [f32; 2]) -> [f32; 3] {
-        let rgba = self.sample_rgba(uv);
-        [rgba[0], rgba[1], rgba[2]]
-    }
-
     pub(super) fn sample_rgba(&self, uv: [f32; 2]) -> [f32; 4] {
         self.sample_with_sampler(
             uv,

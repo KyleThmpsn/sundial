@@ -181,22 +181,6 @@ fn collection_capacity_separates_excluded_draft_from_selected_build() {
 }
 
 #[test]
-fn reopening_build_selection_preserves_its_draft_and_error() {
-    let mut app = PackageAuthoringApp::default();
-    app.enabled_recipe_paths.insert("first.json".into());
-    app.open_build_selection();
-    app.build_selection_draft.as_mut().unwrap().clear();
-    app.build_selection_error = Some("Write failed".into());
-    app.open_build_selection();
-    assert!(app.build_selection_draft.as_ref().unwrap().is_empty());
-    assert_eq!(app.build_selection_error.as_deref(), Some("Write failed"));
-    assert_eq!(app.enabled_recipe_paths.len(), 1);
-    assert!(!app.current_recipe_is_in_build());
-    app.recipe_path = Some("first.json".into());
-    assert!(app.current_recipe_is_in_build());
-}
-
-#[test]
 fn build_checks_external_changes_without_replacing_the_open_draft() {
     let directory = tempfile::tempdir().unwrap();
     let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();

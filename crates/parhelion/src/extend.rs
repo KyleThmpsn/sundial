@@ -1026,7 +1026,7 @@ fn resolve_storage_mode(spec: &NewTagSpec, template_type_info: u32) -> Authoring
     }
 }
 
-fn resolve_reference_modes(
+pub(crate) fn resolve_reference_modes(
     new_tag_count: usize,
     reference_overrides: &[NewTagReferenceOverride],
 ) -> AuthoringResult<Vec<NewTagReference>> {

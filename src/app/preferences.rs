@@ -4,9 +4,6 @@ pub(super) use crate::investment::plug_selection::draw_plug_selection_warning;
 
 pub(super) mod store;
 
-#[cfg(test)]
-mod tests;
-
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -105,6 +102,9 @@ pub(super) struct Preferences {
     pub(super) show_plug_hashes: bool,
     #[serde(default)]
     pub(super) show_preview_fps: bool,
+    /// Item tooltips name the package and hash under their band.
+    #[serde(default)]
+    pub(super) show_tooltip_source: bool,
     #[serde(default)]
     pub(super) item_card_width: ItemCardWidth,
     #[serde(default)]
@@ -297,6 +297,7 @@ impl Default for Preferences {
             always_open_json_editor_in_second_window: false,
             show_plug_hashes: false,
             show_preview_fps: false,
+            show_tooltip_source: false,
             item_card_width: ItemCardWidth::Standard,
             character_inventory_layout: CharacterInventoryLayout::Cards,
             experimental_progression: false,

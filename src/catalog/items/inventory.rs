@@ -270,7 +270,7 @@ impl Catalog {
             .filter_map(|hash| self.inventory_definition(*hash))
             .filter(move |definition| {
                 definition.metadata.is_profile_items_candidate()
-                    && !crate::catalog::dummy_items::contains(definition.hash)
+                    && !self.is_dummy(definition.hash)
                     && query.matches(
                         self,
                         definition.hash,
@@ -292,7 +292,7 @@ impl Catalog {
             .iter()
             .filter_map(|hash| self.inventory_definition(*hash))
             .filter(move |definition| {
-                (show_dummy_items || !crate::catalog::dummy_items::contains(definition.hash))
+                (show_dummy_items || !self.is_dummy(definition.hash))
                     && self.fits_character_inventory(
                         definition.hash,
                         class_type,

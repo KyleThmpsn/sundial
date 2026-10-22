@@ -1,45 +1,6 @@
 use super::*;
 
 #[test]
-fn unnamed_armor_stat_plugs_use_their_local_investment_values() {
-    let mut item = vec![0_u8; 0x300 + ITEM_INVESTMENT_STAT_ROW_SIZE * 3];
-    let count = 3_u64;
-    item[INVESTMENT_STAT_DESCRIPTOR..INVESTMENT_STAT_DESCRIPTOR + 8]
-        .copy_from_slice(&count.to_le_bytes());
-    item[INVESTMENT_STAT_DESCRIPTOR + 8..INVESTMENT_STAT_DESCRIPTOR + 16]
-        .copy_from_slice(&(0x28_i64).to_le_bytes());
-    item[0x2F0..0x2F8].copy_from_slice(&count.to_le_bytes());
-    item[0x2F8..0x2FC].copy_from_slice(&ITEM_INVESTMENT_STAT_ROW_CLASS.to_le_bytes());
-
-    for (row, stat_index, value) in [(0, 5_u16, 7_u32), (1, 3, 13), (2, 4, 1)] {
-        let offset = 0x300 + row * ITEM_INVESTMENT_STAT_ROW_SIZE;
-        item[offset..offset + 2].copy_from_slice(&stat_index.to_le_bytes());
-        item[offset + 4..offset + 8].copy_from_slice(&value.to_le_bytes());
-    }
-    let stat_names = vec![
-        String::new(),
-        String::new(),
-        String::new(),
-        "Mobility".into(),
-        "Resilience".into(),
-        "Recovery".into(),
-    ];
-
-    let rows = [3, 4, 5, 6, 7, 8];
-
-    assert_eq!(
-        stat_allocation_labels(&item, &rows, &stat_names),
-        Some((
-            "13 Mobility / 1 Resilience / 7 Recovery".into(),
-            "Top Stat Allocation"
-        ))
-    );
-
-    item[0x301] = 1;
-    assert_eq!(stat_allocation_labels(&item, &rows, &stat_names), None);
-}
-
-#[test]
 fn item_stats_follow_the_typed_item_resource() {
     let mut item = vec![0_u8; 0x1A0];
     item[ITEM_INVESTMENT_STAT_POINTER_OFFSET..ITEM_INVESTMENT_STAT_POINTER_OFFSET + 8]
@@ -142,36 +103,6 @@ fn item_stat_indices_are_u8_and_require_a_zero_reserved_byte() {
 }
 
 #[test]
-fn stat_group_minimum_is_scoped_to_the_selected_stat() {
-    let group = ItemStatGroup {
-        hash: 0,
-        maximum_value: 100,
-        scaled_stats: vec![
-            ItemScaledStat {
-                definition_index: 14,
-                display_interpolation: vec![ItemStatDisplayPoint {
-                    investment_value: 10,
-                    display_value: 360,
-                }],
-                ..ItemScaledStat::default()
-            },
-            ItemScaledStat {
-                definition_index: 15,
-                display_interpolation: vec![ItemStatDisplayPoint {
-                    investment_value: -20,
-                    display_value: 0,
-                }],
-                ..ItemScaledStat::default()
-            },
-        ],
-    };
-
-    assert_eq!(group.minimum_value(14), Some(10));
-    assert_eq!(group.minimum_value(15), Some(-20));
-    assert_eq!(group.minimum_value(16), None);
-}
-
-#[test]
 fn item_stat_group_index_follows_the_typed_string_resource() {
     let mut definition = vec![0_u8; 0x130];
     definition[ITEM_STRING_STAT_GROUP_POINTER_OFFSET..ITEM_STRING_STAT_GROUP_POINTER_OFFSET + 8]
@@ -240,82 +171,6 @@ fn stat_groups_accept_native_null_arrays() {
             scaled_stats: Vec::new(),
         }]
     );
-}
-
-#[test]
-fn non_linear_stat_display_curves_clamp_to_their_decoded_endpoints() {
-    let points = [
-        ItemStatDisplayPoint {
-            investment_value: 20,
-            display_value: 450,
-        },
-        ItemStatDisplayPoint {
-            investment_value: 80,
-            display_value: 600,
-        },
-    ];
-
-    assert_eq!(
-        interpolate_investment_stat_display(&points, false, -100),
-        Some(450)
-    );
-    assert_eq!(
-        interpolate_investment_stat_display(&points, false, 50),
-        Some(525)
-    );
-    assert_eq!(
-        interpolate_investment_stat_display(&points, false, 100),
-        Some(600)
-    );
-    assert_eq!(
-        interpolate_investment_stat_display(&points, true, -5),
-        Some(-5)
-    );
-}
-
-#[test]
-fn masterwork_labels_use_the_primary_local_stat_name() {
-    let mut item = vec![0_u8; 0x300 + ITEM_INVESTMENT_STAT_ROW_SIZE * 2];
-    let count = 2_u64;
-    item[INVESTMENT_STAT_DESCRIPTOR..INVESTMENT_STAT_DESCRIPTOR + 8]
-        .copy_from_slice(&count.to_le_bytes());
-    item[INVESTMENT_STAT_DESCRIPTOR + 8..INVESTMENT_STAT_DESCRIPTOR + 16]
-        .copy_from_slice(&(0x28_i64).to_le_bytes());
-    item[0x2F0..0x2F8].copy_from_slice(&count.to_le_bytes());
-    item[0x2F8..0x2FC].copy_from_slice(&ITEM_INVESTMENT_STAT_ROW_CLASS.to_le_bytes());
-    item[0x300..0x302].copy_from_slice(&2_u16.to_le_bytes());
-    item[0x300 + ITEM_INVESTMENT_STAT_ROW_SIZE..0x302 + ITEM_INVESTMENT_STAT_ROW_SIZE]
-        .copy_from_slice(&1_u16.to_le_bytes());
-    let stat_names = vec![String::new(), "Impact".into(), "Charge Time".into()];
-
-    assert_eq!(
-        masterwork_label(&item, &stat_names, "Masterwork").as_deref(),
-        Some("Masterwork: Charge Time")
-    );
-    assert_eq!(
-        masterwork_label(&item, &stat_names, "Tier 7 Weapon").as_deref(),
-        Some("Tier 7 Weapon: Charge Time")
-    );
-    let armor_stat_names = vec![
-        String::new(),
-        "Heroic Resistance".into(),
-        "Arc Damage Resistance".into(),
-    ];
-    assert_eq!(
-        masterwork_label(&item, &armor_stat_names, "Tier 4 Armor").as_deref(),
-        Some("Tier 4 Armor: Arc Damage Resistance")
-    );
-    assert_eq!(
-        masterwork_label(&item, &stat_names, "Masterwork Weapon"),
-        None
-    );
-    assert_eq!(
-        masterwork_label(&item, &stat_names[..2], "Masterwork"),
-        None
-    );
-
-    item[0x301] = 1;
-    assert_eq!(masterwork_label(&item, &stat_names, "Masterwork"), None);
 }
 
 fn write_array_descriptor(

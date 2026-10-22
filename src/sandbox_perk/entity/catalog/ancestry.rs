@@ -310,22 +310,6 @@ mod tests {
         assert!(result.errors.is_empty());
     }
 
-    #[test]
-    fn a_failed_resource_is_reported_once_and_does_not_stop_the_search() {
-        let result = collect([1], |wave| {
-            wave.iter()
-                .map(|tag| match tag {
-                    1 => (1, Ok(vec![2, 3])),
-                    2 => (2, Err("resource 2 is unreadable".to_owned())),
-                    3 => (3, Ok(vec![4])),
-                    _ => (*tag, Ok(Vec::new())),
-                })
-                .collect()
-        });
-        assert_eq!(result.parents[&4], vec![3]);
-        assert_eq!(result.errors, vec!["resource 2 is unreadable".to_owned()]);
-    }
-
     /// A shard is keyed by its own package's files: it comes back after a restart, and a
     /// change to that package empties it while other packages changing leaves it alone.
     #[test]

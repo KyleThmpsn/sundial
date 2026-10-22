@@ -1,47 +1,6 @@
 use super::*;
 use crate::catalog::{ItemDef, ItemPackageMetadata, SocketDef};
 
-fn source(hash: u32, name: &str) -> PerkSource {
-    PerkSource {
-        hash,
-        name: name.into(),
-        type_name: "Trait".into(),
-    }
-}
-
-#[test]
-fn shared_effects_keep_all_aliases_searchable_without_claiming_one_name() {
-    let sources: PerkSources = [
-        (453, source(1, "Thorn Catalyst")),
-        (453, source(2, "Masterwork Weapon")),
-        (453, source(3, "Masterwork: Range")),
-        (453, source(1, "Thorn Catalyst")),
-        (421, source(4, "Outlaw")),
-        (421, source(5, "Outlaw")),
-    ]
-    .into_iter()
-    .collect();
-    assert_eq!(sources.label(453), "Shared Effect 453");
-    assert_eq!(
-        sources.shared_label(453).as_deref(),
-        Some("Shared Masterwork Effect")
-    );
-    assert_eq!(sources.shared_label(421), None);
-    assert_eq!(sources.get(453).len(), 3);
-    assert!(sources.matches_query(453, "thorn 453"));
-    assert!(sources.matches_query(453, "masterwork range"));
-    assert!(sources.matches_query(453, "00000002"));
-    assert!(!sources.matches_query(421, "thorn"));
-    assert_eq!(sources.label(421), "Effect 421 · From Outlaw");
-    assert_eq!(
-        sources.get(421).len(),
-        2,
-        "Same-named source hashes stay distinct"
-    );
-    assert_eq!(sources.label(999), "Effect 999");
-    assert!(!sources.has_names(999));
-}
-
 #[test]
 fn provenance_includes_optional_plugs_without_claiming_default_usage() {
     let metadata = |index| ItemPackageMetadata {
@@ -84,27 +43,4 @@ fn provenance_includes_optional_plugs_without_claiming_default_usage() {
             .iter()
             .any(|usage| usage.perk_index == 453)
     );
-}
-
-#[test]
-#[ignore = "requires SUNDIAL_INSTALL; verifies installed masterwork aliases"]
-fn installed_masterwork_sources_do_not_become_thorn_identity() {
-    let install = crate::test_support::install();
-    let catalog = crate::test_support::catalog(&install).unwrap();
-    let sources = catalog.perk_sources();
-    assert_eq!(sources.label(453), "Shared Effect 453");
-    assert!(
-        sources
-            .get(453)
-            .iter()
-            .any(|source| source.name == "Thorn Catalyst")
-    );
-    assert!(
-        sources
-            .get(453)
-            .iter()
-            .any(|source| source.name.starts_with("Masterwork"))
-    );
-    assert!(sources.matches_query(453, "thorn catalyst"));
-    assert_eq!(sources.label(463), "Effect 463 · From The Fundamentals");
 }

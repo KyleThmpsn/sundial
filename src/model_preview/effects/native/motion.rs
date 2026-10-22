@@ -59,6 +59,7 @@ impl Motion {
         }
         for index in self.vertices.clone() {
             let input = Input {
+                vertex_id: model.vertex_ids.get(index).copied().unwrap_or(index as u32),
                 position: pose.positions[index],
                 normal: pose.normals[index],
                 tangent: pose.tangents[index],

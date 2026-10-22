@@ -6,7 +6,9 @@ use crate::tiger::{
 };
 
 mod channel;
+mod light;
 mod optic;
+mod query;
 
 /// A stock weapon part entity: render component, markers and channel bank, each bound to the
 /// weapon's skeleton provider `AE7D0AED`. The character templates below bind to the character
@@ -255,7 +257,7 @@ impl Assembly<'_> {
                         let ordinal = ordinals[0];
                         let mesh = meshes[ordinal];
                         let name = format!("{name}-mesh-{ordinal}");
-                        let model = self.model(source_model_tag, &ordinals, &format!("{name}-model"), &equipment, self.weapon)?;
+                        let model = self.model(source_model_tag, &ordinals, &format!("{name}-model"), &equipment, self.weapon, cloth.then_some((&source, sr)))?;
                         ensure!(!(cloth && self.weapon), "Source weapon cloth has no native weapon-part template");
                         let (template, entity) = if cloth {
                             (0x80EF8694, 0x80EF8695)
@@ -321,6 +323,11 @@ impl Assembly<'_> {
                     activation(&source, &mut component.payload)?;
                     let nr = component.payload.pointer(24)?;
                     let markers = source.array(sr + 0xD8, 64, Some(0x80800608))?;
+                    if self.bone_map.is_some() {
+                        ensure!(markers.iter().all(|&at| source.u32(at).ok() == Some(0)
+                            && source.u32(at + 4).is_ok_and(|mode| mode <= 1)),
+                            "Mapped weapon markers require root bindings");
+                    }
                     let rows = markers.into_iter().flat_map(|at| source.0[at..at + 64].iter().copied()).collect::<Vec<_>>();
                     array(&mut component.payload.0, nr + 0xA8, 0x80809C00, &rows, 64)?;
                     component.seal()?;
@@ -332,6 +339,10 @@ impl Assembly<'_> {
                         ..crate::tiger::markers::NATIVE
                     };
                     let markers = crate::tiger::markers::read(&source, sr + 0xD8, layout)?;
+                    if self.bone_map.is_some() {
+                        ensure!(markers.iter().all(|m| m.binding[0] == 0 && m.binding[1] <= 1),
+                            "Mapped weapon markers require root bindings");
+                    }
                     let mut component = self.component(WEAPON_MARKERS, WEAPON_PART_ENTITY, &name, components.len())?;
                     activation(&source, &mut component.payload)?;
                     component.payload = crate::tiger::markers::replace(&component.payload, &markers)?;
@@ -342,7 +353,13 @@ impl Assembly<'_> {
                     source_owners.insert(tag, components.len());
                     components.push(self.optic(tag, &source, &source_entity, &name, components.len())?);
                 }
-                0x80802733 | 0x80801B6F | 0x8080203D if self.weapon => {
+                0x80803136 if self.weapon => {
+                    components.push(self.query(&source, &name, components.len())?);
+                }
+                0x80801B6F if self.weapon => {
+                    components.push(self.light(tag, &source, &source_entity, &name, components.len())?);
+                }
+                0x80802733 | 0x8080203D if self.weapon => {
                     self.evidence.push(json!({"source_component":tag,"resource_class":class,
                         "omitted":"Source auxiliary sight effects require separate runtime translation"}));
                 }

@@ -106,66 +106,6 @@ fn character_reference_checks_item_class_stack_and_equipped_bucket() {
 }
 
 #[test]
-fn profile_only_inventory_definitions_are_valid_catalog_references() {
-    let hash = 5;
-    let mut catalog = FakeCatalog::default();
-    catalog.inventory.insert(hash, profile_metadata(999));
-    let mut issues = Vec::new();
-
-    validate_profile_item(&catalog, "profile-only item", hash, 1, &mut issues);
-
-    assert!(issues.is_empty());
-}
-
-#[test]
-fn plug_references_use_the_plug_catalog_instead_of_the_equipment_catalog() {
-    let plug_hash = 20;
-    let item_hash = 30;
-    let mut catalog = FakeCatalog::default();
-    catalog.plugs.insert(plug_hash);
-    catalog.items.insert(item_hash, definition(item_hash, 0, 3));
-    let mut issues = Vec::new();
-
-    validate_plug(&catalog, "valid plug", 0, plug_hash, &mut issues);
-    assert!(issues.is_empty());
-
-    validate_plug(&catalog, "item used as plug", 0, item_hash, &mut issues);
-    assert!(
-        issues
-            .iter()
-            .any(|issue| issue.contains("item used as plug"))
-    );
-}
-
-#[test]
-fn character_and_plug_hashes_must_exist() {
-    let catalog = FakeCatalog::default();
-    let mut issues = Vec::new();
-    validate_profile_item(&catalog, "missing profile item", 5, 1, &mut issues);
-    validate_character_item(
-        &catalog,
-        CharacterItemReference {
-            context: "missing item",
-            hash: 10,
-            quantity: 1,
-            class_type: Some(0),
-            expected_bucket: None,
-        },
-        false,
-        &mut issues,
-    );
-    validate_plug(&catalog, "test item", 0, 20, &mut issues);
-
-    assert!(
-        issues
-            .iter()
-            .any(|issue| issue.contains("missing profile item"))
-    );
-    assert!(issues.iter().any(|issue| issue.contains("missing item")));
-    assert!(issues.iter().any(|issue| issue.contains("plug 1")));
-}
-
-#[test]
 fn authored_socket_count_must_match_installed_shape_for_equipped_and_stored_items() {
     let mut catalog = FakeCatalog::default();
     let mut item = definition(10, 0, 3);

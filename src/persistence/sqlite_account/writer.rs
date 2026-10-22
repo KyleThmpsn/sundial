@@ -41,10 +41,26 @@ pub(crate) fn save(
     save_with_backup(document, None)
 }
 
+pub(crate) fn save_checked(
+    document: &mut SqliteAccountDocument,
+    require_closed: impl FnMut() -> Result<(), String>,
+) -> Result<SqliteSaveReceipt, SqliteAccountError> {
+    save_with_backup_checked(document, None, require_closed)
+}
+
 pub(super) fn save_with_backup(
     document: &mut SqliteAccountDocument,
     backup: Option<PathBuf>,
 ) -> Result<SqliteSaveReceipt, SqliteAccountError> {
+    save_with_backup_checked(document, backup, || Ok(()))
+}
+
+fn save_with_backup_checked(
+    document: &mut SqliteAccountDocument,
+    backup: Option<PathBuf>,
+    mut require_closed: impl FnMut() -> Result<(), String>,
+) -> Result<SqliteSaveReceipt, SqliteAccountError> {
+    require_closed().map_err(SqliteAccountError::WriteBlocked)?;
     let mut candidate = document.clone();
     candidate.prepare_persistence()?;
 
@@ -79,6 +95,9 @@ pub(super) fn save_with_backup(
         )?
     };
     let before = super::snapshot::capture(&transaction).map_err(SqliteAccountError::Backup)?;
+    // Backup and validation can take time. A process that started during either must not
+    // receive an account mutation, even when its persisted revision has not changed yet.
+    require_closed().map_err(SqliteAccountError::WriteBlocked)?;
     write_document(&transaction, &candidate)?;
     reader::load_connection(&transaction)?;
     let revision = document::database_revision(&transaction)?;
@@ -109,6 +128,7 @@ pub(super) fn save_with_backup(
         ],
     )
     .map_err(SqliteAccountError::Backup)?;
+    require_closed().map_err(SqliteAccountError::WriteBlocked)?;
     transaction
         .commit()
         .map_err(|error| SqliteAccountError::sqlite("commit", error))?;

@@ -759,19 +759,21 @@ fn plan_maps(
                     .into_iter()
                     .map(|(package, _)| package)
                     .collect();
-                    let registration =
-                        maps.registration_at(&split.addresses, &split.tags, &registered, manager)?;
+                    let registration = maps.registration_at(
+                        &split.addresses,
+                        &split.tags,
+                        &split.references,
+                        &registered,
+                        manager,
+                    )?;
+                    // Every package of a world takes the world's family, as a stock
+                    // destination's packages do, and only its id tells them apart.
                     let family = maps.family(index, part);
                     let counts = std::iter::once((native, 0, split.native_entries, family.clone()))
                         .chain(split.resource_ids.iter().enumerate().map(|(chunk, &id)| {
                             let start = split.native_entries + chunk * CAPACITY;
                             let end = (start + CAPACITY).min(split.tags.len());
-                            let name = if chunk == 0 {
-                                format!("{family}_resources")
-                            } else {
-                                format!("{family}_resources_part_{chunk}")
-                            };
-                            (id, start, end, name)
+                            (id, start, end, family.clone())
                         }));
                     for (id, start, end, family) in counts {
                         crate::package_profile::name_standalone_package(id, &family)
@@ -838,15 +840,10 @@ fn plan_maps(
             .into_iter()
             .map(|(package, _)| package)
             .collect();
-            let registration = maps.registration(&ids, &tags, &registered, manager)?;
+            let registration = maps.registration(&ids, &tags, &references, &registered, manager)?;
             let mut tags = tags.into_iter();
             for (chunk, &id) in ids.iter().enumerate() {
                 let family = maps.family(index, part);
-                let family = if chunk == 0 {
-                    family
-                } else {
-                    format!("{family}_part_{chunk}")
-                };
                 crate::package_profile::name_standalone_package(id, &family).map_err(validation)?;
                 let start = chunk * CAPACITY;
                 let part_tags = tags.by_ref().take(CAPACITY).collect::<Vec<_>>();

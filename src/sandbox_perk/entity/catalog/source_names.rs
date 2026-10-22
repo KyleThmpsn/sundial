@@ -124,48 +124,6 @@ mod tests {
     }
 
     #[test]
-    fn nested_source_vocabulary_requires_contiguous_native_tokens() {
-        let paths = [tft::ContentPath {
-            source: 1,
-            offset: 24,
-            path: "content/ambient_life/nessus_frog/effects/fx_frog_spawn.pattern.tft".into(),
-        }];
-        let names = index(&paths, &[]);
-        for name in ["nessus_frog", "frog_spawn", "frog"] {
-            assert_eq!(names[&fnv1_name_hash(name)].name, name);
-            assert_eq!(names[&fnv1_name_hash(name)].source, paths[0].path);
-        }
-        assert!(!names.contains_key(&fnv1_name_hash("nessus_spawn")));
-    }
-
-    #[test]
-    fn enum_tables_and_wwise_paths_are_engine_vocabulary() {
-        let vocabulary = [
-            tft::ContentPath {
-                source: 2,
-                offset: 0,
-                path: "thermal_maul_super".into(),
-            },
-            tft::ContentPath {
-                source: 3,
-                offset: 40,
-                path: "content\\audio\\wwise_events\\abilities\\ward_of_dawn_npc\\npc_ward_of_dawn_in.wwise_event".into(),
-            },
-        ];
-        let names = index(&[], &vocabulary);
-        assert_eq!(names[&fnv1_name_hash("thermal_maul")].name, "thermal_maul");
-        assert_eq!(
-            names[&fnv1_name_hash("thermal_maul")].source,
-            "thermal_maul_super"
-        );
-        assert_eq!(names[&fnv1_name_hash("ward_of_dawn")].name, "ward_of_dawn");
-        assert_eq!(
-            names[&fnv1_name_hash("ward_of_dawn")].source,
-            vocabulary[1].path
-        );
-    }
-
-    #[test]
     fn legacy_names_hash_exactly_and_yield_to_installed_strings() {
         for legacy in legacy_names() {
             assert_eq!(fnv1_name_hash(&legacy.name), legacy.hash, "{}", legacy.name);

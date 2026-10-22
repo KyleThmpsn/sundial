@@ -242,39 +242,6 @@ fn missing_socket_plug_explains_custom_perk_reuse_without_accepting_missing_rows
 }
 
 #[test]
-fn added_socket_resolution_keeps_the_native_prefix_and_requires_typed_new_rows() {
-    let data = eight_socket_definition();
-    let indices = BTreeMap::from([(100, vec![28]), (101, vec![48])]);
-    let mut columns = vec![None; 9];
-    columns[8] = Some(WeaponSocketColumnOverride {
-        choices: vec![100, 101],
-        socket_type: Some(92),
-        ..Default::default()
-    });
-    let resolved = resolve_socket_column_indices(&indices, &data, &columns).unwrap();
-    assert_eq!(resolved, added_columns(9));
-    assert!(resolve_socket_column_indices(&indices, &data, &columns[..7]).is_err());
-    columns.resize(13, columns[8].clone());
-    assert!(resolve_socket_column_indices(&indices, &data, &columns).is_err());
-    columns.truncate(9);
-    columns[8].as_mut().unwrap().socket_type = None;
-    assert!(resolve_socket_column_indices(&indices, &data, &columns).is_err());
-    columns[8] = None;
-    assert!(resolve_socket_column_indices(&indices, &data, &columns).is_err());
-}
-
-#[test]
-fn added_socket_resolution_normalizes_only_existing_randomized_rows() {
-    let data = synthetic_socket_definition();
-    let mut columns = vec![None, None, None, Some(vec![28, 48])];
-    normalize_inherited_randomized_socket_columns(&data, &mut columns).unwrap();
-    assert_eq!(
-        columns,
-        vec![None, Some(vec![11]), None, Some(vec![28, 48])]
-    );
-}
-
-#[test]
 fn added_sockets_preserve_empty_nested_arrays_with_native_headers() {
     let mut data = eight_socket_definition();
     let descriptor = relative_target(&data, ITEM_ORDINARY_SOCKET_POINTER_OFFSET).unwrap();

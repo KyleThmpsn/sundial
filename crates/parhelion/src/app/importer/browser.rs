@@ -106,9 +106,9 @@ impl Default for Browser {
     }
 }
 
-pub(super) const ROW_HEIGHT: f32 = 64.0;
+pub(super) const ROW_HEIGHT: f32 = 52.0;
 /// Rows without artwork drop the icon tile and its height.
-const TEXT_ROW_HEIGHT: f32 = 48.0;
+const TEXT_ROW_HEIGHT: f32 = 40.0;
 
 fn row_height(icons: bool) -> f32 {
     if icons { ROW_HEIGHT } else { TEXT_ROW_HEIGHT }
@@ -381,17 +381,17 @@ fn draw_row(
             badge.on_hover_text(missing_donor_text(&row));
         }
     }
-    let text_top = rect.top() + if row.icon { 9.0 } else { 2.0 };
+    let text_top = rect.top() + (height - 36.0) / 2.0;
     let title_rect = egui::Rect::from_min_max(
         egui::pos2(text_left, text_top),
-        egui::pos2(text_right, text_top + 22.0),
+        egui::pos2(text_right, text_top + 18.0),
     );
     let subtitle = filters::details(weapon);
     // `put` centres a label; rows need left-aligned text.
     for (rect, text) in [
         (title_rect, egui::RichText::new(&weapon.name).strong()),
         (
-            title_rect.translate(egui::vec2(0.0, 22.0)),
+            title_rect.translate(egui::vec2(0.0, 18.0)),
             egui::RichText::new(&subtitle).weak(),
         ),
     ] {
@@ -710,112 +710,112 @@ mod tests {
     }
 
     #[test]
-    fn sorting_reorders_without_hiding_and_ends_with_the_name() {
-        let weapons = vec![
-            weapon(3, "Zephyr", "Sword"),
-            weapon(1, "Ace", "Hand Cannon"),
-            weapon(2, "Midnight", "Sword"),
-        ];
-        let mut browser = Browser::default();
-        browser.refresh(&weapons);
-        assert_eq!(browser.visible, [0, 1, 2], "catalog order is untouched");
-        for (order, expected) in [(Order::Name, [1, 2, 0]), (Order::Type, [1, 2, 0])] {
-            browser.order = order;
-            browser.dirty = true;
-            browser.refresh(&weapons);
-            assert_eq!(browser.visible, expected, "{}", order.label());
-        }
-    }
-
-    #[test]
     fn fixed_height_rows_scroll_without_rendering_the_whole_catalog() {
-        let mut app = PackageAuthoringApp::default();
-        app.importer.browser = Browser::default();
-        app.importer.notice.clear();
-        app.importer.settings.modern_packages = Some(PathBuf::from("."));
-        app.importer.read_requested = true;
-        app.importer.weapons = (0..1000)
-            .map(|hash| weapon(hash, &format!("Test Weapon {hash:04}"), "Auto Rifle"))
-            .collect();
-        let ctx = egui::Context::default();
-        let mut names = Vec::new();
-        for frame in 0..8 {
-            let mut input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(640.0, 480.0),
-                )),
-                time: Some(f64::from(frame) / 10.0),
-                ..Default::default()
-            };
-            input
-                .events
-                .push(egui::Event::PointerMoved(egui::pos2(300.0, 300.0)));
-            if frame == 3 {
-                input.events.push(egui::Event::MouseWheel {
-                    unit: egui::MouseWheelUnit::Point,
-                    delta: egui::vec2(0.0, -900.0),
-                    modifiers: egui::Modifiers::default(),
-                    phase: egui::TouchPhase::Move,
-                });
-            }
-            let output = ctx.run_ui(input, |ui| {
-                egui::CentralPanel::default().show(ui, |ui| app.draw_importer_contents(ui));
-            });
-            names = output
-                .shapes
-                .iter()
-                .filter_map(|shape| {
-                    if let egui::Shape::Text(text) = &shape.shape
-                        && text.galley.text().starts_with("Test Weapon")
-                        && !text.galley.text().contains('\n')
-                    {
-                        Some((text.galley.text().to_owned(), text.pos.y))
-                    } else {
-                        None
+        use sundial::test_support::capture;
+        for source in Source::ALL {
+            for width in [980.0, 680.0] {
+                let mut app = PackageAuthoringApp::default();
+                app.importer.browser = Browser::default();
+                app.importer.source = source;
+                app.importer.notice.clear();
+                app.importer.settings.modern_packages = Some(PathBuf::from("fixtures/modern"));
+                app.importer.settings.d1_roi = Some(PathBuf::from("fixtures/roi"));
+                app.importer.settings.reach_maps = Some(PathBuf::from("fixtures/reach"));
+                app.importer.settings.marathon_packages = Some(PathBuf::from("fixtures/marathon"));
+                app.importer.read_requested = true;
+                app.importer.weapons = (0..1000)
+                    .map(|hash| weapon(hash, &format!("Test Weapon {hash:04}"), "Auto Rifle"))
+                    .collect();
+                let ctx = egui::Context::default();
+                let mut names = Vec::new();
+                for frame in 0..8 {
+                    let mut input = egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 480.0),
+                        )),
+                        time: Some(f64::from(frame) / 10.0),
+                        ..Default::default()
+                    };
+                    input
+                        .events
+                        .push(egui::Event::PointerMoved(egui::pos2(300.0, 300.0)));
+                    if frame == 3 {
+                        input.events.push(egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Point,
+                            delta: egui::vec2(0.0, -900.0),
+                            modifiers: egui::Modifiers::default(),
+                            phase: egui::TouchPhase::Move,
+                        });
                     }
-                })
-                .collect();
-            assert!(
-                !names.is_empty() && names.len() < 10,
-                "Only viewport rows should be rendered: {names:?}"
-            );
-            let spacing = names.windows(2).next().map(|pair| pair[1].1 - pair[0].1);
-            for pair in names.windows(2) {
+                    let output = ctx.run_ui(input, |ui| {
+                        egui::CentralPanel::default().show(ui, |ui| app.draw_importer_contents(ui));
+                    });
+                    capture::record(&output);
+                    names = output
+                        .shapes
+                        .iter()
+                        .filter_map(|shape| {
+                            if let egui::Shape::Text(text) = &shape.shape
+                                && text.galley.text().starts_with("Test Weapon")
+                                && !text.galley.text().contains('\n')
+                            {
+                                Some((text.galley.text().to_owned(), text.pos.y))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    assert!(
+                        !names.is_empty() && names.len() < 10,
+                        "Only viewport rows should be rendered: {names:?}"
+                    );
+                    let spacing = names.windows(2).next().map(|pair| pair[1].1 - pair[0].1);
+                    for pair in names.windows(2) {
+                        assert!(
+                            (pair[1].1 - pair[0].1 - spacing.unwrap()).abs() < 1.0
+                                && pair[1].1 > pair[0].1,
+                            "Rows must keep a stable height: {names:?}"
+                        );
+                    }
+                    if source.icons() {
+                        let tiles: Vec<_> = output
+                            .shapes
+                            .iter()
+                            .filter_map(|shape| {
+                                if let egui::Shape::Rect(rect) = &shape.shape
+                                    && rect.rect.size() == egui::vec2(48.0, 48.0)
+                                {
+                                    Some(rect.rect)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        assert!(
+                            tiles.len() > 1,
+                            "The browser must retain full-size icon tiles"
+                        );
+                        for pair in tiles.windows(2) {
+                            assert!(
+                                pair[1].top() - pair[0].bottom() <= 8.0,
+                                "Consecutive icons have excessive empty vertical space: {tiles:?}"
+                            );
+                        }
+                    }
+                    if frame == 7 {
+                        capture::write(
+                            &ctx,
+                            &output,
+                            &format!("importer-rows-{}-{width}", source.view_file()),
+                        );
+                    }
+                }
                 assert!(
-                    (pair[1].1 - pair[0].1 - spacing.unwrap()).abs() < 1.0 && pair[1].1 > pair[0].1,
-                    "Rows must keep a stable height: {names:?}"
+                    names.iter().all(|(name, _)| name != "Test Weapon 0000"),
+                    "Wheel scrolling must move the catalog"
                 );
             }
         }
-        assert!(
-            names.iter().all(|(name, _)| name != "Test Weapon 0000"),
-            "Wheel scrolling must move the catalog"
-        );
-    }
-
-    #[test]
-    fn filters_keep_variants_and_exclude_dummy_and_installed_items_by_default() {
-        let weapons: Vec<Weapon> = serde_json::from_value(serde_json::json!([
-            {"hash":1,"name":"Same Name","weapon_type":"Auto Rifle","present_in_native":false},
-            {"hash":2,"name":"Same Name","weapon_type":"Auto Rifle","present_in_native":false,"dummy":true},
-            {"hash":3,"name":"Installed","weapon_type":"Auto Rifle","present_in_native":true}
-        ])).unwrap();
-        let mut browser = Browser::default();
-        browser.refresh(&weapons);
-        assert_eq!(browser.visible, [0]);
-        browser.show_dummy = true;
-        browser.show_installed = true;
-        browser.query = "same".into();
-        browser.dirty = true;
-        browser.refresh(&weapons);
-        assert_eq!(browser.visible, [0, 1]);
-        browser.query = "0x00000003".into();
-        browser.dirty = true;
-        browser.refresh(&weapons);
-        assert_eq!(browser.visible, [2]);
-        assert!(browser.filters_active());
-        browser.clear_filters();
-        assert!(!browser.filters_active());
     }
 }

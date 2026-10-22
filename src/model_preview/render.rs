@@ -86,22 +86,6 @@ impl Scene {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn image(model: &Model, camera: Camera, size: [usize; 2]) -> ColorImage {
-    frame(
-        model,
-        camera,
-        Scene::unprocessed(),
-        size,
-        None,
-        Style::Textured,
-        0.0,
-        None,
-        16,
-        false,
-    )
-}
-
 pub(crate) fn animated_image(
     model: &Model,
     camera: Camera,
@@ -180,11 +164,16 @@ pub(crate) fn preview_image(
 }
 
 /// Native surface coverage on a transparent background for inventory artwork.
-pub(crate) fn transparent_image(model: &Model, camera: Camera, size: usize) -> ColorImage {
+pub(crate) fn transparent_image(
+    model: &Model,
+    camera: Camera,
+    scene: Scene,
+    size: usize,
+) -> ColorImage {
     let scene = Scene {
         background: [0; 3],
         bloom: false,
-        ..Scene::default()
+        ..scene
     };
     let pose = model.pose(0.0);
     frame(
@@ -542,6 +531,11 @@ fn frame(
                         .unwrap_or(flat);
                     let uv = model.uvs.get(vertex).copied().unwrap_or_default();
                     let input = super::effects::native::Input {
+                        vertex_id: model
+                            .vertex_ids
+                            .get(vertex)
+                            .copied()
+                            .unwrap_or(vertex as u32),
                         position: vertices[vertex],
                         normal,
                         tangent: super::effects::native::tangent(source_tangents, vertex, normal),
@@ -653,21 +647,27 @@ fn frame(
     let has_effects = style == Style::Textured
         && (0..model.triangles.len()).any(|i| super::effects::transparent(model, i));
     let mut opaque_depth = Vec::new();
+    let mut opaque_color = None;
+    let mut opaque_normal = None;
+    let mut normals = vec![[0.0f32; 4]; width * (last - first)];
     for transparent in [false, true] {
         if transparent && !has_effects {
             break;
         }
         let native_depth = transparent.then_some(super::effects::native::Depth {
             values: &opaque_depth,
+            color: opaque_color.as_ref(),
+            normal: opaque_normal.as_ref(),
             size: [width, height],
             top: first,
             scale,
         });
         std::thread::scope(|scope| {
-            for (band, ((pixels, depth), coverage)) in linear_pixels
+            for (band, (((pixels, depth), coverage), normals)) in linear_pixels
                 .chunks_mut(rows * width)
                 .zip(depth.chunks_mut(rows * width))
                 .zip(coverage.chunks_mut(rows * width))
+                .zip(normals.chunks_mut(rows * width))
                 .enumerate()
             {
                 let (prepared, dyes, particle_material, effect_frames) =
@@ -690,6 +690,7 @@ fn frame(
                                 pixels,
                                 depth,
                                 coverage,
+                                normals,
                                 width,
                                 top,
                                 bottom,
@@ -724,6 +725,41 @@ fn frame(
         });
         if !transparent && has_effects {
             opaque_depth.clone_from(&depth);
+            let mut receiver = vec![[0.0; 4]; width * height];
+            receiver[first * width..last * width].copy_from_slice(&normals);
+            opaque_normal = Some(super::texture::Texture {
+                size: [width, height],
+                linear: Some(receiver),
+                mips: Some(Vec::new()),
+                ..Default::default()
+            });
+            // Transparent materials sample the completed opaque scene in linear light.
+            // Undo only the viewer's exposure, which their final color receives once.
+            let exposure = scene.exposure.max(1e-8);
+            let background = [
+                background[0] / exposure,
+                background[1] / exposure,
+                background[2] / exposure,
+                1.0,
+            ];
+            let mut pixels = vec![background; width * height];
+            for (to, from) in pixels[first * width..last * width]
+                .iter_mut()
+                .zip(&linear_pixels)
+            {
+                *to = [
+                    from[0] / exposure,
+                    from[1] / exposure,
+                    from[2] / exposure,
+                    1.0,
+                ];
+            }
+            opaque_color = Some(super::texture::Texture {
+                size: [width, height],
+                linear: Some(pixels),
+                mips: Some(Vec::new()),
+                ..Default::default()
+            });
         }
     }
     if sprite_study {
@@ -881,6 +917,7 @@ struct Band<'a> {
     pixels: &'a mut [[f32; 3]],
     depth: &'a mut [f32],
     coverage: &'a mut [f32],
+    normals: &'a mut [[f32; 4]],
     width: usize,
     top: usize,
     bottom: usize,
@@ -890,6 +927,23 @@ struct Band<'a> {
     native_depth: Option<super::effects::native::Depth<'a>>,
     view_direction: [f32; 3],
     view_distance: f32,
+}
+
+impl Band<'_> {
+    fn irradiance(&self) -> [f32; 4] {
+        let (right, up) = screen_axes(self.camera);
+        let key = self.scene.raster_light();
+        let mut coefficients = [0.0; 4];
+        for i in 0..3 {
+            coefficients[i] =
+                (right[i] * key[0] - up[i] * key[1] - self.view_direction[i] * key[2])
+                    * self.scene.key
+                    * 0.5;
+        }
+        // Projection of max(dot(normal, light), 0) onto the first two SH bands.
+        coefficients[3] = self.scene.fill + self.scene.key * 0.25;
+        coefficients
+    }
 }
 
 fn edge(a: [f32; 3], b: [f32; 3], x: f32, y: f32) -> f64 {
@@ -1070,6 +1124,7 @@ fn raster(
                         [b, c],
                         [px, py, z],
                     )
+                    .map(|(color, _)| color)
                     .unwrap_or([0.0; 4])
                 } else {
                     effect_color(
@@ -1092,6 +1147,7 @@ fn raster(
                                     front: area < 0.0,
                                     depth,
                                     exposure,
+                                    irradiance: band.irradiance(),
                                 },
                             ),
                         },
@@ -1166,9 +1222,17 @@ fn raster(
                     });
                     let mut material = material;
                     opaque_color(triangle, &mut material, effect, &band, [b, c], [px, py, z])
-                        .map(|rgba| [rgba[0], rgba[1], rgba[2]])
+                        .map(|(rgba, normal)| {
+                            band.normals[index] = [
+                                normal[0] * 0.375 + 0.5,
+                                normal[1] * 0.375 + 0.5,
+                                normal[2] * 0.375 + 0.5,
+                                1.0,
+                            ];
+                            [rgba[0], rgba[1], rgba[2]]
+                        })
                         .unwrap_or_else(|| {
-                            surface_color(
+                            let (color, normal) = surface_color(
                                 &material,
                                 [uv, detail],
                                 normal,
@@ -1176,7 +1240,20 @@ fn raster(
                                 band.scene,
                                 panel,
                                 lighting,
-                            )
+                            );
+                            let (right, up) = screen_axes(band.camera);
+                            let model_normal: [f32; 3] = std::array::from_fn(|i| {
+                                right[i] * normal[0]
+                                    - up[i] * normal[1]
+                                    - band.view_direction[i] * normal[2]
+                            });
+                            band.normals[index] = [
+                                model_normal[0] * 0.375 + 0.5,
+                                model_normal[1] * 0.375 + 0.5,
+                                model_normal[2] * 0.375 + 0.5,
+                                1.0,
+                            ];
+                            color
                         })
                 };
             }
@@ -1195,7 +1272,7 @@ fn opaque_color(
     band: &Band<'_>,
     barycentric: [f32; 2],
     screen: [f32; 3],
-) -> Option<[f32; 4]> {
+) -> Option<([f32; 4], [f32; 3])> {
     let (model, native, Some(constants)) =
         effect.filter(|(_, material, _)| material.opaque() || material.decal())?
     else {
@@ -1215,13 +1292,16 @@ fn opaque_color(
             triangle.points[2][0],
             triangle.points[2][1],
         ) < 0.0,
-        depth: super::effects::native::Depth {
+        depth: band.native_depth.unwrap_or(super::effects::native::Depth {
             values: &[],
+            color: None,
+            normal: None,
             size: [band.width, band.bottom],
             top: band.top,
             scale: band.scale,
-        },
+        }),
         exposure: band.scene.exposure,
+        irradiance: band.irradiance(),
     };
     if let Some(surface) =
         super::effects::native::sample_surface(model, native, constants, material, pixel)
@@ -1235,7 +1315,10 @@ fn opaque_color(
         let color =
             super::shader::shade_surface(surface.surface, normal, band.scene, surface.ambient)
                 .map(|v| v * surface.coverage);
-        return Some([color[0], color[1], color[2], surface.coverage]);
+        return Some((
+            [color[0], color[1], color[2], surface.coverage],
+            surface.normal,
+        ));
     }
     let (color, ambient) =
         super::effects::native::sample_with_ambient(model, native, constants, material, pixel);
@@ -1257,7 +1340,7 @@ fn surface_color(
     scene: Scene,
     panel: Option<[f32; 4]>,
     lighting: f32,
-) -> [f32; 3] {
+) -> ([f32; 3], [f32; 3]) {
     let [uv, detail] = coordinates;
     let exposure = scene.exposure;
     let tint = material.tint();
@@ -1265,18 +1348,27 @@ fn surface_color(
         // Panel art lives in the colour plate: alpha cuts the segments, colour
         // tints them, and the constant supplies the glow.
         let base = panel.unwrap_or([1.0; 4]);
-        std::array::from_fn(|i| constant[i] * base[i] * exposure)
+        (
+            std::array::from_fn(|i| constant[i] * base[i] * exposure),
+            normal,
+        )
     } else if let Some(texture) = material.albedo {
         material
             .shade_linear(uv, detail, normal, basis, scene)
             .unwrap_or_else(|| {
                 let base = texture.sample_color(uv);
-                std::array::from_fn(|i| base[i] * lighting * exposure)
+                (
+                    std::array::from_fn(|i| base[i] * lighting * exposure),
+                    normal,
+                )
             })
     } else if let Some(tint) = tint {
-        tint.map(|v| v * lighting * exposure)
+        (tint.map(|v| v * lighting * exposure), normal)
     } else {
-        [205.0, 216.0, 230.0]
-            .map(|v| super::shader::linear((v * lighting * exposure / 255.0).clamp(0.0, 1.0)))
+        (
+            [205.0, 216.0, 230.0]
+                .map(|v| super::shader::linear((v * lighting * exposure / 255.0).clamp(0.0, 1.0))),
+            normal,
+        )
     }
 }

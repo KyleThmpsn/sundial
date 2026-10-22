@@ -398,6 +398,13 @@ impl SundialApp {
         );
         preferences_changed |= hash_response.changed();
 
+        preferences_changed |= ui
+            .checkbox(
+                &mut self.preferences.show_tooltip_source,
+                "Show Package and Hash in Item Tooltips",
+            )
+            .changed();
+
         ui.add_space(12.0);
         super::ui::section_heading(ui, "Experimental");
         let mut enable_parhelion = self.preferences.experimental_package_authoring;

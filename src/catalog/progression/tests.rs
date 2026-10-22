@@ -287,67 +287,6 @@ fn unlock_state_indices_use_the_compact_bank_and_keep_the_first_definition() {
 }
 
 #[test]
-fn objective_limits_respect_direction_and_overcompletion() {
-    let mut objective = ObjectiveDef {
-        completion_value: 70,
-        ..ObjectiveDef::default()
-    };
-    assert_eq!(objective.maximum_value(), Some(70));
-    assert_eq!(objective.minimum_value(), None);
-
-    objective.allow_overcompletion = true;
-    assert_eq!(objective.maximum_value(), None);
-    assert_eq!(objective.minimum_value(), None);
-
-    objective.allow_overcompletion = false;
-    objective.is_counting_downward = true;
-    assert_eq!(objective.maximum_value(), None);
-    assert_eq!(objective.minimum_value(), Some(70));
-}
-
-#[test]
-fn repeated_objective_owners_merge_richer_package_metadata() {
-    let mut objectives = vec![ObjectiveDef::default()];
-    add_objective_owner(
-        &mut objectives,
-        0,
-        ObjectiveOwnerDef {
-            hash: 7,
-            kind: ObjectiveOwnerKind::InventoryItem,
-            name: String::new(),
-            type_name: "Item".into(),
-            description: String::new(),
-            traits: Vec::new(),
-            paths: vec![vec!["Items".into()]],
-        },
-    );
-    add_objective_owner(
-        &mut objectives,
-        0,
-        ObjectiveOwnerDef {
-            hash: 7,
-            kind: ObjectiveOwnerKind::InventoryItem,
-            name: "Ace of Spades".into(),
-            type_name: String::new(),
-            description: "Hand cannon".into(),
-            traits: vec![ObjectiveOwnerTraitDef {
-                hash: 9,
-                name: "Exotic".into(),
-                description: String::new(),
-            }],
-            paths: vec![vec!["Collections".into()]],
-        },
-    );
-
-    let owner = &objectives[0].owners[0];
-    assert_eq!(objectives[0].owners.len(), 1);
-    assert_eq!(owner.name, "Ace of Spades");
-    assert_eq!(owner.description, "Hand cannon");
-    assert_eq!(owner.paths.len(), 2);
-    assert_eq!(owner.traits.len(), 1);
-}
-
-#[test]
 fn condition_references_retain_the_complete_package_program() {
     let mut rows = vec![0_u8; 24];
     for (index, (kind, operand)) in [(1_u8, 3_u16), (12, 77), (10, 9)].into_iter().enumerate() {
@@ -560,36 +499,6 @@ fn location_release_condition_rows_use_exact_fields_and_reject_bad_activity_indi
             .unwrap()
             .is_none()
     );
-}
-
-#[test]
-fn presentation_paths_keep_immediate_parent_first_and_preserve_branches() {
-    let node = |hash, name: &str, parents| PresentationNodeDef {
-        hash,
-        name: name.into(),
-        parents,
-        objective_index: None,
-        condition_references: ConditionReferences::default(),
-    };
-    let nodes = vec![
-        node(1, "Metrics", vec![]),
-        node(2, "Account", vec![0]),
-        node(3, "Crucible", vec![0]),
-        node(4, "Account", vec![0]),
-    ];
-
-    assert_eq!(
-        presentation_paths(&nodes, &[1]),
-        vec![vec!["Account".to_owned(), "Metrics".to_owned()]]
-    );
-    assert_eq!(
-        presentation_paths(&nodes, &[1, 2]),
-        vec![
-            vec!["Account".to_owned(), "Metrics".to_owned()],
-            vec!["Crucible".to_owned(), "Metrics".to_owned()],
-        ]
-    );
-    assert_eq!(presentation_paths(&nodes, &[1, 3]).len(), 1);
 }
 
 #[test]

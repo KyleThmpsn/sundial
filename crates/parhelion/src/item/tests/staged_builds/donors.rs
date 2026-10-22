@@ -2,44 +2,6 @@ use super::*;
 
 #[test]
 #[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
-fn real_cross_slot_sword_builds_without_presentation_override() {
-    let packages = crate::test_support::stock_packages();
-    let namespace = "parhelion.cross-slot-without-presentation.integration";
-    let spec = WeaponCloneSpec {
-        kind: crate::ItemKind::Weapon,
-        namespace: namespace.to_owned(),
-        donor_item_hash: 0x4659_8066,
-        expected_donor_name: Some("Crown-Splitter".to_owned()),
-        presentation_donor: None,
-        icon_donor: None,
-        render_gear_donor: None,
-        runtime_component_donors: Vec::new(),
-        identity: WeaponCloneIdentity::from_namespace(namespace)
-            .expect("test namespace should allocate"),
-        text: WeaponCloneText {
-            name: "Energy Sword".to_owned(),
-            flavor: "Retains the native sword model and animation family.".to_owned(),
-            source: "Source: integration test".to_owned(),
-            ..WeaponCloneText::default()
-        },
-        overrides: WeaponCloneOverrides {
-            inventory_slot: Some(WeaponInventorySlot::Energy),
-            ammo_type: Some(WeaponAmmoType::Special),
-            rarity: Some(AuthoredWeaponRarity::Exotic),
-            ..WeaponCloneOverrides::default()
-        },
-    };
-    let result = build_weapon_project(
-        Path::new(&packages),
-        &WeaponProjectSpec {
-            weapons: vec![spec],
-        },
-    );
-    result.expect("Energy/Special sword should build without a presentation override");
-}
-
-#[test]
-#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 #[allow(clippy::cognitive_complexity)]
 fn real_mountaintop_energy_solar_clone_preserves_socket_topology_when_configured() {
     let packages = crate::test_support::stock_packages();

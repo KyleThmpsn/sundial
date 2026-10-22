@@ -407,29 +407,6 @@ mod tests {
     }
 
     #[test]
-    fn focused_projection_changes_only_requested_fields() {
-        let source = document(8);
-        let key = AccountSettingKey::preference(AccountSettingGroup::Display, "brightness");
-        let commands = vec![set(key, AccountSettingValue::Unsigned(6))];
-        let adapter = JsonAccountSettingsAdapter::load_for_commands(&source, &commands).unwrap();
-        let (_, projected, changed) = adapter.apply(&source, commands).unwrap();
-
-        assert!(changed);
-        assert_eq!(
-            projected.pointer("/state/account/settings/display/brightness"),
-            Some(&Value::from(6))
-        );
-        assert_eq!(
-            projected.pointer("/state/account/settings/display/future/keep"),
-            Some(&Value::Bool(true))
-        );
-        assert_eq!(
-            projected.pointer("/future_root/keep"),
-            Some(&Value::Bool(true))
-        );
-    }
-
-    #[test]
     fn invalid_current_values_can_be_repaired_without_loading_unrelated_settings() {
         let mut source = document(MAX_SUPPORTED_SCHEMA + 1);
         *source

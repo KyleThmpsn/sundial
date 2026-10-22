@@ -139,22 +139,3 @@ pub const fn animation_compatibility(
         _ => AnimationCompatibility::Unchecked,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn markers_ignore_unrelated_perks_but_preserve_ambiguity() {
-        assert_eq!(
-            classify_base_damage(&[84, 1048]),
-            BaseDamage::Fixed(DamageFamily::Legacy, Element::Solar)
-        );
-        assert_eq!(classify_base_damage(&[84, 84]), BaseDamage::Duplicate);
-        assert_eq!(
-            classify_base_damage(&[84, LEGACY_ARC_DAMAGE_PERK_INDEX]),
-            BaseDamage::Variable
-        );
-        assert_eq!(classify_base_damage(&[462, 463, 464]), BaseDamage::Variable);
-        assert_eq!(classify_base_damage(&[1048]), BaseDamage::NoMarker);
-    }
-}

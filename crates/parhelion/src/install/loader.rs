@@ -5,6 +5,7 @@ mod legacy;
 mod transaction;
 mod validation;
 pub(super) use legacy::recover_with_observer as recover_legacy_with_observer;
+pub(super) use transaction::completed_backup_owner;
 pub(super) use transaction::recover;
 pub(super) use validation::verify_file;
 use validation::*;
@@ -205,7 +206,7 @@ pub(super) fn retire_inactive(
         .parent()
         .ok_or_else(|| InstallError::validation("Missing game root"))?
         .to_owned();
-    let mut original_family = managed_family(target)?;
+    let mut original_family = installation_family(validated)?;
     if original_family.is_empty() {
         return Ok(Retired {
             install,
@@ -238,7 +239,14 @@ pub(super) fn retire_inactive(
 }
 
 pub(super) fn preview_uninstall(target: &Path) -> Result<uninstall::UninstallPlan, InstallError> {
-    let mut family = managed_family(target)?;
+    preview_uninstall_with_packages(target, &[]).map(|(plan, _)| plan)
+}
+
+pub(super) fn preview_uninstall_with_packages(
+    target: &Path,
+    known: &[CheckedPackage],
+) -> Result<(uninstall::UninstallPlan, Vec<CheckedPackage>), InstallError> {
+    let (mut family, packages) = managed_family_with_packages(target, known)?;
     let original = family.remove(mod_content::ID);
     let mut plan = uninstall::preview_legacy(target)?;
     if let Some(original) = original {
@@ -252,7 +260,23 @@ pub(super) fn preview_uninstall(target: &Path) -> Result<uninstall::UninstallPla
         plan.mod_folder = Some(original);
         plan.mod_family = family;
     }
-    Ok(plan)
+    Ok((plan, packages))
+}
+
+/// Carries the reviewed folder inventory into preparation. Package evidence is reusable only
+/// after current digests and stock sources pass the installed-family checks.
+fn installation_family(validated: &ValidatedRun) -> Result<BTreeMap<String, Folder>, InstallError> {
+    let mut known = validated.packages.clone();
+    if let Some(review) = &validated.replacement_guard {
+        known.extend_from_slice(review.packages());
+    }
+    let (family, _) = managed_family_with_packages(&validated.target_packages_directory, &known)?;
+    if let Some(review) = &validated.replacement_guard {
+        review
+            .verify_family(&family)
+            .map_err(InstallError::validation)?;
+    }
+    Ok(family)
 }
 
 pub(super) fn install_with_observer(
@@ -268,7 +292,7 @@ pub(super) fn install_with_observer(
         .parent()
         .ok_or_else(|| InstallError::validation("Missing game root"))?;
     mod_content::ensure_resolved_environment(install).map_err(InstallError::validation)?;
-    let mut original_family = managed_family(target)?;
+    let mut original_family = installation_family(&validated)?;
     let original = original_family.remove(mod_content::ID);
     // Packages an earlier layout left in stock `packages` cannot load beside the mod, so this
     // transaction retires them, after backing them up, while it publishes the build.
@@ -289,7 +313,7 @@ pub(super) fn install_with_observer(
             .collect()
     };
     let sources = staged(&validated.artifacts)?;
-    validate_packages(target, &sources)?;
+    validate_packages(target, &sources, &validated.packages)?;
     reject_installed_conflicts(target, &sources, &legacy)?;
     let mod_overlaps = check_other_mods(target, &sources, &legacy, &validated.mods)?;
     let mod_reports = crate::mod_family::reports(&validated.mods, install, &validated.artifacts)
@@ -362,6 +386,18 @@ pub(super) fn install_with_observer(
         .then(|| synchronize_authored_collection_unlocks(install, &validated.authored_unlocks));
     let item_grants = (!validated.authored_grants.is_empty())
         .then(|| identities::grant_items(install, target, &validated.authored_grants));
+    let (pruned_backup_directories, backup_prune_warning) = if validated.limit_package_backups {
+        match backups::prune_after_install(
+            &validated.backup_root,
+            validated.package_backup_retention,
+            &backup,
+        ) {
+            Ok(report) => (report.removed_directories, None),
+            Err(error) => (Vec::new(), Some(error)),
+        }
+    } else {
+        (Vec::new(), None)
+    };
     progress(InstallProgress::stage(InstallPhase::Complete));
     Ok(InstallReport {
         mods: mod_reports,
@@ -440,9 +476,8 @@ pub(super) fn install_with_observer(
             .chain(legacy.iter().map(|a| target.join(&a.file_name)))
             .collect(),
         recipe_backup_directory,
-        pruned_backup_directories: vec![],
-        // Recovery sets are intentionally retained. They are not failed cleanup attempts.
-        backup_prune_warning: None,
+        pruned_backup_directories,
+        backup_prune_warning,
         invalidated_sunrise_cache,
         invalidated_package_header_caches,
         profile_sync,

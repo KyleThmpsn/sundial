@@ -4,6 +4,7 @@ use super::*;
 pub(super) struct Resolve {
     fbo: glow::Framebuffer,
     color: glow::Texture,
+    normal: glow::Texture,
     vao: glow::VertexArray,
     program: glow::Program,
     source: Option<glow::UniformLocation>,
@@ -14,6 +15,42 @@ pub(super) struct Resolve {
 }
 
 impl Resolve {
+    pub(super) fn color(&self) -> glow::Texture {
+        self.color
+    }
+
+    pub(super) fn normal(&self) -> glow::Texture {
+        self.normal
+    }
+
+    pub(super) unsafe fn capture(&self, gl: &glow::Context, target: &Target) {
+        // SAFETY: equal-sized float attachments belong to the current draw context.
+        unsafe {
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(target.fbo));
+            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(self.fbo));
+            for attachment in [glow::COLOR_ATTACHMENT0, glow::COLOR_ATTACHMENT1] {
+                gl.read_buffer(attachment);
+                gl.draw_buffer(attachment);
+                gl.blit_framebuffer(
+                    0,
+                    0,
+                    target.size[0],
+                    target.size[1],
+                    0,
+                    0,
+                    target.size[0],
+                    target.size[1],
+                    glow::COLOR_BUFFER_BIT,
+                    glow::NEAREST,
+                );
+            }
+            gl.read_buffer(glow::COLOR_ATTACHMENT0);
+            gl.draw_buffer(glow::COLOR_ATTACHMENT0);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target.fbo));
+            gl.draw_buffers(&[glow::COLOR_ATTACHMENT0, glow::COLOR_ATTACHMENT1]);
+        }
+    }
+
     pub(super) unsafe fn new(gl: &glow::Context, size: [i32; 2]) -> Option<Self> {
         // SAFETY: all objects belong to the current paint context. Failed construction
         // releases every object it allocated before returning.
@@ -35,7 +72,7 @@ impl Resolve {
                     return None;
                 }
             };
-            let vao = match gl.create_vertex_array() {
+            let normal = match gl.create_texture() {
                 Ok(value) => value,
                 Err(_) => {
                     gl.delete_texture(color);
@@ -44,9 +81,20 @@ impl Resolve {
                     return None;
                 }
             };
+            let vao = match gl.create_vertex_array() {
+                Ok(value) => value,
+                Err(_) => {
+                    gl.delete_texture(color);
+                    gl.delete_texture(normal);
+                    gl.delete_framebuffer(fbo);
+                    gl.delete_program(program);
+                    return None;
+                }
+            };
             let mut result = Self {
                 fbo,
                 color,
+                normal,
                 vao,
                 program,
                 source: gl.get_uniform_location(program, "uSource"),
@@ -57,23 +105,25 @@ impl Resolve {
                 has_bloom: gl.get_uniform_location(program, "uHasBloom"),
                 filmic: gl.get_uniform_location(program, "uFilmic"),
             };
-            gl.bind_texture(glow::TEXTURE_2D, Some(color));
-            gl.tex_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                glow::RGBA32F as i32,
-                size[0],
-                size[1],
-                0,
-                glow::RGBA,
-                glow::FLOAT,
-                glow::PixelUnpackData::Slice(None),
-            );
-            for parameter in [glow::TEXTURE_MIN_FILTER, glow::TEXTURE_MAG_FILTER] {
-                gl.tex_parameter_i32(glow::TEXTURE_2D, parameter, glow::LINEAR as i32);
-            }
-            for parameter in [glow::TEXTURE_WRAP_S, glow::TEXTURE_WRAP_T] {
-                gl.tex_parameter_i32(glow::TEXTURE_2D, parameter, glow::CLAMP_TO_EDGE as i32);
+            for texture in [color, normal] {
+                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGBA32F as i32,
+                    size[0],
+                    size[1],
+                    0,
+                    glow::RGBA,
+                    glow::FLOAT,
+                    glow::PixelUnpackData::Slice(None),
+                );
+                for parameter in [glow::TEXTURE_MIN_FILTER, glow::TEXTURE_MAG_FILTER] {
+                    gl.tex_parameter_i32(glow::TEXTURE_2D, parameter, glow::LINEAR as i32);
+                }
+                for parameter in [glow::TEXTURE_WRAP_S, glow::TEXTURE_WRAP_T] {
+                    gl.tex_parameter_i32(glow::TEXTURE_2D, parameter, glow::CLAMP_TO_EDGE as i32);
+                }
             }
             gl.bind_texture(glow::TEXTURE_2D, None);
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
@@ -82,6 +132,13 @@ impl Resolve {
                 glow::COLOR_ATTACHMENT0,
                 glow::TEXTURE_2D,
                 Some(color),
+                0,
+            );
+            gl.framebuffer_texture_2d(
+                glow::FRAMEBUFFER,
+                glow::COLOR_ATTACHMENT1,
+                glow::TEXTURE_2D,
+                Some(normal),
                 0,
             );
             if gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE {
@@ -111,6 +168,8 @@ impl Resolve {
             gl.disable(glow::SCISSOR_TEST);
             gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(target.fbo));
             gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(self.fbo));
+            gl.read_buffer(glow::COLOR_ATTACHMENT0);
+            gl.draw_buffer(glow::COLOR_ATTACHMENT0);
             gl.blit_framebuffer(
                 0,
                 0,
@@ -175,6 +234,7 @@ impl Resolve {
         unsafe {
             gl.delete_framebuffer(self.fbo);
             gl.delete_texture(self.color);
+            gl.delete_texture(self.normal);
             gl.delete_vertex_array(self.vao);
             gl.delete_program(self.program);
             if let Some(bloom) = self.bloom {

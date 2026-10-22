@@ -42,6 +42,11 @@ $parts.Add("Each package and bundled asset remains licensed by its respective au
 $parts.Add("")
 $parts.Add((Get-Content -LiteralPath "crates/parhelion-import/src/halo_reach/level/mission/NOTICE" -Raw).TrimEnd())
 $parts.Add("")
+$parts.Add("## AMD AddrLib")
+$parts.Add("")
+$parts.Add("Source: https://github.com/GPUOpen-Drivers/pal/tree/7ce51b199c72021b8d027c50b55da515fd9b2e0b/src/core/imported/addrlib")
+$parts.Add((Get-Content -LiteralPath "crates/parhelion-import/src/d1_roi/texture/amd/LICENSE.txt" -Raw).TrimEnd())
+$parts.Add("")
 foreach ($package in $packages) {
     $parts.Add("")
     $parts.Add("## $($package.name) $($package.version)")

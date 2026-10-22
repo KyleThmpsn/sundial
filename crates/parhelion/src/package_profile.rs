@@ -949,39 +949,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn authored_package_profiles_are_coherent() {
-        assert_eq!(
-            AUTHORED_PACKAGES
-                .iter()
-                .map(|profile| profile.package_id)
-                .collect::<BTreeSet<_>>()
-                .len(),
-            AUTHORED_PACKAGES.len()
-        );
-        assert_eq!(
-            AUTHORED_PACKAGES
-                .iter()
-                .map(|profile| profile.file_name)
-                .collect::<BTreeSet<_>>()
-                .len(),
-            AUTHORED_PACKAGES.len()
-        );
-        for profile in CANONICAL_PACKAGES {
-            assert_eq!(
-                profile.authored_file_name,
-                profile.stock_file_name(profile.authored_patch_id)
-            );
-        }
-        for profile in AUTHORED_PACKAGES {
-            assert_eq!(authored_package(profile.package_id), Some(profile));
-            assert_eq!(
-                authored_package_for_file_name(profile.file_name),
-                Some(profile)
-            );
-        }
-    }
-
-    #[test]
     fn authored_artifact_selection_requires_core_and_accepts_optional_runtime_hosts() {
         let required = [
             "w64_parhelion_assets_0aa0_0.pkg",

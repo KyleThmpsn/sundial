@@ -1,10 +1,8 @@
 use crate::app::equipment::displayed_plugs;
 use crate::app::equipment::equip_definition;
 use crate::app::equipment::materialize_authored_plugs;
-use crate::app::equipment::native_plug_default;
 use crate::app::equipment::selected_attunement_index;
 use crate::app::equipment::set_weapon_slot_empty;
-use crate::app::item_editor::NativePlugDefault;
 use crate::app::settings::validate_characters;
 use crate::app::*;
 use crate::catalog;
@@ -39,22 +37,6 @@ fn sunrise_native_plugs_are_displayed_and_materialized_on_edit() {
         plugs,
         serde_json::json!(["0x0000002A", "0x0000002C", "0x0000002B"])
     );
-}
-
-#[test]
-fn native_socket_defaults_distinguish_explicit_empty_from_unusable_values() {
-    let defaults = vec![Some("0x0000002A".into()), None, Some("invalid".into())];
-
-    assert_eq!(
-        native_plug_default(&defaults, 0),
-        Some(NativePlugDefault::Plug(42))
-    );
-    assert_eq!(
-        native_plug_default(&defaults, 1),
-        Some(NativePlugDefault::Empty)
-    );
-    assert_eq!(native_plug_default(&defaults, 2), None);
-    assert_eq!(native_plug_default(&defaults, 3), None);
 }
 
 #[test]

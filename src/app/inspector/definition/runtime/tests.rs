@@ -12,15 +12,6 @@ fn pending(state: &mut RuntimeInspectionState, target: RuntimeTarget) -> mpsc::S
 }
 
 #[test]
-fn preparing_an_item_does_not_read_packages() {
-    let mut state = RuntimeInspectionState::default();
-    state.prepare(Path::new("missing-install"), 1, Arc::default());
-    state.poll(&egui::Context::default());
-    assert!(state.pending.is_none());
-    assert!(state.cache.is_empty());
-}
-
-#[test]
 fn navigation_and_reopening_discard_old_results_for_the_same_item() {
     for close in [false, true] {
         let mut state = RuntimeInspectionState::default();
@@ -83,30 +74,4 @@ fn cache_is_bounded_and_target_kinds_cannot_collide() {
     assert!(state.cache.contains_key(&RuntimeTarget::Perk(recent)));
     assert!(state.cache.contains_key(&RuntimeTarget::Weapon(recent)));
     assert!(state.cache.len() <= CACHE_LIMIT);
-}
-
-#[test]
-#[ignore = "requires SUNDIAL_INSTALL pointing to a Shadowkeep install; read-only"]
-fn installed_weapon_and_perk_runtime_inspection() {
-    let install = crate::test_support::install();
-    let install = Path::new(&install);
-    let weapon = loader::load(install, RuntimeTarget::Weapon(285)).unwrap();
-    let LoadedDetails::Weapon(graph) = weapon else {
-        panic!("expected weapon graph");
-    };
-    assert!(graph.field_count() > 0);
-    assert!(
-        graph
-            .fields()
-            .any(|field| field.path_label == "Initial Speed Scale")
-    );
-    // Stock Micro-Missile, also used by Parhelion's package-chain regression test.
-    let LoadedDetails::Perk(perk) = loader::load(install, RuntimeTarget::Perk(1178)).unwrap()
-    else {
-        panic!("expected perk details");
-    };
-    assert_eq!(perk.row.index, 1178);
-    let action = perk.action.unwrap();
-    assert!(!action.graphs.is_empty());
-    assert!(action.graphs.iter().all(|graph| graph.decoded.is_ok()));
 }

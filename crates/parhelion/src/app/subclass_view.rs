@@ -36,6 +36,18 @@ mod values;
 
 pub(in crate::app) use properties::GraphCards;
 
+/// An ability, node or perk's tooltip, in the game's item tooltip once the catalog has loaded.
+fn display_tooltip(
+    response: egui::Response,
+    catalog: Option<&InvestmentCatalog>,
+    tooltip: DisplayTooltip<'_>,
+) -> egui::Response {
+    match catalog {
+        Some(catalog) => catalog.display_tooltip(response, tooltip),
+        None => response.on_hover_ui(|ui| draw_display_tooltip(ui, tooltip)),
+    }
+}
+
 /// The list's width beside the detail panel, and the narrowest pane that keeps the two side by
 /// side.
 const LIST_WIDTH: f32 = 360.0;

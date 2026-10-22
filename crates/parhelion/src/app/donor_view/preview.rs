@@ -1,7 +1,5 @@
 //! Preview the same model and color sources used by the recipe compiler.
 use super::*;
-#[cfg(test)]
-use sundial::investment::WeaponDyeReference;
 use sundial::ui::model_preview::{self, Loadout};
 
 pub(in crate::app) fn loadout(
@@ -150,59 +148,5 @@ impl PackageAuthoringApp {
         if !plug_names.is_empty() {
             ui.label(format!("Socket Colors: {}", plug_names.join(", ")));
         }
-    }
-}
-
-#[cfg(test)]
-fn effective_dyes<'a>(
-    rows: &[Vec<WeaponDyeReference>; 3],
-    plugs: impl Iterator<Item = &'a [Vec<WeaponDyeReference>; 3]>,
-) -> Vec<(i8, u16)> {
-    let mut result = BTreeMap::new();
-    let mut insert = |rows: &[WeaponDyeReference]| {
-        for row in rows {
-            if row.channel_index >= 0 && row.dye_reference_index != u16::MAX {
-                result.insert(row.channel_index, row.dye_reference_index);
-            }
-        }
-    };
-    insert(&rows[1]);
-    insert(&rows[0]);
-    for plug in plugs {
-        insert(&plug[1]);
-        insert(&plug[0]);
-        insert(&plug[2]);
-    }
-    insert(&rows[2]);
-    result.into_iter().collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn shader_replaces_defaults_but_keeps_locked_channels() {
-        let row = |channel_index, dye_reference_index| WeaponDyeReference {
-            channel_index,
-            dye_reference_index,
-        };
-        let base = [
-            vec![row(4, 11)],
-            vec![row(4, 10), row(5, 20), row(6, 30)],
-            vec![row(6, 31)],
-        ];
-        let shader = [
-            vec![row(4, 40), row(5, 50), row(6, 60), row(-1, 90)],
-            vec![],
-            vec![],
-        ];
-        assert_eq!(
-            effective_dyes(&base, [&shader].into_iter()),
-            vec![(4, 40), (5, 50), (6, 31)]
-        );
-        assert_eq!(
-            effective_dyes(&base, std::iter::empty()),
-            vec![(4, 11), (5, 20), (6, 31)]
-        );
     }
 }

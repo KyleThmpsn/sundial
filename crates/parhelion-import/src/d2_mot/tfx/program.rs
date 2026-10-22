@@ -156,6 +156,7 @@ fn pop(stack: &mut Vec<Expression>) -> Result<Expression> {
     stack.pop().context("TFX stack underflow")
 }
 
+#[allow(clippy::cognitive_complexity)]
 pub fn lower(data: &[u8], b: &Bindings) -> Result<Lowered> {
     ensure!(
         b.constant_count <= 256 && b.output_count <= 256 && b.sampler_count <= 256,
@@ -239,6 +240,10 @@ pub fn lower(data: &[u8], b: &Bindings) -> Result<Lowered> {
                 // 33 and 13 shipped programs).
                 if let Some(native) = b.external_textures.get(&[i.op, i.args[0], i.args[1]]) {
                     e.code.extend(native);
+                } else if i.op == 0x4C && i.args == [2, 0x0C] {
+                    // Paired View scopes write the same matrix to cb12[4..8]. The
+                    // modern producer reads extern 2 at row 12, Shadowkeep at row 10.
+                    e.code.extend([0x3E, 2, 0x0A]);
                 } else if (i.op == 0x4B && i.args == [1, 26])
                     || (i.op == 0x4A
                         && matches!(i.args, [1, 0] | [1, 1] | [1, 4] | [1, 7] | [1, 8] | [1, 28]))
@@ -351,6 +356,19 @@ pub fn lower(data: &[u8], b: &Bindings) -> Result<Lowered> {
                     .get(&i.args[0])
                     .context("TFX output read before a translated write")?
                     .clone();
+            }
+            0x35 if stack.len() >= 2 && stack[stack.len() - 2].matrix => {
+                let vector = pop(&mut stack)?;
+                let matrix = pop(&mut stack)?;
+                ensure!(!vector.matrix, "matrix transform requires a vector operand");
+                // A matrix load produces four runtime vectors but stays one expression
+                // here so temporary captures and matrix stores preserve its identity.
+                e.code.extend(matrix.code);
+                e.code.extend(vector.code);
+                e.code.push(i.native);
+                e.missing.extend(matrix.missing);
+                e.missing.extend(vector.missing);
+                ensure!(e.code.len() <= 65536, "expanded TFX expression too large");
             }
             _ if i.arity > 0 => {
                 if (0x43..=0x49).contains(&i.op) {

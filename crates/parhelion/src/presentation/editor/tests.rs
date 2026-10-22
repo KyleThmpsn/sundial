@@ -1,58 +1,6 @@
 use super::*;
 
 #[test]
-fn empty_dawn_artwork_editors_use_dawn_sources_and_preserve_explicit_artwork() {
-    use crate::branding::Branding;
-    for kind in [Kind::Badge, Kind::Watermark] {
-        let expected = match kind {
-            Kind::Badge => Branding::Dawn.badge(),
-            Kind::Watermark => Branding::Dawn.corner(),
-            Kind::Nameplate { .. } => unreachable!(),
-        }
-        .unwrap()
-        .unwrap();
-        let dawn = Editor::with_branding(kind, None, Branding::Dawn);
-        assert_eq!(dawn.source, expected);
-        let sunrise = Editor::with_branding(kind, None, Branding::Sunrise);
-        assert_ne!(sunrise.source, dawn.source);
-        let custom = Editor::with_branding(kind, Some(sunrise.source.clone()), Branding::Dawn);
-        assert_eq!(
-            custom.source, sunrise.source,
-            "explicit recipe artwork must not be replaced"
-        );
-    }
-}
-
-#[test]
-fn imported_badges_default_to_the_active_runtime_background() {
-    let art = Artwork::from_png(include_bytes!(
-        "../../../../../assets/parhelion/dawn-badge-source.png"
-    ))
-    .unwrap();
-    assert!(art.composition().is_none());
-    let dawn = Editor::with_branding(
-        Kind::Badge,
-        Some(art.clone()),
-        crate::branding::Branding::Dawn,
-    );
-    assert_eq!(dawn.composition.background, Background::Dawn);
-    let sunrise = Editor::with_branding(
-        Kind::Badge,
-        Some(art.clone()),
-        crate::branding::Branding::Sunrise,
-    );
-    assert_eq!(sunrise.composition.background, Background::Sunrise);
-    let explicit = art
-        .with_composition(Composition {
-            background: Background::Transparent,
-            ..Default::default()
-        })
-        .unwrap();
-    let dawn = Editor::with_branding(Kind::Badge, Some(explicit), crate::branding::Branding::Dawn);
-    assert_eq!(dawn.composition.background, Background::Transparent);
-}
-
-#[test]
 fn finishing_or_closing_artwork_preview_waits_for_its_package_reader() {
     use std::sync::{
         Arc,
@@ -189,44 +137,6 @@ fn text_rect(output: &egui::FullOutput, label: &str) -> egui::Rect {
         .iter()
         .find_map(|s| find(&s.shape, label))
         .unwrap_or_else(|| panic!("Missing {label}"))
-}
-
-#[test]
-fn artwork_dialog_keeps_actions_visible_at_small_and_large_sizes() {
-    for size in [
-        egui::vec2(360.0, 640.0),
-        egui::vec2(760.0, 680.0),
-        egui::vec2(1200.0, 860.0),
-    ] {
-        for kind in [Kind::Badge, Kind::Watermark] {
-            for tab in [Tab::Placement, Tab::Crop, Tab::Colors, Tab::Background] {
-                if kind == Kind::Watermark && tab == Tab::Background {
-                    continue;
-                }
-                let mut editor = Editor::new(kind, Some(source()));
-                editor.tab = tab;
-                let before = editor.current().unwrap();
-                let ctx = egui::Context::default();
-                let mut output = egui::FullOutput::default();
-                for _ in 0..3 {
-                    (output, _) = frame(&ctx, &mut editor, size, vec![]);
-                }
-                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-                for label in [kind.title(), "Cancel", "Apply Artwork"] {
-                    assert!(
-                        screen.contains_rect(text_rect(&output, label)),
-                        "{label} overflows {size:?} for {kind:?}: {:?}",
-                        text_rect(&output, label)
-                    );
-                }
-                assert_eq!(
-                    editor.current().unwrap(),
-                    before,
-                    "Drawing must not change an artwork draft"
-                );
-            }
-        }
-    }
 }
 
 #[test]

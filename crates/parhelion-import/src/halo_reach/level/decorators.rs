@@ -193,12 +193,14 @@ fn two_sided(mut primitive: Primitive) -> Primitive {
 /// program draws it.
 fn material(set: &Tag, texture: Tag) -> Material {
     Material {
+        decal: None,
         tag: Some(set.clone()),
         options: BTreeMap::from([
             ("albedo".to_owned(), "default".to_owned()),
             ("alpha_test".to_owned(), "simple".to_owned()),
         ]),
         properties: vec![Property {
+            booleans: BTreeMap::new(),
             overlays: Default::default(),
             template: set.clone(),
             constants: BTreeMap::from([("albedo_color".to_owned(), [1.; 4])]),
@@ -352,27 +354,39 @@ pub(super) fn read(
 
 /// Draws the decorators of every BSP in `parts`, appending each instance's primitives, lit by its
 /// probe, to its BSP's own, and writes each BSP's report. Each set draws its second model, or its
-/// first when its second cannot be paired with its types ([`types_at`]). While the level's
-/// triangles, the `structure`'s and the decorators', exceed [`LEVEL_TRIANGLES`], the set whose next
-/// coarser model saves the most triangles draws that one instead. Every instance still draws.
+/// first when its second cannot be paired with its types ([`types_at`]). `groups` are the sets of
+/// parts that load together, as a campaign's areas do, each drawing its structure's triangles and
+/// its decorators'. While a group's exceed [`LEVEL_TRIANGLES`], the set whose next coarser model
+/// saves that group the most triangles draws that one instead, in every group, so a BSP converts
+/// once for all the areas that load it. Every instance still draws.
 pub(super) fn place(
     cache: &Cache,
     pages: &mut Pages,
     parts: &mut [super::Part],
-    structure: usize,
+    groups: &[Vec<usize>],
 ) -> Result<()> {
-    // Each set's tag and how many instances of each of its types the level places.
-    let mut sets = BTreeMap::<String, (Tag, Vec<usize>)>::new();
-    for part in parts.iter() {
+    let structure = parts
+        .iter()
+        .map(|part| {
+            part.primitives
+                .iter()
+                .map(|primitive| primitive.indices.len() / 3)
+                .sum::<usize>()
+        })
+        .collect::<Vec<_>>();
+    // Each set's tag and how many instances of each of its types each part places.
+    let mut sets = BTreeMap::<String, (Tag, Vec<Vec<usize>>)>::new();
+    for (index, part) in parts.iter().enumerate() {
         for (tag, _) in &part.decorated.sets {
             sets.entry(tag.path.clone())
-                .or_insert_with(|| (tag.clone(), Vec::new()));
+                .or_insert_with(|| (tag.clone(), vec![Vec::new(); parts.len()]));
         }
         for (set, instance, _) in &part.decorated.instances {
             let tag = &part.decorated.sets[*set].0;
-            let (_, counts) = sets
+            let counts = &mut sets
                 .entry(tag.path.clone())
-                .or_insert_with(|| (tag.clone(), Vec::new()));
+                .or_insert_with(|| (tag.clone(), vec![Vec::new(); parts.len()]))
+                .1[index];
             if counts.len() <= instance.kind {
                 counts.resize(instance.kind + 1, 0);
             }
@@ -395,12 +409,12 @@ pub(super) fn place(
         );
         models.insert(path.clone(), drawable);
     }
-    let cost = |path: &str, choice: usize| -> usize {
+    // The triangles set `path` draws with model `choice` in group `group`.
+    let cost = |path: &str, choice: usize, group: &[usize]| -> usize {
         let types = &models[path][choice].0;
-        sets[path]
-            .1
+        group
             .iter()
-            .enumerate()
+            .flat_map(|&part| sets[path].1[part].iter().enumerate())
             .map(|(kind, count)| {
                 count
                     * types.get(kind).map_or(0, |primitives| {
@@ -416,22 +430,31 @@ pub(super) fn place(
         .keys()
         .map(|path| (path.clone(), 0usize))
         .collect::<BTreeMap<_, _>>();
-    let mut total = structure + chosen.keys().map(|path| cost(path, 0)).sum::<usize>();
-    while total > LEVEL_TRIANGLES {
+    let total = |chosen: &BTreeMap<String, usize>, group: &[usize]| {
+        group.iter().map(|&part| structure[part]).sum::<usize>()
+            + chosen
+                .iter()
+                .map(|(path, &choice)| cost(path, choice, group))
+                .sum::<usize>()
+    };
+    while let Some(group) = groups
+        .iter()
+        .max_by_key(|group| total(&chosen, group))
+        .filter(|group| total(&chosen, group) > LEVEL_TRIANGLES)
+    {
         let coarser = chosen
             .iter()
             .filter(|&(path, &choice)| choice + 1 < models[path].len())
             .map(|(path, &choice)| {
                 (
-                    cost(path, choice).saturating_sub(cost(path, choice + 1)),
+                    cost(path, choice, group).saturating_sub(cost(path, choice + 1, group)),
                     path.clone(),
                 )
             })
             .max();
-        let Some((saved, path)) = coarser.filter(|&(saved, _)| saved > 0) else {
+        let Some((_, path)) = coarser.filter(|&(saved, _)| saved > 0) else {
             break;
         };
-        total -= saved;
         *chosen.entry(path).or_default() += 1;
     }
     for part in parts.iter_mut() {

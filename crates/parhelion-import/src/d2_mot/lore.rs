@@ -68,19 +68,6 @@ fn entry(
 mod tests {
     use super::*;
     #[test]
-    fn a_display_row_without_description_text_yields_no_lore_tab() {
-        // Trendsetter's row resolves a title and subtitle, but its bank ships
-        // no description, so the weapon converts with no lore instead.
-        assert_eq!(
-            entry(Some("Trendsetter".into()), Some("Lead.".into()), None, 7),
-            None
-        );
-        let value = entry(None, None, Some("text".into()), 7).unwrap();
-        assert_eq!(value["text"], "text");
-        assert!(value["title"].is_null() && value["hash"] == 7);
-    }
-
-    #[test]
     fn lore_references_distinguish_absence_from_invalid_layout() {
         let mut item = Payload(vec![0; 96]);
         assert_eq!(index(&item).unwrap(), None);

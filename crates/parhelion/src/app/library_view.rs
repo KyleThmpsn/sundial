@@ -248,6 +248,7 @@ fn draw_recipe_search(
 /// Both library navigation and build selection use the authored weapon preview.
 fn draw_library_row(
     ui: &mut egui::Ui,
+    catalog: Option<&InvestmentCatalog>,
     icons: &mut LibraryIcons,
     entry: &RecipeLibraryEntry,
     details: &str,
@@ -439,19 +440,54 @@ fn draw_library_row(
                 menu_action = actions::entry_menu(ui, entry, state.can_restore);
             });
         }
-        let clicked = response
-            .on_hover_ui(|ui| {
-                sundial::investment::tooltip_title(ui, &entry.namespace);
-                ui.label(details);
-                ui.label(action);
-            })
-            .clicked();
+        let clicked = library_tooltip(response, catalog, icons, entry, details, action).clicked();
         LibraryRowResponse {
             activated: clicked || checkbox_changed,
             action: menu_action,
         }
     })
     .inner
+}
+
+/// A recipe row's tooltip: the game's item tooltip on its base item's band once the catalog has
+/// loaded, with what the row is and what clicking it does as its note.
+fn library_tooltip(
+    response: egui::Response,
+    catalog: Option<&InvestmentCatalog>,
+    icons: &LibraryIcons,
+    entry: &RecipeLibraryEntry,
+    details: &str,
+    action: &str,
+) -> egui::Response {
+    let Some(catalog) = catalog.filter(|_| entry.donor_hash != 0) else {
+        return response.on_hover_ui(|ui| {
+            sundial::investment::tooltip_title(ui, &entry.namespace);
+            ui.label(details);
+            ui.label(action);
+        });
+    };
+    let note = format!("{}\n{details}\n{action}", entry.namespace);
+    // The recipe's own icon, never the base item's while it loads.
+    let icon = match icons.previews.get(&entry.path) {
+        Some(AuthoredIconPreview::Ready { texture, .. }) => {
+            sundial::investment::IconOverride::Texture(texture.id())
+        }
+        _ => sundial::investment::IconOverride::Pending,
+    };
+    catalog.item_tooltip(
+        response,
+        entry.donor_hash,
+        sundial::investment::ItemTooltip {
+            name: Some(&entry.name),
+            type_name: entry.type_name.as_deref().or(entry.class_type_name),
+            // The base item's text and stats are not the recipe's.
+            description: Some(""),
+            rarity: entry.rarity.map(|rarity| rarity as u8 + 1),
+            icon: Some(icon),
+            note: Some(&note),
+            template: true,
+        },
+    )
 }
 
 /// A map's row details: what it is, and the game its level comes from.
@@ -865,6 +901,7 @@ impl PackageAuthoringApp {
                             let included = draft.contains(&entry.path);
                             if draw_library_row(
                                 ui,
+                                self.catalog.as_ref(),
                                 &mut self.library_icons,
                                 entry,
                                 details,

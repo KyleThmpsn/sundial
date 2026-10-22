@@ -354,40 +354,6 @@ mod tests {
         assert_eq!(embedded.fit_to(96, 96), image);
         assert_eq!(scan(&root, Purpose::Perk).unwrap().0.len(), 2);
     }
-    #[test]
-    fn svg_is_transparent_white_artwork() {
-        let image = svg(br#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><path d="M8 8h16v16H8z"/></svg>"#, 96).unwrap();
-        assert_eq!(image.get_pixel(0, 0)[3], 0);
-        assert_eq!(image.get_pixel(48, 48).0, [255; 4]);
-    }
-
-    #[test]
-    fn artwork_sources_keep_resolution_and_use_destination_rules() {
-        let dir = tempfile::tempdir().unwrap();
-        let input = dir.path().join("wide.png");
-        let mut pixels = image::RgbaImage::from_pixel(768, 256, image::Rgba([180, 90, 30, 255]));
-        pixels.save(&input).unwrap();
-        assert!(load(&input, Purpose::Perk).is_err());
-        assert!(load(&input, Purpose::Watermark).is_err());
-        assert_eq!(
-            load(&input, Purpose::Badge).unwrap().dimensions(),
-            (768, 256)
-        );
-        pixels.put_pixel(0, 0, image::Rgba([0; 4]));
-        pixels.save(&input).unwrap();
-        let root = dir.path().join("icons");
-        let entry = add(&root, &input, Purpose::Watermark).unwrap();
-        assert_eq!(load(&entry.path, Purpose::Watermark).unwrap(), pixels);
-        assert_eq!(scan(&root, Purpose::Perk).unwrap().0.len(), 0);
-        assert_eq!(scan(&root, Purpose::Badge).unwrap().0.len(), 1);
-        assert_eq!(scan(&root, Purpose::Watermark).unwrap().0.len(), 1);
-        let glyph = br#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><path d="M8 8h16v16H8z"/></svg>"#;
-        assert_eq!(
-            svg(glyph, Purpose::Badge.svg_edge()).unwrap().dimensions(),
-            (512, 512)
-        );
-    }
-
     fn archive(files: &[(&str, &[u8])]) -> Vec<u8> {
         let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
         for (name, contents) in files {

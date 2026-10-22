@@ -219,6 +219,7 @@ impl Assembly<'_> {
                     samplers: samplers.len(),
                     stage: packed,
                     reticle: pass == 16,
+                    light: false,
                 },
             )?;
             program.initialize(&values)?;

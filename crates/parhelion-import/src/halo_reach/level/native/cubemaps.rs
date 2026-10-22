@@ -16,7 +16,7 @@
 //! Reach decodes a dynamic cubemap as `64 * rgb^2 * a` (`calc_environment_map_dynamic_ps` in
 //! `templated\environment_mapping.fx`), normalized to an average of one, and scales it by the baked
 //! light where it is sampled. A cube's texels therefore take the light the level's lightmap sends to
-//! its capture point ([`super::occlusion::lights`]), at [`native_material::LIGHT_RADIANCE`]. Reach
+//! its capture point ([`super::occlusion::lights`]), at the level's camera-derived radiance. Reach
 //! samples its cubes with Y negated, so the faces swap +Y with -Y and flip vertically, which assumes
 //! Destiny samples a cube along the world direction as D3D does. That was not traced.
 use super::occlusion;
@@ -28,7 +28,7 @@ use crate::{
     presentation::Graph,
     tiger::reader::Reader,
 };
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -49,7 +49,7 @@ const DYNAMIC_SCALE: f32 = 64.;
 
 /// One cubemap volume in the map's coordinates: its texture's symbol, its box's middle and half
 /// sizes, where its cube was captured, and its priority over volumes it overlaps.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct CubemapVolume {
     pub texture: String,
     pub center: [f32; 3],
@@ -86,6 +86,7 @@ struct Outer {
 /// The level's cubemap volumes, moved by `offset` meters, with their cube textures added to
 /// `graph`, and a report. Only the structure BSPs in `loaded`, a mask by scenario index, place
 /// volumes, as only they place the map's geometry.
+#[expect(clippy::too_many_arguments)]
 pub(super) fn volumes(
     cache: &Cache,
     pages: &mut Pages,
@@ -94,7 +95,12 @@ pub(super) fn volumes(
     level: &Level,
     loaded: u32,
     offset: [f32; 3],
+    radiance: f32,
 ) -> Result<(Vec<CubemapVolume>, Value)> {
+    ensure!(
+        radiance.is_finite() && radiance > 0.,
+        "Invalid cubemap radiance"
+    );
     let scenario = cache.only("scnr")?.address()?;
     let metres = |v: f32| v * METRES_PER_UNIT;
     let mut cubes = BTreeMap::<(usize, usize), Cube>::new();
@@ -226,7 +232,7 @@ pub(super) fn volumes(
                         continue;
                     }
                 };
-                let scale = DYNAMIC_SCALE * light * native_material::LIGHT_RADIANCE;
+                let scale = DYNAMIC_SCALE * light * radiance;
                 let mips = source
                     .mips
                     .iter()
@@ -272,6 +278,7 @@ pub(super) fn volumes(
     let report = json!({
         "volumes": volumes.len(),
         "textures": textures.len(),
+        "native_radiance": radiance,
         "interior": volumes.iter().filter(|v| v.priority == INTERIOR_PRIORITY).count(),
         "shared": volumes.iter().filter(|v| v.priority == SHARED_PRIORITY).count(),
         "exterior": volumes.iter().filter(|v| v.priority == EXTERIOR_PRIORITY).count(),

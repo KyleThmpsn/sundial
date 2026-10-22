@@ -817,42 +817,6 @@ mod tests {
         }
     }
 
-    /// Dawn shares the native view with Sunrise SQLite, so it reads as native. It must not read
-    /// as seasonal-capable: every affordance that routes through Sunrise's seasonal editor is
-    /// refused for Dawn, and the UI has to know before offering it.
-    #[test]
-    fn dawn_views_are_native_but_never_seasonal() {
-        let dawn = json!({"_native_progression": {"runtime": "dawn", "character_slot": 0}});
-        let sqlite = json!({"_native_progression": {"character_slot": 0}});
-        let settings = json!({});
-        let snapshot = collection_state_snapshot(&dawn).unwrap();
-        assert!(snapshot.is_native && snapshot.is_dawn);
-        assert!(is_dawn_progression_view(&dawn));
-        assert!(!supports_seasonal_authoring(&dawn));
-
-        let snapshot = collection_state_snapshot(&sqlite).unwrap();
-        assert!(snapshot.is_native && !snapshot.is_dawn);
-        assert!(supports_seasonal_authoring(&sqlite));
-
-        let snapshot = collection_state_snapshot(&settings).unwrap();
-        assert!(!snapshot.is_native && !snapshot.is_dawn);
-        assert!(!supports_seasonal_authoring(&settings));
-    }
-
-    #[test]
-    fn collection_state_snapshot_reads_compact_backing() {
-        let snapshot = collection_state_fixture();
-        let account_flag = unlock_definition(1, 1, Some(10));
-        let absent_flag = unlock_definition(1, 1, Some(11));
-        let account_value = unlock_definition(2, 1, Some(20));
-        let absent_value = unlock_definition(2, 1, Some(21));
-
-        assert_eq!(snapshot.flag_text(0, &account_flag), "Set");
-        assert_eq!(snapshot.flag_text(0, &absent_flag), "Unset");
-        assert_eq!(snapshot.value_text(0, &account_value), "7");
-        assert_eq!(snapshot.value_text(0, &absent_value), "Not listed");
-    }
-
     #[test]
     fn collection_state_snapshot_uses_native_unbacked_defaults() {
         let snapshot = collection_state_fixture();

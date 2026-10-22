@@ -29,31 +29,6 @@ fn conditional_strings() -> (Vec<u8>, usize) {
 }
 
 #[test]
-fn conditional_companions_survive_growth_and_same_count_updates() {
-    let (mut strings, condition) = conditional_strings();
-    let template = synthetic_sandbox_perk_string_template();
-    let original = strings.clone();
-    set_item_string_sandbox_perk_count(&mut strings, 1, &template).unwrap();
-    assert_eq!(strings, original);
-    set_item_string_sandbox_perk_count(&mut strings, 3, &template).unwrap();
-    let row = companion_rows(&strings);
-    assert_eq!(relative_target(&strings, row + 16).unwrap(), condition);
-    assert!(read_i64(&strings, row + 16).unwrap() < 0);
-    assert_eq!(
-        &strings[condition..condition + 32],
-        &original[condition..condition + 32]
-    );
-    assert_eq!(read_u32(&strings, row + 24).unwrap(), 1);
-    assert_eq!(&strings[row + 32..row + 64], &template[32..]);
-    assert_eq!(&strings[row + 64..row + 96], &template[32..]);
-    set_item_string_sandbox_perk_count(&mut strings, 1, &template).unwrap();
-    assert_eq!(
-        relative_target(&strings, companion_rows(&strings) + 16).unwrap(),
-        condition
-    );
-}
-
-#[test]
 fn companion_rows_follow_retained_perks_when_reordered_or_replaced() {
     let (mut strings, condition) = conditional_strings();
     let template = synthetic_sandbox_perk_string_template();

@@ -35,7 +35,7 @@ pub fn validate(bytes: &[u8]) -> Result<()> {
     for marker in format::read_native(&p)? {
         ensure!(
             marker.binding[0] == 0
-                && marker.binding[1] <= 1
+                && marker.binding[1] <= 2
                 && marker.position.iter().all(|x| x.is_finite())
                 && marker.orientation.iter().all(|x| x.is_finite()),
             "runtime marker transform or root binding differs"

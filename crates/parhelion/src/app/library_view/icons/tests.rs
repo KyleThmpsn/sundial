@@ -33,6 +33,7 @@ fn viewport_navigation_requests_visible_rows_and_bounds_retained_icons() {
                         for entry in &entries {
                             draw_library_row(
                                 ui,
+                                None,
                                 &mut icons,
                                 entry,
                                 "Weapon",

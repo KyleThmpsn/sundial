@@ -154,7 +154,7 @@ impl Pending<'_> {
         animation: &mut AnimationCache,
     ) -> Result<Restored, Reason> {
         let started = std::time::Instant::now();
-        let loaded = self.read();
+        let loaded = self.read(manager);
         self.timings.borrow_mut().load += started.elapsed();
         let (entry, bytes) = loaded?;
         let started = std::time::Instant::now();
@@ -175,9 +175,6 @@ impl Pending<'_> {
             ));
         }
         let exact = entry.state == self.state;
-        if !exact && !entry.relocatable {
-            return Err(Reason::UnsupportedRelocation);
-        }
         let started = std::time::Instant::now();
         let restored = self.replay(
             manager,
@@ -193,7 +190,7 @@ impl Pending<'_> {
         restored
     }
 
-    fn read(&self) -> Result<(Entry, Vec<u8>), Reason> {
+    fn read(&self, manager: &PackageManager) -> Result<(Entry, Vec<u8>), Reason> {
         let file = File::open(&self.path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 Reason::Missing
@@ -214,6 +211,18 @@ impl Pending<'_> {
             if previous.source != current.source {
                 return Err(Reason::SourceChanged);
             }
+        }
+        // A known layout rejection cannot become a hit after checking payloads.
+        // Keep input-first diagnostics for changed recipe keys, and retain every
+        // checksum and input check for exact-allocation or relocatable candidates.
+        if entry.key == self.key
+            && entry.result.is_some() == self.returns
+            && entry.state != self.state
+            && !entry.relocatable
+        {
+            return Err(Reason::UnsupportedRelocation(relocate::limitation(
+                manager, &entry,
+            )));
         }
         let bytes = read_member(&mut archive, "payload.bin", ENTRY_LIMIT).ok_or_else(|| {
             Reason::Damaged("missing, oversized or unreadable payload.bin".into())

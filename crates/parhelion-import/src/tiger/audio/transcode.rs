@@ -124,12 +124,19 @@ pub fn opus_ogg(media: &[u8]) -> Result<Vec<u8>> {
             .map(|(_, body)| *body)
     };
     let fmt = get(*b"fmt ").context("Wwise Opus format chunk missing")?;
-    ensure!(word(fmt, 0)? == 0x3041, "Wwise media is not Opus 0x3041");
+    let codec = word(fmt, 0)?;
+    ensure!(
+        codec == 0x3041,
+        "Wwise media codec is 0x{codec:04X}, expected Opus 0x3041"
+    );
     ensure!(fmt.len() >= 36, "short Wwise Opus format chunk");
     let channels = word(fmt, 2)?;
     let mapping = opus_mapping(fmt)?;
     let rate = dword(fmt, 4)?;
-    ensure!(rate == 48_000, "unsupported Wwise Opus sample rate");
+    ensure!(
+        rate == 48_000,
+        "Wwise Opus sample rate is {rate} Hz, expected 48000 Hz"
+    );
     let sample_count = dword(fmt, 24)?;
     let pre_skip = word(fmt, 32)?;
     let seek = get(*b"seek").context("Wwise Opus packet index missing")?;
@@ -200,11 +207,12 @@ pub fn opus_ogg(media: &[u8]) -> Result<Vec<u8>> {
 /// Format reference: vgmstream/src/meta/wwise.c, OPUSWW ChannelConfigToMapping.
 fn opus_mapping(fmt: &[u8]) -> Result<Vec<u8>> {
     let channels = word(fmt, 2)?;
-    ensure!(fmt.get(34) == Some(&1), "unsupported Wwise Opus version");
+    let version = *fmt.get(34).context("Wwise Opus version byte missing")?;
+    ensure!(version == 1, "Wwise Opus version is {version}, expected 1");
     let config = dword(fmt, 20)?;
     ensure!(
         config & 0xff == u32::from(channels) && (config >> 8) & 0xf == 1,
-        "unsupported Wwise Opus channel configuration"
+        "unsupported Wwise Opus channel configuration 0x{config:08X} for {channels} channels"
     );
     match (channels, fmt.get(35), config >> 12) {
         (1, Some(0), 4) | (2, Some(0), 3) => Ok(vec![0]),
@@ -212,7 +220,11 @@ fn opus_mapping(fmt: &[u8]) -> Result<Vec<u8>> {
         // carries it, so it decodes exactly as the family 0 mono stream does.
         (1, Some(255), 8) => Ok(vec![0]),
         (4, Some(1), 0x603) => Ok(vec![1, 2, 2, 0, 1, 2, 3]),
-        _ => bail!("unsupported Wwise Opus channel mapping"),
+        _ => bail!(
+            "unsupported Wwise Opus channel mapping: {channels} channels, mapping {:?}, speaker mask 0x{:X}",
+            fmt.get(35),
+            config >> 12
+        ),
     }
 }
 
@@ -220,7 +232,9 @@ fn opus_mapping(fmt: &[u8]) -> Result<Vec<u8>> {
 /// independently playable in Dawn until its legacy bank and event are authored.
 pub fn pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
     crate::cancellation::check()?;
-    let ogg = opus_ogg(media)?;
+    let ogg = opus_ogg(media).context(
+        "Source Wwise Opus adaptation failed before FFmpeg started. The source media layout could not be converted",
+    )?;
     let chunks = chunks(media)?;
     let fmt = chunks
         .iter()
@@ -229,7 +243,8 @@ pub fn pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
         .1;
     let channels = word(fmt, 2)?;
     let rate = dword(fmt, 4)?;
-    let mut command = Command::new(crate::tools::executable(crate::tools::Tool::Ffmpeg));
+    let executable = crate::tools::executable(crate::tools::Tool::Ffmpeg);
+    let mut command = Command::new(&executable);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -252,7 +267,10 @@ pub fn pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| crate::tools::Tool::Ffmpeg.missing())?;
+        .with_context(|| format!(
+            "Could not start FFmpeg at \"{}\" to decode Wwise Opus. Choose a working FFmpeg executable in Import Tools",
+            executable.display()
+        ))?;
     let mut input = process.stdin.take().context("ffmpeg stdin missing")?;
     // Large cues can fill stdout while ffmpeg is still reading stdin. Feed
     // input concurrently with draining both output pipes to avoid a deadlock.
@@ -263,24 +281,45 @@ pub fn pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
             writer.join(),
         )
     });
-    let output = output?;
+    let output = output.with_context(|| {
+        format!(
+            "Could not collect audio decoder output from FFmpeg at \"{}\"",
+            executable.display()
+        )
+    })?;
     if !output.status.success() {
         bail!(
-            "ffmpeg could not decode Wwise Opus: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "FFmpeg at \"{}\" failed to decode Wwise Opus ({channels} channels, {rate} Hz), {}. Decoder output: {}",
+            executable.display(),
+            output.status,
+            if output.stderr.is_empty() {
+                "no error output was returned".into()
+            } else {
+                String::from_utf8_lossy(&output.stderr)
+            }
         );
     }
     written
         .map_err(|_| anyhow::anyhow!("ffmpeg input writer panicked"))?
-        .context("write Wwise Opus to ffmpeg")?;
+        .with_context(|| {
+            format!(
+                "Could not send Wwise Opus to FFmpeg at \"{}\"",
+                executable.display()
+            )
+        })?;
     let data = &output.stdout;
     ensure!(
         !data.is_empty() && data.len() % (usize::from(channels) * 2) == 0,
-        "decoded PCM samples are incomplete"
+        "FFmpeg at \"{}\" returned incomplete PCM: {} bytes for {channels} channels at {rate} Hz",
+        executable.display(),
+        data.len()
     );
     ensure!(
         data.len() / (usize::from(channels) * 2) == dword(fmt, 24)? as usize,
-        "decoded PCM frame count disagrees with Wwise source"
+        "FFmpeg at \"{}\" returned {} PCM frames, but the Wwise source declares {} ({channels} channels, {rate} Hz)",
+        executable.display(),
+        data.len() / (usize::from(channels) * 2),
+        dword(fmt, 24)?
     );
     riff_pcm_layout(channels, rate, dword(fmt, 20)? >> 12, data)
 }
@@ -312,7 +351,7 @@ pub fn normalize_pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
     let rate = dword(fmt, 4)?;
     ensure!(
         matches!(channels, 1 | 2 | 4) && (8_000..=192_000).contains(&rate),
-        "unsupported PCM channel count or sample rate"
+        "unsupported PCM layout: {channels} channels at {rate} Hz. Expected 1, 2 or 4 channels at 8000 to 192000 Hz"
     );
     ensure!(
         word(fmt, 14)? == 16
@@ -340,7 +379,7 @@ pub fn normalize_pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
             );
             dword(fmt, 20)?
         }
-        _ => bail!("media is not PCM"),
+        codec => bail!("prepared media codec is 0x{codec:04X}, expected PCM 0x0001 or 0xFFFE"),
     };
     ensure!(
         chunks
@@ -546,9 +585,10 @@ pub fn mix_pcm(layers: &[Vec<u8>]) -> Result<Vec<u8>> {
 /// its HIRC object graph. The caller must assign private bank and media IDs.
 pub fn pcm_bank_template(bank: &[u8]) -> Result<Vec<u8>> {
     ensure!(bank.get(..4) == Some(b"BKHD"), "legacy bank lacks BKHD");
+    let version = dword(bank, 8)?;
     ensure!(
-        dword(bank, 8)? == 113,
-        "bank is not Dawn's Wwise version 113"
+        version == 113,
+        "native Wwise bank version is {version}, expected 113"
     );
     let mut copy = bank.to_vec();
     let mut at = 0usize;

@@ -152,6 +152,16 @@ pub(crate) fn prepare(
         let original = nr.tag(to, Some(0x80809C36))?;
         let (mut converted, report) = skeleton(&modern.0, &original.0, to)?;
         validate_native_instance(&converted.0)?;
+        let relocation = report["relocation"]
+            .as_object()
+            .map(|row| -> Result<(usize, usize)> {
+                Ok((
+                    usize::try_from(row["cut"].as_u64().context("FK relocation cut")?)?,
+                    usize::try_from(row["delta"].as_u64().context("FK relocation delta")?)?,
+                ))
+            })
+            .transpose()?;
+        validate_source_relocation(&original.0, &converted.0, relocation)?;
         for offset in report["owner_patches"]
             .as_array()
             .context("FK self patches")?
@@ -165,7 +175,7 @@ pub(crate) fn prepare(
         fs::write(graph.join(&template_file), &original.0)?;
         result.push(
             json!({"source":from,"native":to,"first_person":first_person,
-            "file":file,"template_file":template_file,"conversion":report}),
+            "file":file,"template_file":template_file,"relocation":report["relocation"],"conversion":report}),
         );
     }
     Ok(json!(result))

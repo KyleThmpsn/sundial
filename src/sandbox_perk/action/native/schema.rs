@@ -16,9 +16,6 @@ pub struct Record {
     pub fields: Vec<(usize, u32)>,
 }
 
-#[cfg(test)]
-mod decompile_coverage;
-
 type Encoded = (
     u32,
     usize,

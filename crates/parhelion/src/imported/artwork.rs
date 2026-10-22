@@ -74,7 +74,12 @@ pub(crate) fn for_model(
     if let Some(icon) = available(&next)? {
         return Ok(Some(icon));
     }
-    let settings = parhelion_import::artwork::Settings::for_recipe(
+    let document: Value = serde_json::from_slice(
+        &fs::read(graph.directory.join("asset-graph.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let settings = parhelion_import::artwork::Settings::for_graph(
+        &document,
         &serde_json::to_value(&next).map_err(|e| e.to_string())?,
     );
     let png = parhelion_import::artwork::render(graph, packages, settings)

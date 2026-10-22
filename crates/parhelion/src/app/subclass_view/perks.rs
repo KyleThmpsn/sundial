@@ -143,17 +143,16 @@ impl PackageAuthoringApp {
                 let chip = if on_remove {
                     chip
                 } else {
-                    chip.on_hover_ui(|ui| {
-                        draw_display_tooltip(
-                            ui,
-                            DisplayTooltip {
-                                icon: icon.as_ref(),
-                                name: &label,
-                                subtitle: source.map(|(subclass, _, _)| subclass.name.as_str()),
-                                description: Some(&self.perk_description(perk)),
-                            },
-                        );
-                    })
+                    display_tooltip(
+                        chip,
+                        self.catalog.as_ref(),
+                        DisplayTooltip {
+                            icon: icon.as_ref(),
+                            name: &label,
+                            subtitle: source.map(|(subclass, _, _)| subclass.name.as_str()),
+                            description: Some(&self.perk_description(perk)),
+                        },
+                    )
                 };
                 chip.context_menu(|ui| {
                     workbench_style(ui);
@@ -177,18 +176,17 @@ impl PackageAuthoringApp {
                 let chip = if on_remove {
                     chip
                 } else {
-                    chip.on_hover_ui(|ui| {
-                        draw_display_tooltip(
-                            ui,
-                            DisplayTooltip {
-                                icon: icon.as_ref(),
-                                name: &perk.name,
-                                subtitle: Some("Custom Perk"),
-                                description: (!perk.description.trim().is_empty())
-                                    .then_some(perk.description.as_str()),
-                            },
-                        );
-                    })
+                    display_tooltip(
+                        chip,
+                        self.catalog.as_ref(),
+                        DisplayTooltip {
+                            icon: icon.as_ref(),
+                            name: &perk.name,
+                            subtitle: Some("Custom Perk"),
+                            description: (!perk.description.trim().is_empty())
+                                .then_some(perk.description.as_str()),
+                        },
+                    )
                 };
                 if removed {
                     let mut edited = edits.clone();

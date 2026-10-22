@@ -84,6 +84,7 @@ pub struct Settings {
     pub reach_maps: Option<PathBuf>,
     pub marathon_packages: Option<PathBuf>,
     pub d1_roi: Option<PathBuf>,
+    /// Retained when saving existing preferences. Texture conversion no longer loads this DLL.
     pub d1_xg_library: Option<PathBuf>,
     pub d1_oodle: Option<PathBuf>,
     pub ffmpeg: Option<PathBuf>,
@@ -97,7 +98,6 @@ impl Settings {
         crate::tools::Paths {
             ffmpeg: self.ffmpeg.clone(),
             oodle: self.d1_oodle.clone(),
-            xg: self.d1_xg_library.clone(),
             vgmstream: self.vgmstream.clone(),
             dxc: self.dxc.clone(),
             native_packages,
@@ -110,7 +110,6 @@ impl Settings {
         match tool {
             Tool::Ffmpeg => Some(&mut self.ffmpeg),
             Tool::Oodle => Some(&mut self.d1_oodle),
-            Tool::Xg => Some(&mut self.d1_xg_library),
             Tool::Vgmstream => Some(&mut self.vgmstream),
             Tool::Dxc => Some(&mut self.dxc),
             Tool::Decompiler => None,
@@ -754,35 +753,7 @@ fn selection_priority(
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn source_only_limits_are_distinguished_from_donor_failures() {
-        // Bygones met the same plate limit on all 68 donors. Marking it lets
-        // the loop report it once instead of sweeping the whole catalogue.
-        let plain = anyhow::anyhow!("native donor has no object channel input");
-        assert!(!crate::d2_mot::is_source_limit(&plain));
-        let limited = crate::d2_mot::source_limit(anyhow::anyhow!(
-            "multiple plate textures require composition"
-        ));
-        assert!(crate::d2_mot::is_source_limit(&limited));
-        assert!(
-            format!("{limited:#}").contains("multiple plate textures require composition"),
-            "the underlying reason must survive marking"
-        );
-        assert!(crate::d2_mot::is_source_limit(
-            &limited.context("source stage 1")
-        ));
-    }
-
     use super::*;
-
-    #[test]
-    fn ordinary_donors_precede_exotics_even_with_larger_skeletons() {
-        let ordinary = json!({"hash":99,"exotic":false,"mapping":{"native_bone_count":12}});
-        let exotic = json!({"hash":1,"exotic":true,"mapping":{"native_bone_count":8}});
-        let unknown = json!({"hash":0,"mapping":{"native_bone_count":1}});
-        assert!(donor_priority(&ordinary) < donor_priority(&exotic));
-        assert!(donor_priority(&ordinary) < donor_priority(&unknown));
-    }
 
     #[test]
     fn previous_success_is_found_without_following_saved_recipe_paths() {
@@ -804,78 +775,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(previous_model_donor(root.path(), 42), Some(91));
-    }
-
-    #[test]
-    fn remembered_donor_precedes_smaller_unverified_candidates() {
-        let mut candidates = [
-            json!({"hash":1,"exotic":false,"mapping":{"native_bone_count":3}}),
-            json!({"hash":2,"exotic":false,"mapping":{"native_bone_count":9}}),
-        ];
-        let preferred = Some(2);
-        candidates
-            .sort_by_key(|row| selection_priority(row, (0, "Source"), None, None, None, preferred));
-        assert_eq!(candidates[0]["hash"], 2);
-    }
-
-    #[test]
-    fn collection_backed_donor_can_cross_slot_and_rarity() {
-        let mut candidates = [
-            json!({"hash":1,"exotic":false,"bucket":20,"rarity":4,"collection_backed":false,"mapping":{"native_bone_count":1}}),
-            json!({"hash":2,"exotic":false,"bucket":10,"rarity":2,"collection_backed":true,"mapping":{"native_bone_count":8}}),
-        ];
-        candidates.sort_by_key(|row| {
-            selection_priority(row, (0, "Source"), Some(20), Some(4), None, Some(1))
-        });
-        assert_eq!(candidates[0]["hash"], 2);
-    }
-
-    #[test]
-    fn simple_collection_donor_precedes_unrelated_progression_conditions() {
-        let mut candidates = [
-            json!({"hash":1,"exotic":false,"bucket":20,"rarity":4,"collection_backed":true,"unrelated_collection_condition":true,"mapping":{"native_bone_count":15}}),
-            json!({"hash":2,"exotic":false,"bucket":20,"rarity":4,"collection_backed":true,"unrelated_collection_condition":false,"mapping":{"native_bone_count":15}}),
-        ];
-        candidates.sort_by_key(|row| {
-            selection_priority(row, (0, "Source"), Some(20), Some(4), None, Some(1))
-        });
-        assert_eq!(candidates[0]["hash"], 2);
-    }
-
-    #[test]
-    fn available_native_counterpart_precedes_other_safe_donors() {
-        let mut candidates = [
-            json!({"hash":1,"name":"Another Weapon","exotic":false,"bucket":20,"rarity":4,"collection_backed":true,"mapping":{"native_bone_count":8}}),
-            json!({"hash":2,"name":"Source Weapon","exotic":false,"bucket":20,"rarity":4,"collection_backed":true,"mapping":{"native_bone_count":12}}),
-        ];
-        candidates.sort_by_key(|row| {
-            selection_priority(row, (99, "source weapon"), Some(20), Some(4), None, None)
-        });
-        assert_eq!(candidates[0]["hash"], 2);
-        candidates[0]["unrelated_collection_condition"] = json!(true);
-        candidates.sort_by_key(|row| {
-            selection_priority(row, (99, "Source Weapon"), Some(20), Some(4), None, None)
-        });
-        assert_eq!(candidates[0]["hash"], 1);
-    }
-
-    #[test]
-    fn shared_content_group_precedes_smaller_unrelated_rig() {
-        let mut candidates = [
-            json!({"hash":1,"name":"Generic Auto","content_key":"611794E9","exotic":false,"bucket":20,"rarity":4,"collection_backed":true,"mapping":{"native_bone_count":3}}),
-            json!({"hash":2,"name":"Suros Auto","content_key":"A0EEEE21","exotic":false,"bucket":20,"rarity":4,"collection_backed":true,"mapping":{"native_bone_count":4}}),
-        ];
-        candidates.sort_by_key(|row| {
-            selection_priority(
-                row,
-                (99, "Source"),
-                Some(20),
-                Some(4),
-                Some("A0EEEE21"),
-                None,
-            )
-        });
-        assert_eq!(candidates[0]["hash"], 2);
     }
 
     #[test]

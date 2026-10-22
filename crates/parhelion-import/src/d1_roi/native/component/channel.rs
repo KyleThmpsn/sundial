@@ -1,8 +1,8 @@
-//! Retain inherited inputs, zero values, local expressions and kind-2 channel callbacks.
+//! Retain inherited inputs, zero values, local expressions and checked stateful callbacks.
 use super::*;
 mod callback;
 mod incoming;
-mod program;
+pub(super) mod program;
 
 struct Bank {
     names: Vec<u32>,
@@ -14,6 +14,7 @@ struct Bank {
     programs: BTreeMap<usize, program::Program>,
     inputs: Vec<incoming::Input>,
     dependencies: Vec<Vec<u8>>,
+    history: Vec<u8>,
 }
 
 impl Bank {
@@ -214,9 +215,7 @@ impl Bank {
         }
         let instance = source.pointer(16)?;
         ensure!(
-            source.u64(instance + 0x70)? == 0
-                && source.u64(instance + 0x80)? == 0
-                && source.u64(schema + 0xE8)? == 0,
+            source.u64(instance + 0x80)? == 0 && source.u64(schema + 0xE8)? == 0,
             "Source channel has unsupported receivers"
         );
         let values = source.array(instance + 0x50, 16, Some(0x80800090))?;
@@ -227,6 +226,12 @@ impl Bank {
                     .all(|at| source.0[*at..*at + 16].iter().all(|v| *v == 0)),
             "Source cached channel initialization differs"
         );
+        let history = source.array_range(instance + 0x70, 16, Some(0x80800090))?;
+        let history = source.0[history].to_vec();
+        ensure!(
+            history.len() <= 64 * 16 && history.iter().all(|v| *v == 0),
+            "Source callback history is initialized or too large"
+        );
         Ok(Self {
             names,
             inherited,
@@ -235,6 +240,7 @@ impl Bank {
             programs,
             inputs,
             dependencies,
+            history,
         })
     }
 }
@@ -432,6 +438,7 @@ impl Assembly<'_> {
             incoming::write(&bank.inputs, source, &mut component, template)?;
         }
         let p = &mut component.payload;
+        array(&mut p.0, instance + 0x60, 0x80800090, &bank.history, 16)?;
         for (at, count) in [
             (0x134, bank.names.len()),
             (0x13C, locals.len()),
@@ -495,13 +502,9 @@ impl Assembly<'_> {
         }
         if let Some(template) = &input_template {
             let input_allocation = self.native.tag(template.u32(0x44)?, None)?;
-            incoming::allocate(
-                &mut allocation,
-                &input_allocation,
-                bank.inputs.len(),
-                usize::try_from(source.u64(source.pointer(16)? + 0x60)?)?,
-            )?;
+            incoming::allocate(&mut allocation, &input_allocation, bank.inputs.len())?;
         }
+        incoming::allocate_history(&mut allocation, bank.history.len() / 16)?;
         let allocation_symbol = format!("{symbol}-allocation");
         self.node(&allocation_symbol, tag, &allocation.0, None, &[])?;
         component.patch(0x44, &allocation_symbol)?;
@@ -509,6 +512,9 @@ impl Assembly<'_> {
         self.evidence.push(json!({"source_channel_bank":source.u32(source.pointer(16)?)?,
             "declarations":bank.names.len(),"inherited":bank.inherited.len(),"local_constants":bank.constants.len(),
             "local_callbacks":bank.callbacks.len(),
+            "callback_history_vectors":bank.history.len()/16,
+            "adapted_springs":bank.callbacks.values().filter(|c| c.spring).count(),
+            "spring_policy":"Source stiffness and damping become native frequency and damping ratio. Shadowkeep uses its analytic solver, not the source bounded integration steps.",
             "local_programs":bank.programs.len(),
             "incoming_values":bank.inputs.len(),
             "unbound_zero":bank.names.len()-bank.inherited.len()-locals.len()}));

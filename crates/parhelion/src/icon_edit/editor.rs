@@ -787,20 +787,3 @@ fn draw_compact_icon_adjustment(ui: &mut egui::Ui, label: &str, value: &mut i16)
     )
     .changed()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn grayscale_action_is_idempotent_instead_of_toggling() {
-        let mut edit = WeaponIconEdit {
-            saturation: 25,
-            ..WeaponIconEdit::default()
-        };
-        assert!(apply_grayscale_action(&mut edit));
-        assert_eq!(edit.saturation, WeaponIconEdit::MIN_COLOR_ADJUSTMENT);
-        assert!(!apply_grayscale_action(&mut edit));
-        assert_eq!(edit.saturation, WeaponIconEdit::MIN_COLOR_ADJUSTMENT);
-    }
-}

@@ -79,15 +79,16 @@ pub(crate) fn draw_supported_plug_choice_picker(
         ui.with_layout(left_aligned, |ui| ui.add(button)).inner
     };
     let anchor = if let Some(tooltip) = button_tooltip {
-        anchor.on_hover_ui(|ui| {
-            crate::app::item_editor::draw_item_tooltip_with_icon(
-                ui,
-                catalog,
-                button_icon_hash.unwrap_or_default(),
-                Some(tooltip),
-                icon_override,
-            );
-        })
+        crate::app::item_editor::authored_item_tooltip(
+            anchor,
+            catalog,
+            button_icon_hash.unwrap_or_default(),
+            crate::app::item_editor::AuthoredTooltip {
+                text: Some(tooltip),
+                icon: icon_override,
+                ..Default::default()
+            },
+        )
     } else {
         button_icon_hash.map_or(anchor.clone(), |hash| {
             catalog_item_tooltip(anchor, catalog, hash)
@@ -204,7 +205,7 @@ pub(crate) fn draw_perk_row(
         ui.spacing().interact_size.y.max(
             ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y,
         );
-    crate::app::item_editor::draw_compact_picker_row(
+    let row = crate::app::item_editor::draw_compact_picker_row(
         ui,
         Some(catalog),
         crate::app::item_editor::CatalogPickerRow {
@@ -217,16 +218,17 @@ pub(crate) fn draw_perk_row(
             selected,
         },
         icon,
-    )
-    .on_hover_ui(|ui| {
-        crate::app::item_editor::draw_item_tooltip_with_icon(
-            ui,
-            catalog,
-            u64::from(hash),
-            Some(tooltip),
+    );
+    crate::app::item_editor::authored_item_tooltip(
+        row,
+        catalog,
+        u64::from(hash),
+        crate::app::item_editor::AuthoredTooltip {
+            text: Some(tooltip),
             icon,
-        );
-    })
+            ..Default::default()
+        },
+    )
 }
 
 /// A perk in a list of perks, as a picker row: its icon, its name, and the first line of its
@@ -246,7 +248,7 @@ pub(crate) fn draw_perk_card_row(
             .map(str::trim)
             .find(|line| !line.is_empty())
     });
-    crate::app::item_editor::draw_picker_row_with_icon(
+    let row = crate::app::item_editor::draw_picker_row_with_icon(
         ui,
         Some(catalog),
         crate::app::item_editor::CatalogPickerRow {
@@ -259,16 +261,19 @@ pub(crate) fn draw_perk_card_row(
             selected,
         },
         icon,
-    )
-    .on_hover_ui(|ui| {
-        crate::app::item_editor::draw_item_tooltip_with_icon(
-            ui,
-            catalog,
-            u64::from(hash),
-            Some(tooltip),
+    );
+    // A custom perk is listed by the stock perk it was made from, whose stats are not its own.
+    crate::app::item_editor::authored_item_tooltip(
+        row,
+        catalog,
+        u64::from(hash),
+        crate::app::item_editor::AuthoredTooltip {
+            text: Some(tooltip),
             icon,
-        );
-    })
+            template: true,
+            ..Default::default()
+        },
+    )
 }
 
 /// Native icon with the same backdrop as the catalog controls.

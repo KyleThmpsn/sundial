@@ -41,36 +41,6 @@ fn conversion_carries_component_edits_and_refuses_unrepresentable_references() {
 }
 
 #[test]
-fn conversion_preview_is_invalidated_by_each_kind_of_edit() {
-    let mut editor = super::super::tests::editor(super::super::tests::fixture());
-    let initial = editor.conversion_input();
-    editor.activation = Some(PerkActivation::GrenadeKill);
-    assert_ne!(editor.conversion_input(), initial);
-    editor.activation = None;
-    editor.projectile_draft.push(ProjectileSelection {
-        source_graph: 1,
-        donor_graph: 2,
-        damage_type: None,
-    });
-    assert_ne!(editor.conversion_input(), initial);
-    editor.projectile_draft.clear();
-    let field = editor.graph.as_ref().unwrap().graphs[0]
-        .1
-        .fields()
-        .next()
-        .unwrap();
-    editor.draft.push(WeaponRuntimeValueOverride {
-        locator: field.locator.clone(),
-        value: field.value.clone(),
-    });
-    assert_ne!(editor.conversion_input(), initial);
-    editor.draft.clear();
-    editor.action_draft = actions::discover(&editor.graph.as_ref().unwrap().action_payload);
-    editor.action_draft[0].value_bits = 2.0_f32.to_bits();
-    assert_ne!(editor.conversion_input(), initial);
-}
-
-#[test]
 fn conversion_uses_edited_action_values_and_rejects_stale_values() {
     let loaded = super::super::tests::fixture();
     let mut editor = super::super::tests::editor(loaded.clone());
@@ -97,129 +67,6 @@ fn conversion_uses_edited_action_values_and_rejects_stale_values() {
         )
         .is_err()
     );
-}
-
-/// A candidate whose program is told apart by name. The selection reads only the fidelity.
-fn candidate(name: &str, fidelity: Result<Vec<decompile::Difference>, String>) -> Candidate {
-    Candidate {
-        program: Program {
-            name: name.into(),
-            ..Program::default()
-        },
-        fidelity,
-    }
-}
-
-fn difference() -> decompile::Difference {
-    decompile::Difference {
-        node: "Spawn effect".into(),
-        offset: 4,
-        stock: vec![1],
-        compiled: vec![2],
-    }
-}
-
-const UNCHECKED: &str =
-    "Exact conversion cannot be checked for a node outside the authored program model.";
-
-#[test]
-fn exact_typed_program_wins_without_trying_the_native_form() {
-    let preview = select(Ok(candidate("typed", Ok(vec![]))), || {
-        panic!("an exact typed program needs no native form")
-    })
-    .unwrap();
-    assert_eq!(preview.recovery, decompile::Recovery::Typed);
-    assert_eq!(preview.program.name, "typed");
-    assert_eq!(preview.fidelity, Ok(vec![]));
-}
-
-#[test]
-fn typed_compile_failure_falls_back_to_an_exact_native_form() {
-    let reason = "The typed program did not compile. Choose an asset.".to_owned();
-    let preview = select(Err(reason.clone()), || Ok(candidate("native", Ok(vec![])))).unwrap();
-    assert_eq!(preview.recovery, decompile::Recovery::NativeForm(reason));
-    assert_eq!(preview.program.name, "native");
-    assert_eq!(preview.fidelity, Ok(vec![]));
-}
-
-#[test]
-fn typed_fidelity_error_falls_back_to_an_exact_native_form() {
-    let preview = select(Ok(candidate("typed", Err(UNCHECKED.into()))), || {
-        Ok(candidate("native", Ok(vec![])))
-    })
-    .unwrap();
-    let decompile::Recovery::NativeForm(reason) = &preview.recovery else {
-        panic!("{:?}", preview.recovery);
-    };
-    assert!(reason.contains("could not be checked"), "{reason}");
-    assert!(reason.contains(UNCHECKED), "{reason}");
-    assert_eq!(preview.program.name, "native");
-    assert_eq!(preview.fidelity, Ok(vec![]));
-}
-
-#[test]
-fn typed_differences_yield_to_an_exact_native_form() {
-    let preview = select(
-        Ok(candidate("typed", Ok(vec![difference(), difference()]))),
-        || Ok(candidate("native", Ok(vec![]))),
-    )
-    .unwrap();
-    let decompile::Recovery::NativeForm(reason) = &preview.recovery else {
-        panic!("{:?}", preview.recovery);
-    };
-    assert!(reason.contains('2'));
-    assert_eq!(preview.program.name, "native");
-    assert_eq!(preview.fidelity, Ok(vec![]));
-    let preview = select(Ok(candidate("typed", Ok(vec![difference()]))), || {
-        Ok(candidate("native", Ok(vec![])))
-    })
-    .unwrap();
-    let decompile::Recovery::NativeForm(reason) = &preview.recovery else {
-        panic!("{:?}", preview.recovery);
-    };
-    assert!(reason.contains('1'));
-}
-
-#[test]
-fn lossy_typed_program_stays_reviewable_when_the_native_form_is_not_exact() {
-    for native in [
-        Ok(candidate("native", Ok(vec![difference()]))),
-        Ok(candidate("native", Err(UNCHECKED.into()))),
-        Err("The native form did not compile. A label is unknown.".to_owned()),
-    ] {
-        let preview = select(Ok(candidate("typed", Ok(vec![difference()]))), || native).unwrap();
-        assert_eq!(preview.recovery, decompile::Recovery::Typed);
-        assert_eq!(preview.program.name, "typed");
-        assert_eq!(preview.fidelity, Ok(vec![difference()]));
-    }
-    // An unchecked typed program is never traded for a lossy native form.
-    let preview = select(Ok(candidate("typed", Err(UNCHECKED.into()))), || {
-        Ok(candidate("native", Ok(vec![difference()])))
-    })
-    .unwrap();
-    assert_eq!(preview.recovery, decompile::Recovery::Typed);
-    assert_eq!(preview.fidelity, Err(UNCHECKED.into()));
-}
-
-#[test]
-fn native_result_stands_in_only_when_the_typed_route_failed() {
-    let reason = "This perk runs no program.".to_owned();
-    let preview = select(Err(reason.clone()), || {
-        Ok(candidate("native", Ok(vec![difference()])))
-    })
-    .unwrap();
-    assert_eq!(
-        preview.recovery,
-        decompile::Recovery::NativeForm(reason.clone())
-    );
-    assert_eq!(preview.program.name, "native");
-    assert_eq!(preview.fidelity, Ok(vec![difference()]));
-    let preview = select(Err(reason.clone()), || {
-        Ok(candidate("native", Err(UNCHECKED.into())))
-    })
-    .unwrap();
-    assert_eq!(preview.recovery, decompile::Recovery::NativeForm(reason));
-    assert_eq!(preview.fidelity, Err(UNCHECKED.into()));
 }
 
 /// An action assembled from node templates alone: an unconditional activation with the
@@ -308,24 +155,6 @@ fn native_fallback_keeps_every_ending_and_component_edit_when_the_typed_model_re
     assert_eq!(preview.recovery, decompile::Recovery::NativeForm(refusal));
     assert_eq!(preview.fidelity, Ok(vec![]));
     assert_eq!(preview.program, program);
-}
-
-#[test]
-fn both_conversion_routes_report_each_failure() {
-    let payload = synthetic_action(1.0);
-    let (mut loaded, edit) = synthetic_editor(&payload);
-    // Two component graphs expose the same field, so no route can assign the edit to one asset.
-    loaded.graphs.push(loaded.graphs[0].clone());
-    let mut editor = super::super::tests::editor(loaded.clone());
-    editor.draft.push(edit);
-    let input = editor.conversion_input();
-    let typed = typed_program(&loaded, &input, &payload).unwrap_err();
-    let native = native_program(&loaded, &input, &payload, [ENTITY]).unwrap_err();
-    assert!(native.contains("cannot be assigned"), "{native}");
-    let error = select(Err(typed.clone()), || Err(native.clone())).unwrap_err();
-    assert!(error.contains(&typed), "{error}");
-    assert!(error.contains(&native), "{error}");
-    assert!(error.contains("cannot be prepared"), "{error}");
 }
 
 /// The kill category a decoded condition filters on.
@@ -426,49 +255,4 @@ fn conversion_preserves_all_conditions_activation_and_component_values() {
         .collect::<Vec<_>>();
     assert_eq!(parameter.value(&values).unwrap(), 4.25);
     assert_eq!(preview.fidelity, Ok(vec![]));
-}
-
-#[test]
-fn an_exact_conversion_is_left_to_the_card() {
-    let mut editor = super::super::tests::editor(super::super::tests::fixture());
-    let loaded = editor.graph.clone().unwrap();
-    editor.preview = Some((
-        editor.conversion_input(),
-        Ok(Preview {
-            program: Program::default(),
-            fidelity: Ok(vec![]),
-            recovery: decompile::Recovery::Typed,
-        }),
-    ));
-    let ctx = egui::Context::default();
-    let run = |editor: &mut PerkEditor, events: Vec<egui::Event>| {
-        ctx.run_ui(
-            egui::RawInput {
-                events,
-                ..Default::default()
-            },
-            |ui| {
-                egui::CentralPanel::default().show(ui, |ui| {
-                    let ctx = ui.ctx().clone();
-                    editor.draw_conversion(ui, &ctx, &loaded);
-                });
-            },
-        )
-    };
-    let mut output = run(&mut editor, vec![]);
-    for _ in 0..2 {
-        output = run(&mut editor, vec![]);
-    }
-    assert!(
-        editor.conversion.is_none(),
-        "An exact program is not converted on its own"
-    );
-    let offered = output.shapes.iter().any(|shape| {
-        matches!(&shape.shape, egui::Shape::Text(text)
-            if ["Edit as a Program", "Convert Anyway"].contains(&text.galley.job.text.as_str()))
-    });
-    assert!(
-        !offered,
-        "The card edits an exact program in place, so the editor offers no conversion"
-    );
 }

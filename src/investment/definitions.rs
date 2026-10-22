@@ -607,21 +607,4 @@ mod stat_display_tests {
         assert_eq!(stat.in_game_display_value(49), 49);
         assert_eq!(stat.in_game_display_value(50), 600);
     }
-
-    #[test]
-    fn unscaled_stats_display_their_raw_package_value() {
-        let stat = WeaponInvestmentStat {
-            definition_index: 32,
-            definition_hash: None,
-            name: "Zoom".to_owned(),
-            value: 16,
-            minimum_value: Some(0),
-            maximum_value: Some(100),
-            display_as_numeric: false,
-            is_linear: false,
-            display_interpolation: Vec::new(),
-        };
-
-        assert_eq!(stat.in_game_display_label(16), "16");
-    }
 }

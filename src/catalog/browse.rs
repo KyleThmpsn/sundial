@@ -65,7 +65,7 @@ pub(crate) struct BrowseEntry {
     pub rarity: ItemRarity,
     /// 0 Titan, 1 Hunter, 2 Warlock. None for items any class uses.
     pub class: Option<u8>,
-    /// Placeholder and test definitions: unnamed, gear without a type, or on the dummy list.
+    /// Placeholder and test definitions: unnamed, gear without a type, or a dummy.
     pub internal: bool,
     /// No name in the catalog, so the entry is named for its hash.
     pub unnamed: bool,
@@ -211,9 +211,7 @@ impl Catalog {
             .or_else(|| self.package_item_name(hash).map(str::trim))
             .unwrap_or_default();
         let gear = matches!(kind, Kind::Weapon | Kind::Armor);
-        let internal = name.is_empty()
-            || (gear && type_name.is_empty())
-            || crate::catalog::dummy_items::contains(hash);
+        let internal = name.is_empty() || (gear && type_name.is_empty()) || self.is_dummy(hash);
         BrowseEntry {
             hash,
             name: if name.is_empty() {
@@ -258,21 +256,49 @@ impl Catalog {
         if cosmetic_pool_plugs.contains(&hash) || named(&COSMETIC_PLUG_WORDS) {
             return (Kind::Cosmetic, true, None);
         }
+        let plug = self.plug_by_role(hash, &lowered, slot.is_some());
         let inventory = self.inventory_metadata(hash);
-        let instanced = inventory
-            .is_some_and(|inventory| inventory.stackability == ItemStackability::Instanced);
-        // A plug category makes a plug unless it is instanced equipment. A socket offering the
-        // item makes it one regardless. A held item is never one.
-        let categorised = self
-            .item_package_metadata(hash)
-            .and_then(|metadata| metadata.plug_category_hash)
-            .is_some_and(|category| category >= SMALLEST_PLUG_CATEGORY);
-        let plug = !named(&HELD_TYPE_WORDS)
-            && (self.plug_hashes.contains(&hash)
-                || (categorised && !(slot.is_some() && instanced)));
         let cosmetic = inventory
             .is_some_and(|inventory| COSMETIC_BUCKETS.contains(&inventory.native_bucket_id))
             || named(&COSMETIC_ITEM_WORDS);
         (if cosmetic { Kind::Cosmetic } else { kind }, plug, slot)
+    }
+
+    /// Whether a definition is a plug. A Ghost Shell or Sparrow has a type line and plugs of its
+    /// own, but is not one.
+    pub(crate) fn is_plug(&self, hash: u64) -> bool {
+        let type_name = self
+            .item(hash)
+            .map(|item| item.type_name.trim())
+            .filter(|name| !name.is_empty())
+            .or_else(|| self.plug_type_name(hash))
+            .or_else(|| self.package_item_type_name(hash))
+            .unwrap_or_default()
+            .to_lowercase();
+        let equipment = self
+            .item_package_metadata(hash)
+            .and_then(|metadata| metadata.equipment_slot)
+            .and_then(semantic_slot)
+            .is_some();
+        self.plug_by_role(hash, &type_name, equipment)
+    }
+
+    /// A plug category makes a plug unless it is instanced equipment. A socket offering the item
+    /// makes it one regardless. A held item is never one.
+    fn plug_by_role(&self, hash: u64, lowered_type: &str, equipment: bool) -> bool {
+        if HELD_TYPE_WORDS
+            .iter()
+            .any(|word| lowered_type.contains(word))
+        {
+            return false;
+        }
+        let instanced = self
+            .inventory_metadata(hash)
+            .is_some_and(|inventory| inventory.stackability == ItemStackability::Instanced);
+        let categorised = self
+            .item_package_metadata(hash)
+            .and_then(|metadata| metadata.plug_category_hash)
+            .is_some_and(|category| category >= SMALLEST_PLUG_CATEGORY);
+        self.plug_hashes.contains(&hash) || (categorised && !(equipment && instanced))
     }
 }

@@ -93,7 +93,7 @@ pub(crate) fn draw_catalog_item_header_with_trailing(
     header.icon = hash
         .filter(|_| ui.is_rect_visible(header_rect))
         .and_then(|hash| catalog.icon_texture(ui.ctx(), hash));
-    let badge = item_header_badge(hash);
+    let badge = item_header_badge(catalog, hash);
     let response = draw_header(ui, header, ITEM_HEADER_ICON_SIZE, 0.0, badge, trailing);
     let Some(hash) = hash else {
         return response;
@@ -139,9 +139,8 @@ pub(crate) fn draw_catalog_item_header_with_trailing(
     response | card_response | tooltip_response
 }
 
-fn item_header_badge(hash: Option<u64>) -> Option<&'static str> {
-    hash.filter(|hash| crate::catalog::dummy_items::contains(*hash))
-        .map(|_| "Dummy")
+fn item_header_badge(catalog: &Catalog, hash: Option<u64>) -> Option<&'static str> {
+    hash.filter(|hash| catalog.is_dummy(*hash)).map(|_| "Dummy")
 }
 
 pub(crate) fn draw_item_badge(ui: &mut egui::Ui, text: &str) -> egui::Response {

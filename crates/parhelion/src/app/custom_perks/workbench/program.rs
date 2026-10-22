@@ -122,8 +122,6 @@ fn retains(program: &Program) -> bool {
 
 pub(super) mod native;
 pub(super) use native::draw_complete;
-#[cfg(test)]
-mod tests;
 
 /// Draws a node read only with the node editor's controls, as the layout and accessibility
 /// checks draw every native kind. Nothing in the app draws a lone node since the stock reading

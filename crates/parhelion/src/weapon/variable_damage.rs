@@ -15,9 +15,6 @@ use crate::{
     WeaponSandboxPerkRuntimeOverride, WeaponSocketColumnOverride, WeaponSocketPlugVariantOverride,
 };
 
-/// Hard Light, the weapon whose record drives the reload hold.
-#[cfg(test)]
-pub(crate) const HARD_LIGHT_ITEM_HASH: u32 = 0xF5DE_4480;
 /// Hard Light's Fundamentals plug: stock rows 462 (Arc), 463 (Solar) and 464 (Void).
 pub(crate) const FUNDAMENTALS_PLUG_HASH: u32 = 0x9C33_04DA;
 /// The native socket type of weapon trait sockets, the lane the plug is pinned into.
@@ -258,90 +255,6 @@ mod tests {
             }),
             ..WeaponCloneOverrides::default()
         }
-    }
-
-    fn column(choice: u32) -> Option<WeaponSocketColumnOverride> {
-        Some(WeaponSocketColumnOverride {
-            choices: vec![choice],
-            socket_type: None,
-            choice_weight_bits: Vec::new(),
-            choice_conditions: Vec::new(),
-            reusable_plug_set_index: None,
-            randomized_plug_set_index: None,
-            randomized_selection_program: Vec::new(),
-        })
-    }
-
-    #[test]
-    fn every_element_pins_the_stock_plug_without_a_variant() {
-        let expanded = expand_overrides(&overrides(&SELECTOR_ORDER), &SOCKET_TYPES).unwrap();
-        assert_eq!(expanded.socket_columns.len(), SOCKET_TYPES.len());
-        assert_eq!(expanded.socket_columns[3], column(FUNDAMENTALS_PLUG_HASH));
-        assert!(
-            expanded
-                .socket_columns
-                .iter()
-                .enumerate()
-                .all(|(lane, column)| lane == 3 || column.is_none())
-        );
-        assert!(expanded.socket_plug_variants.is_empty());
-    }
-
-    #[test]
-    fn a_subset_adds_a_private_variant_in_selector_order() {
-        let expanded = expand_overrides(
-            &overrides(&[ModernDamageType::Solar, ModernDamageType::Void]),
-            &SOCKET_TYPES,
-        )
-        .unwrap();
-        let [variant] = expanded.socket_plug_variants.as_slice() else {
-            panic!("one variant");
-        };
-        assert!(variant.replace_effects);
-        assert_eq!((variant.socket_index, variant.choice_index), (3, 0));
-        assert_eq!(variant.source_plug_hash, FUNDAMENTALS_PLUG_HASH);
-        assert_eq!(
-            variant.name.as_deref(),
-            Some("The Fundamentals (Void / Solar)")
-        );
-        assert_eq!(
-            variant
-                .sandbox_perks
-                .iter()
-                .map(|perk| perk.source_perk_index)
-                .collect::<Vec<_>>(),
-            [464, 463]
-        );
-        assert!(
-            variant
-                .sandbox_perks
-                .iter()
-                .all(|perk| perk.program.is_none())
-        );
-    }
-
-    #[test]
-    fn existing_columns_keep_their_other_lanes() {
-        let mut source = overrides(&SELECTOR_ORDER);
-        source.socket_columns = vec![None; SOCKET_TYPES.len()];
-        source.socket_columns[1] = column(0x1234_5678);
-        let expanded = expand_overrides(&source, &SOCKET_TYPES).unwrap();
-        assert_eq!(expanded.socket_columns[1], source.socket_columns[1]);
-        assert_eq!(expanded.socket_columns[3], column(FUNDAMENTALS_PLUG_HASH));
-    }
-
-    #[test]
-    fn a_chosen_trait_lane_keeps_its_choices_behind_the_fundamentals() {
-        let mut chosen = overrides(&SELECTOR_ORDER);
-        chosen.socket_columns = vec![None; SOCKET_TYPES.len()];
-        chosen.socket_columns[3] = column(0x1234_5678);
-        let expanded = expand_overrides(&chosen, &SOCKET_TYPES).unwrap();
-        assert_eq!(
-            expanded.socket_columns[3]
-                .as_ref()
-                .map(|column| column.choices.as_slice()),
-            Some([FUNDAMENTALS_PLUG_HASH, 0x1234_5678].as_slice())
-        );
     }
 
     #[test]

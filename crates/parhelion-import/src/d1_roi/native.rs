@@ -18,7 +18,7 @@ mod weapon;
 
 #[derive(Default)]
 pub struct NativeOptions {
-    /// Xbox texture address-computation library matching the source platform.
+    /// Retained for existing callers. Texture conversion is built in and ignores this path.
     pub xg_library: Option<PathBuf>,
 }
 
@@ -40,6 +40,8 @@ struct Assembly<'a> {
     /// inputs index.
     object_channels: Vec<u32>,
     palette: u32,
+    /// Source equipment index to native index. Present only when runtime palettes differ.
+    bone_map: Option<Vec<u16>>,
     weapon: bool,
     weapon_runtime: Option<u32>,
 }
@@ -57,11 +59,14 @@ impl<'a> Assembly<'a> {
         let layouts = super::layout::Layouts::read(source, &mut native)?;
         let glow = super::shader::glow::read(source, options.xg_library.as_deref())?;
         let rig = if let Some((runtime, donor)) = weapon {
-            rig::weapon(runtime, donor, &mut native)?
+            rig::weapon(source, runtime, donor, &mut native)?
         } else {
             rig::validate(source, &mut native)?
         };
         let palette = u32::try_from(rig["bones"].as_u64().context("Validated palette size")?)?;
+        let bone_map = (rig["remapped"] == true)
+            .then(|| serde_json::from_value(rig["bone_map"].clone()))
+            .transpose()?;
         fs::create_dir_all(folder)?;
         Ok(Self {
             source,
@@ -78,6 +83,7 @@ impl<'a> Assembly<'a> {
             approximations: BTreeSet::new(),
             object_channels: Vec::new(),
             palette,
+            bone_map,
             weapon: weapon.is_some(),
             weapon_runtime: weapon
                 .map(|(runtime, _)| {

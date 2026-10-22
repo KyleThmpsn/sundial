@@ -14,9 +14,10 @@ pub fn appearance(reference: &GraphReference, kind: &str) -> LocalAppearance {
     let reference = reference.clone();
     let kind = kind.to_owned();
     let key = format!(
-        "{}:{}:{kind:?}",
+        "{}:{}:{kind:?}:{:?}",
         reference.directory.display(),
-        reference.sha256
+        reference.sha256,
+        reference.material_inputs
     );
     LocalAppearance::new(key, move |manager| read(&reference, &kind, manager))
 }
@@ -42,7 +43,8 @@ fn read(
         .directory
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    let (package, symbols, entries) = prepare(&graph, &root, manager)?;
+    let (package, symbols, entries) =
+        prepare(&graph, &root, manager, reference.material_inputs.as_ref())?;
     // Validate after reading too, so concurrent file changes cannot assemble a mixed graph.
     validate(reference, item_kind)?;
     manager.add_local_package(package, entries)?;
@@ -65,6 +67,7 @@ fn prepare(
     graph: &Value,
     root: &Path,
     manager: &PackageManager,
+    inputs: Option<&crate::marathon::MaterialInputs>,
 ) -> Result<(u16, Symbols, Entries), String> {
     let nodes = graph["nodes"]
         .as_array()
@@ -93,6 +96,8 @@ fn prepare(
     }
     let mut bound = crate::tiger::material::bind(graph, root)
         .map_err(|e| format!("Imported model bindings: {e:#}"))?;
+    crate::marathon::inputs::bind(graph, root, inputs, &mut bound)
+        .map_err(|e| format!("Imported material inputs: {e:#}"))?;
     let models = crate::model_symbols(graph).map_err(|e| e.to_string())?;
     let entries = nodes
         .iter()

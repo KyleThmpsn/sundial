@@ -68,6 +68,106 @@ pub(super) fn depth(code: &[u8], binding: &super::expression::Depth) -> Result<V
     .bytecode)
 }
 
+/// A mapped rigid vertex can change only the packed bone selector in POSITION0.w.
+/// Admit the checked integer recovery and refuse other uses of that lane or direct nonroot bones.
+pub(super) fn rigid_indices(code: &[u8]) -> Result<()> {
+    let signature = dxbc::signature(code, b"ISGN")?;
+    ensure!(
+        signature.iter().any(
+            |(name, index, register, mask)| name.eq_ignore_ascii_case("POSITION")
+                && *index == 0
+                && *register == 0
+                && *mask == 15
+        ) && !signature
+            .iter()
+            .any(|(name, _, _, _)| name.eq_ignore_ascii_case("BLENDINDICES")
+                || name.eq_ignore_ascii_case("BLENDWEIGHT")),
+        "Mapped weapon shader needs a rigid position input"
+    );
+    let words = tokens(code)?;
+    ensure!(
+        words[0] == 0x00010050,
+        "Mapped weapon shader is not vertex SM5"
+    );
+    for instruction in dxbc::walk(&words)? {
+        if (0x58..=0x6A).contains(&instruction.opcode) {
+            continue;
+        }
+        // Projection shaders can read a fixed texture texel. It has no vertex-dependent
+        // address, unlike a stream carrying additional per-vertex deformation indices.
+        ensure!(
+            instruction.operands.iter().all(|operand| {
+                !matches!(operand.kind, 7 | 30 | 31)
+                    || (operand.kind == 7
+                        && instruction.opcode == 0x2D
+                        && instruction
+                            .operands
+                            .get(1)
+                            .is_some_and(|address| address.kind == 4))
+            }),
+            "Mapped rigid vertex program reads indexed resource deformation"
+        );
+        for operand in &instruction.operands {
+            let token = words[operand.token_at];
+            if operand.kind == 8
+                && operand
+                    .indices
+                    .first()
+                    .copied()
+                    .flatten()
+                    .is_some_and(|at| words[at] == 10)
+                && (token >> 25) & 7 == 0
+            {
+                let row = operand
+                    .indices
+                    .get(1)
+                    .copied()
+                    .flatten()
+                    .context("Mapped bone row")?;
+                ensure!(
+                    words[row] < 3,
+                    "Mapped shader has a direct nonroot bone read"
+                );
+            }
+            if operand.kind != 1
+                || !operand
+                    .indices
+                    .first()
+                    .copied()
+                    .flatten()
+                    .is_some_and(|at| words[at] == 0)
+            {
+                continue;
+            }
+            let uses_w = match (token >> 2) & 3 {
+                0 => token & (8 << 4) != 0,
+                1 => (0..4).any(|lane| (token >> (4 + lane * 2)) & 3 == 3),
+                2 => (token >> 4) & 3 == 3,
+                _ => anyhow::bail!("Mapped position input has an unsupported lane selector"),
+            };
+            if !uses_w {
+                continue;
+            }
+            let scalar = |index: usize, value: f32| -> bool {
+                instruction.operands.get(index).is_some_and(|op| {
+                    words[op.token_at] == 0x4001
+                        && words.get(op.token_at + 1) == Some(&value.to_bits())
+                })
+            };
+            ensure!(
+                instruction.opcode == 0x32
+                    && instruction.operands.len() == 4
+                    && instruction.operands[1].token_at == operand.token_at
+                    && token == 0x0010103A
+                    && scalar(2, 32767.0)
+                    && scalar(3, 0.1),
+                "Mapped position.w has a use outside rigid bone-index recovery"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// D1 bone matrices occupy b10. Native skinning appends the same matrices after
 /// the eight model vectors in b11. Input/output signatures remain untouched.
 pub(super) fn skinning(code: &[u8]) -> Result<Vec<u8>> {

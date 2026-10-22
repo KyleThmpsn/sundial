@@ -195,13 +195,18 @@ fn details(
             );
         }
     });
-    response.on_hover_ui(|ui| {
-        crate::app::item_editor::draw_catalog_item_tooltip(ui, catalog, entry.item_hash);
-        ui.separator();
-        ui.label(if owned {
-            "Click to remove this mod and refund one point."
-        } else {
-            reason.map_or("Click to unlock this mod for one point.", String::as_str)
-        });
-    });
+    let note = if owned {
+        "Click to remove this mod and refund one point."
+    } else {
+        reason.map_or("Click to unlock this mod for one point.", String::as_str)
+    };
+    crate::app::item_editor::authored_item_tooltip(
+        response,
+        catalog,
+        entry.item_hash,
+        crate::app::item_editor::AuthoredTooltip {
+            note: Some(note),
+            ..Default::default()
+        },
+    );
 }

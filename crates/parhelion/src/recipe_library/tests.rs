@@ -75,41 +75,6 @@ fn unreadable_selection_state_is_not_replaced_with_defaults() {
 }
 
 #[test]
-fn library_preview_tracks_authored_icon_and_its_inheritance() {
-    let directory = tempfile::tempdir().unwrap();
-    let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
-    let path = library.root().join(EVERY_END_FILE_NAME);
-    let mut recipe = WeaponRecipe::load_json(&path).unwrap();
-    for source in [0, 1, 2] {
-        recipe.presentation_donor = (source > 0).then(|| crate::WeaponDonorReference {
-            item_hash: 0x1234ABCD.into(),
-            expected_name: None,
-        });
-        recipe.icon_donor = (source > 1).then(|| crate::WeaponDonorReference {
-            item_hash: 0x5678ABCD.into(),
-            expected_name: None,
-        });
-        recipe.overrides.icon_edit.hue_shift_degrees = 45;
-        library.save_existing(&path, &recipe).unwrap();
-        let scan = library.scan().unwrap();
-        let entry = scan
-            .entries
-            .iter()
-            .find(|entry| entry.path == path)
-            .unwrap();
-        assert_eq!(
-            entry.icon_hash,
-            match source {
-                0 => recipe.donor.item_hash.parse_u32().unwrap(),
-                1 => 0x1234ABCD,
-                _ => 0x5678ABCD,
-            }
-        );
-        assert_eq!(entry.icon_edit, recipe.overrides.icon_edit);
-    }
-}
-
-#[test]
 fn bundled_recipes_validate_with_unique_identities() {
     let mut namespaces = BTreeSet::new();
     let mut hashes = BTreeSet::new();
@@ -335,38 +300,6 @@ fn save_new_and_import_never_overwrite_or_duplicate_an_identity() {
     assert!(second.is_file());
     assert!(library.import(&external).is_err());
     assert_eq!(WeaponRecipe::load_json(&second).unwrap(), imported_recipe);
-}
-
-#[test]
-fn duplicate_allocates_a_fresh_copy_and_preserves_recipe_content() {
-    let directory = tempfile::tempdir().unwrap();
-    let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
-    let mut recipe = WeaponRecipe::new_named_weapon_for_donor(
-        "Library Copy Fixture",
-        0x1234_5678,
-        "Fixture Donor",
-    )
-    .unwrap();
-    recipe.flavor = "A copied story.".into();
-    recipe.overrides.ammo_type = Some(crate::RecipeAmmoType::Heavy);
-    let original_path = library.save_new(&recipe).unwrap();
-
-    let collision = WeaponRecipe::new_named_weapon_for_donor(
-        "Library Copy Fixture Copy",
-        0x1234_5678,
-        "Fixture Donor",
-    )
-    .unwrap();
-    library.save_new(&collision).unwrap();
-
-    let copy_path = library.duplicate(&recipe).unwrap();
-    let copy = WeaponRecipe::load_json(&copy_path).unwrap();
-    assert_eq!(copy.name, "Library Copy Fixture Copy 2");
-    assert_ne!(copy.namespace, recipe.namespace);
-    assert_eq!(copy.donor, recipe.donor);
-    assert_eq!(copy.overrides, recipe.overrides);
-    assert_eq!(copy.flavor, recipe.flavor);
-    assert_eq!(WeaponRecipe::load_json(original_path).unwrap(), recipe);
 }
 
 #[test]

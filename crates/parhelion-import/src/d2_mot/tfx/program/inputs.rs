@@ -163,6 +163,19 @@ pub fn required(data: &[u8], reads: &BTreeMap<u8, u8>) -> Result<BTreeSet<Input>
                     }
                 }))
             }
+            0x35 if stack.len() >= 2 && matches!(&stack[stack.len() - 2], Value::Matrix(_)) => {
+                let operand = vector(take(&mut stack)?)?;
+                let Value::Matrix(rows) = take(&mut stack)? else {
+                    unreachable!("matrix operand checked above")
+                };
+                Value::Vector(std::array::from_fn(|lane| {
+                    operand
+                        .iter()
+                        .flat_map(|value| value.iter().cloned())
+                        .chain(rows.iter().flat_map(|row| row[lane].iter().cloned()))
+                        .collect()
+                }))
+            }
             // Component-wise operations retain the matching lanes. All other
             // supported numeric operations retain the union of their inputs.
             1..=0x35 | 0x43..=0x49 => {

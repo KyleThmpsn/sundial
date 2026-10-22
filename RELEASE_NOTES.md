@@ -54,7 +54,7 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 - Parhelion supports Project Sunrise 0.6's mods feature. Builds install to the mod folder, and Sunrise's **Mods** page lists them as **Parhelion**, with the version of Sundial that built them. Packages from earlier builds can't move there, so Parhelion offers to build them again, and installing backs up and removes the old ones. **Review Sunrise Mod Upgrade…** in **Preferences… > Builds & Backups** opens that review again.
 - You can switch between Sunrise 0.6 and Dawn or an earlier Sunrise. Sundial and Parhelion read whichever runtime is active, and installing there backs up and removes the packages installed for the other one. A build is made for one kind of runtime, so build again after switching.
 - On Sunrise 0.6, Parhelion installs alongside other mods, including Sunrise Studio mods. Builds include merge data, so Sunrise can combine the rows Parhelion and a Studio mod both add to item, Collections, and other shared tables. Installation stops and says why when Sunrise can't combine an entry both mods change, when both mods set the same values differently, or when a mod that loads before Parhelion adds rows to a table Parhelion adds to. Sunrise loads mods in order of their IDs. Builds avoid package IDs other mods use, and installation also stops if a mod declares Parhelion incompatible.
-- Items that join a game Collections page, such as weapons, exotic armor and items shown beside their base item, have a Collections **Position**. **Automatic** keeps them first on their page, as before, unless another installed Sunrise mod changes Collections. Then they go last, so both mods load. The Sunrise badge and added pages follow the same rule. **Build & Stage** asks before building items set to **First** beside such a mod.
+- Items that join a game Collections page, such as weapons, Exotic armor, and items shown beside their base item, have a Collections **Position**. **Automatic** keeps them first on their page, as before, unless another installed Sunrise mod changes Collections. Then they go last, so both mods load. The Sunrise badge and added pages follow the same rule. **Build & Stage** asks before building items set to **First** beside such a mod.
 - Sundial and Parhelion also read content from other Sunrise mods, including their configuration values and the tables Sunrise combines from several mods, and refresh when a mod changes. A mod Sunrise would refuse is left out, and Sundial's **Copy Report** lists why.
 
 ### Vehicles
@@ -104,12 +104,15 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 - **Resync Account** shows its progress, then the Collections and inventory changes it made and anything it couldn't add.
 - Leaving a recipe with unsaved changes now offers to save them.
 - Builds and installs are faster. Unchanged weapons and Subclass abilities reuse their compiled data, recipes are read and packages are compressed on several cores at once, and installation reviews each package once.
-- Installing a reviewed build reuses its package and recipe validation, while still checking file contents and current account changes. Installation no longer repeats the full validation during its account review.
+- When saved runtime data cannot be reused after resource allocations change, builds skip redundant cache checks and identify the resources that prevent reuse.
+- Installing a reviewed build reuses its package and recipe validation through account review, mod installation, and removal of inactive mods after switching runtimes, while still checking file contents, stock dependencies, and current account changes. A runtime changed since review is rejected before package processing.
 - Parhelion uses less memory when browsing artwork and the recipe library.
 - **Build & Install** is easier to follow, with a resizable window and clearer progress. The recipe library and **Items in This Build** mark recipes whose items are installed, and **Build & Stage** warns before a build would remove installed items and offers **Add to Build**.
 
 ### Fixes
 
+- Fixed refreshing Custom Perks allowing unsaved edits to overwrite changes saved in another window.
+- Collections sync now rechecks that Destiny 2 is closed before saving a Sunrise SQLite account.
 - Fixed some borrowed weapon behaviors leaving out data their perks rely on.
 - Fixed large builds, such as several Subclasses with swapped abilities, failing when they ran out of room for private perks and abilities.
 - Fixed build and install progress finishing stages early or going past its total.
@@ -126,8 +129,8 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 - Fixed exported recipe bundles with deeply nested recipes failing to open.
 - Fixed a second Parhelion window replacing the first window's autosaved custom perk drafts.
 - Fixed custom perk ability and event conditions accepting values the game ignores. The game signal conditions are now **When a Game Signal Starts** and **When a Game Signal Ends**.
-- Fixed installs overwriting a package file another program changed during the install.
-- Fixed successful mod installs reporting retained recovery backups as a cleanup failure.
+- Fixed installs overwriting package files or mod metadata another program changed after review or during installation.
+- Completed mod backups now follow the configured backup limit, keeping the current install's backup even when older backups have newer timestamps. Recovery copies for interrupted operations, account changes, upgrades, and removals are preserved without reporting a cleanup failure.
 - Fixed installs and removals leaving a `.parhelion-transaction.lock` file in the Destiny 2 folder.
 - Fixed installs, recovery, and removals failing when the Sunrise or Dawn DLL is linked to a build outside the game folder.
 - Fixed installs and removals clearing only the active runtime's item cache, so switching between Dawn and Sunrise could start the game with outdated custom items.
@@ -140,14 +143,17 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 
 ## Sundial
 
-- Current Sunrise accounts can be edited alongside older SQLite and JSON accounts. Saves preserve character appearances and starter loadouts. Reset and recovery require matching account formats, and Parhelion protects items used by starter loadouts during removal.
+- Sunrise 0.6 accounts (SQLite schema v3) can be edited alongside earlier Sunrise SQLite and JSON accounts. Saves preserve character appearances and starter loadouts. Reset and recovery require matching account formats, and Parhelion protects items used by starter loadouts during removal.
 - Logging settings support **Off** and preserve **Trace**. **Trace** is available when the installed Sunrise module supports it.
 - The catalog cache is about 50 times smaller and inspection caches are compressed, so Sundial starts faster and uses far less memory and disk space. The first start after updating rescans the installation once.
 - The perk picker's **Plugs Offered** dropdown adds a sixth scope. On an Auto Rifle's barrel socket, they range from the item's own barrels through **Auto Rifle Barrels**, **All Barrels**, **Auto Rifles**, and **All Weapons** to **All**.
 - The **Inspector** is redesigned, inspired by the Armory design I used for Dawn's in-game Loadout Studio. Its home page browses every item without a search.
   - **Weapons**, **Armor**, **Cosmetics**, **Perks & Mods**, **Other**, and **Recent** tabs show items as cards in their rarity's color, grouped by type.
   - Filter by type, rarity, and class, sort by type, name, or rarity, and show **Dummy Items**. Search narrows every tab.
-  - Hovering over an item card shows a tooltip styled like the ones in game. Right-click a card to **Open** it, **Add To** a character or the profile, open its **Model Preview**, or copy its name or hash.
+  - Hovering over an item card or item link shows a tooltip styled like the ones in game. Plugs show their stat changes and perk descriptions. **Show Package and Hash in Item Tooltips** in **Preferences** adds where each item is defined.
+  - Right-click a card to **Open** it, **Add To** a character or the profile, open its **Model Preview**, or copy its name or hash.
+  - An item's **Overview** shows its model beside its details when the window has room.
+- Item, perk, and plug tooltips across Sundial and Parhelion, including perk pickers, abilities, and the recipe library, use the same in-game style.
 - Characters can now hold bounties, quest steps, engrams, and other non-equipment items. A quest added this way may not start at its first step.
 - **Game Settings > Sunrise > Advanced** adds Project Sunrise 0.6's **Unlock Cheat Tools**, **Allow Studio Attach**, and **Export Package Keys**. Cheat tools unlock movement tools and infinite ammo in Sunrise's in-game menu, and progress made while they're on isn't saved. The other two are for Sunrise Studio.
 
@@ -162,7 +168,7 @@ Model previews in Sundial and Parhelion support more models and reproduce more o
 - Transparent and glowing effects, such as ornament sights and energy, blend more accurately over the model as the camera moves.
 - Finer detail survives, such as normal maps on mirrored parts, distant patterns, and partly filled texture sheets.
 - Glowing surfaces follow their material's brightness and have bloom halos. **View > Bloom** and **Filmic Output** control glow and highlights.
-- Default lighting keeps darker paint and midtones, and reflections follow the **Key** and **Fill** lights, so surfaces look less washed out.
+- Default lighting keeps darker paint and midtones, and reflections follow the **Key** and **Fill** lights, so surfaces look less washed out. Rough surfaces no longer take a pale sheen at their edges.
 - Vehicle previews keep their full textures, lights, and damage markings, and long effect meshes no longer shrink them.
 - Cloth now moves in previews, including capes, Titan marks, and Warlock robes, and robes keep their full length.
 - Animations support all recovered clip formats, with improved joint movement, lighting, and framing. Models that share animations play together.
@@ -174,6 +180,8 @@ Model previews in Sundial and Parhelion support more models and reproduce more o
 
 ### Fixes
 
+- Fixed switching between Sunrise and Dawn opening the previous runtime's account source. Dawn selections now remember the correct settings folder.
+- Choosing a runtime copy now backs up Dawn's settings, account, and scripts with its DLL, and restores them together.
 - Fixed external links not opening in your default browser.
 - Fixed wider perk picker scopes listing shaders and ornaments on sockets that aren't cosmetic.
 - Fixed quests, bounties, currencies, and consumables in a character's inventory reading as not valid for the character.

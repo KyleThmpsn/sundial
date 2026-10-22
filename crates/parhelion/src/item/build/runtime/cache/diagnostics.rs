@@ -21,7 +21,7 @@ pub(in crate::item::build::runtime) enum Reason {
     #[cfg(feature = "d2-model-importer")]
     ImportUnavailable(PathBuf),
     Damaged(String),
-    UnsupportedRelocation,
+    UnsupportedRelocation(String),
     SharedAnimationChanged,
     RelocationRejected,
     #[cfg(feature = "d2-model-importer")]
@@ -89,9 +89,9 @@ impl fmt::Display for Reason {
                 f,
                 "[fragment-damaged] Saved fragment is unreadable or damaged: {detail}"
             ),
-            Self::UnsupportedRelocation => write!(
+            Self::UnsupportedRelocation(detail) => write!(
                 f,
-                "[unsupported-relocation] Allocations moved and this fragment has an unsupported reference layout"
+                "[unsupported-relocation] Allocation state changed. This fragment requires its original allocation state. {detail}"
             ),
             Self::SharedAnimationChanged => write!(
                 f,

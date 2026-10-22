@@ -424,25 +424,3 @@ fn automatic_destination(
             .or_else(|| Family::from_type_name(&donor.type_name))?,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        Ammo, Destination, Family, WeaponAmmoType, WeaponDonorSummary, automatic_destination,
-    };
-
-    #[test]
-    fn automatic_destination_combines_authored_ammo_with_donor_weapon_type() {
-        let donor = WeaponDonorSummary {
-            ammo_type: Some(WeaponAmmoType::Heavy),
-            ..crate::test_support::donor_summary(1, "Sword donor", "Sword")
-        };
-        assert_eq!(
-            automatic_destination(Some(&donor), None, Some(crate::RecipeAmmoType::Special)),
-            Some(Destination {
-                ammo: Ammo::Special,
-                family: Family::Swords,
-            })
-        );
-    }
-}

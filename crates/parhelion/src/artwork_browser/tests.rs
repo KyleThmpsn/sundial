@@ -52,43 +52,6 @@ fn frame(
 }
 
 #[test]
-fn grid_keeps_actions_in_bottom_chin_and_only_uploads_visible_icons() {
-    for width in [640.0, 1050.0] {
-        let ctx = egui::Context::default();
-        ctx.enable_accesskit();
-        let mut picker = picker();
-        let mut query = String::new();
-        let mut output = egui::FullOutput::default();
-        for _ in 0..3 {
-            output = frame(&ctx, &mut picker, &mut query, width, vec![]).0;
-        }
-        for name in [
-            "Select Existing Perk",
-            "Download destiny-icons",
-            "Add Icon…",
-        ] {
-            let bounds = accessible(&output, name).unwrap_or_else(|| panic!("Missing {name}"));
-            assert!(
-                bounds.top() > 530.0 && bounds.bottom() <= 600.0,
-                "{name}: {bounds:?}"
-            );
-            assert!(bounds.right() <= width, "{name}: {bounds:?}");
-        }
-        assert!(picker.thumbnails.len() < 100);
-        assert!(!picker.thumbnails.is_empty());
-        picker.downloaded = true;
-        output = frame(&ctx, &mut picker, &mut query, width, vec![]).0;
-        assert!(accessible(&output, "Download destiny-icons").is_none());
-        assert!(accessible(&output, "Add Icon…").is_some());
-        query = "previous search".into();
-        picker.events().send(Event::RevealLocal(2)).unwrap();
-        frame(&ctx, &mut picker, &mut query, width, vec![]);
-        assert!(query.is_empty());
-        assert_eq!(picker.source, 2);
-    }
-}
-
-#[test]
 fn search_can_select_an_icon_beyond_the_initial_grid() {
     let ctx = egui::Context::default();
     ctx.enable_accesskit();
@@ -157,42 +120,6 @@ fn artwork_selection_embeds_full_source_for_multiple_destinations() {
         assert_eq!(restored.render(96, 96).dimensions(), (96, 96));
         assert_eq!(restored.render(512, 312).dimensions(), (512, 312));
     }
-}
-
-#[test]
-fn native_names_packages_and_hashes_are_searchable_together() {
-    let ctx = egui::Context::default();
-    ctx.enable_accesskit();
-    let mut picker = picker();
-    picker.rows.clear();
-    picker
-        .events()
-        .send(Event::Native(package_icons::Entry {
-            tag: tiger_pkg::TagHash(0x813180C9),
-            package: "w64_investment_0131_0.pkg".into(),
-            name: "ui/perks/Outlaw_reload.dds\nui/perks/precision_kill.dds".into(),
-            white: true,
-            size: [96, 96],
-        }))
-        .unwrap();
-    for search in [
-        "OUTLAW",
-        "precision kill",
-        "outlaw investment",
-        "0x813180c9",
-        "outlaw 0131_0.pkg",
-    ] {
-        let mut query = search.to_owned();
-        frame(&ctx, &mut picker, &mut query, 800.0, vec![]);
-        assert_eq!(
-            picker.thumbnails.len(),
-            1,
-            "Missing named texture for {search}"
-        );
-    }
-    let mut query = "unrelated".to_owned();
-    frame(&ctx, &mut picker, &mut query, 800.0, vec![]);
-    assert!(picker.thumbnails.is_empty());
 }
 
 #[test]

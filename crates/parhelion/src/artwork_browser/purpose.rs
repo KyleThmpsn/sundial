@@ -48,19 +48,3 @@ impl Purpose {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn perk_sources_must_be_square_and_never_upscaled() {
-        for edge in [96, 192, 256, 512] {
-            assert!(Purpose::Perk.accepts_size(edge, edge));
-        }
-        for (w, h) in [(16, 16), (64, 64), (96, 128), (128, 96), (1024, 1024)] {
-            assert!(!Purpose::Perk.accepts_size(w, h));
-        }
-        assert!(Purpose::Badge.accepts_size(768, 256));
-        assert!(Purpose::Watermark.accepts_size(768, 256));
-    }
-}

@@ -1,4 +1,5 @@
 //! Append local controls without renumbering a carrier's physics and attachment bones.
+mod instance;
 mod ranges;
 mod section;
 mod validation;
@@ -7,6 +8,7 @@ use crate::{
     tiger::payload::Payload,
 };
 use anyhow::{Context, Result, ensure};
+pub(crate) use instance::grow as grow_instance;
 pub use ranges::Renumbering;
 pub use validation::{validate_extension, validate_weapon_pair};
 

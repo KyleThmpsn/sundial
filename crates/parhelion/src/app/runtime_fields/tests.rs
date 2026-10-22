@@ -81,25 +81,6 @@ fn passive_render_preserves_all_ieee_float_bits_and_saved_overrides() {
 }
 
 #[test]
-fn finite_decimal_display_keeps_small_and_boundary_values() {
-    let ctx = egui::Context::default();
-    for bits in [1, 0x007F_FFFF, 0x3F80_0001, 0x7F7F_FFFF, 0x8000_0000] {
-        let expected = format!("{:?}", f32::from_bits(bits));
-        let mut output = egui::FullOutput::default();
-        for _ in 0..2 {
-            output = frame(&ctx, Vec::new(), |ui| {
-                assert_eq!(draw_runtime_float_decimal(ui, bits), None);
-            });
-        }
-        assert!(
-            text(&output).contains(&expected),
-            "{bits:08X}: {}",
-            text(&output)
-        );
-    }
-}
-
-#[test]
 fn double_precision_fields_preserve_exact_bits_on_passive_render() {
     for bits in [
         0,

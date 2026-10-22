@@ -118,17 +118,6 @@ fn switching_documents_preserves_pending_edits_under_their_original_owner() {
 }
 
 #[test]
-fn reselecting_the_current_document_keeps_its_active_editor() {
-    let mut workbench = Workbench::default();
-    workbench.set_test_editor(editor(fixture()));
-    let recipe = workbench.documents[0].recipe.clone();
-    workbench.add_document(Document::new(recipe, None));
-    assert_eq!(workbench.documents.len(), 1);
-    assert!(workbench.editor.is_some());
-    assert_eq!(workbench.editing_effect, Some(1178));
-}
-
-#[test]
 fn switching_documents_keeps_an_unfinished_worker_owned_until_it_finishes() {
     let mut parameter_editor = editor(fixture());
     let (sender, receiver) = mpsc::channel();

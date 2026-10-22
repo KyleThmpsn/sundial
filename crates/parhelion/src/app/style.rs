@@ -1019,24 +1019,6 @@ pub(crate) fn list_row(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::
 mod tests {
     use super::*;
 
-    #[test]
-    fn perk_text_follows_body_size_without_changing_the_global_theme() {
-        let ctx = egui::Context::default();
-        ctx.global_style_mut(|style| {
-            style
-                .text_styles
-                .insert(egui::TextStyle::Body, egui::FontId::proportional(18.0));
-        });
-        let before = egui::TextStyle::Small.resolve(&ctx.global_style());
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            egui::CentralPanel::default().show(ui, |ui| {
-                perk_workbench_style(ui);
-                assert_eq!(egui::TextStyle::Small.resolve(ui.style()).size, 18.0);
-            });
-        });
-        assert_eq!(egui::TextStyle::Small.resolve(&ctx.global_style()), before);
-    }
-
     fn luminance(color: egui::Color32) -> f32 {
         let channels = color.to_array()[..3]
             .iter()

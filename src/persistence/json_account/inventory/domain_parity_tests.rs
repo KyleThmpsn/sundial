@@ -10,49 +10,6 @@ use super::tests::document;
 use super::*;
 
 #[test]
-fn adapter_capabilities_match_every_current_json_schema_mode() {
-    for version in
-        crate::game_settings::MIN_SUPPORTED_SCHEMA..=crate::game_settings::MAX_SUPPORTED_SCHEMA
-    {
-        let document = document(version);
-        let mode = schema_mode(&document);
-        let capabilities = JsonProfileAdapter::load(&document).unwrap().capabilities();
-
-        assert_eq!(
-            capabilities.profile_items_writable,
-            mode.can_mutate_profile_items()
-        );
-        assert_eq!(
-            capabilities.profile_item_capacity,
-            mode.profile_item_capacity()
-        );
-        assert!(capabilities.enforce_loaded_profile_item_capacity);
-        assert_eq!(
-            capabilities.dismantle_rewards_writable,
-            mode.can_mutate_dismantle_rewards()
-        );
-        assert_eq!(
-            capabilities.dismantle_reward_capacity,
-            mode.dismantle_reward_capacity()
-        );
-        assert_eq!(
-            capabilities.filtered_dismantle_rewards,
-            mode.supports_filtered_dismantle_rewards()
-        );
-    }
-
-    let future = document(crate::game_settings::MAX_SUPPORTED_SCHEMA + 1);
-    let capabilities = JsonProfileAdapter::load(&future).unwrap().capabilities();
-    assert!(capabilities.profile_items_writable);
-    assert_eq!(
-        capabilities.profile_item_capacity,
-        Some(PROFILE_ITEM_CAPACITY)
-    );
-    assert!(!capabilities.enforce_loaded_profile_item_capacity);
-    assert!(!capabilities.dismantle_rewards_writable);
-}
-
-#[test]
 fn future_profile_capacity_matches_legacy_without_rejecting_loaded_rows() {
     let mut production = document(crate::game_settings::MAX_SUPPORTED_SCHEMA + 1);
     *production

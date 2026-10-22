@@ -2,12 +2,12 @@
 //! level when it builds the cache, and keeps the projected triangles in the BSP's decal render
 //! geometry (`+0x340`), laid out as its other render geometry blocks, with one mesh per cluster
 //! and no parts. The BSP's decal rows (`+0x328`) name each decal's decal system by datum, its
-//! cluster's mesh in the high byte of `+0x04`, and its property row at `+0x18`. A property row
+//! cluster's mesh at byte `+0x05`, and its property start/count at `+0x18/+0x1A`. A property row
 //! (`+0x334`) gives the decal's index start, index count, vertex start and vertex count in that
 //! mesh, `i16` each. In Hang 'Em High every mesh's decal ranges end exactly at its vertex
 //! buffer's end. A decal system (`decs`) holds its decals at `+0x2C`, `0x98`-byte rows each with
-//! an embedded render method at `+0x08`, which the decal's material reads. Every placement takes
-//! its system's first decal.
+//! an embedded render method at `+0x08`. Each property selects a layer at `+0x08`, with sprite
+//! offset and scale at `+0x0C/+0x14`. The original MCC renderer walks all properties.
 use super::super::{
     cache::{Cache, Tag},
     material::{self, Material},
@@ -54,7 +54,7 @@ pub(super) fn read(
     let geometry = Geometry::read(cache, tag, at + GEOMETRY)
         .with_context(|| format!("Decal geometry of {}", tag.path))?;
     let mut sections = BTreeMap::new();
-    let mut systems = BTreeMap::<u32, usize>::new();
+    let mut systems = BTreeMap::new();
     let mut primitives = Vec::with_capacity(rows.len());
     for (index, &row) in rows.iter().enumerate() {
         let datum = cache.u32(row)?;
@@ -63,32 +63,19 @@ pub(super) fn read(
             .get((datum & 0xFFFF) as usize)
             .and_then(Option::as_ref)
             .filter(|system| system.datum == datum && system.group == "decs")
-            .with_context(|| format!("Decal {index} names no decal system"))?
-            .clone();
-        let material = match systems.get(&datum) {
-            Some(&material) => material,
-            None => {
-                let decal = *cache
-                    .block(system.address()? + SYSTEM_DECALS.0, SYSTEM_DECALS.1)?
-                    .first()
-                    .with_context(|| format!("Decal system {} holds no decal", system.path))?;
-                materials.push(
-                    material::embedded(cache, system.clone(), decal + DECAL_RENDER_METHOD)
-                        .with_context(|| format!("Decal system {}", system.path))?,
-                );
-                systems.insert(datum, materials.len() - 1);
-                materials.len() - 1
-            }
-        };
-        let mesh = usize::try_from(cache.i16(row + ROW_MESH)? >> 8)
-            .with_context(|| format!("Decal {index} names no mesh"))?;
-        let property = *properties
-            .get(usize::try_from(cache.i16(row + ROW_PROPERTY)?)?)
-            .with_context(|| format!("Decal {index}'s property row is outside the table"))?;
-        let [index_start, index_count, vertex_start, vertex_count] =
-            [0, 2, 4, 6].map(|offset| cache.i16(property + offset).map(|v| v as u16 as usize));
-        let (index_start, index_count, vertex_start, vertex_count) =
-            (index_start?, index_count?, vertex_start?, vertex_count?);
+            .with_context(|| format!("Decal {index} names no decal system"))?;
+        let definitions = cache.block(system.address()? + SYSTEM_DECALS.0, SYSTEM_DECALS.1)?;
+        // MCC 0015D75C reads the unsigned mesh byte, then walks the complete property span.
+        // Each property selects its own definition and cached sprite transform.
+        let mesh = usize::from(cache.u8(row + ROW_MESH + 1)?);
+        let first = usize::try_from(cache.i16(row + ROW_PROPERTY)?)?;
+        let count = usize::try_from(cache.i16(row + ROW_PROPERTY + 2)?)?;
+        let end = first
+            .checked_add(count)
+            .context("Decal property range overflow")?;
+        let properties = properties
+            .get(first..end)
+            .context("Decal properties outside table")?;
         if let std::collections::btree_map::Entry::Vacant(entry) = sections.entry(mesh) {
             let section = geometry
                 .raw_section(cache, pages, mesh)?
@@ -101,48 +88,118 @@ pub(super) fn read(
             );
             entry.insert(section);
         }
-        let section = &sections[&mesh];
-        ensure!(
-            index_start + index_count <= section.indices.len()
-                && vertex_start + vertex_count <= section.count,
-            "Decal {index} lies outside its mesh's buffers"
-        );
-        let source = &section.indices[index_start..index_start + index_count];
-        // A range indexes its mesh's buffer, or its own vertices from their start.
-        let offset = if source.iter().all(|&i| {
-            (vertex_start..vertex_start + vertex_count).contains(&(i as usize))
-                || i == section.restart
-        }) {
-            0
-        } else {
+        for (part, &property) in properties.iter().enumerate() {
+            let layer = u16::try_from(cache.i16(property + 8)?)?;
+            let definition = *definitions
+                .get(usize::from(layer))
+                .context("Decal layer outside system")?;
+            let sprite = cache.floats::<4>(property + 0x0c)?;
             ensure!(
-                source
-                    .iter()
-                    .all(|&i| (i as usize) < vertex_count || i == section.restart),
-                "Decal {index}'s indices leave its vertex range"
+                sprite.iter().all(|value| value.is_finite()),
+                "Nonfinite decal sprite"
             );
-            vertex_start as u32
-        };
-        let triangles = triangles(source, section.topology, section.restart, offset)?;
-        let used = triangles.iter().flatten().copied().collect::<BTreeSet<_>>();
-        let remap = used
-            .iter()
-            .enumerate()
-            .map(|(local, &vertex)| (vertex, local as u32))
-            .collect::<BTreeMap<_, _>>();
-        let vertices = vertices(section, &used, &triangles)
-            .with_context(|| format!("Decal {index}'s vertices"))?;
-        primitives.push(Primitive {
-            section: mesh,
-            part: index,
-            material: Some(material),
-            flags: 0,
-            instance: Some(format!("decal{index}")),
-            vertices,
-            indices: triangles.iter().flatten().map(|v| remap[v]).collect(),
-        });
+            let render_pass = cache.u32(definition + 0x90)?;
+            ensure!(render_pass <= 1, "Unknown decal render pass {render_pass}");
+            let key = (datum, layer, sprite.map(f32::to_bits));
+            let material = match systems.get(&key) {
+                Some(&material) => material,
+                None => {
+                    let mut material =
+                        material::embedded(cache, system.clone(), definition + DECAL_RENDER_METHOD)
+                            .with_context(|| {
+                                format!("Decal system {} layer {layer}", system.path)
+                            })?;
+                    material.decal = Some(material::Decal {
+                        layer,
+                        sprite,
+                        render_pass,
+                    });
+                    let index = materials.len();
+                    materials.push(material);
+                    systems.insert(key, index);
+                    index
+                }
+            };
+            let primitive = primitive(
+                cache,
+                &sections[&mesh],
+                property,
+                mesh,
+                first + part,
+                material,
+            )
+            .with_context(|| format!("Decal {index} layer {layer}"))?;
+            if !primitive.indices.is_empty() {
+                primitives.push(primitive);
+            }
+        }
     }
     Ok(primitives)
+}
+
+fn primitive(
+    cache: &Cache,
+    section: &RawSection,
+    property: usize,
+    mesh: usize,
+    part: usize,
+    material: usize,
+) -> Result<Primitive> {
+    let read = |offset| -> Result<usize> { Ok(usize::try_from(cache.i16(property + offset)?)?) };
+    let [index_start, index_count, vertex_start, vertex_count] = [0, 2, 4, 6].map(read);
+    let (index_start, index_count, vertex_start, vertex_count): (usize, usize, usize, usize) =
+        (index_start?, index_count?, vertex_start?, vertex_count?);
+    ensure!(
+        index_start + index_count <= section.indices.len()
+            && vertex_start + vertex_count <= section.count,
+        "Decal lies outside its mesh's buffers"
+    );
+    let source = &section.indices[index_start..index_start + index_count];
+    // Retain the checked source index domains. The range may index the mesh or its own vertices.
+    let offset = if source.iter().all(|&i| {
+        (vertex_start..vertex_start + vertex_count).contains(&(i as usize)) || i == section.restart
+    }) {
+        0
+    } else {
+        ensure!(
+            source
+                .iter()
+                .all(|&i| (i as usize) < vertex_count || i == section.restart),
+            "Decal indices leave its vertex range"
+        );
+        vertex_start as u32
+    };
+    let triangles = triangles(source, section.topology, section.restart, offset)?;
+    let used = triangles.iter().flatten().copied().collect::<BTreeSet<_>>();
+    if used.is_empty() {
+        return Ok(Primitive {
+            section: mesh,
+            part,
+            material: Some(material),
+            flags: 0,
+            analytical_light: None,
+            instance: Some(format!("decal{part}")),
+            bsps: 0,
+            vertices: Vec::new(),
+            indices: Vec::new(),
+        });
+    }
+    let remap = used
+        .iter()
+        .enumerate()
+        .map(|(local, &vertex)| (vertex, local as u32))
+        .collect::<BTreeMap<_, _>>();
+    Ok(Primitive {
+        section: mesh,
+        part,
+        material: Some(material),
+        flags: 0,
+        analytical_light: None,
+        instance: Some(format!("decal{part}")),
+        bsps: 0,
+        vertices: vertices(section, &used, &triangles)?,
+        indices: triangles.iter().flatten().map(|v| remap[v]).collect(),
+    })
 }
 
 /// The world vertices `used` of `section`, in meters and stood off their surface. A vertex

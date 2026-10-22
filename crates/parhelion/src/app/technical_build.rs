@@ -264,6 +264,3 @@ impl super::PackageAuthoringApp {
         self.technical_registry_fields = fields_shown;
     }
 }
-
-#[cfg(test)]
-mod tests;

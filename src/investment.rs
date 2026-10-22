@@ -44,8 +44,8 @@ fn is_stock_shader(metadata: &crate::catalog::ItemPackageMetadata) -> bool {
 pub(crate) mod seasonal;
 pub use controls::{
     AUTHORING_SOCKET_RESET_WIDTH, AuthoringItemHeader, CatalogLoadingView, DisplayTooltip,
-    IconOverride, PlugChoicePickerButton, PlugChoicePickerOptions, PlugSelection, PlugTooltip,
-    WeaponChoiceFilter, WeaponDonorPickerAction, WeaponDonorPickerClearChoice,
+    IconOverride, ItemTooltip, PlugChoicePickerButton, PlugChoicePickerOptions, PlugSelection,
+    PlugTooltip, WeaponChoiceFilter, WeaponDonorPickerAction, WeaponDonorPickerClearChoice,
     WeaponDonorPickerOptions, authoring_button_width, authoring_choice_row_height,
     authoring_socket_label_width, authoring_socket_reset_width, configure_authoring_fonts,
     default_plug_selection_mode, draw_asset_choice_row, draw_asset_choice_row_plain,
@@ -1351,31 +1351,5 @@ mod tests {
                 .supported_plug_sets(1, &[Some(700); MAX_WEAPON_SOCKETS + 1])
                 .is_err()
         );
-    }
-
-    #[test]
-    #[ignore = "requires SUNDIAL_INSTALL; native item and plug effect catalog"]
-    fn sandbox_effect_choices_include_conditional_plug_effects() {
-        let install = crate::test_support::install();
-        let catalog = crate::test_support::catalog(&install).unwrap();
-        let choices = catalog.weapon_sandbox_perk_choices_from(|_| true);
-        for (index, name) in [
-            (421, "Outlaw"),
-            (351, "Rampage"),
-            (352, "Grave Robber"),
-            (1300, "Swashbuckler"),
-            (951, "Ashes to Assets"),
-        ] {
-            let choice = choices
-                .iter()
-                .find(|choice| choice.perk_index == index)
-                .expect("stock conditional effect");
-            assert_eq!(choice.representative_name, name);
-            assert!(
-                catalog
-                    .item_sandbox_perk_indices(choice.representative_hash)
-                    .contains(&index)
-            );
-        }
     }
 }

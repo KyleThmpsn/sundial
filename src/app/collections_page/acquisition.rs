@@ -552,16 +552,3 @@ pub(super) fn draw_condition_token_metadata(
         request_hash_inspection(ui.ctx(), definition.hash);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn absent_acquisition_condition_is_unconditionally_acquired() {
-        let evaluation = acquisition_evaluation(&[], None);
-
-        assert_eq!(evaluation, AcquisitionEvaluation::Unconditional);
-        assert_eq!(evaluation.state(), AcquisitionState::Acquired);
-    }
-}

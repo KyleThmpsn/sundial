@@ -801,11 +801,6 @@ pub fn prepare_with_rig(
                 .push(markers);
         }
     }
-    let slot_markers = slots
-        .slot_markers()
-        .iter()
-        .map(|hash| format!("{hash:08X}"))
-        .collect::<Vec<_>>();
     let event_library = events(
         &mut sr,
         &mut nr,
@@ -1039,7 +1034,6 @@ pub fn prepare_with_rig(
             "retargeted_bones": retargeted,
             "unmapped_source_bones": unmapped,
             "slot_alignment": alignment,
-            "slot_markers": slot_markers,
             "pose_bindings": pose_bindings,
             "pose_layers": pose_layers,
             "files": files,

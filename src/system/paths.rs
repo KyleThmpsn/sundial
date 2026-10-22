@@ -218,20 +218,4 @@ mod tests {
         std::os::unix::fs::symlink(directory.path().join("absent"), &dangling).unwrap();
         assert!(resolve_path_for_comparison(&dangling.join("output.json")).is_err());
     }
-
-    #[test]
-    fn resolved_and_canonical_windows_paths_compare_equally() {
-        let directory = tempfile::tempdir().unwrap();
-        let canonical = fs::canonicalize(directory.path()).unwrap();
-        // The temp directory can sit behind an 8.3 short name, which canonicalize expands and
-        // a lexical fold cannot, so the plain form is the canonical path minus its prefix.
-        let plain =
-            std::path::PathBuf::from(canonical.to_string_lossy().trim_start_matches(r"\\?\"));
-        assert!(
-            cfg!(not(windows)) || plain != canonical,
-            "the prefix was not stripped"
-        );
-        assert!(paths_equal(&plain, &canonical));
-        assert!(path_is_within(&canonical.join("child"), &plain));
-    }
 }

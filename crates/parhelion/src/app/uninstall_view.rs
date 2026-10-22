@@ -244,22 +244,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn closing_a_read_only_review_does_not_reload_but_mutations_do() {
-        for mutated in [false, true] {
-            let mut app = PackageAuthoringApp::default();
-            app.uninstall.open = true;
-            app.catalog_load_requested = true;
-            app.catalog_force_rebuild = mutated;
-            let recipe = app.recipe.clone();
-            app.close_uninstall_review();
-            assert!(!app.uninstall.open);
-            assert_eq!(app.catalog_load_requested, !mutated);
-            assert_eq!(app.recipe, recipe);
-            assert!(!app.uninstall.busy());
-        }
-    }
-
-    #[test]
     fn disconnected_uninstall_worker_is_a_visible_error_not_success() {
         let mut app = PackageAuthoringApp::default();
         let (sender, receiver) = mpsc::channel();

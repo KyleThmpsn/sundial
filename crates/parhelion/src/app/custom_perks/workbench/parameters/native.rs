@@ -683,14 +683,6 @@ pub(in crate::app::custom_perks) fn named_property(field: &WeaponRuntimeField) -
         && !field.name.starts_with("Reserved ")
 }
 
-#[cfg(test)]
-fn property_changes(
-    loaded: &PrivatePerkRuntimeGraph,
-    draft: &[WeaponRuntimeValueOverride],
-) -> Result<Vec<String>, String> {
-    changes(loaded, draft, &std::collections::BTreeSet::new())
-}
-
 /// The changes an effect card does not already show as rows. `named` says every named value
 /// is in view, not only the proven ones.
 pub(in crate::app::custom_perks) fn unlisted_changes(

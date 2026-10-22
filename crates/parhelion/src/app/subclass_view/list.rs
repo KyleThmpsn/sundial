@@ -249,18 +249,17 @@ impl PackageAuthoringApp {
             selected: selected == SubclassSelection::Entry(place),
             color: edits.color.or(abilities.hud_color),
         }
-        .show(ui)
-        .on_hover_ui(|ui| {
-            draw_display_tooltip(
-                ui,
-                DisplayTooltip {
-                    icon: icon.as_ref(),
-                    name: &name,
-                    subtitle: Some(&from_subtitle(&kind, summary)),
-                    description: description.as_deref(),
-                },
-            );
-        });
+        .show(ui);
+        let row = display_tooltip(
+            row,
+            self.catalog.as_ref(),
+            DisplayTooltip {
+                icon: icon.as_ref(),
+                name: &name,
+                subtitle: Some(&from_subtitle(&kind, summary)),
+                description: description.as_deref(),
+            },
+        );
         row.clicked().then_some(SubclassSelection::Entry(place))
     }
 
@@ -298,21 +297,20 @@ impl PackageAuthoringApp {
             selected: page.selection == SubclassSelection::Path(path),
             color: None,
         }
-        .show(ui)
-        .on_hover_ui(|ui| {
-            draw_display_tooltip(
-                ui,
-                DisplayTooltip {
-                    icon: None,
-                    name,
-                    subtitle: Some(&from_subtitle(
-                        &format!("{} Attunement", path.label()),
-                        summary,
-                    )),
-                    description: Some(&self.path_nodes(base, abilities, path)),
-                },
-            );
-        });
+        .show(ui);
+        let row = display_tooltip(
+            row,
+            self.catalog.as_ref(),
+            DisplayTooltip {
+                icon: None,
+                name,
+                subtitle: Some(&from_subtitle(
+                    &format!("{} Attunement", path.label()),
+                    summary,
+                )),
+                description: Some(&self.path_nodes(base, abilities, path)),
+            },
+        );
         if row.clicked() {
             clicked = Some(SubclassSelection::Path(path));
         }

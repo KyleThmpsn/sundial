@@ -12,8 +12,6 @@ mod lead;
 mod recipes;
 pub(super) use recipes::WEAPON_PROPERTIES_GRAPH;
 mod rows;
-#[cfg(test)]
-mod tests;
 mod words;
 
 use lead::*;

@@ -20,6 +20,8 @@ use crate::{
 
 use super::{MapRecipe, Picture, activity, picture, private_match, world};
 
+mod sharing;
+
 const INVESTMENT_ROOT_CLASS: u32 = 0x8080_7D84;
 const ROOT_ACTIVITY_TABLE_SLOT: usize = 4;
 const ROOT_PRIVATE_MATCH_TABLE_SLOT: usize = 64;
@@ -137,10 +139,13 @@ fn flatten_at(addresses: &[TagHash], tags: &mut [NewTagSpec]) -> AuthoringResult
 }
 
 /// The entries across `ids`, holding `tags`, that are companions. Together they must name
-/// every other entry, or that entry could never load. Also returns every other package they name.
+/// every active entry, or that entry could never load. Inactive texture aliases have been checked
+/// against a reciprocal canonical pair in the final linked bytes. They must remain unloaded.
+/// Also returns every other package the companions name.
 fn companions(
     addresses: &[TagHash],
     tags: &[NewTagSpec],
+    inactive: &BTreeSet<TagHash>,
 ) -> AuthoringResult<(Vec<TagHash>, BTreeSet<u16>)> {
     let ids = addresses
         .iter()
@@ -165,6 +170,7 @@ fn companions(
     }
     let expected = addresses
         .iter()
+        .filter(|tag| !inactive.contains(*tag))
         .map(|tag| (tag.pkg_id(), tag.entry_index()))
         .collect::<BTreeSet<_>>();
     if companions.is_empty() || covered != expected {
@@ -587,19 +593,21 @@ impl Plan {
         &self,
         ids: &[u16],
         tags: &[NewTagSpec],
+        references: &[crate::NewTagReferenceOverride],
         registered: &BTreeSet<u16>,
         manager: &PackageManager,
     ) -> AuthoringResult<Vec<TagHash>> {
         let addresses = (0..tags.len())
             .map(|entry| entry_tag(ids, entry))
             .collect::<AuthoringResult<Vec<_>>>()?;
-        self.registration_at(&addresses, tags, registered, manager)
+        self.registration_at(&addresses, tags, references, registered, manager)
     }
 
     pub(crate) fn registration_at(
         &self,
         addresses: &[TagHash],
         tags: &[NewTagSpec],
+        references: &[crate::NewTagReferenceOverride],
         registered: &BTreeSet<u16>,
         manager: &PackageManager,
     ) -> AuthoringResult<Vec<TagHash>> {
@@ -607,17 +615,22 @@ impl Plan {
             .iter()
             .map(|tag| tag.pkg_id())
             .collect::<BTreeSet<_>>();
-        let (mut entries, packages) = companions(addresses, tags)?;
+        let inactive = sharing::inactive(addresses, tags, references, manager)?;
+        let (mut entries, packages) = companions(addresses, tags, &inactive)?;
         // World overflow contains raw resources rather than companions. Register each package
         // through its smallest inert data entry before any named root can request its content.
         for &id in &ids {
-            if entries.iter().any(|tag| tag.pkg_id() == id) {
+            if entries.iter().any(|tag| tag.pkg_id() == id)
+                || !addresses
+                    .iter()
+                    .any(|tag| tag.pkg_id() == id && !inactive.contains(tag))
+            {
                 continue;
             }
             let anchor = addresses
                 .iter()
                 .enumerate()
-                .filter(|(_, tag)| tag.pkg_id() == id)
+                .filter(|(_, tag)| tag.pkg_id() == id && !inactive.contains(*tag))
                 .filter_map(|(index, _)| {
                     let spec = &tags[index];
                     let entry = manager.get_entry(spec.template_tag)?;

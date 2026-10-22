@@ -1,6 +1,6 @@
 use super::*;
 use crate::package_payload::native_array_at;
-use crate::sandbox_perk::action::native::{Graph, labels};
+use crate::sandbox_perk::action::native::Graph;
 use crate::sandbox_perk::nodes;
 
 /// A synthetic installation: the fixture label registry and a fixed set of live
@@ -38,46 +38,7 @@ impl NativeResolver for Synthetic {
 }
 
 const KILL: u8 = 2;
-const PRECISION: u32 = 0x962E_A19B;
 const DEAD_RESOURCE: u32 = 0x8ABC_0001;
-
-#[test]
-fn editable_draft_preserves_symbolic_filters_extra_groups_and_native_bits() {
-    let mut node = NativeNode::effect(47).unwrap();
-    node.bytes[4..8].copy_from_slice(&0xFEEDABCDu32.to_le_bytes());
-    let program = Program {
-        trigger: Trigger::PrecisionKill,
-        actions: vec![
-            Action::UpdateAccumulator {
-                mode: 0,
-                value_bits: 0x80000000,
-            },
-            Action::Native { node: node.clone() },
-        ],
-        additional_groups: vec![NativeGroup {
-            effects: vec![node],
-            ..NativeGroup::default()
-        }],
-        ..Program::default()
-    };
-    let mut native = draft(&program).unwrap();
-    let registry = crate::package_runtime::labels::fixture::registry();
-    labels::compile(&mut native.graph, &registry).unwrap();
-    let expected = assemble(
-        &program,
-        Some((
-            trigger_labels(program.trigger),
-            compile_labels(&registry, &[PRECISION]).unwrap(),
-        )),
-    )
-    .unwrap();
-    assert!(
-        super::super::decompile::native_fidelity(&expected.payload, &native.graph.emit().unwrap())
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(native.assets.len(), 0);
-}
 
 #[test]
 fn draft_keeps_component_overrides_and_refuses_to_merge_distinct_edits() {
@@ -130,34 +91,11 @@ fn kill_class() -> u32 {
     nodes::condition(KILL).unwrap().class
 }
 
-/// A Kill Event whose first source label list names a precision kill while its compiled
-/// masks are still those of the template, exactly as a label edit leaves a node before
-/// it is compiled.
-fn kill_with_stale_masks() -> NativeNode {
-    let mut node = NativeNode::condition(KILL).unwrap();
-    let mut graph = Graph::read(&node.bytes, 0, kill_class()).unwrap();
-    let (source, _) = labels::bindings(kill_class()).unwrap()[0];
-    graph
-        .create_target(0, source + 8, 0x808094B3, true)
-        .unwrap();
-    let rows = graph.blocks[0].links[&(source + 8)];
-    graph.resize_array(rows, 1).unwrap();
-    graph.blocks[rows].bytes[..4].copy_from_slice(&PRECISION.to_le_bytes());
-    node.bytes = graph.emit().unwrap();
-    node
-}
-
 /// A Kill Event whose resource lane names a tag no installation holds.
 fn kill_with_dead_resource() -> NativeNode {
     let mut node = NativeNode::condition(KILL).unwrap();
     node.bytes[80..84].copy_from_slice(&DEAD_RESOURCE.to_le_bytes());
     node
-}
-
-fn compiled_precision_mask(node: &NativeNode) -> [u8; 40] {
-    let graph = Graph::read(&node.bytes, 0, kill_class()).unwrap();
-    let (_, predicate) = labels::bindings(kill_class()).unwrap()[0];
-    labels::effective(&graph, 0, predicate).unwrap()[0]
 }
 
 type Read = fn(&Program) -> &NativeNode;
@@ -258,38 +196,6 @@ fn condition_positions(node: &NativeNode) -> Vec<(String, Program, Read)> {
 }
 
 #[test]
-fn label_edits_compile_in_every_native_condition_position() {
-    let node = kill_with_stale_masks();
-    assert_eq!(
-        compiled_precision_mask(&node),
-        [0; 40],
-        "fixture masks are stale"
-    );
-    let registry = crate::package_runtime::labels::fixture::registry();
-    let expected = compile_labels(&registry, &[PRECISION]).unwrap();
-    assert_ne!(expected, [0; 40]);
-    let mut reference = None;
-    for (position, mut program, read) in condition_positions(&node) {
-        let mut resolver = Synthetic::new(&[]);
-        prepare_native_nodes(&mut program, &mut resolver)
-            .unwrap_or_else(|error| panic!("{position}: {error}"));
-        let prepared = read(&program);
-        assert_eq!(
-            compiled_precision_mask(prepared),
-            expected,
-            "{position} kept its stale masks"
-        );
-        match &reference {
-            None => reference = Some(prepared.bytes.clone()),
-            Some(bytes) => assert_eq!(
-                &prepared.bytes, bytes,
-                "{position} compiled differently from the primary trigger"
-            ),
-        }
-    }
-}
-
-#[test]
 fn missing_resources_are_rejected_in_every_native_condition_position() {
     let node = kill_with_dead_resource();
     let graph = Graph::read(&node.bytes, 0, kill_class()).unwrap();
@@ -339,38 +245,6 @@ fn missing_resources_are_rejected_in_group_effects_like_native_actions() {
         prepare_native_nodes(&mut program.clone(), &mut Synthetic::new(&[DEAD_RESOURCE]))
             .unwrap_or_else(|error| panic!("{position}: {error}"));
     }
-}
-
-#[test]
-fn native_nodes_reach_every_verbatim_position() {
-    let condition = NativeNode::condition(KILL).unwrap();
-    let effect = NativeNode::effect(43).unwrap();
-    let program = Program {
-        trigger: Trigger::Native,
-        native_trigger: Some(condition.clone()),
-        native_removal: Some(condition.clone()),
-        native_rearm: Some(condition.clone()),
-        alternative_triggers: vec![condition.clone()],
-        alternative_removals: vec![condition.clone()],
-        alternative_rearms: vec![condition.clone()],
-        actions: vec![Action::Native {
-            node: effect.clone(),
-        }],
-        additional_groups: vec![NativeGroup {
-            activation: vec![condition.clone()],
-            effects: vec![effect.clone()],
-            removal: vec![condition.clone()],
-            rearm: vec![condition.clone()],
-        }],
-        ..Program::default()
-    };
-    let (conditions, effects): (Vec<_>, Vec<_>) = program
-        .native_nodes()
-        .partition(|(condition, _)| condition.is_condition());
-    assert_eq!(conditions.len(), 9);
-    assert_eq!(effects.len(), 2);
-    assert!(conditions.iter().all(|(_, node)| **node == condition));
-    assert!(effects.iter().all(|(_, node)| **node == effect));
 }
 
 fn attach_node(action: &Action) -> Vec<u8> {

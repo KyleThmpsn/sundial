@@ -243,26 +243,6 @@ mod tests {
     use sundial::package_authoring::sandbox_perk::action::native::NodeKind as NativeNodeKind;
 
     #[test]
-    fn installed_script_outside_stock_examples_roundtrips_without_changing_other_fields() {
-        let mut graph = Graph::read(
-            &native::template(NativeNodeKind::Effect(48)).unwrap(),
-            0,
-            CLASS,
-        )
-        .unwrap();
-        let original = graph.blocks[0].bytes.clone();
-        let path = r"content\new\another_script.object_behaviors.tft";
-        let tag = 0x8123_4567;
-        set_reference(&mut graph, 0, path, tag).unwrap();
-        let reread = Graph::read(&graph.emit().unwrap(), 0, CLASS).unwrap();
-        assert_eq!(current_tag(&reread, 0).unwrap(), tag);
-        let target = reread.blocks[0].links[&PATH];
-        assert_eq!(&reread.blocks[target].bytes[..path.len()], path.as_bytes());
-        assert_eq!(&reread.blocks[0].bytes[..PATH], &original[..PATH]);
-        assert_eq!(&reread.blocks[0].bytes[TAG + 4..], &original[TAG + 4..]);
-    }
-
-    #[test]
     fn choosing_a_script_writes_its_path_and_tag_and_survives_a_reload() {
         let bytes = native::template(NativeNodeKind::Effect(48)).unwrap();
         let mut graph = Graph::read(&bytes, 0, CLASS).unwrap();

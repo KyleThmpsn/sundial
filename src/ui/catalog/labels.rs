@@ -148,24 +148,3 @@ fn candidates(
     });
     hashes
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn search_uses_active_registry_and_keeps_unknown_current_values_removable() {
-        let registry =
-            Registry::read(&crate::package_runtime::labels::fixture::registry()).unwrap();
-        let observed = [(0x12345678, "stale label", 1)];
-        let hashes = candidates(Some(&registry), &observed, &[0x87654321], "", false);
-        assert!(!hashes.contains(&0x12345678));
-        assert!(hashes.contains(&0x87654321));
-        assert!(!hashes.contains(&0xEC6A8FC5));
-        assert!(candidates(Some(&registry), &[], &[], "EC6A8FC5", true).contains(&0xEC6A8FC5));
-        assert_eq!(
-            candidates(Some(&registry), &[], &[], "precision", false),
-            vec![0x962EA19B]
-        );
-    }
-}

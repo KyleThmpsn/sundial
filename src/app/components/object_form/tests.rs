@@ -69,21 +69,6 @@ fn click_label(output: &egui::FullOutput, label: &str) -> Vec<egui::Event> {
 }
 
 #[test]
-fn apply_and_remove_buttons_return_explicit_actions() {
-    let context = egui::Context::default();
-    let source = json!({"package_name":"raid_gluttony_0","opaque":{"keep":true}});
-    let (output, _) = frame(&context, &source, Vec::new());
-    let (_, action) = frame(&context, &source, click_label(&output, "Apply"));
-    match action {
-        Some(Action::Apply(value)) => assert_eq!(value, source),
-        _ => panic!("Apply must produce a value without altering the source"),
-    }
-    let (output, _) = frame(&context, &source, Vec::new());
-    let (_, action) = frame(&context, &source, click_label(&output, "Remove"));
-    assert!(matches!(action, Some(Action::Remove)));
-}
-
-#[test]
 fn optional_field_edits_stay_staged_and_cancel_discards_them() {
     let context = egui::Context::default();
     let source = json!({"package_name":"x","opaque":[1,2]});

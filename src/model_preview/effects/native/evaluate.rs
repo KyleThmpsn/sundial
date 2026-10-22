@@ -24,8 +24,12 @@ pub(super) trait Context {
         offset: [i32; 3],
     ) -> Bits;
     fn load(&self, resource: usize, position: [i32; 4], offset: [i32; 3]) -> Bits;
-    fn lod(&self, resource: usize, uv: [f32; 4]) -> [f32; 4];
+    fn lod(&self, resource: usize, sampler: usize, uv: [f32; 4]) -> [f32; 4];
     fn derivative(&self, input: &Operand, y: bool) -> [f32; 4];
+    /// Offset to the other pixel of the current derivative pair.
+    fn derivative_offset(&self, _y: bool) -> f32 {
+        1.0
+    }
 }
 
 struct Registers<'a, C> {
@@ -315,16 +319,21 @@ impl Program {
                     );
                     continue;
                 }
+                85 => {
+                    let a = source(1);
+                    let b = source(2);
+                    std::array::from_fn(|i| a[i].wrapping_shr(b[i] & 31))
+                }
                 86 => source(1).map(|v| (v as f32).to_bits()),
                 108 => {
-                    let raw = context.lod(r.index(&v[2], 0), float(1));
+                    let raw = context.lod(r.index(&v[2], 0), r.index(&v[3], 0), float(1));
                     std::array::from_fn(|i| raw[v[2].lanes[i]].to_bits())
                 }
-                122 | 124 => self.derivatives[at]
+                122..=125 => self.derivatives[at]
                     .as_ref()
                     .map_or_else(
-                        || context.derivative(&v[1], instruction.code == 124),
-                        |derivative| derivative.at(context, instruction.code == 124),
+                        || context.derivative(&v[1], instruction.code >= 124),
+                        |derivative| derivative.at(context, instruction.code >= 124),
                     )
                     .map(f32::to_bits),
                 140 => {

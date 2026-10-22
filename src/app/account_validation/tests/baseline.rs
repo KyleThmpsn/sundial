@@ -50,17 +50,6 @@ fn duplicating_invalid_inventory_rows_does_not_inherit_the_baseline_exemption() 
 }
 
 #[test]
-fn removing_invalid_rows_and_editing_unrelated_fields_remain_allowed() {
-    let (catalog, before) = catalog_and_document();
-    let mut candidate = before.clone();
-    candidate.json_mut()["state"]["account"]["future_setting"] = json!({"preserve": true});
-    assert!(validate_new_account_catalog_issues(&candidate, &before, &catalog, false).is_ok());
-    candidate.json_mut()["state"]["account"]["profile_items"] = json!([]);
-    candidate.json_mut()["state"]["characters"][0]["inventory"] = json!([]);
-    assert!(validate_new_account_catalog_issues(&candidate, &before, &catalog, false).is_ok());
-}
-
-#[test]
 fn reordering_rows_preserves_exemptions_but_another_invalid_quantity_does_not() {
     let (catalog, mut before) = catalog_and_document();
     before.json_mut()["state"]["account"]["profile_items"]

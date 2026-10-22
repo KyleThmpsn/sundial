@@ -306,27 +306,35 @@ pub fn checked_path(root: &Path, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Reader and writer bounds for loader manifests, managed content receipts and transaction records.
+pub fn metadata_byte_limit(path: &Path) -> u64 {
+    if path.file_name().is_some_and(|n| n == MANIFEST) {
+        256 * 1024
+    } else if path.file_name().is_some_and(|n| n == RECEIPT) {
+        // Linked metadata carries one compact entry descriptor per imported resource. Large
+        // map families can exceed the ordinary one-megabyte metadata limit.
+        128 * 1024 * 1024
+    } else {
+        1024 * 1024
+    }
+}
+
 pub fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
     let file =
         File::open(path).map_err(|error| format!("Could not read {}: {error}", path.display()))?;
     if !file.metadata().map_err(|e| e.to_string())?.is_file() {
         return Err("Mod metadata must be a regular file".into());
     }
-    let limit = if path.file_name().is_some_and(|n| n == MANIFEST) {
-        256 * 1024
-    } else if path.file_name().is_some_and(|n| n == RECEIPT) {
-        // Linked metadata carries one compact entry descriptor per imported resource. Large
-        // map families can exceed the ordinary one-megabyte metadata limit.
-        32 * 1024 * 1024
-    } else {
-        1024 * 1024
-    };
+    let limit = metadata_byte_limit(path);
     let mut bytes = Vec::new();
     file.take(limit + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     if bytes.len() as u64 > limit {
-        return Err("Mod metadata exceeds its size limit".into());
+        return Err(format!(
+            "Mod metadata {} exceeds its {limit}-byte size limit",
+            path.display()
+        ));
     }
     let text = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
     crate::strict_json::from_str(text)

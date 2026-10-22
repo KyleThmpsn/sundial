@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) mod decoder;
+pub(super) mod package;
 pub(super) mod staged;
 
 #[cfg(test)]
@@ -32,6 +33,16 @@ pub(super) fn validate_request_with_progress(
             "The selected runtime cannot install Parhelion packages: {error}"
         ))
     })?;
+    let game_root = target_packages_directory
+        .parent()
+        .ok_or_else(|| InstallError::validation("Missing game root"))?
+        .to_owned();
+    let runtime = (request.runtime_snapshot_check)(&game_root).map_err(InstallError::validation)?;
+    if let Some(review) = &request.confirmed_replacement {
+        review
+            .verify_runtime(&runtime)
+            .map_err(InstallError::validation)?;
+    }
 
     if !(1..=MAX_PACKAGE_BACKUP_RETENTION).contains(&request.package_backup_retention) {
         return Err(InstallError::validation(format!(
@@ -90,8 +101,9 @@ pub(super) fn validate_request_with_progress(
         5,
         7,
     ));
-    let sunrise_build_cache = validate_sunrise_build_cache_with(
-        &target_packages_directory,
+    let sunrise_build_cache = validate_sunrise_build_cache_for_runtime(
+        game_root,
+        runtime,
         request.runtime_snapshot_check,
     )?;
     progress(InstallProgress::item(
@@ -133,6 +145,7 @@ pub(super) fn validate_request_with_progress(
         obsolete_artifacts,
         selected_recipe_files: manifest.selected_recipe_files,
         staged_inputs: manifest.inputs,
+        packages: manifest.packages,
         authored_unlocks: manifest.authored_unlocks,
         authored_grants: manifest.authored_grants,
         package_backup_retention: request.package_backup_retention,
@@ -260,7 +273,7 @@ pub(super) fn validate_manifest_and_staged_files(
     }
     let staged_artifacts = staged::packages(&artifacts, &manifest.mods);
     validate_direct_package_set(staged_run_directory, &staged_artifacts)?;
-    validate_staged_packages(
+    let packages = validate_staged_packages(
         staged_run_directory,
         &artifacts,
         target_packages_directory,
@@ -276,6 +289,7 @@ pub(super) fn validate_manifest_and_staged_files(
     let map_diagnostics = validate_map_diagnostics(staged_run_directory, manifest.map_diagnostics)?;
     Ok(ValidatedManifest {
         inputs,
+        packages,
         source_artifacts,
         artifacts,
         merge_data,
@@ -860,7 +874,7 @@ pub(super) fn validate_staged_packages(
     artifacts: &[ArtifactMetadata],
     target_packages_directory: &Path,
     mods: &[crate::mod_family::Member],
-) -> Result<(), InstallError> {
+) -> Result<Vec<package::Checked>, InstallError> {
     let profiles = authored_packages_for_file_names(
         artifacts.iter().map(|artifact| artifact.file_name.as_str()),
     )
@@ -902,7 +916,12 @@ pub(super) fn validate_staged_packages(
                 artifact.file_name
             )));
         }
-        validate_authored_package_bytes(&path, bytes, *profile, target_packages_directory)
+        validate_authored_package_bytes(&path, bytes, *profile, target_packages_directory).map(
+            |structure| package::Checked {
+                artifact: (*artifact).clone(),
+                structure,
+            },
+        )
     };
     // Each worker holds one whole package, and an imported map's run to hundreds of megabytes.
     let workers = std::thread::available_parallelism()
@@ -910,7 +929,7 @@ pub(super) fn validate_staged_packages(
         .clamp(1, 4)
         .min(jobs.len());
     if workers <= 1 {
-        return jobs.iter().try_for_each(check);
+        return jobs.iter().map(check).collect();
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
     let mut results = std::thread::scope(|scope| {
@@ -934,7 +953,7 @@ pub(super) fn validate_staged_packages(
             .collect::<Vec<_>>()
     });
     results.sort_by_key(|(index, _)| *index);
-    results.into_iter().try_for_each(|(_, result)| result)
+    results.into_iter().map(|(_, result)| result).collect()
 }
 
 pub(super) fn validate_authored_package_file(
@@ -948,7 +967,7 @@ pub(super) fn validate_authored_package_file(
             path.display()
         ))
     })?;
-    validate_authored_package_bytes(path, bytes, profile, target_packages_directory)
+    validate_authored_package_bytes(path, bytes, profile, target_packages_directory).map(|_| ())
 }
 
 /// Validates `bytes`, the contents of authored package `path`, against `profile`.
@@ -957,13 +976,14 @@ pub(super) fn validate_authored_package_bytes(
     bytes: Vec<u8>,
     profile: AuthoredPackage,
     target_packages_directory: &Path,
-) -> Result<(), InstallError> {
-    let header = read_package_header(path).map_err(|error| {
+) -> Result<package::Structure, InstallError> {
+    let prefix = bytes.get(..PACKAGE_HEADER_PREFIX_SIZE).ok_or_else(|| {
         InstallError::validation(format!(
-            "Could not read authored package header {}: {error}",
+            "Authored package header is truncated: {}",
             path.display()
         ))
     })?;
+    let header = PackageHeaderPrefix::parse(prefix.try_into().expect("checked prefix length"));
     validate_header(
         path,
         header,
@@ -991,6 +1011,7 @@ pub(super) fn validate_authored_package_bytes(
     let compressed = layout
         .has_compressed_blocks(&bytes)
         .map_err(|error| InstallError::validation(error.to_string()))?;
+    let structure = package::Structure::from_layout(&layout, &bytes);
     let package =
         PackageD2PreBL::from_reader(profile.file_name, Cursor::new(bytes)).map_err(|error| {
             InstallError::validation(format!(
@@ -1040,7 +1061,7 @@ pub(super) fn validate_authored_package_bytes(
             })?;
         }
     }
-    Ok(())
+    Ok(structure)
 }
 
 pub(super) fn validate_target_package_chain(

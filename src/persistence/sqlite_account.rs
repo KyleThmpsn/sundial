@@ -31,7 +31,7 @@ pub(crate) use error::{SqliteAccountError, SqliteAccountIncompatibility};
 pub(crate) use inventory_state::{CharacterStack, PendingReward};
 pub(crate) use writer::{
     SqliteRestoreReceipt, SqliteSaveReceipt, restore_backup_safely, rollback_save,
-    save as save_document, validate_backup,
+    save as save_document, save_checked as save_document_checked, validate_backup,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]

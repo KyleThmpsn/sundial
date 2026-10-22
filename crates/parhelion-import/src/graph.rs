@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 /// The importer revision a new import records in its graph. Raise it with any change to what
 /// conversion writes. Raise `MINIMUM_CONVERTER_REVISION` to it as well when imports made before
 /// the change are unsafe or wrong to install, so Parhelion asks for those to be imported again.
-pub const CONVERTER_REVISION: u32 = 87;
+pub const CONVERTER_REVISION: u32 = 116;
 /// Imports from an earlier revision need importing again. Imports made before revisions were
 /// recorded count as revision 0.
 pub const MINIMUM_CONVERTER_REVISION: u32 = 0;
@@ -29,6 +29,9 @@ pub struct GraphReference {
     /// pinned. 0 for imports made before revisions were recorded.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub converter_revision: u32,
+    /// Authored values applied to private material copies without changing the source pin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material_inputs: Option<crate::marathon::MaterialInputs>,
 }
 
 fn is_zero(value: &u32) -> bool {
@@ -77,6 +80,7 @@ pub fn manifest_converter_revision(directory: &Path) -> u32 {
 pub fn record_converter_revision(directory: &Path) -> Result<()> {
     let path = directory.join("asset-graph.json");
     let mut graph: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    include_animation_payloads(&mut graph)?;
     graph["converter_revision"] = CONVERTER_REVISION.into();
     crate::io::write_json(&path, &graph)
 }
@@ -103,6 +107,7 @@ impl GraphReference {
         ensure!(!output.exists(), "Model output already exists");
         let mut graph: Value =
             serde_json::from_slice(&fs::read(self.directory.join("asset-graph.json"))?)?;
+        include_animation_payloads(&mut graph)?;
         ensure!(
             !matches!(
                 graph["kind"].as_str(),
@@ -132,6 +137,12 @@ impl GraphReference {
             .as_object()
             .into_iter()
             .chain(graph["animation"]["character"].as_object())
+            .chain(
+                graph
+                    .get("equipment_animation")
+                    .filter(|a| a["status"] == "linked")
+                    .and_then(Value::as_object),
+            )
         {
             let files = first_person["files"]
                 .as_object()
@@ -209,7 +220,9 @@ impl GraphReference {
         }
         crate::io::write_json(&output.join("asset-graph.json"), &graph)?;
         self.validate(source_item)?;
-        Self::new(&output, target_item)
+        let mut copied = Self::new(&output, target_item)?;
+        copied.material_inputs = self.material_inputs.clone();
+        Ok(copied)
     }
 
     pub fn new(directory: &Path, item: u32) -> Result<Self> {
@@ -218,15 +231,23 @@ impl GraphReference {
             .context("Open imported asset folder")?;
         let sha256 = fingerprint(&directory, Some(item))?;
         let converter_revision = manifest_converter_revision(&directory);
+        let graph: Value = serde_json::from_slice(&fs::read(directory.join("asset-graph.json"))?)?;
+        let material_inputs = graph
+            .get("material_inputs")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?;
         Ok(Self {
             directory,
             sha256,
             attachments: Vec::new(),
             converter_revision,
+            material_inputs,
         })
     }
 
     pub fn validate(&self, item: u32) -> Result<()> {
+        self.validate_material_inputs()?;
         ensure!(
             self.directory.is_absolute(),
             "Imported asset folder must be absolute"
@@ -268,6 +289,7 @@ impl GraphReference {
     /// Model gear and shaders allocate private registrations for each authored recipe.
     /// Their immutable source graph can therefore survive a rename or a duplicate.
     pub fn validate_reusable(&self, kind: &str) -> Result<()> {
+        self.validate_material_inputs()?;
         ensure!(
             matches!(
                 kind,
@@ -316,6 +338,79 @@ impl GraphReference {
         }
         Ok(())
     }
+
+    fn validate_material_inputs(&self) -> Result<()> {
+        if let Some(inputs) = &self.material_inputs {
+            inputs.validate()?;
+            let graph: Value =
+                serde_json::from_slice(&fs::read(self.directory.join("asset-graph.json"))?)?;
+            ensure!(
+                graph["source"] == "marathon" && graph.get("material_inputs").is_some(),
+                "Imported graph has no editable material inputs. Reimport it"
+            );
+        }
+        Ok(())
+    }
+}
+
+// New manifests name every animation payload in the established files map. This keeps
+// existing saved fingerprints valid while copies and newly prepared graphs pin private
+// rigs and supplemental clips as well as their state and clip banks.
+fn include_animation_payloads(graph: &mut Value) -> Result<()> {
+    for section in [
+        "/animation/first_person",
+        "/animation/character",
+        "/equipment_animation",
+    ] {
+        let Some(animation) = graph.pointer_mut(section) else {
+            continue;
+        };
+        if !animation.is_object() {
+            continue;
+        }
+        let mut additions = Vec::new();
+        for field in ["rigs", "extra_clips"] {
+            for (index, row) in animation[field]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                let file = row["file"].as_str().context("animation payload file")?;
+                additions.push((format!("{field}_{index}"), Value::from(file)));
+                for template in ["template_file", "original_file"] {
+                    if let Some(file) = row.get(template) {
+                        ensure!(file.is_string(), "Animation template file must be a path");
+                        additions.push((format!("{field}_{index}_{template}"), file.clone()));
+                    }
+                }
+            }
+        }
+        if let Some(layers) = animation.get("pose_layers").filter(|v| !v.is_null()) {
+            for field in ["file", "template_file"] {
+                let file = layers[field]
+                    .as_str()
+                    .context("animation pose layer file")?;
+                additions.push((format!("pose_layers_{field}"), Value::from(file)));
+            }
+        }
+        if additions.is_empty() {
+            continue;
+        }
+        let files = animation["files"]
+            .as_object_mut()
+            .context("animation files")?;
+        for (key, file) in additions {
+            if let Some(existing) = files.get(&key) {
+                ensure!(existing == &file, "Conflicting animation payload {key}");
+            } else {
+                if !files.values().any(|existing| existing == &file) {
+                    files.insert(key, file);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn hash_animation(graph: &Value, root: &Path, digest: &mut Sha256) -> Result<()> {
@@ -492,12 +587,18 @@ fn fingerprint(directory: &Path, item: Option<u32>) -> Result<String> {
                     .all(|part| matches!(part, Component::Normal(_))),
             "Audio payload path must stay inside its graph folder"
         );
-        let resolved = root.join(path).canonicalize()?;
+        let resolved = root.join(path).canonicalize().with_context(|| {
+            format!(
+                "Locate prepared audio payload {}",
+                root.join(path).display()
+            )
+        })?;
         ensure!(
             resolved.starts_with(&root),
             "Audio payload escapes its graph folder"
         );
-        let payload = fs::read(resolved)?;
+        let payload = fs::read(&resolved)
+            .with_context(|| format!("Read prepared audio payload {}", resolved.display()))?;
         digest.update((payload.len() as u64).to_le_bytes());
         digest.update(payload);
     }

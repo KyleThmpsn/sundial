@@ -47,7 +47,7 @@ impl Importer {
     }
 
     pub(super) fn tools_ready(&self) -> bool {
-        !self.tools_checking() && self.missing_tools().is_empty()
+        self.fetching.is_none() && !self.tools_checking() && self.missing_tools().is_empty()
     }
 
     fn choose_tool(&mut self, tool: Tool) {
@@ -293,6 +293,16 @@ impl PackageAuthoringApp {
                     .num_columns(4)
                     .spacing([16.0, 8.0])
                     .show(ui, |ui| {
+                        if self.importer.source == Source::Roi {
+                            ui.strong("Xbox Textures");
+                            ui.weak("Textures");
+                            ui.weak("Built In");
+                            sundial::ui::info_link(ui,
+                                "Texture conversion is built in using AMD AddrLib. No XG DLL or setup is needed.",
+                                "AMD AddrLib Source", parhelion_import::d1_roi::texture::SOURCE_URL,
+                                Some(parhelion_import::d1_roi::texture::LICENSE));
+                            ui.end_row();
+                        }
                         for (tool, status) in rows {
                             self.draw_tool_row(ui, tool, &status);
                             ui.end_row();
@@ -340,9 +350,12 @@ impl PackageAuthoringApp {
             },
         );
         ui.horizontal(|ui| {
-            ui.add_enabled_ui(self.importer.fetching.is_none(), |ui| {
-                self.draw_tool_actions(ui, tool, *status == Status::Missing);
-            });
+            ui.add_enabled_ui(
+                self.importer.fetching.is_none() && !self.importer.busy(),
+                |ui| {
+                    self.draw_tool_actions(ui, tool, *status == Status::Missing);
+                },
+            );
             if self.importer.fetching.is_some() && tool == Tool::Decompiler {
                 ui.spinner();
             }

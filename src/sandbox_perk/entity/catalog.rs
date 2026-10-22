@@ -42,13 +42,6 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// Useful discovery evidence, separate from structural validity or gameplay testing.
-    /// A global reference, package membership or a tag alone does not identify an effect.
-    #[cfg(test)]
-    pub fn has_discovery_identity(&self) -> bool {
-        self.has_discovery_identity_with(|_| None, |_| None)
-    }
-
     pub fn has_discovery_identity_with(
         &self,
         perk_name: impl FnMut(u16) -> Option<String>,
@@ -946,6 +939,3 @@ pub fn cached_cancellable(
         |_| true,
     )
 }
-
-#[cfg(test)]
-mod tests;

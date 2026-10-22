@@ -117,7 +117,7 @@ impl PackageAuthoringApp {
             ui.add_space(4.0);
             hint(
                 ui,
-                "Sunrise mod recovery backups are kept separately and are not removed automatically.",
+                "The limit includes completed mod backups. Recovery copies for interrupted operations, account changes, upgrades, and removals are kept.",
             );
             if backups_changed {
                 self.save_workbench_preferences();

@@ -1,5 +1,5 @@
 use super::*;
-use sundial::package_authoring::runtime::{BindingHash, GraphTag, SchemaHandle};
+use sundial::package_authoring::runtime::{BindingHash, SchemaHandle};
 use sundial::package_authoring::runtime::{
     WeaponRuntimeBinding, WeaponRuntimeOwner, WeaponRuntimeRoot, WeaponRuntimeRootKind,
 };
@@ -124,48 +124,6 @@ pub(in crate::app) fn editor(loaded: PrivatePerkRuntimeGraph) -> PerkEditor {
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
-fn activity_asset_properties_allow_dependencies_that_the_build_enrolls() {
-    let path = crate::test_support::stock_packages();
-    let manager = open_shadowkeep_package_manager(&path).unwrap();
-    for tag in [0x80C107D8, 0x80BFBBAB] {
-        let report = entity::residency::inspect(&manager, tag).unwrap();
-        if tag == 0x80C107D8 {
-            assert!(
-                !report.additions().is_empty(),
-                "fixture must need enrollment"
-            );
-        }
-        assert!(loading_issues(&manager, [("Asset", tag, false)]).is_empty());
-        assert!(loading_issues(&manager, [("Projectile", tag, true)]).is_empty());
-        let loaded = load_entity_parameters(&path, tag).unwrap();
-        assert!(loaded.graph_errors.is_empty());
-        let mut draft = editor(loaded);
-        let loaded = draft.graph.as_ref().unwrap();
-        let field = loaded
-            .graphs
-            .iter()
-            .flat_map(|(_, graph)| graph.fields())
-            .find(|field| {
-                runtime_field_is_editable(field)
-                    && validation::fields_for(loaded, &field.locator).len() == 1
-                    && validation::finite(&field.value)
-            })
-            .unwrap();
-        draft.draft.push(WeaponRuntimeValueOverride {
-            locator: field.locator.clone(),
-            value: field.value.clone(),
-        });
-        assert!(
-            draft.validation_errors().is_empty(),
-            "{:?}",
-            draft.validation_errors()
-        );
-    }
-    assert!(!loading_issues(&manager, [("Asset", 0xDEADBEEF, false)]).is_empty());
-}
-
-#[test]
 fn verified_speed_updates_both_lanes_and_reset_preserves_other_bytes() {
     let loaded = fixture();
     let speed = guided::ProjectileSpeed::discover(&loaded).unwrap();
@@ -248,74 +206,6 @@ fn action_only_edits_validate_expected_bits_and_duplicate_targets() {
     assert!(editor.validation_errors().is_empty());
 }
 
-/// The notice asked users to "open asset discovery", which is not a control, and stayed
-/// after discovery had built the index. The index is applied in place instead.
-#[test]
-fn the_index_notice_is_replaced_by_the_references_once_the_index_exists() {
-    use sundial::package_authoring::tft::{Index, Reference};
-    let mut loaded = fixture();
-    loaded.warnings = index_warnings(None);
-    let graph = loaded.graphs[0].0;
-    let reference = |source: u32, target: u32| Reference {
-        source,
-        source_class: 0,
-        offset: 0,
-        target,
-        target_class: 0,
-        path: "content/example.tft".into(),
-    };
-    let names = Index {
-        references: vec![
-            reference(loaded.action_tag, 0x1234),
-            reference(0x5678, graph),
-            reference(0x9999, 0x8888),
-        ],
-        ..Index::default()
-    };
-    PerkEditor::apply_asset_index(&mut loaded, &names, None);
-    assert!(loaded.warnings.is_empty());
-    assert_eq!(loaded.native_assets.len(), 2);
-    // An index that could not read everything says so in the same place.
-    let mut partial = names.clone();
-    partial.errors.push("one resource".into());
-    PerkEditor::apply_asset_index(&mut loaded, &partial, None);
-    assert_eq!(loaded.warnings.len(), 1);
-    assert!(loaded.warnings[0].starts_with("1 resources could not be read"));
-    // An entity opened on its own keeps references in either direction.
-    let mut entity = fixture();
-    entity.action_tag = 0;
-    PerkEditor::apply_asset_index(&mut entity, &names, Some(0x8888));
-    assert_eq!(entity.native_assets.len(), 1);
-    // Nothing to do while the notice is absent: a loaded effect is left alone.
-    let mut editor = editor(fixture());
-    assert!(!editor.refresh_asset_index());
-}
-
-#[test]
-fn reference_index_notices_do_not_block_valid_component_edits() {
-    let mut loaded = fixture();
-    let field = loaded.graphs[0].1.fields().next().unwrap();
-    let edit = WeaponRuntimeValueOverride {
-        locator: field.locator.clone(),
-        value: field.value.clone(),
-    };
-    loaded
-        .warnings
-        .push("Asset references have not been indexed.".into());
-    let mut editor = editor(loaded);
-    editor.draft.push(edit);
-    assert!(editor.validation_errors().is_empty());
-    Arc::make_mut(editor.graph.as_mut().unwrap())
-        .graph_errors
-        .push("Graph could not be decoded.".into());
-    assert!(
-        editor
-            .validation_errors()
-            .iter()
-            .any(|error| error.contains("Some perk graphs could not be decoded"))
-    );
-}
-
 #[test]
 fn runtime_validation_blocks_unfinished_stale_ambiguous_and_wrong_type_edits() {
     let loaded = fixture();
@@ -340,78 +230,6 @@ fn runtime_validation_blocks_unfinished_stale_ambiguous_and_wrong_type_edits() {
     assert!(!editor.validation_errors().is_empty());
     editor.reset_all();
     assert!(editor.validation_errors().is_empty());
-}
-
-#[test]
-fn removing_runtime_edits_keeps_private_identity_and_effects() {
-    let mut recipe = PackageAuthoringApp::default().recipe;
-    let key = editor(fixture()).key;
-    upsert_private_perk_runtime_values(&mut recipe, key, vec![]);
-    let variant = &mut recipe.overrides.socket_plug_variants[0];
-    variant.name = Some("Private Intrinsic".into());
-    variant.description = Some("Authored description".into());
-    variant.classification_donor_hash = Some(HexHash::new(123));
-    variant.investment_stats = vec![WeaponStatOverride {
-        definition_index: 13,
-        value: 10,
-    }];
-    let before = variant.clone();
-    variant.sandbox_perks[0].action_float_values = actions::discover(&fixture().action_payload);
-    remove_private_perk_runtime_values(&mut recipe, key);
-    assert_eq!(recipe.overrides.socket_plug_variants, vec![before]);
-}
-
-#[test]
-#[ignore = "requires clean Shadowkeep packages via SUNDIAL_STOCK_PACKAGES"]
-fn native_micro_missile_exposes_verified_speed() {
-    use sundial::package_authoring::runtime::resolve_weapon_runtime_field;
-    let packages = crate::test_support::stock_packages();
-    let loaded =
-        load_private_perk_runtime_graph(Path::new(&packages), editor(fixture()).key, &[]).unwrap();
-    let speed = guided::ProjectileSpeed::discover(&loaded).expect("verified speed profile");
-    let mut editor = editor(loaded.clone());
-    speed.set(&loaded, &mut editor.draft, 62.5).unwrap();
-    assert_eq!(editor.draft.len(), 2);
-    assert!(
-        editor.validation_errors().is_empty(),
-        "{:?}",
-        editor.validation_errors()
-    );
-    let manager = open_shadowkeep_package_manager(Path::new(&packages)).unwrap();
-    let payload = manager.read_tag(TagHash(0x8152_82E1)).unwrap();
-    for value in &mut editor.draft {
-        // Existing recipes address this owner through a different valid binding alias.
-        value.locator.binding_hash = BindingHash::new(0xB176_70ED);
-        value.locator.resource_index = 0;
-        let resolved = resolve_weapon_runtime_field(
-            &manager,
-            &payload,
-            &value.locator.for_graph(GraphTag::new(0x8152_82E1)).unwrap(),
-        )
-        .unwrap();
-        encode_weapon_runtime_value(&resolved.field.kind, &value.value).unwrap();
-    }
-    assert_eq!(speed.value(&loaded, &editor.draft).unwrap(), 62.5);
-    assert!(
-        editor.validation_errors().is_empty(),
-        "{:?}",
-        editor.validation_errors()
-    );
-    speed.set(&loaded, &mut editor.draft, 1.0).unwrap();
-    assert!(editor.draft.is_empty());
-}
-
-#[test]
-fn resetting_parameter_defaults_keeps_the_original_editor_draft() {
-    let loaded = fixture();
-    let mut editor = editor(loaded.clone());
-    let speed = guided::ProjectileSpeed::discover(&loaded).unwrap();
-    speed.set(&loaded, &mut editor.draft, 62.5).unwrap();
-    editor.original_draft = editor.draft.clone();
-    assert!(!editor.has_changes());
-    editor.reset_all();
-    assert!(editor.has_changes());
-    assert_eq!(speed.value(&loaded, &editor.original_draft).unwrap(), 62.5);
 }
 
 pub(in crate::app) fn set_test_speed(

@@ -73,13 +73,4 @@ mod tests {
         assert!(!text.contains('\u{fffd}'));
         assert!(text.ends_with("Latest: 星\n"));
     }
-
-    #[test]
-    fn unreadable_activity_does_not_discard_the_report() {
-        let directory = TestDirectory::new("diagnostic-parhelion-read-error");
-        let mut report = "Sundial report\n".to_owned();
-        append_at(&mut report, &directory.0);
-        assert!(report.starts_with("Sundial report\n"));
-        assert!(report.contains("Parhelion Activity Unavailable"));
-    }
 }

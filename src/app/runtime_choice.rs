@@ -2,9 +2,7 @@
 
 #[cfg(test)]
 mod tests;
-use super::{
-    SundialApp, account_workspace::WorkspaceDocument, platform, preferences::SettingsLayout,
-};
+use super::{SundialApp, platform, preferences::SettingsLayout};
 use crate::package_runtime::installation::{
     RuntimeCopy, RuntimeInspection, RuntimeLocation, RuntimeRestorePlan, SettingsResetPlan,
     archive_other_runtime, preview_runtime_restore, restore_runtime,
@@ -428,18 +426,16 @@ impl SundialApp {
         match result {
             Ok(backup) => {
                 self.settings_path = path;
-                self.settings_layout = match keep {
-                    RuntimeLocation::Root => SettingsLayout::Root,
-                    RuntimeLocation::BinX64 => SettingsLayout::BinX64,
-                };
                 self.runtime_state =
                     super::runtime_state::RuntimeState::inspect(&self.install_path);
-                let dawn = self.dawn_account_runtime();
-                self.replace_loaded_document(WorkspaceDocument::load(
-                    json,
-                    &self.settings_path,
-                    dawn,
-                ));
+                let document = self.load_workspace_document(json);
+                self.settings_layout = match (keep, self.dawn_account_runtime()) {
+                    (RuntimeLocation::Root, false) => SettingsLayout::Root,
+                    (RuntimeLocation::BinX64, false) => SettingsLayout::BinX64,
+                    (RuntimeLocation::Root, true) => SettingsLayout::DawnRoot,
+                    (RuntimeLocation::BinX64, true) => SettingsLayout::DawnBinX64,
+                };
+                self.replace_loaded_document(document);
                 self.runtime_choice.open = false;
                 self.runtime_choice.error = None;
                 let preference_error = self.save_preferences().err();

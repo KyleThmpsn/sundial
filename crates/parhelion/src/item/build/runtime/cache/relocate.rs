@@ -1,6 +1,52 @@
 //! Reference locations come from native layouts or the authored v113 Wwise sound layout.
 use super::*;
 
+pub(super) fn limitation(manager: &PackageManager, entry: &Entry) -> String {
+    let unsupported = entry
+        .host
+        .iter()
+        .chain(entry.groups.iter().flat_map(|group| &group.tags))
+        .filter(|tag| tag.fields.is_none())
+        .collect::<Vec<_>>();
+    if unsupported.is_empty() {
+        return "The fragment has an unresolved private dependency or incomplete relocation tracing".into();
+    }
+    let mut details = unsupported
+        .iter()
+        .take(3)
+        .map(|tag| {
+            let reference = manager
+                .get_entry(TagHash(tag.template))
+                .map(|entry| (entry.file_type, entry.reference));
+            let class = reference
+                .filter(|(kind, _)| matches!(*kind, 8 | 16))
+                .map(|(_, reference)| reference);
+            let layout = if class == Some(0x8080_9EF9) {
+                "loading index with encoded package and entry indices"
+            } else {
+                "unsupported reference layout"
+            };
+            let identity = reference
+                .map(|(_, reference)| match class {
+                    Some(class) => format!(", class {class:08X}"),
+                    None => format!(", entry reference {reference:08X}"),
+                })
+                .unwrap_or_default();
+            format!(
+                "cached tag {:08X} (template {:08X}{identity}): {layout}",
+                tag.assigned, tag.template
+            )
+        })
+        .collect::<Vec<_>>();
+    if unsupported.len() > details.len() {
+        details.push(format!(
+            "{} more unsupported resources",
+            unsupported.len() - details.len()
+        ));
+    }
+    details.join(". ")
+}
+
 pub(super) fn fields(manager: &PackageManager, tag: &NewTagSpec) -> Option<Vec<(usize, u32)>> {
     match tag.storage {
         crate::NewTagStorageMode::AudioMedia

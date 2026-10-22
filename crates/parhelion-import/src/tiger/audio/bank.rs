@@ -184,9 +184,10 @@ pub fn object_types(bytes: &[u8]) -> Result<BTreeSet<u8>> {
         match name {
             b"BKHD" => {
                 ensure!(!header && body.len() == 40, "bank header envelope differs");
+                let version = u32::from_le_bytes(body[..4].try_into()?);
                 ensure!(
-                    u32::from_le_bytes(body[..4].try_into()?) == 150,
-                    "source bank must be version 150"
+                    version == 150,
+                    "source Wwise bank version is {version}, expected 150"
                 );
                 header = true;
             }
@@ -259,7 +260,11 @@ fn lower_inner(
         bytes: header.context("bank header missing")?,
         at: 0,
     };
-    ensure!(h.u32()? == 150, "source bank must be version 150");
+    let version = h.u32()?;
+    ensure!(
+        version == 150,
+        "source Wwise bank version is {version}, expected 150"
+    );
     let bank_id = h.u32()?;
     // The source uses language hashes. Native SFX banks use language ordinal zero.
     let language = h.u32()?;

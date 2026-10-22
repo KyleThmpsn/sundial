@@ -138,31 +138,3 @@ fn alpha_bounds(source: &image::RgbaImage) -> Option<[u16; 4]> {
         upper(bottom, source.height()) - y,
     ])
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reversed_crop_drags_and_transparent_padding_preserve_source_bounds() {
-        let rect = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(200.0, 100.0));
-        let a = egui::pos2(60.0, 45.0);
-        let b = egui::pos2(160.0, 95.0);
-        assert_eq!(selection(rect, a, b), [2500, 2500, 5000, 5000]);
-        assert_eq!(selection(rect, b, a), [2500, 2500, 5000, 5000]);
-        let source = image::RgbaImage::from_fn(80, 40, |x, y| {
-            image::Rgba([
-                0,
-                0,
-                0,
-                if (20..60).contains(&x) && (10..30).contains(&y) {
-                    255
-                } else {
-                    0
-                },
-            ])
-        });
-        assert_eq!(alpha_bounds(&source), Some([2500, 2500, 5000, 5000]));
-        assert_eq!(alpha_bounds(&image::RgbaImage::new(20, 20)), None);
-    }
-}

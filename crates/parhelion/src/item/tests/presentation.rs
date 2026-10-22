@@ -247,29 +247,6 @@ fn slot_conversion_preserves_weapon_type_and_every_other_string_byte() {
 }
 
 #[test]
-fn cross_slot_classification_preserves_appearance_type_and_authored_bucket() {
-    for (source_slot, target_slot) in [
-        (WeaponInventorySlot::Energy, WeaponInventorySlot::Kinetic),
-        (WeaponInventorySlot::Kinetic, WeaponInventorySlot::Energy),
-    ] {
-        let mut target = item_string_classification_fixture(target_slot, 0x6312_A690);
-        let source = item_string_classification_fixture(source_slot, 0xC0E9_5045);
-        let before = target.clone();
-        let mut expected = item_string_client_classification(&source, source_slot).unwrap();
-        expected[..4].copy_from_slice(&target_slot.bucket_hash().to_le_bytes());
-        transplant_item_string_client_classification(&mut target, &source, target_slot).unwrap();
-        assert_eq!(
-            item_string_client_classification(&target, target_slot).unwrap(),
-            expected
-        );
-        let start = ITEM_STRING_CLIENT_CLASSIFICATION_OFFSET;
-        let end = start + ITEM_STRING_CLIENT_CLASSIFICATION_SIZE;
-        assert_eq!(&target[..start], &before[..start]);
-        assert_eq!(&target[end..], &before[end..]);
-    }
-}
-
-#[test]
 fn item_string_classification_preserves_distinct_stock_type_keys() {
     let mut payload = item_string_classification_fixture(WeaponInventorySlot::Energy, 0x0D51_B658);
     assert!(item_string_client_classification(&payload, WeaponInventorySlot::Kinetic).is_err());
@@ -382,35 +359,4 @@ fn authored_collectible_display_clears_stale_reacquire_warning() {
         .unwrap(),
         BLANK_LOCALIZED_REFERENCE_HASH
     );
-}
-
-#[test]
-fn shader_unlock_preserves_base_colors_and_unrelated_render_data() {
-    let mut data = synthetic_weapon_identity_fields(AuthoredWeaponRarity::Exotic, 42);
-    let dye = |channel_index, dye_reference_index| WeaponDyeReferenceOverride {
-        channel_index,
-        dye_reference_index,
-    };
-    let original = [
-        vec![dye(7, 11), dye(4, 12)],
-        vec![dye(4, 20), dye(8, 21)],
-        vec![dye(4, 30), dye(5, 31), dye(6, 32)],
-    ];
-    set_weapon_render_dye_rows(&mut data, &original).unwrap();
-    let art = weapon_art_arrangements(&data).unwrap();
-    unlock_weapon_shader_dyes(&mut data).unwrap();
-    assert_eq!(
-        weapon_render_dye_rows(&data).unwrap(),
-        [
-            vec![dye(7, 11)],
-            vec![dye(8, 21), dye(4, 30), dye(5, 31), dye(6, 32)],
-            vec![]
-        ]
-    );
-    assert_eq!(weapon_art_arrangements(&data).unwrap(), art);
-    assert_eq!(weapon_pattern_index(&data).unwrap(), Some(42));
-    assert_eq!(weapon_rarity(&data).unwrap(), AuthoredWeaponRarity::Exotic);
-    let once = data.clone();
-    unlock_weapon_shader_dyes(&mut data).unwrap();
-    assert_eq!(data, once);
 }

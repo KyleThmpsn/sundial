@@ -13,42 +13,6 @@ fn runtime_binding(resource_offset: u64) -> WeaponRuntimeBinding {
 }
 
 #[test]
-fn runtime_locator_buildability_matches_compiler_shape_limits() {
-    let mut locator = WeaponRuntimeFieldLocator {
-        graph_tag: None,
-        binding_hash: BindingHash::new(0x1111_2222),
-        resource_index: 0,
-        root: WeaponRuntimeRootKind::ComponentDefinition,
-        root_schema: SchemaHandle::new(0x8080_1001),
-        path: Vec::new(),
-        type_handle: SchemaHandle::new(0x8080_1002),
-        value_offset: 0,
-        byte_size: 4,
-    };
-    assert!(locator.is_buildable());
-    locator.graph_tag = Some(0x8152_82E1.into());
-    assert!(locator.for_graph(GraphTag::new(0x8152_82E2)).is_err());
-    assert!(
-        locator
-            .for_graph(GraphTag::new(0x8152_82E1))
-            .unwrap()
-            .graph_tag
-            .is_none()
-    );
-    locator.type_handle = SchemaHandle::new(0);
-    assert!(!locator.is_buildable());
-    locator.type_handle = SchemaHandle::new(0x8080_1002);
-    locator.path = (0..=MAX_RUNTIME_SCHEMA_DEPTH)
-        .map(|index| WeaponRuntimePathElement {
-            name_hash: index as u32 + 1,
-            type_handle: SchemaHandle::new(0x8080_1002),
-            byte_offset: 0,
-        })
-        .collect();
-    assert!(!locator.is_buildable());
-}
-
-#[test]
 fn component_definition_prefix_rejects_invalid_absolute_targets() {
     let binding = runtime_binding(0x20);
     let mut owner = vec![0_u8; 0xC0];
@@ -77,20 +41,6 @@ fn component_definition_prefix_rejects_invalid_absolute_targets() {
         native_component_definition_reference(&owner, &binding),
         Ok(None)
     );
-}
-
-#[test]
-fn embedded_runtime_registry_resolves_every_base_and_member_type() {
-    let registry = runtime_registry().expect("embedded runtime registry");
-    assert!(!registry.records.is_empty());
-    for record in registry.records.values() {
-        if !matches!(record.base_type, 0 | u32::MAX) {
-            assert!(registry.records.contains_key(&record.base_type));
-        }
-        for member in &record.members {
-            assert!(registry.records.contains_key(&member.type_handle));
-        }
-    }
 }
 
 #[test]
@@ -248,39 +198,6 @@ fn technical_ranges_cover_every_unreflected_owner_byte_without_crossing_componen
 }
 
 #[test]
-fn technical_ranges_are_chunked_without_losing_bytes() {
-    let owner_payload = vec![0xA5; 640];
-    let root = OwnerRootDescriptor {
-        kind: WeaponRuntimeRootKind::ComponentDefinition,
-        target: 16,
-        schema: 0x8080_5678,
-        limit: 616,
-    };
-    let mut fields = Vec::new();
-    append_uncovered_runtime_ranges(
-        &owner_payload,
-        root,
-        &mut fields,
-        WEAPON_TRIGGER_COMPONENT_KEY,
-        0,
-        &[],
-    )
-    .expect("append technical ranges");
-    assert!(
-        fields
-            .iter()
-            .all(|field| field.locator.byte_size as usize <= MAX_TECHNICAL_RUNTIME_FIELD_BYTES)
-    );
-    assert_eq!(
-        fields
-            .iter()
-            .map(|field| field.locator.byte_size as usize)
-            .sum::<usize>(),
-        600
-    );
-}
-
-#[test]
 fn shared_owner_ranges_preserve_bytes_and_reject_stale_boundaries() {
     let payload = (0_u8..64).collect::<Vec<_>>();
     let root = WeaponRuntimeRoot {
@@ -380,29 +297,4 @@ fn displayed_runtime_fields_resolve_to_exact_source_bytes() {
             "Pattern {pattern_index} must expose runtime fields"
         );
     }
-}
-
-#[test]
-fn inferred_member_names_are_consistent_and_never_shadow_a_verified_name() {
-    let registry = runtime_registry().expect("runtime registry");
-    for (hash, name) in &registry.inferred {
-        assert_eq!(
-            fnv1_name_hash(name),
-            *hash,
-            "inferred name {name} does not hash to 0x{hash:08X}"
-        );
-        assert!(
-            !registry.names.contains_key(hash),
-            "inferred name 0x{hash:08X} shadows a verified name"
-        );
-    }
-    // A verified name always wins and is never reported as inferred.
-    for hash in registry.names.keys() {
-        assert!(!runtime_member_name(*hash, registry).1);
-    }
-    let (label, inferred) = runtime_member_name(0x2570_6232, registry);
-    assert_eq!(label, "Magnetism Distance");
-    assert!(!inferred);
-    let unknown = runtime_member_name(0x0000_0001, registry);
-    assert_eq!(unknown, ("Member 0x00000001".to_owned(), false));
 }

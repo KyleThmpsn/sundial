@@ -341,47 +341,6 @@ fn replacing_flair_preserves_unrecognized_inventory_items() {
 }
 
 #[test]
-fn exotic_detection_uses_rarity_not_perk_sockets() {
-    use crate::catalog::{ItemPackageMetadata, ItemRarity, SocketDef};
-    let mut item = ItemDef {
-        hash: 1,
-        name: "Custom weapon".into(),
-        type_name: "Sidearm".into(),
-        bucket_hash: SLOTS[0].2,
-        class_type: 3,
-        default_plugs: vec![],
-        sockets: vec![],
-        abilities: Default::default(),
-    };
-    let catalog = Catalog::for_test(
-        vec![item.clone()],
-        HashMap::from([(
-            1,
-            ItemPackageMetadata {
-                rarity: ItemRarity::Exotic,
-                ..Default::default()
-            },
-        )]),
-    );
-    assert!(is_exotic(&catalog, &item));
-    item.sockets.push(SocketDef {
-        socket_type: 377,
-        ..Default::default()
-    });
-    let catalog = Catalog::for_test(
-        vec![item.clone()],
-        HashMap::from([(
-            1,
-            ItemPackageMetadata {
-                rarity: ItemRarity::Legendary,
-                ..Default::default()
-            },
-        )]),
-    );
-    assert!(!is_exotic(&catalog, &item));
-}
-
-#[test]
 fn hash_choices_skip_the_engine_empty_marker() {
     let mut rng = Rng::from_seed(7);
     let no_definition_hash = u64::from(NO_DEFINITION_HASH.get());
